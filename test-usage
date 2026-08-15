@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+
+fail() {
+    printf 'test-usage: %s\n' "$*" >&2
+    exit 1
+}
+
+assert_output() {
+    local expected="$1"
+    shift
+
+    local actual
+    actual="$("$@")"
+    [[ "${actual}" == "${expected}" ]] || fail "expected '${expected}', got '${actual}'"
+}
+
+tmp="$(mktemp -d)"
+trap 'rm -rf "${tmp}"' EXIT
+
+mkdir -p "${tmp}/home/.codex" "${tmp}/bin" "${tmp}/cache"
+cat >| "${tmp}/home/.codex/auth.json" <<'EOF'
+{"tokens":{"access_token":"test-token","account_id":"test-account"}}
+EOF
+
+cat >| "${tmp}/bin/curl" <<'EOF'
+#!/usr/bin/env bash
+printf '.\n' >> "${MOCK_CALLS}"
+cat "${MOCK_RESPONSE}"
+EOF
+chmod +x "${tmp}/bin/curl"
+
+cat >| "${tmp}/five-hour.json" <<'EOF'
+{"rate_limit":{"primary_window":{"used_percent":25,"limit_window_seconds":18000,"reset_after_seconds":3660},"secondary_window":{"used_percent":40,"limit_window_seconds":604800,"reset_after_seconds":176400}}}
+EOF
+
+cat >| "${tmp}/weekly-only.json" <<'EOF'
+{"rate_limit":{"primary_window":{"used_percent":100,"limit_window_seconds":604800,"reset_after_seconds":385907},"secondary_window":null}}
+EOF
+
+run_usage() {
+    env \
+        HOME="${tmp}/home" \
+        XDG_CACHE_HOME="${tmp}/cache" \
+        PATH="${tmp}/bin:${PATH}" \
+        MOCK_RESPONSE="$1" \
+        MOCK_CALLS="${tmp}/curl-calls" \
+        CODEX_USAGE_CACHE_TTL=0 \
+        "${ROOT}/codex-usage"
+}
+
+assert_output '75/60 · 1h1m/2d1h' run_usage "${tmp}/five-hour.json"
+assert_output '—/0 · —/4d11h' run_usage "${tmp}/weekly-only.json"
+
+rm -f "${tmp}/curl-calls" "${tmp}/cache/codex/usage.json"
+for _ in 1 2; do
+    env \
+        HOME="${tmp}/home" \
+        XDG_CACHE_HOME="${tmp}/cache" \
+        PATH="${tmp}/bin:${PATH}" \
+        MOCK_RESPONSE="${tmp}/five-hour.json" \
+        MOCK_CALLS="${tmp}/curl-calls" \
+        CODEX_USAGE_CACHE_TTL=60 \
+        "${ROOT}/codex-usage" >/dev/null
+done
+[[ "$(wc -l < "${tmp}/curl-calls")" -eq 1 ]] || fail 'fresh cache did not prevent a second request'
+
+printf 'test-usage: all tests passed\n'

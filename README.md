@@ -16,6 +16,8 @@ Clone the repository somewhere under `~/code`, then expose the launcher on `PATH
 
 ```bash
 ln -s ~/code/agent-box/agent-box ~/.local/bin/agent-box
+ln -s ~/code/agent-box/codex-usage ~/.local/bin/codex-usage
+ln -s ~/code/agent-box/claude-usage ~/.local/bin/claude-usage
 ```
 
 If the repository lives at another path under `~/code`, adjust the source path accordingly.
@@ -70,6 +72,26 @@ Claude Code is installed from the official `@anthropic-ai/claude-code` npm packa
 If `~/.claude.json` already exists on the host, it is mounted as well.
 
 The launcher also forwards common Anthropic/provider variables when they are already set on the host, including `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`, Bedrock/Vertex selectors, and common HTTP/TLS proxy variables.
+
+## Usage limits
+
+The optional helpers query the subscription usage endpoints without sending a
+model prompt:
+
+```bash
+codex-usage
+claude-usage
+```
+
+They print remaining short/weekly quota and time until reset:
+
+```text
+83/61 · 3h24m/4d11h
+```
+
+An unavailable window is shown as `—`. Responses are cached for 60 seconds to
+avoid unnecessary polling. `claude-usage --statusline` can also consume the JSON
+provided by Claude Code's `statusLine` integration.
 
 ## Shell and diagnostics
 
