@@ -10,14 +10,15 @@ ENV LANG=C.UTF-8 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PYTHONUNBUFFERED=1 \
     UV_NO_PROGRESS=1 \
-    UV_LINK_MODE=copy
+    UV_LINK_MODE=copy \
+    DISABLE_AUTOUPDATER=1
 
 #
 # ---------------------------------------------------------------------------
 # Base OS / development packages
 # ---------------------------------------------------------------------------
 #
-# Этот слой намеренно расположен первым и меняется редко.
+# This layer is intentionally first and changes rarely.
 #
 
 RUN set -eux; \
@@ -103,12 +104,12 @@ RUN set -eux; \
 # Container user
 # ---------------------------------------------------------------------------
 #
-# Ubuntu 24.04 уже может содержать UID/GID 1000 (обычно user "ubuntu").
+# Ubuntu 24.04 may already contain UID/GID 1000 (usually user "ubuntu").
 #
-# Поэтому:
-#   - существующий GID переиспользуем;
-#   - существующий UID переименовываем;
-#   - если UID/GID свободны — создаём нормально.
+# Therefore:
+#   - reuse an existing GID;
+#   - rename an existing UID;
+#   - create the user/group normally when UID/GID are free.
 #
 
 RUN set -eux; \
@@ -151,8 +152,9 @@ RUN set -eux; \
 # Frequently updated tools
 # ---------------------------------------------------------------------------
 #
-# codex-box update меняет этот ARG.
-# Всё выше остаётся в build cache, а этот слой и следующие пересобираются.
+# agent-box update changes this ARG.
+# Everything above stays in the build cache while this layer and later layers
+# are rebuilt.
 #
 
 ARG TOOLS_REFRESH=initial
@@ -160,8 +162,9 @@ ARG TOOLS_REFRESH=initial
 #
 # mise
 #
-# Не является основой image. Нужен для project-specific toolchains:
-# mise.toml, .mise.toml, .tool-versions и т.п.
+# mise is not the foundation of the image. It is available for project-specific
+# toolchains declared through mise.toml, .mise.toml, .tool-versions, and similar
+# project files.
 #
 
 RUN set -eux; \
@@ -189,8 +192,8 @@ RUN set -eux; \
 #
 # uv
 #
-# System Python в Ubuntu — 3.12.
-# Другие версии Python uv сможет устанавливать для конкретных проектов сам.
+# Ubuntu 24.04 provides Python 3.12 as the system Python.
+# uv can install other Python versions for individual projects when needed.
 #
 
 RUN set -eux; \
@@ -204,7 +207,7 @@ RUN set -eux; \
 #
 # Node.js 22
 #
-# OpenAI использует Node 22 и в своём secure Codex devcontainer.
+# Both coding agents support the Node.js version used by this image.
 #
 
 RUN set -eux; \
@@ -219,11 +222,13 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/*
 
 #
-# Codex CLI
+# Coding agents
 #
 
 RUN set -eux; \
-    npm install --global @openai/codex@latest; \
+    npm install --global \
+        @openai/codex@latest \
+        @anthropic-ai/claude-code@latest; \
     npm cache clean --force
 
 #
@@ -320,6 +325,7 @@ RUN set -eux; \
     node --version; \
     npm --version; \
     codex --version; \
+    claude --version; \
     mise --version; \
     git --version; \
     git-lfs --version; \
