@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+AUTH="$HOME/.codex/auth.json"
+TOKEN="$(jq -r '.tokens.access_token' "$AUTH")"
+ACCOUNT_ID="$(jq -r '.tokens.account_id // empty' "$AUTH")"
+
+json="$(
+  curl -s --max-time 10 \
+    -H "Authorization: Bearer ${TOKEN}" \
+    ${ACCOUNT_ID:+-H "chatgpt-account-id: ${ACCOUNT_ID}"} \
+    https://chatgpt.com/backend-api/wham/usage
+)"
+
+jq -r '
+  def compact_time($s):
+    if $s >= 86400 then
+      "\(($s / 86400) | floor)d\((($s % 86400) / 3600) | floor)h"
+    elif $s >= 3600 then
+      "\(($s / 3600) | floor)h\((($s % 3600) / 60) | floor)m"
+    else
+      "\(($s / 60) | floor)m"
+    end;
+
+  def remaining($w):
+    if $w == null then "—"
+    else ((100 - $w.used_percent) | floor | tostring)
+    end;
+
+  def reset($w):
+    if $w == null then "—"
+    else compact_time($w.reset_after_seconds)
+    end;
+
+  .rate_limit |
+  if . == null then
+    "—/— · —/—"
+  elif .secondary_window == null then
+    "—/\(remaining(.primary_window)) · —/\(reset(.primary_window))"
+  else
+    "\(remaining(.primary_window))/\(remaining(.secondary_window)) · \(reset(.primary_window))/\(reset(.secondary_window))"
+  end
+' <<< "$json"
