@@ -217,14 +217,15 @@ if [[ -f "${HOST_HOME}/.claude.json" ]]; then
     )
 fi
 
-# Status line commands in ~/.claude/settings.json may reference host-installed
-# helpers. Mount only the configured claude-usage executable when present.
-if [[ -f "${HOST_HOME}/.local/bin/claude-usage" ]]; then
-    MOUNTS+=(
-        --mount
-        "type=bind,src=${HOST_HOME}/.local/bin/claude-usage,dst=${CONTAINER_HOME}/.local/bin/claude-usage,ro=true"
-    )
-fi
+# Mount usage helpers individually instead of exposing the host's entire bin.
+for helper in codex-usage claude-usage; do
+    if [[ -f "${HOST_HOME}/.local/bin/${helper}" ]]; then
+        MOUNTS+=(
+            --mount
+            "type=bind,src=${HOST_HOME}/.local/bin/${helper},dst=${CONTAINER_HOME}/.local/bin/${helper},ro=true"
+        )
+    fi
+done
 
 # Git configuration is readable but immutable from the container.
 if [[ -f "${HOST_HOME}/.gitconfig" ]]; then
