@@ -73,6 +73,42 @@ If `~/.claude.json` already exists on the host, it is mounted as well.
 
 The launcher also forwards common Anthropic/provider variables when they are already set on the host, including `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`, Bedrock/Vertex selectors, and common HTTP/TLS proxy variables.
 
+## Git and GitHub
+
+`git` and `gh` configuration is reseeded from the host on every start into
+private container state:
+
+```text
+~/.gitconfig, ~/.config/git   -> container ~/.config/git   (GIT_CONFIG_GLOBAL)
+~/.config/gh                  -> container ~/.config/gh     (GH_CONFIG_DIR)
+```
+
+These are directories rather than bind-mounted files on purpose: `git` and `gh`
+rewrite their configuration through a temporary file plus rename, and renaming
+over a bind-mounted file fails with `Device or resource busy`. The host remains
+the source of truth, and configuration written inside the container is
+discarded at the next start.
+
+`gh auth login` is not meant to be run inside the container — the token lives in
+the host keyring, and the container is disposable. Authenticate on the host
+instead:
+
+```bash
+gh auth login
+```
+
+At startup the launcher reads `gh auth token` on the host and passes it in as
+`GH_TOKEN`, which authenticates both `gh` and the `gh auth git-credential`
+helper used by `git` over HTTPS. An already exported `GH_TOKEN`/`GITHUB_TOKEN`
+is forwarded as-is and takes precedence. Disable the passthrough with:
+
+```bash
+AGENT_BOX_GH_TOKEN=0 agent-box codex
+```
+
+Only HTTPS remotes are authenticated this way; the container has no SSH keys or
+agent socket, so `git@github.com:` remotes will fail.
+
 ## Usage limits
 
 The optional helpers query the subscription usage endpoints without sending a
