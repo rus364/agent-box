@@ -40,6 +40,8 @@ Environment:
   AGENT_BOX_AGENT   Default agent when codex/claude is omitted (default: codex)
   AGENT_BOX_IMAGE   Container image name (default: localhost/agent-box:latest)
   AGENT_BOX_KVM=0   Disable KVM passthrough
+  AGENT_BOX_GH_TOKEN=0
+                    Do not pass the host GitHub token in as GH_TOKEN
 
 Examples:
   agent-box
@@ -78,6 +80,8 @@ mkdir -p \
     "${STATE_ROOT}/cache" \
     "${STATE_ROOT}/uv" \
     "${STATE_ROOT}/mise" \
+    "${STATE_ROOT}/git" \
+    "${STATE_ROOT}/gh" \
     "${HOST_HOME}/.codex" \
     "${HOST_HOME}/.claude" \
     "${HOST_HOME}/.cache/claude-code" \
@@ -227,20 +231,55 @@ for helper in codex-usage claude-usage; do
     fi
 done
 
-# Git configuration is readable but immutable from the container.
-if [[ -f "${HOST_HOME}/.gitconfig" ]]; then
-    MOUNTS+=(
-        --mount
-        "type=bind,src=${HOST_HOME}/.gitconfig,dst=${CONTAINER_HOME}/.gitconfig,ro=true"
-    )
-fi
+# ---------------------------------------------------------------------------
+# Git and GitHub CLI configuration
+# ---------------------------------------------------------------------------
+#
+# A single config file cannot be bind mounted here: git and gh rewrite their
+# configuration by creating a temporary file and renaming it over the target,
+# and renaming over a bind mount fails with "Device or resource busy" even when
+# the mount is writable.
+#
+# Both directories are therefore private container state that is reseeded from
+# the host on every start. The host stays the source of truth; whatever the
+# container writes is discarded at the next start.
+seed_state_dir() {
+    local state_dir="$1"
+    shift
 
-if [[ -d "${HOST_HOME}/.config/git" ]]; then
-    MOUNTS+=(
-        --mount
-        "type=bind,src=${HOST_HOME}/.config/git,dst=${CONTAINER_HOME}/.config/git,ro=true"
-    )
-fi
+    rm -rf -- "${state_dir}"
+    mkdir -p -- "${state_dir}"
+    chmod 700 -- "${state_dir}"
+
+    local source
+    for source in "$@"; do
+        [[ -e "${source}" ]] || continue
+
+        if [[ -d "${source}" ]]; then
+            cp -a -- "${source}/." "${state_dir}/"
+        else
+            cp -a -- "${source}" "${state_dir}/config"
+        fi
+    done
+}
+
+# ~/.gitconfig wins over the XDG file on the host, so it is seeded last.
+seed_state_dir \
+    "${STATE_ROOT}/git" \
+    "${HOST_HOME}/.config/git" \
+    "${HOST_HOME}/.gitconfig"
+
+seed_state_dir \
+    "${STATE_ROOT}/gh" \
+    "${HOST_HOME}/.config/gh"
+
+MOUNTS+=(
+    --mount
+    "type=bind,src=${STATE_ROOT}/git,dst=${CONTAINER_HOME}/.config/git"
+
+    --mount
+    "type=bind,src=${STATE_ROOT}/gh,dst=${CONTAINER_HOME}/.config/gh"
+)
 
 # ---------------------------------------------------------------------------
 # ~/.agents
@@ -341,6 +380,8 @@ RUN_ARGS=(
     --env="HOME=${CONTAINER_HOME}"
     --env="PATH=${CONTAINER_HOME}/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
     --env="CODEX_HOME=${CONTAINER_HOME}/.codex"
+    --env="GIT_CONFIG_GLOBAL=${CONTAINER_HOME}/.config/git/config"
+    --env="GH_CONFIG_DIR=${CONTAINER_HOME}/.config/gh"
     --env="XDG_CACHE_HOME=${CONTAINER_HOME}/.cache"
     --env="UV_CACHE_DIR=${CONTAINER_HOME}/.cache/uv"
     --env="MISE_DATA_DIR=${CONTAINER_HOME}/.local/share/mise"
@@ -349,9 +390,34 @@ RUN_ARGS=(
     "${MOUNTS[@]}"
 )
 
+# GitHub authentication.
+#
+# `gh auth login` cannot be completed inside a disposable container: gh keeps
+# the token in the host keyring, not in a file, so there is nothing to mount.
+# Instead the host token is read once per start and inherited as GH_TOKEN,
+# which authenticates both gh and the `gh auth git-credential` helper that the
+# seeded gitconfig already references.
+#
+# AGENT_BOX_GH_TOKEN=0 disables the passthrough.
+if [[ "${AGENT_BOX_GH_TOKEN:-1}" != "0" && -z "${GH_TOKEN:-}" && -z "${GITHUB_TOKEN:-}" ]]; then
+    if command -v gh >/dev/null 2>&1; then
+        HOST_GH_TOKEN="$(gh auth token 2>/dev/null || true)"
+
+        if [[ -n "${HOST_GH_TOKEN}" ]]; then
+            export GH_TOKEN="${HOST_GH_TOKEN}"
+        else
+            warn "no GitHub token on the host; run 'gh auth login' outside the container"
+        fi
+
+        unset HOST_GH_TOKEN
+    fi
+fi
+
 # Forward common provider/proxy variables when they are present on the host.
 # Values are inherited by Podman and are not embedded in this script or image.
 for env_name in \
+    GH_TOKEN \
+    GITHUB_TOKEN \
     ANTHROPIC_API_KEY \
     ANTHROPIC_AUTH_TOKEN \
     ANTHROPIC_BASE_URL \
@@ -398,6 +464,9 @@ case "${1:-}" in
                 printf "%-20s %s\n" "uv:" "$(uv --version)"
                 printf "%-20s %s\n" "mise:" "$(mise --version)"
                 printf "%-20s %s\n" "git:" "$(git --version)"
+                printf "%-20s %s\n" "git user:" "$(git config --global user.name) <$(git config --global user.email)>"
+                printf "%-20s %s\n" "gh:" "$(gh --version | head -1)"
+                printf "%-20s %s\n" "gh account:" "$(gh api user --jq .login 2>/dev/null || echo "not authenticated")"
                 printf "%-20s %s\n" "yq:" "$(yq --version)"
                 printf "%-20s %s\n" "kubectl:" "$(kubectl version --client 2>/dev/null | head -1)"
                 printf "%-20s %s\n" "helm:" "$(helm version --short)"
