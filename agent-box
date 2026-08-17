@@ -30,6 +30,7 @@ usage() {
     cat <<'EOF'
 Usage:
   agent-box [codex|claude] [agent arguments...]
+  agent-box usage <codex|claude> [--statusline]
   agent-box shell [bash arguments...]
   agent-box doctor
   agent-box build
@@ -49,9 +50,248 @@ Examples:
   agent-box codex exec "inspect this repository"
   agent-box claude
   agent-box claude -p "summarize this repository"
+  agent-box usage codex
+  agent-box usage claude
   AGENT_BOX_AGENT=claude agent-box
 EOF
 }
+
+format_codex_usage() {
+    jq -er '
+      def compact_time($s):
+        if $s >= 86400 then
+          "\(($s / 86400) | floor)d\((($s % 86400) / 3600) | floor)h"
+        elif $s >= 3600 then
+          "\(($s / 3600) | floor)h\((($s % 3600) / 60) | floor)m"
+        else
+          "\(($s / 60) | floor)m"
+        end;
+
+      def remaining($w):
+        if $w == null or $w.used_percent == null then "—"
+        else ((100 - $w.used_percent) | floor | tostring)
+        end;
+
+      def reset($w):
+        if $w == null or $w.reset_after_seconds == null then "—"
+        else compact_time($w.reset_after_seconds)
+        end;
+
+      (.rate_limit // {}) as $r |
+      ([$r.primary_window, $r.secondary_window] | map(select(. != null))) as $windows |
+      ($windows | map(select(.limit_window_seconds != null and .limit_window_seconds <= 86400)) | first) as $short |
+      ($windows | map(select(.limit_window_seconds != null and .limit_window_seconds > 86400)) | first) as $week |
+      if ($short == null and $week == null) then
+        error("response carried no recognizable rate-limit windows")
+      else
+        "\(remaining($short))/\(remaining($week)) · \(reset($short))/\(reset($week))"
+      end
+    '
+}
+
+agent_usage_codex() {
+    local cache="${XDG_CACHE_HOME:-$HOME/.cache}/codex/usage.json"
+    local cache_ttl="${CODEX_USAGE_CACHE_TTL:-60}"
+    local auth="${CODEX_AUTH_PATH:-${CODEX_HOME:-$HOME/.codex}/auth.json}"
+    local usage_url="${CODEX_USAGE_URL:-https://chatgpt.com/backend-api/wham/usage}"
+    local dir tmp token account_id json
+
+    if [[ -s "${cache}" ]] && (( $(date +%s) - $(stat -c %Y "${cache}") < cache_ttl )); then
+        format_codex_usage < "${cache}"
+        return
+    fi
+
+    if [[ ! -r "${auth}" ]]; then
+        printf 'agent-box usage codex: authentication file not found: %s\n' "${auth}" >&2
+        return 1
+    fi
+
+    token="$(jq -er '.tokens.access_token' "${auth}")" || {
+        printf 'agent-box usage codex: access token not found in %s\n' "${auth}" >&2
+        return 1
+    }
+    account_id="$(jq -r '.tokens.account_id // empty' "${auth}")"
+
+    local curl_args=(
+        --fail-with-body
+        --silent
+        --show-error
+        --max-time 15
+        --header "Authorization: Bearer ${token}"
+    )
+
+    if [[ -n "${account_id}" ]]; then
+        curl_args+=(--header "chatgpt-account-id: ${account_id}")
+    fi
+
+    if json="$(curl "${curl_args[@]}" "${usage_url}")"; then
+        dir="$(dirname -- "${cache}")"
+        mkdir -p -- "${dir}"
+        tmp="$(mktemp "${dir}/usage.XXXXXX")"
+        jq -ec '.' <<< "${json}" >| "${tmp}"
+        mv -- "${tmp}" "${cache}"
+        format_codex_usage < "${cache}"
+        return
+    fi
+
+    if [[ -s "${cache}" ]]; then
+        printf 'agent-box usage codex: request failed; showing cached usage\n' >&2
+        format_codex_usage < "${cache}"
+    else
+        return 1
+    fi
+}
+
+normalize_claude_usage() {
+    jq -c '
+      def epoch:
+        if type == "number" then .
+        elif type == "string" then
+          (sub("\\+00:00$"; "Z") | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601)
+        else null
+        end;
+
+      def window($w):
+        if $w == null then null
+        else {
+          used_percentage: ($w.used_percentage // $w.utilization),
+          resets_at: ($w.resets_at | epoch)
+        }
+        end;
+
+      if has("rate_limits") then
+        {rate_limits}
+      else
+        {rate_limits: {
+          five_hour: window(.five_hour),
+          seven_day: window(.seven_day)
+        }}
+      end
+    '
+}
+
+write_claude_usage_cache() {
+    local cache="$1"
+    local dir tmp
+    dir="$(dirname -- "${cache}")"
+    mkdir -p -- "${dir}"
+    tmp="$(mktemp "${dir}/rate-limits.XXXXXX")"
+    normalize_claude_usage >| "${tmp}"
+    mv -- "${tmp}" "${cache}"
+}
+
+format_claude_usage() {
+    jq -r --argjson now "$(date +%s)" '
+      def valid($w):
+        $w != null
+        and $w.used_percentage != null
+        and $w.resets_at != null
+        and $w.resets_at > $now;
+
+      def compact_time($s):
+        if $s >= 86400 then
+          "\(($s / 86400) | floor)d\((($s % 86400) / 3600) | floor)h"
+        elif $s >= 3600 then
+          "\(($s / 3600) | floor)h\((($s % 3600) / 60) | floor)m"
+        else
+          "\(($s / 60) | floor)m"
+        end;
+
+      def remaining($w):
+        if valid($w) then ((100 - $w.used_percentage) | floor | tostring)
+        else "—"
+        end;
+
+      def reset($w):
+        if valid($w) then compact_time(($w.resets_at - $now) | floor)
+        else "—"
+        end;
+
+      (.rate_limits // {}) as $r |
+      "\(remaining($r.five_hour))/\(remaining($r.seven_day)) · \(reset($r.five_hour))/\(reset($r.seven_day))"
+    '
+}
+
+agent_usage_claude() {
+    local cache="${XDG_CACHE_HOME:-$HOME/.cache}/claude-code/rate-limits.json"
+    local credentials="${CLAUDE_CREDENTIALS_PATH:-$HOME/.claude/.credentials.json}"
+    local usage_url="${CLAUDE_CODE_CUSTOM_OAUTH_URL:-https://api.anthropic.com}/api/oauth/usage"
+    local cache_ttl="${CLAUDE_USAGE_CACHE_TTL:-60}"
+    local input token response
+
+    if [[ "${1:-}" == "--statusline" ]]; then
+        input="$(cat)"
+
+        if jq -e '.rate_limits != null' >/dev/null 2>&1 <<< "${input}"; then
+            write_claude_usage_cache "${cache}" <<< "${input}"
+        fi
+
+        format_claude_usage <<< "${input}"
+        return
+    fi
+
+    if [[ -s "${cache}" ]] && (( $(date +%s) - $(stat -c %Y "${cache}") < cache_ttl )); then
+        format_claude_usage < "${cache}"
+        return
+    fi
+
+    if [[ ! -r "${credentials}" ]]; then
+        printf 'agent-box usage claude: OAuth credentials not found: %s\n' "${credentials}" >&2
+    elif token="$(jq -er '.claudeAiOauth.accessToken' "${credentials}" 2>/dev/null)"; then
+        if response="$(curl \
+            --fail-with-body \
+            --silent \
+            --show-error \
+            --max-time 15 \
+            --header "Authorization: Bearer ${token}" \
+            --header 'anthropic-beta: oauth-2025-04-20' \
+            --header 'Content-Type: application/json' \
+            --header 'User-Agent: claude-cli (external, cli)' \
+            "${usage_url}")"; then
+            write_claude_usage_cache "${cache}" <<< "${response}"
+            format_claude_usage < "${cache}"
+            return
+        fi
+    else
+        printf 'agent-box usage claude: Claude Code subscription OAuth token not found\n' >&2
+    fi
+
+    if [[ -s "${cache}" ]]; then
+        format_claude_usage < "${cache}"
+    else
+        printf '—/— · —/—\n'
+    fi
+}
+
+case "${1:-}" in
+    usage)
+        shift
+        provider="${1:-}"
+        [[ -n "${provider}" ]] || die "usage provider required; expected codex or claude"
+        shift
+
+        case "${provider}" in
+            codex)
+                [[ "$#" -eq 0 ]] || die "agent-box usage codex takes no arguments"
+                agent_usage_codex
+                ;;
+            claude)
+                if [[ "$#" -gt 1 || ( "$#" -eq 1 && "${1}" != "--statusline" ) ]]; then
+                    die "agent-box usage claude accepts only --statusline"
+                fi
+                agent_usage_claude "$@"
+                ;;
+            *)
+                die "unsupported usage provider '${provider}'; expected codex or claude"
+                ;;
+        esac
+        exit
+        ;;
+    help|-h|--help)
+        usage
+        exit
+        ;;
+esac
 
 # Resolve this script even when called through a symlink such as:
 # ~/.local/bin/agent-box -> ~/code/agent-box/agent-box
@@ -86,6 +326,18 @@ mkdir -p \
     "${HOST_HOME}/.claude" \
     "${HOST_HOME}/.cache/claude-code" \
     "${HOST_HOME}/.cache/claude-cli-nodejs"
+
+# Migrate the old standalone claude-usage status line to the integrated command.
+CLAUDE_SETTINGS="${HOST_HOME}/.claude/settings.json"
+if [[ -f "${CLAUDE_SETTINGS}" ]] && command -v jq >/dev/null 2>&1; then
+    old_statusline="$(jq -r '.statusLine.command // empty' "${CLAUDE_SETTINGS}" 2>/dev/null || true)"
+    if [[ "${old_statusline}" == "~/.local/bin/claude-usage --statusline" ]]; then
+        settings_tmp="$(mktemp "${CLAUDE_SETTINGS}.XXXXXX")"
+        jq '.statusLine.command = "~/.local/bin/agent-box usage claude --statusline"' \
+            "${CLAUDE_SETTINGS}" >| "${settings_tmp}"
+        mv -- "${settings_tmp}" "${CLAUDE_SETTINGS}"
+    fi
+fi
 
 # The refresh token is persistent. Therefore an update followed by a regular
 # build cannot accidentally return to an older cached TOOLS_REFRESH layer.
@@ -142,10 +394,6 @@ case "${1:-}" in
         build_image true true
         exit
         ;;
-    help|-h|--help)
-        usage
-        exit
-        ;;
 esac
 
 # Auto-build on first use.
@@ -169,8 +417,6 @@ sync_claude_agent_skills() {
     local skill name claude_skill source_real claude_real
 
     while IFS= read -r -d '' skill; do
-        # Ignore non-skill entries. Broken symlinks are reported later by
-        # agent-box doctor and by the existing ~/.agents mount validation.
         [[ -f "${skill}/SKILL.md" ]] || continue
 
         name="$(basename -- "${skill}")"
@@ -196,8 +442,6 @@ sync_claude_agent_skills() {
         ln -s -- "${skill}" "${claude_skill}"
     done < <(find "${agent_skills}" -mindepth 1 -maxdepth 1 -print0)
 
-    # Remove only stale links that were created from this canonical directory.
-    # Unrelated Claude-only skills and symlinks are left untouched.
     while IFS= read -r -d '' claude_skill; do
         case "$(readlink -- "${claude_skill}")" in
             "${agent_skills}/"*)
@@ -212,12 +456,6 @@ sync_claude_agent_skills() {
 sync_claude_agent_skills
 
 # Workdir mapping.
-#
-# Host:
-#   /home/rus364/code -> /home/rus364/.local/src
-#
-# Container always sees:
-#   /home/rus364/code/...
 PWD_REAL="$(readlink -f -- "${PWD}")"
 
 case "${PWD_REAL}" in
@@ -240,22 +478,18 @@ CONTAINER_PWD="${CONTAINER_CODE}${RELATIVE}"
 # ---------------------------------------------------------------------------
 
 MOUNTS=(
-    # All code is intentionally writable.
     --mount
     "type=bind,src=${CODE_REAL},dst=${CONTAINER_CODE}"
 
-    # Agent config, authentication, and history from the host.
     --mount
     "type=bind,src=${HOST_HOME}/.codex,dst=${CONTAINER_HOME}/.codex"
 
     --mount
     "type=bind,src=${HOST_HOME}/.claude,dst=${CONTAINER_HOME}/.claude"
 
-    # Persistent disposable-container state.
     --mount
     "type=bind,src=${STATE_ROOT}/cache,dst=${CONTAINER_HOME}/.cache"
 
-    # Keep Claude's caches shared with host-side helpers such as claude-usage.
     --mount
     "type=bind,src=${HOST_HOME}/.cache/claude-code,dst=${CONTAINER_HOME}/.cache/claude-code"
 
@@ -267,10 +501,13 @@ MOUNTS=(
 
     --mount
     "type=bind,src=${STATE_ROOT}/mise,dst=${CONTAINER_HOME}/.local/share/mise"
+
+    # Claude statusLine runs inside the container. Expose this launcher there
+    # so it can call the integrated usage command without helper scripts.
+    --mount
+    "type=bind,src=${SCRIPT_DIR}/agent-box,dst=${CONTAINER_HOME}/.local/bin/agent-box,ro=true"
 )
 
-# Claude Code can also use a top-level ~/.claude.json file. Mount it when it
-# already exists on the host; ~/.claude remains the primary persistent state.
 if [[ -f "${HOST_HOME}/.claude.json" ]]; then
     MOUNTS+=(
         --mount
@@ -278,28 +515,9 @@ if [[ -f "${HOST_HOME}/.claude.json" ]]; then
     )
 fi
 
-# Mount usage helpers individually instead of exposing the host's entire bin.
-for helper in codex-usage claude-usage; do
-    if [[ -f "${HOST_HOME}/.local/bin/${helper}" ]]; then
-        MOUNTS+=(
-            --mount
-            "type=bind,src=${HOST_HOME}/.local/bin/${helper},dst=${CONTAINER_HOME}/.local/bin/${helper},ro=true"
-        )
-    fi
-done
-
 # ---------------------------------------------------------------------------
 # Git and GitHub CLI configuration
 # ---------------------------------------------------------------------------
-#
-# A single config file cannot be bind mounted here: git and gh rewrite their
-# configuration by creating a temporary file and renaming it over the target,
-# and renaming over a bind mount fails with "Device or resource busy" even when
-# the mount is writable.
-#
-# Both directories are therefore private container state that is reseeded from
-# the host on every start. The host stays the source of truth; whatever the
-# container writes is discarded at the next start.
 seed_state_dir() {
     local state_dir="$1"
     shift
@@ -320,7 +538,6 @@ seed_state_dir() {
     done
 }
 
-# ~/.gitconfig wins over the XDG file on the host, so it is seeded last.
 seed_state_dir \
     "${STATE_ROOT}/git" \
     "${HOST_HOME}/.config/git" \
@@ -341,14 +558,6 @@ MOUNTS+=(
 # ---------------------------------------------------------------------------
 # ~/.agents
 # ---------------------------------------------------------------------------
-#
-# ~/.agents itself is read-only.
-#
-# Skills may be absolute symlinks pointing outside ~/.agents, for example:
-#   ~/.local/share/codex-skill-sources/...
-#   /mnt/data/tools/Hermes/...
-#
-# Mount each resolved target read-only at the path expected by the symlink.
 if [[ -d "${HOST_HOME}/.agents" ]]; then
     MOUNTS+=(
         --mount
@@ -396,10 +605,6 @@ fi
 # ---------------------------------------------------------------------------
 # QEMU / KVM
 # ---------------------------------------------------------------------------
-#
-# amd64: qemu-system-x86_64 + /dev/kvm
-# arm64: qemu-system-aarch64 + TCG
-# AGENT_BOX_KVM=0 explicitly disables KVM passthrough.
 DEVICE_ARGS=()
 
 if [[ "${AGENT_BOX_KVM:-1}" != "0" && -e /dev/kvm ]]; then
@@ -408,8 +613,6 @@ if [[ "${AGENT_BOX_KVM:-1}" != "0" && -e /dev/kvm ]]; then
 
         OCI_RUNTIME="$(podman info --format '{{.Host.OCIRuntime.Name}}')"
 
-        # keep-groups is supported by crun and preserves host supplementary
-        # groups such as the kvm group.
         if [[ "${OCI_RUNTIME}" == "crun" ]]; then
             DEVICE_ARGS+=(--group-add=keep-groups)
         else
@@ -423,7 +626,6 @@ fi
 # ---------------------------------------------------------------------------
 # Runtime
 # ---------------------------------------------------------------------------
-
 RUN_ARGS=(
     run
     --rm
@@ -447,15 +649,6 @@ RUN_ARGS=(
     "${MOUNTS[@]}"
 )
 
-# GitHub authentication.
-#
-# `gh auth login` cannot be completed inside a disposable container: gh keeps
-# the token in the host keyring, not in a file, so there is nothing to mount.
-# Instead the host token is read once per start and inherited as GH_TOKEN,
-# which authenticates both gh and the `gh auth git-credential` helper that the
-# seeded gitconfig already references.
-#
-# AGENT_BOX_GH_TOKEN=0 disables the passthrough.
 if [[ "${AGENT_BOX_GH_TOKEN:-1}" != "0" && -z "${GH_TOKEN:-}" && -z "${GITHUB_TOKEN:-}" ]]; then
     if command -v gh >/dev/null 2>&1; then
         HOST_GH_TOKEN="$(gh auth token 2>/dev/null || true)"
@@ -470,8 +663,6 @@ if [[ "${AGENT_BOX_GH_TOKEN:-1}" != "0" && -z "${GH_TOKEN:-}" && -z "${GITHUB_TO
     fi
 fi
 
-# Forward common provider/proxy variables when they are present on the host.
-# Values are inherited by Podman and are not embedded in this script or image.
 for env_name in \
     GH_TOKEN \
     GITHUB_TOKEN \
@@ -489,8 +680,6 @@ for env_name in \
     fi
 done
 
-# Only allocate a PTY when the caller actually has one. This keeps normal TUI
-# use working while also allowing non-interactive and piped execution.
 if [[ -t 0 && -t 1 ]]; then
     RUN_ARGS+=(--tty)
 fi
@@ -498,7 +687,6 @@ fi
 # ---------------------------------------------------------------------------
 # Commands
 # ---------------------------------------------------------------------------
-
 case "${1:-}" in
     shell)
         shift
