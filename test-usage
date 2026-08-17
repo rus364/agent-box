@@ -20,7 +20,7 @@ assert_output() {
 tmp="$(mktemp -d)"
 trap 'rm -rf "${tmp}"' EXIT
 
-mkdir -p "${tmp}/home/.codex" "${tmp}/bin" "${tmp}/cache"
+mkdir -p "${tmp}/home/.codex" "${tmp}/home/.claude" "${tmp}/bin" "${tmp}/cache"
 cat >| "${tmp}/home/.codex/auth.json" <<'EOF'
 {"tokens":{"access_token":"test-token","account_id":"test-account"}}
 EOF
@@ -40,7 +40,7 @@ cat >| "${tmp}/weekly-only.json" <<'EOF'
 {"rate_limit":{"primary_window":{"used_percent":100,"limit_window_seconds":604800,"reset_after_seconds":385907},"secondary_window":null}}
 EOF
 
-run_usage() {
+run_codex_usage() {
     env \
         HOME="${tmp}/home" \
         XDG_CACHE_HOME="${tmp}/cache" \
@@ -48,11 +48,11 @@ run_usage() {
         MOCK_RESPONSE="$1" \
         MOCK_CALLS="${tmp}/curl-calls" \
         CODEX_USAGE_CACHE_TTL=0 \
-        "${ROOT}/codex-usage"
+        "${ROOT}/agent-box" usage codex
 }
 
-assert_output '75/60 · 1h1m/2d1h' run_usage "${tmp}/five-hour.json"
-assert_output '—/0 · —/4d11h' run_usage "${tmp}/weekly-only.json"
+assert_output '75/60 · 1h1m/2d1h' run_codex_usage "${tmp}/five-hour.json"
+assert_output '—/0 · —/4d11h' run_codex_usage "${tmp}/weekly-only.json"
 
 rm -f "${tmp}/curl-calls" "${tmp}/cache/codex/usage.json"
 for _ in 1 2; do
@@ -63,8 +63,18 @@ for _ in 1 2; do
         MOCK_RESPONSE="${tmp}/five-hour.json" \
         MOCK_CALLS="${tmp}/curl-calls" \
         CODEX_USAGE_CACHE_TTL=60 \
-        "${ROOT}/codex-usage" >/dev/null
+        "${ROOT}/agent-box" usage codex >/dev/null
 done
 [[ "$(wc -l < "${tmp}/curl-calls")" -eq 1 ]] || fail 'fresh cache did not prevent a second request'
+
+now="$(date +%s)"
+claude_statusline="$(jq -cn \
+    --argjson five_reset "$((now + 3660))" \
+    --argjson week_reset "$((now + 176400))" \
+    '{rate_limits:{five_hour:{used_percentage:25,resets_at:$five_reset},seven_day:{used_percentage:40,resets_at:$week_reset}}}')"
+
+assert_output '75/60 · 1h1m/2d1h' \
+    bash -c 'printf "%s\n" "$1" | env HOME="$2" XDG_CACHE_HOME="$3" "$4" usage claude --statusline' \
+    _ "${claude_statusline}" "${tmp}/home" "${tmp}/cache" "${ROOT}/agent-box"
 
 printf 'test-usage: all tests passed\n'
