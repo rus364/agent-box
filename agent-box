@@ -154,6 +154,63 @@ if ! podman image exists "${IMAGE}"; then
     build_image false false
 fi
 
+# Keep ~/.agents/skills as the canonical shared skill set. Codex discovers
+# skills there directly, while Claude Code discovers personal skills from
+# ~/.claude/skills. Create only missing Claude links and never overwrite an
+# existing Claude-specific skill with the same name.
+sync_claude_agent_skills() {
+    local agent_skills="${HOST_HOME}/.agents/skills"
+    local claude_skills="${HOST_HOME}/.claude/skills"
+
+    [[ -d "${agent_skills}" ]] || return 0
+
+    mkdir -p -- "${claude_skills}"
+
+    local skill name claude_skill source_real claude_real
+
+    while IFS= read -r -d '' skill; do
+        # Ignore non-skill entries. Broken symlinks are reported later by
+        # agent-box doctor and by the existing ~/.agents mount validation.
+        [[ -f "${skill}/SKILL.md" ]] || continue
+
+        name="$(basename -- "${skill}")"
+        claude_skill="${claude_skills}/${name}"
+
+        if [[ -L "${claude_skill}" ]]; then
+            source_real="$(readlink -f -- "${skill}" 2>/dev/null || true)"
+            claude_real="$(readlink -f -- "${claude_skill}" 2>/dev/null || true)"
+
+            if [[ -n "${source_real}" && "${claude_real}" == "${source_real}" ]]; then
+                continue
+            fi
+
+            warn "Claude skill '${name}' already points elsewhere; keeping ${claude_skill}"
+            continue
+        fi
+
+        if [[ -e "${claude_skill}" ]]; then
+            warn "Claude skill '${name}' already exists; keeping ${claude_skill}"
+            continue
+        fi
+
+        ln -s -- "${skill}" "${claude_skill}"
+    done < <(find "${agent_skills}" -mindepth 1 -maxdepth 1 -print0)
+
+    # Remove only stale links that were created from this canonical directory.
+    # Unrelated Claude-only skills and symlinks are left untouched.
+    while IFS= read -r -d '' claude_skill; do
+        case "$(readlink -- "${claude_skill}")" in
+            "${agent_skills}/"*)
+                if [[ ! -e "${claude_skill}" ]]; then
+                    rm -f -- "${claude_skill}"
+                fi
+                ;;
+        esac
+    done < <(find "${claude_skills}" -mindepth 1 -maxdepth 1 -type l -print0)
+}
+
+sync_claude_agent_skills
+
 # Workdir mapping.
 #
 # Host:
@@ -517,16 +574,41 @@ case "${1:-}" in
 
                 if [[ -d "$HOME/.agents/skills" ]]; then
                     broken=0
+                    shared=0
 
-                    while IFS= read -r link; do
+                    while IFS= read -r -d "" link; do
                         if [[ ! -e "${link}" ]]; then
                             echo "BROKEN agent skill: ${link} -> $(readlink "${link}")"
                             broken=1
                         fi
-                    done < <(find "$HOME/.agents/skills" -maxdepth 1 -type l)
+                    done < <(find "$HOME/.agents/skills" -maxdepth 1 -type l -print0)
+
+                    while IFS= read -r -d "" skill; do
+                        [[ -f "${skill}/SKILL.md" ]] || continue
+
+                        name="$(basename -- "${skill}")"
+                        claude_skill="$HOME/.claude/skills/${name}"
+
+                        if [[ ! -f "${claude_skill}/SKILL.md" ]]; then
+                            echo "MISSING Claude skill: ${claude_skill}"
+                            broken=1
+                            continue
+                        fi
+
+                        agent_real="$(readlink -f -- "${skill}")"
+                        claude_real="$(readlink -f -- "${claude_skill}")"
+
+                        if [[ "${agent_real}" != "${claude_real}" ]]; then
+                            echo "MISMATCH Claude skill: ${claude_skill} -> ${claude_real} (expected ${agent_real})"
+                            broken=1
+                            continue
+                        fi
+
+                        shared=$((shared + 1))
+                    done < <(find "$HOME/.agents/skills" -mindepth 1 -maxdepth 1 -print0)
 
                     if [[ "${broken}" -eq 0 ]]; then
-                        echo "agent skill links:   OK"
+                        echo "shared agent skills: OK (${shared})"
                     fi
                 fi
             '
