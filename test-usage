@@ -69,8 +69,8 @@ done
 
 now="$(date +%s)"
 claude_statusline="$(jq -cn \
-    --argjson five_reset "$((now + 3660))" \
-    --argjson week_reset "$((now + 176400))" \
+    --argjson five_reset "$((now + 3720))" \
+    --argjson week_reset "$((now + 176460))" \
     '{rate_limits:{five_hour:{used_percentage:25,resets_at:$five_reset},seven_day:{used_percentage:40,resets_at:$week_reset}}}')"
 
 assert_output '75/60 · 1h1m/2d1h' \
