@@ -73,6 +73,25 @@ If `~/.claude.json` already exists on the host, it is mounted as well.
 
 The launcher also forwards common Anthropic/provider variables when they are already set on the host, including `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`, Bedrock/Vertex selectors, and common HTTP/TLS proxy variables.
 
+## Shared agent skills
+
+`~/.agents/skills` is the canonical shared skill directory. Codex discovers skills there directly, while Claude Code discovers personal skills under `~/.claude/skills`.
+
+Before starting a container, `agent-box` exposes each valid shared skill to Claude Code by creating a matching symlink:
+
+```text
+~/.agents/skills/systematic-debugging
+        -> ~/.claude/skills/systematic-debugging
+```
+
+The skill contents are not copied. Both agents therefore use the same `SKILL.md` and supporting files.
+
+Existing Claude-specific skills are preserved. If `~/.claude/skills/<name>` already exists and does not point to the corresponding shared skill, `agent-box` leaves it unchanged and prints a warning instead of overwriting it.
+
+Shared skills may themselves be symlinks to directories elsewhere on the host. `agent-box` mounts those resolved targets read-only into the container so the links remain valid for both Codex and Claude Code.
+
+`agent-box doctor` verifies both the original `~/.agents/skills` links and their Claude Code counterparts.
+
 ## Git and GitHub
 
 `git` and `gh` configuration is reseeded from the host on every start into
@@ -137,7 +156,7 @@ Open a shell in the same container environment:
 agent-box shell
 ```
 
-Check both agents, development tools, QEMU, KVM, and agent skill links:
+Check both agents, development tools, QEMU, KVM, and shared agent skills:
 
 ```bash
 agent-box doctor
