@@ -16,8 +16,6 @@ Clone the repository somewhere under `~/code`, then expose the launcher on `PATH
 
 ```bash
 ln -s ~/code/agent-box/agent-box ~/.local/bin/agent-box
-ln -s ~/code/agent-box/codex-usage ~/.local/bin/codex-usage
-ln -s ~/code/agent-box/claude-usage ~/.local/bin/claude-usage
 ```
 
 If the repository lives at another path under `~/code`, adjust the source path accordingly.
@@ -130,23 +128,28 @@ agent socket, so `git@github.com:` remotes will fail.
 
 ## Usage limits
 
-The optional helpers query the subscription usage endpoints without sending a
-model prompt:
+Usage reporting is built into `agent-box`; there are no separate helper scripts:
 
 ```bash
-codex-usage
-claude-usage
+agent-box usage codex
+agent-box usage claude
 ```
 
-They print remaining short/weekly quota and time until reset:
+Both commands query the corresponding subscription usage endpoint without sending a model prompt. They print remaining short/weekly quota and time until reset:
 
 ```text
 83/61 · 3h24m/4d11h
 ```
 
-An unavailable window is shown as `—`. Responses are cached for 60 seconds to
-avoid unnecessary polling. `claude-usage --statusline` can also consume the JSON
-provided by Claude Code's `statusLine` integration.
+An unavailable window is shown as `—`. Responses are cached for 60 seconds to avoid unnecessary polling. The commands run directly on the host and do not start a Podman container.
+
+Claude Code's `statusLine` integration uses the same implementation through:
+
+```bash
+agent-box usage claude --statusline
+```
+
+When `agent-box` sees the old exact status-line command `~/.local/bin/claude-usage --statusline` in `~/.claude/settings.json`, it migrates it automatically to the integrated command while preserving the rest of the settings file.
 
 ## Shell and diagnostics
 
