@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 IMAGE="${AGENT_BOX_IMAGE:-localhost/agent-box:latest}"
-DEFAULT_AGENT="${AGENT_BOX_AGENT:-codex}"
+DEFAULT_AGENT="${AGENT_BOX_AGENT:-claude}"
 
 HOST_HOME="${HOME:?HOME is not set}"
 HOST_UID="$(id -u)"
@@ -38,7 +38,7 @@ Usage:
   agent-box rebuild
 
 Environment:
-  AGENT_BOX_AGENT   Default agent when codex/claude is omitted (default: codex)
+  AGENT_BOX_AGENT   Default agent when claude/codex is omitted (default: claude)
   AGENT_BOX_IMAGE   Container image name (default: localhost/agent-box:latest)
   AGENT_BOX_KVM=0   Disable KVM passthrough
   AGENT_BOX_GH_TOKEN=0
@@ -46,13 +46,13 @@ Environment:
 
 Examples:
   agent-box
-  agent-box codex
-  agent-box codex exec "inspect this repository"
   agent-box claude
   agent-box claude -p "summarize this repository"
-  agent-box usage codex
+  agent-box codex
+  agent-box codex exec "inspect this repository"
   agent-box usage claude
-  AGENT_BOX_AGENT=claude agent-box
+  agent-box usage codex
+  AGENT_BOX_AGENT=codex agent-box
 EOF
 }
 
@@ -271,15 +271,15 @@ case "${1:-}" in
         shift
 
         case "${provider}" in
-            codex)
-                [[ "$#" -eq 0 ]] || die "agent-box usage codex takes no arguments"
-                agent_usage_codex
-                ;;
             claude)
                 if [[ "$#" -gt 1 || ( "$#" -eq 1 && "${1}" != "--statusline" ) ]]; then
                     die "agent-box usage claude accepts only --statusline"
                 fi
                 agent_usage_claude "$@"
+                ;;
+            codex)
+                [[ "$#" -eq 0 ]] || die "agent-box usage codex takes no arguments"
+                agent_usage_codex
                 ;;
             *)
                 die "unsupported usage provider '${provider}'; expected codex or claude"
@@ -703,8 +703,8 @@ case "${1:-}" in
                 printf "%-20s %s\n" "architecture:" "$(uname -m)"
                 printf "%-20s %s\n" "user:" "$(id)"
                 printf "%-20s %s\n" "workdir:" "$PWD"
-                printf "%-20s %s\n" "codex:" "$(codex --version)"
                 printf "%-20s %s\n" "claude:" "$(claude --version)"
+                printf "%-20s %s\n" "codex:" "$(codex --version)"
                 printf "%-20s %s\n" "python:" "$(python --version 2>&1)"
                 printf "%-20s %s\n" "uv:" "$(uv --version)"
                 printf "%-20s %s\n" "mise:" "$(mise --version)"
@@ -806,21 +806,13 @@ esac
 agent="${DEFAULT_AGENT}"
 
 case "${1:-}" in
-    codex|claude)
+    claude|codex)
         agent="$1"
         shift
         ;;
 esac
 
 case "${agent}" in
-    codex)
-        exec podman \
-            "${RUN_ARGS[@]}" \
-            "${IMAGE}" \
-            codex \
-            --dangerously-bypass-approvals-and-sandbox \
-            "$@"
-        ;;
     claude)
         exec podman \
             "${RUN_ARGS[@]}" \
@@ -829,7 +821,15 @@ case "${agent}" in
             --dangerously-skip-permissions \
             "$@"
         ;;
+    codex)
+        exec podman \
+            "${RUN_ARGS[@]}" \
+            "${IMAGE}" \
+            codex \
+            --dangerously-bypass-approvals-and-sandbox \
+            "$@"
+        ;;
     *)
-        die "unsupported agent '${agent}'; expected codex or claude"
+        die "unsupported agent '${agent}'; expected claude or codex"
         ;;
 esac
