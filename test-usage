@@ -77,4 +77,21 @@ assert_output '75/60 · 1h1m/2d1h' \
     bash -c 'printf "%s\n" "$1" | env HOME="$2" XDG_CACHE_HOME="$3" "$4" usage claude --statusline' \
     _ "${claude_statusline}" "${tmp}/home" "${tmp}/cache" "${ROOT}/agent-box"
 
+rm -f "${tmp}/cache/codex/usage.json"
+assert_output 'Claude 75/60 · 1h1m/2d1h │ Codex 75/60 · 1h1m/2d1h' \
+    bash -c 'printf "%s\n" "$1" | env HOME="$2" XDG_CACHE_HOME="$3" PATH="$4" MOCK_RESPONSE="$5" MOCK_CALLS="$6" CODEX_USAGE_CACHE_TTL=0 "$7" usage all --statusline' \
+    _ \
+    "${claude_statusline}" \
+    "${tmp}/home" \
+    "${tmp}/cache" \
+    "${tmp}/bin:${PATH}" \
+    "${tmp}/five-hour.json" \
+    "${tmp}/curl-calls" \
+    "${ROOT}/agent-box"
+
+rm -f "${tmp}/home/.codex/auth.json" "${tmp}/cache/codex/usage.json"
+assert_output 'Claude 75/60 · 1h1m/2d1h │ Codex —/— · —/—' \
+    bash -c 'printf "%s\n" "$1" | env HOME="$2" XDG_CACHE_HOME="$3" "$4" usage all --statusline' \
+    _ "${claude_statusline}" "${tmp}/home" "${tmp}/cache" "${ROOT}/agent-box"
+
 printf 'test-usage: all tests passed\n'
