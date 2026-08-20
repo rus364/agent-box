@@ -31,6 +31,7 @@ usage() {
 Usage:
   agent-box [codex|claude] [agent arguments...]
   agent-box usage <codex|claude> [--statusline]
+  agent-box usage all --statusline
   agent-box shell [bash arguments...]
   agent-box doctor
   agent-box build
@@ -52,6 +53,7 @@ Examples:
   agent-box codex exec "inspect this repository"
   agent-box usage claude
   agent-box usage codex
+  agent-box usage all --statusline
   AGENT_BOX_AGENT=codex agent-box
 EOF
 }
@@ -263,11 +265,21 @@ agent_usage_claude() {
     fi
 }
 
+agent_usage_all_statusline() {
+    local input claude codex
+    input="$(cat)"
+
+    claude="$(agent_usage_claude --statusline <<< "${input}")" || claude='—/— · —/—'
+    codex="$(agent_usage_codex 2>/dev/null)" || codex='—/— · —/—'
+
+    printf 'Claude %s │ Codex %s\n' "${claude}" "${codex}"
+}
+
 case "${1:-}" in
     usage)
         shift
         provider="${1:-}"
-        [[ -n "${provider}" ]] || die "usage provider required; expected codex or claude"
+        [[ -n "${provider}" ]] || die "usage provider required; expected codex, claude, or all"
         shift
 
         case "${provider}" in
@@ -281,8 +293,12 @@ case "${1:-}" in
                 [[ "$#" -eq 0 ]] || die "agent-box usage codex takes no arguments"
                 agent_usage_codex
                 ;;
+            all)
+                [[ "$#" -eq 1 && "${1}" == "--statusline" ]] || die "agent-box usage all requires --statusline"
+                agent_usage_all_statusline
+                ;;
             *)
-                die "unsupported usage provider '${provider}'; expected codex or claude"
+                die "unsupported usage provider '${provider}'; expected codex, claude, or all"
                 ;;
         esac
         exit
@@ -327,13 +343,14 @@ mkdir -p \
     "${HOST_HOME}/.cache/claude-code" \
     "${HOST_HOME}/.cache/claude-cli-nodejs"
 
-# Migrate the old standalone claude-usage status line to the integrated command.
+# Migrate legacy/single-provider status lines to the combined usage line.
 CLAUDE_SETTINGS="${HOST_HOME}/.claude/settings.json"
 if [[ -f "${CLAUDE_SETTINGS}" ]] && command -v jq >/dev/null 2>&1; then
     old_statusline="$(jq -r '.statusLine.command // empty' "${CLAUDE_SETTINGS}" 2>/dev/null || true)"
-    if [[ "${old_statusline}" == "~/.local/bin/claude-usage --statusline" ]]; then
+    if [[ "${old_statusline}" == "~/.local/bin/claude-usage --statusline" || \
+          "${old_statusline}" == "~/.local/bin/agent-box usage claude --statusline" ]]; then
         settings_tmp="$(mktemp "${CLAUDE_SETTINGS}.XXXXXX")"
-        jq '.statusLine.command = "~/.local/bin/agent-box usage claude --statusline"' \
+        jq '.statusLine.command = "~/.local/bin/agent-box usage all --statusline"' \
             "${CLAUDE_SETTINGS}" >| "${settings_tmp}"
         mv -- "${settings_tmp}" "${CLAUDE_SETTINGS}"
     fi
