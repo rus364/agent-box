@@ -143,13 +143,21 @@ Both commands query the corresponding subscription usage endpoint without sendin
 
 An unavailable window is shown as `—`. Responses are cached for 60 seconds to avoid unnecessary polling. The commands run directly on the host and do not start a Podman container.
 
-Claude Code's `statusLine` integration uses the same implementation through:
+Claude Code's `statusLine` can show both subscriptions side by side through:
 
 ```bash
-agent-box usage claude --statusline
+agent-box usage all --statusline
 ```
 
-When `agent-box` sees the old exact status-line command `~/.local/bin/claude-usage --statusline` in `~/.claude/settings.json`, it migrates it automatically to the integrated command while preserving the rest of the settings file.
+The combined output looks like:
+
+```text
+Claude 97/88 · 4h51m/5d23h │ Codex 83/61 · 3h24m/4d11h
+```
+
+Claude usage comes from the status-line payload that Claude Code already provides. Codex usage uses the same cached subscription query as `agent-box usage codex`. If Codex usage is unavailable, the Claude status line still renders and the Codex side is shown as `—/— · —/—`.
+
+When `agent-box` sees either the old `~/.local/bin/claude-usage --statusline` command or the previous `~/.local/bin/agent-box usage claude --statusline` command in `~/.claude/settings.json`, it migrates it automatically to the combined command while preserving the rest of the settings file.
 
 ## Shell and diagnostics
 
