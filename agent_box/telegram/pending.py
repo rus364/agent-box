@@ -5,6 +5,12 @@ must never let a Telegram user forge access to another session's question, an
 already-answered question, or inject raw agent input through button labels.
 This module is the single source of truth for a callback token's validity.
 
+A multi-select question adds a third, *pre*-claim phase: ``toggle_selection``
+records which options are checked while the question is still open. Nothing is
+committed until the user submits, which then goes through the same
+claim/deliver path as a single-select tap. A free-text ("Other") answer skips
+the option list entirely and is claimed when the user's message arrives.
+
 A callback goes through two phases, not one: ``claim`` reserves the token
 (the anti-replay lock -- a second callback for the same token can never
 succeed, regardless of outcome), and only after the caller has actually
@@ -57,6 +63,12 @@ class PendingQuestion:
     message_id: int | None
     options: list[dict[str, str]] = field(default_factory=list)
     status: str = STATUS_PENDING
+    #: Several options may be chosen before submitting (Claude multiSelect).
+    multi_select: bool = False
+    #: An answer outside ``options`` is accepted (Claude "Other", Codex isOther).
+    allow_free_text: bool = False
+    #: Indices into ``options`` toggled on so far; multi-select only.
+    selected: list[int] = field(default_factory=list)
     created_at: float = field(default_factory=time.time)
 
     def to_dict(self) -> dict[str, Any]:
@@ -66,7 +78,8 @@ class PendingQuestion:
     def from_dict(cls, data: dict[str, Any]) -> "PendingQuestion":
         known = {f: data.get(f) for f in (
             "token", "session_id", "chat_id", "user_id", "question_id",
-            "message_id", "options", "status", "created_at",
+            "message_id", "options", "status", "multi_select", "allow_free_text",
+            "selected", "created_at",
         ) if f in data}
         return cls(**known)
 
@@ -104,13 +117,15 @@ class PendingRegistry:
 
     def create(
         self, session_id: str, chat_id: int, user_id: int, question_id: str,
-        options: list[Option], message_id: int | None = None,
+        options: list[Option], message_id: int | None = None, *,
+        multi_select: bool = False, allow_free_text: bool = False,
     ) -> PendingQuestion:
         pending = PendingQuestion(
             token=uuid.uuid4().hex[:12],
             session_id=session_id, chat_id=chat_id, user_id=user_id,
             question_id=question_id, message_id=message_id,
             options=[asdict(o) for o in options],
+            multi_select=multi_select, allow_free_text=allow_free_text,
         )
         with _locked(self.path):
             items = self._load()
@@ -157,6 +172,36 @@ class PendingRegistry:
             found["status"] = STATUS_CLAIMED
             self._save(items)
             return PendingQuestion.from_dict(found)
+
+    def toggle_selection(self, token: str, user_id: int, index: int) -> PendingQuestion | None:
+        """Flip one option of a multi-select question on or off.
+
+        Deliberately *not* a claim: a multi-select answer is only committed by
+        the explicit submit that follows, so toggling must stay repeatable
+        while the question is still ``pending``. Unlike :meth:`claim` this does
+        not burn the token on a user mismatch -- refusing outright means a
+        non-owner cannot destroy someone else's question by tapping it, and the
+        submit still goes through :meth:`claim`, which does enforce ownership.
+        """
+        with _locked(self.path):
+            items = self._load()
+            for item in items:
+                if item.get("token") != token:
+                    continue
+                if item.get("status", STATUS_PENDING) != STATUS_PENDING:
+                    return None
+                if not item.get("multi_select"):
+                    return None
+                if int(item.get("user_id", -1)) != int(user_id):
+                    return None
+                if not 0 <= index < len(item.get("options") or []):
+                    return None
+                selected = [int(i) for i in item.get("selected") or []]
+                item["selected"] = [i for i in selected if i != index] if index in selected \
+                    else sorted([*selected, index])
+                self._save(items)
+                return PendingQuestion.from_dict(item)
+            return None
 
     def mark_delivered(self, token: str) -> bool:
         return self._transition(token, expect=STATUS_CLAIMED, to=STATUS_DELIVERED)

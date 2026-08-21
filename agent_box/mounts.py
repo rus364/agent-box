@@ -1,8 +1,9 @@
 """Bind-mount planning: parsing ``--mount`` and resolving overlaps.
 
-Kept as pure, dependency-free logic (no subprocess, no filesystem side
-effects beyond ``Path.resolve()``) so mount planning can be unit-tested
-deterministically.
+Kept as pure logic (no subprocess, no filesystem side effects beyond
+``Path.resolve()``) so mount planning can be unit-tested deterministically.
+Its one dependency is ``paths.expand_user``, so that ``~`` in a ``--mount``
+value resolves against the passwd home like every other host path here.
 
 Design: a host path that is deliberately exposed to the agent appears at the
 *same* absolute path inside the container (see ``workspace.py``), so a
@@ -15,6 +16,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+
+from .paths import expand_user
 
 
 class MountError(ValueError):
@@ -51,7 +54,9 @@ def parse_mount_arg(raw: str) -> MountSpec:
         text = text[: -len(":rw")]
     if not text:
         raise MountError(f"--mount: missing path in {raw!r}")
-    path = Path(text).expanduser()
+    # expand_user, not Path.expanduser: "~" must mean the passwd home, so a
+    # poisoned $HOME cannot silently redirect a --mount somewhere else.
+    path = expand_user(text)
     if not path.is_absolute():
         raise MountError(f"--mount path must be absolute: {raw!r}")
     try:

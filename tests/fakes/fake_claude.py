@@ -20,6 +20,7 @@ This fake implements the *real* mechanism, not a convenient one. Specifically:
 Protocol implemented (a structurally real subset of stream-json):
   - "ask"   -> one AskUserQuestion permission request with one question
   - "ask2"  -> one AskUserQuestion permission request with two questions
+  - "multi" -> one AskUserQuestion permission request with a multiSelect question
   - "cancel"-> asks, then immediately withdraws via control_cancel_request
   - anything else -> an assistant text echo plus a "result" turn end
 """
@@ -33,6 +34,12 @@ TWO = [
      "options": [{"label": "Yes", "description": ""}, {"label": "No", "description": ""}]},
     {"question": "Which branch?", "header": "Branch",
      "options": [{"label": "main", "description": ""}, {"label": "dev", "description": ""}]},
+]
+# multiSelect is a real field of the AskUserQuestion input schema; the fake
+# carries it through so the adapter's handling of it is actually exercised.
+MULTI = [
+    {"question": "Which files?", "header": "Files", "multiSelect": True,
+     "options": [{"label": "a.py", "description": ""}, {"label": "b.py", "description": ""}]},
 ]
 
 
@@ -101,10 +108,10 @@ def main():
             if block.get("type") != "text":
                 continue
             text = block.get("text", "")
-            if text in ("ask", "ask2", "cancel"):
+            if text in ("ask", "ask2", "multi", "cancel"):
                 counter += 1
                 request_id = f"req-{counter}"
-                questions = TWO if text == "ask2" else ONE
+                questions = {"ask2": TWO, "multi": MULTI}.get(text, ONE)
                 open_requests[request_id] = questions
                 ask(argv, questions, request_id, cancel=(text == "cancel"))
             else:

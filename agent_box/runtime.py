@@ -134,6 +134,50 @@ def seed_state_dir(target: Path, *sources: Path) -> None:
             shutil.copy2(source, target / "config")
 
 
+def agent_tree_mounts() -> list[tuple[Path, Path, bool]]:
+    """Read-only mounts for ``~/.agents`` and everything it symlinks out to.
+
+    Scope, decided deliberately: the **whole** ``~/.agents`` tree is walked
+    recursively, not just ``~/.agents/skills``.
+
+    The reason is that the tree itself is bind-mounted read-only at its own
+    path, so *every* symlink in it -- skills, shared agent definitions,
+    commands, prompt fragments, whatever a user keeps there -- would dangle
+    inside the container unless its target is mounted too. Narrowing the walk
+    to ``skills/`` would not make the container see less of the host in any
+    meaningful sense; it would just make the non-skill half of an already
+    exposed directory silently broken. ``sync_claude_agent_skills`` only cares
+    about ``skills/`` because that is the only part Claude Code consumes by
+    convention -- that is a different question from what has to resolve.
+
+    Everything is mounted read-only, including external targets: agent-box
+    exposes shared agent material to the container, it does not let the
+    container edit the user's shared library. Symlinks pointing back inside
+    ``~/.agents`` are skipped (the whole-tree mount already covers them), and a
+    broken symlink is warned about and skipped rather than failing the run.
+    """
+    agents = HOST_HOME / ".agents"
+    if not agents.is_dir():
+        return []
+    mounts: list[tuple[Path, Path, bool]] = [(agents, agents, True)]
+    seen: set[Path] = set()
+    for link in sorted(agents.rglob("*")):
+        if not link.is_symlink():
+            continue
+        try:
+            host_target = link.resolve(strict=True)
+        except OSError:
+            warn(f"broken agent symlink: {link}")
+            continue
+        if agents in host_target.parents or host_target == agents:
+            continue  # already covered by the whole-tree mount above
+        if host_target in seen:
+            continue
+        seen.add(host_target)
+        mounts.append((host_target, host_target, True))
+    return mounts
+
+
 def build_mounts(workspace: Workspace, extra_mounts: list[MountSpec], script_dir: Path) -> list[str]:
     """Build ``--mount`` flags.
 
@@ -177,8 +221,13 @@ def build_mounts(workspace: Workspace, extra_mounts: list[MountSpec], script_dir
         pairs.append((script_dir / "agent_box", HOST_HOME / ".local/lib/agent-box/agent_box", True))
     if NOTIFY_CONFIG.is_file():
         pairs.append((NOTIFY_CONFIG, HOST_HOME / ".config/agent-box/telegram.json", True))
-    if (HOST_HOME / ".claude.json").is_file():
-        pairs.append((HOST_HOME / ".claude.json", HOST_HOME / ".claude.json", False))
+    # Claude Code's ~/.claude.json sits *beside* the config directory rather
+    # than inside it. When CLAUDE_CONFIG_DIR relocates that directory, the
+    # relocated tree is already mounted whole (CLAUDE_HOME above), so only the
+    # default home location needs its own mount.
+    for claude_json in {HOST_HOME / ".claude.json", CLAUDE_HOME.parent / ".claude.json"}:
+        if claude_json.is_file():
+            pairs.append((claude_json, claude_json, False))
 
     seed_state_dir(STATE_ROOT / "git", HOST_HOME / ".config/git", HOST_HOME / ".gitconfig")
     seed_state_dir(STATE_ROOT / "gh", HOST_HOME / ".config/gh")
@@ -187,24 +236,7 @@ def build_mounts(workspace: Workspace, extra_mounts: list[MountSpec], script_dir
         (STATE_ROOT / "gh", HOST_HOME / ".config/gh", False),
     ]
 
-    agents = HOST_HOME / ".agents"
-    if agents.is_dir():
-        pairs.append((agents, agents, True))
-        seen: set[tuple[str, str]] = set()
-        for link in agents.rglob("*"):
-            if not link.is_symlink():
-                continue
-            try:
-                host_target = link.resolve(strict=True)
-            except OSError:
-                warn(f"broken agent symlink: {link}")
-                continue
-            if agents in host_target.parents or host_target == agents:
-                continue  # already covered by the whole-tree mount above
-            key = (str(host_target), str(host_target))
-            if key not in seen:
-                seen.add(key)
-                pairs.append((host_target, host_target, True))
+    pairs += agent_tree_mounts()
 
     out = []
     seen_paths: set[Path] = set()
@@ -250,9 +282,16 @@ def maybe_gh_token() -> None:
         warn("no GitHub token on the host; run 'gh auth login' outside the container")
 
 
+#: Set inside containers whose agent is being driven by the Telegram
+#: remote-control daemon. ``agent_box.notify`` treats it as "this process's
+#: output already has a delivery channel; do not also fan out to the global
+#: notification chat".
+SUPPRESS_NOTIFY_ENV = "AGENT_BOX_SUPPRESS_NOTIFY"
+
+
 def base_podman_args(
     workspace: Workspace, extra_mounts: list[MountSpec], script_dir: Path, *,
-    include_kvm: bool = True,
+    include_kvm: bool = True, outbound_notifications: bool = True,
 ) -> list[str]:
     """The full ``podman run`` argument list, minus the trailing image/command.
 
@@ -283,6 +322,8 @@ def base_podman_args(
         "--env=DISABLE_AUTOUPDATER=1", f"--env=TERM={os.environ.get('TERM', 'xterm-256color')}",
         *build_mounts(workspace, extra_mounts, script_dir),
     ]
+    if not outbound_notifications:
+        args.append(f"--env={SUPPRESS_NOTIFY_ENV}=1")
     # A host that relocates Claude Code's config directory must have the
     # container agree: CLAUDE_HOME is already bind-mounted at its host path,
     # but `claude` inside the container would still look in $HOME/.claude
@@ -313,11 +354,23 @@ def machine_podman_argv(
 ) -> list[str]:
     """Full ``["podman", ...]`` argv for a piped (non-tty) machine-mode session.
 
-    Used by the Telegram daemon to run Claude/Codex *inside* the same Podman
-    environment as normal ``agent-box`` usage, over stdin/stdout, instead of
-    on the bare host.
+    Used by the Telegram daemon to run Claude/Codex over stdin/stdout in a
+    disposable container built from the same image, under the same
+    mount/environment/hardening policy as normal ``agent-box`` usage, instead
+    of on the bare host.
+
+    Outbound notifications are switched off for these containers. A Telegram
+    remote-control session is owner-scoped and already relays every event back
+    to the chat (and topic) that owns it; letting the Claude notification hooks
+    also fire would additionally post that session's prompts and turn
+    completions to the *global* ``notify_chat_id``, which is a different
+    audience the session's owner never chose. Codex is unaffected in practice
+    (its ``notify`` hook is only wired up for interactive runs), but the flag
+    covers it too rather than relying on that.
     """
-    args = base_podman_args(workspace, extra_mounts, script_dir, include_kvm=False)
+    args = base_podman_args(
+        workspace, extra_mounts, script_dir, include_kvm=False, outbound_notifications=False,
+    )
     return ["podman", *args, IMAGE, *command]
 
 
@@ -351,6 +404,13 @@ fi
 rc=0; timeout 2 qemu-system-aarch64 -accel tcg -machine virt -cpu max -S -nodefaults -display none >/dev/null 2>&1 || rc=$?
 [[ "${rc}" -eq 124 ]] && echo "arm64 TCG:           OK" || echo "arm64 TCG:           FAILED (rc=${rc})"
 echo
+# Honors CLAUDE_CONFIG_DIR the same way agent_box.paths.CLAUDE_HOME does, so
+# doctor inspects the directory Claude actually uses rather than assuming
+# $HOME/.claude.
+claude_home="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+printf "%-20s %s\n" "claude config:" "${claude_home}"
+printf "%-20s %s\n" "codex home:" "${CODEX_HOME:-$HOME/.codex}"
+echo
 if [[ -d "$HOME/.agents/skills" ]]; then
   broken=0; shared=0
   while IFS= read -r -d "" link; do
@@ -358,7 +418,7 @@ if [[ -d "$HOME/.agents/skills" ]]; then
   done < <(find "$HOME/.agents/skills" -maxdepth 1 -type l -print0)
   while IFS= read -r -d "" skill; do
     [[ -f "${skill}/SKILL.md" ]] || continue
-    name="$(basename -- "${skill}")"; claude_skill="$HOME/.claude/skills/${name}"
+    name="$(basename -- "${skill}")"; claude_skill="${claude_home}/skills/${name}"
     if [[ ! -f "${claude_skill}/SKILL.md" ]]; then echo "MISSING Claude skill: ${claude_skill}"; broken=1; continue; fi
     agent_real="$(readlink -f -- "${skill}")"; claude_real="$(readlink -f -- "${claude_skill}")"
     if [[ "${agent_real}" != "${claude_real}" ]]; then echo "MISMATCH Claude skill: ${claude_skill} -> ${claude_real} (expected ${agent_real})"; broken=1; continue; fi

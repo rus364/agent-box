@@ -34,9 +34,10 @@ handled explicitly, so questions never leak:
   recorded answer is rolled back and the failure reported, so the caller can
   release its own claim on the question instead of leaving it stuck.
 
-The subprocess runs *inside* the same Podman container as normal
-``agent-box codex`` (via ``Provider._spawn``/``runtime.machine_podman_argv``),
-not on the bare host.
+The subprocess runs in its own disposable container, built from the same
+image and configured by the same runtime policy as normal ``agent-box codex``
+(via ``Provider._spawn``/``runtime.machine_podman_argv``), not on the bare
+host.
 """
 from __future__ import annotations
 
@@ -209,7 +210,13 @@ class CodexProvider(Provider):
             options = [QuestionOption(o.get("label", ""), o.get("description", "")) for o in (q.get("options") or [])]
             self._emit(AgentEvent(kind=EventKind.QUESTION, question=Question(
                 id=qid, header=str(q.get("header") or "Codex"), text=str(q.get("question") or ""),
-                options=options, allow_free_text=bool(q.get("isOther", True)),
+                # ToolRequestUserInputQuestion.isOther defaults to false in
+                # the generated schema: a Codex question only accepts a
+                # free-text answer when it says so.
+                options=options, allow_free_text=bool(q.get("isOther", False)),
+                # The schema has no multi-select for request_user_input; one
+                # answer per question (the response type still takes a list).
+                multi_select=False,
             )))
 
     # -- withdrawal --------------------------------------------------------

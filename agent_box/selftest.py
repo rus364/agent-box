@@ -105,6 +105,24 @@ def run_selftest() -> int:
     from .telegram.providers.codex import CodexProvider
     check(CodexProvider.CAPABILITIES.get("experimentalApi"), True, "codex experimental API capability")
 
+    from .paths import expand_user
+    check(expand_user("~"), real_home, "tilde expands to the passwd home")
+    check(expand_user("/abs"), Path("/abs"), "absolute path untouched by expand_user")
+
+    from .runtime import SUPPRESS_NOTIFY_ENV
+    from . import notify as notify_module
+    saved_flag = os.environ.get(SUPPRESS_NOTIFY_ENV)
+    os.environ[SUPPRESS_NOTIFY_ENV] = "1"
+    try:
+        check(notify_module.outbound_suppressed(), True, "outbound notifications suppressed")
+        check(notify_module.telegram_send("unused"), True, "suppressed send is a silent success")
+    finally:
+        if saved_flag is None:
+            os.environ.pop(SUPPRESS_NOTIFY_ENV, None)
+        else:
+            os.environ[SUPPRESS_NOTIFY_ENV] = saved_flag
+    check(notify_module.outbound_suppressed(), False, "local runs still notify")
+
     from .mounts import MountSpec, plan_mounts
     check(len(plan_mounts([MountSpec(Path("/a"), False), MountSpec(Path("/a"), False)])), 1, "mount planning collapses duplicates")
 

@@ -7,11 +7,13 @@ Providers speak each tool's supported machine interface directly:
   --output-format stream-json``.
 
 Neither adapter scrapes terminal output, drives a TUI, or reads/writes a
-provider's private on-disk session files. Both run the provider CLI *inside*
-the same Podman environment normal ``agent-box claude``/``codex`` use (via
-``agent_box.runtime.machine_podman_argv``), not on the bare host -- a
-machine with Podman, the built image, and no host-installed ``claude``/
-``codex`` binaries can still be Telegram-remote-controlled.
+provider's private on-disk session files. Each session runs the provider CLI
+in a disposable container of its own, built from the same image and
+configured by the same authoritative runtime policy as normal ``agent-box
+claude``/``codex`` use (``agent_box.runtime.machine_podman_argv``, which goes
+through the same ``base_podman_args`` interactive runs do), not on the bare
+host -- a machine with Podman, the built image, and no host-installed
+``claude``/``codex`` binaries can still be Telegram-remote-controlled.
 """
 from __future__ import annotations
 
@@ -53,7 +55,13 @@ class Question:
     header: str
     text: str
     options: list[QuestionOption] = field(default_factory=list)
+    #: The provider accepts an answer that is not one of ``options`` (Claude's
+    #: always-available "Other", Codex's ``isOther``). Surfaced as an
+    #: "Other..." button that collects the next plain message as the answer.
     allow_free_text: bool = True
+    #: The provider accepts several of ``options`` at once (Claude's
+    #: ``multiSelect``). Surfaced as toggles plus an explicit submit.
+    multi_select: bool = False
 
 
 @dataclass

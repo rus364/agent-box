@@ -2,8 +2,10 @@
 
 Long-polls ``getUpdates`` (no webhook, no public port), renders an
 inline-button menu, and routes messages/callbacks to per-session provider
-adapters (Claude or Codex) that run *inside* the same Podman container
-normal ``agent-box claude``/``codex`` use.
+adapters (Claude or Codex). Each session gets its own disposable container,
+built from the same image and configured by the same authoritative runtime
+policy (``agent_box.runtime.base_podman_args``) as normal ``agent-box
+claude``/``codex`` use.
 
 Security model, stated precisely, because "the chat is authorized" is not the
 same statement as "this person may drive this session":
@@ -98,6 +100,10 @@ class TelegramBot:
         # is None for the chat's "main" routing target (a private chat, or a
         # forum message outside any topic).
         self._active: dict[tuple[int, int, int | None], str] = {}
+        # (chat_id, user_id, message_thread_id) -> pending token whose owner
+        # tapped "Other..." and whose next plain message is that question's
+        # free-text answer rather than a new turn.
+        self._awaiting_text: dict[tuple[int, int, int | None], str] = {}
 
     # -- authorization -------------------------------------------------
     def _is_allowed(self, user_id: int | None) -> bool:
@@ -126,6 +132,7 @@ class TelegramBot:
         """
         changed = self.sessions.reconcile_on_startup()
         for session in changed:
+            self._forget_session_awaited(session.id)
             self.pending.discard_session(session.id)
         self._publish_index()
 
@@ -226,6 +233,15 @@ class TelegramBot:
         return self.client.send_message(chat_id, text, message_thread_id=thread_id, **kwargs)
 
     def _route_free_text(self, chat_id: int, user_id: int, text: str, thread_id: int | None) -> None:
+        awaited = self._awaiting_text.pop((chat_id, user_id, thread_id), None)
+        if awaited is not None:
+            # The user asked to answer this question in their own words, so
+            # this message is that question's answer -- not a new turn. It
+            # matters that it goes back as the *answer*: both providers block
+            # on an outstanding request, and a plain turn would leave that
+            # request unanswered.
+            self._submit_answer(chat_id, user_id, awaited, lambda _claimed: [text])
+            return
         session = self._resolve_routing_target(chat_id, user_id, thread_id)
         if session is None:
             self._say(
@@ -430,23 +446,73 @@ class TelegramBot:
         for i in range(0, len(text), MAX_TELEGRAM_TEXT):
             self._say(chat_id, escape(text[i:i + MAX_TELEGRAM_TEXT]), thread_id)
 
+    def _question_keyboard(self, pending) -> dict[str, Any]:
+        """Render a question's buttons for its provider semantics.
+
+        Single-select: one button per option, tapping it answers immediately.
+        Multi-select: the options are checkbox toggles and nothing is submitted
+        until "Submit" is tapped. Free text ("Other..."), where the provider
+        allows it, arms the next plain message as the answer.
+        """
+        rows: list[list[dict[str, str]]] = []
+        selected = set(pending.selected or [])
+        for index, option in enumerate(pending.options):
+            label = option["label"]
+            if pending.multi_select:
+                mark = "☑" if index in selected else "☐"
+                rows.append([{"text": f"{mark} {label}", "callback_data": f"sel:{pending.token}:{index}"}])
+            else:
+                rows.append([{"text": label, "callback_data": f"ans:{pending.token}:{index}"}])
+        footer: list[dict[str, str]] = []
+        if pending.multi_select:
+            count = len(selected)
+            footer.append({"text": f"Submit ({count})" if count else "Submit",
+                           "callback_data": f"done:{pending.token}"})
+        if pending.allow_free_text:
+            footer.append({"text": "Other...", "callback_data": f"text:{pending.token}"})
+        if footer:
+            rows.append(footer)
+        return {"inline_keyboard": rows}
+
     def _send_question(self, session: Session, question: Question) -> None:
         self.sessions.update(session.id, status=STATUS_WAITING_INPUT)
-        options = [Option(o.label, o.label) for o in question.options] or [Option("Other...", "")]
-        pending = self.pending.create(session.id, session.chat_id, session.owner_user_id, question.id, options)
-        rows = [[{"text": o.label, "callback_data": f"ans:{pending.token}:{i}"}] for i, o in enumerate(options)]
-        text = f"<b>{escape(question.header)}</b>\n\n{escape(question.text)}"
+        options = [Option(o.label, o.label) for o in question.options]
+        allow_free_text = question.allow_free_text or not options
+        pending = self.pending.create(
+            session.id, session.chat_id, session.owner_user_id, question.id, options,
+            multi_select=question.multi_select and bool(options),
+            allow_free_text=allow_free_text,
+        )
+        lines = [f"<b>{escape(question.header)}</b>", "", escape(question.text)]
+        if pending.multi_select:
+            lines += ["", "<i>Pick any number of options, then Submit.</i>"]
+        elif allow_free_text and options:
+            lines += ["", "<i>Or tap Other... to answer in your own words.</i>"]
+        elif allow_free_text:
+            lines += ["", "<i>Tap Other... and send your answer as a message.</i>"]
         result = self._say(
-            session.chat_id, text, session.message_thread_id,
-            reply_markup={"inline_keyboard": rows},
+            session.chat_id, "\n".join(lines), session.message_thread_id,
+            reply_markup=self._question_keyboard(pending),
         )
         message_id = result.get("message_id") if isinstance(result, dict) else None
         if message_id is not None:
             self.pending.set_message_id(pending.token, message_id)
 
+    def _forget_awaited(self, tokens: set[str]) -> None:
+        """Disarm any "answer this by message" prompt for retired questions."""
+        for key, token in list(self._awaiting_text.items()):
+            if token in tokens:
+                del self._awaiting_text[key]
+
+    def _forget_session_awaited(self, session_id: str) -> None:
+        tokens = {p["token"] for p in self.pending._load() if p.get("session_id") == session_id}
+        self._forget_awaited(tokens)
+
     def _close_question(self, session: Session, question_id: str) -> None:
         """The provider withdrew a question: retire its buttons honestly."""
         retired = self.pending.discard_question(session.id, question_id)
+        if retired is not None:
+            self._forget_awaited({retired.token})
         if retired is None or retired.message_id is None:
             return
         try:
@@ -499,6 +565,12 @@ class TelegramBot:
             self._session_action(chat_id, user_id, data.split(":", 2)[2], "resume")
         elif data.startswith("ans:"):
             self._handle_answer_callback(chat_id, user_id, data)
+        elif data.startswith("sel:"):
+            self._handle_toggle_callback(chat_id, user_id, data)
+        elif data.startswith("done:"):
+            self._handle_submit_callback(chat_id, user_id, data.split(":", 1)[1])
+        elif data.startswith("text:"):
+            self._handle_free_text_callback(chat_id, user_id, thread_id, data.split(":", 1)[1])
 
     def _session_action(self, chat_id: int, user_id: int, session_id: str, action: str) -> None:
         session = self._owned(self.sessions.get(session_id), chat_id, user_id)
@@ -514,6 +586,7 @@ class TelegramBot:
                 provider.stop()
                 self._providers.pop(session_id, None)
             self.sessions.update(session_id, status=STATUS_STOPPED)
+            self._forget_session_awaited(session_id)
             self.pending.discard_session(session_id)
             self._publish_index()
             self._say(chat_id, "Session stopped.", thread_id)
@@ -574,11 +647,85 @@ class TelegramBot:
             return None
         return allowed
 
+    # -- answering questions -------------------------------------------
     def _handle_answer_callback(self, chat_id: int, user_id: int, data: str) -> None:
+        """A single-select option tap: answer immediately."""
         try:
             _, token, idx_str = data.split(":", 2)
         except ValueError:
             return
+
+        def resolve(claimed):
+            try:
+                return [claimed.options[int(idx_str)]["value"]]
+            except (IndexError, ValueError):
+                return None
+
+        self._submit_answer(chat_id, user_id, token, resolve)
+
+    def _handle_toggle_callback(self, chat_id: int, user_id: int, data: str) -> None:
+        """A multi-select checkbox tap: record it, commit nothing yet."""
+        try:
+            _, token, idx_str = data.split(":", 2)
+            index = int(idx_str)
+        except ValueError:
+            return
+        updated = self.pending.toggle_selection(token, user_id, index)
+        if updated is None or updated.chat_id != chat_id:
+            return
+        if updated.message_id is None:
+            return
+        try:
+            self.client.edit_message_reply_markup(
+                chat_id, updated.message_id, self._question_keyboard(updated),
+            )
+        except TelegramAPIError:
+            logger.warning("could not redraw multi-select question buttons", exc_info=True)
+
+    def _handle_submit_callback(self, chat_id: int, user_id: int, token: str) -> None:
+        """The explicit submit of a multi-select question."""
+        peeked = self.pending.peek(token)
+        if peeked is not None and peeked.multi_select and not peeked.selected:
+            # Submitting nothing is almost certainly a mis-tap, and an empty
+            # answer is a real answer to the agent. Refuse without burning the
+            # token so the user can still pick something.
+            self._say(chat_id, "Pick at least one option before submitting.")
+            return
+
+        def resolve(claimed):
+            values = [claimed.options[i]["value"] for i in claimed.selected
+                      if 0 <= i < len(claimed.options)]
+            return values or None
+
+        self._submit_answer(chat_id, user_id, token, resolve)
+
+    def _handle_free_text_callback(
+        self, chat_id: int, user_id: int, thread_id: int | None, token: str,
+    ) -> None:
+        """"Other...": arm the next plain message as this question's answer."""
+        peeked = self.pending.peek(token)
+        if peeked is None or peeked.chat_id != chat_id or peeked.user_id != user_id:
+            return
+        if not peeked.allow_free_text:
+            self._say(chat_id, "This question only accepts one of the listed options.", thread_id)
+            return
+        session = self.sessions.get(peeked.session_id)
+        target_thread = session.message_thread_id if session else thread_id
+        self._awaiting_text[(chat_id, user_id, target_thread)] = token
+        self._say(
+            chat_id,
+            "Send your answer as a normal message — it goes back as the answer to "
+            "that question, not as a new turn.",
+            target_thread,
+        )
+
+    def _submit_answer(self, chat_id: int, user_id: int, token: str, resolve) -> None:
+        """Claim a pending question and deliver ``resolve(claimed)`` to the provider.
+
+        One path for every answer shape (single tap, multi-select submit, free
+        text) so the claim/deliver/report guarantees cannot drift apart between
+        them.
+        """
         claimed = self.pending.claim(token, user_id)
         if claimed is None:
             self._say(chat_id, "This question is no longer valid.")
@@ -589,9 +736,8 @@ class TelegramBot:
         session = self._owned(self.sessions.get(claimed.session_id), chat_id, user_id)
         provider = self._providers.get(claimed.session_id) if session else None
         thread_id = session.message_thread_id if session else None
-        try:
-            option = claimed.options[int(idx_str)]
-        except (IndexError, ValueError):
+        answers = resolve(claimed)
+        if not answers:
             self.pending.mark_failed(token)
             return
         if session is None or provider is None or not provider.is_alive():
@@ -600,7 +746,7 @@ class TelegramBot:
             return
 
         try:
-            result = provider.answer_question(claimed.question_id, [option["value"]])
+            result = provider.answer_question(claimed.question_id, answers)
         except Exception as exc:  # provider/transport failure, not a refusal
             self.pending.mark_failed(token)
             logger.warning("answer delivery raised", exc_info=True)
@@ -632,6 +778,7 @@ class TelegramBot:
             )
             return
 
+        self._forget_awaited({token})
         self._clear_buttons(chat_id, claimed.message_id)
         if result.status is AnswerStatus.RECORDED:
             # Truthful wording: the agent has been told nothing yet.
