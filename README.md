@@ -7,8 +7,11 @@ The container mounts the host `~/code` tree at the same logical path, preserves 
 ## Requirements
 
 - Linux
+- Python 3.10+
 - Podman
 - `~/code` must exist (it may be a symlink)
+
+The launcher itself uses only the Python standard library. There are no Python package dependencies.
 
 ## Install the launcher
 
@@ -38,31 +41,18 @@ agent-box rebuild  # refresh tools and rebuild without cache
 
 The default image is `localhost/agent-box:latest`. Override it with `AGENT_BOX_IMAGE`.
 
-## Run Codex
-
-```bash
-agent-box codex
-agent-box codex exec "inspect this repository"
-```
-
-Codex remains the default agent for compatibility with the previous launcher, so these are equivalent:
-
-```bash
-agent-box
-agent-box codex
-```
-
-To change the default:
-
-```bash
-export AGENT_BOX_AGENT=claude
-```
-
 ## Run Claude Code
 
 ```bash
+agent-box
 agent-box claude
 agent-box claude -p "summarize this repository"
+```
+
+Claude Code is the default agent. To change the default:
+
+```bash
+export AGENT_BOX_AGENT=codex
 ```
 
 Claude Code is installed from the official `@anthropic-ai/claude-code` npm package. Its `~/.claude` state is mounted from the host so authentication, settings, and history survive disposable container runs.
@@ -70,6 +60,13 @@ Claude Code is installed from the official `@anthropic-ai/claude-code` npm packa
 If `~/.claude.json` already exists on the host, it is mounted as well.
 
 The launcher also forwards common Anthropic/provider variables when they are already set on the host, including `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`, Bedrock/Vertex selectors, and common HTTP/TLS proxy variables.
+
+## Run Codex
+
+```bash
+agent-box codex
+agent-box codex exec "inspect this repository"
+```
 
 ## Shared agent skills
 
@@ -92,39 +89,28 @@ Shared skills may themselves be symlinks to directories elsewhere on the host. `
 
 ## Git and GitHub
 
-`git` and `gh` configuration is reseeded from the host on every start into
-private container state:
+`git` and `gh` configuration is reseeded from the host on every start into private container state:
 
 ```text
 ~/.gitconfig, ~/.config/git   -> container ~/.config/git   (GIT_CONFIG_GLOBAL)
 ~/.config/gh                  -> container ~/.config/gh     (GH_CONFIG_DIR)
 ```
 
-These are directories rather than bind-mounted files on purpose: `git` and `gh`
-rewrite their configuration through a temporary file plus rename, and renaming
-over a bind-mounted file fails with `Device or resource busy`. The host remains
-the source of truth, and configuration written inside the container is
-discarded at the next start.
+These are directories rather than bind-mounted files on purpose: `git` and `gh` rewrite their configuration through a temporary file plus rename, and renaming over a bind-mounted file fails with `Device or resource busy`. The host remains the source of truth, and configuration written inside the container is discarded at the next start.
 
-`gh auth login` is not meant to be run inside the container — the token lives in
-the host keyring, and the container is disposable. Authenticate on the host
-instead:
+`gh auth login` is not meant to be run inside the container — the token lives in the host keyring, and the container is disposable. Authenticate on the host instead:
 
 ```bash
 gh auth login
 ```
 
-At startup the launcher reads `gh auth token` on the host and passes it in as
-`GH_TOKEN`, which authenticates both `gh` and the `gh auth git-credential`
-helper used by `git` over HTTPS. An already exported `GH_TOKEN`/`GITHUB_TOKEN`
-is forwarded as-is and takes precedence. Disable the passthrough with:
+At startup the launcher reads `gh auth token` on the host and passes it in as `GH_TOKEN`, which authenticates both `gh` and the `gh auth git-credential` helper used by `git` over HTTPS. An already exported `GH_TOKEN`/`GITHUB_TOKEN` is forwarded as-is and takes precedence. Disable the passthrough with:
 
 ```bash
 AGENT_BOX_GH_TOKEN=0 agent-box codex
 ```
 
-Only HTTPS remotes are authenticated this way; the container has no SSH keys or
-agent socket, so `git@github.com:` remotes will fail.
+Only HTTPS remotes are authenticated this way; the container has no SSH keys or agent socket, so `git@github.com:` remotes will fail.
 
 ## Usage limits
 
@@ -188,6 +174,16 @@ agent-box notify disable
 ```
 
 `notify disable` removes the Telegram configuration and only the Claude hooks installed by `agent-box`; unrelated Claude settings and hooks are preserved.
+
+## Self-tests
+
+The small pure-logic test suite is embedded in the launcher itself:
+
+```bash
+agent-box selftest
+```
+
+It checks duration formatting, Claude/Codex usage parsing, notification payload handling, and related logic without starting Podman or accessing the network. There is no separate test framework or test file.
 
 ## Shell and diagnostics
 
