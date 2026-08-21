@@ -6,6 +6,7 @@ real, comprehensive test suite lives under `tests/` and runs via
 """
 from __future__ import annotations
 
+import os
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -64,6 +65,15 @@ def run_selftest() -> int:
         sub.mkdir()
         ws = resolve_workspace(cwd=sub)
         check(ws.host_root, sub.resolve(), "workspace root outside git defaults to cwd")
-        check(str(ws.relative), ".", "workspace relative path")
+        check(ws.container_root, ws.host_root, "same-path model: no /workspace remap")
+        check(ws.container_cwd, ws.cwd, "container cwd mirrors host cwd")
+
+    from .identity import detect_host_identity
+    identity = detect_host_identity()
+    check(identity.uid, os.getuid(), "host identity uid")
+    check(identity.home.is_absolute(), True, "host identity home is absolute")
+
+    from .mounts import MountSpec, plan_mounts
+    check(len(plan_mounts([MountSpec(Path("/a"), False), MountSpec(Path("/a"), False)])), 1, "mount planning collapses duplicates")
 
     return n

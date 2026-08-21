@@ -1,3 +1,5 @@
-from .base import AgentEvent, EventKind, Provider, Question, QuestionOption
+from .base import AgentEvent, EventKind, Provider, ProviderError, Question, QuestionOption, RuntimeContext
 
-__all__ = ["AgentEvent", "EventKind", "Provider", "Question", "QuestionOption"]
+__all__ = [
+    "AgentEvent", "EventKind", "Provider", "ProviderError", "Question", "QuestionOption", "RuntimeContext",
+]

@@ -1,12 +1,16 @@
 FROM docker.io/library/ubuntu:24.04
 
 ARG DEBIAN_FRONTEND=noninteractive
-# Neutral, implementation-owned in-container identity: not derived from any
-# host username so the image and its mounted state stay portable across
-# machines. Override only if you have a strong reason to.
-ARG USER_NAME=agentbox
+# The container user mirrors the *building* host's real Unix identity
+# (name/uid/gid/home, from agent_box.identity.detect_host_identity), so that
+# host-absolute paths -- the project workspace, extra --mount targets, and
+# host-authored symlinks such as ~/.claude/skills entries -- resolve
+# identically inside the container. These defaults are only used if the
+# image is built without --build-arg (e.g. `podman build` run by hand).
+ARG USER_NAME=agent
 ARG USER_UID=1000
 ARG USER_GID=1000
+ARG USER_HOME=/home/agent
 
 ENV LANG=C.UTF-8 \
     LC_ALL=C.UTF-8 \
@@ -129,7 +133,7 @@ RUN set -eux; \
         if [ "${existing_user}" != "${USER_NAME}" ]; then \
             usermod \
                 --login "${USER_NAME}" \
-                --home "/home/${USER_NAME}" \
+                --home "${USER_HOME}" \
                 --shell /bin/bash \
                 "${existing_user}"; \
         fi; \
@@ -138,17 +142,16 @@ RUN set -eux; \
         useradd \
             --uid "${USER_UID}" \
             --gid "${USER_GID}" \
-            --home-dir "/home/${USER_NAME}" \
+            --home-dir "${USER_HOME}" \
             --shell /bin/bash \
             "${USER_NAME}"; \
     fi; \
     mkdir -p \
-        "/home/${USER_NAME}" \
-        "/workspace" \
-        "/home/${USER_NAME}/.cache" \
-        "/home/${USER_NAME}/.local/share/uv" \
-        "/home/${USER_NAME}/.local/share/mise"; \
-    chown -R "${USER_UID}:${USER_GID}" "/home/${USER_NAME}" "/workspace"
+        "${USER_HOME}" \
+        "${USER_HOME}/.cache" \
+        "${USER_HOME}/.local/share/uv" \
+        "${USER_HOME}/.local/share/mise"; \
+    chown -R "${USER_UID}:${USER_GID}" "${USER_HOME}"
 
 #
 # ---------------------------------------------------------------------------
@@ -353,10 +356,14 @@ RUN set -eux; \
 
 USER ${USER_NAME}
 
-ENV HOME=/home/${USER_NAME} \
-    MISE_DATA_DIR=/home/${USER_NAME}/.local/share/mise \
-    UV_CACHE_DIR=/home/${USER_NAME}/.cache/uv
+ENV HOME=${USER_HOME} \
+    MISE_DATA_DIR=${USER_HOME}/.local/share/mise \
+    UV_CACHE_DIR=${USER_HOME}/.cache/uv
 
-WORKDIR /workspace
+# No fixed WORKDIR: agent_box.runtime always passes an explicit --workdir
+# matching the host's absolute project/cwd path, which is bind-mounted at
+# that same path (see workspace.py). This WORKDIR is only a sane default
+# for `podman run` invocations that don't set one (e.g. manual debugging).
+WORKDIR ${USER_HOME}
 
 CMD ["/bin/bash"]

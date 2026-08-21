@@ -1,0 +1,30 @@
+{
+  "id": 42,
+  "method": "item/tool/requestUserInput",
+  "params": {
+    "threadId": "thread_1",
+    "turnId": "turn_1",
+    "itemId": "item_9",
+    "isBlocking": true,
+    "questions": [
+      {
+        "id": "q_a",
+        "header": "Confirm",
+        "question": "Proceed with migration?",
+        "options": [
+          {"label": "Yes", "description": "Run the migration now"},
+          {"label": "No", "description": "Cancel"}
+        ]
+      },
+      {
+        "id": "q_b",
+        "header": "Backup",
+        "question": "Also take a backup first?",
+        "options": [
+          {"label": "Yes", "description": "Back up before migrating"},
+          {"label": "No", "description": "Skip the backup"}
+        ]
+      }
+    ]
+  }
+}

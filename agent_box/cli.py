@@ -19,9 +19,45 @@ def die(message: str) -> NoReturn:
     raise SystemExit(1)
 
 
+RUNTIME_COMMANDS = {"claude", "codex", "shell", "doctor"}
+
+
+def parse_global_args(argv: list[str]) -> tuple[list[str], list[str]]:
+    """Split agent-box's own leading options from the rest of argv.
+
+    Grammar: ``agent-box [--mount PATH[:ro]]... [claude|codex|shell|doctor] [provider args...]``.
+    Agent-box's own options must come first; once a non-option token is seen
+    (or a bare ``--``), everything after it is passed through untouched, so
+    ``agent-box claude --model opus`` or a hypothetical Claude/Codex
+    ``--mount`` flag of their own is never misinterpreted as ours.
+    """
+    mounts: list[str] = []
+    i = 0
+    while i < len(argv):
+        token = argv[i]
+        if token == "--":
+            i += 1
+            break
+        if token == "--mount":
+            if i + 1 >= len(argv):
+                die("--mount requires a path")
+            mounts.append(argv[i + 1])
+            i += 2
+            continue
+        if token.startswith("--mount="):
+            value = token[len("--mount="):]
+            if not value:
+                die("--mount requires a path")
+            mounts.append(value)
+            i += 1
+            continue
+        break
+    return mounts, argv[i:]
+
+
 def usage_text() -> None:
     print('''Usage:
-  agent-box [codex|claude] [agent arguments...]
+  agent-box [--mount PATH[:ro]]... [codex|claude|shell|doctor] [arguments...]
   agent-box usage <codex|claude> [--statusline]
   agent-box usage all [--statusline]
   agent-box notify <setup|test|status|disable>
@@ -41,12 +77,20 @@ Environment:
   AGENT_BOX_KVM=0              Disable KVM passthrough
   AGENT_BOX_GH_TOKEN=0
                                Do not pass the host GitHub token in as GH_TOKEN
-  AGENT_BOX_WORKSPACE_ROOT     Override the host directory mounted as /workspace
+  AGENT_BOX_WORKSPACE_ROOT     Override the host directory mounted into the container
+
+--mount PATH[:ro] additionally bind-mounts PATH (an existing absolute host
+directory) into the container at that same path, read-write by default or
+read-only with the ':ro' suffix. Repeatable. Must appear before the
+claude/codex/shell/doctor subcommand; use '--' to stop agent-box's own
+option parsing early if a provider argument would otherwise be ambiguous.
 
 Examples:
   agent-box
   agent-box claude
   agent-box codex
+  agent-box --mount ~/code claude
+  agent-box --mount /mnt/data/specs:ro --mount /srv/generated codex
   agent-box usage all
   agent-box notify setup
   agent-box telegram serve
@@ -159,12 +203,12 @@ def _require_config() -> TelegramConfig:
     return config
 
 
-def telegram_command(args: list[str]) -> None:
+def telegram_command(args: list[str], script_dir: Path) -> None:
     if not args:
         die("telegram action required; expected serve, status, enable, disable, allow, or roots")
     action, rest = args[0], args[1:]
     if action == "serve":
-        telegram_serve(rest)
+        telegram_serve(rest, script_dir)
     elif action == "status":
         telegram_status()
     elif action == "enable":
@@ -179,7 +223,7 @@ def telegram_command(args: list[str]) -> None:
         die(f"unsupported telegram action '{action}'")
 
 
-def telegram_serve(args: list[str]) -> None:
+def telegram_serve(args: list[str], script_dir: Path) -> None:
     if args:
         die("agent-box telegram serve takes no arguments")
     config = _require_config()
@@ -187,8 +231,10 @@ def telegram_serve(args: list[str]) -> None:
         die("remote control is disabled; run 'agent-box telegram enable' after configuring 'telegram allow'")
     if not config.remote_control.allowed_user_ids:
         die("no allowed Telegram user IDs configured; run 'agent-box telegram allow add <user_id>'")
+    if not (script_dir / "Containerfile").is_file():
+        die(f"Containerfile not found: {script_dir / 'Containerfile'}")
     from .telegram.bot import TelegramBot
-    bot = TelegramBot(config)
+    bot = TelegramBot(config, script_dir)
     print("agent-box: Telegram remote-control daemon starting (long polling)")
     bot.run()
 
@@ -252,11 +298,14 @@ def telegram_roots(args: list[str]) -> None:
         return
     if not rest:
         die(f"agent-box telegram roots {action} requires a path")
-    path = rest[0]
+    raw = Path(rest[0]).expanduser()
+    # Stored as a canonical absolute path so the daemon's cwd at 'telegram
+    # serve' time can never change what this security-relevant setting means.
+    path = str(raw.resolve())
     roots = config.remote_control.workspace_roots
     if action == "add":
-        if not Path(path).expanduser().is_dir():
-            die(f"not a directory: {path}")
+        if not raw.is_dir():
+            die(f"not a directory: {rest[0]}")
         if path not in roots:
             roots.append(path)
     elif action == "remove":
@@ -278,15 +327,18 @@ def selftest() -> None:
 # -- main ----------------------------------------------------------------
 
 def main() -> None:
-    args = sys.argv[1:]
+    mounts, args = parse_global_args(sys.argv[1:])
     script_dir = Path(__file__).resolve().parent.parent
+    non_runtime_subcommands = {"usage", "notify", "telegram", "selftest", "help", "-h", "--help", "build", "update", "rebuild"}
     try:
+        if mounts and args and args[0] in non_runtime_subcommands:
+            die("--mount is only valid before claude/codex/shell/doctor")
         if args and args[0] == "usage":
             usage_command(args[1:]); return
         if args and args[0] == "notify":
             notify_command(args[1:]); return
         if args and args[0] == "telegram":
-            telegram_command(args[1:]); return
+            telegram_command(args[1:], script_dir); return
         if args and args[0] == "selftest":
             if len(args) != 1: die("agent-box selftest takes no arguments")
             selftest(); return
@@ -299,7 +351,7 @@ def main() -> None:
             command = args[0]
             raise SystemExit(runtime.build_image(script_dir, command != "build", command == "rebuild"))
         from . import runtime
-        runtime.runtime_main(args, script_dir)
+        runtime.runtime_main(args, script_dir, mounts)
     except AgentBoxError as exc:
         die(str(exc))
     except KeyboardInterrupt:
