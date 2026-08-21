@@ -16,6 +16,8 @@ CODE_REAL="$(readlink -f -- "${CODE_LINK}")"
 STATE_ROOT="${HOST_HOME}/.local/share/agent-box"
 BUILD_STATE="${STATE_ROOT}/build"
 TOOLS_REFRESH_FILE="${BUILD_STATE}/tools-refresh"
+NOTIFY_CONFIG="${XDG_CONFIG_HOME:-${HOST_HOME}/.config}/agent-box/telegram.json"
+NOTIFY_COMMAND="~/.local/bin/agent-box notify claude"
 
 die() {
     printf 'agent-box: %s\n' "$*" >&2
@@ -32,6 +34,7 @@ Usage:
   agent-box [codex|claude] [agent arguments...]
   agent-box usage <codex|claude> [--statusline]
   agent-box usage all --statusline
+  agent-box notify <setup|test|status|disable>
   agent-box shell [bash arguments...]
   agent-box doctor
   agent-box build
@@ -54,8 +57,199 @@ Examples:
   agent-box usage claude
   agent-box usage codex
   agent-box usage all --statusline
+  agent-box notify setup
+  agent-box notify test
   AGENT_BOX_AGENT=codex agent-box
 EOF
+}
+
+telegram_send() {
+    local text="$1"
+    local token chat_id
+
+    [[ -r "${NOTIFY_CONFIG}" ]] || return 0
+    command -v jq >/dev/null 2>&1 || return 0
+    command -v curl >/dev/null 2>&1 || return 0
+
+    token="$(jq -er '.token' "${NOTIFY_CONFIG}" 2>/dev/null)" || return 0
+    chat_id="$(jq -er '.chat_id' "${NOTIFY_CONFIG}" 2>/dev/null)" || return 0
+
+    curl \
+        --fail \
+        --silent \
+        --show-error \
+        --max-time 10 \
+        --data-urlencode "chat_id=${chat_id}" \
+        --data-urlencode "text=${text}" \
+        "https://api.telegram.org/bot${token}/sendMessage" \
+        >/dev/null
+}
+
+notify_project() {
+    local cwd="$1"
+    local project
+
+    project="$(basename -- "${cwd:-unknown}")"
+    [[ -n "${project}" && "${project}" != "/" ]] || project="unknown"
+    printf '%s\n' "${project}"
+}
+
+notify_claude() {
+    local input event kind cwd project message title detail
+
+    input="$(cat)"
+    event="$(jq -r '.hook_event_name // empty' <<< "${input}" 2>/dev/null || true)"
+    kind="$(jq -r '.notification_type // empty' <<< "${input}" 2>/dev/null || true)"
+    cwd="$(jq -r '.cwd // empty' <<< "${input}" 2>/dev/null || true)"
+    project="$(notify_project "${cwd}")"
+    message="$(jq -r '.message // .error // empty' <<< "${input}" 2>/dev/null || true)"
+
+    case "${event}:${kind}" in
+        Notification:permission_prompt)
+            title="Claude · ${project} · needs permission"
+            detail="${message:-Claude is waiting for approval.}"
+            ;;
+        Notification:idle_prompt)
+            title="Claude · ${project} · waiting for input"
+            detail="${message:-Claude is waiting for your input.}"
+            ;;
+        Stop:*)
+            title="Claude · ${project} · finished"
+            detail="Turn completed."
+            ;;
+        StopFailure:*)
+            title="Claude · ${project} · stopped"
+            detail="${message:-Claude stopped because of an API error.}"
+            ;;
+        *)
+            return 0
+            ;;
+    esac
+
+    telegram_send "${title}
+${detail}"
+}
+
+notify_codex() {
+    local input type cwd project detail
+
+    input="${1:-}"
+    [[ -n "${input}" ]] || input="$(cat)"
+    type="$(jq -r '.type // empty' <<< "${input}" 2>/dev/null || true)"
+    [[ "${type}" == "agent-turn-complete" ]] || return 0
+
+    cwd="$(jq -r '.cwd // empty' <<< "${input}" 2>/dev/null || true)"
+    project="$(notify_project "${cwd:-${PWD}}")"
+    detail="$(jq -r '."last-assistant-message" // empty' <<< "${input}" 2>/dev/null || true)"
+    [[ -n "${detail}" ]] || detail="Turn completed."
+
+    telegram_send "Codex · ${project} · finished
+${detail}"
+}
+
+write_json_file() {
+    local path="$1"
+    local dir tmp
+    dir="$(dirname -- "${path}")"
+    mkdir -p -- "${dir}"
+    tmp="$(mktemp "${dir}/.agent-box.XXXXXX")"
+    cat >| "${tmp}"
+    chmod 600 "${tmp}"
+    mv -- "${tmp}" "${path}"
+}
+
+install_claude_notify_hooks() {
+    local settings="${HOST_HOME}/.claude/settings.json"
+    local dir tmp
+
+    command -v jq >/dev/null 2>&1 || die "jq is required to configure Claude hooks"
+    dir="$(dirname -- "${settings}")"
+    mkdir -p -- "${dir}"
+    [[ -f "${settings}" ]] || printf '{}\n' >| "${settings}"
+
+    tmp="$(mktemp "${dir}/settings.XXXXXX")"
+    jq --arg cmd "${NOTIFY_COMMAND}" '
+      def add_hook($event; $matcher):
+        .hooks = (.hooks // {}) |
+        .hooks[$event] = (
+          (.hooks[$event] // []) as $items |
+          ({hooks: [{type: "command", command: $cmd}]} +
+            (if $matcher == "" then {} else {matcher: $matcher} end)) as $entry |
+          if any($items[]; . == $entry) then $items else $items + [$entry] end
+        );
+      add_hook("Notification"; "permission_prompt") |
+      add_hook("Notification"; "idle_prompt") |
+      add_hook("Stop"; "") |
+      add_hook("StopFailure"; "")
+    ' "${settings}" >| "${tmp}"
+    mv -- "${tmp}" "${settings}"
+}
+
+remove_claude_notify_hooks() {
+    local settings="${HOST_HOME}/.claude/settings.json"
+    local dir tmp
+
+    [[ -f "${settings}" ]] || return 0
+    command -v jq >/dev/null 2>&1 || die "jq is required to remove Claude hooks"
+    dir="$(dirname -- "${settings}")"
+    tmp="$(mktemp "${dir}/settings.XXXXXX")"
+
+    jq --arg cmd "${NOTIFY_COMMAND}" '
+      if .hooks == null then .
+      else
+        .hooks |= with_entries(
+          .value = [
+            .value[] |
+            select(any(.hooks[]?; .type == "command" and .command == $cmd) | not)
+          ] |
+          select(.value | length > 0)
+        )
+      end
+    ' "${settings}" >| "${tmp}"
+    mv -- "${tmp}" "${settings}"
+}
+
+notify_setup() {
+    local token chat_id
+
+    command -v jq >/dev/null 2>&1 || die "jq is required"
+    command -v curl >/dev/null 2>&1 || die "curl is required"
+
+    printf 'Telegram bot token: ' >&2
+    IFS= read -rs token
+    printf '\nTelegram chat ID: ' >&2
+    IFS= read -r chat_id
+
+    [[ -n "${token}" ]] || die "Telegram bot token cannot be empty"
+    [[ -n "${chat_id}" ]] || die "Telegram chat ID cannot be empty"
+
+    jq -cn --arg token "${token}" --arg chat_id "${chat_id}" '{token:$token, chat_id:$chat_id}' |
+        write_json_file "${NOTIFY_CONFIG}"
+
+    install_claude_notify_hooks
+
+    if ! telegram_send "agent-box · Telegram notifications enabled"; then
+        rm -f -- "${NOTIFY_CONFIG}"
+        remove_claude_notify_hooks
+        die "Telegram test failed; configuration was rolled back"
+    fi
+
+    printf 'agent-box: Telegram notifications enabled for Claude and Codex\n'
+}
+
+notify_status() {
+    if [[ -r "${NOTIFY_CONFIG}" ]]; then
+        printf 'Telegram notifications: enabled\n'
+        printf 'Config: %s\n' "${NOTIFY_CONFIG}"
+    else
+        printf 'Telegram notifications: disabled\n'
+    fi
+}
+
+notify_disable() {
+    rm -f -- "${NOTIFY_CONFIG}"
+    remove_claude_notify_hooks
+    printf 'agent-box: Telegram notifications disabled\n'
 }
 
 format_codex_usage() {
@@ -303,6 +497,44 @@ case "${1:-}" in
         esac
         exit
         ;;
+    notify)
+        shift
+        action="${1:-}"
+        shift || true
+
+        case "${action}" in
+            setup)
+                [[ "$#" -eq 0 ]] || die "agent-box notify setup takes no arguments"
+                notify_setup
+                ;;
+            test)
+                [[ "$#" -eq 0 ]] || die "agent-box notify test takes no arguments"
+                [[ -r "${NOTIFY_CONFIG}" ]] || die "Telegram notifications are not configured"
+                telegram_send "agent-box · test notification"
+                printf 'agent-box: test notification sent\n'
+                ;;
+            status)
+                [[ "$#" -eq 0 ]] || die "agent-box notify status takes no arguments"
+                notify_status
+                ;;
+            disable)
+                [[ "$#" -eq 0 ]] || die "agent-box notify disable takes no arguments"
+                notify_disable
+                ;;
+            claude)
+                [[ "$#" -eq 0 ]] || die "agent-box notify claude takes no arguments"
+                notify_claude
+                ;;
+            codex)
+                [[ "$#" -le 1 ]] || die "agent-box notify codex accepts at most one payload argument"
+                notify_codex "${1:-}"
+                ;;
+            *)
+                die "notify action required; expected setup, test, status, or disable"
+                ;;
+        esac
+        exit
+        ;;
     help|-h|--help)
         usage
         exit
@@ -519,11 +751,18 @@ MOUNTS=(
     --mount
     "type=bind,src=${STATE_ROOT}/mise,dst=${CONTAINER_HOME}/.local/share/mise"
 
-    # Claude statusLine runs inside the container. Expose this launcher there
-    # so it can call the integrated usage command without helper scripts.
+    # Claude statusLine and notification hooks run inside the container. Expose
+    # this launcher there so both integrations use the same host-maintained code.
     --mount
     "type=bind,src=${SCRIPT_DIR}/agent-box,dst=${CONTAINER_HOME}/.local/bin/agent-box,ro=true"
 )
+
+if [[ -f "${NOTIFY_CONFIG}" ]]; then
+    MOUNTS+=(
+        --mount
+        "type=bind,src=${NOTIFY_CONFIG},dst=${CONTAINER_HOME}/.config/agent-box/telegram.json,ro=true"
+    )
+fi
 
 if [[ -f "${HOST_HOME}/.claude.json" ]]; then
     MOUNTS+=(
@@ -839,10 +1078,19 @@ case "${agent}" in
             "$@"
         ;;
     codex)
+        CODEX_NOTIFY_ARGS=()
+        if [[ -r "${NOTIFY_CONFIG}" ]]; then
+            CODEX_NOTIFY_ARGS+=(
+                -c
+                'notify=["/home/rus364/.local/bin/agent-box","notify","codex"]'
+            )
+        fi
+
         exec podman \
             "${RUN_ARGS[@]}" \
             "${IMAGE}" \
             codex \
+            "${CODEX_NOTIFY_ARGS[@]}" \
             --dangerously-bypass-approvals-and-sandbox \
             "$@"
         ;;
