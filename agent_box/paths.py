@@ -74,27 +74,16 @@ XDG_DATA_HOME = env_path("XDG_DATA_HOME", HOST_HOME / ".local/share")
 XDG_CACHE_HOME = env_path("XDG_CACHE_HOME", HOST_HOME / ".cache")
 
 # agent-box's own persistent state (build markers, seeded git/gh config,
-# notification state, Telegram remote-control state).
+# notification state).
 STATE_ROOT = env_path("AGENT_BOX_STATE_DIR", XDG_DATA_HOME / "agent-box")
 CONFIG_ROOT = env_path("AGENT_BOX_CONFIG_DIR", XDG_CONFIG_HOME / "agent-box")
 
 BUILD_STATE = STATE_ROOT / "build"
 TOOLS_REFRESH_FILE = BUILD_STATE / "tools-refresh"
 
-NOTIFY_CONFIG = CONFIG_ROOT / "telegram.json"
+# The one agent-box configuration file (see agent_box.config).
+CONFIG_FILE = CONFIG_ROOT / "config.json"
 NOTIFY_STATE_ROOT = STATE_ROOT / "notify"
-
-TELEGRAM_CONFIG = CONFIG_ROOT / "telegram.json"
-TELEGRAM_STATE_ROOT = STATE_ROOT / "telegram"
-TELEGRAM_SESSIONS_FILE = TELEGRAM_STATE_ROOT / "sessions.json"
-TELEGRAM_PENDING_FILE = TELEGRAM_STATE_ROOT / "pending.json"
-TELEGRAM_OFFSET_FILE = TELEGRAM_STATE_ROOT / "offset.json"
-# A deliberately minimal, non-secret projection of the session registry,
-# written into NOTIFY_STATE_ROOT because that is the only Telegram-related
-# directory bind-mounted into the container (see runtime.build_mounts). It
-# carries session id / provider / project path only -- never callback tokens,
-# the getUpdates offset, chat or user IDs.
-TELEGRAM_SESSION_INDEX_FILE = NOTIFY_STATE_ROOT / "sessions-index.json"
 
 CLAUDE_HOME = env_path("CLAUDE_CONFIG_DIR", HOST_HOME / ".claude")
 CODEX_HOME = env_path("CODEX_HOME", HOST_HOME / ".codex")

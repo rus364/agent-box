@@ -9,11 +9,9 @@ from agent_box.workspace import Workspace
 
 
 class BuildMountsEnsuresStateDirsTests(unittest.TestCase):
-    """Regression test for a real bug found via live testing: machine-mode
-    Telegram sessions spawn `podman run` directly (no `runtime_main` call
-    site to ensure state dirs first), so podman failed immediately with
-    "no such file or directory" the first time a fresh AGENT_BOX_STATE_DIR
-    was used. build_mounts must ensure those directories exist itself."""
+    """podman fails a bind mount outright when its source is missing, so
+    build_mounts must create the host-side state directories itself rather
+    than trusting a caller to have done it."""
 
     def test_build_mounts_creates_missing_state_dirs(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -42,7 +40,7 @@ class MountOverlapWithProjectRootTests(unittest.TestCase):
             project.mkdir()
             workspace = Workspace(project.resolve(), project.resolve())
             extra = MountSpec(path=parent.resolve(), read_only=False, label="--mount")
-            argv = runtime.machine_podman_argv(workspace, [extra], project, ["codex"])
+            argv = runtime.container_argv(workspace, [extra], project, ["codex"])
             mount_flags = [a for a in argv if a.startswith("type=bind")]
             matching_project = [f for f in mount_flags if f"src={project.resolve()},dst={project.resolve()}" in f]
             matching_parent = [f for f in mount_flags if f"src={parent.resolve()},dst={parent.resolve()}" in f]
@@ -57,36 +55,38 @@ class MountOverlapWithProjectRootTests(unittest.TestCase):
             workspace = Workspace(project.resolve(), project.resolve())
             extra = MountSpec(path=parent.resolve(), read_only=True, label="--mount")
             with self.assertRaises(Exception):
-                runtime.machine_podman_argv(workspace, [extra], project, ["codex"])
+                runtime.container_argv(workspace, [extra], project, ["codex"])
 
 
-class MachinePodmanArgvTests(unittest.TestCase):
+class ContainerArgvTests(unittest.TestCase):
     def test_same_absolute_path_mounted_no_workspace_rewrite(self):
         with tempfile.TemporaryDirectory() as project:
             workspace = Workspace(Path(project), Path(project))
-            argv = runtime.machine_podman_argv(workspace, [], Path(project), ["codex", "app-server"])
+            argv = runtime.container_argv(workspace, [], Path(project), ["codex", "app-server"])
             self.assertIn("podman", argv)
             self.assertIn(f"--workdir={project}", argv)
             self.assertTrue(any(f"src={project},dst={project}" in a for a in argv))
             self.assertNotIn("/workspace", " ".join(argv))
 
-    def test_no_tty_flag_for_machine_mode(self):
+    def test_extra_env_is_passed_before_the_image(self):
         with tempfile.TemporaryDirectory() as project:
             workspace = Workspace(Path(project), Path(project))
-            argv = runtime.machine_podman_argv(workspace, [], Path(project), ["claude"])
-            self.assertNotIn("--tty", argv)
+            argv = runtime.container_argv(
+                workspace, [], Path(project), ["claude"], extra_env=["FOO=1"])
+            self.assertIn("--env=FOO=1", argv)
+            self.assertLess(argv.index("--env=FOO=1"), argv.index("claude"))
 
     def test_extra_mounts_included(self):
         with tempfile.TemporaryDirectory() as project, tempfile.TemporaryDirectory() as extra:
             workspace = Workspace(Path(project), Path(project))
             spec = MountSpec(path=Path(extra).resolve(), read_only=True)
-            argv = runtime.machine_podman_argv(workspace, [spec], Path(project), ["codex"])
+            argv = runtime.container_argv(workspace, [spec], Path(project), ["codex"])
             self.assertTrue(any(f"src={spec.path},dst={spec.path}" in a and "ro=true" in a for a in argv))
 
     def test_hardening_flags_present(self):
         with tempfile.TemporaryDirectory() as project:
             workspace = Workspace(Path(project), Path(project))
-            argv = runtime.machine_podman_argv(workspace, [], Path(project), ["codex"])
+            argv = runtime.container_argv(workspace, [], Path(project), ["codex"])
             self.assertIn("--cap-drop=all", argv)
             self.assertIn("--security-opt=no-new-privileges", argv)
 

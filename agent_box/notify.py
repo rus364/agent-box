@@ -1,8 +1,17 @@
-"""Outbound Claude/Codex Telegram notifications.
+"""Outbound-only Telegram notifications for Claude and Codex.
 
-This is the transport the Telegram remote-control subsystem also reuses
-(``agent_box.telegram.api``) so there is exactly one piece of code that talks
-to the Bot API for sending messages.
+Deliberately one-directional: this module sends ``sendMessage`` calls and
+nothing else. There is no polling, no ``getUpdates``, no callback handling and
+no way to drive a session from Telegram -- controlling a live Claude session
+from Telegram is the job of Anthropic's official ``telegram`` plugin (see
+``agent_box.config.CLAUDE_TELEGRAM_CHANNEL``), and Codex users have the
+official ChatGPT remote-control experience. Notifications are a separate,
+much smaller feature: "something happened in a container you left running".
+
+Claude delivers events through hooks installed in its ``settings.json``
+(``agent-box notify claude``), Codex through its ``notify`` program setting
+(``agent-box notify codex``). Both run *inside* the container, which is why
+the config file and the notification state directory are bind-mounted in.
 """
 from __future__ import annotations
 
@@ -11,38 +20,57 @@ import json
 import os
 import stat
 import sys
+import time
 import urllib.error
 import urllib.parse
+import urllib.request
 from pathlib import Path
 from typing import Any
 
 from .atomicio import atomic_write_json, read_json
-from .config import load_telegram_config
+from .config import load_config
 from .paths import NOTIFY_STATE_ROOT
-from .telegram.api import TelegramAPIError, TelegramClient
 
 NOTIFY_STATE_TTL = 1800
-# PATH-resolved so the same hook command works both on the host (when a user
-# runs `agent-box notify status` directly) and inside the container, where
-# `agent-box` is mounted onto PATH rather than living at a host-specific path.
+#: PATH-resolved so the same hook command works on the host and inside the
+#: container, where `agent-box` is mounted onto PATH rather than living at a
+#: host-specific path.
 NOTIFY_COMMAND = "agent-box notify claude"
-# Hook command written by versions that hardcoded the launcher's install path.
-# Recognized so `notify setup`/`notify disable` clean up (rather than
-# duplicate) hooks installed by an older agent-box.
-LEGACY_NOTIFY_COMMANDS = ("~/.local/bin/agent-box notify claude",)
+#: Set by ``agent_box.runtime`` on containers whose Claude session already
+#: talks to Telegram through the official channel plugin. Those sessions relay
+#: their own replies, prompts and questions to the paired chat; letting the
+#: hooks fire as well would post the same interaction twice.
+SUPPRESS_NOTIFY_ENV = "AGENT_BOX_SUPPRESS_NOTIFY"
 
 
 def outbound_suppressed() -> bool:
-    """True when this process must not send a global Telegram notification.
+    return bool(os.environ.get(SUPPRESS_NOTIFY_ENV, "").strip())
 
-    Set by ``agent_box.runtime`` for containers the Telegram remote-control
-    daemon starts (``SUPPRESS_NOTIFY_ENV``). Those sessions already relay
-    everything to the owner's chat through the bot; the legacy hook path would
-    additionally broadcast them to ``notify_chat_id``, an audience the session
-    owner did not pick. Interactive ``agent-box claude``/``codex`` runs never
-    set it, so local notification behavior is unchanged.
-    """
-    return bool(os.environ.get("AGENT_BOX_SUPPRESS_NOTIFY", "").strip())
+
+def telegram_send(text: str) -> bool:
+    """POST one HTML message to the configured chat. Never raises, never logs
+    the bot token."""
+    if outbound_suppressed():
+        return True
+    notifications = load_config().notifications
+    if not notifications.usable:
+        return True
+    url = f"https://api.telegram.org/bot{notifications.telegram_token}/sendMessage"
+    body = json.dumps({
+        "chat_id": notifications.telegram_chat_id,
+        "text": text,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True,
+    }).encode()
+    request = urllib.request.Request(
+        url, data=body, headers={"Content-Type": "application/json"}, method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            payload = json.load(response)
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError):
+        return False
+    return bool(isinstance(payload, dict) and payload.get("ok"))
 
 
 def notify_project(cwd: str) -> str:
@@ -66,19 +94,13 @@ def telegram_notice(icon: str, agent: str, project: str, status: str, detail: st
     return "\n".join(lines)
 
 
-def telegram_send(text: str, reply_markup: dict[str, Any] | None = None) -> bool:
-    if outbound_suppressed():
-        return True
-    config = load_telegram_config()
-    if config is None or not config.configured or not config.notify_chat_id:
-        return True
-    try:
-        client = TelegramClient(config.token)
-        client.send_message(config.notify_chat_id, text, reply_markup=reply_markup)
-        return True
-    except TelegramAPIError:
-        return False
-
+# -- Claude background-task state -----------------------------------------
+#
+# Claude fires Stop for the visible turn even when background tasks keep
+# running, and then an idle_prompt Notification once it is genuinely waiting.
+# Recording the task count at Stop lets the idle notification be suppressed
+# while work is still in flight, so a long background run does not ping the
+# chat as if it needed input.
 
 def notify_session_path(session_id: str, root: Path = NOTIFY_STATE_ROOT) -> Path | None:
     if not session_id:
@@ -94,7 +116,6 @@ def claude_background_tasks(obj: dict[str, Any]) -> list[Any] | None:
 
 
 def cache_fresh(path: Path, ttl: int) -> bool:
-    import time
     try:
         st = path.stat()
         return st.st_size > 0 and time.time() - st.st_mtime < ttl
@@ -127,26 +148,7 @@ def claude_background_active(session_id: str, root: Path = NOTIFY_STATE_ROOT) ->
         return False
 
 
-def _session_hint(provider: str, cwd: str) -> str:
-    """Pointer to a live remote-control session for this project, if any.
-
-    Reads :mod:`agent_box.session_index` rather than the session registry
-    itself. These hooks normally run *inside* the container, where the
-    Telegram state directory is not mounted (and must not be -- it holds
-    pending-question callback tokens and the polling offset), so the registry
-    is unreadable there. The published index carries only id/provider/project.
-
-    The emitted text is a real command: ``/session <id>`` opens that session
-    in the bot (``agent_box.telegram.bot``). An earlier version printed
-    ``/sessions <id>``, which the bot never accepted.
-    """
-    try:
-        from .session_index import find
-        session_id = find(provider, cwd)
-    except Exception:
-        return ""
-    return f"/session {session_id}" if session_id else ""
-
+# -- hook entry points ----------------------------------------------------
 
 def notify_claude() -> None:
     obj = parse_payload(sys.stdin.read())
@@ -159,29 +161,23 @@ def notify_claude() -> None:
     tasks = claude_background_tasks(obj) if event == "Stop" else None
 
     if event == "Stop":
-        if tasks is None:
-            # Older/unusual payloads do not expose task state. Clear any stale
-            # marker and keep the legacy notification behavior rather than risk
-            # suppressing a real prompt indefinitely.
-            update_claude_background_state(session_id, [])
-        else:
-            update_claude_background_state(session_id, tasks)
+        # Older/unusual payloads do not expose task state. Clear any stale
+        # marker rather than risk suppressing a real prompt indefinitely.
+        update_claude_background_state(session_id, [] if tasks is None else tasks)
     elif event == "StopFailure":
         update_claude_background_state(session_id, [])
-
-    hint = _session_hint("claude", cwd)
 
     if (event, kind) == ("Notification", "permission_prompt"):
         telegram_send(telegram_notice(
             "🔐", "Claude", project, "Permission required",
-            (message or "Claude is waiting for approval.") + (f"\n{hint}" if hint else ""),
+            message or "Claude is waiting for approval.",
         ))
     elif (event, kind) == ("Notification", "idle_prompt"):
         if claude_background_active(session_id):
             return
         telegram_send(telegram_notice(
             "💬", "Claude", project, "Waiting for input",
-            (message or "Claude is waiting for your input.") + (f"\n{hint}" if hint else ""),
+            message or "Claude is waiting for your input.",
         ))
     elif event == "Stop":
         if tasks:
@@ -203,12 +199,12 @@ def notify_codex(payload: str | None) -> None:
     obj = parse_payload(payload if payload is not None else sys.stdin.read())
     if obj.get("type") != "agent-turn-complete":
         return
-    cwd = str(obj.get("cwd") or os.getcwd())
-    project = notify_project(cwd)
+    project = notify_project(str(obj.get("cwd") or os.getcwd()))
     detail = str(obj.get("last-assistant-message") or "Turn completed.")
-    hint = _session_hint("codex", cwd)
-    telegram_send(telegram_notice("✅", "Codex", project, "Turn finished", detail + (f"\n{hint}" if hint else "")))
+    telegram_send(telegram_notice("✅", "Codex", project, "Turn finished", detail))
 
+
+# -- Claude settings.json hook wiring -------------------------------------
 
 def hook_entry(matcher: str | None = None) -> dict[str, Any]:
     item: dict[str, Any] = {"hooks": [{"type": "command", "command": NOTIFY_COMMAND}]}
@@ -225,9 +221,6 @@ def install_claude_notify_hooks(settings_path: Path) -> None:
     hooks = settings.setdefault("hooks", {})
     if not isinstance(hooks, dict):
         raise AgentBoxError(f"{settings_path}: hooks must be a JSON object")
-    for event, items in list(hooks.items()):
-        if isinstance(items, list):
-            hooks[event] = [x for x in items if not _uses_legacy_notify(x)]
     for event, entry in (
         ("Notification", hook_entry("permission_prompt")),
         ("Notification", hook_entry("idle_prompt")),
@@ -245,14 +238,7 @@ def install_claude_notify_hooks(settings_path: Path) -> None:
 def _uses_notify(entry: Any) -> bool:
     return isinstance(entry, dict) and isinstance(entry.get("hooks"), list) and any(
         isinstance(h, dict) and h.get("type") == "command"
-        and h.get("command") in (NOTIFY_COMMAND, *LEGACY_NOTIFY_COMMANDS)
-        for h in entry["hooks"]
-    )
-
-
-def _uses_legacy_notify(entry: Any) -> bool:
-    return isinstance(entry, dict) and isinstance(entry.get("hooks"), list) and any(
-        isinstance(h, dict) and h.get("type") == "command" and h.get("command") in LEGACY_NOTIFY_COMMANDS
+        and h.get("command") == NOTIFY_COMMAND
         for h in entry["hooks"]
     )
 

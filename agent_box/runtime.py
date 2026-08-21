@@ -1,10 +1,11 @@
 """Podman container build/run: the single authoritative place that builds a
 ``podman run``/``podman build`` command line.
 
-Both interactive local use (``agent-box claude``/``codex``/``shell``) and the
-Telegram remote-control daemon's machine-mode sessions go through
-:func:`base_podman_args` here, so they share one environment/mount/hardening
-model instead of the daemon re-approximating a second one.
+Every local command -- ``agent-box claude``/``codex``/``shell``/``doctor`` --
+goes through :func:`base_podman_args`, so there is exactly one definition of
+what a container can see. What that is depends on ``agent-box config``: host
+credentials are exposed only where the user turned the corresponding switch
+on (see :mod:`agent_box.config`).
 """
 from __future__ import annotations
 
@@ -16,12 +17,15 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .atomicio import atomic_write_json, atomic_write_text, read_json
+from .atomicio import atomic_write_text
+from .channel import channel_args
+from .config import Config, load_config
 from .errors import AgentBoxError
 from .identity import HostIdentity, detect_host_identity
 from .mounts import MountSpec
+from .notify import SUPPRESS_NOTIFY_ENV
 from .paths import (
-    BUILD_STATE, CLAUDE_HOME, CODEX_HOME, HOST_HOME, NOTIFY_CONFIG,
+    BUILD_STATE, CLAUDE_HOME, CODEX_HOME, CONFIG_FILE, HOST_HOME,
     NOTIFY_STATE_ROOT, STATE_ROOT, TOOLS_REFRESH_FILE, XDG_CACHE_HOME,
 )
 from .workspace import Workspace, resolve_workspace
@@ -41,24 +45,6 @@ def ensure_state_dirs() -> None:
         XDG_CACHE_HOME / "claude-code", XDG_CACHE_HOME / "claude-cli-nodejs",
     ):
         path.mkdir(parents=True, exist_ok=True)
-
-
-def migrate_statusline() -> None:
-    path = CLAUDE_HOME / "settings.json"
-    if not path.is_file():
-        return
-    try:
-        settings = read_json(path)
-        status = settings.get("statusLine")
-        if isinstance(status, dict) and status.get("command") in {
-            "~/.local/bin/claude-usage --statusline",
-            "~/.local/bin/agent-box usage claude --statusline",
-            "~/.local/bin/agent-box usage all --statusline",
-        }:
-            status["command"] = "agent-box usage all --statusline"
-            atomic_write_json(path, settings)
-    except (OSError, ValueError, AttributeError):
-        pass
 
 
 def ensure_refresh_token() -> None:
@@ -178,7 +164,10 @@ def agent_tree_mounts() -> list[tuple[Path, Path, bool]]:
     return mounts
 
 
-def build_mounts(workspace: Workspace, extra_mounts: list[MountSpec], script_dir: Path) -> list[str]:
+def build_mounts(
+    workspace: Workspace, extra_mounts: list[MountSpec], script_dir: Path,
+    config: Config | None = None,
+) -> list[str]:
     """Build ``--mount`` flags.
 
     Everything the agent should see is mounted at the *same absolute path*
@@ -187,13 +176,12 @@ def build_mounts(workspace: Workspace, extra_mounts: list[MountSpec], script_dir
     container's user/home mirror the host's (agent_box.identity).
 
     Ensures the host-side directories these mounts bind from actually exist
-    first: podman fails a bind mount outright if its source is missing, and
-    unlike interactive local runs (whose caller always calls
-    ``ensure_state_dirs`` first), Telegram machine-mode sessions have no
-    other call site that's guaranteed to run before this.
+    first, because podman fails a bind mount outright if its source is
+    missing.
     """
     from .mounts import MountSpec, plan_mounts
 
+    config = load_config() if config is None else config
     ensure_state_dirs()
     # The project root and any explicit --mount paths can legitimately
     # overlap (a --mount of a parent directory containing the project is
@@ -219,8 +207,15 @@ def build_mounts(workspace: Workspace, extra_mounts: list[MountSpec], script_dir
     ]
     if (script_dir / "agent_box").is_dir():
         pairs.append((script_dir / "agent_box", HOST_HOME / ".local/lib/agent-box/agent_box", True))
-    if NOTIFY_CONFIG.is_file():
-        pairs.append((NOTIFY_CONFIG, HOST_HOME / ".config/agent-box/telegram.json", True))
+    # Read-only: the notification hooks run inside the container and need the
+    # bot token to send, but nothing in there may rewrite the user's config.
+    # The destination is the *default* XDG location rather than the host's
+    # own CONFIG_FILE path, because agent-box inside the container gets no
+    # AGENT_BOX_CONFIG_DIR/XDG_CONFIG_HOME and so looks exactly there. A host
+    # that relocates its config directory would otherwise mount the file at a
+    # path the container never reads.
+    if CONFIG_FILE.is_file():
+        pairs.append((CONFIG_FILE, HOST_HOME / ".config/agent-box/config.json", True))
     # Claude Code's ~/.claude.json sits *beside* the config directory rather
     # than inside it. When CLAUDE_CONFIG_DIR relocates that directory, the
     # relocated tree is already mounted whole (CLAUDE_HOME above), so only the
@@ -229,8 +224,20 @@ def build_mounts(workspace: Workspace, extra_mounts: list[MountSpec], script_dir
         if claude_json.is_file():
             pairs.append((claude_json, claude_json, False))
 
-    seed_state_dir(STATE_ROOT / "git", HOST_HOME / ".config/git", HOST_HOME / ".gitconfig")
-    seed_state_dir(STATE_ROOT / "gh", HOST_HOME / ".config/gh")
+    # Both directories are always mounted so git and gh work inside the
+    # container, but they are only *seeded* from the host when the user opted
+    # in. Seeding with no sources leaves an empty 0700 directory: git falls
+    # back to its built-in defaults, gh runs unauthenticated. Copies, not bind
+    # mounts of the originals, so a container can never write back to the
+    # host's real git/gh configuration.
+    seed_state_dir(
+        STATE_ROOT / "git",
+        *((HOST_HOME / ".config/git", HOST_HOME / ".gitconfig") if config.git.config else ()),
+    )
+    seed_state_dir(
+        STATE_ROOT / "gh",
+        *((HOST_HOME / ".config/gh",) if config.github.gh_config else ()),
+    )
     pairs += [
         (STATE_ROOT / "git", HOST_HOME / ".config/git", False),
         (STATE_ROOT / "gh", HOST_HOME / ".config/gh", False),
@@ -271,34 +278,52 @@ def kvm_args() -> list[str]:
     return args
 
 
-def maybe_gh_token() -> None:
-    if os.environ.get("AGENT_BOX_GH_TOKEN", "1") == "0" or os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN") or not shutil.which("gh"):
+def maybe_gh_token(config: Config) -> None:
+    """Forward a host GitHub token, but only when explicitly configured.
+
+    Being logged in to ``gh`` on the host is NOT consent to hand a live
+    GitHub credential to every container -- an earlier agent-box treated it
+    as though it were. The token now travels only when
+    ``github.gh_token`` is on in ``agent-box config``.
+
+    ``AGENT_BOX_GH_TOKEN`` still overrides for a single command: ``0``
+    withholds the token from a configured-on host, ``1`` forwards it from a
+    configured-off one.
+    """
+    override = os.environ.get("AGENT_BOX_GH_TOKEN", "").strip()
+    enabled = config.github.gh_token
+    if override == "0":
+        enabled = False
+    elif override == "1":
+        enabled = True
+    if not enabled or os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN"):
+        return
+    if not shutil.which("gh"):
+        warn("github.gh_token is enabled but 'gh' is not installed on the host")
         return
     r = subprocess.run(["gh", "auth", "token"], text=True, capture_output=True)
     token = r.stdout.strip() if r.returncode == 0 else ""
     if token:
         os.environ["GH_TOKEN"] = token
     else:
-        warn("no GitHub token on the host; run 'gh auth login' outside the container")
+        warn("github.gh_token is enabled but the host has no token; run 'gh auth login'")
 
 
-#: Set inside containers whose agent is being driven by the Telegram
-#: remote-control daemon. ``agent_box.notify`` treats it as "this process's
-#: output already has a delivery channel; do not also fan out to the global
-#: notification chat".
-SUPPRESS_NOTIFY_ENV = "AGENT_BOX_SUPPRESS_NOTIFY"
+#: Provider credential/endpoint variables forwarded from the invoking shell
+#: when ``providers.env`` is on. Only ones already exported for this command
+#: are passed; agent-box never reads them from a file.
+PROVIDER_ENV = (
+    "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL",
+    "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX",
+    "HTTP_PROXY", "HTTPS_PROXY", "SSL_CERT_FILE", "NODE_EXTRA_CA_CERTS",
+)
 
 
 def base_podman_args(
-    workspace: Workspace, extra_mounts: list[MountSpec], script_dir: Path, *,
-    include_kvm: bool = True, outbound_notifications: bool = True,
+    workspace: Workspace, extra_mounts: list[MountSpec], script_dir: Path,
+    config: Config | None = None,
 ) -> list[str]:
     """The full ``podman run`` argument list, minus the trailing image/command.
-
-    Shared by interactive local runs and the Telegram daemon's machine-mode
-    provider subprocesses, so both get the identical mount/env/hardening
-    model -- there is exactly one place that decides what the container can
-    see.
 
     ``HOST_HOME`` is the passwd-derived home (``paths.passwd_home``), the
     same value ``agent_box.identity`` builds the image's user with and the
@@ -306,10 +331,10 @@ def base_podman_args(
     consulted, so a poisoned ``$HOME`` cannot move the container's home,
     PATH, or any bind mount.
     """
+    config = load_config() if config is None else config
     home = HOST_HOME
     args = [
-        "run", "--rm", "--interactive", "--userns=keep-id",
-        *(kvm_args() if include_kvm else []),
+        "run", "--rm", "--interactive", "--userns=keep-id", *kvm_args(),
         "--cap-drop=all", "--security-opt=no-new-privileges", "--hostname=agent-box",
         f"--workdir={workspace.container_cwd}", f"--env=HOME={home}",
         f"--env=PATH={home}/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
@@ -318,12 +343,14 @@ def base_podman_args(
         f"--env=GH_CONFIG_DIR={home}/.config/gh",
         f"--env=XDG_CACHE_HOME={XDG_CACHE_HOME}",
         f"--env=UV_CACHE_DIR={XDG_CACHE_HOME}/uv",
+        # The official Telegram channel plugin runs its MCP server under Bun
+        # and installs its dependencies on first start; keep that download in
+        # the container-only cache so it survives across disposable runs.
+        f"--env=BUN_INSTALL_CACHE_DIR={XDG_CACHE_HOME}/bun",
         f"--env=MISE_DATA_DIR={home}/.local/share/mise",
         "--env=DISABLE_AUTOUPDATER=1", f"--env=TERM={os.environ.get('TERM', 'xterm-256color')}",
-        *build_mounts(workspace, extra_mounts, script_dir),
+        *build_mounts(workspace, extra_mounts, script_dir, config),
     ]
-    if not outbound_notifications:
-        args.append(f"--env={SUPPRESS_NOTIFY_ENV}=1")
     # A host that relocates Claude Code's config directory must have the
     # container agree: CLAUDE_HOME is already bind-mounted at its host path,
     # but `claude` inside the container would still look in $HOME/.claude
@@ -331,46 +358,23 @@ def base_podman_args(
     # a tilde or relative setting means the same thing on both sides.
     if os.environ.get("CLAUDE_CONFIG_DIR", "").strip():
         args.append(f"--env=CLAUDE_CONFIG_DIR={CLAUDE_HOME}")
-    maybe_gh_token()
-    for name in (
-        "GH_TOKEN", "GITHUB_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
-        "ANTHROPIC_BASE_URL", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX",
-        "HTTP_PROXY", "HTTPS_PROXY", "SSL_CERT_FILE", "NODE_EXTRA_CA_CERTS",
-    ):
+    maybe_gh_token(config)
+    forwarded = ("GH_TOKEN", "GITHUB_TOKEN", *(PROVIDER_ENV if config.providers.env else ()))
+    for name in forwarded:
         if os.environ.get(name):
             args.append(f"--env={name}")
     return args
 
 
-def interactive_podman_args(workspace: Workspace, extra_mounts: list[MountSpec], script_dir: Path) -> list[str]:
-    args = base_podman_args(workspace, extra_mounts, script_dir)
+def container_argv(
+    workspace: Workspace, extra_mounts: list[MountSpec], script_dir: Path,
+    command: list[str], config: Config | None = None, extra_env: list[str] | None = None,
+) -> list[str]:
+    """Full ``["podman", ...]`` argv for one disposable container run."""
+    args = base_podman_args(workspace, extra_mounts, script_dir, config)
+    args += [f"--env={pair}" for pair in (extra_env or [])]
     if sys.stdin.isatty() and sys.stdout.isatty():
         args.append("--tty")
-    return args
-
-
-def machine_podman_argv(
-    workspace: Workspace, extra_mounts: list[MountSpec], script_dir: Path, command: list[str],
-) -> list[str]:
-    """Full ``["podman", ...]`` argv for a piped (non-tty) machine-mode session.
-
-    Used by the Telegram daemon to run Claude/Codex over stdin/stdout in a
-    disposable container built from the same image, under the same
-    mount/environment/hardening policy as normal ``agent-box`` usage, instead
-    of on the bare host.
-
-    Outbound notifications are switched off for these containers. A Telegram
-    remote-control session is owner-scoped and already relays every event back
-    to the chat (and topic) that owns it; letting the Claude notification hooks
-    also fire would additionally post that session's prompts and turn
-    completions to the *global* ``notify_chat_id``, which is a different
-    audience the session's owner never chose. Codex is unaffected in practice
-    (its ``notify`` hook is only wired up for interactive runs), but the flag
-    covers it too rather than relying on that.
-    """
-    args = base_podman_args(
-        workspace, extra_mounts, script_dir, include_kvm=False, outbound_notifications=False,
-    )
     return ["podman", *args, IMAGE, *command]
 
 
@@ -381,6 +385,7 @@ printf "%-20s %s\n" "user:" "$(id)"
 printf "%-20s %s\n" "workdir:" "$PWD"
 printf "%-20s %s\n" "claude:" "$(claude --version)"
 printf "%-20s %s\n" "codex:" "$(codex --version)"
+printf "%-20s %s\n" "bun:" "$(bun --version)"
 printf "%-20s %s\n" "python:" "$(python --version 2>&1)"
 printf "%-20s %s\n" "uv:" "$(uv --version)"
 printf "%-20s %s\n" "mise:" "$(mise --version)"
@@ -410,6 +415,11 @@ echo
 claude_home="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 printf "%-20s %s\n" "claude config:" "${claude_home}"
 printf "%-20s %s\n" "codex home:" "${CODEX_HOME:-$HOME/.codex}"
+if [[ -f "${claude_home}/channels/telegram/.env" ]]; then
+  echo "telegram channel:    token configured"
+else
+  echo "telegram channel:    no token (see 'agent-box config check')"
+fi
 echo
 if [[ -d "$HOME/.agents/skills" ]]; then
   broken=0; shared=0
@@ -447,8 +457,8 @@ def runtime_main(args: list[str], script_dir: Path, extra_mount_specs: list[str]
         raise AgentBoxError(str(exc)) from exc
 
     ensure_state_dirs()
-    migrate_statusline()
     ensure_refresh_token()
+    config = load_config()
 
     if not image_exists():
         print("agent-box: image not found; building it...", file=sys.stderr)
@@ -457,24 +467,36 @@ def runtime_main(args: list[str], script_dir: Path, extra_mount_specs: list[str]
             raise SystemExit(rc)
 
     sync_claude_agent_skills()
+
+    agent, rest = DEFAULT_AGENT, args
+    if args and args[0] in {"claude", "codex", "shell", "doctor"}:
+        agent, rest = args[0], args[1:]
+    if agent not in {"claude", "codex", "shell", "doctor"}:
+        raise AgentBoxError(f"unsupported agent '{agent}'; expected claude or codex")
+
+    if agent == "claude" and config.claude.telegram_channel:
+        # Resolved before the container starts so a missing plugin or token is
+        # an actionable error here, not a session that looks fine and never
+        # reaches Telegram.
+        channel = channel_args()
+        # The official channel relays this session's replies, prompts and
+        # questions to the paired chat itself. Outbound notification hooks
+        # would post the same interaction a second time, to a chat the user
+        # picked for a different purpose, so they stand down for this run.
+        extra_env = [f"{SUPPRESS_NOTIFY_ENV}=1"]
+    else:
+        channel, extra_env = [], []
+
     try:
-        podman = interactive_podman_args(workspace, extra_mounts, script_dir)
+        podman = container_argv(workspace, extra_mounts, script_dir, [], config, extra_env)
     except MountError as exc:
         raise AgentBoxError(str(exc)) from exc
 
-    if args and args[0] == "shell":
-        os.execvp("podman", ["podman", *podman, IMAGE, "bash", "--login", *args[1:]])
-    if args and args[0] == "doctor":
-        os.execvp("podman", ["podman", *podman, IMAGE, "bash", "-c", DOCTOR_SCRIPT])
-
-    agent, rest = DEFAULT_AGENT, args
-    if args and args[0] in {"claude", "codex"}:
-        agent, rest = args[0], args[1:]
+    if agent == "shell":
+        os.execvp("podman", [*podman, "bash", "--login", *rest])
+    if agent == "doctor":
+        os.execvp("podman", [*podman, "bash", "-c", DOCTOR_SCRIPT])
     if agent == "claude":
-        cmd = ["podman", *podman, IMAGE, "claude", "--dangerously-skip-permissions", *rest]
-    elif agent == "codex":
-        notify = ["-c", 'notify=["agent-box","notify","codex"]'] if NOTIFY_CONFIG.is_file() else []
-        cmd = ["podman", *podman, IMAGE, "codex", *notify, "--dangerously-bypass-approvals-and-sandbox", *rest]
-    else:
-        raise AgentBoxError(f"unsupported agent '{agent}'; expected claude or codex")
-    os.execvp("podman", cmd)
+        os.execvp("podman", [*podman, "claude", "--dangerously-skip-permissions", *channel, *rest])
+    notify = ["-c", 'notify=["agent-box","notify","codex"]'] if config.notifications.usable else []
+    os.execvp("podman", [*podman, "codex", *notify, "--dangerously-bypass-approvals-and-sandbox", *rest])

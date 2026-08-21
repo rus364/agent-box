@@ -257,6 +257,24 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/*
 
 #
+# Bun
+#
+# Required by Anthropic's official Telegram channel plugin
+# (telegram@claude-plugins-official): its MCP server is a TypeScript file run
+# directly by Bun, and its own `bun install` step fetches the plugin's
+# dependencies on first start. Claude Code passes `bun` as a bare command, so
+# it has to be on PATH for every user of the image, not just in a shell that
+# sourced an installer profile snippet.
+#
+
+RUN set -eux; \
+    export BUN_INSTALL=/usr/local; \
+    curl -fsSL https://bun.sh/install -o /tmp/bun-install.sh; \
+    bash /tmp/bun-install.sh; \
+    rm -f /tmp/bun-install.sh; \
+    test -x /usr/local/bin/bun
+
+#
 # Coding agents
 #
 
@@ -359,6 +377,7 @@ RUN set -eux; \
     uv --version; \
     node --version; \
     npm --version; \
+    bun --version; \
     codex --version; \
     claude --version; \
     mise --version; \
