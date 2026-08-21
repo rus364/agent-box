@@ -1,7 +1,10 @@
 FROM docker.io/library/ubuntu:24.04
 
 ARG DEBIAN_FRONTEND=noninteractive
-ARG USER_NAME=rus364
+# Neutral, implementation-owned in-container identity: not derived from any
+# host username so the image and its mounted state stay portable across
+# machines. Override only if you have a strong reason to.
+ARG USER_NAME=agentbox
 ARG USER_UID=1000
 ARG USER_GID=1000
 
@@ -141,11 +144,11 @@ RUN set -eux; \
     fi; \
     mkdir -p \
         "/home/${USER_NAME}" \
-        "/home/${USER_NAME}/code" \
+        "/workspace" \
         "/home/${USER_NAME}/.cache" \
         "/home/${USER_NAME}/.local/share/uv" \
         "/home/${USER_NAME}/.local/share/mise"; \
-    chown -R "${USER_UID}:${USER_GID}" "/home/${USER_NAME}"
+    chown -R "${USER_UID}:${USER_GID}" "/home/${USER_NAME}" "/workspace"
 
 #
 # ---------------------------------------------------------------------------
@@ -354,6 +357,6 @@ ENV HOME=/home/${USER_NAME} \
     MISE_DATA_DIR=/home/${USER_NAME}/.local/share/mise \
     UV_CACHE_DIR=/home/${USER_NAME}/.cache/uv
 
-WORKDIR /home/${USER_NAME}/code
+WORKDIR /workspace
 
 CMD ["/bin/bash"]
