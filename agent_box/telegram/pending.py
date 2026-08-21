@@ -32,6 +32,11 @@ PENDING_TTL_SECONDS = 3600
 
 STATUS_PENDING = "pending"
 STATUS_CLAIMED = "claimed"
+# The user's choice was accepted by the provider but the provider request it
+# belongs to carries other, still-unanswered questions, so nothing has been
+# handed to the agent yet. Terminal for replay purposes (the token can never
+# be answered twice) but explicitly *not* "delivered".
+STATUS_RECORDED = "recorded"
 STATUS_DELIVERED = "delivered"
 STATUS_FAILED = "failed"
 
@@ -155,6 +160,49 @@ class PendingRegistry:
 
     def mark_delivered(self, token: str) -> bool:
         return self._transition(token, expect=STATUS_CLAIMED, to=STATUS_DELIVERED)
+
+    def mark_recorded(self, token: str) -> bool:
+        """The provider took the answer but has not been given the response."""
+        return self._transition(token, expect=STATUS_CLAIMED, to=STATUS_RECORDED)
+
+    def promote_recorded(self, session_id: str, question_ids: list[str]) -> list[PendingQuestion]:
+        """Flip earlier ``recorded`` answers to ``delivered``.
+
+        Called once the aggregate provider response covering ``question_ids``
+        has actually been submitted: only then is it true that those earlier
+        answers reached the agent.
+        """
+        wanted = set(question_ids)
+        promoted: list[PendingQuestion] = []
+        with _locked(self.path):
+            items = self._load()
+            for item in items:
+                if item.get("session_id") != session_id:
+                    continue
+                if item.get("question_id") not in wanted:
+                    continue
+                if item.get("status") != STATUS_RECORDED:
+                    continue
+                item["status"] = STATUS_DELIVERED
+                promoted.append(PendingQuestion.from_dict(item))
+            if promoted:
+                self._save(items)
+        return promoted
+
+    def discard_question(self, session_id: str, question_id: str) -> PendingQuestion | None:
+        """Retire a question the provider withdrew; returns it if it was open."""
+        with _locked(self.path):
+            items = self._load()
+            found = None
+            for item in items:
+                if item.get("session_id") == session_id and item.get("question_id") == question_id:
+                    if item.get("status") in (STATUS_PENDING, STATUS_CLAIMED):
+                        item["status"] = STATUS_FAILED
+                        found = PendingQuestion.from_dict(item)
+                    break
+            if found is not None:
+                self._save(items)
+            return found
 
     def mark_failed(self, token: str) -> bool:
         return self._transition(token, expect=STATUS_CLAIMED, to=STATUS_FAILED)

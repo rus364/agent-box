@@ -69,9 +69,41 @@ def run_selftest() -> int:
         check(ws.container_cwd, ws.cwd, "container cwd mirrors host cwd")
 
     from .identity import detect_host_identity
+    from .paths import passwd_home
     identity = detect_host_identity()
     check(identity.uid, os.getuid(), "host identity uid")
     check(identity.home.is_absolute(), True, "host identity home is absolute")
+    # $HOME must not be able to move the build identity or any host path.
+    real_home = passwd_home()
+    saved_home = os.environ.get("HOME")
+    os.environ["HOME"] = "/tmp/agent-box-selftest-poisoned-home"
+    try:
+        check(passwd_home(), real_home, "passwd home ignores $HOME")
+        check(detect_host_identity().home, real_home, "build identity home ignores $HOME")
+    finally:
+        if saved_home is None:
+            os.environ.pop("HOME", None)
+        else:
+            os.environ["HOME"] = saved_home
+
+    from types import SimpleNamespace
+
+    from . import session_index
+    with tempfile.TemporaryDirectory() as tmp:
+        index = Path(tmp) / "sessions-index.json"
+        session_index.publish(
+            [SimpleNamespace(id="s1", provider="claude", host_project="/p", chat_id=1)], index
+        )
+        check(session_index.find("claude", "/p", index), "s1", "session index lookup")
+        check("chat_id" in index.read_text(), False, "session index carries no chat id")
+
+    from .telegram.providers.base import AnswerResult, AnswerStatus
+    check(AnswerResult(AnswerStatus.RECORDED).delivered, False, "recorded is not delivered")
+    check(AnswerResult(AnswerStatus.RECORDED).accepted, True, "recorded is accepted")
+    check(AnswerResult(AnswerStatus.FAILED).accepted, False, "failed is not accepted")
+
+    from .telegram.providers.codex import CodexProvider
+    check(CodexProvider.CAPABILITIES.get("experimentalApi"), True, "codex experimental API capability")
 
     from .mounts import MountSpec, plan_mounts
     check(len(plan_mounts([MountSpec(Path("/a"), False), MountSpec(Path("/a"), False)])), 1, "mount planning collapses duplicates")

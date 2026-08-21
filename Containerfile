@@ -5,12 +5,21 @@ ARG DEBIAN_FRONTEND=noninteractive
 # (name/uid/gid/home, from agent_box.identity.detect_host_identity), so that
 # host-absolute paths -- the project workspace, extra --mount targets, and
 # host-authored symlinks such as ~/.claude/skills entries -- resolve
-# identically inside the container. These defaults are only used if the
-# image is built without --build-arg (e.g. `podman build` run by hand).
-ARG USER_NAME=agent
-ARG USER_UID=1000
-ARG USER_GID=1000
-ARG USER_HOME=/home/agent
+# identically inside the container.
+#
+# These ARGs deliberately have NO defaults. An earlier revision defaulted them
+# to a fixed name, uid 1000, gid 1000 and an invented home directory, which
+# meant a direct `podman build` (without agent-box's --build-arg values)
+# silently produced an image whose user and home did not match the host at
+# all: bind mounts landed at paths the
+# container user could not own, $HOME pointed at a directory nothing was
+# mounted into, and the mismatch only surfaced later as confusing runtime
+# failures. Failing the build immediately is the safe behavior -- see the
+# validation step in the "Container user" layer below.
+ARG USER_NAME
+ARG USER_UID
+ARG USER_GID
+ARG USER_HOME
 
 ENV LANG=C.UTF-8 \
     LC_ALL=C.UTF-8 \
@@ -118,6 +127,26 @@ RUN set -eux; \
 #   - rename an existing UID;
 #   - create the user/group normally when UID/GID are free.
 #
+
+# Identity args are required: fail fast and explain, rather than inventing a
+# fallback identity that will not match the host at runtime.
+RUN set -eu; \
+    missing=""; \
+    [ -n "${USER_NAME:-}" ] || missing="${missing} USER_NAME"; \
+    [ -n "${USER_UID:-}" ] || missing="${missing} USER_UID"; \
+    [ -n "${USER_GID:-}" ] || missing="${missing} USER_GID"; \
+    [ -n "${USER_HOME:-}" ] || missing="${missing} USER_HOME"; \
+    if [ -n "${missing}" ]; then \
+        echo "agent-box: missing required --build-arg:${missing}" >&2; \
+        echo "agent-box: build this image with 'agent-box build', which derives" >&2; \
+        echo "agent-box: USER_NAME/USER_UID/USER_GID/USER_HOME from the host passwd" >&2; \
+        echo "agent-box: entry, or pass all four --build-arg values explicitly." >&2; \
+        exit 1; \
+    fi; \
+    case "${USER_UID}" in ''|*[!0-9]*) echo "agent-box: USER_UID must be numeric: ${USER_UID}" >&2; exit 1;; esac; \
+    case "${USER_GID}" in ''|*[!0-9]*) echo "agent-box: USER_GID must be numeric: ${USER_GID}" >&2; exit 1;; esac; \
+    case "${USER_HOME}" in /*) ;; *) echo "agent-box: USER_HOME must be an absolute path: ${USER_HOME}" >&2; exit 1;; esac; \
+    printf '%s\n' "agent-box: building for ${USER_NAME} (${USER_UID}:${USER_GID}) home=${USER_HOME}"
 
 RUN set -eux; \
     existing_group="$(getent group "${USER_GID}" | cut -d: -f1 || true)"; \

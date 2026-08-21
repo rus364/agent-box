@@ -76,6 +76,10 @@ This matters beyond ownership: because the container user's home is the same pat
 
 If the username reported by the OS isn't a legal Linux login name (e.g. it contains characters `useradd` rejects), it's sanitized deterministically (lowercased, invalid characters replaced) rather than making something up; if even that fails, it falls back to `user<uid>`.
 
+**One home directory, from one source.** The home used for the build identity, for the container's runtime `HOME`, for every bind mount's host side, and for the state/config defaults is always the passwd entry's `pw_dir` (`agent_box.paths.passwd_home`). `$HOME` is never consulted, and neither is anything that consults it internally — `Path.home()` and `Path.expanduser()` both read `$HOME` first, so `~` in a setting like `XDG_DATA_HOME` or `CLAUDE_CONFIG_DIR` is expanded against the passwd home explicitly. A poisoned or merely inherited-from-elsewhere `$HOME` therefore cannot relocate any of it, which matters because `--userns=keep-id` maps the *passwd* identity back to the host regardless of what a shell variable says.
+
+Building the image requires that identity to be passed explicitly: the `Containerfile`'s `USER_NAME`/`USER_UID`/`USER_GID`/`USER_HOME` args have no defaults, and a build without them fails immediately with a message saying what to pass. `agent-box build` supplies all four.
+
 ## Workspace behavior
 
 `agent-box` resolves a single project root for the current invocation and mounts it into the container **at the same absolute path it has on the host** — there is no internal normalization path like a fixed `/workspace`. The container's working directory mirrors your host working directory exactly, including any subdirectory:
@@ -170,6 +174,8 @@ Both providers cache for 60 seconds and run directly on the host (no container).
 ~/.codex/, ~/.claude/                agent auth and state (unchanged locations)
 ```
 
+`CLAUDE_CONFIG_DIR` and `CODEX_HOME` are honored for the agents' own directories. When `CLAUDE_CONFIG_DIR` is set, the relocated directory is bind-mounted at its host path *and* the resolved value is forwarded into the container as `CLAUDE_CONFIG_DIR`, so `claude` inside the container reads the same configuration instead of an empty `$HOME/.claude`.
+
 Override the state/config roots directly with `AGENT_BOX_STATE_DIR` / `AGENT_BOX_CONFIG_DIR` if needed. Container runs themselves are disposable (`podman run --rm`); only these host paths persist.
 
 ## Telegram notifications
@@ -194,7 +200,9 @@ agent-box notify disable
 
 Claude Code notifications cover permission prompts, idle prompts, completed turns, background work, and stop failures. Codex receives an `agent-turn-complete` notifier automatically when launched through `agent-box`. Claude Code can emit an `idle_prompt` while background agents are still running; `agent-box` tracks per-session background-task state from the `Stop` hook and suppresses the false "waiting for input" notification while background work is active (permission prompts and failures are never suppressed; stale state expires after 30 minutes as a safety net).
 
-If you also configure remote control and a matching session exists, notifications include a pointer to it.
+If you also configure remote control and a live session exists for the same project, notifications include a pointer to it: `/session <id>`, which the bot accepts as a command.
+
+That pointer works from inside the container, where the hooks actually run. The Telegram state directory (`sessions.json`, pending-question callback tokens, the `getUpdates` offset) is deliberately **not** mounted into any container, so container-side code cannot read it — an earlier version tried to, and the pointer was therefore always empty (and named `/sessions <id>`, a command the bot never accepted). Instead the daemon publishes a minimal index at `~/.local/share/agent-box/notify/sessions-index.json` (mode `0600`) containing only session id, provider, and project path for sessions that are live right now. No callback tokens, no polling offset, no chat or Telegram user IDs.
 
 ## Telegram remote control
 
@@ -220,7 +228,10 @@ Run `agent-box telegram serve` as a long-lived process (e.g. a systemd `--user` 
 - Projects are chosen from buttons built from configured, canonicalized `workspace_roots` only — a Telegram user can never type or select an arbitrary host path. A symlink inside an allowed root that points outside every configured root is not listed as a selectable project, and is rejected if selected anyway.
 - **The local `--mount` CLI option described above is never exposed to Telegram.** There is no remote equivalent, no `/mount` command, and no way for a Telegram message or callback to add an arbitrary host path to a session's mounts. If a deployment genuinely needs extra host paths available remotely, that would be a host-administrator-configured, non-Telegram-writable setting — not implemented here because it isn't needed yet.
 - There is no `/shell` command, no generic "run this host command" action, and callback data never carries raw agent arguments — every button maps to a short opaque token validated server-side against the session/user/request it belongs to.
-- Answering an already-claimed, already-delivered, or expired question fails closed. A callback is only ever reported as successful to the user *after* the provider actually confirms the answer was accepted; a delivery failure is reported honestly and the token is not silently reusable, but it is also not silently claimed as success.
+- **Every session has an owner, and only the owner can act on it.** Listing, opening, routing plain text to, interrupting, stopping, resuming, and answering questions all require `owner_user_id` to match. Being on the allowlist authorizes running *your own* sessions in a chat — there is no shared-session policy in agent-box, so a second allow-listed user in the same group chat gets their own independent sessions rather than access to yours. Active-session routing is keyed by `(chat_id, user_id, message_thread_id)`, so two people in one group chat never collide.
+- **A project is re-authorized on every resume**, against `workspace_roots` as configured *now* and against the project's *current* canonical path. A stored path records a past decision, not a standing grant: if a root was removed or narrowed, the project deleted, or the path replaced by a symlink escaping the root, `Resume` refuses and says so.
+- Answering an already-claimed, already-delivered, already-recorded, or expired question fails closed. A callback is only ever reported as successful to the user *after* the provider actually confirms delivery; a delivery failure — including a write/transport exception mid-delivery — is reported honestly and never leaves the question stuck in a claimed state, but the token is also not silently reusable.
+- When one provider request carries several questions, answering one of them is reported as **recorded**, not delivered: nothing reaches the agent until every question in that request has an answer and the single aggregate response is actually submitted. Only then are the earlier recorded answers marked delivered.
 - The container itself keeps its existing hardening (`--cap-drop=all`, `--security-opt=no-new-privileges`) for every session, local and remote alike.
 - `telegram.json` (token, allowlist, workspace roots) stays mode `0600`. Session/pending-question state files are also written `0600` and never contain the bot token or agent credentials.
 - Logging never includes the bot token, provider credentials, or full prompt payloads.
@@ -228,18 +239,21 @@ Run `agent-box telegram serve` as a long-lived process (e.g. a systemd `--user` 
 ### Using it from Telegram
 
 ```text
-/start      main menu (Sessions, New session, Usage, Refresh)
-/sessions   list your sessions
-/new        create a session: pick Claude or Codex, then a project
-/status     quick summary
-/usage      Claude + Codex usage line
+/start        main menu (Sessions, New session, Usage, Refresh)
+/sessions     list your sessions
+/session <id> open a specific session (the pointer notifications print)
+/new          create a session: pick Claude or Codex, then a project
+/status       quick summary
+/usage        Claude + Codex usage line
 ```
 
-Multiple sessions in the same chat are supported. Opening a session from `/sessions` makes it the chat's *active* session — plain text messages route there until you open a different one. If a session was created inside a Telegram forum topic, messages sent in that topic route to it directly regardless of which session is otherwise active. With no active session and more than one live session in the chat, you're asked to pick one explicitly rather than the bot guessing.
+Multiple sessions in the same chat are supported, and each one belongs to the user who created it: `/sessions` lists only your own, and every other command refuses to touch someone else's.
+
+Opening a session makes it *your* active session for that chat (or that forum topic) — your plain text messages route there until you open a different one. Routing candidates are always scoped to your own sessions in the current chat and the current topic, so a message in a topic never lands in a main-chat session and vice versa. Within those candidates the order is: the session you explicitly opened, else the single *live* one. A forum topic that has hosted several sessions over time routes to the one that is actually running now — never to the oldest record that happens to match the topic. With two live sessions and no explicit selection, you're asked to pick rather than the bot guessing.
 
 Each session has `Open`, `Interrupt`, `Stop`, and (once stopped/disconnected) `Resume` buttons — only actions the provider actually confirmed are reported as having happened.
 
-When a provider asks a structured question with options (Codex's `request_user_input`, Claude's `AskUserQuestion`), it's rendered as inline buttons; tapping one submits the corresponding structured answer.
+When a provider asks a structured question with options (Codex's `item/tool/requestUserInput`, Claude's `AskUserQuestion`), it's rendered as inline buttons; tapping one submits the corresponding structured answer. If a request carries several questions you get one message per question, and the bot tells you plainly when an answer is only *recorded* pending the rest. If the provider withdraws a question (Codex `serverRequest/resolved`, Claude `control_cancel_request`, or the session ending), its buttons are retired instead of silently failing later.
 
 ### Session persistence and daemon restarts
 
@@ -249,19 +263,25 @@ On daemon startup, every session whose stored status implies a live process is m
 
 ### Claude vs. Codex capabilities
 
-Both adapters use each tool's supported machine interface — Codex's `app-server` JSON-RPC protocol (verified against the schema the installed `codex app-server generate-json-schema` emits, including the `initialize` → `initialized` → `thread/start` handshake order) and Claude Code's `--input-format stream-json --output-format stream-json`. Neither scrapes terminal output, drives a TUI, or reads a provider's private session files.
+Both adapters use each tool's supported machine interface — Codex's `app-server` JSON-RPC protocol (verified against the schema the installed `codex app-server generate-json-schema --out <dir>` emits, including the `initialize` → `initialized` → `thread/start` handshake order and the `capabilities.experimentalApi` opt-in that `item/tool/requestUserInput` requires) and Claude Code's `--input-format stream-json --output-format stream-json` plus its `--permission-prompt-tool stdio` control protocol. Neither scrapes terminal output, drives a TUI, or reads a provider's private session files.
 
 | | Codex | Claude Code |
 |---|---|---|
-| Structured questions → buttons | Yes (`item/tool/requestUserInput`); a single request can carry multiple questions and is answered with exactly one aggregate JSON-RPC response once all of them have an answer | Best-effort (`AskUserQuestion` tool call answered via a `tool_result` message); only the first sub-question of a multi-question call is exposed as buttons |
+| Structured questions → buttons | Yes (`item/tool/requestUserInput`, gated on `capabilities.experimentalApi`); a single request can carry multiple questions and is answered with exactly one aggregate JSON-RPC response once all of them have an answer | Yes (`AskUserQuestion` via the Agent SDK's `canUseTool` mechanism — a `can_use_tool` control request answered with `behavior: "allow"` and the selections in `updatedInput.answers`); every sub-question of a multi-question call is exposed, and all of them are returned in one control response |
 | Interrupt a running turn | Yes (`turn/interrupt`) | Not supported over stream-json input; reported honestly as unsupported rather than faking success |
 | Resume after daemon restart | Real (live-verified): `thread/resume` rejoins the existing thread by ID; the same local session record is kept. Only works once the thread has completed at least one turn — Codex doesn't persist a resumable rollout before that | Real (live-verified), but a different guarantee: `--resume <session-id>` starts a **new** process that continues the same session's history (Claude Code's own CLI help documents `--session-id` and `--resume` as separate mechanisms, and `--fork-session`'s help text confirms plain `--resume` reuses the original ID) — not a rebind of a still-running process, since Claude Code has no supported way to do that |
 
 Both adapters' core flow -- starting a session, sending a turn, receiving text back, and resuming -- has been verified live through a real built image with real Claude/Codex credentials (not just against fixtures/fake executables): a Codex thread survived `thread/resume` with the same thread ID after a real turn, and a Claude session survived `--resume <session-id>` with the model correctly recalling something only told to the earlier process. One real nuance found this way: Codex only persists a resumable "rollout" for a thread once it has run at least one turn -- resuming a thread that was started but never given a turn fails with a real, honestly-propagated `ProviderError` ("no rollout found for thread id ..."), not a silent success.
 
-A Python/TypeScript Agent SDK also exists as a possible alternative to driving the `claude` CLI's stream-json interface; it was considered but not adopted here, since it would mean running a second, SDK-based execution path inside the container alongside the CLI-based one used for local interactive sessions, which is a much larger change than this pass's scope. The documented stream-json CLI mechanism used here was live-verified for the parts that matter most (starting a session, turns, resume); if a future revision finds the SDK gives materially better structured-question guarantees, the adapter is isolated enough (`agent_box/telegram/providers/claude.py`) to swap without touching the rest of the system.
+#### How Claude's structured questions actually work
 
-What was *not* live-verified: the `AskUserQuestion`/`request_user_input` structured-question round trip, since neither model reliably calls those tools on demand from a scripted, non-interactive smoke test. That path is exercised against a fake `claude`/`codex app-server` executable in the test suite instead (proving the actual subprocess/JSON-RPC wiring), plus hand-authored fixtures for the message-parsing logic itself. As a safety net, every Claude question is also answerable by plain free text: if you type an answer instead of tapping a button, it's delivered as an ordinary next user turn, which Claude will still receive as an answer.
+`AskUserQuestion` is a **built-in** tool: the CLI executes it itself, so a client cannot answer it by sending a `tool_result` block on stdin for its `tool_use` id. An earlier revision of this adapter did exactly that. It looked correct only because the test suite's fake `claude` executable had been written to accept it — against a real Claude Code install it did nothing. That fake, and the claim it supported, are gone.
+
+The supported mechanism is the Agent SDK's `canUseTool` callback. The SDK implements it over the CLI's own control protocol: it launches the CLI with `--permission-prompt-tool stdio` and answers a `can_use_tool` control request. `AskUserQuestion` declares `requiresUserInteraction`, so the CLI routes it to that permission surface with `requires_user_interaction: true`, and the user's selections come back as the tool's `updatedInput` — the `AskUserQuestion` input schema carries an `answers` map, described by the CLI itself as "User answers collected by the permission component", keyed by question text. This adapter speaks that protocol directly rather than adding the SDK as a second in-container execution path; the wire format is the SDK's.
+
+**This round trip is live-verified** against the installed Claude Code (2.1.239) with real credentials: a real turn emitted the `can_use_tool` request for `AskUserQuestion`, the response above was accepted, and the model received `"Pick a colour"="Red"` and answered accordingly. The test suite reproduces the same exchange against a fake `claude` that refuses to ask at all unless `--permission-prompt-tool stdio` is present.
+
+The Codex handshake itself — `initialize` with `capabilities.experimentalApi: true`, `initialized`, then `thread/start` — *was* run against the installed `codex app-server` (0.148.0), which accepted the capability and returned a real thread. Codex's `item/tool/requestUserInput` round trip is **not** live-verified — the model does not reliably call that tool on demand from a scripted, non-interactive smoke test. It is exercised against a fake `codex app-server` that enforces the real handshake and the `experimentalApi` capability (a client that does not declare it gets no question at all), plus fixtures generated from the installed CLI's own JSON schema. The request/response shapes match `ToolRequestUserInputParams`/`ToolRequestUserInputResponse` from that schema.
 
 ## Self-tests
 
@@ -301,7 +321,9 @@ When `/dev/kvm` is accessible, it is passed through automatically for interactiv
 
 ## Known limitations
 
-- Claude's structured-question round trip (`AskUserQuestion` → `tool_result`) is implemented against the documented stream-json mechanism but not verified against a live Claude Code session in this development environment; see "Claude vs. Codex capabilities" above.
+- Codex's `item/tool/requestUserInput` round trip is exercised only against a fake `codex app-server` (which does enforce the real handshake, the `experimentalApi` capability, and the schema's request/response shapes) — the model does not reliably call that tool on demand from a scripted smoke test, so the end-to-end path has not been seen against a live Codex. Claude's `AskUserQuestion` round trip *has* been live-verified; see "Claude vs. Codex capabilities" above.
+- The Claude adapter's structured questions depend on `--permission-prompt-tool stdio` and the `can_use_tool` control request. That is the same wire the Agent SDK's `canUseTool` uses, but it is not a frozen public API: a future Claude Code release could change it, in which case questions stop appearing (they are not silently mis-answered). It is verified against 2.1.239 only.
+- Any other tool that reaches the permission surface in a Telegram session is **denied**, not auto-approved. Sessions run with `--permission-mode bypassPermissions`, so this should not normally happen; if a future Claude Code version routes more tools there, those tool calls will fail rather than run unattended.
 - A failed answer-delivery attempt is reported honestly and the token is safely consumed (no replay), but the original message's buttons are not automatically re-issued with a fresh token — you'd need the agent to re-ask, or restart the session.
 - There is no remote (Telegram-driven) equivalent of `--mount`; extra host paths for remote sessions would need a host-administrator-configured setting, which doesn't exist yet because nothing has needed it.
 - KVM/QEMU passthrough applies to interactive local runs only, not to Telegram machine-mode sessions.
@@ -312,6 +334,9 @@ When `/dev/kvm` is accessible, it is passed through automatically for interactiv
 - The mandatory `~/code` workspace requirement is gone. If you relied on it implicitly, set `AGENT_BOX_WORKSPACE_ROOT=~/code` to keep the old "one big mounted tree" behavior, or simply `cd` into individual projects as needed.
 - `telegram.json`'s old two-key notification-only schema (`token`, `chat_id`) is read transparently; nothing breaks, and remote control stays off until you explicitly configure and enable it.
 - Telegram remote-control sessions used to run the `claude`/`codex` CLI directly on the host; they now run inside the same Podman container as everything else. If you were relying on a host-installed `claude`/`codex` for remote control specifically, it's no longer required (the built image is).
+- **`podman build` on the `Containerfile` now requires explicit identity args.** The `USER_NAME`/`USER_UID`/`USER_GID`/`USER_HOME` build args no longer default to an invented `agent`/`1000`/`1000` identity, because that produced an image whose user and home matched no host, failing confusingly at runtime instead of at build time. Use `agent-box build` (which derives all four from the host passwd entry), or pass all four `--build-arg` values yourself.
+- **`$HOME` no longer influences any host path.** The build identity, the container's `HOME`, every bind mount source, and the state/config directory defaults all come from the passwd entry (`pwd.getpwuid`), and `~` in a setting such as `XDG_DATA_HOME` or `CLAUDE_CONFIG_DIR` expands against that same home. If you were deliberately pointing `$HOME` somewhere else to relocate agent-box state, use `AGENT_BOX_STATE_DIR`/`AGENT_BOX_CONFIG_DIR`/`XDG_*` instead.
+- **`CLAUDE_CONFIG_DIR` is now forwarded into the container.** If you relocate Claude Code's config directory on the host, the container is told about it (and the directory is bind-mounted at its host path) instead of `claude` inside the container falling back to an empty `$HOME/.claude`.
 
 ### Migration from codex-box (pre-agent-box)
 

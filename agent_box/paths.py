@@ -7,9 +7,34 @@ home layout.
 from __future__ import annotations
 
 import os
+import pwd
 from pathlib import Path
 
-HOST_HOME = Path.home()
+
+def passwd_home(uid: int | None = None) -> Path:
+    """This process's real home directory, from the passwd database.
+
+    Deliberately *not* ``Path.home()``/``os.path.expanduser("~")``: those
+    consult ``$HOME`` first, so any shell (or a hostile/misconfigured
+    environment) can point agent-box's build identity, bind mounts, state
+    directories and container ``HOME`` at an arbitrary path. The passwd entry
+    is the actual account home and is what ``--userns=keep-id`` maps back to
+    on the host, so it is the only definition used here.
+
+    Falls back to ``/`` only when the current UID has no passwd entry or the
+    entry reports a non-absolute home -- a conservative, absolute value rather
+    than a ``$HOME``-derived guess.
+    """
+    uid = os.getuid() if uid is None else uid
+    try:
+        home = Path(pwd.getpwuid(uid).pw_dir or "")
+    except KeyError:
+        home = Path("")
+    return home if home.is_absolute() else Path("/")
+
+
+# The real, passwd-derived home. ``$HOME`` never overrides this.
+HOST_HOME = passwd_home()
 
 
 def env_path(name: str, default: Path) -> Path:
@@ -25,7 +50,23 @@ def env_path(name: str, default: Path) -> Path:
     value = os.environ.get(name)
     if value is None or not value.strip():
         return default
-    return Path(value).expanduser()
+    return expand_user(value)
+
+
+def expand_user(value: str) -> Path:
+    """``~``-expansion anchored on the passwd home, never on ``$HOME``.
+
+    ``Path.expanduser()`` resolves ``~`` through ``$HOME`` when it is set, so
+    a poisoned ``$HOME`` would silently redirect any tilde-using setting
+    (``XDG_*``, ``CLAUDE_CONFIG_DIR``, a configured workspace root, ...) away
+    from the real account home. This keeps tilde expansion consistent with
+    :data:`HOST_HOME`.
+    """
+    if value == "~":
+        return HOST_HOME
+    if value.startswith("~/"):
+        return HOST_HOME / value[2:]
+    return Path(value)
 
 
 XDG_CONFIG_HOME = env_path("XDG_CONFIG_HOME", HOST_HOME / ".config")
@@ -48,6 +89,12 @@ TELEGRAM_STATE_ROOT = STATE_ROOT / "telegram"
 TELEGRAM_SESSIONS_FILE = TELEGRAM_STATE_ROOT / "sessions.json"
 TELEGRAM_PENDING_FILE = TELEGRAM_STATE_ROOT / "pending.json"
 TELEGRAM_OFFSET_FILE = TELEGRAM_STATE_ROOT / "offset.json"
+# A deliberately minimal, non-secret projection of the session registry,
+# written into NOTIFY_STATE_ROOT because that is the only Telegram-related
+# directory bind-mounted into the container (see runtime.build_mounts). It
+# carries session id / provider / project path only -- never callback tokens,
+# the getUpdates offset, chat or user IDs.
+TELEGRAM_SESSION_INDEX_FILE = NOTIFY_STATE_ROOT / "sessions-index.json"
 
 CLAUDE_HOME = env_path("CLAUDE_CONFIG_DIR", HOST_HOME / ".claude")
 CODEX_HOME = env_path("CODEX_HOME", HOST_HOME / ".codex")

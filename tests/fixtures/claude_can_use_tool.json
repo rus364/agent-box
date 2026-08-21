@@ -1,0 +1,24 @@
+{
+  "type": "control_request",
+  "request_id": "req_01",
+  "request": {
+    "subtype": "can_use_tool",
+    "tool_name": "AskUserQuestion",
+    "display_name": "AskUserQuestion",
+    "tool_use_id": "toolu_01",
+    "requires_user_interaction": true,
+    "input": {
+      "questions": [
+        {
+          "question": "How should I handle the existing config?",
+          "header": "Config",
+          "multiSelect": false,
+          "options": [
+            {"label": "Keep it", "description": "Leave the current config untouched"},
+            {"label": "Replace it", "description": "Overwrite with new defaults"}
+          ]
+        }
+      ]
+    }
+  }
+}

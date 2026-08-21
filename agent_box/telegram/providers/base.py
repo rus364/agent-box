@@ -30,6 +30,11 @@ from ...workspace import Workspace
 class EventKind(str, Enum):
     TEXT = "text"          # a chunk of assistant-visible text to relay
     QUESTION = "question"  # a structured question with selectable options
+    # A previously asked question can no longer be answered: the provider
+    # withdrew it (Codex ``serverRequest/resolved``, Claude
+    # ``control_cancel_request``) or the session died with it outstanding.
+    # ``AgentEvent.text`` carries the question id.
+    QUESTION_CLOSED = "question_closed"
     TURN_DONE = "turn_done"
     STARTED = "started"
     ERROR = "error"
@@ -56,6 +61,41 @@ class AgentEvent:
     kind: EventKind
     text: str = ""
     question: Question | None = None
+
+
+class AnswerStatus(str, Enum):
+    """What actually happened to a single answer handed to a provider.
+
+    The distinction that matters: a provider request can carry several
+    questions and must be answered with exactly one response containing all
+    of them. Until that response is genuinely handed to the provider, an
+    individual answer is only *recorded* -- reporting it to the user as
+    delivered would be a lie, because the agent has not seen anything yet.
+    """
+    DELIVERED = "delivered"  # the provider has the complete response
+    RECORDED = "recorded"    # accepted, but other questions are outstanding
+    REJECTED = "rejected"    # unknown/duplicate/withdrawn question
+    FAILED = "failed"        # delivery attempted and failed; nothing recorded
+
+
+@dataclass
+class AnswerResult:
+    status: AnswerStatus
+    #: Question ids in the same provider request still awaiting an answer.
+    outstanding: list[str] = field(default_factory=list)
+    #: On DELIVERED, every question id covered by the response just sent --
+    #: including siblings answered earlier and only *recorded* until now.
+    resolved: list[str] = field(default_factory=list)
+    detail: str = ""
+
+    @property
+    def accepted(self) -> bool:
+        """True when the answer was taken (delivered or recorded)."""
+        return self.status in (AnswerStatus.DELIVERED, AnswerStatus.RECORDED)
+
+    @property
+    def delivered(self) -> bool:
+        return self.status is AnswerStatus.DELIVERED
 
 
 class ProviderError(RuntimeError):
@@ -146,11 +186,25 @@ class Provider:
     def start(self) -> None:
         raise NotImplementedError
 
+    def resume(self, provider_session_id: str) -> None:
+        """Rejoin/continue an existing provider session by its own ID.
+
+        Declared here because the Telegram daemon calls it on any provider it
+        knows how to restart; what "resume" guarantees differs per provider
+        and is documented on each implementation.
+        """
+        raise NotImplementedError
+
     def send_message(self, text: str) -> None:
         raise NotImplementedError
 
-    def answer_question(self, question_id: str, answers: list[str]) -> bool:
-        """Return True only if the provider confirmed the answer was delivered."""
+    def answer_question(self, question_id: str, answers: list[str]) -> AnswerResult:
+        """Record/deliver one answer.
+
+        Never reports :attr:`AnswerStatus.DELIVERED` before the complete
+        response for the whole provider request has actually been written to
+        the provider.
+        """
         raise NotImplementedError
 
     def interrupt(self) -> bool:

@@ -113,17 +113,24 @@ def claude_background_active(session_id: str, root: Path = NOTIFY_STATE_ROOT) ->
 
 
 def _session_hint(provider: str, cwd: str) -> str:
-    """Best-effort pointer to a registered remote-control session, if any."""
+    """Pointer to a live remote-control session for this project, if any.
+
+    Reads :mod:`agent_box.session_index` rather than the session registry
+    itself. These hooks normally run *inside* the container, where the
+    Telegram state directory is not mounted (and must not be -- it holds
+    pending-question callback tokens and the polling offset), so the registry
+    is unreadable there. The published index carries only id/provider/project.
+
+    The emitted text is a real command: ``/session <id>`` opens that session
+    in the bot (``agent_box.telegram.bot``). An earlier version printed
+    ``/sessions <id>``, which the bot never accepted.
+    """
     try:
-        from .telegram.sessions import SessionRegistry
+        from .session_index import find
+        session_id = find(provider, cwd)
     except Exception:
         return ""
-    try:
-        registry = SessionRegistry()
-        session = registry.find_by_project(provider, cwd)
-    except Exception:
-        return ""
-    return f"/sessions {session.id}" if session else ""
+    return f"/session {session_id}" if session_id else ""
 
 
 def notify_claude() -> None:

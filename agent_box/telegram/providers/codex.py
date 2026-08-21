@@ -1,18 +1,38 @@
 """Codex provider: drives ``codex app-server`` over its JSON-RPC/stdio protocol.
 
-Protocol details (method names, param/result shapes) were taken from the
-schema the installed Codex CLI itself generates
-(``codex app-server generate-json-schema``), not from memory of an older
-protocol. Handshake: ``initialize`` request, then the required
-``initialized`` client notification, *then* ``thread/start``/
-``thread/resume`` -- skipping the ``initialized`` notification (as an
-earlier revision of this adapter did) is not the documented sequence.
+Protocol details (method names, param/result shapes) come from the schema the
+installed Codex CLI itself generates (``codex app-server generate-json-schema
+--out <dir>``), not from memory of an older protocol.
+
+Handshake, in order:
+
+1. ``initialize`` request. Its ``capabilities.experimentalApi`` **must** be
+   ``true``: ``item/tool/requestUserInput`` (and its params/response types) is
+   marked EXPERIMENTAL in the generated schema, and the capability is
+   documented as "Opt into receiving experimental API methods and fields".
+   Omitting it -- as an earlier revision of this adapter did -- leaves the
+   server free never to send the structured-question request at all, so the
+   feature silently does nothing.
+2. The required ``initialized`` client notification.
+3. ``thread/start`` / ``thread/resume``.
 
 ``item/tool/requestUserInput`` is a single JSON-RPC server request that can
-carry multiple questions; it must be answered with exactly one JSON-RPC
-response containing every question's answer. This adapter tracks each
-request's questions independently and only sends the response once all of
-them have an answer recorded.
+carry multiple questions, and must be answered with exactly one JSON-RPC
+response containing every question's answer
+(``ToolRequestUserInputResponse``: ``{"answers": {<qid>: {"answers": [...]}}}``).
+This adapter therefore tracks each request's questions independently and
+reports an individual answer as *recorded*, never as *delivered*, until the
+aggregate response has actually been written to the server.
+
+Two things that can end a pending request without the user answering it are
+handled explicitly, so questions never leak:
+
+* ``serverRequest/resolved`` -- the server telling us a request it sent has
+  been resolved elsewhere (another client, a timeout, an interrupt). The
+  pending questions are dropped and reported closed.
+* a write/provider failure while submitting the aggregate response -- the
+  recorded answer is rolled back and the failure reported, so the caller can
+  release its own claim on the question instead of leaving it stuck.
 
 The subprocess runs *inside* the same Podman container as normal
 ``agent-box codex`` (via ``Provider._spawn``/``runtime.machine_podman_argv``),
@@ -23,13 +43,20 @@ from __future__ import annotations
 import itertools
 import json
 import threading
-from typing import Any
+from typing import Any, ClassVar
 
-from .base import AgentEvent, EventKind, Provider, ProviderError, Question, QuestionOption, RuntimeContext
+from .base import (
+    AgentEvent, AnswerResult, AnswerStatus, EventKind, Provider, ProviderError,
+    Question, QuestionOption, RuntimeContext,
+)
 
 
 class CodexProvider(Provider):
     name = "codex"
+
+    #: Client capabilities sent with ``initialize``. ``experimentalApi``
+    #: gates ``item/tool/requestUserInput``.
+    CAPABILITIES: ClassVar[dict[str, Any]] = {"experimentalApi": True}
 
     def __init__(self, context: RuntimeContext, on_event=None):
         super().__init__(context, on_event)
@@ -42,15 +69,21 @@ class CodexProvider(Provider):
         self._thread_id: str | None = None
         self._current_turn_id: str | None = None
         self._started = False
+        # Guards the pending-question bookkeeping below. Deliberately separate
+        # from ``_lock`` (which serializes RPC call bookkeeping) so answering a
+        # question never blocks the reader thread's response dispatch.
+        self._questions_lock = threading.Lock()
         # rpc_id -> {"order": [qid,...], "questions": {qid: {"answered": bool, "answers": [...]}}}
         self._pending_requests: dict[Any, dict[str, Any]] = {}
         self._qid_to_rpc: dict[str, Any] = {}
 
     # -- JSON-RPC plumbing ------------------------------------------------
     def _write(self, obj: dict[str, Any]) -> None:
-        assert self._proc and self._proc.stdin
-        self._proc.stdin.write(json.dumps(obj) + "\n")
-        self._proc.stdin.flush()
+        proc = self._proc
+        if proc is None or proc.stdin is None or proc.stdin.closed:
+            raise ProviderError("codex app-server stdin is not available")
+        proc.stdin.write(json.dumps(obj) + "\n")
+        proc.stdin.flush()
 
     def _call(self, method: str, params: dict[str, Any], timeout: float = 60) -> Any:
         rpc_id = next(self._id_counter)
@@ -94,6 +127,9 @@ class CodexProvider(Provider):
                 "codex app-server exited before starting a session"
                 + (f": {tail}" if tail else "")
             )))
+        # The process is gone: nothing can ever answer an outstanding
+        # question, so say so instead of leaving buttons that silently fail.
+        self._close_all_pending("the Codex session ended before this question was answered")
         self._emit(AgentEvent(kind=EventKind.STOPPED))
 
     def _handle_message(self, obj: dict[str, Any]) -> None:
@@ -125,6 +161,10 @@ class CodexProvider(Provider):
         elif method == "turn/completed":
             self._current_turn_id = None
             self._emit(AgentEvent(kind=EventKind.TURN_DONE))
+        elif method == "serverRequest/resolved":
+            # ServerRequestResolvedNotification: a request the server sent us
+            # has been resolved without (or regardless of) our response.
+            self._discard_request(params.get("requestId"), "Codex withdrew this question")
         elif method == "error":
             self._emit(AgentEvent(kind=EventKind.ERROR, text=str(params.get("message") or obj)))
 
@@ -137,7 +177,10 @@ class CodexProvider(Provider):
         else:
             # Unhandled server request kinds (approvals, elicitations, ...):
             # decline rather than silently approving unknown/privileged actions.
-            self._write({"id": rpc_id, "error": {"code": -32601, "message": f"unsupported: {method}"}})
+            try:
+                self._write({"id": rpc_id, "error": {"code": -32601, "message": f"unsupported: {method}"}})
+            except ProviderError:
+                pass
 
     def _handle_request_user_input(self, rpc_id: Any, params: dict[str, Any]) -> None:
         questions = params.get("questions") or []
@@ -145,15 +188,20 @@ class CodexProvider(Provider):
         qmap: dict[str, dict[str, Any]] = {}
         for q in questions:
             qid = str(q.get("id") or "")
-            if not qid:
+            if not qid or qid in qmap:
                 continue
             order.append(qid)
             qmap[qid] = {"answered": False, "answers": []}
-            self._qid_to_rpc[qid] = rpc_id
         if not order:
-            self._respond(rpc_id, {"answers": {}})
+            try:
+                self._respond(rpc_id, {"answers": {}})
+            except ProviderError:
+                pass
             return
-        self._pending_requests[rpc_id] = {"order": order, "questions": qmap}
+        with self._questions_lock:
+            self._pending_requests[rpc_id] = {"order": order, "questions": qmap}
+            for qid in order:
+                self._qid_to_rpc[qid] = rpc_id
         for q in questions:
             qid = str(q.get("id") or "")
             if qid not in qmap:
@@ -164,11 +212,37 @@ class CodexProvider(Provider):
                 options=options, allow_free_text=bool(q.get("isOther", True)),
             )))
 
+    # -- withdrawal --------------------------------------------------------
+    def _discard_request(self, rpc_id: Any, reason: str) -> None:
+        with self._questions_lock:
+            record = self._pending_requests.pop(rpc_id, None)
+            if record is None:
+                return
+            for qid in record["order"]:
+                self._qid_to_rpc.pop(qid, None)
+        for qid in record["order"]:
+            self._emit(AgentEvent(kind=EventKind.QUESTION_CLOSED, text=qid))
+        self._emit(AgentEvent(kind=EventKind.ERROR, text=reason))
+
+    def _close_all_pending(self, reason: str) -> None:
+        with self._questions_lock:
+            records = list(self._pending_requests.items())
+            self._pending_requests.clear()
+            self._qid_to_rpc.clear()
+        for _rpc_id, record in records:
+            for qid in record["order"]:
+                self._emit(AgentEvent(kind=EventKind.QUESTION_CLOSED, text=qid))
+        if records:
+            self._emit(AgentEvent(kind=EventKind.ERROR, text=reason))
+
     # -- handshake -----------------------------------------------------
     def _handshake(self) -> None:
         self._reader_thread = threading.Thread(target=self._reader_loop, daemon=True)
         self._reader_thread.start()
-        self._call("initialize", {"clientInfo": {"name": "agent-box", "version": "1"}})
+        self._call("initialize", {
+            "clientInfo": {"name": "agent-box", "version": "1"},
+            "capabilities": dict(self.CAPABILITIES),
+        })
         # Required post-initialize notification; must precede thread/start
         # or thread/resume per the app-server protocol's initialization
         # lifecycle (mirrors the LSP-style initialize/initialized handshake).
@@ -220,23 +294,46 @@ class CodexProvider(Provider):
         turn = (result or {}).get("turn") or {}
         self._current_turn_id = str(turn.get("id") or "") or self._current_turn_id
 
-    def answer_question(self, question_id: str, answers: list[str]) -> bool:
-        rpc_id = self._qid_to_rpc.get(question_id)
-        if rpc_id is None:
-            return False
-        record = self._pending_requests.get(rpc_id)
-        if record is None or question_id not in record["questions"]:
-            return False
-        if record["questions"][question_id]["answered"]:
-            return False  # already answered; do not double-count
-        record["questions"][question_id] = {"answered": True, "answers": answers}
-        if all(v["answered"] for v in record["questions"].values()):
-            payload = {"answers": {qid: {"answers": record["questions"][qid]["answers"]} for qid in record["order"]}}
+    def answer_question(self, question_id: str, answers: list[str]) -> AnswerResult:
+        with self._questions_lock:
+            rpc_id = self._qid_to_rpc.get(question_id)
+            if rpc_id is None:
+                return AnswerResult(AnswerStatus.REJECTED, detail="unknown or already-resolved question")
+            record = self._pending_requests.get(rpc_id)
+            if record is None or question_id not in record["questions"]:
+                return AnswerResult(AnswerStatus.REJECTED, detail="unknown or already-resolved question")
+            if record["questions"][question_id]["answered"]:
+                return AnswerResult(AnswerStatus.REJECTED, detail="already answered")
+            record["questions"][question_id] = {"answered": True, "answers": list(answers)}
+            outstanding = [q for q in record["order"] if not record["questions"][q]["answered"]]
+            if outstanding:
+                # Recorded only. The server has seen nothing yet, so this must
+                # not be reported to the user as a delivered answer.
+                return AnswerResult(AnswerStatus.RECORDED, outstanding=outstanding)
+            payload = {"answers": {
+                qid: {"answers": list(record["questions"][qid]["answers"])} for qid in record["order"]
+            }}
+
+        # The write happens outside the lock (it is real I/O), but the record
+        # is still registered, so a concurrent answer for the same request
+        # cannot slip past the "already answered" checks above.
+        try:
             self._respond(rpc_id, payload)
-            del self._pending_requests[rpc_id]
+        except (ProviderError, OSError, ValueError) as exc:
+            # Roll the recorded answer back so the request stays answerable
+            # and the caller's own claim can be released rather than left
+            # stuck half-way through delivery.
+            with self._questions_lock:
+                current = self._pending_requests.get(rpc_id)
+                if current is not None and question_id in current["questions"]:
+                    current["questions"][question_id] = {"answered": False, "answers": []}
+            return AnswerResult(AnswerStatus.FAILED, detail=str(exc) or exc.__class__.__name__)
+
+        with self._questions_lock:
+            self._pending_requests.pop(rpc_id, None)
             for qid in record["order"]:
                 self._qid_to_rpc.pop(qid, None)
-        return True
+        return AnswerResult(AnswerStatus.DELIVERED, resolved=list(record["order"]))
 
     def interrupt(self) -> bool:
         if not self._thread_id or not self._current_turn_id:
