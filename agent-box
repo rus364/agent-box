@@ -49,7 +49,7 @@ def usage() -> None:
     print('''Usage:
   agent-box [codex|claude] [agent arguments...]
   agent-box usage <codex|claude> [--statusline]
-  agent-box usage all --statusline
+  agent-box usage all [--statusline]
   agent-box notify <setup|test|status|disable>
   agent-box selftest
   agent-box shell [bash arguments...]
@@ -69,7 +69,7 @@ Examples:
   agent-box
   agent-box claude
   agent-box codex
-  agent-box usage all --statusline
+  agent-box usage all
   agent-box notify setup
   agent-box selftest''')
 
@@ -362,8 +362,12 @@ def claude_usage(statusline: bool = False, payload: str | None = None) -> str:
     if statusline:
         obj = parse_payload(payload if payload is not None else sys.stdin.read())
         if isinstance(obj.get("rate_limits"), dict):
-            atomic_write_json(cache, normalize_claude_usage(obj))
-        return format_claude_usage(obj)
+            normalized = normalize_claude_usage(obj)
+            atomic_write_json(cache, normalized)
+            return format_claude_usage(normalized)
+        # A status-line invocation normally receives Claude's payload on stdin.
+        # When called manually (or with empty stdin), fall back to the regular
+        # cached/OAuth usage path instead of rendering an empty placeholder.
     if cache_fresh(cache, ttl):
         return format_claude_usage(read_json(cache))
     if credentials.is_file():
@@ -400,11 +404,12 @@ def usage_command(args: list[str]) -> None:
             die("agent-box usage codex takes no arguments")
         print(codex_usage())
     elif provider == "all":
-        if rest != ["--statusline"]:
-            die("agent-box usage all requires --statusline")
-        payload = sys.stdin.read()
+        if rest not in ([], ["--statusline"]):
+            die("agent-box usage all accepts only --statusline")
+        statusline = rest == ["--statusline"]
+        payload = sys.stdin.read() if statusline else None
         try:
-            claude = claude_usage(True, payload)
+            claude = claude_usage(statusline, payload)
         except Exception:
             claude = PLACEHOLDER_USAGE
         try:
