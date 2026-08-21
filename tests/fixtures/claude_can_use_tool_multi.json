@@ -1,0 +1,24 @@
+{
+  "type": "control_request",
+  "request_id": "req_02",
+  "request": {
+    "subtype": "can_use_tool",
+    "tool_name": "AskUserQuestion",
+    "tool_use_id": "toolu_02",
+    "requires_user_interaction": true,
+    "input": {
+      "questions": [
+        {
+          "question": "Proceed with migration?",
+          "header": "Confirm",
+          "options": [{"label": "Yes", "description": ""}, {"label": "No", "description": ""}]
+        },
+        {
+          "question": "Also take a backup first?",
+          "header": "Backup",
+          "options": [{"label": "Yes", "description": ""}, {"label": "No", "description": ""}]
+        }
+      ]
+    }
+  }
+}

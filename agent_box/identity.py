@@ -10,7 +10,8 @@ inside the container without any path rewriting.
 
 Nothing here is a literal username: it is always derived from
 ``pwd.getpwuid`` (with narrow, validated fallbacks), so the source tree
-contains no developer-specific identity.
+contains no developer-specific identity. The home directory comes from the
+same passwd entry (``paths.passwd_home``) and is never read from ``$HOME``.
 """
 from __future__ import annotations
 
@@ -20,7 +21,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from .paths import HOST_HOME
+from .paths import passwd_home
 
 # Linux useradd's allowed pattern is roughly ^[a-z_][a-z0-9_-]*[$]?$, capped
 # at 32 characters. We stay inside that without the trailing '$'.
@@ -59,13 +60,13 @@ def detect_host_identity() -> HostIdentity:
     uid = os.getuid()
     gid = os.getgid()
     try:
-        entry = pwd.getpwuid(uid)
-        raw_name = entry.pw_name
-        home = Path(entry.pw_dir) if entry.pw_dir else HOST_HOME
+        raw_name = pwd.getpwuid(uid).pw_name
     except KeyError:
         raw_name = os.environ.get("USER") or os.environ.get("LOGNAME") or f"user{uid}"
-        home = HOST_HOME
-    if not home.is_absolute():
-        home = HOST_HOME
+    # Always the passwd home (paths.passwd_home), never $HOME: the build
+    # identity, the container's HOME, and the host paths build_mounts binds
+    # from must all agree, and a shell-settable variable must not be able to
+    # move any of them.
+    home = passwd_home(uid)
     name = _sanitize_username(raw_name, uid)
     return HostIdentity(name=name, uid=uid, gid=gid, home=home)

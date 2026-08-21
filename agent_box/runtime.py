@@ -261,11 +261,11 @@ def base_podman_args(
     model -- there is exactly one place that decides what the container can
     see.
 
-    Uses ``HOST_HOME`` (this process's real home, as opposed to
-    ``agent_box.identity``'s build-time snapshot) since that's what
-    ``build_mounts`` actually binds host state from; the two coincide except
-    in the rare case a rebuild happens under a different UID than the one
-    currently running.
+    ``HOST_HOME`` is the passwd-derived home (``paths.passwd_home``), the
+    same value ``agent_box.identity`` builds the image's user with and the
+    same value ``build_mounts`` binds host state from. ``$HOME`` is never
+    consulted, so a poisoned ``$HOME`` cannot move the container's home,
+    PATH, or any bind mount.
     """
     home = HOST_HOME
     args = [
@@ -283,6 +283,13 @@ def base_podman_args(
         "--env=DISABLE_AUTOUPDATER=1", f"--env=TERM={os.environ.get('TERM', 'xterm-256color')}",
         *build_mounts(workspace, extra_mounts, script_dir),
     ]
+    # A host that relocates Claude Code's config directory must have the
+    # container agree: CLAUDE_HOME is already bind-mounted at its host path,
+    # but `claude` inside the container would still look in $HOME/.claude
+    # without this. Forwarded as the resolved value (not the raw variable) so
+    # a tilde or relative setting means the same thing on both sides.
+    if os.environ.get("CLAUDE_CONFIG_DIR", "").strip():
+        args.append(f"--env=CLAUDE_CONFIG_DIR={CLAUDE_HOME}")
     maybe_gh_token()
     for name in (
         "GH_TOKEN", "GITHUB_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
