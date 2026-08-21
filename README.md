@@ -159,6 +159,36 @@ Claude usage comes from the status-line payload that Claude Code already provide
 
 When `agent-box` sees either the old `~/.local/bin/claude-usage --statusline` command or the previous `~/.local/bin/agent-box usage claude --statusline` command in `~/.claude/settings.json`, it migrates it automatically to the combined command while preserving the rest of the settings file.
 
+## Telegram notifications
+
+`agent-box` can send Telegram notifications from both Claude Code and Codex.
+
+Create a bot with BotFather, start a chat with it, then run:
+
+```bash
+agent-box notify setup
+```
+
+The setup asks for the bot token and Telegram chat ID, sends a test message, and configures Claude Code hooks automatically. The token and chat ID are stored locally in:
+
+```text
+~/.config/agent-box/telegram.json
+```
+
+The file is created with mode `600`. When notification configuration exists, it is mounted read-only into the agent container.
+
+Claude Code notifications cover permission prompts, idle prompts, completed turns, and stop failures. Codex receives an `agent-turn-complete` notifier automatically when launched through `agent-box`.
+
+Useful commands:
+
+```bash
+agent-box notify test
+agent-box notify status
+agent-box notify disable
+```
+
+`notify disable` removes the Telegram configuration and only the Claude hooks installed by `agent-box`; unrelated Claude settings and hooks are preserved.
+
 ## Shell and diagnostics
 
 Open a shell in the same container environment:
