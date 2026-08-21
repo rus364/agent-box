@@ -1,4 +1,11 @@
-"""Podman container build/run: mounts, environment, KVM, GitHub token passthrough."""
+"""Podman container build/run: the single authoritative place that builds a
+``podman run``/``podman build`` command line.
+
+Both interactive local use (``agent-box claude``/``codex``/``shell``) and the
+Telegram remote-control daemon's machine-mode sessions go through
+:func:`base_podman_args` here, so they share one environment/mount/hardening
+model instead of the daemon re-approximating a second one.
+"""
 from __future__ import annotations
 
 import os
@@ -11,17 +18,16 @@ from pathlib import Path
 
 from .atomicio import atomic_write_json, atomic_write_text, read_json
 from .errors import AgentBoxError
+from .identity import HostIdentity, detect_host_identity
+from .mounts import MountSpec
 from .paths import (
-    BUILD_STATE, CLAUDE_HOME, CODEX_HOME, CONTAINER_HOME, CONTAINER_USER,
-    HOST_HOME, NOTIFY_CONFIG, NOTIFY_STATE_ROOT, STATE_ROOT, TOOLS_REFRESH_FILE,
-    XDG_CACHE_HOME,
+    BUILD_STATE, CLAUDE_HOME, CODEX_HOME, HOST_HOME, NOTIFY_CONFIG,
+    NOTIFY_STATE_ROOT, STATE_ROOT, TOOLS_REFRESH_FILE, XDG_CACHE_HOME,
 )
 from .workspace import Workspace, resolve_workspace
 
 IMAGE = os.environ.get("AGENT_BOX_IMAGE", "localhost/agent-box:latest")
 DEFAULT_AGENT = os.environ.get("AGENT_BOX_AGENT", "claude")
-HOST_UID = os.getuid()
-HOST_GID = os.getgid()
 
 
 def warn(message: str) -> None:
@@ -60,18 +66,20 @@ def ensure_refresh_token() -> None:
         atomic_write_text(TOOLS_REFRESH_FILE, "initial\n")
 
 
-def build_image(script_dir: Path, refresh: bool, no_cache: bool) -> int:
+def build_image(script_dir: Path, refresh: bool, no_cache: bool, identity: HostIdentity | None = None) -> int:
     ensure_state_dirs()
     ensure_refresh_token()
+    identity = identity or detect_host_identity()
     if refresh:
         now = datetime.now(timezone.utc)
         token = now.strftime("%Y%m%dT%H%M%S.") + f"{time.time_ns() % 1_000_000_000:09d}Z\n"
         atomic_write_text(TOOLS_REFRESH_FILE, token)
     args = [
         "podman", "build", "--format=oci", "--pull=always", "--layers",
-        "--build-arg", f"USER_NAME={CONTAINER_USER}",
-        "--build-arg", f"USER_UID={HOST_UID}",
-        "--build-arg", f"USER_GID={HOST_GID}",
+        "--build-arg", f"USER_NAME={identity.name}",
+        "--build-arg", f"USER_UID={identity.uid}",
+        "--build-arg", f"USER_GID={identity.gid}",
+        "--build-arg", f"USER_HOME={identity.home}",
         "--build-arg", f"TOOLS_REFRESH={TOOLS_REFRESH_FILE.read_text().strip()}",
         "--tag", IMAGE, "--file", str(script_dir / "Containerfile"),
     ]
@@ -79,6 +87,12 @@ def build_image(script_dir: Path, refresh: bool, no_cache: bool) -> int:
         args.append("--no-cache")
     args.append(str(script_dir))
     return subprocess.call(args)
+
+
+def image_exists() -> bool:
+    return subprocess.run(
+        ["podman", "image", "exists", IMAGE], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+    ).returncode == 0
 
 
 def sync_claude_agent_skills() -> None:
@@ -120,44 +134,62 @@ def seed_state_dir(target: Path, *sources: Path) -> None:
             shutil.copy2(source, target / "config")
 
 
-def build_mounts(workspace: Workspace, script_dir: Path) -> list[str]:
-    c = CONTAINER_HOME
+def build_mounts(workspace: Workspace, extra_mounts: list[MountSpec], script_dir: Path) -> list[str]:
+    """Build ``--mount`` flags.
+
+    Everything the agent should see is mounted at the *same absolute path*
+    it has on the host (see workspace.py's module docstring) -- there is no
+    container-specific home or workspace root to translate to, because the
+    container's user/home mirror the host's (agent_box.identity).
+
+    Ensures the host-side directories these mounts bind from actually exist
+    first: podman fails a bind mount outright if its source is missing, and
+    unlike interactive local runs (whose caller always calls
+    ``ensure_state_dirs`` first), Telegram machine-mode sessions have no
+    other call site that's guaranteed to run before this.
+    """
+    from .mounts import MountSpec, plan_mounts
+
+    ensure_state_dirs()
+    # The project root and any explicit --mount paths can legitimately
+    # overlap (a --mount of a parent directory containing the project is
+    # the documented way to expose sibling repos); plan_mounts collapses
+    # that deterministically instead of issuing two overlapping podman
+    # --mount flags for the same tree.
+    project_mounts = plan_mounts([MountSpec(workspace.host_root, False, "project root"), *extra_mounts])
+
     pairs: list[tuple[Path, Path, bool]] = [
-        (workspace.host_root, workspace.container_root, False),
-        (CODEX_HOME, c / ".codex", False),
-        (CLAUDE_HOME, c / ".claude", False),
-        (STATE_ROOT / "cache", c / ".cache", False),
-        (XDG_CACHE_HOME / "claude-code", c / ".cache/claude-code", False),
-        (XDG_CACHE_HOME / "claude-cli-nodejs", c / ".cache/claude-cli-nodejs", False),
-        (STATE_ROOT / "uv", c / ".local/share/uv", False),
-        (STATE_ROOT / "mise", c / ".local/share/mise", False),
-        (NOTIFY_STATE_ROOT, c / ".local/share/agent-box/notify", False),
-        (script_dir / "agent-box", c / ".local/bin/agent-box", True),
+        (CODEX_HOME, CODEX_HOME, False),
+        (CLAUDE_HOME, CLAUDE_HOME, False),
+        # An isolated, container-only cache directory -- deliberately not
+        # the host's real ~/.cache -- mounted at the same path the
+        # container's XDG_CACHE_HOME env var points at (see
+        # base_podman_args) so the two stay consistent.
+        (STATE_ROOT / "cache", XDG_CACHE_HOME, False),
+        (XDG_CACHE_HOME / "claude-code", XDG_CACHE_HOME / "claude-code", False),
+        (XDG_CACHE_HOME / "claude-cli-nodejs", XDG_CACHE_HOME / "claude-cli-nodejs", False),
+        (STATE_ROOT / "uv", HOST_HOME / ".local/share/uv", False),
+        (STATE_ROOT / "mise", HOST_HOME / ".local/share/mise", False),
+        (NOTIFY_STATE_ROOT, HOST_HOME / ".local/share/agent-box/notify", False),
+        (script_dir / "agent-box", HOST_HOME / ".local/bin/agent-box", True),
     ]
     if (script_dir / "agent_box").is_dir():
-        pairs.append((script_dir / "agent_box", c / ".local/lib/agent-box/agent_box", True))
+        pairs.append((script_dir / "agent_box", HOST_HOME / ".local/lib/agent-box/agent_box", True))
     if NOTIFY_CONFIG.is_file():
-        pairs.append((NOTIFY_CONFIG, c / ".config/agent-box/telegram.json", True))
+        pairs.append((NOTIFY_CONFIG, HOST_HOME / ".config/agent-box/telegram.json", True))
     if (HOST_HOME / ".claude.json").is_file():
-        pairs.append((HOST_HOME / ".claude.json", c / ".claude.json", False))
+        pairs.append((HOST_HOME / ".claude.json", HOST_HOME / ".claude.json", False))
 
     seed_state_dir(STATE_ROOT / "git", HOST_HOME / ".config/git", HOST_HOME / ".gitconfig")
     seed_state_dir(STATE_ROOT / "gh", HOST_HOME / ".config/gh")
-    pairs += [(STATE_ROOT / "git", c / ".config/git", False), (STATE_ROOT / "gh", c / ".config/gh", False)]
+    pairs += [
+        (STATE_ROOT / "git", HOST_HOME / ".config/git", False),
+        (STATE_ROOT / "gh", HOST_HOME / ".config/gh", False),
+    ]
 
-    # ~/.agents is mounted at its literal host path (not remapped under the
-    # container home) because host-authored symlinks under it -- including
-    # the ones agent-box itself writes into ~/.claude/skills -- are absolute
-    # host paths. The container's home directory name is neutral/portable,
-    # but these symlink targets are not, so they only resolve if the host
-    # path itself exists inside the container too.
     agents = HOST_HOME / ".agents"
     if agents.is_dir():
         pairs.append((agents, agents, True))
-        if agents != c / ".agents":
-            # Also mount at $HOME/.agents so Codex (which looks relative to
-            # its own $HOME inside the container) discovers skills too.
-            pairs.append((agents, c / ".agents", True))
         seen: set[tuple[str, str]] = set()
         for link in agents.rglob("*"):
             if not link.is_symlink():
@@ -167,22 +199,25 @@ def build_mounts(workspace: Workspace, script_dir: Path) -> list[str]:
             except OSError:
                 warn(f"broken agent symlink: {link}")
                 continue
-            raw = os.readlink(link)
-            container_target = Path(raw) if os.path.isabs(raw) else Path(os.path.normpath(str(link.parent / raw)))
-            try:
-                container_target.relative_to(agents)
-                continue
-            except ValueError:
-                pass
-            key = (str(host_target), str(container_target))
+            if agents in host_target.parents or host_target == agents:
+                continue  # already covered by the whole-tree mount above
+            key = (str(host_target), str(host_target))
             if key not in seen:
                 seen.add(key)
-                pairs.append((host_target, container_target, True))
+                pairs.append((host_target, host_target, True))
 
     out = []
+    seen_paths: set[Path] = set()
+    for spec in project_mounts:
+        seen_paths.add(spec.path)
+        flag = f"type=bind,src={spec.path},dst={spec.path}" + (",ro=true" if spec.read_only else "")
+        out += ["--mount", flag]
     for src, dst, ro in pairs:
-        spec = f"type=bind,src={src},dst={dst}" + (",ro=true" if ro else "")
-        out += ["--mount", spec]
+        if dst in seen_paths:
+            continue
+        seen_paths.add(dst)
+        flag = f"type=bind,src={src},dst={dst}" + (",ro=true" if ro else "")
+        out += ["--mount", flag]
     return out
 
 
@@ -215,21 +250,38 @@ def maybe_gh_token() -> None:
         warn("no GitHub token on the host; run 'gh auth login' outside the container")
 
 
-def run_args(workspace: Workspace, script_dir: Path) -> list[str]:
-    c = CONTAINER_HOME
+def base_podman_args(
+    workspace: Workspace, extra_mounts: list[MountSpec], script_dir: Path, *,
+    include_kvm: bool = True,
+) -> list[str]:
+    """The full ``podman run`` argument list, minus the trailing image/command.
+
+    Shared by interactive local runs and the Telegram daemon's machine-mode
+    provider subprocesses, so both get the identical mount/env/hardening
+    model -- there is exactly one place that decides what the container can
+    see.
+
+    Uses ``HOST_HOME`` (this process's real home, as opposed to
+    ``agent_box.identity``'s build-time snapshot) since that's what
+    ``build_mounts`` actually binds host state from; the two coincide except
+    in the rare case a rebuild happens under a different UID than the one
+    currently running.
+    """
+    home = HOST_HOME
     args = [
-        "run", "--rm", "--interactive", "--userns=keep-id", *kvm_args(),
+        "run", "--rm", "--interactive", "--userns=keep-id",
+        *(kvm_args() if include_kvm else []),
         "--cap-drop=all", "--security-opt=no-new-privileges", "--hostname=agent-box",
-        f"--workdir={workspace.container_cwd}", f"--env=HOME={c}",
-        f"--env=PATH={c}/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-        f"--env=CODEX_HOME={c}/.codex",
-        f"--env=GIT_CONFIG_GLOBAL={c}/.config/git/config",
-        f"--env=GH_CONFIG_DIR={c}/.config/gh",
-        f"--env=XDG_CACHE_HOME={c}/.cache",
-        f"--env=UV_CACHE_DIR={c}/.cache/uv",
-        f"--env=MISE_DATA_DIR={c}/.local/share/mise",
+        f"--workdir={workspace.container_cwd}", f"--env=HOME={home}",
+        f"--env=PATH={home}/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        f"--env=CODEX_HOME={CODEX_HOME}",
+        f"--env=GIT_CONFIG_GLOBAL={home}/.config/git/config",
+        f"--env=GH_CONFIG_DIR={home}/.config/gh",
+        f"--env=XDG_CACHE_HOME={XDG_CACHE_HOME}",
+        f"--env=UV_CACHE_DIR={XDG_CACHE_HOME}/uv",
+        f"--env=MISE_DATA_DIR={home}/.local/share/mise",
         "--env=DISABLE_AUTOUPDATER=1", f"--env=TERM={os.environ.get('TERM', 'xterm-256color')}",
-        *build_mounts(workspace, script_dir),
+        *build_mounts(workspace, extra_mounts, script_dir),
     ]
     maybe_gh_token()
     for name in (
@@ -239,9 +291,27 @@ def run_args(workspace: Workspace, script_dir: Path) -> list[str]:
     ):
         if os.environ.get(name):
             args.append(f"--env={name}")
+    return args
+
+
+def interactive_podman_args(workspace: Workspace, extra_mounts: list[MountSpec], script_dir: Path) -> list[str]:
+    args = base_podman_args(workspace, extra_mounts, script_dir)
     if sys.stdin.isatty() and sys.stdout.isatty():
         args.append("--tty")
     return args
+
+
+def machine_podman_argv(
+    workspace: Workspace, extra_mounts: list[MountSpec], script_dir: Path, command: list[str],
+) -> list[str]:
+    """Full ``["podman", ...]`` argv for a piped (non-tty) machine-mode session.
+
+    Used by the Telegram daemon to run Claude/Codex *inside* the same Podman
+    environment as normal ``agent-box`` usage, over stdin/stdout, instead of
+    on the bare host.
+    """
+    args = base_podman_args(workspace, extra_mounts, script_dir, include_kvm=False)
+    return ["podman", *args, IMAGE, *command]
 
 
 DOCTOR_SCRIPT = r'''
@@ -292,7 +362,9 @@ fi
 '''
 
 
-def runtime_main(args: list[str], script_dir: Path) -> None:
+def runtime_main(args: list[str], script_dir: Path, extra_mount_specs: list[str] | None = None) -> None:
+    from .mounts import MountError, parse_mount_arg, plan_mounts
+
     if not shutil.which("podman"):
         raise AgentBoxError("podman not found")
     if not (script_dir / "Containerfile").is_file():
@@ -302,18 +374,26 @@ def runtime_main(args: list[str], script_dir: Path) -> None:
     except (NotADirectoryError, ValueError) as exc:
         raise AgentBoxError(str(exc)) from exc
 
+    try:
+        extra_mounts = plan_mounts([parse_mount_arg(spec) for spec in (extra_mount_specs or [])])
+    except MountError as exc:
+        raise AgentBoxError(str(exc)) from exc
+
     ensure_state_dirs()
     migrate_statusline()
     ensure_refresh_token()
 
-    if subprocess.run(["podman", "image", "exists", IMAGE], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode != 0:
+    if not image_exists():
         print("agent-box: image not found; building it...", file=sys.stderr)
         rc = build_image(script_dir, False, False)
         if rc:
             raise SystemExit(rc)
 
     sync_claude_agent_skills()
-    podman = run_args(workspace, script_dir)
+    try:
+        podman = interactive_podman_args(workspace, extra_mounts, script_dir)
+    except MountError as exc:
+        raise AgentBoxError(str(exc)) from exc
 
     if args and args[0] == "shell":
         os.execvp("podman", ["podman", *podman, IMAGE, "bash", "--login", *args[1:]])

@@ -1,4 +1,5 @@
-"""Claude Code provider: drives ``claude`` over its stream-json protocol.
+"""Claude Code provider: drives ``claude`` over its stream-json protocol,
+inside the same Podman container normal ``agent-box claude`` uses.
 
 Uses the officially supported programmatic surface: ``claude --print
 --input-format stream-json --output-format stream-json --session-id <uuid>``.
@@ -7,68 +8,97 @@ accepts one JSON object per line for each new user turn, and stdout emits one
 JSON object per line describing assistant text and tool calls (the same
 message shape as the Anthropic Messages API).
 
-Important limitation (see README "Claude vs Codex capabilities"): Claude Code
-session identity is bound to the process that was started with a given
-``--session-id``. There is no supported way to rebind an existing session to
-a *new* long-lived stream-json process after the original one exits, so a
-crashed/restarted daemon can only continue a Claude session via ``--resume``,
-which starts a fresh process. Codex's ``thread/resume`` is more directly
-resumable.
+Session identity and resume, precisely stated:
+
+Claude Code's own CLI help documents ``--session-id`` (bind a specific ID to
+*this* process) and ``--resume [session-id]`` ("Resume a conversation by
+session ID") as separate, mutually exclusive things. There is no supported
+way to attach a second, still-running process to an existing session, and
+--fork-session's own help text ("create a new session ID instead of reusing
+the original, use with --resume") confirms that a plain ``--resume
+<id>`` reuses the original session ID by default. So: mid-flight recovery of
+a live process is not supported (a crashed/restarted daemon cannot "rejoin"
+a running Claude turn the way Codex's ``thread/resume`` rejoins a running
+thread) -- but starting a *new* process with ``--resume <session-id>`` is a
+real, documented way to continue that session's history, and that is what
+this adapter's ``resume()`` does. It is not the same guarantee Codex gives;
+see the README for the honest comparison.
 
 AskUserQuestion round-trip: when Claude calls the ``AskUserQuestion`` tool,
 this adapter answers by sending a ``tool_result`` message on stdin, which is
 the documented mechanism for returning tool output over stream-json input.
-This has not been verified against a live Claude session in this environment
-(no network/credentials here), so as a safety net every question is also
-answerable by plain text: if the user free-texts an answer instead of
-tapping a button, it is delivered as an ordinary next user turn rather than
-a tool_result, which Claude will still receive as an answer to its question.
+This has not been verified against a live Claude session in this
+environment (no network/credentials here) -- only against a fake ``claude``
+executable in the test suite that exercises the real subprocess/stdio
+wiring. As a safety net every question is also answerable by plain text: if
+the user free-texts an answer instead of tapping a button, it is delivered
+as an ordinary next user turn rather than a tool_result, which Claude will
+still receive as an answer to its question.
 """
 from __future__ import annotations
 
 import json
-import shutil
-import subprocess
 import threading
 import uuid
-from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
-from .base import AgentEvent, EventKind, Provider, ProviderError, Question, QuestionOption
-
-CLAUDE_BIN = "claude"
+from .base import AgentEvent, EventKind, Provider, ProviderError, Question, QuestionOption, RuntimeContext
 
 
 class ClaudeProvider(Provider):
     name = "claude"
 
-    def __init__(self, host_project: Path, on_event: Callable[[AgentEvent], None] | None = None):
-        super().__init__(host_project, on_event)
-        self._proc: subprocess.Popen | None = None
+    def __init__(self, context: RuntimeContext, on_event=None):
+        super().__init__(context, on_event)
         self._reader_thread: threading.Thread | None = None
         self._lock = threading.Lock()
         self._pending_tool_use: dict[str, dict[str, Any]] = {}  # question_id -> {tool_use_id, header, text}
+        self._started = False
+        self._resumed_id: str | None = None
 
     def _write(self, obj: dict[str, Any]) -> None:
         assert self._proc and self._proc.stdin
         self._proc.stdin.write(json.dumps(obj) + "\n")
         self._proc.stdin.flush()
 
+    def _command(self, *, resume: str | None) -> list[str]:
+        # The installed Claude Code CLI rejects --print --output-format
+        # stream-json without --verbose ("--output-format=stream-json
+        # requires --verbose") -- confirmed by actually running it, not
+        # assumed from --help text.
+        base = ["claude", "--print", "--input-format", "stream-json", "--output-format", "stream-json",
+                "--verbose", "--permission-mode", "bypassPermissions"]
+        if resume:
+            return [*base, "--resume", resume]
+        return [*base, "--session-id", str(uuid.uuid4())]
+
     def start(self) -> None:
-        if not shutil.which(CLAUDE_BIN):
-            raise ProviderError("claude CLI not found on PATH")
-        session_id = str(uuid.uuid4())
-        self._proc = subprocess.Popen(
-            [
-                CLAUDE_BIN, "--print", "--input-format", "stream-json", "--output-format", "stream-json",
-                "--session-id", session_id, "--permission-mode", "bypassPermissions",
-            ],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-            text=True, bufsize=1, cwd=str(self.host_project),
-        )
+        command = self._command(resume=None)
+        session_id = command[command.index("--session-id") + 1]
+        self._spawn(command)
         self.provider_session_id = session_id
         self._reader_thread = threading.Thread(target=self._reader_loop, daemon=True)
         self._reader_thread.start()
+        self._started = True
+        self._emit(AgentEvent(kind=EventKind.STARTED, text=session_id))
+
+    def resume(self, session_id: str) -> None:
+        """Start a *new* process with ``--resume <session_id>``.
+
+        This is real, documented Claude Code history continuation -- not a
+        rebind of a still-running process (see module docstring) -- so it is
+        only offered, and only claimed as "resume", for that specific
+        guarantee.
+        """
+        if not session_id:
+            raise ProviderError("no Claude session ID to resume")
+        command = self._command(resume=session_id)
+        self._spawn(command)
+        self.provider_session_id = session_id
+        self._resumed_id = session_id
+        self._reader_thread = threading.Thread(target=self._reader_loop, daemon=True)
+        self._reader_thread.start()
+        self._started = True
         self._emit(AgentEvent(kind=EventKind.STARTED, text=session_id))
 
     def _reader_loop(self) -> None:
@@ -82,6 +112,11 @@ class ClaudeProvider(Provider):
             except json.JSONDecodeError:
                 continue
             self._handle_event(obj)
+        if not self._started:
+            tail = self.stderr_tail().strip()
+            self._emit(AgentEvent(kind=EventKind.ERROR, text=(
+                "claude exited before starting a session" + (f": {tail}" if tail else "")
+            )))
         self._emit(AgentEvent(kind=EventKind.STOPPED))
 
     def _handle_event(self, obj: dict[str, Any]) -> None:
@@ -144,20 +179,6 @@ class ClaudeProvider(Provider):
         return True
 
     def interrupt(self) -> bool:
-        # stream-json input has no dedicated interrupt RPC; the documented
-        # mechanism is closing stdin / terminating the turn is not
-        # supported mid-turn without ending the whole process, so this is
-        # honestly reported as unsupported rather than faking success.
+        # stream-json input has no documented interrupt RPC; reported
+        # honestly as unsupported rather than faking success.
         return False
-
-    def stop(self) -> None:
-        if self._proc and self._proc.poll() is None:
-            try:
-                if self._proc.stdin:
-                    self._proc.stdin.close()
-            except OSError:
-                pass
-            self._proc.terminate()
-
-    def is_alive(self) -> bool:
-        return self._proc is not None and self._proc.poll() is None

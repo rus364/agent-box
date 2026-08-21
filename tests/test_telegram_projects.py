@@ -41,6 +41,32 @@ class ProjectAllowlistTests(unittest.TestCase):
     def test_nonexistent_root_ignored(self):
         self.assertEqual(list_projects(["/does/not/exist"]), [])
 
+    def test_symlink_child_escaping_root_is_not_listed(self):
+        with tempfile.TemporaryDirectory() as outside:
+            escape_target = Path(outside) / "secret"
+            escape_target.mkdir()
+            (self.root / "escape").symlink_to(escape_target)
+            entries = list_projects([str(self.root)])
+            self.assertNotIn(escape_target.resolve(), {e.path for e in entries})
+            names = {e.path.name for e in entries}
+            self.assertNotIn("escape", names)
+
+    def test_symlink_child_within_root_is_listed(self):
+        real = self.root / "alpha"
+        (self.root / "alias").symlink_to(real)
+        entries = list_projects([str(self.root)])
+        # "alias" resolves to the same path as "alpha"; only one entry for it.
+        paths = [e.path for e in entries]
+        self.assertEqual(paths.count(real.resolve()), 1)
+
+    def test_resolve_allowed_project_rejects_symlink_escape(self):
+        with tempfile.TemporaryDirectory() as outside:
+            escape_target = Path(outside) / "secret"
+            escape_target.mkdir()
+            link = self.root / "escape2"
+            link.symlink_to(escape_target)
+            self.assertIsNone(resolve_allowed_project(link, [str(self.root)]))
+
 
 if __name__ == "__main__":
     unittest.main()

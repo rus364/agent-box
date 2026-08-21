@@ -2,7 +2,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from agent_box.telegram.sessions import STATUS_RUNNING, STATUS_STOPPED, SessionRegistry
+from agent_box.telegram.sessions import (
+    STATUS_DISCONNECTED, STATUS_ERROR, STATUS_RUNNING, STATUS_STOPPED, STATUS_WAITING_INPUT, SessionRegistry,
+)
 
 
 class SessionRegistryTests(unittest.TestCase):
@@ -56,6 +58,31 @@ class SessionRegistryTests(unittest.TestCase):
         raw = self.registry.path.read_text()
         for forbidden in ("token", "bot", "api_key", "password"):
             self.assertNotIn(forbidden, raw.lower())
+
+    def test_reconcile_marks_live_sessions_disconnected(self):
+        running = self.registry.create("claude", "/p1", chat_id=1, owner_user_id=1)
+        self.registry.update(running.id, status=STATUS_RUNNING)
+        waiting = self.registry.create("codex", "/p2", chat_id=1, owner_user_id=1)
+        self.registry.update(waiting.id, status=STATUS_WAITING_INPUT)
+        stopped = self.registry.create("claude", "/p3", chat_id=1, owner_user_id=1)
+        self.registry.update(stopped.id, status=STATUS_STOPPED)
+        errored = self.registry.create("claude", "/p4", chat_id=1, owner_user_id=1)
+        self.registry.update(errored.id, status=STATUS_ERROR)
+
+        changed = self.registry.reconcile_on_startup()
+
+        self.assertEqual({s.id for s in changed}, {running.id, waiting.id})
+        self.assertEqual(self.registry.get(running.id).status, STATUS_DISCONNECTED)
+        self.assertEqual(self.registry.get(waiting.id).status, STATUS_DISCONNECTED)
+        self.assertEqual(self.registry.get(stopped.id).status, STATUS_STOPPED)
+        self.assertEqual(self.registry.get(errored.id).status, STATUS_ERROR)
+
+    def test_reconcile_is_idempotent(self):
+        session = self.registry.create("claude", "/p", chat_id=1, owner_user_id=1)
+        self.registry.update(session.id, status=STATUS_RUNNING)
+        self.registry.reconcile_on_startup()
+        second_pass = self.registry.reconcile_on_startup()
+        self.assertEqual(second_pass, [])
 
 
 if __name__ == "__main__":

@@ -23,6 +23,13 @@ STATUS_RUNNING = "running"
 STATUS_WAITING_INPUT = "waiting_input"
 STATUS_STOPPED = "stopped"
 STATUS_ERROR = "error"
+# Persisted metadata said "running"/"waiting_input", but this daemon process
+# has no live provider attached to it (e.g. right after a restart). Distinct
+# from STATUS_STOPPED (a deliberate, clean stop) so the UI can offer resume
+# where the provider supports it.
+STATUS_DISCONNECTED = "disconnected"
+
+LIVE_STATUSES = (STATUS_STARTING, STATUS_RUNNING, STATUS_WAITING_INPUT)
 
 
 @dataclass
@@ -133,3 +140,23 @@ class SessionRegistry:
         with _locked(self.path):
             sessions = [s for s in self._load() if s.get("id") != session_id]
             self._save(sessions)
+
+    def reconcile_on_startup(self) -> list[Session]:
+        """Mark every session that claims to be live as disconnected.
+
+        Called once when the daemon starts, before any provider process is
+        attached to anything: persisted "running"/"waiting_input" status is
+        not proof of a live process, so leaving it as-is would show a zombie
+        session as usable. Returns the sessions that were changed.
+        """
+        with _locked(self.path):
+            sessions = self._load()
+            changed: list[Session] = []
+            for entry in sessions:
+                if entry.get("status") in LIVE_STATUSES:
+                    entry["status"] = STATUS_DISCONNECTED
+                    entry["updated_at"] = time.time()
+                    changed.append(Session.from_dict(entry))
+            if changed:
+                self._save(sessions)
+            return changed
