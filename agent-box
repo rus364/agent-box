@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import getpass
+import html
 import json
 import os
 import shutil
@@ -28,6 +29,8 @@ STATE_ROOT = HOST_HOME / ".local/share/agent-box"
 BUILD_STATE = STATE_ROOT / "build"
 TOOLS_REFRESH_FILE = BUILD_STATE / "tools-refresh"
 NOTIFY_CONFIG = Path(os.environ.get("XDG_CONFIG_HOME", str(HOST_HOME / ".config"))) / "agent-box/telegram.json"
+NOTIFY_STATE_ROOT = STATE_ROOT / "notify"
+NOTIFY_STATE_TTL = 1800
 NOTIFY_COMMAND = "~/.local/bin/agent-box notify claude"
 PLACEHOLDER_USAGE = "—/— · —/—"
 
@@ -114,12 +117,19 @@ def telegram_send(text: str) -> bool:
         token, chat_id = str(cfg["token"]), str(cfg["chat_id"])
     except (OSError, ValueError, KeyError, TypeError):
         return True
-    data = urllib.parse.urlencode({"chat_id": chat_id, "text": text}).encode()
+    data = urllib.parse.urlencode({"chat_id": chat_id, "text": text, "parse_mode": "HTML"}).encode()
     try:
         http_json(f"https://api.telegram.org/bot{token}/sendMessage", data=data, timeout=10)
         return True
     except (OSError, ValueError, urllib.error.URLError):
         return False
+
+
+def telegram_notice(icon: str, agent: str, project: str, status: str, detail: str = "") -> str:
+    lines = [f"{icon} <b>{html.escape(agent)} · {html.escape(project)}</b>", html.escape(status)]
+    if detail.strip():
+        lines.append(html.escape(detail.strip()))
+    return "\n".join(lines)
 
 
 def notify_project(cwd: str) -> str:
@@ -136,23 +146,90 @@ def parse_payload(payload: str) -> dict[str, Any]:
     return obj if isinstance(obj, dict) else {}
 
 
+def notify_session_path(session_id: str, root: Path = NOTIFY_STATE_ROOT) -> Path | None:
+    if not session_id:
+        return None
+    return root / f"{urllib.parse.quote(session_id, safe='')}.json"
+
+
+def claude_background_tasks(obj: dict[str, Any]) -> list[Any] | None:
+    if "background_tasks" not in obj:
+        return None
+    tasks = obj.get("background_tasks")
+    return tasks if isinstance(tasks, list) else None
+
+
+def update_claude_background_state(session_id: str, tasks: list[Any] | None, root: Path = NOTIFY_STATE_ROOT) -> None:
+    path = notify_session_path(session_id, root)
+    if path is None or tasks is None:
+        return
+    if tasks:
+        atomic_write_json(path, {"count": len(tasks)}, stat.S_IRUSR | stat.S_IWUSR)
+    else:
+        path.unlink(missing_ok=True)
+
+
+def claude_background_active(session_id: str, root: Path = NOTIFY_STATE_ROOT) -> bool:
+    path = notify_session_path(session_id, root)
+    if path is None:
+        return False
+    if not cache_fresh(path, NOTIFY_STATE_TTL):
+        path.unlink(missing_ok=True)
+        return False
+    try:
+        state = read_json(path)
+        return isinstance(state, dict) and int(state.get("count", 0)) > 0
+    except (OSError, ValueError, TypeError):
+        path.unlink(missing_ok=True)
+        return False
+
+
 def notify_claude() -> None:
     obj = parse_payload(sys.stdin.read())
     event = str(obj.get("hook_event_name") or "")
     kind = str(obj.get("notification_type") or "")
+    session_id = str(obj.get("session_id") or "")
     project = notify_project(str(obj.get("cwd") or ""))
     message = str(obj.get("message") or obj.get("error") or "")
-    if (event, kind) == ("Notification", "permission_prompt"):
-        title, detail = f"Claude · {project} · needs permission", message or "Claude is waiting for approval."
-    elif (event, kind) == ("Notification", "idle_prompt"):
-        title, detail = f"Claude · {project} · waiting for input", message or "Claude is waiting for your input."
-    elif event == "Stop":
-        title, detail = f"Claude · {project} · finished", "Turn completed."
+    tasks = claude_background_tasks(obj) if event == "Stop" else None
+
+    if event == "Stop":
+        if tasks is None:
+            # Older/unusual payloads do not expose task state. Clear any stale
+            # marker and keep the legacy notification behavior rather than risk
+            # suppressing a real prompt indefinitely.
+            update_claude_background_state(session_id, [])
+        else:
+            update_claude_background_state(session_id, tasks)
     elif event == "StopFailure":
-        title, detail = f"Claude · {project} · stopped", message or "Claude stopped because of an API error."
-    else:
-        return
-    telegram_send(f"{title}\n{detail}")
+        update_claude_background_state(session_id, [])
+
+    if (event, kind) == ("Notification", "permission_prompt"):
+        telegram_send(telegram_notice(
+            "🔐", "Claude", project, "Permission required",
+            message or "Claude is waiting for approval.",
+        ))
+    elif (event, kind) == ("Notification", "idle_prompt"):
+        if claude_background_active(session_id):
+            return
+        telegram_send(telegram_notice(
+            "💬", "Claude", project, "Waiting for input",
+            message or "Claude is waiting for your input.",
+        ))
+    elif event == "Stop":
+        if tasks:
+            count = len(tasks)
+            label = "task" if count == 1 else "tasks"
+            telegram_send(telegram_notice(
+                "⚙️", "Claude", project, f"Background work continues · {count} {label}"
+            ))
+        else:
+            telegram_send(telegram_notice("✅", "Claude", project, "Turn finished"))
+    elif event == "StopFailure":
+        telegram_send(telegram_notice(
+            "❌", "Claude", project, "Stopped with an error",
+            message or "Claude stopped because of an API error.",
+        ))
 
 
 def notify_codex(payload: str | None) -> None:
@@ -161,7 +238,7 @@ def notify_codex(payload: str | None) -> None:
         return
     project = notify_project(str(obj.get("cwd") or os.getcwd()))
     detail = str(obj.get("last-assistant-message") or "Turn completed.")
-    telegram_send(f"Codex · {project} · finished\n{detail}")
+    telegram_send(telegram_notice("✅", "Codex", project, "Turn finished", detail))
 
 
 def hook_entry(matcher: str | None = None) -> dict[str, Any]:
@@ -431,7 +508,7 @@ def notify_command(args: list[str]) -> None:
     elif action == "test":
         if rest: die("agent-box notify test takes no arguments")
         if not NOTIFY_CONFIG.is_file(): die("Telegram notifications are not configured")
-        if not telegram_send("agent-box · test notification"): die("Telegram test failed")
+        if not telegram_send("🧪 <b>agent-box</b>\nTest notification"): die("Telegram test failed")
         print("agent-box: test notification sent")
     elif action == "status":
         if rest: die("agent-box notify status takes no arguments")
@@ -441,6 +518,7 @@ def notify_command(args: list[str]) -> None:
         if rest: die("agent-box notify disable takes no arguments")
         NOTIFY_CONFIG.unlink(missing_ok=True)
         remove_claude_notify_hooks()
+        shutil.rmtree(NOTIFY_STATE_ROOT, ignore_errors=True)
         print("agent-box: Telegram notifications disabled")
     elif action == "claude":
         if rest: die("agent-box notify claude takes no arguments")
@@ -454,7 +532,7 @@ def notify_command(args: list[str]) -> None:
 
 def ensure_state_dirs() -> None:
     for path in (
-        BUILD_STATE, STATE_ROOT / "cache", STATE_ROOT / "uv", STATE_ROOT / "mise",
+        BUILD_STATE, STATE_ROOT / "cache", STATE_ROOT / "uv", STATE_ROOT / "mise", NOTIFY_STATE_ROOT,
         STATE_ROOT / "git", STATE_ROOT / "gh", HOST_HOME / ".codex", HOST_HOME / ".claude",
         HOST_HOME / ".cache/claude-code", HOST_HOME / ".cache/claude-cli-nodejs",
     ):
@@ -554,6 +632,7 @@ def build_mounts(code_real: Path, script_dir: Path) -> list[str]:
         (HOST_HOME / ".cache/claude-cli-nodejs", c / ".cache/claude-cli-nodejs", False),
         (STATE_ROOT / "uv", c / ".local/share/uv", False),
         (STATE_ROOT / "mise", c / ".local/share/mise", False),
+        (NOTIFY_STATE_ROOT, c / ".local/share/agent-box/notify", False),
         (script_dir / "agent-box", c / ".local/bin/agent-box", True),
     ]
     if NOTIFY_CONFIG.is_file():
@@ -726,6 +805,19 @@ def selftest() -> None:
     check(notify_project("/tmp/project"), "project", "project")
     check(notify_project("/"), "unknown", "root project")
     check(parse_payload("bad"), {}, "bad json")
+    check(claude_background_tasks({}), None, "background tasks absent")
+    check(claude_background_tasks({"background_tasks": []}), [], "background tasks empty")
+    check(
+        telegram_notice("💬", "Claude", "a<b", "Waiting & ready"),
+        "💬 <b>Claude · a&lt;b</b>\nWaiting &amp; ready",
+        "telegram html",
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        update_claude_background_state("session-1", [{"id": "task-1"}], root)
+        check(claude_background_active("session-1", root), True, "background active")
+        update_claude_background_state("session-1", [], root)
+        check(claude_background_active("session-1", root), False, "background cleared")
     print(f"agent-box: {n} self-tests passed")
 
 
