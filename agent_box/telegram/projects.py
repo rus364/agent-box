@@ -1,7 +1,17 @@
 """Project discovery constrained to configured workspace roots.
 
 A Telegram user selects a project from a button list built from this module;
-they never type a path. Every path returned here is verified to *resolve*
+they never type a path. A configured root written with ``~`` expands against
+the passwd home (``paths.expand_user``), never ``$HOME`` -- this is a
+security-relevant setting and must not be steerable by the daemon's
+environment.
+
+Discovery depth is deliberately **one level**: each configured root itself,
+plus its immediate subdirectories. Deeper nesting is not walked, because the
+list is rendered as Telegram inline buttons (one row each) and an unbounded
+recursive walk of a large tree would be both unusable and a needless
+filesystem scan on every ``/new``. Put a project's parent directory in
+``workspace_roots`` to expose that project. Every path returned here is verified to *resolve*
 (symlinks followed) inside one of the configured, host-administered
 ``workspace_roots`` -- a symlink under a root that points outside it is not
 listed, so a remote user can't be handed a button that quietly escapes the
@@ -12,6 +22,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from ..paths import expand_user
+
 
 @dataclass
 class ProjectEntry:
@@ -21,7 +33,7 @@ class ProjectEntry:
 
 def _expand_root(root: str) -> Path | None:
     try:
-        resolved = Path(root).expanduser().resolve()
+        resolved = expand_user(root).resolve()
     except (OSError, RuntimeError):
         return None
     return resolved if resolved.is_dir() else None

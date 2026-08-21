@@ -16,6 +16,8 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from .paths import expand_user
+
 
 @dataclass(frozen=True)
 class Workspace:
@@ -62,7 +64,9 @@ def resolve_workspace(cwd: Path | None = None, override: str | None = None) -> W
 
     override = override if override is not None else os.environ.get("AGENT_BOX_WORKSPACE_ROOT", "").strip()
     if override:
-        root = Path(override).expanduser().resolve()
+        # Passwd-anchored ~ expansion (see paths.expand_user): $HOME must not
+        # be able to move the workspace root out from under this check.
+        root = expand_user(override).resolve()
         if not root.is_dir():
             raise NotADirectoryError(f"AGENT_BOX_WORKSPACE_ROOT does not exist: {root}")
         if pwd != root and root not in pwd.parents:

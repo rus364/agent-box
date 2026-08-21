@@ -13,7 +13,7 @@ from typing import Any
 
 from .atomicio import atomic_write_json, read_json
 from .errors import AgentBoxError
-from .paths import HOST_HOME, XDG_CACHE_HOME
+from .paths import CLAUDE_HOME, CODEX_HOME, XDG_CACHE_HOME, env_path
 
 PLACEHOLDER_USAGE = "—/— · —/—"
 
@@ -113,7 +113,11 @@ def parse_payload(payload: str) -> dict[str, Any]:
 def codex_usage() -> str:
     cache = XDG_CACHE_HOME / "codex/usage.json"
     ttl = int(os.environ.get("CODEX_USAGE_CACHE_TTL", "60"))
-    auth = Path(os.environ.get("CODEX_AUTH_PATH", str(Path(os.environ.get("CODEX_HOME", str(HOST_HOME / ".codex"))) / "auth.json")))
+    # CODEX_HOME comes from agent_box.paths, which normalizes it once (with
+    # passwd-anchored "~" expansion). Re-reading the raw variable here would
+    # give a second, subtly different answer than the directory the container
+    # actually mounts and the rest of agent-box uses.
+    auth = env_path("CODEX_AUTH_PATH", CODEX_HOME / "auth.json")
     url = os.environ.get("CODEX_USAGE_URL", "https://chatgpt.com/backend-api/wham/usage")
     if cache_fresh(cache, ttl):
         return format_codex_usage(read_json(cache))
@@ -142,7 +146,10 @@ def codex_usage() -> str:
 
 def claude_usage(statusline: bool = False, payload: str | None = None) -> str:
     cache = XDG_CACHE_HOME / "claude-code/rate-limits.json"
-    credentials = Path(os.environ.get("CLAUDE_CREDENTIALS_PATH", str(HOST_HOME / ".claude/.credentials.json")))
+    # Same reasoning as codex_usage: CLAUDE_HOME already honors
+    # CLAUDE_CONFIG_DIR, so a relocated Claude config directory is picked up
+    # here without this function knowing about that variable at all.
+    credentials = env_path("CLAUDE_CREDENTIALS_PATH", CLAUDE_HOME / ".credentials.json")
     url = os.environ.get("CLAUDE_CODE_CUSTOM_OAUTH_URL", "https://api.anthropic.com").rstrip("/") + "/api/oauth/usage"
     ttl = int(os.environ.get("CLAUDE_USAGE_CACHE_TTL", "60"))
     if statusline:

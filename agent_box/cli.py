@@ -11,7 +11,7 @@ from . import notify as notify_module
 from . import usage as usage_module
 from .config import RemoteControlConfig, TelegramConfig, load_telegram_config, save_telegram_config
 from .errors import AgentBoxError
-from .paths import CLAUDE_HOME, TELEGRAM_CONFIG
+from .paths import CLAUDE_HOME, TELEGRAM_CONFIG, expand_user
 
 
 def die(message: str) -> NoReturn:
@@ -298,7 +298,7 @@ def telegram_roots(args: list[str]) -> None:
         return
     if not rest:
         die(f"agent-box telegram roots {action} requires a path")
-    raw = Path(rest[0]).expanduser()
+    raw = expand_user(rest[0])
     # Stored as a canonical absolute path so the daemon's cwd at 'telegram
     # serve' time can never change what this security-relevant setting means.
     path = str(raw.resolve())

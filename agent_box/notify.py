@@ -32,6 +32,19 @@ NOTIFY_COMMAND = "agent-box notify claude"
 LEGACY_NOTIFY_COMMANDS = ("~/.local/bin/agent-box notify claude",)
 
 
+def outbound_suppressed() -> bool:
+    """True when this process must not send a global Telegram notification.
+
+    Set by ``agent_box.runtime`` for containers the Telegram remote-control
+    daemon starts (``SUPPRESS_NOTIFY_ENV``). Those sessions already relay
+    everything to the owner's chat through the bot; the legacy hook path would
+    additionally broadcast them to ``notify_chat_id``, an audience the session
+    owner did not pick. Interactive ``agent-box claude``/``codex`` runs never
+    set it, so local notification behavior is unchanged.
+    """
+    return bool(os.environ.get("AGENT_BOX_SUPPRESS_NOTIFY", "").strip())
+
+
 def notify_project(cwd: str) -> str:
     if not cwd or cwd == "/":
         return "unknown"
@@ -54,6 +67,8 @@ def telegram_notice(icon: str, agent: str, project: str, status: str, detail: st
 
 
 def telegram_send(text: str, reply_markup: dict[str, Any] | None = None) -> bool:
+    if outbound_suppressed():
+        return True
     config = load_telegram_config()
     if config is None or not config.configured or not config.notify_chat_id:
         return True

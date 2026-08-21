@@ -1,8 +1,8 @@
 # agent-box
 
-`agent-box` runs Codex CLI and Claude Code inside the same rootless Podman development container.
+`agent-box` runs Codex CLI and Claude Code inside disposable rootless Podman containers built from one development image.
 
-It mounts your current project into the container at the *same absolute path* it has on the host, builds a container user that mirrors your real Unix identity, and preserves agent configuration/authentication across disposable runs. It also has optional Telegram integration: outbound notifications, and an opt-in bidirectional remote-control mode that runs Claude Code or Codex sessions *inside the same container* under Telegram's control.
+It mounts your current project into the container at the *same absolute path* it has on the host, builds a container user that mirrors your real Unix identity, and preserves agent configuration/authentication across disposable runs. It also has optional Telegram integration: outbound notifications, and an opt-in bidirectional remote-control mode that runs Claude Code or Codex sessions in containers of their own, under Telegram's control.
 
 ## Requirements
 
@@ -53,7 +53,7 @@ agent-box claude
 agent-box claude -p "summarize this repository"
 agent-box codex
 agent-box codex exec "inspect this repository"
-agent-box shell      # a plain shell in the same container environment
+agent-box shell      # a plain shell in an identically configured container
 ```
 
 This works from **any** directory — there is no requirement to keep projects under a fixed host directory such as `~/code`.
@@ -134,7 +134,22 @@ The skill contents are not copied. Both agents therefore use the same `SKILL.md`
 
 Shared skills may themselves be symlinks to directories elsewhere on the host; because the container's home mirrors the host's (see "Container identity"), those symlinks resolve correctly inside the container without rewriting, and `agent-box` mounts their real targets read-only.
 
-`agent-box doctor` verifies both the `~/.agents/skills` links and their Claude Code counterparts.
+### What exactly gets mounted from `~/.agents`
+
+If `~/.agents` exists, the **whole tree** is bind-mounted read-only at its own path, and `agent-box` then walks **all of it** — not just `skills/` — looking for symlinks that point outside the tree, and mounts each distinct target read-only at its own path too.
+
+That scope is deliberate. Since the tree itself is already visible to the container, narrowing the walk to `skills/` would not hide anything; it would just leave every non-skill symlink (a shared agent definition, a command, a prompt fragment) dangling inside a directory the container can already read. `sync_claude_agent_skills` only cares about `skills/` because that is the part Claude Code consumes by convention — a different question from what has to resolve.
+
+The guarantees that come with that scope:
+
+- Every one of these mounts is **read-only**, external targets included. agent-box exposes your shared agent material to the container; it does not let the container rewrite your library.
+- Symlinks pointing back inside `~/.agents` are skipped — the whole-tree mount already covers them.
+- Each distinct target is mounted once, in a deterministic order.
+- A broken symlink prints a warning and is skipped; it never fails the run.
+
+If you keep something under `~/.agents` that you do not want a container to read, move it out — the read-only tree mount is unconditional.
+
+`agent-box doctor` verifies both the `~/.agents/skills` links and their Claude Code counterparts, and prints the Claude config and Codex home directories it actually inspected (honoring `CLAUDE_CONFIG_DIR` / `CODEX_HOME`).
 
 ## Git and GitHub
 
@@ -208,12 +223,17 @@ That pointer works from inside the container, where the hooks actually run. The 
 
 Remote control turns the same Telegram bot into a bidirectional interface: you can start Claude Code or Codex sessions from Telegram, chat with them, and answer their structured questions with inline buttons.
 
-**Sessions run inside the same Podman container as normal `agent-box claude`/`codex` usage** — the Telegram daemon itself runs on the host (it needs to, to hold the long-poll connection and manage subprocesses), but every actual agent process it starts is `podman run` under the hood, sharing the exact mount/environment/hardening model `agent_box.runtime` uses for interactive use. A machine with Python, Podman, and the built `agent-box` image — but **no host-installed `claude` or `codex` binary at all** — can still be Telegram-remote-controlled.
+**Sessions run in their own disposable containers, built from the same image and configured by the same authoritative policy as normal `agent-box claude`/`codex` usage.** Every run — local or remote — is a separate `podman run --rm`; nothing is ever shared between two sessions, and no container outlives its session. What *is* shared is the policy: a single function (`agent_box.runtime.base_podman_args`) decides the mounts, environment, and hardening for both, so there is exactly one place that determines what a container can see, rather than the daemon re-approximating a second answer.
+
+The Telegram daemon itself runs on the host — it has to, to hold the long-poll connection and manage subprocesses — but every agent process it starts is `podman run` under the hood. A machine with Python, Podman, and the built `agent-box` image — but **no host-installed `claude` or `codex` binary at all** — can still be Telegram-remote-controlled.
+
+The one deliberate policy difference for remote-control containers: outbound Telegram notification hooks are switched off in them (`AGENT_BOX_SUPPRESS_NOTIFY`). See "Notifications and remote control don't double up" below.
 
 **It is disabled by default and requires explicit setup.** Configure it after `agent-box notify setup` has stored a bot token:
 
 ```bash
 agent-box telegram roots add ~/code          # an allowed project root (repeatable; stored as a canonical absolute path)
+                                             # "~" expands against the passwd home, never $HOME
 agent-box telegram allow add <your_telegram_user_id>
 agent-box telegram enable
 agent-box telegram serve                     # foreground long-polling daemon
@@ -221,11 +241,20 @@ agent-box telegram serve                     # foreground long-polling daemon
 
 Run `agent-box telegram serve` as a long-lived process (e.g. a systemd `--user` service, tmux/screen session, or similar). It uses `getUpdates` long polling — no webhook, no public HTTP endpoint, no inbound port.
 
+### Notifications and remote control don't double up
+
+If you use both features, a remote-control session's events go **only** to the chat that owns it.
+
+The Claude notification hooks live in `~/.claude/settings.json`, which every container mounts, so without this they would also fire for Telegram-driven sessions and post that session's permission prompts and turn completions to the single global `notify_chat_id`. That is a different audience: remote-control sessions are owner-scoped, and their owner never chose the notification chat — may not even be in it. So machine-mode containers get `AGENT_BOX_SUPPRESS_NOTIFY=1` and `agent_box.notify` stops before reading the config or contacting the API.
+
+Local `agent-box claude` / `agent-box codex` runs never set the flag, so ordinary notification behavior is unchanged. Suppression only affects *sending*: per-session background-task bookkeeping still updates normally.
+
 ### Security model
 
 - Remote control is off until you explicitly enable it, independent of notification setup.
 - Only Telegram user IDs on the configured allowlist get any response; unknown users receive no information, not even an error.
 - Projects are chosen from buttons built from configured, canonicalized `workspace_roots` only — a Telegram user can never type or select an arbitrary host path. A symlink inside an allowed root that points outside every configured root is not listed as a selectable project, and is rejected if selected anyway.
+- **Project discovery is one level deep**, by design: `/new` lists each configured root itself plus its immediate subdirectories, and stops there. The list is rendered as inline buttons (one row each), so an unbounded recursive walk would be both unusable in Telegram and a needless filesystem scan on every `/new`. To expose a project nested deeper, add its parent directory to `workspace_roots`. Depth limits the *listing* only — containment checks still accept any path genuinely inside a configured root.
 - **The local `--mount` CLI option described above is never exposed to Telegram.** There is no remote equivalent, no `/mount` command, and no way for a Telegram message or callback to add an arbitrary host path to a session's mounts. If a deployment genuinely needs extra host paths available remotely, that would be a host-administrator-configured, non-Telegram-writable setting — not implemented here because it isn't needed yet.
 - There is no `/shell` command, no generic "run this host command" action, and callback data never carries raw agent arguments — every button maps to a short opaque token validated server-side against the session/user/request it belongs to.
 - **Every session has an owner, and only the owner can act on it.** Listing, opening, routing plain text to, interrupting, stopping, resuming, and answering questions all require `owner_user_id` to match. Being on the allowlist authorizes running *your own* sessions in a chat — there is no shared-session policy in agent-box, so a second allow-listed user in the same group chat gets their own independent sessions rather than access to yours. Active-session routing is keyed by `(chat_id, user_id, message_thread_id)`, so two people in one group chat never collide.
@@ -253,7 +282,22 @@ Opening a session makes it *your* active session for that chat (or that forum to
 
 Each session has `Open`, `Interrupt`, `Stop`, and (once stopped/disconnected) `Resume` buttons — only actions the provider actually confirmed are reported as having happened.
 
-When a provider asks a structured question with options (Codex's `item/tool/requestUserInput`, Claude's `AskUserQuestion`), it's rendered as inline buttons; tapping one submits the corresponding structured answer. If a request carries several questions you get one message per question, and the bot tells you plainly when an answer is only *recorded* pending the rest. If the provider withdraws a question (Codex `serverRequest/resolved`, Claude `control_cancel_request`, or the session ending), its buttons are retired instead of silently failing later.
+### Structured questions
+
+When a provider asks a structured question (Codex's `item/tool/requestUserInput`, Claude's `AskUserQuestion`), it's rendered as inline buttons. The buttons follow what that specific question actually permits, rather than flattening every question into one shape:
+
+| Question says | You get |
+|---|---|
+| a list of options | one button per option; tapping one answers immediately |
+| `multiSelect: true` (Claude) | checkbox toggles (☐/☑) plus an explicit **Submit**; nothing is sent until you submit, and submitting with nothing selected is refused rather than sending an empty answer |
+| free text is allowed (Claude always; Codex when the question sets `isOther`) | an **Other...** button; your next plain message in that chat/topic goes back as *that question's answer*, not as a new turn |
+| no options at all | just **Other...** |
+
+The free-text path matters for correctness, not just convenience: both providers block on an outstanding request, so an answer typed as an ordinary turn would leave that request unanswered. A question that does not permit free text gets no Other button, and tapping a stale one is refused.
+
+If a request carries several questions you get one message per question, and the bot says plainly when an answer is only *recorded* pending the rest — nothing reaches the agent until every question in that request is answered and the single aggregate response is submitted. This holds for every answer shape, including multi-select submits and free text.
+
+If the provider withdraws a question (Codex `serverRequest/resolved`, Claude `control_cancel_request`, or the session ending), its buttons are retired and any armed Other prompt is disarmed, instead of silently failing later.
 
 ### Session persistence and daemon restarts
 
@@ -268,6 +312,8 @@ Both adapters use each tool's supported machine interface — Codex's `app-serve
 | | Codex | Claude Code |
 |---|---|---|
 | Structured questions → buttons | Yes (`item/tool/requestUserInput`, gated on `capabilities.experimentalApi`); a single request can carry multiple questions and is answered with exactly one aggregate JSON-RPC response once all of them have an answer | Yes (`AskUserQuestion` via the Agent SDK's `canUseTool` mechanism — a `can_use_tool` control request answered with `behavior: "allow"` and the selections in `updatedInput.answers`); every sub-question of a multi-question call is exposed, and all of them are returned in one control response |
+| Free-text ("Other") answers | Per question, from the schema's `isOther` (default false) | Always — `AskUserQuestion` never restricts the user to the listed options |
+| Multi-select questions | Not in the protocol; `request_user_input` has no multi-select field | Yes, from the question's `multiSelect`; selections are comma-joined into the single value the `answers` map takes |
 | Interrupt a running turn | Yes (`turn/interrupt`) | Not supported over stream-json input; reported honestly as unsupported rather than faking success |
 | Resume after daemon restart | Real (live-verified): `thread/resume` rejoins the existing thread by ID; the same local session record is kept. Only works once the thread has completed at least one turn — Codex doesn't persist a resumable rollout before that | Real (live-verified), but a different guarantee: `--resume <session-id>` starts a **new** process that continues the same session's history (Claude Code's own CLI help documents `--session-id` and `--resume` as separate mechanisms, and `--fork-session`'s help text confirms plain `--resume` reuses the original ID) — not a rebind of a still-running process, since Claude Code has no supported way to do that |
 
@@ -323,6 +369,8 @@ When `/dev/kvm` is accessible, it is passed through automatically for interactiv
 
 - Codex's `item/tool/requestUserInput` round trip is exercised only against a fake `codex app-server` (which does enforce the real handshake, the `experimentalApi` capability, and the schema's request/response shapes) — the model does not reliably call that tool on demand from a scripted smoke test, so the end-to-end path has not been seen against a live Codex. Claude's `AskUserQuestion` round trip *has* been live-verified; see "Claude vs. Codex capabilities" above.
 - The Claude adapter's structured questions depend on `--permission-prompt-tool stdio` and the `can_use_tool` control request. That is the same wire the Agent SDK's `canUseTool` uses, but it is not a frozen public API: a future Claude Code release could change it, in which case questions stop appearing (they are not silently mis-answered). It is verified against 2.1.239 only.
+- Multi-select and free-text answering are exercised against the fakes and unit-tested end to end through the bot, but not observed against a live model actually emitting a `multiSelect` question or a user picking "Other" in a real Telegram chat.
+- `~/.agents` is mounted read-only in full, and every external symlink target under it is mounted read-only too. This is deliberate (see "What exactly gets mounted from `~/.agents`"), but it does mean the container can read anything you keep there, not only skills.
 - Any other tool that reaches the permission surface in a Telegram session is **denied**, not auto-approved. Sessions run with `--permission-mode bypassPermissions`, so this should not normally happen; if a future Claude Code version routes more tools there, those tool calls will fail rather than run unattended.
 - A failed answer-delivery attempt is reported honestly and the token is safely consumed (no replay), but the original message's buttons are not automatically re-issued with a fresh token — you'd need the agent to re-ask, or restart the session.
 - There is no remote (Telegram-driven) equivalent of `--mount`; extra host paths for remote sessions would need a host-administrator-configured setting, which doesn't exist yet because nothing has needed it.
@@ -333,10 +381,11 @@ When `/dev/kvm` is accessible, it is passed through automatically for interactiv
 - The container's internal user used to be a fixed, neutral `agentbox` account; it now mirrors your real Unix identity, and the project workspace used to be remapped to a fixed `/workspace` inside the container; it's now mounted at the same absolute path it has on the host. Nothing to do on your side beyond rebuilding the image (`agent-box rebuild`); host-side auth/config directories are unaffected since they're bind-mounted by content.
 - The mandatory `~/code` workspace requirement is gone. If you relied on it implicitly, set `AGENT_BOX_WORKSPACE_ROOT=~/code` to keep the old "one big mounted tree" behavior, or simply `cd` into individual projects as needed.
 - `telegram.json`'s old two-key notification-only schema (`token`, `chat_id`) is read transparently; nothing breaks, and remote control stays off until you explicitly configure and enable it.
-- Telegram remote-control sessions used to run the `claude`/`codex` CLI directly on the host; they now run inside the same Podman container as everything else. If you were relying on a host-installed `claude`/`codex` for remote control specifically, it's no longer required (the built image is).
+- Telegram remote-control sessions used to run the `claude`/`codex` CLI directly on the host; they now run in disposable containers from the same image, under the same runtime policy as everything else. If you were relying on a host-installed `claude`/`codex` for remote control specifically, it's no longer required (the built image is).
 - **`podman build` on the `Containerfile` now requires explicit identity args.** The `USER_NAME`/`USER_UID`/`USER_GID`/`USER_HOME` build args no longer default to an invented `agent`/`1000`/`1000` identity, because that produced an image whose user and home matched no host, failing confusingly at runtime instead of at build time. Use `agent-box build` (which derives all four from the host passwd entry), or pass all four `--build-arg` values yourself.
-- **`$HOME` no longer influences any host path.** The build identity, the container's `HOME`, every bind mount source, and the state/config directory defaults all come from the passwd entry (`pwd.getpwuid`), and `~` in a setting such as `XDG_DATA_HOME` or `CLAUDE_CONFIG_DIR` expands against that same home. If you were deliberately pointing `$HOME` somewhere else to relocate agent-box state, use `AGENT_BOX_STATE_DIR`/`AGENT_BOX_CONFIG_DIR`/`XDG_*` instead.
-- **`CLAUDE_CONFIG_DIR` is now forwarded into the container.** If you relocate Claude Code's config directory on the host, the container is told about it (and the directory is bind-mounted at its host path) instead of `claude` inside the container falling back to an empty `$HOME/.claude`.
+- **`$HOME` no longer influences any host path.** The build identity, the container's `HOME`, every bind mount source, the state/config directory defaults, `AGENT_BOX_WORKSPACE_ROOT`, `--mount`, `agent-box telegram roots add`, and Telegram project discovery all come from the passwd entry (`pwd.getpwuid`); `~` anywhere in a setting expands against that same home. If you were deliberately pointing `$HOME` somewhere else to relocate agent-box state, use `AGENT_BOX_STATE_DIR`/`AGENT_BOX_CONFIG_DIR`/`XDG_*` instead.
+- **`CLAUDE_CONFIG_DIR` is now forwarded into the container**, and honored consistently on the host. If you relocate Claude Code's config directory, the container is told about it (and the directory is bind-mounted at its host path) instead of `claude` inside the container falling back to an empty `$HOME/.claude`. `agent-box usage claude` reads credentials from the relocated directory, `agent-box doctor` inspects it, and the skills sync writes there — all from the one normalized value in `agent_box.paths`, rather than each re-parsing the variable. `CODEX_HOME` works the same way for `agent-box usage codex`.
+- **Telegram remote-control sessions no longer trigger the outbound notification hooks.** Their events go to the owner's chat via the bot only. Local runs are unchanged.
 
 ### Migration from codex-box (pre-agent-box)
 

@@ -1,5 +1,6 @@
 """Claude Code provider: drives ``claude`` over its stream-json protocol,
-inside the same Podman container normal ``agent-box claude`` uses.
+in a disposable container built from the same image and configured by the same
+runtime policy as normal ``agent-box claude``.
 
 Uses the officially supported programmatic surface::
 
@@ -48,6 +49,12 @@ after which the CLI feeds Claude ``Your questions have been answered:
 questions is answered with exactly one control_response containing all of
 them, so an individual answer is reported as *recorded*, never *delivered*,
 until that response is actually written.
+
+Two per-question semantics are carried through rather than flattened away:
+``multiSelect`` (several options at once, comma-joined into the single value
+the schema's ``answers`` map expects) and the always-available "Other" answer
+(free text, delivered as that question's value instead of as a separate user
+turn).
 
 ``control_cancel_request`` (the CLI withdrawing an in-flight prompt, e.g.
 after an interrupt) is handled by closing the affected questions.
@@ -242,7 +249,12 @@ class ClaudeProvider(Provider):
                        for o in (q.get("options") or [])]
             emit.append(Question(
                 id=qid, header=str(q.get("header") or "Claude"), text=text,
-                options=options, allow_free_text=True,
+                options=options,
+                # AskUserQuestion always lets the user answer with something
+                # that is not on the list; the CLI's own tool description says
+                # so ("Users will always be able to select 'Other'").
+                allow_free_text=True,
+                multi_select=bool(q.get("multiSelect")),
             ))
         if not order:
             self._control_response(request_id, {"behavior": "allow", "updatedInput": tool_input})
@@ -282,6 +294,9 @@ class ClaudeProvider(Provider):
         self._write({"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": text}]}})
 
     def answer_question(self, question_id: str, answers: list[str]) -> AnswerResult:
+        # The AskUserQuestion schema's `answers` map takes one value per
+        # question. Multi-select answers are comma-joined, which is exactly the
+        # normalization the CLI applies to an array it receives there.
         answer_text = ", ".join(a for a in answers if a)
         with self._lock:
             request_id = self._qid_to_request.get(question_id)
