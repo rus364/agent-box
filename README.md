@@ -158,7 +158,30 @@ The setup asks for the bot token and Telegram chat ID, sends a test message, and
 
 The file is created with mode `600`. When notification configuration exists, it is mounted read-only into the agent container.
 
-Claude Code notifications cover permission prompts, idle prompts, completed turns, and stop failures. Codex receives an `agent-turn-complete` notifier automatically when launched through `agent-box`.
+Claude Code notifications cover permission prompts, idle prompts, completed turns, background work, and stop failures. Notifications use Telegram HTML formatting and status-specific emoji.
+
+Claude Code can emit an `idle_prompt` while the parent turn is idle but background agents are still running. To avoid falsely reporting that human input is required, `agent-box` records the `background_tasks` supplied by Claude Code's `Stop` hook per `session_id`. While that mechanically reported background-task state is active, `idle_prompt` notifications for the same session are suppressed. Permission prompts and failures are never suppressed. The next `Stop` with no background tasks clears the state and sends the normal completed-turn notification. Stale state expires after 30 minutes as a safety fallback.
+
+Typical Claude notifications look like:
+
+```text
+🔐 Claude · project
+Permission required
+
+⚙️ Claude · project
+Background work continues · 1 task
+
+💬 Claude · project
+Waiting for input
+
+✅ Claude · project
+Turn finished
+
+❌ Claude · project
+Stopped with an error
+```
+
+Codex receives an `agent-turn-complete` notifier automatically when launched through `agent-box` and uses the same formatted Telegram style.
 
 Useful commands:
 
@@ -168,7 +191,7 @@ agent-box notify status
 agent-box notify disable
 ```
 
-`notify disable` removes the Telegram configuration and only the Claude hooks installed by `agent-box`; unrelated Claude settings and hooks are preserved.
+`notify disable` removes the Telegram configuration, background-notification state, and only the Claude hooks installed by `agent-box`; unrelated Claude settings and hooks are preserved.
 
 ## Self-tests
 
@@ -178,7 +201,7 @@ The small pure-logic test suite is embedded in the launcher itself:
 agent-box selftest
 ```
 
-It checks duration formatting, Claude/Codex usage parsing, notification payload handling, and related logic without starting Podman or accessing the network. There is no separate test framework or test file.
+It checks duration formatting, Claude/Codex usage parsing, notification payload handling, Telegram formatting, and background-task state without starting Podman or accessing the network. There is no separate test framework or test file.
 
 ## Shell and diagnostics
 
