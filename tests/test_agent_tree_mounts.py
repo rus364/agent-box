@@ -126,7 +126,7 @@ class AgentTreeMountTests(unittest.TestCase):
             project = Path(tmp) / "project"
             project.mkdir()
             with mock.patch.object(runtime, "HOST_HOME", home):
-                argv = runtime.machine_podman_argv(
+                argv = runtime.container_argv(
                     Workspace(project, project), [], project, ["claude"])
             flag = next(a for a in argv if f"src={target.resolve()}," in a)
             self.assertIn("ro=true", flag)

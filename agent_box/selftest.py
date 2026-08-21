@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from . import notify, usage
-from .config import TelegramConfig
+from .config import Config
 
 
 def run_selftest() -> int:
@@ -56,8 +56,12 @@ def run_selftest() -> int:
         notify.update_claude_background_state("session-1", [], root)
         check(notify.claude_background_active("session-1", root), False, "background cleared")
 
-    check(TelegramConfig.from_dict({"token": "t", "chat_id": "123"}).notify_chat_id, "123", "legacy config migration")
-    check(TelegramConfig.from_dict(None).configured, False, "empty config")
+    check(Config.from_dict(None).claude.telegram_channel, False, "channel off by default")
+    check(Config.from_dict(None).github.gh_token, False, "gh token passthrough off by default")
+    check(Config.from_dict(None).notifications.usable, False, "notifications off by default")
+    check(Config.from_dict({"notifications": {"enabled": True, "telegram_token": "t",
+                                              "telegram_chat_id": "1"}}).notifications.usable,
+          True, "notifications need token and chat id")
 
     from .workspace import resolve_workspace
     with tempfile.TemporaryDirectory() as tmp:
@@ -86,30 +90,11 @@ def run_selftest() -> int:
         else:
             os.environ["HOME"] = saved_home
 
-    from types import SimpleNamespace
-
-    from . import session_index
-    with tempfile.TemporaryDirectory() as tmp:
-        index = Path(tmp) / "sessions-index.json"
-        session_index.publish(
-            [SimpleNamespace(id="s1", provider="claude", host_project="/p", chat_id=1)], index
-        )
-        check(session_index.find("claude", "/p", index), "s1", "session index lookup")
-        check("chat_id" in index.read_text(), False, "session index carries no chat id")
-
-    from .telegram.providers.base import AnswerResult, AnswerStatus
-    check(AnswerResult(AnswerStatus.RECORDED).delivered, False, "recorded is not delivered")
-    check(AnswerResult(AnswerStatus.RECORDED).accepted, True, "recorded is accepted")
-    check(AnswerResult(AnswerStatus.FAILED).accepted, False, "failed is not accepted")
-
-    from .telegram.providers.codex import CodexProvider
-    check(CodexProvider.CAPABILITIES.get("experimentalApi"), True, "codex experimental API capability")
-
     from .paths import expand_user
     check(expand_user("~"), real_home, "tilde expands to the passwd home")
     check(expand_user("/abs"), Path("/abs"), "absolute path untouched by expand_user")
 
-    from .runtime import SUPPRESS_NOTIFY_ENV
+    from .notify import SUPPRESS_NOTIFY_ENV
     from . import notify as notify_module
     saved_flag = os.environ.get(SUPPRESS_NOTIFY_ENV)
     os.environ[SUPPRESS_NOTIFY_ENV] = "1"
@@ -125,5 +110,11 @@ def run_selftest() -> int:
 
     from .mounts import MountSpec, plan_mounts
     check(len(plan_mounts([MountSpec(Path("/a"), False), MountSpec(Path("/a"), False)])), 1, "mount planning collapses duplicates")
+
+    from . import channel
+    with tempfile.TemporaryDirectory() as tmp:
+        claude_home = Path(tmp)
+        check(channel.plugin_installed(claude_home), False, "channel plugin absent")
+        check(len(channel.missing_requirements(claude_home)), 2, "channel reports both gaps")
 
     return n

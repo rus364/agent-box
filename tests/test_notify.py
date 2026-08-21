@@ -51,19 +51,6 @@ class NotifyLogicTests(unittest.TestCase):
             settings = __import__("json").loads(path.read_text())
             self.assertNotIn("hooks", settings)
 
-    def test_hook_install_migrates_legacy_command(self):
-        import json
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "settings.json"
-            path.write_text(json.dumps({"hooks": {"Stop": [
-                {"hooks": [{"type": "command", "command": "~/.local/bin/agent-box notify claude"}]}
-            ]}}))
-            notify.install_claude_notify_hooks(path)
-            settings = json.loads(path.read_text())
-            commands = [h["command"] for entry in settings["hooks"]["Stop"] for h in entry["hooks"]]
-            self.assertEqual(commands.count("agent-box notify claude"), 1)
-            self.assertNotIn("~/.local/bin/agent-box notify claude", commands)
-
     def test_hook_install_preserves_unrelated_settings(self):
         import json
         with tempfile.TemporaryDirectory() as tmp:

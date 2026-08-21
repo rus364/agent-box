@@ -1,25 +1,22 @@
 """Command-line dispatch. Kept free of business logic beyond argument parsing."""
 from __future__ import annotations
 
-import getpass
 import shutil
 import sys
 from pathlib import Path
 from typing import NoReturn
 
+from . import channel as channel_module
 from . import notify as notify_module
 from . import usage as usage_module
-from .config import RemoteControlConfig, TelegramConfig, load_telegram_config, save_telegram_config
+from .config import CLAUDE_TELEGRAM_CHANNEL, load_config, save_config
 from .errors import AgentBoxError
-from .paths import CLAUDE_HOME, TELEGRAM_CONFIG, expand_user
+from .paths import CLAUDE_HOME, CONFIG_FILE
 
 
 def die(message: str) -> NoReturn:
     print(f"agent-box: {message}", file=sys.stderr)
     raise SystemExit(1)
-
-
-RUNTIME_COMMANDS = {"claude", "codex", "shell", "doctor"}
 
 
 def parse_global_args(argv: list[str]) -> tuple[list[str], list[str]]:
@@ -58,26 +55,24 @@ def parse_global_args(argv: list[str]) -> tuple[list[str], list[str]]:
 def usage_text() -> None:
     print('''Usage:
   agent-box [--mount PATH[:ro]]... [codex|claude|shell|doctor] [arguments...]
-  agent-box usage <codex|claude> [--statusline]
-  agent-box usage all [--statusline]
-  agent-box notify <setup|test|status|disable>
-  agent-box telegram <serve|status|enable|disable>
-  agent-box telegram allow <add|remove|list> [telegram_user_id]
-  agent-box telegram roots <add|remove|list> [path]
+  agent-box config [show|check]
+  agent-box usage <codex|claude|all> [--statusline]
+  agent-box notify <test|claude|codex>
   agent-box selftest
-  agent-box shell [bash arguments...]
-  agent-box doctor
-  agent-box build
-  agent-box update
-  agent-box rebuild
+  agent-box build | update | rebuild
 
-Environment:
-  AGENT_BOX_AGENT             Default agent when claude/codex is omitted (default: claude)
-  AGENT_BOX_IMAGE             Container image name (default: localhost/agent-box:latest)
-  AGENT_BOX_KVM=0              Disable KVM passthrough
-  AGENT_BOX_GH_TOKEN=0
-                               Do not pass the host GitHub token in as GH_TOKEN
-  AGENT_BOX_WORKSPACE_ROOT     Override the host directory mounted into the container
+Configuration:
+  agent-box config          Interactive setup. Persists to
+                            ~/.config/agent-box/config.json
+  agent-box config show     Print the current settings (token redacted)
+  agent-box config check    Verify the official Claude Telegram channel setup
+
+Environment (overrides for a single command):
+  AGENT_BOX_AGENT           Default agent when claude/codex is omitted (default: claude)
+  AGENT_BOX_IMAGE           Container image name (default: localhost/agent-box:latest)
+  AGENT_BOX_KVM=0           Disable KVM passthrough
+  AGENT_BOX_GH_TOKEN=0|1    Withhold / force the host GitHub token for this run
+  AGENT_BOX_WORKSPACE_ROOT  Override the host directory mounted into the container
 
 --mount PATH[:ro] additionally bind-mounts PATH (an existing absolute host
 directory) into the container at that same path, read-write by default or
@@ -91,10 +86,8 @@ Examples:
   agent-box codex
   agent-box --mount ~/code claude
   agent-box --mount /mnt/data/specs:ro --mount /srv/generated codex
-  agent-box usage all
-  agent-box notify setup
-  agent-box telegram serve
-  agent-box selftest''')
+  agent-box config
+  agent-box usage all''')
 
 
 # -- usage -----------------------------------------------------------------
@@ -129,191 +122,138 @@ def usage_command(args: list[str]) -> None:
         die(f"unsupported usage provider '{provider}'; expected codex, claude, or all")
 
 
-# -- notify (legacy outbound-only commands, still supported) ---------------
-
-def notify_setup() -> None:
-    token = getpass.getpass("Telegram bot token: ")
-    chat_id = input("Telegram chat ID: ")
-    if not token or not chat_id:
-        die("Telegram bot token and chat ID cannot be empty")
-    existing = load_telegram_config()
-    remote = existing.remote_control if existing else RemoteControlConfig()
-    config = TelegramConfig(token=token, notify_chat_id=chat_id, remote_control=remote)
-    save_telegram_config(config)
-    try:
-        notify_module.install_claude_notify_hooks(CLAUDE_HOME / "settings.json")
-        if not notify_module.telegram_send("agent-box · Telegram notifications enabled"):
-            raise AgentBoxError("Telegram test failed")
-    except BaseException:
-        TELEGRAM_CONFIG.unlink(missing_ok=True)
-        try:
-            notify_module.remove_claude_notify_hooks(CLAUDE_HOME / "settings.json")
-        except Exception:
-            pass
-        raise
-    print("agent-box: Telegram notifications enabled for Claude and Codex")
-
+# -- notify ----------------------------------------------------------------
+#
+# Setup lives in `agent-box config`; what stays here is the hook entry points
+# the container calls (`notify claude` / `notify codex`) plus a manual test.
 
 def notify_command(args: list[str]) -> None:
     if not args:
-        die("notify action required; expected setup, test, status, or disable")
+        die("notify action required; expected test, claude, or codex")
     action, rest = args[0], args[1:]
-    if action == "setup":
-        if rest: die("agent-box notify setup takes no arguments")
-        notify_setup()
-    elif action == "test":
-        if rest: die("agent-box notify test takes no arguments")
-        config = load_telegram_config()
-        if config is None or not config.configured: die("Telegram notifications are not configured")
-        if not notify_module.telegram_send("🧪 <b>agent-box</b>\nTest notification"): die("Telegram test failed")
+    if action == "test":
+        if rest:
+            die("agent-box notify test takes no arguments")
+        if not load_config().notifications.usable:
+            die("Telegram notifications are not configured; run 'agent-box config'")
+        if not notify_module.telegram_send("🧪 <b>agent-box</b>\nTest notification"):
+            die("Telegram test failed")
         print("agent-box: test notification sent")
-    elif action == "status":
-        if rest: die("agent-box notify status takes no arguments")
-        config = load_telegram_config()
-        enabled = config is not None and config.configured
-        print("Telegram notifications: enabled" if enabled else "Telegram notifications: disabled")
-        if enabled:
-            print(f"Config: {TELEGRAM_CONFIG}")
-            print(f"Remote control: {'enabled' if config.remote_control.enabled else 'disabled'}")
-    elif action == "disable":
-        if rest: die("agent-box notify disable takes no arguments")
-        TELEGRAM_CONFIG.unlink(missing_ok=True)
-        notify_module.remove_claude_notify_hooks(CLAUDE_HOME / "settings.json")
-        import shutil as _shutil
-        from .paths import NOTIFY_STATE_ROOT, TELEGRAM_STATE_ROOT
-        _shutil.rmtree(NOTIFY_STATE_ROOT, ignore_errors=True)
-        _shutil.rmtree(TELEGRAM_STATE_ROOT, ignore_errors=True)
-        print("agent-box: Telegram notifications disabled")
     elif action == "claude":
-        if rest: die("agent-box notify claude takes no arguments")
+        if rest:
+            die("agent-box notify claude takes no arguments")
         notify_module.notify_claude()
     elif action == "codex":
-        if len(rest) > 1: die("agent-box notify codex accepts at most one payload argument")
+        if len(rest) > 1:
+            die("agent-box notify codex accepts at most one payload argument")
         notify_module.notify_codex(rest[0] if rest else None)
     else:
-        die("notify action required; expected setup, test, status, or disable")
+        die(f"unsupported notify action '{action}'; expected test, claude, or codex")
 
 
-# -- telegram remote control -------------------------------------------
+# -- config ----------------------------------------------------------------
 
-def _require_config() -> TelegramConfig:
-    config = load_telegram_config()
-    if config is None or not config.configured:
-        die("Telegram is not configured; run 'agent-box notify setup' first")
-    return config
+def _redact(token: str) -> str:
+    if not token:
+        return "(not set)"
+    return f"{token[:6]}…{token[-4:]}" if len(token) > 12 else "(set)"
 
 
-def telegram_command(args: list[str], script_dir: Path) -> None:
-    if not args:
-        die("telegram action required; expected serve, status, enable, disable, allow, or roots")
-    action, rest = args[0], args[1:]
-    if action == "serve":
-        telegram_serve(rest, script_dir)
-    elif action == "status":
-        telegram_status()
-    elif action == "enable":
-        telegram_set_enabled(True)
-    elif action == "disable":
-        telegram_set_enabled(False)
-    elif action == "allow":
-        telegram_allow(rest)
-    elif action == "roots":
-        telegram_roots(rest)
+def _prompt_bool(label: str, current: bool) -> bool:
+    default = "Y/n" if current else "y/N"
+    answer = input(f"{label} [{default}]: ").strip().lower()
+    if not answer:
+        return current
+    return answer in {"y", "yes", "on", "true", "1"}
+
+
+def _prompt_text(label: str, current: str, secret: bool = False) -> str:
+    shown = _redact(current) if secret else (current or "(not set)")
+    answer = input(f"{label} [{shown}]: ").strip()
+    return answer or current
+
+
+def config_show() -> None:
+    config = load_config()
+    print(f"Config file: {CONFIG_FILE}{'' if CONFIG_FILE.is_file() else ' (not created yet; showing defaults)'}")
+    print()
+    print(f"  Claude Telegram channel     {'on' if config.claude.telegram_channel else 'off'}")
+    print(f"  Outbound notifications      {'on' if config.notifications.enabled else 'off'}")
+    print(f"    bot token                 {_redact(config.notifications.telegram_token)}")
+    print(f"    chat id                   {config.notifications.telegram_chat_id or '(not set)'}")
+    print(f"  GitHub token passthrough    {'on' if config.github.gh_token else 'off'}")
+    print(f"  GitHub gh config copy       {'on' if config.github.gh_config else 'off'}")
+    print(f"  Git config copy             {'on' if config.git.config else 'off'}")
+    print(f"  Provider env passthrough    {'on' if config.providers.env else 'off'}")
+
+
+def config_check() -> None:
+    """Report on the official Claude Telegram channel, without changing anything."""
+    config = load_config()
+    print(f"Claude Telegram channel: {'enabled' if config.claude.telegram_channel else 'disabled'} in agent-box config")
+    print(f"Plugin installed:        {'yes' if channel_module.plugin_installed() else 'no'}")
+    print(f"Bot token configured:    {'yes' if channel_module.token_configured() else 'no'}")
+    missing = channel_module.missing_requirements()
+    print()
+    if missing:
+        print(channel_module.setup_instructions())
+        raise SystemExit(1)
+    print(f"Ready. 'agent-box claude' will pass --channels {CLAUDE_TELEGRAM_CHANNEL}")
+
+
+def config_interactive() -> None:
+    config = load_config()
+    print(f"agent-box configuration ({CONFIG_FILE})")
+    print("Press Enter to keep the current value shown in brackets.\n")
+
+    print("-- Claude Telegram channel (Anthropic's official plugin) --")
+    print("Controls the live 'agent-box claude' session from Telegram.")
+    config.claude.telegram_channel = _prompt_bool("Enable Claude Telegram channel", config.claude.telegram_channel)
+
+    print("\n-- Outbound Telegram notifications --")
+    print("One-way pings only (Codex turn complete, Claude waiting/finished/failed).")
+    config.notifications.enabled = _prompt_bool("Enable outbound notifications", config.notifications.enabled)
+    if config.notifications.enabled:
+        config.notifications.telegram_token = _prompt_text(
+            "  Telegram bot token", config.notifications.telegram_token, secret=True)
+        config.notifications.telegram_chat_id = _prompt_text(
+            "  Telegram chat id", config.notifications.telegram_chat_id)
+        if not config.notifications.telegram_token or not config.notifications.telegram_chat_id:
+            print("  note: notifications stay inactive until both a token and a chat id are set")
+
+    print("\n-- Host integration (each exposes host data to the container) --")
+    config.github.gh_token = _prompt_bool(
+        "Pass the host GitHub token in as GH_TOKEN", config.github.gh_token)
+    config.github.gh_config = _prompt_bool(
+        "Copy the host ~/.config/gh (contains that token) in", config.github.gh_config)
+    config.git.config = _prompt_bool(
+        "Copy the host git config (user.name/user.email) in", config.git.config)
+    config.providers.env = _prompt_bool(
+        "Forward provider variables from this shell (ANTHROPIC_API_KEY, proxies)", config.providers.env)
+
+    save_config(config)
+    settings = CLAUDE_HOME / "settings.json"
+    if config.notifications.enabled:
+        notify_module.install_claude_notify_hooks(settings)
     else:
-        die(f"unsupported telegram action '{action}'")
+        notify_module.remove_claude_notify_hooks(settings)
+
+    print(f"\nSaved {CONFIG_FILE}\n")
+    config_show()
+    if config.claude.telegram_channel and channel_module.missing_requirements():
+        print()
+        print(channel_module.setup_instructions())
 
 
-def telegram_serve(args: list[str], script_dir: Path) -> None:
-    if args:
-        die("agent-box telegram serve takes no arguments")
-    config = _require_config()
-    if not config.remote_control.enabled:
-        die("remote control is disabled; run 'agent-box telegram enable' after configuring 'telegram allow'")
-    if not config.remote_control.allowed_user_ids:
-        die("no allowed Telegram user IDs configured; run 'agent-box telegram allow add <user_id>'")
-    if not (script_dir / "Containerfile").is_file():
-        die(f"Containerfile not found: {script_dir / 'Containerfile'}")
-    from .telegram.bot import TelegramBot
-    bot = TelegramBot(config, script_dir)
-    print("agent-box: Telegram remote-control daemon starting (long polling)")
-    bot.run()
-
-
-def telegram_status() -> None:
-    config = load_telegram_config()
-    if config is None or not config.configured:
-        print("Telegram: not configured")
-        return
-    rc = config.remote_control
-    print(f"Notifications: {'configured' if config.notify_chat_id else 'not configured'}")
-    print(f"Remote control: {'enabled' if rc.enabled else 'disabled'}")
-    print(f"Allowed user IDs: {', '.join(str(u) for u in rc.allowed_user_ids) or '(none)'}")
-    print(f"Workspace roots: {', '.join(rc.workspace_roots) or '(none)'}")
-
-
-def telegram_set_enabled(enabled: bool) -> None:
-    config = _require_config()
-    if enabled and not config.remote_control.allowed_user_ids:
-        die("cannot enable remote control with an empty allowlist; run 'agent-box telegram allow add <user_id>' first")
-    config.remote_control.enabled = enabled
-    save_telegram_config(config)
-    print(f"agent-box: Telegram remote control {'enabled' if enabled else 'disabled'}")
-
-
-def telegram_allow(args: list[str]) -> None:
+def config_command(args: list[str]) -> None:
     if not args:
-        die("expected: agent-box telegram allow <add|remove|list> [telegram_user_id]")
-    action, rest = args[0], args[1:]
-    config = _require_config()
-    if action == "list":
-        for uid in config.remote_control.allowed_user_ids:
-            print(uid)
-        return
-    if not rest:
-        die(f"agent-box telegram allow {action} requires a Telegram user ID")
-    try:
-        user_id = int(rest[0])
-    except ValueError:
-        die("Telegram user ID must be an integer")
-    ids = config.remote_control.allowed_user_ids
-    if action == "add":
-        if user_id not in ids:
-            ids.append(user_id)
-    elif action == "remove":
-        config.remote_control.allowed_user_ids = [u for u in ids if u != user_id]
+        config_interactive()
+    elif args == ["show"]:
+        config_show()
+    elif args == ["check"]:
+        config_check()
     else:
-        die(f"unsupported telegram allow action '{action}'")
-    save_telegram_config(config)
-    print(f"agent-box: allowlist updated ({len(config.remote_control.allowed_user_ids)} user(s))")
-
-
-def telegram_roots(args: list[str]) -> None:
-    if not args:
-        die("expected: agent-box telegram roots <add|remove|list> [path]")
-    action, rest = args[0], args[1:]
-    config = _require_config()
-    if action == "list":
-        for root in config.remote_control.workspace_roots:
-            print(root)
-        return
-    if not rest:
-        die(f"agent-box telegram roots {action} requires a path")
-    raw = expand_user(rest[0])
-    # Stored as a canonical absolute path so the daemon's cwd at 'telegram
-    # serve' time can never change what this security-relevant setting means.
-    path = str(raw.resolve())
-    roots = config.remote_control.workspace_roots
-    if action == "add":
-        if not raw.is_dir():
-            die(f"not a directory: {rest[0]}")
-        if path not in roots:
-            roots.append(path)
-    elif action == "remove":
-        config.remote_control.workspace_roots = [r for r in roots if r != path]
-    else:
-        die(f"unsupported telegram roots action '{action}'")
-    save_telegram_config(config)
-    print(f"agent-box: workspace roots updated ({len(config.remote_control.workspace_roots)} root(s))")
+        die("expected: agent-box config [show|check]")
 
 
 # -- selftest ----------------------------------------------------------
@@ -326,19 +266,21 @@ def selftest() -> None:
 
 # -- main ----------------------------------------------------------------
 
+NON_RUNTIME = {"usage", "notify", "config", "selftest", "help", "-h", "--help", "build", "update", "rebuild"}
+
+
 def main() -> None:
     mounts, args = parse_global_args(sys.argv[1:])
     script_dir = Path(__file__).resolve().parent.parent
-    non_runtime_subcommands = {"usage", "notify", "telegram", "selftest", "help", "-h", "--help", "build", "update", "rebuild"}
     try:
-        if mounts and args and args[0] in non_runtime_subcommands:
+        if mounts and args and args[0] in NON_RUNTIME:
             die("--mount is only valid before claude/codex/shell/doctor")
         if args and args[0] == "usage":
             usage_command(args[1:]); return
         if args and args[0] == "notify":
             notify_command(args[1:]); return
-        if args and args[0] == "telegram":
-            telegram_command(args[1:], script_dir); return
+        if args and args[0] == "config":
+            config_command(args[1:]); return
         if args and args[0] == "selftest":
             if len(args) != 1: die("agent-box selftest takes no arguments")
             selftest(); return
@@ -354,5 +296,5 @@ def main() -> None:
         runtime.runtime_main(args, script_dir, mounts)
     except AgentBoxError as exc:
         die(str(exc))
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, EOFError):
         raise SystemExit(130)
