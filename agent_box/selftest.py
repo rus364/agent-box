@@ -1,0 +1,69 @@
+"""`agent-box selftest`: a fast smoke test with no Podman/network dependency.
+
+This exists for convenience (`agent-box selftest` right after install). The
+real, comprehensive test suite lives under `tests/` and runs via
+`python3 -m unittest`.
+"""
+from __future__ import annotations
+
+import tempfile
+from pathlib import Path
+from typing import Any
+
+from . import notify, usage
+from .config import TelegramConfig
+
+
+def run_selftest() -> int:
+    n = 0
+
+    def check(actual: Any, expected: Any, label: str) -> None:
+        nonlocal n
+        n += 1
+        if actual != expected:
+            raise AssertionError(f"{label}: expected {expected!r}, got {actual!r}")
+
+    check(usage.compact_time(3660), "1h1m", "duration")
+    check(usage.compact_time(176400), "2d1h", "duration days")
+    check(usage.format_codex_usage({"rate_limit": {
+        "primary_window": {"used_percent": 25, "limit_window_seconds": 18000, "reset_after_seconds": 3660},
+        "secondary_window": {"used_percent": 40, "limit_window_seconds": 604800, "reset_after_seconds": 176400},
+    }}), "75/60 · 1h1m/2d1h", "codex windows")
+    check(usage.format_codex_usage({"rate_limit": {
+        "primary_window": {"used_percent": 100, "limit_window_seconds": 604800, "reset_after_seconds": 385907},
+        "secondary_window": None,
+    }}), "—/0 · —/4d11h", "codex weekly")
+    now = 1_800_000_000
+    check(usage.format_claude_usage({"rate_limits": {
+        "five_hour": {"used_percentage": 25, "resets_at": now + 3660},
+        "seven_day": {"used_percentage": 40, "resets_at": now + 176400},
+    }}, now), "75/60 · 1h1m/2d1h", "claude windows")
+    check(notify.notify_project("/tmp/project"), "project", "project")
+    check(notify.notify_project("/"), "unknown", "root project")
+    check(notify.parse_payload("bad"), {}, "bad json")
+    check(notify.claude_background_tasks({}), None, "background tasks absent")
+    check(notify.claude_background_tasks({"background_tasks": []}), [], "background tasks empty")
+    check(
+        notify.telegram_notice("💬", "Claude", "a<b", "Waiting & ready"),
+        "💬 <b>Claude · a&lt;b</b>\nWaiting &amp; ready",
+        "telegram html",
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        notify.update_claude_background_state("session-1", [{"id": "task-1"}], root)
+        check(notify.claude_background_active("session-1", root), True, "background active")
+        notify.update_claude_background_state("session-1", [], root)
+        check(notify.claude_background_active("session-1", root), False, "background cleared")
+
+    check(TelegramConfig.from_dict({"token": "t", "chat_id": "123"}).notify_chat_id, "123", "legacy config migration")
+    check(TelegramConfig.from_dict(None).configured, False, "empty config")
+
+    from .workspace import resolve_workspace
+    with tempfile.TemporaryDirectory() as tmp:
+        sub = Path(tmp) / "sub"
+        sub.mkdir()
+        ws = resolve_workspace(cwd=sub)
+        check(ws.host_root, sub.resolve(), "workspace root outside git defaults to cwd")
+        check(str(ws.relative), ".", "workspace relative path")
+
+    return n
