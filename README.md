@@ -119,29 +119,24 @@ Usage reporting is built into `agent-box`; there are no separate helper scripts:
 ```bash
 agent-box usage codex
 agent-box usage claude
+agent-box usage all
 ```
 
-Both commands query the corresponding subscription usage endpoint without sending a model prompt. They print remaining short/weekly quota and time until reset:
-
-```text
-83/61 · 3h24m/4d11h
-```
-
-An unavailable window is shown as `—`. Responses are cached for 60 seconds to avoid unnecessary polling. The commands run directly on the host and do not start a Podman container.
-
-Claude Code's `statusLine` can show both subscriptions side by side through:
-
-```bash
-agent-box usage all --statusline
-```
-
-The combined output looks like:
+The combined command prints both subscriptions on one line, making it convenient for direct use in a terminal:
 
 ```text
 Claude 97/88 · 4h51m/5d23h │ Codex 83/61 · 3h24m/4d11h
 ```
 
-Claude usage comes from the status-line payload that Claude Code already provides. Codex usage uses the same cached subscription query as `agent-box usage codex`. If Codex usage is unavailable, the Claude status line still renders and the Codex side is shown as `—/— · —/—`.
+Both providers use a 60-second cache to avoid unnecessary polling. The commands run directly on the host and do not start a Podman container.
+
+Claude Code's `statusLine` uses the same combined output through:
+
+```bash
+agent-box usage all --statusline
+```
+
+In status-line mode, Claude usage normally comes from the payload that Claude Code provides on stdin. If the payload is absent or does not contain rate-limit data, `agent-box` falls back to the regular cached/OAuth Claude usage path. Codex usage uses the same cached subscription query as `agent-box usage codex`.
 
 When `agent-box` sees either the old `~/.local/bin/claude-usage --statusline` command or the previous `~/.local/bin/agent-box usage claude --statusline` command in `~/.claude/settings.json`, it migrates it automatically to the combined command while preserving the rest of the settings file.
 
