@@ -239,6 +239,18 @@ class LaunchDecisionTests(unittest.TestCase):
         self.assertEqual(env, ["AGENT_BOX_SUPPRESS_NOTIFY=1"])
         self.assertIsNotNone(channel.channel_owner(self.lock))
 
+    def test_init_only_does_not_take_the_channel(self):
+        flags, env, _ = self._decide(rest=["--init-only"])
+        self.assertEqual(flags, [])
+        self.assertEqual(env, ["TELEGRAM_BOT_TOKEN="])
+        self.assertIsNone(channel.channel_owner(self.lock))
+
+    def test_background_exec_does_not_take_the_channel(self):
+        flags, env, _ = self._decide(rest=["--bg", "--exec", "pytest -x"])
+        self.assertEqual(flags, [])
+        self.assertEqual(env, ["TELEGRAM_BOT_TOKEN="])
+        self.assertIsNone(channel.channel_owner(self.lock))
+
     def test_second_session_falls_back_to_a_normal_claude(self):
         self._decide()
         flags, env, err = self._decide()
@@ -405,6 +417,33 @@ class ClaudeManagementArgvTests(unittest.TestCase):
         ])
         self.assertEqual(extra_env, ["AGENT_BOX_SUPPRESS_NOTIFY=1"])
         self.assertIsNotNone(channel.channel_owner(self.lock))
+
+    def test_init_only_keeps_argv_without_session_flags(self):
+        rest = ["--init-only"]
+        argv, extra_env = self._launch(rest)
+        self.assertEqual(argv[-2:], ["claude", *rest])
+        self.assertNotIn("--channels", argv)
+        self.assertNotIn("--dangerously-skip-permissions", argv)
+        self.assertIn("TELEGRAM_BOT_TOKEN=", extra_env)
+        self.assertIsNone(channel.channel_owner(self.lock))
+
+    def test_background_exec_keeps_argv_without_session_flags(self):
+        rest = ["--bg", "--exec", "pytest -x"]
+        argv, extra_env = self._launch(rest)
+        self.assertEqual(argv[-4:], ["claude", *rest])
+        self.assertNotIn("--channels", argv)
+        self.assertNotIn("--dangerously-skip-permissions", argv)
+        self.assertIn("TELEGRAM_BOT_TOKEN=", extra_env)
+        self.assertIsNone(channel.channel_owner(self.lock))
+
+    def test_leading_model_version_keeps_argv_without_session_flags(self):
+        rest = ["--model", "opus", "--version"]
+        argv, extra_env = self._launch(rest)
+        self.assertEqual(argv[-4:], ["claude", *rest])
+        self.assertNotIn("--channels", argv)
+        self.assertNotIn("--dangerously-skip-permissions", argv)
+        self.assertIn("TELEGRAM_BOT_TOKEN=", extra_env)
+        self.assertIsNone(channel.channel_owner(self.lock))
 
 
 class RuntimeNotificationSelectionTests(unittest.TestCase):

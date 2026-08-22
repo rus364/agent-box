@@ -606,6 +606,28 @@ _CLAUDE_MODEL_PREFIX_MANAGEMENT_COMMANDS = frozenset({
     "upgrade",
 })
 
+_CLAUDE_INFORMATION_FLAGS = frozenset({"--help", "-h", "--version", "-v"})
+_CLAUDE_BACKGROUND_FLAGS = frozenset({"--bg", "--background"})
+
+
+def is_claude_non_session_flag_invocation(rest: list[str]) -> bool:
+    """Whether verified flag-only syntax dispatches without a Claude session.
+
+    Only inspect arguments before ``--`` so a prompt such as ``--init-only``
+    remains session input.  This intentionally covers only documented forms:
+    information flags, ``--init-only``, and ``--bg/--background --exec``.
+    """
+    try:
+        before_separator = rest[:rest.index("--")]
+    except ValueError:
+        before_separator = rest
+    flags = frozenset(before_separator)
+    if flags & _CLAUDE_INFORMATION_FLAGS or "--init-only" in flags:
+        return True
+    return bool(flags & _CLAUDE_BACKGROUND_FLAGS) and any(
+        arg == "--exec" or arg.startswith("--exec=") for arg in before_separator
+    )
+
 
 def is_claude_session_invocation(rest: list[str]) -> bool:
     """Whether Claude will dispatch this argv to a session.
@@ -618,9 +640,9 @@ def is_claude_session_invocation(rest: list[str]) -> bool:
     """
     if not rest:
         return True
-    first = rest[0]
-    if first in {"--help", "-h", "--version", "-v"}:
+    if is_claude_non_session_flag_invocation(rest):
         return False
+    first = rest[0]
     if first == "--":
         return True
     if not first.startswith("-"):
