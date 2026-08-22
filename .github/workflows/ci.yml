@@ -13,6 +13,20 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  lint:
+    name: Ruff
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7.0.1
+
+      - name: Run Ruff
+        uses: astral-sh/ruff-action@v4.1.0
+        with:
+          version: "latest"
+          args: "check --select E4,E9,F"
+
   tests:
     name: Python ${{ matrix.python-version }}
     runs-on: ubuntu-24.04
@@ -21,7 +35,6 @@ jobs:
       fail-fast: false
       matrix:
         python-version:
-          - "3.10"
           - "3.11"
           - "3.12"
           - "3.13"
@@ -35,6 +48,11 @@ jobs:
         uses: actions/setup-python@v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
+
+      - name: Configure test Git identity
+        run: |
+          git config --global user.name "agent-box CI"
+          git config --global user.email "agent-box-ci@example.invalid"
 
       - name: Run fast self-tests
         run: python agent-box selftest
