@@ -48,13 +48,14 @@ STALE_NOTIFY_COMMAND = "~/.local/bin/agent-box notify claude"
 #: interactive replies, prompts and questions to the paired chat, so only the
 #: matching ``Notification`` hooks need to stand down.
 SUPPRESS_NOTIFY_ENV = "AGENT_BOX_SUPPRESS_NOTIFY"
+OFFICIAL_CHANNEL_NOTIFICATION_TYPES = frozenset({"permission_prompt", "idle_prompt"})
 
 
 def outbound_suppressed() -> bool:
     return bool(os.environ.get(SUPPRESS_NOTIFY_ENV, "").strip())
 
 
-def claude_interaction_suppressed(event: str) -> bool:
+def claude_interaction_suppressed(event: str, kind: str = "") -> bool:
     """Whether the official Claude Telegram channel already owns ``event``.
 
     The channel relays interactive prompts to its paired chat, so agent-box's
@@ -62,7 +63,11 @@ def claude_interaction_suppressed(event: str) -> bool:
     are lifecycle signals, not interactive channel traffic; keep sending them
     so the notification bot reports terminal success/failure reliably.
     """
-    return outbound_suppressed() and event == "Notification"
+    return (
+        outbound_suppressed()
+        and event == "Notification"
+        and kind in OFFICIAL_CHANNEL_NOTIFICATION_TYPES
+    )
 
 
 def sync_credentials(config: Any, path: Path = NOTIFY_CREDENTIALS) -> None:
@@ -225,7 +230,7 @@ def notify_claude() -> None:
     # lifecycle hooks below.  Decide that at the Claude-event boundary rather
     # than silently dropping every notification in telegram_send(), which is
     # also shared with Codex.
-    if claude_interaction_suppressed(event):
+    if claude_interaction_suppressed(event, kind):
         return
 
     if (event, kind) == ("Notification", "permission_prompt"):
@@ -275,16 +280,15 @@ def hook_entry(matcher: str | None = None) -> dict[str, Any]:
 
 
 def install_claude_notify_hooks(settings_path: Path) -> None:
-    from .claude_settings import install_hook_entries, remove_hook_commands
+    from .claude_settings import reconcile_hook_entries
     # The stale command is removed first (a separate, pre-existing owned
     # command from an older agent-box), then the current entries are
     # installed -- both go through the same shared, generic mechanics.
-    remove_hook_commands(settings_path, {
+    reconcile_hook_entries(settings_path, {
         "Notification": (STALE_NOTIFY_COMMAND,),
         "Stop": (STALE_NOTIFY_COMMAND,),
         "StopFailure": (STALE_NOTIFY_COMMAND,),
-    })
-    install_hook_entries(settings_path, [
+    }, [
         ("Notification", hook_entry("permission_prompt")),
         ("Notification", hook_entry("idle_prompt")),
         ("Stop", hook_entry()),

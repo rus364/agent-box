@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from agent_box import notify, runtime
+from agent_box import claude_settings, notify, runtime
 from agent_box.config import Config, NotificationsConfig
 from agent_box.mounts import MountSpec
 from agent_box.workspace import Workspace
@@ -335,9 +335,16 @@ class ClaudeNotifyHookLifecycleTests(IsolatedRuntimeTest):
                 mock.patch.object(runtime, "CLAUDE_HOME", claude_home),
                 mock.patch.object(runtime.os, "execvp", side_effect=ExecCalled),
             ):
-                for _ in range(2):
+                with mock.patch.object(
+                    claude_settings, "atomic_write_json", wraps=claude_settings.atomic_write_json,
+                ) as write_json:
                     with self.assertRaises(ExecCalled):
                         runtime.runtime_main(["claude"], Path(__file__).resolve().parent.parent)
+                    self.assertEqual(write_json.call_count, 1, "migration must write settings once")
+                    write_json.reset_mock()
+                    with self.assertRaises(ExecCalled):
+                        runtime.runtime_main(["claude"], Path(__file__).resolve().parent.parent)
+                    write_json.assert_not_called()
 
             settings = json.loads(settings_path.read_text())
             self.assertEqual(settings["model"], "opus")
@@ -364,6 +371,38 @@ class ClaudeNotifyHookLifecycleTests(IsolatedRuntimeTest):
                             stale_count += 1
             self.assertEqual(stale_count, 0)
             self.assertEqual(managed_counts, {"Notification": 2, "Stop": 1, "StopFailure": 1})
+
+    def test_host_claude_launch_migrates_legacy_notify_hook(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            claude_home = root / "claude"
+            claude_home.mkdir()
+            settings_path = claude_home / "settings.json"
+            settings_path.write_text(json.dumps({"hooks": {"Stop": [{"hooks": [
+                {"type": "command", "command": notify.STALE_NOTIFY_COMMAND},
+                {"type": "command", "command": "my-stop-hook"},
+            ]}]}}))
+            config = Config(notifications=NotificationsConfig(
+                enabled=True, telegram_token="token", telegram_chat_id="chat",
+            ))
+            with (
+                mock.patch.object(runtime.shutil, "which", return_value="/usr/bin/claude"),
+                mock.patch.object(runtime, "resolve_workspace", return_value=Workspace(root, root)),
+                mock.patch.object(runtime, "load_config", return_value=config),
+                mock.patch.object(runtime, "CLAUDE_HOME", claude_home),
+                mock.patch.object(runtime.subprocess, "call", return_value=0),
+            ):
+                self.assertEqual(runtime.host_main("claude", []), 0)
+
+            settings = json.loads(settings_path.read_text())
+            commands = [
+                handler["command"]
+                for entry in settings["hooks"]["Stop"]
+                for handler in entry["hooks"]
+            ]
+            self.assertNotIn(notify.STALE_NOTIFY_COMMAND, commands)
+            self.assertIn(notify.NOTIFY_COMMAND, commands)
+            self.assertIn("my-stop-hook", commands)
 
 
 class HostModeTests(IsolatedRuntimeTest):

@@ -131,6 +131,11 @@ class NotifyLogicTests(unittest.TestCase):
                 }, official_channel=True)
                 self.assertEqual(notices, [])
 
+    def test_official_channel_does_not_claim_unknown_notification_types(self):
+        with mock.patch.dict(os.environ, {notify.SUPPRESS_NOTIFY_ENV: "1"}, clear=True):
+            self.assertFalse(notify.claude_interaction_suppressed("Notification"))
+            self.assertFalse(notify.claude_interaction_suppressed("Notification", "future_prompt"))
+
     def test_normal_claude_session_keeps_all_notification_behavior(self):
         cases = [
             (

@@ -24,24 +24,26 @@ def uses_command(entry: Any, command: str) -> bool:
     )
 
 
-def install_hook_entries(settings_path: Path, entries: list[tuple[str, dict[str, Any]]]) -> None:
-    """Append each ``(event, entry)`` pair to ``settings_path`` if an entry
-    with the same ``matcher`` doesn't already carry that command as one of
-    its handlers. Idempotent, and safe against a *mixed* entry -- one an
-    earlier install (or a user) already combined our command with other
-    handlers under the same matcher -- which must not gain a second,
-    duplicate outer entry for the same command.
-    """
-    settings = read_json(settings_path) if settings_path.exists() else {}
-    if not isinstance(settings, dict):
-        raise AgentBoxError(f"{settings_path} must contain a JSON object")
-    hooks = settings.setdefault("hooks", {})
+def _install_hook_entries(settings: dict[str, Any], entries: list[tuple[str, dict[str, Any]]]) -> bool:
+    """Apply managed entries in memory and report whether they changed it."""
+    if not entries:
+        return False
+    changed = False
+    hooks = settings.get("hooks")
+    if hooks is None:
+        hooks = {}
+        settings["hooks"] = hooks
+        changed = True
     if not isinstance(hooks, dict):
-        raise AgentBoxError(f"{settings_path}: hooks must be a JSON object")
+        raise AgentBoxError("hooks must be a JSON object")
     for event, entry in entries:
-        items = hooks.setdefault(event, [])
+        items = hooks.get(event)
+        if items is None:
+            items = []
+            hooks[event] = items
+            changed = True
         if not isinstance(items, list):
-            raise AgentBoxError(f"{settings_path}: hooks.{event} must be a list")
+            raise AgentBoxError(f"hooks.{event} must be a list")
         matcher = entry.get("matcher")
         commands = {
             h.get("command") for h in entry.get("hooks", [])
@@ -54,13 +56,12 @@ def install_hook_entries(settings_path: Path, entries: list[tuple[str, dict[str,
         )
         if not already_present:
             items.append(entry)
-    atomic_write_json(settings_path, settings)
+            changed = True
+    return changed
 
 
-def remove_hook_commands(settings_path: Path, owned: dict[str, tuple[str, ...]]) -> None:
-    """Remove only the *handlers* whose command is in ``owned[event]``, per
-    event -- operating inside each outer entry's ``hooks`` array rather than
-    dropping the whole entry.
+def _remove_hook_commands(settings: dict[str, Any], owned: dict[str, tuple[str, ...]]) -> bool:
+    """Remove managed handlers in memory and report whether they changed it.
 
     Claude hook entries can group several handlers (and a caller's own,
     unrelated handler) under one outer matcher/group object; agent-box may
@@ -69,37 +70,73 @@ def remove_hook_commands(settings_path: Path, owned: dict[str, tuple[str, ...]])
     other field on a surviving entry (``matcher``, ``timeout``,
     ``statusMessage``, ``once``, or anything else) is preserved unchanged.
     """
-    if not settings_path.exists():
-        return
-    settings = read_json(settings_path)
-    if not isinstance(settings, dict):
-        raise AgentBoxError(f"{settings_path} must contain a JSON object")
     hooks = settings.get("hooks")
-    if isinstance(hooks, dict):
-        cleaned = {}
-        for event, items in hooks.items():
-            if not isinstance(items, list):
-                cleaned[event] = items
-                continue
-            commands = owned.get(event, ())
-            remaining_items = []
-            for item in items:
-                if not commands or not isinstance(item, dict) or not isinstance(item.get("hooks"), list):
-                    remaining_items.append(item)
-                    continue
-                filtered_handlers = [
-                    h for h in item["hooks"]
-                    if not (isinstance(h, dict) and h.get("type") == "command" and h.get("command") in commands)
-                ]
-                if not filtered_handlers:
-                    continue  # every handler in this entry was ours; drop the entry
-                if len(filtered_handlers) != len(item["hooks"]):
-                    item = {**item, "hooks": filtered_handlers}
+    if not isinstance(hooks, dict):
+        return False
+    changed = False
+    cleaned: dict[str, Any] = {}
+    for event, items in hooks.items():
+        commands = owned.get(event, ())
+        if not isinstance(items, list) or not commands:
+            cleaned[event] = items
+            continue
+        remaining_items = []
+        event_changed = False
+        for item in items:
+            if not isinstance(item, dict) or not isinstance(item.get("hooks"), list):
                 remaining_items.append(item)
-            if remaining_items:
-                cleaned[event] = remaining_items
+                continue
+            filtered_handlers = [
+                h for h in item["hooks"]
+                if not (isinstance(h, dict) and h.get("type") == "command" and h.get("command") in commands)
+            ]
+            if len(filtered_handlers) == len(item["hooks"]):
+                remaining_items.append(item)
+                continue
+            event_changed = True
+            if filtered_handlers:
+                remaining_items.append({**item, "hooks": filtered_handlers})
+        if event_changed:
+            changed = True
+        if remaining_items or not event_changed:
+            cleaned[event] = remaining_items
+    if changed:
         if cleaned:
             settings["hooks"] = cleaned
         else:
             settings.pop("hooks", None)
-    atomic_write_json(settings_path, settings)
+    return changed
+
+
+def reconcile_hook_entries(
+    settings_path: Path,
+    owned: dict[str, tuple[str, ...]],
+    entries: list[tuple[str, dict[str, Any]]],
+) -> bool:
+    """Reconcile managed hook handlers with at most one settings-file write.
+
+    The file is parsed once, all removals and additions are made in memory,
+    and its atomic writer runs only when the resulting data differs.  An empty
+    ``entries`` list is a removal-only operation, so a missing file remains
+    untouched.
+    """
+    if not settings_path.exists() and not entries:
+        return False
+    settings = read_json(settings_path) if settings_path.exists() else {}
+    if not isinstance(settings, dict):
+        raise AgentBoxError(f"{settings_path} must contain a JSON object")
+    changed = _remove_hook_commands(settings, owned)
+    changed = _install_hook_entries(settings, entries) or changed
+    if changed:
+        atomic_write_json(settings_path, settings)
+    return changed
+
+
+def install_hook_entries(settings_path: Path, entries: list[tuple[str, dict[str, Any]]]) -> bool:
+    """Install managed entries, without rewriting an already-correct file."""
+    return reconcile_hook_entries(settings_path, {}, entries)
+
+
+def remove_hook_commands(settings_path: Path, owned: dict[str, tuple[str, ...]]) -> bool:
+    """Remove managed handlers, without rewriting an unchanged file."""
+    return reconcile_hook_entries(settings_path, owned, [])
