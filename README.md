@@ -18,7 +18,7 @@ agent-box implements no Telegram bot, no remote-control daemon, and no session r
 ## Requirements
 
 - Linux
-- Python 3.10+
+- Python 3.11+
 - Podman
 
 The launcher uses only the Python standard library. There are no Python package dependencies.
@@ -236,7 +236,7 @@ Building the image requires that identity to be passed explicitly: the `Containe
 
 ## Workspace behavior
 
-`agent-box` resolves a single project root and mounts it into the container **at the same absolute path it has on the host** — there is no fixed `/workspace` remap. The container's working directory mirrors your host working directory exactly, including any subdirectory:
+`agent-box` resolves a single project root and mounts it into the container **at the same absolute path** it has on the host — there is no fixed `/workspace` remap. The container's working directory mirrors your host working directory exactly, including any subdirectory:
 
 ```text
 host:      /home/alex/code/infrado
