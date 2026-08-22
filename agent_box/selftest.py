@@ -58,6 +58,10 @@ def run_selftest() -> int:
 
     check(Config.from_dict(None).claude.telegram_channel, False, "channel off by default")
     check(Config.from_dict(None).github.gh_token, False, "gh token passthrough off by default")
+    check(Config.from_dict(None).providers.api_keys, False, "provider API keys off by default")
+    check(Config.from_dict(None).providers.transport, True, "provider transport on by default")
+    check(Config.from_dict(None).git.full_config, False, "full git config copy off by default")
+    check(Config.from_dict(None).git.identity, True, "git identity seeding on by default")
     check(Config.from_dict(None).notifications.usable, False, "notifications off by default")
     check(Config.from_dict({"notifications": {"enabled": True, "telegram_token": "t",
                                               "telegram_chat_id": "1"}}).notifications.usable,
@@ -116,5 +120,29 @@ def run_selftest() -> int:
         claude_home = Path(tmp)
         check(channel.plugin_installed(claude_home), False, "channel plugin absent")
         check(len(channel.missing_requirements(claude_home)), 2, "channel reports both gaps")
+        lock = Path(tmp) / "runtime/telegram-channel.json"
+        check(channel.channel_owner(lock), None, "channel free when unlocked")
+        check(channel.acquire_channel("/p", lock), True, "channel acquired")
+        check(channel.acquire_channel("/p", lock), False, "channel not acquired twice")
+        check((channel.channel_owner(lock) or {}).get("project"), "/p", "owner records project")
+        # A record naming a process that never existed is stale, not a lock.
+        from .atomicio import atomic_write_json
+        atomic_write_json(lock, {"pid": 2 ** 30, "pid_start": "1", "boot_id": "x"})
+        check(channel.channel_owner(lock), None, "stale lock ignored")
+        channel.release_channel(lock)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        creds = Path(tmp) / "notify.json"
+        config = Config()
+        notify.sync_credentials(config, creds)
+        check(creds.exists(), False, "disabled notifications write no credential file")
+        config.notifications.enabled = True
+        config.notifications.telegram_token = "t"
+        config.notifications.telegram_chat_id = "1"
+        notify.sync_credentials(config, creds)
+        check(notify.load_credentials(creds), ("t", "1"), "credential file round trip")
+        config.notifications.enabled = False
+        notify.sync_credentials(config, creds)
+        check(creds.exists(), False, "disabling removes the credential file")
 
     return n

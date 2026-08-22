@@ -24,8 +24,8 @@ Schema (version 1)::
       "claude": {"telegram_channel": false},
       "notifications": {"enabled": false, "telegram_token": "", "telegram_chat_id": ""},
       "github": {"gh_token": false, "gh_config": false},
-      "git": {"config": true},
-      "providers": {"env": true}
+      "git": {"identity": true, "full_config": false},
+      "providers": {"api_keys": false, "transport": true}
     }
 """
 from __future__ import annotations
@@ -123,33 +123,59 @@ class GitHubConfig:
 
 @dataclass
 class GitConfig:
-    #: Copy the host's git config (user.name/user.email and friends) in, so
-    #: commits made in the container are attributed correctly. Not a secret,
-    #: so this one defaults on.
-    config: bool = True
+    """Git configuration exposure, split by how much of the host it reveals.
+
+    ``identity`` seeds *only* ``user.name`` and ``user.email``, read one key
+    at a time via ``git config --get``. That is what commit attribution
+    actually needs and it is not a secret, so it defaults on.
+
+    ``full_config`` copies the host's entire git configuration instead. A real
+    ``~/.gitconfig`` routinely carries far more than identity --
+    ``credential.helper`` entries, ``http.<url>.extraHeader`` values holding
+    bearer tokens, ``url.insteadOf`` rewrites, and ``include.path``
+    directives pulling in further files. Handing all of that to an agent
+    container is a deliberate act, so it defaults off.
+    """
+
+    identity: bool = True
+    full_config: bool = False
 
     def to_dict(self) -> dict[str, Any]:
-        return {"config": self.config}
+        return {"identity": self.identity, "full_config": self.full_config}
 
     @classmethod
     def from_dict(cls, data: Any) -> "GitConfig":
-        return cls(config=_bool(data, "config", True))
+        return cls(identity=_bool(data, "identity", True), full_config=_bool(data, "full_config", False))
 
 
 @dataclass
 class ProvidersConfig:
-    #: Forward provider credential/endpoint variables that are already set in
-    #: the invoking shell (ANTHROPIC_API_KEY, proxies, Bedrock/Vertex flags).
-    #: Only variables the user exported for this very command are passed, so
-    #: this defaults on; turn it off to run the container with none of them.
-    env: bool = True
+    """Shell variables forwarded into the container, split by sensitivity.
+
+    ``api_keys`` covers the ones that *are* the credential
+    (``ANTHROPIC_API_KEY``, ``ANTHROPIC_AUTH_TOKEN``). Having one exported in
+    the shell that launched agent-box is not by itself a decision to hand it
+    to an agent, so this is off by default: Claude and Codex normally
+    authenticate through the mounted ``~/.claude``/``~/.codex`` directories
+    and need no key in the environment at all.
+
+    ``transport`` covers endpoint and plumbing settings that select *where*
+    and *how* requests go -- base URL, Bedrock/Vertex selectors, proxies, CA
+    bundles. Without them a container behind a corporate proxy or on a
+    third-party endpoint simply cannot reach the network, so these default on.
+    Note that a proxy URL can itself embed credentials
+    (``http://user:pass@host``); if that is your situation, turn this off.
+    """
+
+    api_keys: bool = False
+    transport: bool = True
 
     def to_dict(self) -> dict[str, Any]:
-        return {"env": self.env}
+        return {"api_keys": self.api_keys, "transport": self.transport}
 
     @classmethod
     def from_dict(cls, data: Any) -> "ProvidersConfig":
-        return cls(env=_bool(data, "env", True))
+        return cls(api_keys=_bool(data, "api_keys", False), transport=_bool(data, "transport", True))
 
 
 @dataclass

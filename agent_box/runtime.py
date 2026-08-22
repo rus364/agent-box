@@ -17,16 +17,18 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from . import channel as channel_module
+from . import notify as notify_module
 from .atomicio import atomic_write_text
-from .channel import channel_args
 from .config import Config, load_config
 from .errors import AgentBoxError
 from .identity import HostIdentity, detect_host_identity
 from .mounts import MountSpec
 from .notify import SUPPRESS_NOTIFY_ENV
 from .paths import (
-    BUILD_STATE, CLAUDE_HOME, CODEX_HOME, CONFIG_FILE, HOST_HOME,
-    NOTIFY_STATE_ROOT, STATE_ROOT, TOOLS_REFRESH_FILE, XDG_CACHE_HOME,
+    BUILD_STATE, CLAUDE_HOME, CODEX_HOME, CONTAINER_NOTIFY_CREDENTIALS,
+    HOST_HOME, NOTIFY_CREDENTIALS, NOTIFY_STATE_ROOT, STATE_ROOT,
+    TOOLS_REFRESH_FILE, XDG_CACHE_HOME,
 )
 from .workspace import Workspace, resolve_workspace
 
@@ -120,6 +122,43 @@ def seed_state_dir(target: Path, *sources: Path) -> None:
             shutil.copy2(source, target / "config")
 
 
+GIT_IDENTITY_KEYS = ("user.name", "user.email")
+
+
+def seed_git_config(target: Path, config: Config) -> None:
+    """Populate the container's git config directory.
+
+    Three outcomes, by design:
+
+    * ``full_config`` on -- copy the host's git configuration wholesale. A
+      real ``~/.gitconfig`` commonly carries ``credential.helper`` entries,
+      ``http.<url>.extraHeader`` bearer tokens, ``url.insteadOf`` rewrites and
+      ``include.path`` directives, so this is opt-in.
+    * ``identity`` on (the default) -- write a minimal config holding only
+      ``user.name`` and ``user.email``, read one key at a time from the host so
+      nothing else can ride along. That is what commit attribution needs and
+      it reveals nothing beyond a name and address the commits would carry
+      anyway.
+    * both off -- an empty directory; git falls back to its own defaults.
+    """
+    if config.git.full_config:
+        seed_state_dir(target, HOST_HOME / ".config/git", HOST_HOME / ".gitconfig")
+        return
+    seed_state_dir(target)
+    if not config.git.identity:
+        return
+    lines = []
+    for key in GIT_IDENTITY_KEYS:
+        result = subprocess.run(
+            ["git", "config", "--global", "--get", key], text=True, capture_output=True,
+        )
+        value = result.stdout.strip() if result.returncode == 0 else ""
+        if value:
+            lines.append(f"\t{key.split('.', 1)[1]} = {value}")
+    if lines:
+        atomic_write_text(target / "config", "[user]\n" + "\n".join(lines) + "\n")
+
+
 def agent_tree_mounts() -> list[tuple[Path, Path, bool]]:
     """Read-only mounts for ``~/.agents`` and everything it symlinks out to.
 
@@ -207,15 +246,15 @@ def build_mounts(
     ]
     if (script_dir / "agent_box").is_dir():
         pairs.append((script_dir / "agent_box", HOST_HOME / ".local/lib/agent-box/agent_box", True))
-    # Read-only: the notification hooks run inside the container and need the
-    # bot token to send, but nothing in there may rewrite the user's config.
-    # The destination is the *default* XDG location rather than the host's
-    # own CONFIG_FILE path, because agent-box inside the container gets no
-    # AGENT_BOX_CONFIG_DIR/XDG_CONFIG_HOME and so looks exactly there. A host
-    # that relocates its config directory would otherwise mount the file at a
-    # path the container never reads.
-    if CONFIG_FILE.is_file():
-        pairs.append((CONFIG_FILE, HOST_HOME / ".config/agent-box/config.json", True))
+    # The container never sees config.json. It would carry the bot token into
+    # every container even with notifications off, plus host-integration
+    # settings the container has no business reading. Instead the host derives
+    # a two-key credential file (notify.sync_credentials) and mounts it
+    # read-only, and only while notifications are actually usable -- so a
+    # disabled feature exposes no token at all rather than an ignored one.
+    notify_module.sync_credentials(config, NOTIFY_CREDENTIALS)
+    if NOTIFY_CREDENTIALS.is_file():
+        pairs.append((NOTIFY_CREDENTIALS, CONTAINER_NOTIFY_CREDENTIALS, True))
     # Claude Code's ~/.claude.json sits *beside* the config directory rather
     # than inside it. When CLAUDE_CONFIG_DIR relocates that directory, the
     # relocated tree is already mounted whole (CLAUDE_HOME above), so only the
@@ -225,15 +264,10 @@ def build_mounts(
             pairs.append((claude_json, claude_json, False))
 
     # Both directories are always mounted so git and gh work inside the
-    # container, but they are only *seeded* from the host when the user opted
-    # in. Seeding with no sources leaves an empty 0700 directory: git falls
-    # back to its built-in defaults, gh runs unauthenticated. Copies, not bind
-    # mounts of the originals, so a container can never write back to the
+    # container, but what goes into them depends on the config. Copies, not
+    # bind mounts of the originals, so a container can never write back to the
     # host's real git/gh configuration.
-    seed_state_dir(
-        STATE_ROOT / "git",
-        *((HOST_HOME / ".config/git", HOST_HOME / ".gitconfig") if config.git.config else ()),
-    )
+    seed_git_config(STATE_ROOT / "git", config)
     seed_state_dir(
         STATE_ROOT / "gh",
         *((HOST_HOME / ".config/gh",) if config.github.gh_config else ()),
@@ -278,45 +312,75 @@ def kvm_args() -> list[str]:
     return args
 
 
-def maybe_gh_token(config: Config) -> None:
-    """Forward a host GitHub token, but only when explicitly configured.
+def github_enabled(config: Config) -> bool:
+    """Whether a GitHub credential may reach the container at all.
 
-    Being logged in to ``gh`` on the host is NOT consent to hand a live
-    GitHub credential to every container -- an earlier agent-box treated it
-    as though it were. The token now travels only when
-    ``github.gh_token`` is on in ``agent-box config``.
+    Being logged in to ``gh`` on the host is not consent, and neither is
+    having ``GH_TOKEN`` exported in the launching shell -- an agent container
+    is a different trust boundary from your interactive shell, and a variable
+    that happens to be in the environment is not a decision about it. So the
+    config switch gates *both* the host-derived token and any already-exported
+    one.
 
-    ``AGENT_BOX_GH_TOKEN`` still overrides for a single command: ``0``
-    withholds the token from a configured-on host, ``1`` forwards it from a
-    configured-off one.
+    ``AGENT_BOX_GH_TOKEN`` overrides for a single run: ``1`` allows, ``0``
+    denies. Anything else is ignored rather than guessed at.
     """
     override = os.environ.get("AGENT_BOX_GH_TOKEN", "").strip()
-    enabled = config.github.gh_token
+    if override == "1":
+        return True
     if override == "0":
-        enabled = False
-    elif override == "1":
-        enabled = True
-    if not enabled or os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN"):
-        return
+        return False
+    return config.github.gh_token
+
+
+def github_env(config: Config) -> list[str]:
+    """``--env`` flags carrying a GitHub token, or nothing at all.
+
+    Returns flags rather than mutating the environment so that the decision
+    and its effect on the podman command line are the same step; an earlier
+    version set ``os.environ["GH_TOKEN"]`` as a side effect and then forwarded
+    ``GH_TOKEN``/``GITHUB_TOKEN`` unconditionally further down, which meant a
+    shell-exported token reached the container even with the switch off.
+    """
+    if not github_enabled(config):
+        return []
+    existing = [n for n in ("GH_TOKEN", "GITHUB_TOKEN") if os.environ.get(n)]
+    if existing:
+        # Already in the environment and now permitted: forward by name, so
+        # the value never appears in the container's argv.
+        return [f"--env={name}" for name in existing]
     if not shutil.which("gh"):
-        warn("github.gh_token is enabled but 'gh' is not installed on the host")
-        return
-    r = subprocess.run(["gh", "auth", "token"], text=True, capture_output=True)
-    token = r.stdout.strip() if r.returncode == 0 else ""
-    if token:
-        os.environ["GH_TOKEN"] = token
-    else:
-        warn("github.gh_token is enabled but the host has no token; run 'gh auth login'")
+        warn("GitHub token passthrough is enabled but 'gh' is not installed on the host")
+        return []
+    result = subprocess.run(["gh", "auth", "token"], text=True, capture_output=True)
+    token = result.stdout.strip() if result.returncode == 0 else ""
+    if not token:
+        warn("GitHub token passthrough is enabled but the host has no token; run 'gh auth login'")
+        return []
+    return [f"--env=GH_TOKEN={token}"]
 
 
-#: Provider credential/endpoint variables forwarded from the invoking shell
-#: when ``providers.env`` is on. Only ones already exported for this command
-#: are passed; agent-box never reads them from a file.
-PROVIDER_ENV = (
-    "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL",
-    "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX",
+#: Variables that *are* a provider credential. Off by default: Claude and
+#: Codex authenticate through the mounted ~/.claude / ~/.codex directories,
+#: so a container normally needs none of these.
+PROVIDER_API_KEY_ENV = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
+#: Endpoint and plumbing settings -- where requests go and how. Without them
+#: a container behind a proxy or on a third-party endpoint cannot reach the
+#: network at all, so these default on.
+PROVIDER_TRANSPORT_ENV = (
+    "ANTHROPIC_BASE_URL", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX",
     "HTTP_PROXY", "HTTPS_PROXY", "SSL_CERT_FILE", "NODE_EXTRA_CA_CERTS",
 )
+
+
+def provider_env(config: Config) -> list[str]:
+    names = (
+        *(PROVIDER_API_KEY_ENV if config.providers.api_keys else ()),
+        *(PROVIDER_TRANSPORT_ENV if config.providers.transport else ()),
+    )
+    # --env=NAME (not NAME=value) so a secret never lands in the argv, which
+    # is world-readable via /proc on most systems.
+    return [f"--env={name}" for name in names if os.environ.get(name)]
 
 
 def base_podman_args(
@@ -358,11 +422,8 @@ def base_podman_args(
     # a tilde or relative setting means the same thing on both sides.
     if os.environ.get("CLAUDE_CONFIG_DIR", "").strip():
         args.append(f"--env=CLAUDE_CONFIG_DIR={CLAUDE_HOME}")
-    maybe_gh_token(config)
-    forwarded = ("GH_TOKEN", "GITHUB_TOKEN", *(PROVIDER_ENV if config.providers.env else ()))
-    for name in forwarded:
-        if os.environ.get(name):
-            args.append(f"--env={name}")
+    args += github_env(config)
+    args += provider_env(config)
     return args
 
 
@@ -439,6 +500,42 @@ fi
 '''
 
 
+def claude_channel_args(
+    agent: str, config: Config, workspace: Workspace,
+) -> tuple[list[str], list[str]]:
+    """Decide whether this Claude session gets the official Telegram channel.
+
+    Three outcomes, none of which stops Claude from starting:
+
+    * not Claude, or the channel is switched off -- nothing to do.
+    * enabled but the plugin/token setup is incomplete -- warn and run without
+      it. ``agent-box config`` refuses to enable the channel before the
+      prerequisites exist, so this only happens if the plugin was uninstalled
+      or its token removed afterwards.
+    * enabled and another live session already owns the channel -- say so and
+      run without it. The bot has one conversation; two sessions answering
+      every inbound message is worse than the second one being local-only.
+
+    When the channel *is* taken, outbound notification hooks stand down for
+    this container: the channel already relays this session's replies and
+    prompts to the paired chat, and the hooks would post the same interaction
+    again to the notification chat, which is a different audience.
+    """
+    if agent != "claude" or not config.claude.telegram_channel:
+        return [], []
+    missing = channel_module.missing_requirements()
+    if missing:
+        warn("Telegram channel unavailable: " + " and ".join(missing))
+        warn("run 'agent-box config check' for setup steps; starting Claude without it")
+        return [], []
+    if not channel_module.acquire_channel(str(workspace.host_root)):
+        owner = channel_module.channel_owner()
+        detail = f" ({channel_module.describe_owner(owner)})" if owner else ""
+        print(f"agent-box: Telegram channel already active in another Claude session{detail}", file=sys.stderr)
+        return [], []
+    return channel_module.channel_flag(), [f"{SUPPRESS_NOTIFY_ENV}=1"]
+
+
 def runtime_main(args: list[str], script_dir: Path, extra_mount_specs: list[str] | None = None) -> None:
     from .mounts import MountError, parse_mount_arg, plan_mounts
 
@@ -474,23 +571,20 @@ def runtime_main(args: list[str], script_dir: Path, extra_mount_specs: list[str]
     if agent not in {"claude", "codex", "shell", "doctor"}:
         raise AgentBoxError(f"unsupported agent '{agent}'; expected claude or codex")
 
-    if agent == "claude" and config.claude.telegram_channel:
-        # Resolved before the container starts so a missing plugin or token is
-        # an actionable error here, not a session that looks fine and never
-        # reaches Telegram.
-        channel = channel_args()
-        # The official channel relays this session's replies, prompts and
-        # questions to the paired chat itself. Outbound notification hooks
-        # would post the same interaction a second time, to a chat the user
-        # picked for a different purpose, so they stand down for this run.
-        extra_env = [f"{SUPPRESS_NOTIFY_ENV}=1"]
-    else:
-        channel, extra_env = [], []
+    channel, extra_env = claude_channel_args(agent, config, workspace)
 
     try:
         podman = container_argv(workspace, extra_mounts, script_dir, [], config, extra_env)
-    except MountError as exc:
-        raise AgentBoxError(str(exc)) from exc
+    except BaseException as exc:
+        # The lock names this PID and would go stale the moment we exit, but
+        # releasing it explicitly means a failed launch never leaves a record
+        # that `agent-box config check` would report as an active session.
+        channel_module.release_channel()
+        # plan_mounts rejects contradictory --mount requests here; that is a
+        # user error and must print as one, not as a traceback.
+        if isinstance(exc, MountError):
+            raise AgentBoxError(str(exc)) from exc
+        raise
 
     if agent == "shell":
         os.execvp("podman", [*podman, "bash", "--login", *rest])

@@ -28,14 +28,19 @@ from pathlib import Path
 from typing import Any
 
 from .atomicio import atomic_write_json, read_json
-from .config import load_config
-from .paths import NOTIFY_STATE_ROOT
+from .paths import NOTIFY_CREDENTIALS, NOTIFY_STATE_ROOT
 
 NOTIFY_STATE_TTL = 1800
 #: PATH-resolved so the same hook command works on the host and inside the
 #: container, where `agent-box` is mounted onto PATH rather than living at a
 #: host-specific path.
 NOTIFY_COMMAND = "agent-box notify claude"
+#: The one hook command older agent-box versions wrote, back when the launcher
+#: was referenced by its install path instead of resolved on PATH. Removed
+#: when the current hooks are installed -- not as a compatibility subsystem,
+#: but because leaving it in place means every Claude event fires the hook
+#: twice and posts two identical Telegram messages.
+STALE_NOTIFY_COMMAND = "~/.local/bin/agent-box notify claude"
 #: Set by ``agent_box.runtime`` on containers whose Claude session already
 #: talks to Telegram through the official channel plugin. Those sessions relay
 #: their own replies, prompts and questions to the paired chat; letting the
@@ -47,17 +52,55 @@ def outbound_suppressed() -> bool:
     return bool(os.environ.get(SUPPRESS_NOTIFY_ENV, "").strip())
 
 
+def sync_credentials(config: Any, path: Path = NOTIFY_CREDENTIALS) -> None:
+    """Write, or delete, the minimal credential file the hooks read.
+
+    This is the whole reason the container never sees ``config.json``: that
+    file holds the bot token unconditionally, so mounting it would put the
+    token in every container even with notifications switched off, alongside
+    host-integration settings the container has no reason to read. Instead the
+    host derives a two-key file and mounts it read-only *only* while
+    notifications are actually usable. Turning notifications off removes it,
+    so the credential stops being reachable rather than merely being ignored.
+    """
+    if config.notifications.usable:
+        atomic_write_json(path, {
+            "token": config.notifications.telegram_token,
+            "chat_id": config.notifications.telegram_chat_id,
+        }, stat.S_IRUSR | stat.S_IWUSR)
+    else:
+        path.unlink(missing_ok=True)
+
+
+def load_credentials(path: Path = NOTIFY_CREDENTIALS) -> tuple[str, str] | None:
+    """The bot token and chat id, or None when notifications are not active.
+
+    The same code path runs on the host (``agent-box notify test``) and inside
+    the container (the Claude/Codex hooks), so both read exactly the file that
+    is mounted -- there is no second, host-only way to reach the token.
+    """
+    try:
+        data = read_json(path)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    token, chat_id = str(data.get("token") or ""), str(data.get("chat_id") or "")
+    return (token, chat_id) if token and chat_id else None
+
+
 def telegram_send(text: str) -> bool:
     """POST one HTML message to the configured chat. Never raises, never logs
     the bot token."""
     if outbound_suppressed():
         return True
-    notifications = load_config().notifications
-    if not notifications.usable:
+    credentials = load_credentials()
+    if credentials is None:
         return True
-    url = f"https://api.telegram.org/bot{notifications.telegram_token}/sendMessage"
+    token, chat_id = credentials
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
     body = json.dumps({
-        "chat_id": notifications.telegram_chat_id,
+        "chat_id": chat_id,
         "text": text,
         "parse_mode": "HTML",
         "disable_web_page_preview": True,
@@ -221,6 +264,9 @@ def install_claude_notify_hooks(settings_path: Path) -> None:
     hooks = settings.setdefault("hooks", {})
     if not isinstance(hooks, dict):
         raise AgentBoxError(f"{settings_path}: hooks must be a JSON object")
+    for event, items in list(hooks.items()):
+        if isinstance(items, list):
+            hooks[event] = [x for x in items if not _uses_command(x, STALE_NOTIFY_COMMAND)]
     for event, entry in (
         ("Notification", hook_entry("permission_prompt")),
         ("Notification", hook_entry("idle_prompt")),
@@ -235,12 +281,15 @@ def install_claude_notify_hooks(settings_path: Path) -> None:
     atomic_write_json(settings_path, settings)
 
 
-def _uses_notify(entry: Any) -> bool:
+def _uses_command(entry: Any, command: str) -> bool:
     return isinstance(entry, dict) and isinstance(entry.get("hooks"), list) and any(
-        isinstance(h, dict) and h.get("type") == "command"
-        and h.get("command") == NOTIFY_COMMAND
+        isinstance(h, dict) and h.get("type") == "command" and h.get("command") == command
         for h in entry["hooks"]
     )
+
+
+def _uses_notify(entry: Any) -> bool:
+    return _uses_command(entry, NOTIFY_COMMAND) or _uses_command(entry, STALE_NOTIFY_COMMAND)
 
 
 def remove_claude_notify_hooks(settings_path: Path) -> None:
