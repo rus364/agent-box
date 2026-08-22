@@ -1,7 +1,9 @@
 import json
+import os
 import subprocess
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 from agent_box import flow_push
@@ -1140,10 +1142,10 @@ class PushGuardTests(unittest.TestCase):
         from unittest import mock
         real_run = flow_push._run
 
-        def fake_run(args, cwd=None, timeout=10, extra_config=None):
-            if args[:2] == ["git", "push"]:
+        def fake_run(args, cwd=None, timeout=10):
+            if "push" in args:
                 raise _subprocess.TimeoutExpired(cmd=args, timeout=timeout)
-            return real_run(args, cwd=cwd, timeout=timeout, extra_config=extra_config)
+            return real_run(args, cwd=cwd, timeout=timeout)
 
         with mock.patch.object(flow_push, "_run", side_effect=fake_run):
             decision = flow_push.guarded_push(self.repo, auto_push_enabled=True)
@@ -1346,3 +1348,398 @@ class HookInstallationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class InheritedGitConfigContextTests(unittest.TestCase):
+    """Preflight and the final push must resolve `origin` from *identical*
+    effective Git configuration.
+
+    Git's command-scope config can arrive from the inherited environment
+    (`GIT_CONFIG_COUNT`/`KEY_n`/`VALUE_n`, and the higher-precedence
+    `GIT_CONFIG_PARAMETERS`). Two distinct failures were mechanically
+    reproduced when the push's own safety overrides were injected through
+    `GIT_CONFIG_COUNT`: it *replaced* inherited entries (silently dropping
+    an inherited `remote.origin.pushurl`, so the push reached a different
+    repository than preflight inspected), and it *lost* to an inherited
+    `GIT_CONFIG_PARAMETERS` (so `push.followTags=true` survived). Passing
+    the overrides as command-line `-c` instead fixes both: `-c` is additive
+    and outranks every inherited mechanism.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+
+    def _flow_repo(self, path: Path, branch: str) -> None:
+        path.mkdir(parents=True, exist_ok=True)
+        _init_repo(path, branch=branch)
+        (path / ".flow").mkdir()
+        (path / ".flow" / "config.json").write_text("{}")
+        _git(path, "add", ".flow")
+        _git(path, "commit", "-q", "-m", "flow-next marker")
+
+    def _inherit(self, **env: str):
+        patcher = unittest.mock.patch.dict(os.environ, env)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_inherited_command_scope_pushurl_is_not_dropped_by_the_push(self):
+        """repo-A default = trunk, repo-B default = main, current branch =
+        trunk. An inherited `GIT_CONFIG_COUNT` entry points `origin`'s push
+        URL at repo-B, so preflight inspects repo-B and (correctly, for
+        repo-B) considers `trunk` a safe non-default branch. The push must
+        then land in repo-B too. Previously the push dropped the inherited
+        entry, fell back to repo-A, and advanced repo-A's *default* branch.
+        """
+        repo_a = self.root / "repo-A.git"
+        repo_b = self.root / "repo-B.git"
+        _git(self.root, "init", "-q", "--bare", "-b", "trunk", str(repo_a))
+        _git(self.root, "init", "-q", "--bare", "-b", "main", str(repo_b))
+        repo = self.root / "work"
+        self._flow_repo(repo, branch="trunk")
+        _git(repo, "remote", "add", "origin", str(repo_a))
+        _git(repo, "push", "-q", "origin", "trunk")
+        _git(repo, "push", "-q", str(repo_b), "trunk:main")
+        (repo / "w.txt").write_text("work\n")
+        _git(repo, "add", "w.txt")
+        _git(repo, "commit", "-q", "-m", "feature work")
+
+        a_before = _git(repo_a, "rev-parse", "trunk").stdout.strip()
+        head = _git(repo, "rev-parse", "HEAD").stdout.strip()
+        self.assertNotEqual(a_before, head)
+
+        self._inherit(
+            GIT_CONFIG_COUNT="1",
+            GIT_CONFIG_KEY_0="remote.origin.pushurl",
+            GIT_CONFIG_VALUE_0=str(repo_b),
+        )
+        self.assertEqual(flow_push._effective_push_url(repo), str(repo_b))
+
+        flow_push.arm_marker(repo)
+        decision = flow_push.guarded_push(repo, auto_push_enabled=True)
+        self.assertEqual(decision.action, "pushed")
+
+        self.assertEqual(
+            _git(repo_a, "rev-parse", "trunk").stdout.strip(), a_before,
+            "repo-A (never inspected by preflight) must not have received the push")
+        self.assertEqual(
+            _git(repo_b, "rev-parse", "trunk").stdout.strip(), head,
+            "the push must land in the exact repository preflight inspected")
+
+    def test_feature_branch_lands_only_in_the_inspected_repository(self):
+        """A genuine feature branch, with an inherited command-scope
+        pushurl: it must appear in the inspected repository and nowhere
+        else."""
+        fetch_remote = self.root / "fetch.git"
+        push_remote = self.root / "push.git"
+        _git(self.root, "init", "-q", "--bare", "-b", "main", str(fetch_remote))
+        _git(self.root, "init", "-q", "--bare", "-b", "main", str(push_remote))
+        repo = self.root / "work"
+        self._flow_repo(repo, branch="main")
+        _git(repo, "remote", "add", "origin", str(fetch_remote))
+        _git(repo, "push", "-q", "origin", "main")
+        _git(repo, "push", "-q", str(push_remote), "main")
+        _git(repo, "checkout", "-q", "-b", "feature-inherited")
+        (repo / "w.txt").write_text("work\n")
+        _git(repo, "add", "w.txt")
+        _git(repo, "commit", "-q", "-m", "feature work")
+        head = _git(repo, "rev-parse", "HEAD").stdout.strip()
+
+        self._inherit(
+            GIT_CONFIG_COUNT="1",
+            GIT_CONFIG_KEY_0="remote.origin.pushurl",
+            GIT_CONFIG_VALUE_0=str(push_remote),
+        )
+        self.assertEqual(flow_push._effective_push_url(repo), str(push_remote))
+
+        flow_push.arm_marker(repo)
+        decision = flow_push.guarded_push(repo, auto_push_enabled=True)
+        self.assertEqual(decision.action, "pushed")
+
+        self.assertEqual(
+            _git(push_remote, "rev-parse", "feature-inherited").stdout.strip(), head)
+        self.assertEqual(
+            subprocess.run(
+                ["git", "ls-remote", "--heads", str(fetch_remote), "feature-inherited"],
+                capture_output=True, text=True, check=True).stdout,
+            "", "the fetch-only repository must not have received the branch")
+
+    def test_inherited_git_config_parameters_cannot_re_enable_follow_tags(self):
+        """`GIT_CONFIG_PARAMETERS` outranks `GIT_CONFIG_COUNT`, so it used
+        to defeat the `push.followTags=false` neutralization and push an
+        annotated tag. Command-line `-c` outranks it."""
+        remote = self.root / "remote.git"
+        _git(self.root, "init", "-q", "--bare", "-b", "main", str(remote))
+        repo = self.root / "work"
+        self._flow_repo(repo, branch="main")
+        _git(repo, "remote", "add", "origin", str(remote))
+        _git(repo, "push", "-q", "origin", "main")
+        _git(repo, "checkout", "-q", "-b", "feature-hostile-tags")
+        (repo / "w.txt").write_text("work\n")
+        _git(repo, "add", "w.txt")
+        _git(repo, "commit", "-q", "-m", "feature work")
+        _git(repo, "tag", "-a", "v9", "-m", "release v9")
+
+        self._inherit(GIT_CONFIG_PARAMETERS="'push.followTags=true'")
+        # The user's *effective* setting really is `true` at this point --
+        # this is what the push has to override.
+        self.assertEqual(
+            _git(repo, "config", "--get", "push.followTags").stdout.strip(), "true")
+
+        flow_push.arm_marker(repo)
+        decision = flow_push.guarded_push(repo, auto_push_enabled=True)
+
+        self.assertEqual(decision.action, "pushed")
+        self.assertIn(
+            "feature-hostile-tags",
+            subprocess.run(
+                ["git", "ls-remote", "--heads", str(remote), "feature-hostile-tags"],
+                capture_output=True, text=True, check=True).stdout)
+        self.assertEqual(
+            subprocess.run(
+                ["git", "ls-remote", "--tags", str(remote)],
+                capture_output=True, text=True, check=True).stdout,
+            "", "no tag may be pushed, whatever the inherited config says")
+
+    def test_inherited_git_config_parameters_cannot_re_enable_recurse_submodules(self):
+        """Same, for `push.recurseSubmodules=on-demand`, which would push
+        into an entirely different repository. A control push proves the
+        topology really would recurse, so the assertion is not vacuous."""
+        sub_remote = self.root / "sub.git"
+        sub_control_remote = self.root / "sub-control.git"
+        control_remote = self.root / "control.git"
+        remote = self.root / "remote.git"
+        for bare in (sub_remote, sub_control_remote, control_remote, remote):
+            _git(self.root, "init", "-q", "--bare", "-b", "main", str(bare))
+        sub_work = self.root / "sub-work"
+        sub_work.mkdir()
+        _init_repo(sub_work, branch="main")
+        _git(sub_work, "remote", "add", "origin", str(sub_remote))
+        _git(sub_work, "push", "-q", "-u", "origin", "main")
+
+        repo = self.root / "work"
+        self._flow_repo(repo, branch="main")
+        _git(repo, "remote", "add", "origin", str(remote))
+        _git(repo, "remote", "add", "control", str(control_remote))
+        _git(repo, "push", "-q", "origin", "main")
+        _git(repo, "checkout", "-q", "-b", "feature-hostile-sub")
+        subprocess.run(
+            ["git", "-c", "protocol.file.allow=always", "submodule", "add", "-q",
+             str(sub_remote), "subdir"],
+            cwd=repo, check=True, capture_output=True, text=True)
+        _git(repo, "commit", "-q", "-m", "add submodule")
+        subdir = repo / "subdir"
+        (subdir / "extra.txt").write_text("submodule change\n")
+        _git(subdir, "add", "extra.txt")
+        _git(subdir, "commit", "-q", "-m", "submodule change")
+        # `git push ... HEAD` with recursion requires the submodule to be on
+        # a branch of the same name as the superproject's.
+        _git(subdir, "checkout", "-q", "-B", "feature-hostile-sub")
+        _git(repo, "add", "subdir")
+        _git(repo, "commit", "-q", "-m", "bump submodule pointer")
+
+        self._inherit(
+            GIT_CONFIG_PARAMETERS="'push.recurseSubmodules=on-demand' 'protocol.file.allow=always'")
+        self.assertEqual(
+            _git(repo, "config", "--get", "push.recurseSubmodules").stdout.strip(), "on-demand")
+
+        flow_push.arm_marker(repo)
+        decision = flow_push.guarded_push(repo, auto_push_enabled=True)
+
+        self.assertEqual(decision.action, "pushed")
+        self.assertIn(
+            "feature-hostile-sub",
+            subprocess.run(
+                ["git", "ls-remote", "--heads", str(remote), "feature-hostile-sub"],
+                capture_output=True, text=True, check=True).stdout)
+        self.assertEqual(
+            subprocess.run(
+                ["git", "ls-remote", "--heads", str(sub_remote), "feature-hostile-sub"],
+                capture_output=True, text=True, check=True).stdout,
+            "", "the submodule's own repository must not have been pushed")
+
+        # Control, deliberately *after* the assertion above so it cannot
+        # contaminate it: an otherwise identical push without the
+        # neutralization really does recurse into the submodule's own
+        # repository. Recursion targets the same *remote name* inside the
+        # submodule, so `control` is wired there too -- pointed at a
+        # separate bare repo, leaving `sub_remote` untouched either way.
+        _git(subdir, "remote", "add", "control", str(sub_control_remote))
+        subprocess.run(
+            ["git", "-c", "push.recurseSubmodules=on-demand",
+             "-c", "protocol.file.allow=always", "push", "-q", "control", "HEAD"],
+            cwd=repo, check=True, capture_output=True, text=True)
+        self.assertNotEqual(
+            subprocess.run(
+                ["git", "ls-remote", "--heads", str(sub_control_remote), "feature-hostile-sub"],
+                capture_output=True, text=True, check=True).stdout,
+            "", "control: this topology really is reachable by submodule recursion, "
+                "so the assertion above is not vacuous")
+
+    def test_unrelated_inherited_config_survives_alongside_the_overrides(self):
+        """The overrides must be *additive*: an unrelated inherited
+        command-scope entry (here, the pushurl that decides the receiving
+        repository) still applies, while the safety keys are still forced
+        off. Both properties in one push."""
+        decoy = self.root / "decoy.git"
+        real = self.root / "real.git"
+        _git(self.root, "init", "-q", "--bare", "-b", "main", str(decoy))
+        _git(self.root, "init", "-q", "--bare", "-b", "main", str(real))
+        repo = self.root / "work"
+        self._flow_repo(repo, branch="main")
+        _git(repo, "remote", "add", "origin", str(decoy))
+        _git(repo, "push", "-q", "origin", "main")
+        _git(repo, "push", "-q", str(real), "main")
+        _git(repo, "checkout", "-q", "-b", "feature-mixed")
+        (repo / "w.txt").write_text("work\n")
+        _git(repo, "add", "w.txt")
+        _git(repo, "commit", "-q", "-m", "feature work")
+        _git(repo, "tag", "-a", "v8", "-m", "release v8")
+
+        self._inherit(
+            GIT_CONFIG_COUNT="2",
+            GIT_CONFIG_KEY_0="remote.origin.pushurl",
+            GIT_CONFIG_VALUE_0=str(real),
+            GIT_CONFIG_KEY_1="push.followTags",
+            GIT_CONFIG_VALUE_1="true",
+        )
+
+        flow_push.arm_marker(repo)
+        decision = flow_push.guarded_push(repo, auto_push_enabled=True)
+
+        self.assertEqual(decision.action, "pushed")
+        self.assertIn(
+            "feature-mixed",
+            subprocess.run(
+                ["git", "ls-remote", "--heads", str(real), "feature-mixed"],
+                capture_output=True, text=True, check=True).stdout,
+            "the unrelated inherited pushurl must still decide the destination")
+        self.assertEqual(
+            subprocess.run(
+                ["git", "ls-remote", "--heads", str(decoy), "feature-mixed"],
+                capture_output=True, text=True, check=True).stdout, "")
+        self.assertEqual(
+            subprocess.run(
+                ["git", "ls-remote", "--tags", str(real)],
+                capture_output=True, text=True, check=True).stdout,
+            "", "the safety override must still win over the inherited one")
+
+
+class MarkerHeadBindingTests(unittest.TestCase):
+    """The marker is a capability meaning "this branch **at this commit**
+    completed Flow-Next", never "this branch completed at some point".
+
+    A marker retained across a retryable failure must authorize a retry of
+    that same commit and nothing else; commits created afterwards need
+    their own successful `flowctl done`.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+        self.remote = self.root / "remote.git"
+        _git(self.root, "init", "-q", "--bare", "-b", "main", str(self.remote))
+        self.repo = self.root / "repo"
+        self.repo.mkdir()
+        _init_repo(self.repo, branch="main")
+        (self.repo / ".flow").mkdir()
+        (self.repo / ".flow" / "config.json").write_text("{}")
+        _git(self.repo, "add", ".flow")
+        _git(self.repo, "commit", "-q", "-m", "flow-next marker")
+        _git(self.repo, "remote", "add", "origin", str(self.remote))
+        _git(self.repo, "push", "-q", "origin", "main")
+        _git(self.repo, "checkout", "-q", "-b", "feature-marker")
+
+    def _commit(self, name: str) -> str:
+        (self.repo / f"{name}.txt").write_text(f"{name}\n")
+        _git(self.repo, "add", f"{name}.txt")
+        _git(self.repo, "commit", "-q", "-m", name)
+        return _git(self.repo, "rev-parse", "HEAD").stdout.strip()
+
+    def _remote_sha(self) -> str:
+        return subprocess.run(
+            ["git", "ls-remote", str(self.remote), "refs/heads/feature-marker"],
+            capture_output=True, text=True, check=True).stdout.strip()
+
+    def test_retained_marker_does_not_authorize_a_later_commit(self):
+        sha_a = self._commit("a")
+        flow_push.arm_marker(self.repo)
+        self.assertEqual(flow_push.read_marker(self.repo)["head"], sha_a)
+
+        sha_b = self._commit("b")
+        self.assertNotEqual(sha_a, sha_b)
+        before = self._remote_sha()
+
+        decision = flow_push.guarded_push(self.repo, auto_push_enabled=True)
+
+        self.assertEqual(decision.action, "invalidated")
+        self.assertIn(sha_a, decision.detail)
+        self.assertIn(sha_b, decision.detail)
+        self.assertEqual(self._remote_sha(), before, "nothing may have been pushed")
+        self.assertEqual(before, "", "the branch must still not exist on the remote")
+        self.assertIsNone(
+            flow_push.read_marker(self.repo),
+            "the marker describes a state that no longer exists, so it is dropped "
+            "rather than left to re-decide the same refusal on every later Stop")
+
+    def test_new_successful_done_re_arms_the_current_head(self):
+        sha_a = self._commit("a")
+        flow_push.arm_marker(self.repo)
+        sha_b = self._commit("b")
+        self.assertEqual(
+            flow_push.guarded_push(self.repo, auto_push_enabled=True).action, "invalidated")
+
+        # A new successful `flowctl done` at B is what re-authorizes B.
+        flow_push.arm_marker(self.repo)
+        marker = flow_push.read_marker(self.repo)
+        self.assertEqual(marker["head"], sha_b)
+        self.assertNotEqual(marker["head"], sha_a)
+
+        decision = flow_push.guarded_push(self.repo, auto_push_enabled=True)
+        self.assertEqual(decision.action, "pushed")
+        self.assertIn(sha_b, self._remote_sha())
+        self.assertIsNone(flow_push.read_marker(self.repo))
+
+    def test_legitimate_retry_at_the_same_head_still_pushes(self):
+        """A retryable failure keeps the marker; once the remote is healthy
+        again the *same* commit must still push. HEAD binding must not
+        break ordinary retries."""
+        sha_a = self._commit("a")
+        _git(self.repo, "remote", "set-url", "origin", str(self.root / "offline.git"))
+        flow_push.arm_marker(self.repo)
+
+        first = flow_push.guarded_push(self.repo, auto_push_enabled=True)
+        self.assertIn(first.action, ("skipped", "failed"))
+        self.assertIsNotNone(flow_push.read_marker(self.repo), "marker kept for retry")
+        self.assertEqual(flow_push.read_marker(self.repo)["head"], sha_a)
+
+        _git(self.repo, "remote", "set-url", "origin", str(self.remote))
+        retry = flow_push.guarded_push(self.repo, auto_push_enabled=True)
+
+        self.assertEqual(retry.action, "pushed")
+        self.assertIn(sha_a, self._remote_sha())
+
+    def test_branch_binding_still_invalidates_before_head_is_consulted(self):
+        """Existing branch-binding semantics are unchanged: a marker from a
+        different branch is reported as a *branch* mismatch."""
+        self._commit("a")
+        flow_push.arm_marker(self.repo)
+        _git(self.repo, "checkout", "-q", "-b", "other-branch")
+
+        decision = flow_push.guarded_push(self.repo, auto_push_enabled=True)
+
+        self.assertEqual(decision.action, "invalidated")
+        self.assertIn("feature-marker", decision.detail)
+        self.assertIsNone(flow_push.read_marker(self.repo))
+        self.assertEqual(self._remote_sha(), "")
+
+    def test_marker_is_not_armed_without_a_commit_to_bind_to(self):
+        """An unborn branch has no HEAD to authorize; arming a headless
+        marker would only create one that can never validate."""
+        empty = self.root / "empty"
+        empty.mkdir()
+        _git(empty, "init", "-q", "-b", "main")
+        flow_push.arm_marker(empty)
+        self.assertIsNone(flow_push.read_marker(empty))
