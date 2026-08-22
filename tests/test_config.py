@@ -97,6 +97,70 @@ class RoundTripTests(unittest.TestCase):
             self.assertNotIn("remote_control", json.loads(path.read_text()))
 
 
+class FlowNextConfigTests(unittest.TestCase):
+    def test_old_config_without_flow_next_still_loads(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            path.write_text(json.dumps({
+                "version": 1,
+                "claude": {"telegram_channel": False},
+                "notifications": {"enabled": False, "telegram_token": "", "telegram_chat_id": ""},
+                "github": {"gh_token": False, "gh_config": False},
+                "git": {"identity": True, "full_config": False},
+                "providers": {"api_keys": False, "transport": True},
+            }))
+            config = load_config(path)
+        self.assertEqual(config.flow_next.review_backends["claude"], "codex:gpt-5.6-sol:medium")
+        self.assertEqual(config.flow_next.review_backends["codex"], "codex:gpt-5.6-sol:medium")
+        self.assertFalse(config.flow_next.auto_push)
+
+    def test_default_review_mapping(self):
+        config = Config()
+        self.assertEqual(config.flow_next.review_backends, {
+            "claude": "codex:gpt-5.6-sol:medium",
+            "codex": "codex:gpt-5.6-sol:medium",
+        })
+
+    def test_auto_push_defaults_false(self):
+        self.assertFalse(Config().flow_next.auto_push)
+
+    def test_configured_mapping_overrides_defaults(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            path.write_text(json.dumps({
+                "version": 1,
+                "flow_next": {"review_backends": {"claude": "claude:opus-9:high"}, "auto_push": True},
+            }))
+            config = load_config(path)
+        self.assertEqual(config.flow_next.review_backends["claude"], "claude:opus-9:high")
+        # codex mapping wasn't overridden, so it keeps its default.
+        self.assertEqual(config.flow_next.review_backends["codex"], "codex:gpt-5.6-sol:medium")
+        self.assertTrue(config.flow_next.auto_push)
+
+    def test_malformed_review_backends_fall_back_to_defaults(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            path.write_text(json.dumps({
+                "version": 1,
+                "flow_next": {"review_backends": {"claude": 12345, "codex": ""}, "auto_push": "yes"},
+            }))
+            config = load_config(path)
+        self.assertEqual(config.flow_next.review_backends["claude"], "codex:gpt-5.6-sol:medium")
+        self.assertEqual(config.flow_next.review_backends["codex"], "codex:gpt-5.6-sol:medium")
+        self.assertFalse(config.flow_next.auto_push)
+
+    def test_flow_next_round_trips(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            config = Config()
+            config.flow_next.auto_push = True
+            config.flow_next.review_backends["claude"] = "claude:future-model:high"
+            save_config(config, path)
+            loaded = load_config(path)
+        self.assertTrue(loaded.flow_next.auto_push)
+        self.assertEqual(loaded.flow_next.review_backends["claude"], "claude:future-model:high")
+
+
 class NotificationsUsableTests(unittest.TestCase):
     def test_enabled_alone_is_not_enough(self):
         config = Config()

@@ -211,5 +211,193 @@ class CodexRuntimeOverridesTests(IsolatedRuntimeTest):
                 overrides.assert_not_called()
 
 
+class ContainerFlowNextEnvTests(IsolatedRuntimeTest):
+    def test_flow_next_workspace_injects_review_backend_env(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".flow").mkdir()
+            (root / ".flow" / "config.json").write_text("{}")
+            workspace = Workspace(root, root)
+
+            class ExecCalled(Exception):
+                pass
+
+            captured = {}
+
+            def fake_container_argv(workspace, extra_mounts, script_dir, command, config=None,
+                                     extra_env=None, mount_notifications=True):
+                captured["extra_env"] = extra_env
+                return ["podman"]
+
+            with (
+                mock.patch.object(runtime.shutil, "which", return_value="/usr/bin/podman"),
+                mock.patch.object(runtime, "resolve_workspace", return_value=workspace),
+                mock.patch.object(runtime, "ensure_state_dirs"),
+                mock.patch.object(runtime, "ensure_refresh_token"),
+                mock.patch.object(runtime, "load_config", return_value=Config()),
+                mock.patch.object(runtime, "image_exists", return_value=True),
+                mock.patch.object(runtime, "sync_claude_agent_skills"),
+                mock.patch.object(runtime, "claude_channel_args", return_value=([], [])),
+                mock.patch.object(runtime, "container_argv", side_effect=fake_container_argv),
+                mock.patch.object(runtime.os, "execvp", side_effect=ExecCalled),
+                self.assertRaises(ExecCalled),
+            ):
+                runtime.runtime_main(["claude"], Path.cwd())
+            self.assertIn("FLOW_REVIEW_BACKEND=codex:gpt-5.6-sol:medium", captured["extra_env"])
+
+    def test_non_flow_next_workspace_injects_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp), Path(tmp))
+
+            class ExecCalled(Exception):
+                pass
+
+            captured = {}
+
+            def fake_container_argv(workspace, extra_mounts, script_dir, command, config=None,
+                                     extra_env=None, mount_notifications=True):
+                captured["extra_env"] = extra_env
+                return ["podman"]
+
+            with (
+                mock.patch.object(runtime.shutil, "which", return_value="/usr/bin/podman"),
+                mock.patch.object(runtime, "resolve_workspace", return_value=workspace),
+                mock.patch.object(runtime, "ensure_state_dirs"),
+                mock.patch.object(runtime, "ensure_refresh_token"),
+                mock.patch.object(runtime, "load_config", return_value=Config()),
+                mock.patch.object(runtime, "image_exists", return_value=True),
+                mock.patch.object(runtime, "sync_claude_agent_skills"),
+                mock.patch.object(runtime, "claude_channel_args", return_value=([], [])),
+                mock.patch.object(runtime, "container_argv", side_effect=fake_container_argv),
+                mock.patch.object(runtime.os, "execvp", side_effect=ExecCalled),
+                self.assertRaises(ExecCalled),
+            ):
+                runtime.runtime_main(["claude"], Path.cwd())
+            self.assertEqual(captured["extra_env"], [])
+
+
+class HostModeTests(IsolatedRuntimeTest):
+    def _flow_next_workspace(self, tmp: str) -> Path:
+        root = Path(tmp) / "project"
+        root.mkdir()
+        (root / ".flow").mkdir()
+        (root / ".flow" / "config.json").write_text("{}")
+        return root
+
+    def test_host_claude_selects_host_claude_executable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp), Path(tmp))
+            with mock.patch.object(runtime.shutil, "which", return_value="/usr/local/bin/claude"), \
+                 mock.patch.object(runtime, "resolve_workspace", return_value=workspace), \
+                 mock.patch.object(runtime, "load_config", return_value=Config()), \
+                 mock.patch.object(runtime.subprocess, "call", return_value=0) as call:
+                rc = runtime.host_main("claude", ["--model", "opus"])
+            self.assertEqual(rc, 0)
+            call.assert_called_once()
+            argv = call.call_args.args[0]
+            self.assertEqual(argv, ["/usr/local/bin/claude", "--model", "opus"])
+
+    def test_host_codex_selects_host_codex_executable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp), Path(tmp))
+            with mock.patch.object(runtime.shutil, "which", return_value="/usr/local/bin/codex"), \
+                 mock.patch.object(runtime, "resolve_workspace", return_value=workspace), \
+                 mock.patch.object(runtime, "load_config", return_value=Config()), \
+                 mock.patch.object(runtime.subprocess, "call", return_value=0) as call:
+                runtime.host_main("codex", ["exec", "hello"])
+            argv = call.call_args.args[0]
+            self.assertEqual(argv, ["/usr/local/bin/codex", "exec", "hello"])
+
+    def test_passthrough_args_preserved(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp), Path(tmp))
+            with mock.patch.object(runtime.shutil, "which", return_value="/usr/local/bin/claude"), \
+                 mock.patch.object(runtime, "resolve_workspace", return_value=workspace), \
+                 mock.patch.object(runtime, "load_config", return_value=Config()), \
+                 mock.patch.object(runtime.subprocess, "call", return_value=0) as call:
+                runtime.host_main("claude", ["-p", "do a thing", "--model", "opus"])
+            self.assertEqual(
+                call.call_args.args[0],
+                ["/usr/local/bin/claude", "-p", "do a thing", "--model", "opus"],
+            )
+
+    def test_podman_never_invoked_in_host_mode(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp), Path(tmp))
+            with mock.patch.object(runtime.shutil, "which", return_value="/usr/local/bin/claude"), \
+                 mock.patch.object(runtime, "resolve_workspace", return_value=workspace), \
+                 mock.patch.object(runtime, "load_config", return_value=Config()), \
+                 mock.patch.object(runtime.subprocess, "call", return_value=0) as call, \
+                 mock.patch.object(runtime.os, "execvp") as execvp:
+                runtime.host_main("claude", [])
+            execvp.assert_not_called()
+            for arg in call.call_args.args[0]:
+                self.assertNotEqual(arg, "podman")
+
+    def test_flow_next_env_injected_in_host_mode(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._flow_next_workspace(tmp)
+            workspace = Workspace(root, root)
+            with mock.patch.object(runtime.shutil, "which", return_value="/usr/local/bin/claude"), \
+                 mock.patch.object(runtime, "resolve_workspace", return_value=workspace), \
+                 mock.patch.object(runtime, "load_config", return_value=Config()), \
+                 mock.patch.object(runtime.subprocess, "call", return_value=0) as call:
+                runtime.host_main("claude", [])
+            env = call.call_args.kwargs["env"]
+            self.assertEqual(env.get("FLOW_REVIEW_BACKEND"), "codex:gpt-5.6-sol:medium")
+
+    def test_no_flow_next_env_for_non_flow_next_host_workspace(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp), Path(tmp))
+            with mock.patch.object(runtime.shutil, "which", return_value="/usr/local/bin/claude"), \
+                 mock.patch.object(runtime, "resolve_workspace", return_value=workspace), \
+                 mock.patch.object(runtime, "load_config", return_value=Config()), \
+                 mock.patch.object(runtime.subprocess, "call", return_value=0) as call:
+                runtime.host_main("claude", [])
+            env = call.call_args.kwargs["env"]
+            self.assertNotIn("FLOW_REVIEW_BACKEND", env)
+
+    def test_real_exit_status_propagated(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp), Path(tmp))
+            with mock.patch.object(runtime.shutil, "which", return_value="/usr/local/bin/claude"), \
+                 mock.patch.object(runtime, "resolve_workspace", return_value=workspace), \
+                 mock.patch.object(runtime, "load_config", return_value=Config()), \
+                 mock.patch.object(runtime.subprocess, "call", return_value=7):
+                rc = runtime.host_main("claude", [])
+            self.assertEqual(rc, 7)
+
+    def test_missing_host_executable_raises(self):
+        from agent_box.errors import AgentBoxError
+        with (
+            mock.patch.object(runtime.shutil, "which", return_value=None),
+            self.assertRaises(AgentBoxError),
+        ):
+            runtime.host_main("claude", [])
+
+
+class ContainerHostParityTests(IsolatedRuntimeTest):
+    """Container and host mode must resolve the same Flow-Next policy through
+    the same shared helper, so they cannot drift."""
+
+    def test_container_and_host_inject_same_flow_next_env(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".flow").mkdir()
+            (root / ".flow" / "config.json").write_text("{}")
+            config = Config()
+            from agent_box.flow_next import flow_next_launch_env
+            container_env = flow_next_launch_env(root, "claude", config)
+            with mock.patch.object(runtime.shutil, "which", return_value="/usr/local/bin/claude"), \
+                 mock.patch.object(runtime, "resolve_workspace", return_value=Workspace(root, root)), \
+                 mock.patch.object(runtime, "load_config", return_value=config), \
+                 mock.patch.object(runtime.subprocess, "call", return_value=0) as call:
+                runtime.host_main("claude", [])
+            host_env = call.call_args.kwargs["env"]
+            for pair in container_env:
+                name, _, value = pair.partition("=")
+                self.assertEqual(host_env.get(name), value)
+
+
 if __name__ == "__main__":
     unittest.main()

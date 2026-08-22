@@ -20,16 +20,21 @@ def die(message: str) -> NoReturn:
     raise SystemExit(1)
 
 
-def parse_global_args(argv: list[str]) -> tuple[list[str], list[str]]:
+def parse_global_args(argv: list[str]) -> tuple[list[str], bool, list[str]]:
     """Split agent-box's own leading options from the rest of argv.
 
-    Grammar: ``agent-box [--mount PATH[:ro]]... [claude|codex|shell|doctor] [provider args...]``.
+    Grammar: ``agent-box [--mount PATH[:ro]]... [--host] [claude|codex|shell|doctor] [provider args...]``.
     Agent-box's own options must come first; once a non-option token is seen
     (or a bare ``--``), everything after it is passed through untouched, so
     ``agent-box claude --model opus`` or a hypothetical Claude/Codex
-    ``--mount`` flag of their own is never misinterpreted as ours.
+    ``--mount``/``--host`` flag of their own is never misinterpreted as ours.
+
+    ``--host`` runs the resolved subcommand directly on the host instead of
+    in a container; ``agent-box claude``/``agent-box codex`` keep meaning
+    containerized execution.
     """
     mounts: list[str] = []
+    host = False
     i = 0
     while i < len(argv):
         token = argv[i]
@@ -49,13 +54,17 @@ def parse_global_args(argv: list[str]) -> tuple[list[str], list[str]]:
             mounts.append(value)
             i += 1
             continue
+        if token == "--host":
+            host = True
+            i += 1
+            continue
         break
-    return mounts, argv[i:]
+    return mounts, host, argv[i:]
 
 
 def usage_text() -> None:
     print('''Usage:
-  agent-box [--mount PATH[:ro]]... [codex|claude|shell|doctor] [arguments...]
+  agent-box [--mount PATH[:ro]]... [--host] [codex|claude|shell|doctor] [arguments...]
   agent-box config [show|check]
   agent-box usage <codex|claude|all> [--statusline]
   agent-box notify <test|claude|codex>
@@ -81,10 +90,22 @@ read-only with the ':ro' suffix. Repeatable. Must appear before the
 claude/codex/shell/doctor subcommand; use '--' to stop agent-box's own
 option parsing early if a provider argument would otherwise be ambiguous.
 
+--host runs claude/codex directly on the host instead of in a container: no
+Podman, the installed host executable, your normal host git/gh credentials.
+'agent-box claude'/'agent-box codex' (without --host) keep meaning
+containerized execution. Not valid with --mount, and not valid with
+shell/doctor, which are container-only.
+
+Flow-Next workspaces (a '.flow/config.json' present) get a deterministic
+FLOW_REVIEW_BACKEND from agent-box config in both modes; see
+'flow_next' in 'agent-box config show'.
+
 Examples:
   agent-box
   agent-box claude
   agent-box codex
+  agent-box --host claude
+  agent-box --host codex
   agent-box --mount ~/code claude
   agent-box --mount /mnt/data/specs:ro --mount /srv/generated codex
   agent-box config
@@ -153,6 +174,24 @@ def notify_command(args: list[str]) -> None:
         die(f"unsupported notify action '{action}'; expected test, claude, or codex")
 
 
+# -- flow-next ---------------------------------------------------------------
+#
+# Internal hook entry points for the managed Claude PostToolUse/Stop hooks
+# that drive Flow-Next auto-push (see agent_box.flow_push). Not meant to be
+# typed by a user; agent-box config installs these as the literal hook
+# commands in ~/.claude/settings.json.
+
+def flow_next_command(args: list[str]) -> None:
+    from . import flow_push
+
+    if args == ["post-tool-use"]:
+        flow_push.run_post_tool_use_hook(sys.stdin.read())
+    elif args == ["stop"]:
+        flow_push.run_stop_hook(sys.stdin.read())
+    else:
+        die("unsupported flow-next action; expected post-tool-use or stop")
+
+
 # -- config ----------------------------------------------------------------
 
 def _redact(token: str) -> str:
@@ -199,6 +238,9 @@ def config_show() -> None:
     print(f"  Git full config copy        {'on' if config.git.full_config else 'off'}")
     print(f"  Provider API keys           {'on' if config.providers.api_keys else 'off'}")
     print(f"  Provider transport/proxy    {'on' if config.providers.transport else 'off'}")
+    print(f"  Flow-Next auto-push         {'on' if config.flow_next.auto_push else 'off'}")
+    for agent, backend in sorted(config.flow_next.review_backends.items()):
+        print(f"    review backend ({agent})    {backend}")
 
 
 def config_check() -> None:
@@ -284,15 +326,29 @@ def config_interactive() -> None:
         "Forward endpoint/proxy settings from this shell (base URL, proxies, CA bundle)",
         config.providers.transport)
 
+    print("\n-- Flow-Next auto-push (opt-in, Claude only) --")
+    print("On a successful 'flowctl done', arms a marker; the next Claude Stop")
+    print("pushes the current feature branch only if every safety check passes")
+    print("(clean worktree, not main/master/default, no diverged remote, no force).")
+    config.flow_next.auto_push = _prompt_bool(
+        "Enable Flow-Next auto-push", config.flow_next.auto_push)
+
     save_config(config)
-    # Keep the two derived artifacts in step with what was just saved: the
-    # container-visible credential file, and Claude's own hook entries.
+    # Keep the derived artifacts in step with what was just saved: the
+    # container-visible credential file, and Claude's own hook entries. The
+    # notification hooks and the flow-next hooks are installed/removed
+    # independently of each other -- each owns only its own hook commands.
     notify_module.sync_credentials(config)
     settings = CLAUDE_HOME / "settings.json"
     if config.notifications.enabled:
         notify_module.install_claude_notify_hooks(settings)
     else:
         notify_module.remove_claude_notify_hooks(settings)
+    from . import flow_push
+    if config.flow_next.auto_push:
+        flow_push.install_flow_push_hooks(settings)
+    else:
+        flow_push.remove_flow_push_hooks(settings)
 
     print(f"\nSaved {CONFIG_FILE}\n")
     config_show()
@@ -322,21 +378,32 @@ def selftest() -> None:
 
 # -- main ----------------------------------------------------------------
 
-NON_RUNTIME = {"usage", "notify", "config", "selftest", "help", "-h", "--help", "build", "update", "rebuild"}
+NON_RUNTIME = {
+    "usage", "notify", "config", "selftest", "help", "-h", "--help",
+    "build", "update", "rebuild", "flow-next",
+}
+#: --host only makes sense for a real agent launch, never for these.
+HOST_ONLY_AGENTS = {"claude", "codex"}
 
 
 def main() -> None:
-    mounts, args = parse_global_args(sys.argv[1:])
+    mounts, host, args = parse_global_args(sys.argv[1:])
     script_dir = Path(__file__).resolve().parent.parent
     try:
         if mounts and args and args[0] in NON_RUNTIME:
             die("--mount is only valid before claude/codex/shell/doctor")
+        if host and args and args[0] in NON_RUNTIME:
+            die("--host is only valid before claude/codex")
+        if host and mounts:
+            die("--host does not use --mount; there is no container to mount into")
         if args and args[0] == "usage":
             usage_command(args[1:]); return
         if args and args[0] == "notify":
             notify_command(args[1:]); return
         if args and args[0] == "config":
             config_command(args[1:]); return
+        if args and args[0] == "flow-next":
+            flow_next_command(args[1:]); return
         if args and args[0] == "selftest":
             if len(args) != 1: die("agent-box selftest takes no arguments")
             selftest(); return
@@ -348,6 +415,12 @@ def main() -> None:
             from . import runtime
             command = args[0]
             raise SystemExit(runtime.build_image(script_dir, command != "build", command == "rebuild"))
+        if host:
+            agent = args[0] if args else None
+            if agent not in HOST_ONLY_AGENTS:
+                die("--host requires 'claude' or 'codex'; shell/doctor are container-only")
+            from . import runtime
+            raise SystemExit(runtime.host_main(agent, args[1:]))
         from . import runtime
         runtime.runtime_main(args, script_dir, mounts)
     except AgentBoxError as exc:
