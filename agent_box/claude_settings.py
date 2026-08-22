@@ -25,8 +25,12 @@ def uses_command(entry: Any, command: str) -> bool:
 
 
 def install_hook_entries(settings_path: Path, entries: list[tuple[str, dict[str, Any]]]) -> None:
-    """Append each ``(event, entry)`` pair to ``settings_path`` if not already
-    present. Idempotent; leaves every other event and unrelated entry alone.
+    """Append each ``(event, entry)`` pair to ``settings_path`` if an entry
+    with the same ``matcher`` doesn't already carry that command as one of
+    its handlers. Idempotent, and safe against a *mixed* entry -- one an
+    earlier install (or a user) already combined our command with other
+    handlers under the same matcher -- which must not gain a second,
+    duplicate outer entry for the same command.
     """
     settings = read_json(settings_path) if settings_path.exists() else {}
     if not isinstance(settings, dict):
@@ -38,13 +42,33 @@ def install_hook_entries(settings_path: Path, entries: list[tuple[str, dict[str,
         items = hooks.setdefault(event, [])
         if not isinstance(items, list):
             raise AgentBoxError(f"{settings_path}: hooks.{event} must be a list")
-        if entry not in items:
+        matcher = entry.get("matcher")
+        commands = {
+            h.get("command") for h in entry.get("hooks", [])
+            if isinstance(h, dict) and h.get("type") == "command"
+        }
+        already_present = any(
+            isinstance(item, dict) and item.get("matcher") == matcher
+            and any(uses_command(item, cmd) for cmd in commands)
+            for item in items
+        )
+        if not already_present:
             items.append(entry)
     atomic_write_json(settings_path, settings)
 
 
 def remove_hook_commands(settings_path: Path, owned: dict[str, tuple[str, ...]]) -> None:
-    """Remove only entries whose command is in ``owned[event]``, per event."""
+    """Remove only the *handlers* whose command is in ``owned[event]``, per
+    event -- operating inside each outer entry's ``hooks`` array rather than
+    dropping the whole entry.
+
+    Claude hook entries can group several handlers (and a caller's own,
+    unrelated handler) under one outer matcher/group object; agent-box may
+    only ever remove the handler(s) it owns. An outer entry is dropped
+    entirely only once filtering leaves its ``hooks`` array empty; every
+    other field on a surviving entry (``matcher``, ``timeout``,
+    ``statusMessage``, ``once``, or anything else) is preserved unchanged.
+    """
     if not settings_path.exists():
         return
     settings = read_json(settings_path)
@@ -58,9 +82,22 @@ def remove_hook_commands(settings_path: Path, owned: dict[str, tuple[str, ...]])
                 cleaned[event] = items
                 continue
             commands = owned.get(event, ())
-            remaining = [x for x in items if not any(uses_command(x, cmd) for cmd in commands)]
-            if remaining:
-                cleaned[event] = remaining
+            remaining_items = []
+            for item in items:
+                if not commands or not isinstance(item, dict) or not isinstance(item.get("hooks"), list):
+                    remaining_items.append(item)
+                    continue
+                filtered_handlers = [
+                    h for h in item["hooks"]
+                    if not (isinstance(h, dict) and h.get("type") == "command" and h.get("command") in commands)
+                ]
+                if not filtered_handlers:
+                    continue  # every handler in this entry was ours; drop the entry
+                if len(filtered_handlers) != len(item["hooks"]):
+                    item = {**item, "hooks": filtered_handlers}
+                remaining_items.append(item)
+            if remaining_items:
+                cleaned[event] = remaining_items
         if cleaned:
             settings["hooks"] = cleaned
         else:
