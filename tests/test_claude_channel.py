@@ -217,7 +217,7 @@ class LaunchDecisionTests(unittest.TestCase):
         self._decide()
         flags, env, err = self._decide()
         self.assertEqual(flags, [], "no --channels for the second session")
-        self.assertEqual(env, [], "and its notification hooks stay active")
+        self.assertEqual(env, ["TELEGRAM_BOT_TOKEN="], "its plugin must not load the shared .env")
         self.assertIn("Telegram channel already active in another Claude session", err)
 
     def test_prerequisites_lost_after_enabling_warns_but_still_runs(self):
@@ -228,9 +228,25 @@ class LaunchDecisionTests(unittest.TestCase):
 
     def test_disabled_setting_takes_no_lock(self):
         self.config.claude.telegram_channel = False
-        flags, _, _ = self._decide()
+        flags, env, _ = self._decide()
         self.assertEqual(flags, [])
+        self.assertEqual(env, ["TELEGRAM_BOT_TOKEN="])
         self.assertIsNone(channel.channel_owner(self.lock))
+
+    def test_empty_token_has_the_official_plugin_precedence_needed_for_isolation(self):
+        """Pin the upstream contract rather than assuming --channels gates startup.
+
+        The installed plugin loads .env only when the process variable is
+        undefined.  An empty explicit value therefore prevents it from
+        discovering the persisted shared token and polling Telegram.
+        """
+        source = (Path.home() / ".claude/plugins/marketplaces/claude-plugins-official"
+                  "/external_plugins/telegram/server.ts")
+        if not source.is_file():
+            self.skipTest("official Telegram plugin source is not installed")
+        text = source.read_text()
+        self.assertIn("process.env[m[1]] === undefined", text)
+        self.assertIn("const TOKEN = process.env.TELEGRAM_BOT_TOKEN", text)
 
     def test_codex_never_touches_the_channel(self):
         home = claude_home(str(self.root / "claude"), plugin=True, token=True)
@@ -246,6 +262,43 @@ class LaunchDecisionTests(unittest.TestCase):
             {"pid": 2 ** 30, "pid_start": "999", "boot_id": channel._boot_id()}))
         flags, _, _ = self._decide()
         self.assertEqual(flags, ["--channels", CLAUDE_TELEGRAM_CHANNEL])
+
+
+class RuntimeNotificationSelectionTests(unittest.TestCase):
+    """Only agents that can emit outbound notifications receive its token."""
+
+    def _run(self, agent, channel):
+        config = Config()
+        config.notifications.enabled = True
+        config.notifications.telegram_token = "token"
+        config.notifications.telegram_chat_id = "chat"
+        workspace = Workspace(Path("/project"), Path("/project"))
+        captured = []
+
+        def fake_argv(*args, **kwargs):
+            captured.append(kwargs.get("mount_notifications", args[-1]))
+            return ["podman"]
+
+        with mock.patch.object(runtime.shutil, "which", return_value="/usr/bin/podman"), \
+             mock.patch.object(runtime, "resolve_workspace", return_value=workspace), \
+             mock.patch.object(runtime, "ensure_state_dirs"), \
+             mock.patch.object(runtime, "ensure_refresh_token"), \
+             mock.patch.object(runtime, "load_config", return_value=config), \
+             mock.patch.object(runtime, "image_exists", return_value=True), \
+             mock.patch.object(runtime, "sync_claude_agent_skills"), \
+             mock.patch.object(runtime, "claude_channel_args", return_value=(channel, [])), \
+             mock.patch.object(runtime, "container_argv", side_effect=fake_argv), \
+             mock.patch.object(runtime.os, "execvp", side_effect=SystemExit):
+            with self.assertRaises(SystemExit):
+                runtime.runtime_main([agent], Path(__file__).parents[1])
+        return captured
+
+    def test_credentials_are_scoped_by_actual_launch_role(self):
+        self.assertEqual(self._run("codex", []), [True])
+        self.assertEqual(self._run("claude", []), [True])
+        self.assertEqual(self._run("claude", ["--channels", CLAUDE_TELEGRAM_CHANNEL]), [False])
+        self.assertEqual(self._run("shell", []), [False])
+        self.assertEqual(self._run("doctor", []), [False])
 
 
 class ConfigEnableGatingTests(unittest.TestCase):

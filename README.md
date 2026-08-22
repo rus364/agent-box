@@ -84,8 +84,8 @@ Settings are stored as a small versioned JSON document at `~/.config/agent-box/c
   "claude":        { "telegram_channel": false },
   "notifications": { "enabled": false, "telegram_token": "", "telegram_chat_id": "" },
   "github":        { "gh_token": false, "gh_config": false },
-  "git":           { "config": true },
-  "providers":     { "env": true }
+  "git":           { "identity": true, "full_config": false },
+  "providers":     { "api_keys": false, "transport": true }
 }
 ```
 
@@ -95,14 +95,16 @@ Settings are stored as a small versioned JSON document at `~/.config/agent-box/c
 | --- | --- | --- |
 | `claude.telegram_channel` | **off** | Adds `--channels plugin:telegram@claude-plugins-official` to `agent-box claude` |
 | `notifications.enabled` | **off** | Outbound-only Telegram pings; needs a token and chat id to become active |
-| `github.gh_token` | **off** | Runs `gh auth token` on the host and passes the result in as `GH_TOKEN` |
+| `github.gh_token` | **off** | Permits an exported token, or obtains `gh auth token`, and forwards it as `GH_TOKEN` |
 | `github.gh_config` | **off** | Copies the host's `~/.config/gh` (which stores that token) into the container |
-| `git.config` | on | Copies the host's git config so commits are attributed to you. Not a secret |
-| `providers.env` | on | Forwards provider variables *already exported in your shell* — `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`, Bedrock/Vertex selectors, HTTP/TLS proxy variables |
+| `git.identity` | **on** | Seeds only global `user.name` and `user.email` for commit attribution |
+| `git.full_config` | **off** | Copies the complete host Git configuration; opt in only if you accept its credential helpers, headers, includes, and rewrites being exposed |
+| `providers.api_keys` | **off** | Forwards exported `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` |
+| `providers.transport` | **on** | Forwards endpoint, Bedrock/Vertex, proxy, and CA transport settings (turn off if your proxy URL carries credentials) |
 
 **Security-sensitive host integration is explicit.** In particular, being logged in to `gh` on the host is *not* consent to hand a live GitHub credential to every container — `github.gh_token` must be turned on deliberately. (An earlier agent-box forwarded the token whenever `gh` happened to be authenticated. It no longer does.)
 
-`providers.env` forwards only variables you exported for that very command, and podman is given `--env=NAME` rather than `--env=NAME=value`, so a secret never appears in the container's argv.
+Provider values, exported GitHub tokens, and a GitHub token obtained from `gh auth token` are forwarded to Podman by name (`--env=NAME`), never as `--env=NAME=value`; the latter would expose the value in process argv. `AGENT_BOX_GH_TOKEN=0` denies GitHub passthrough for one run and `=1` permits it.
 
 ### Environment overrides
 
@@ -167,7 +169,13 @@ Because `~/.claude` is bind-mounted read-write at its host path, a plugin instal
 - Pairing and the allowlist policy (step 4).
 - On a managed claude.ai Teams/Enterprise account, channels are off unless an administrator enables them. Personal/Console accounts do not need this.
 
-If the channel is enabled in config but the plugin or token is missing, `agent-box claude` **fails with instructions** rather than starting a session that silently never reaches Telegram.
+If the channel is enabled in config but the plugin or token is missing, `agent-box claude` prints instructions and starts as a normal local Claude session.
+
+### One active Telegram owner
+
+Telegram permits only one `getUpdates` consumer per bot token. agent-box records one live channel owner using PID, process-start time, and boot ID; stale records are recovered automatically. A second `agent-box claude` prints `Telegram channel already active in another Claude session`, starts normally, and does not receive `--channels`.
+
+The official plugin can still be globally loaded by Claude Code in that second process, even without `--channels`. Its current server loads its persisted `.env` only when `TELEGRAM_BOT_TOKEN` is undefined. agent-box therefore passes an explicit empty `TELEGRAM_BOT_TOKEN` to every non-owner Claude container (including when the channel is disabled). The official plugin exits before polling instead of falling back to the shared token, so it cannot steal or kill the owner's poller. This is isolation around an upstream multi-process limitation, not a second Telegram controller.
 
 ## Codex remote control
 
@@ -191,7 +199,9 @@ What gets sent:
 
 Claude's "turn finished" is suppressed while background tasks from that turn are still running, so a long background job doesn't ping you as though it needed input.
 
-**No double notifications.** When `claude.telegram_channel` is on, the official channel already relays that session's replies and prompts to the paired chat, so agent-box switches its own Claude notification hooks off for that container (`AGENT_BOX_SUPPRESS_NOTIFY=1`). Codex notifications are unaffected — nothing else covers them.
+**No double notifications.** When a Claude session owns the official channel, it already relays replies and prompts to the paired chat, so agent-box suppresses its Claude hooks (`AGENT_BOX_SUPPRESS_NOTIFY=1`). Codex notifications are unaffected.
+
+The main configuration file is never mounted into a container. When outbound notifications are usable, agent-box derives a minimal mode-0600 runtime `notify.json` containing only the bot token and chat id, then mounts that file read-only. It is available to Codex and to non-channel Claude sessions only; shell, doctor, and the Claude channel owner do not receive it. Disabled notifications mean no notification credential mount.
 
 Enabling notifications installs Claude hooks into `~/.claude/settings.json`; disabling removes them. Codex is wired up per-run with `-c notify=[...]`.
 
@@ -277,9 +287,9 @@ If you keep something under `~/.agents` a container shouldn't read, move it out 
 
 `git` and `gh` configuration directories are always mounted (so both tools work), but only *populated* from the host when you opt in — see the configuration table above. They're reseeded as a **copy**, not a bind mount, because `git`/`gh` rewrite config via temp-file-plus-rename, which fails on a bind-mounted file. The host stays the source of truth; anything written inside the container is discarded at the next start.
 
-With `github.gh_config` off, the directory is empty and `gh` runs unauthenticated. With `github.gh_token` off, no `GH_TOKEN` is forwarded.
+With `github.gh_config` off, the directory is empty and `gh` runs unauthenticated. With `github.gh_token` off (or `AGENT_BOX_GH_TOKEN=0`), no `GH_TOKEN` or `GITHUB_TOKEN` is forwarded.
 
-`gh auth login` is not meant to run inside the container — authenticate on the host. With `github.gh_token` on, agent-box reads `gh auth token` on the host and passes it in as `GH_TOKEN`, authenticating both `gh` and the `gh auth git-credential` helper used by `git` over HTTPS. An already-exported `GH_TOKEN`/`GITHUB_TOKEN` takes precedence. Only HTTPS remotes are authenticated this way; the container has no SSH keys or agent socket.
+`gh auth login` is not meant to run inside the container — authenticate on the host. With `github.gh_token` on, agent-box permits an already-exported `GH_TOKEN`/`GITHUB_TOKEN`, or reads `gh auth token` and places it only in the launcher environment before Podman is exec'd. In both cases Podman receives `--env=NAME`, never the token value in argv. Only HTTPS remotes are authenticated this way; the container has no SSH keys or agent socket.
 
 ## Usage limits
 
@@ -345,7 +355,7 @@ When `/dev/kvm` is accessible it is passed through automatically. Disable with `
 - **`current directory is not inside the configured workspace root`** — you set `AGENT_BOX_WORKSPACE_ROOT` and `cd`'d outside it.
 - **`--mount` rejects a path** — it must be an existing absolute directory; a relative path, a file, or a not-yet-created directory is rejected rather than silently mounted.
 - **`the Claude Telegram channel is enabled ... but`** — run `agent-box config check` and follow the printed steps, or turn the channel off with `agent-box config`.
-- **Telegram is silent even though the channel is on** — the plugin needs a paired user. DM the bot and run `/telegram:access pair <code>` in the session. On managed Teams/Enterprise accounts, channels also need an administrator to enable them.
+- **Telegram is silent even though the channel is on** — first make sure another Claude session is not reported as the active owner; then pair the plugin user with `/telegram:access pair <code>`. On managed Teams/Enterprise accounts, channels also need an administrator to enable them.
 - **Claude/Codex not authenticated in the container** — authenticate on the host first; the container mounts `~/.claude` and `~/.codex` rather than managing its own credentials.
 - **`gh` is unauthenticated in the container** — that's the default. Turn on `github.gh_token` (and optionally `github.gh_config`) in `agent-box config`.
 - **Shared skill shows MISSING/MISMATCH in `agent-box doctor`** — a `~/.claude/skills/<name>` entry already exists and doesn't point at the shared skill; remove or rename it if you want it linked.
@@ -353,7 +363,7 @@ When `/dev/kvm` is accessible it is passed through automatically. Disable with `
 ## Known limitations
 
 - `~/.agents` is mounted read-only in full, and every external symlink target under it too. Deliberate, but it does mean the container can read anything you keep there, not only skills.
-- The official Telegram plugin is a third-party-to-agent-box component: its behavior, slash commands, and state layout are Anthropic's, and agent-box only checks for the plugin's presence and a token before passing the flag. If the plugin changes where it stores state, `agent-box config check` would need updating.
+- The official Telegram plugin is outside agent-box's control. Its current global-plugin startup behavior requires the empty-token isolation above; a plugin change to its environment precedence or state layout may require an agent-box update.
 - `--channels` is verified against Claude Code 2.1.239.
 - There is no remote equivalent of `--mount`, and no way to start a container from Telegram. The channel attaches to a session you started locally.
 
@@ -364,7 +374,7 @@ When `/dev/kvm` is accessible it is passed through automatically. Disable with `
 - **`~/.config/agent-box/telegram.json` is not read.** Configuration now lives in `~/.config/agent-box/config.json` and there is no migration — run `agent-box config` once to set things up again. Delete the old file.
 - **Command changes:** `agent-box notify setup|status|disable` → `agent-box config`. `agent-box telegram *` → gone. `agent-box notify test|claude|codex` still exist (the last two are the hook entry points).
 - **The GitHub token is no longer forwarded by default.** It used to travel whenever `gh` was authenticated on the host; now it requires `github.gh_token` in `agent-box config`. Same for copying `~/.config/gh`, which is now `github.gh_config` and also off by default.
-- **Legacy notify hook cleanup is gone.** If an old `~/.local/bin/agent-box notify claude` hook entry is still in your `~/.claude/settings.json`, remove it by hand or let `agent-box config` reinstall the current ones alongside it.
+- **Legacy notify hooks are cleaned up.** Running `agent-box config` removes the old `~/.local/bin/agent-box notify claude` entries when it installs current hooks.
 - The `statusLine` auto-migration is gone; if yours still points at an old command, set it to `agent-box usage all --statusline`.
 - `podman build` on the `Containerfile` requires explicit `USER_NAME`/`USER_UID`/`USER_GID`/`USER_HOME` args — use `agent-box build`, or pass all four yourself.
 - The mandatory `~/code` workspace requirement is gone; set `AGENT_BOX_WORKSPACE_ROOT=~/code` if you want the old "one big mounted tree" behavior.

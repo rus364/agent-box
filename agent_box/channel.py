@@ -71,12 +71,13 @@ def plugin_installed(claude_home: Path | None = None) -> bool:
 def token_configured(claude_home: Path | None = None) -> bool:
     """True when the plugin will find a bot token *inside the container*.
 
-    Only the plugin's own persisted ``.env`` counts. The server also honours a
-    ``TELEGRAM_BOT_TOKEN`` environment variable, but agent-box never forwards
-    that into the container, so a host shell exporting one would make this
-    check pass while the actual session had no token -- exactly the silent
-    half-working state the preflight exists to prevent. The ``.env`` file
-    lives under CLAUDE_HOME, which is mounted, so it is the canonical setup.
+    Only the plugin's own persisted ``.env`` counts. A host shell token is
+    never forwarded as a credential: non-owner Claude containers receive an
+    explicit *empty* token to prevent the global plugin falling back to .env,
+    while an owner reads this persisted token normally. Counting a host shell
+    token here would therefore make preflight pass while the actual owner had
+    no usable setup. The ``.env`` file lives under CLAUDE_HOME, which is
+    mounted, so it is the canonical setup.
     """
     try:
         text = (_home(claude_home) / CHANNEL_STATE / ".env").read_text(encoding="utf-8")

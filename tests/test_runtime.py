@@ -8,7 +8,23 @@ from agent_box.mounts import MountSpec
 from agent_box.workspace import Workspace
 
 
-class BuildMountsEnsuresStateDirsTests(unittest.TestCase):
+class IsolatedRuntimeTest(unittest.TestCase):
+    def setUp(self):
+        self._state_tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._state_tmp.cleanup)
+        state = Path(self._state_tmp.name) / "state"
+        self._patches = [
+            mock.patch.object(runtime, "STATE_ROOT", state),
+            mock.patch.object(runtime, "BUILD_STATE", state / "build"),
+            mock.patch.object(runtime, "NOTIFY_STATE_ROOT", state / "notify"),
+            mock.patch.object(runtime, "NOTIFY_CREDENTIALS", state / "runtime/notify.json"),
+        ]
+        for patch in self._patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+
+
+class BuildMountsEnsuresStateDirsTests(IsolatedRuntimeTest):
     """podman fails a bind mount outright when its source is missing, so
     build_mounts must create the host-side state directories itself rather
     than trusting a caller to have done it."""
@@ -29,7 +45,7 @@ class BuildMountsEnsuresStateDirsTests(unittest.TestCase):
                 self.assertTrue((state_root / "notify").is_dir())
 
 
-class MountOverlapWithProjectRootTests(unittest.TestCase):
+class MountOverlapWithProjectRootTests(IsolatedRuntimeTest):
     """A --mount that's a parent of (or identical to) the project root must
     collapse to one podman --mount flag, not two overlapping ones."""
 
@@ -58,7 +74,7 @@ class MountOverlapWithProjectRootTests(unittest.TestCase):
                 runtime.container_argv(workspace, [extra], project, ["codex"])
 
 
-class ContainerArgvTests(unittest.TestCase):
+class ContainerArgvTests(IsolatedRuntimeTest):
     def test_same_absolute_path_mounted_no_workspace_rewrite(self):
         with tempfile.TemporaryDirectory() as project:
             workspace = Workspace(Path(project), Path(project))

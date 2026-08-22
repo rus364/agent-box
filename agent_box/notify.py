@@ -10,8 +10,10 @@ much smaller feature: "something happened in a container you left running".
 
 Claude delivers events through hooks installed in its ``settings.json``
 (``agent-box notify claude``), Codex through its ``notify`` program setting
-(``agent-box notify codex``). Both run *inside* the container, which is why
-the config file and the notification state directory are bind-mounted in.
+(``agent-box notify codex``). Both run *inside* the container, which is why a
+minimal derived credential file and notification state directory are mounted
+only for agents that can use outbound notifications; the main config file is
+never mounted.
 """
 from __future__ import annotations
 

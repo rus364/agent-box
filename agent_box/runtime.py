@@ -205,7 +205,7 @@ def agent_tree_mounts() -> list[tuple[Path, Path, bool]]:
 
 def build_mounts(
     workspace: Workspace, extra_mounts: list[MountSpec], script_dir: Path,
-    config: Config | None = None,
+    config: Config | None = None, mount_notifications: bool = True,
 ) -> list[str]:
     """Build ``--mount`` flags.
 
@@ -252,8 +252,9 @@ def build_mounts(
     # a two-key credential file (notify.sync_credentials) and mounts it
     # read-only, and only while notifications are actually usable -- so a
     # disabled feature exposes no token at all rather than an ignored one.
-    notify_module.sync_credentials(config, NOTIFY_CREDENTIALS)
-    if NOTIFY_CREDENTIALS.is_file():
+    if mount_notifications:
+        notify_module.sync_credentials(config, NOTIFY_CREDENTIALS)
+    if mount_notifications and NOTIFY_CREDENTIALS.is_file():
         pairs.append((NOTIFY_CREDENTIALS, CONTAINER_NOTIFY_CREDENTIALS, True))
     # Claude Code's ~/.claude.json sits *beside* the config directory rather
     # than inside it. When CLAUDE_CONFIG_DIR relocates that directory, the
@@ -336,11 +337,11 @@ def github_enabled(config: Config) -> bool:
 def github_env(config: Config) -> list[str]:
     """``--env`` flags carrying a GitHub token, or nothing at all.
 
-    Returns flags rather than mutating the environment so that the decision
-    and its effect on the podman command line are the same step; an earlier
-    version set ``os.environ["GH_TOKEN"]`` as a side effect and then forwarded
-    ``GH_TOKEN``/``GITHUB_TOKEN`` unconditionally further down, which meant a
-    shell-exported token reached the container even with the switch off.
+    A token read from ``gh auth token`` is placed in this short-lived launch
+    process's environment, then forwarded by *name*. Podman inherits that
+    environment when it is exec'd, while its argv contains only
+    ``--env=GH_TOKEN``. This is deliberately different from putting the token
+    after ``=`` in argv, which exposes it through process inspection.
     """
     if not github_enabled(config):
         return []
@@ -357,7 +358,8 @@ def github_env(config: Config) -> list[str]:
     if not token:
         warn("GitHub token passthrough is enabled but the host has no token; run 'gh auth login'")
         return []
-    return [f"--env=GH_TOKEN={token}"]
+    os.environ["GH_TOKEN"] = token
+    return ["--env=GH_TOKEN"]
 
 
 #: Variables that *are* a provider credential. Off by default: Claude and
@@ -385,7 +387,7 @@ def provider_env(config: Config) -> list[str]:
 
 def base_podman_args(
     workspace: Workspace, extra_mounts: list[MountSpec], script_dir: Path,
-    config: Config | None = None,
+    config: Config | None = None, mount_notifications: bool = True,
 ) -> list[str]:
     """The full ``podman run`` argument list, minus the trailing image/command.
 
@@ -413,7 +415,7 @@ def base_podman_args(
         f"--env=BUN_INSTALL_CACHE_DIR={XDG_CACHE_HOME}/bun",
         f"--env=MISE_DATA_DIR={home}/.local/share/mise",
         "--env=DISABLE_AUTOUPDATER=1", f"--env=TERM={os.environ.get('TERM', 'xterm-256color')}",
-        *build_mounts(workspace, extra_mounts, script_dir, config),
+        *build_mounts(workspace, extra_mounts, script_dir, config, mount_notifications),
     ]
     # A host that relocates Claude Code's config directory must have the
     # container agree: CLAUDE_HOME is already bind-mounted at its host path,
@@ -430,9 +432,10 @@ def base_podman_args(
 def container_argv(
     workspace: Workspace, extra_mounts: list[MountSpec], script_dir: Path,
     command: list[str], config: Config | None = None, extra_env: list[str] | None = None,
+    mount_notifications: bool = True,
 ) -> list[str]:
     """Full ``["podman", ...]`` argv for one disposable container run."""
-    args = base_podman_args(workspace, extra_mounts, script_dir, config)
+    args = base_podman_args(workspace, extra_mounts, script_dir, config, mount_notifications)
     args += [f"--env={pair}" for pair in (extra_env or [])]
     if sys.stdin.isatty() and sys.stdout.isatty():
         args.append("--tty")
@@ -521,18 +524,27 @@ def claude_channel_args(
     prompts to the paired chat, and the hooks would post the same interaction
     again to the notification chat, which is a different audience.
     """
-    if agent != "claude" or not config.claude.telegram_channel:
+    if agent != "claude":
         return [], []
+    # The official plugin is globally loaded by Claude Code and its MCP
+    # server can start even without --channels. Its source loads .env only
+    # when TELEGRAM_BOT_TOKEN is *undefined*, so an explicit empty value
+    # prevents fallback to the shared persisted token and exits before
+    # getUpdates. Every non-owner needs this, including when the channel is
+    # disabled, or a second normal Claude would steal the bot poller.
+    isolated = ["TELEGRAM_BOT_TOKEN="]
+    if not config.claude.telegram_channel:
+        return [], isolated
     missing = channel_module.missing_requirements()
     if missing:
         warn("Telegram channel unavailable: " + " and ".join(missing))
         warn("run 'agent-box config check' for setup steps; starting Claude without it")
-        return [], []
+        return [], isolated
     if not channel_module.acquire_channel(str(workspace.host_root)):
         owner = channel_module.channel_owner()
         detail = f" ({channel_module.describe_owner(owner)})" if owner else ""
         print(f"agent-box: Telegram channel already active in another Claude session{detail}", file=sys.stderr)
-        return [], []
+        return [], isolated
     return channel_module.channel_flag(), [f"{SUPPRESS_NOTIFY_ENV}=1"]
 
 
@@ -574,7 +586,12 @@ def runtime_main(args: list[str], script_dir: Path, extra_mount_specs: list[str]
     channel, extra_env = claude_channel_args(agent, config, workspace)
 
     try:
-        podman = container_argv(workspace, extra_mounts, script_dir, [], config, extra_env)
+        mount_notifications = bool(config.notifications.usable and (
+            agent == "codex" or (agent == "claude" and not channel)
+        ))
+        podman = container_argv(
+            workspace, extra_mounts, script_dir, [], config, extra_env, mount_notifications,
+        )
     except BaseException as exc:
         # The lock names this PID and would go stale the moment we exit, but
         # releasing it explicitly means a failed launch never leaves a record

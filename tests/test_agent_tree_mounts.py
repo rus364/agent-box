@@ -125,7 +125,12 @@ class AgentTreeMountTests(unittest.TestCase):
             (agents / "skills" / "my-skill").symlink_to(target)
             project = Path(tmp) / "project"
             project.mkdir()
-            with mock.patch.object(runtime, "HOST_HOME", home):
+            state = Path(tmp) / "state"
+            with mock.patch.object(runtime, "HOST_HOME", home), \
+                 mock.patch.object(runtime, "STATE_ROOT", state), \
+                 mock.patch.object(runtime, "BUILD_STATE", state / "build"), \
+                 mock.patch.object(runtime, "NOTIFY_STATE_ROOT", state / "notify"), \
+                 mock.patch.object(runtime, "NOTIFY_CREDENTIALS", state / "runtime/notify.json"):
                 argv = runtime.container_argv(
                     Workspace(project, project), [], project, ["claude"])
             flag = next(a for a in argv if f"src={target.resolve()}," in a)

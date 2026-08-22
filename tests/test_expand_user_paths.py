@@ -60,21 +60,17 @@ class WorkspaceRootTests(unittest.TestCase):
             self.assertNotIn(POISON, str(ctx.exception))
 
     def test_tilde_override_accepted_when_cwd_is_inside_the_real_home(self):
-        with tempfile.TemporaryDirectory(dir=str(real_home())) as tmp:
-            name = Path(tmp).name
-            with mock.patch.dict(os.environ, {"HOME": POISON}):
-                workspace = resolve_workspace(cwd=Path(tmp), override=f"~/{name}")
-            self.assertEqual(workspace.host_root, Path(tmp).resolve())
+        with mock.patch.dict(os.environ, {"HOME": POISON}):
+            workspace = resolve_workspace(cwd=real_home(), override="~")
+        self.assertEqual(workspace.host_root, real_home().resolve())
 
 
 class MountArgTests(unittest.TestCase):
     def test_tilde_mount_resolves_against_passwd_home(self):
-        with tempfile.TemporaryDirectory(dir=str(real_home())) as tmp:
-            name = Path(tmp).name
-            with mock.patch.dict(os.environ, {"HOME": POISON}):
-                spec = parse_mount_arg(f"~/{name}")
-            self.assertEqual(spec.path, Path(tmp).resolve())
-            self.assertNotIn(POISON, str(spec.path))
+        with mock.patch.dict(os.environ, {"HOME": POISON}):
+            spec = parse_mount_arg("~")
+        self.assertEqual(spec.path, real_home().resolve())
+        self.assertNotIn(POISON, str(spec.path))
 
     def test_tilde_mount_under_poisoned_home_is_not_found(self):
         """The poisoned tree exists but must never be what ``~`` means."""
@@ -86,12 +82,10 @@ class MountArgTests(unittest.TestCase):
                     parse_mount_arg(f"~/{ONLY_UNDER_POISON}")
 
     def test_ro_suffix_still_parsed_with_tilde(self):
-        with tempfile.TemporaryDirectory(dir=str(real_home())) as tmp:
-            name = Path(tmp).name
-            with mock.patch.dict(os.environ, {"HOME": POISON}):
-                spec = parse_mount_arg(f"~/{name}:ro")
-            self.assertTrue(spec.read_only)
-            self.assertEqual(spec.path, Path(tmp).resolve())
+        with mock.patch.dict(os.environ, {"HOME": POISON}):
+            spec = parse_mount_arg("~:ro")
+        self.assertTrue(spec.read_only)
+        self.assertEqual(spec.path, real_home().resolve())
 
 
 if __name__ == "__main__":
