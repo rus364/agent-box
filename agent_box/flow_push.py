@@ -5,9 +5,17 @@ The contract is deliberately narrow:
 
 * a successful *actual, unchained* ``flowctl done`` invocation -- detected
   from a Claude ``PostToolUse`` hook on the ``Bash`` tool -- arms a small
-  marker recorded in git's own private state for the repository and branch;
+  marker recorded in git's own private state for the repository;
 * a later Claude ``Stop`` consumes that marker and, only if every guard in
   :func:`push_preflight` passes, runs exactly ``git push -u origin HEAD``.
+
+The marker is a deliberately narrow capability, and reads as exactly one
+sentence: *this repository/worktree, on this branch, at this commit,
+successfully completed Flow-Next.* It is never "this branch was completed
+at some point in the past" -- both the branch and the recorded ``head``
+must still match at push time, so a marker retained across a retryable
+failure can authorize a retry of *that same commit* and nothing else.
+Commits created afterwards need their own successful ``flowctl done``.
 
 Nothing here decides whether tests passed, review shipped, or a quality
 audit succeeded -- that is Flow-Next's job, expressed entirely through
@@ -69,32 +77,57 @@ _FLOWCTL_DONE_RE = re.compile(r"^(?:\S*/)?flowctl(?:\.\w+)?\s+done(?:\s+\S.*)?$"
 #: settings can still silently widen what that command actually does:
 #: `push.followTags` pushes annotated tags reachable from the pushed
 #: commit, and `push.recurseSubmodules` can push into an entirely
-#: different (submodule) repository. Both were mechanically reproduced and
-#: are neutralized here via Git's own environment-based config mechanism
-#: (`GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n`), which
-#: overrides for this one subprocess only and leaves the user's stored
-#: config completely untouched. `push.default`, `remote.<name>.push`, and
-#: `remote.<name>.mirror` are deliberately not neutralized: the explicit
-#: `HEAD` refspec on the command line already makes the first two moot and
-#: makes the third fail outright (`--mirror can't be combined with
-#: refspecs`) rather than expand anything -- verified mechanically, see
-#: flow_push tests.
+#: different (submodule) repository. Both were mechanically reproduced.
+#:
+#: These are passed as Git's own command-line `-c <key>=<value>`, and that
+#: choice is load-bearing in two independent ways -- both verified against
+#: git 2.55 rather than assumed:
+#:
+#: * `-c` occupies Git's *command* scope, the highest-precedence scope
+#:   there is. It therefore overrides an inherited `GIT_CONFIG_PARAMETERS`
+#:   (also command scope, but `-c` is appended after it, and last wins) as
+#:   well as an inherited `GIT_CONFIG_COUNT` entry (merely *environment*
+#:   scope). The environment mechanism these overrides used previously did
+#:   NOT have that property: an inherited `GIT_CONFIG_PARAMETERS` beat it
+#:   outright, and a hostile `push.followTags=true` survived into the real
+#:   push.
+#: * `-c` is purely *additive*. It leaves every inherited `GIT_CONFIG_*`
+#:   entry in place, so the final push resolves `remote.origin.url`,
+#:   `remote.origin.pushurl`, and `url.*.insteadOf`/`pushInsteadOf` from
+#:   exactly the same configuration the preflight queries saw. Writing
+#:   `GIT_CONFIG_COUNT`/`KEY_n`/`VALUE_n` instead *replaced* the inherited
+#:   entries, which could silently delete an inherited
+#:   `remote.origin.pushurl` and send the push to a different repository
+#:   than the one preflight inspected. See `_push_config_args`.
+#:
+#: `push.default`, `remote.<name>.push`, and `remote.<name>.mirror` are
+#: deliberately not neutralized: the explicit `HEAD` refspec on the command
+#: line already makes the first two moot and makes the third fail outright
+#: (`--mirror can't be combined with refspecs`) rather than expand anything
+#: -- verified mechanically, see flow_push tests.
 _PUSH_CONFIG_OVERRIDES = {
     "push.followTags": "false",
     "push.recurseSubmodules": "no",
 }
 
 
+def _push_config_args() -> list[str]:
+    """``_PUSH_CONFIG_OVERRIDES`` as ``-c key=value`` argv, for `git push`."""
+    return [arg for key, value in _PUSH_CONFIG_OVERRIDES.items() for arg in ("-c", f"{key}={value}")]
+
+
 def _run(
     args: list[str], cwd: Path | str | None = None, timeout: float = 10,
-    extra_config: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess:
+    """Run a git command with a *single*, uniform environment.
+
+    Every git invocation in this module -- preflight queries and the final
+    push alike -- inherits exactly the same environment, so they cannot
+    disagree about what ``origin`` resolves to. The push's extra safety
+    settings ride on the command line instead (see `_push_config_args`)
+    precisely so that this stays true.
+    """
     env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
-    if extra_config:
-        env["GIT_CONFIG_COUNT"] = str(len(extra_config))
-        for i, (key, value) in enumerate(extra_config.items()):
-            env[f"GIT_CONFIG_KEY_{i}"] = key
-            env[f"GIT_CONFIG_VALUE_{i}"] = value
     return subprocess.run(
         args, cwd=str(cwd) if cwd else None, capture_output=True, text=True,
         timeout=timeout, check=False, env=env,
@@ -149,11 +182,16 @@ def head_sha(cwd: Path) -> str | None:
 
 
 def arm_marker(cwd: Path) -> None:
-    """Record "a Flow-Next task just completed here" for a later Stop.
+    """Record "a Flow-Next task just completed *here*" for a later Stop.
 
-    No-ops (silently) outside a git repository or with a detached HEAD --
-    there is nothing safe to record, and this must never raise into the
-    caller's hook process.
+    "Here" is deliberately narrow: this exact branch **at this exact
+    commit**. Both fields are authorization state consumed by
+    :func:`push_preflight`, not diagnostic metadata -- see that function on
+    why the recorded ``head`` must still match at push time.
+
+    No-ops (silently) outside a git repository, with a detached HEAD, or on
+    an unborn branch with no commit to name -- there is nothing safe to
+    record, and this must never raise into the caller's hook process.
     """
     marker_path = _git_path(cwd, MARKER_GIT_PATH)
     if marker_path is None:
@@ -161,7 +199,12 @@ def arm_marker(cwd: Path) -> None:
     branch = current_branch(cwd)
     if branch is None:
         return
-    atomic_write_json(marker_path, {"branch": branch, "head": head_sha(cwd)})
+    head = head_sha(cwd)
+    if not head:
+        # Nothing to bind the capability to; arming a headless marker would
+        # only create a marker that can never validate.
+        return
+    atomic_write_json(marker_path, {"branch": branch, "head": head})
 
 
 def read_marker(cwd: Path) -> dict[str, Any] | None:
@@ -416,12 +459,36 @@ def push_preflight(cwd: Path, auto_push_enabled: bool) -> PushDecision:
     if branch is None:
         # Usually transient (mid-rebase, a temporary detached checkout); the
         # marker is kept so a later Stop back on the recorded branch can
-        # still complete the push, per module docstring on marker lifetime.
+        # still complete the push -- but only if that branch is still at the
+        # recorded commit, which the HEAD check below enforces. Nothing here
+        # widens the capability; it just doesn't burn it on a transient
+        # state.
         return PushDecision("skipped", "HEAD is detached")
 
     if marker.get("branch") != branch:
         clear_marker(cwd)
         return PushDecision("invalidated", f"marker was for '{marker.get('branch')}', not '{branch}'")
+
+    # The marker authorizes exactly one commit: the HEAD that was current
+    # when `flowctl done` succeeded. Without this check a marker retained
+    # across a retryable failure would keep authorizing whatever HEAD
+    # happens to be current later, so a single successful `flowctl done` at
+    # commit A would silently license pushing B, C, D... -- commits no
+    # Flow-Next completion ever vouched for.
+    #
+    # A mismatch *invalidates* rather than skips. The marker describes a
+    # repository state that no longer exists, so there is nothing for a
+    # later Stop to retry: keeping it would only produce an unbounded run
+    # of Stop hooks re-deciding the same refusal. Re-authorizing the new
+    # HEAD is exactly what the next successful `flowctl done` does -- it
+    # re-arms the marker at that commit (see `arm_marker`).
+    head = head_sha(cwd)
+    if head is None or marker.get("head") != head:
+        clear_marker(cwd)
+        return PushDecision(
+            "invalidated",
+            f"marker was for commit {marker.get('head')}, but HEAD is now {head}; "
+            "a new successful 'flowctl done' is required")
 
     if branch in PROTECTED_BRANCHES:
         clear_marker(cwd)
@@ -456,8 +523,7 @@ def push_preflight(cwd: Path, auto_push_enabled: bool) -> PushDecision:
         return PushDecision("invalidated", f"'{branch}' is the remote default branch")
 
     if state.branch_exists:
-        local_sha = head_sha(cwd)
-        if state.branch_sha == local_sha:
+        if state.branch_sha == head:
             clear_marker(cwd)
             return PushDecision("invalidated", "nothing new to push")
         if not _is_ancestor(cwd, state.branch_sha, "HEAD"):
@@ -474,7 +540,11 @@ def guarded_push(cwd: Path, auto_push_enabled: bool) -> PushDecision:
     ``--force``/``--force-with-lease``, never another branch, never tags,
     never another remote. By the time this runs, :func:`push_preflight` has
     already proven ``origin`` resolves to exactly one push destination and
-    queried that exact destination, so ``origin`` here is unambiguous.
+    queried that exact destination, so ``origin`` here is unambiguous --
+    and because the safety settings ride on the command line rather than in
+    the environment (:func:`_push_config_args`), this subprocess resolves
+    ``origin`` from byte-identical configuration to the preflight queries,
+    so the two cannot disagree about which repository receives the push.
     ``_PUSH_CONFIG_OVERRIDES`` additionally neutralizes the Git settings
     that could otherwise widen a plain push beyond that one branch (see its
     docstring) without touching the user's stored config. A push failure,
@@ -488,8 +558,7 @@ def guarded_push(cwd: Path, auto_push_enabled: bool) -> PushDecision:
         return decision
     try:
         result = _run(
-            ["git", "push", "-u", "origin", "HEAD"], cwd=cwd, timeout=60,
-            extra_config=_PUSH_CONFIG_OVERRIDES,
+            ["git", *_push_config_args(), "push", "-u", "origin", "HEAD"], cwd=cwd, timeout=60,
         )
     except subprocess.TimeoutExpired:
         return PushDecision("failed", "git push timed out")
