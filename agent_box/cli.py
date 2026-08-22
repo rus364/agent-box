@@ -1,6 +1,7 @@
 """Command-line dispatch. Kept free of business logic beyond argument parsing."""
 from __future__ import annotations
 
+import getpass
 import shutil
 import sys
 from pathlib import Path
@@ -134,7 +135,8 @@ def notify_command(args: list[str]) -> None:
     if action == "test":
         if rest:
             die("agent-box notify test takes no arguments")
-        if not load_config().notifications.usable:
+        notify_module.sync_credentials(load_config())
+        if notify_module.load_credentials() is None:
             die("Telegram notifications are not configured; run 'agent-box config'")
         if not notify_module.telegram_send("🧪 <b>agent-box</b>\nTest notification"):
             die("Telegram test failed")
@@ -167,9 +169,19 @@ def _prompt_bool(label: str, current: bool) -> bool:
     return answer in {"y", "yes", "on", "true", "1"}
 
 
-def _prompt_text(label: str, current: str, secret: bool = False) -> str:
-    shown = _redact(current) if secret else (current or "(not set)")
-    answer = input(f"{label} [{shown}]: ").strip()
+def _prompt_text(label: str, current: str) -> str:
+    answer = input(f"{label} [{current or '(not set)'}]: ").strip()
+    return answer or current
+
+
+def _prompt_secret(label: str, current: str) -> str:
+    """Read a secret without echoing it.
+
+    ``getpass`` also keeps the token out of the terminal scrollback and any
+    screen-sharing or recording of the session, which plain ``input`` would
+    not. An empty answer keeps whatever is already stored.
+    """
+    answer = getpass.getpass(f"{label} [{_redact(current)}]: ").strip()
     return answer or current
 
 
@@ -183,22 +195,43 @@ def config_show() -> None:
     print(f"    chat id                   {config.notifications.telegram_chat_id or '(not set)'}")
     print(f"  GitHub token passthrough    {'on' if config.github.gh_token else 'off'}")
     print(f"  GitHub gh config copy       {'on' if config.github.gh_config else 'off'}")
-    print(f"  Git config copy             {'on' if config.git.config else 'off'}")
-    print(f"  Provider env passthrough    {'on' if config.providers.env else 'off'}")
+    print(f"  Git identity (name/email)   {'on' if config.git.identity else 'off'}")
+    print(f"  Git full config copy        {'on' if config.git.full_config else 'off'}")
+    print(f"  Provider API keys           {'on' if config.providers.api_keys else 'off'}")
+    print(f"  Provider transport/proxy    {'on' if config.providers.transport else 'off'}")
 
 
 def config_check() -> None:
     """Report on the official Claude Telegram channel, without changing anything."""
     config = load_config()
-    print(f"Claude Telegram channel: {'enabled' if config.claude.telegram_channel else 'disabled'} in agent-box config")
+    enabled = config.claude.telegram_channel
+    ready = not channel_module.missing_requirements()
+    owner = channel_module.channel_owner()
+
+    print(f"Claude Telegram channel: {'enabled' if enabled else 'disabled'} in agent-box config")
     print(f"Plugin installed:        {'yes' if channel_module.plugin_installed() else 'no'}")
     print(f"Bot token configured:    {'yes' if channel_module.token_configured() else 'no'}")
-    missing = channel_module.missing_requirements()
+    if owner:
+        print(f"Currently active:        yes ({channel_module.describe_owner(owner)})")
+    else:
+        print("Currently active:        no")
     print()
-    if missing:
+
+    if not ready:
         print(channel_module.setup_instructions())
         raise SystemExit(1)
-    print(f"Ready. 'agent-box claude' will pass --channels {CLAUDE_TELEGRAM_CHANNEL}")
+    if not enabled:
+        # Saying "agent-box claude will use the channel" here would be a lie:
+        # the prerequisites are in place but the setting is off, so nothing
+        # passes --channels.
+        print("Prerequisites are ready, but the channel is disabled.")
+        print("Enable it with:  agent-box config")
+        raise SystemExit(1)
+    if owner:
+        print("Ready. Another Claude session currently owns the channel; a new")
+        print("'agent-box claude' will start normally, without Telegram.")
+        return
+    print(f"Ready. The next 'agent-box claude' will pass --channels {CLAUDE_TELEGRAM_CHANNEL}")
 
 
 def config_interactive() -> None:
@@ -208,30 +241,53 @@ def config_interactive() -> None:
 
     print("-- Claude Telegram channel (Anthropic's official plugin) --")
     print("Controls the live 'agent-box claude' session from Telegram.")
-    config.claude.telegram_channel = _prompt_bool("Enable Claude Telegram channel", config.claude.telegram_channel)
+    missing = channel_module.missing_requirements()
+    if missing:
+        # Refuse to store an enabled channel that cannot work. The plugin is
+        # installed from inside a Claude session, so the bootstrap order is
+        # necessarily: run Claude, install and configure the plugin, then come
+        # back here. Storing true now would only produce a setting that every
+        # later run has to warn about.
+        print(f"Not available yet: {' and '.join(missing)}.")
+        if config.claude.telegram_channel:
+            print("Turning the channel off, because it can no longer work.")
+        config.claude.telegram_channel = False
+    else:
+        config.claude.telegram_channel = _prompt_bool(
+            "Enable Claude Telegram channel", config.claude.telegram_channel)
 
     print("\n-- Outbound Telegram notifications --")
     print("One-way pings only (Codex turn complete, Claude waiting/finished/failed).")
     config.notifications.enabled = _prompt_bool("Enable outbound notifications", config.notifications.enabled)
     if config.notifications.enabled:
-        config.notifications.telegram_token = _prompt_text(
-            "  Telegram bot token", config.notifications.telegram_token, secret=True)
+        config.notifications.telegram_token = _prompt_secret(
+            "  Telegram bot token", config.notifications.telegram_token)
         config.notifications.telegram_chat_id = _prompt_text(
             "  Telegram chat id", config.notifications.telegram_chat_id)
-        if not config.notifications.telegram_token or not config.notifications.telegram_chat_id:
+        if not config.notifications.usable:
             print("  note: notifications stay inactive until both a token and a chat id are set")
 
     print("\n-- Host integration (each exposes host data to the container) --")
     config.github.gh_token = _prompt_bool(
-        "Pass the host GitHub token in as GH_TOKEN", config.github.gh_token)
+        "Pass a host GitHub token in as GH_TOKEN", config.github.gh_token)
     config.github.gh_config = _prompt_bool(
         "Copy the host ~/.config/gh (contains that token) in", config.github.gh_config)
-    config.git.config = _prompt_bool(
-        "Copy the host git config (user.name/user.email) in", config.git.config)
-    config.providers.env = _prompt_bool(
-        "Forward provider variables from this shell (ANTHROPIC_API_KEY, proxies)", config.providers.env)
+    config.git.identity = _prompt_bool(
+        "Seed git user.name and user.email (for commit attribution)", config.git.identity)
+    config.git.full_config = _prompt_bool(
+        "Copy the ENTIRE host git config (may include credential helpers, tokens)",
+        config.git.full_config)
+    config.providers.api_keys = _prompt_bool(
+        "Forward API keys from this shell (ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN)",
+        config.providers.api_keys)
+    config.providers.transport = _prompt_bool(
+        "Forward endpoint/proxy settings from this shell (base URL, proxies, CA bundle)",
+        config.providers.transport)
 
     save_config(config)
+    # Keep the two derived artifacts in step with what was just saved: the
+    # container-visible credential file, and Claude's own hook entries.
+    notify_module.sync_credentials(config)
     settings = CLAUDE_HOME / "settings.json"
     if config.notifications.enabled:
         notify_module.install_claude_notify_hooks(settings)
@@ -240,7 +296,7 @@ def config_interactive() -> None:
 
     print(f"\nSaved {CONFIG_FILE}\n")
     config_show()
-    if config.claude.telegram_channel and channel_module.missing_requirements():
+    if missing:
         print()
         print(channel_module.setup_instructions())
 

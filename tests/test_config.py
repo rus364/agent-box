@@ -22,10 +22,21 @@ class DefaultsAreSafeTests(unittest.TestCase):
         self.assertFalse(config.claude.telegram_channel)
         self.assertFalse(config.notifications.enabled)
 
+    def test_provider_api_keys_are_off_by_default(self):
+        """An ANTHROPIC_API_KEY exported in your shell is not a decision to
+        hand it to an agent container; the agents authenticate through the
+        mounted ~/.claude / ~/.codex directories instead."""
+        self.assertFalse(Config().providers.api_keys)
+
+    def test_full_git_config_copy_is_off_by_default(self):
+        """A real ~/.gitconfig routinely carries credential.helper entries,
+        http.<url>.extraHeader tokens and include.path directives."""
+        self.assertFalse(Config().git.full_config)
+
     def test_non_secret_conveniences_default_on(self):
         config = Config()
-        self.assertTrue(config.git.config)
-        self.assertTrue(config.providers.env)
+        self.assertTrue(config.git.identity)       # only user.name / user.email
+        self.assertTrue(config.providers.transport)  # endpoints, proxies, CA bundle
 
     def test_missing_file_yields_defaults(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -48,6 +59,8 @@ class DefaultsAreSafeTests(unittest.TestCase):
             self.assertTrue(config.claude.telegram_channel)
             self.assertFalse(config.github.gh_token)
             self.assertFalse(config.notifications.enabled)
+            self.assertFalse(config.providers.api_keys)
+            self.assertFalse(config.git.full_config)
 
 
 class RoundTripTests(unittest.TestCase):
@@ -58,7 +71,9 @@ class RoundTripTests(unittest.TestCase):
         config.notifications.telegram_token = "123:abc"
         config.notifications.telegram_chat_id = "555"
         config.github.gh_token = True
-        config.git.config = False
+        config.git.identity = False
+        config.git.full_config = True
+        config.providers.api_keys = True
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "config.json"
             save_config(config, path)
@@ -70,7 +85,9 @@ class RoundTripTests(unittest.TestCase):
         self.assertEqual(loaded.notifications.telegram_token, "123:abc")
         self.assertEqual(loaded.notifications.telegram_chat_id, "555")
         self.assertTrue(loaded.github.gh_token)
-        self.assertFalse(loaded.git.config)
+        self.assertFalse(loaded.git.identity)
+        self.assertTrue(loaded.git.full_config)
+        self.assertTrue(loaded.providers.api_keys)
 
     def test_unknown_keys_are_dropped_on_save(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -84,6 +84,20 @@ TOOLS_REFRESH_FILE = BUILD_STATE / "tools-refresh"
 # The one agent-box configuration file (see agent_box.config).
 CONFIG_FILE = CONFIG_ROOT / "config.json"
 NOTIFY_STATE_ROOT = STATE_ROOT / "notify"
+# The only credential the container ever sees for notifications: a generated
+# two-key file (bot token + chat id), written solely when notifications are
+# usable and mounted read-only. Deliberately NOT the main config file, which
+# also describes host-integration switches the container has no business
+# reading -- and which would otherwise carry the bot token into every
+# container even with notifications turned off. See agent_box.notify.
+NOTIFY_CREDENTIALS = STATE_ROOT / "runtime/notify.json"
+# Where the container looks for it: agent-box inside the container gets no
+# AGENT_BOX_STATE_DIR/XDG_DATA_HOME, so it resolves the default location.
+CONTAINER_NOTIFY_CREDENTIALS = HOST_HOME / ".local/share/agent-box/runtime/notify.json"
+
+# Guards the "one live Claude session owns the Telegram channel" invariant
+# (see agent_box.channel).
+CHANNEL_LOCK = STATE_ROOT / "runtime/telegram-channel.json"
 
 CLAUDE_HOME = env_path("CLAUDE_CONFIG_DIR", HOST_HOME / ".claude")
 CODEX_HOME = env_path("CODEX_HOME", HOST_HOME / ".codex")
