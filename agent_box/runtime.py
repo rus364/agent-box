@@ -590,56 +590,57 @@ fi
 
 
 CLAUDE_MANAGEMENT_COMMANDS = frozenset({
-    "agents", "auth", "auto-mode", "doctor", "gateway", "import", "install",
-    "mcp", "plugin", "plugins", "project", "setup-token", "ultrareview", "update", "upgrade",
+    "agents", "attach", "auth", "auto-mode", "daemon", "doctor", "gateway", "install",
+    "kill", "logs", "mcp", "plugin", "plugins", "project", "remote-control", "rc",
+    "respawn", "rm",
+    "self-hosted-runner", "setup-token", "stop", "ultrareview", "update", "upgrade",
 })
 
-# The option syntax is from the installed Claude CLI's ``claude --help`` output.
-# This only parses far enough to find a possible top-level command; Claude still
-# receives the original argv and remains responsible for full validation.
-_CLAUDE_OPTIONS_WITH_VALUE = frozenset({
-    "--agent", "--agents", "--append-system-prompt", "--autocompact", "--debug-file",
-    "--effort", "--environment", "--fallback-model", "--input-format", "--json-schema",
-    "--max-budget-usd", "--model", "--name", "--output-format", "--permission-mode",
-    "--plugin-dir", "--plugin-url", "--remote-control-session-name-prefix", "--session-id",
-    "--setting-sources", "--settings", "--system-prompt", "-n",
-})
-_CLAUDE_OPTIONS_WITH_OPTIONAL_VALUE = frozenset({
-    "--cloud", "--debug", "--from-pr", "--prompt-suggestions", "--remote-control",
-    "--resume", "--teleport", "--tmux", "--worktree", "-d", "-r", "-w",
-})
-_CLAUDE_OPTIONS_WITH_VARIADIC_VALUES = frozenset({
-    "--add-dir", "--allowedTools", "--allowed-tools", "--betas", "--disallowedTools",
-    "--disallowed-tools", "--file", "--mcp-config", "--tools",
+# Claude 2.1.240 accepts a leading ``--model`` for these commands.  It does
+# not do so for every command above: ``claude --model opus daemon status`` and
+# ``claude --model opus logs ID`` start a session instead.  Keep this explicit
+# rather than attempting to clone Claude's complete argument parser.
+_CLAUDE_MODEL_PREFIX_MANAGEMENT_COMMANDS = frozenset({
+    "agents", "auth", "auto-mode", "doctor", "gateway", "install", "mcp", "plugin",
+    "plugins", "project", "remote-control", "rc", "setup-token", "ultrareview", "update",
+    "upgrade",
 })
 
 
 def is_claude_session_invocation(rest: list[str]) -> bool:
-    """Whether Claude will start a session rather than run a management command."""
-    index = 0
-    while index < len(rest):
-        arg = rest[index]
-        if arg in {"--help", "-h", "--version", "-v"}:
-            return False
-        if arg == "--":
-            return True
-        if not arg.startswith("-"):
-            return arg not in CLAUDE_MANAGEMENT_COMMANDS
-        option, has_value, _ = arg.partition("=")
-        if has_value or option not in (
-            _CLAUDE_OPTIONS_WITH_VALUE
-            | _CLAUDE_OPTIONS_WITH_OPTIONAL_VALUE
-            | _CLAUDE_OPTIONS_WITH_VARIADIC_VALUES
-        ):
-            index += 1
-        elif option in _CLAUDE_OPTIONS_WITH_VALUE:
-            index += 2
-        elif option in _CLAUDE_OPTIONS_WITH_OPTIONAL_VALUE:
-            index += 2 if index + 1 < len(rest) and not rest[index + 1].startswith("-") else 1
-        else:
-            index += 1
-            while index < len(rest) and not rest[index].startswith("-"):
-                index += 1
+    """Whether Claude will dispatch this argv to a session.
+
+    This is deliberately a small dispatch table verified against Claude Code,
+    not a reimplementation of its option parser.  ``import`` is excluded from
+    the management set because supported builds start an interactive session
+    which runs ``/import``.  A feature-disabled build exits before that session
+    starts, but its invocation form remains session-oriented.
+    """
+    if not rest:
+        return True
+    first = rest[0]
+    if first in {"--help", "-h", "--version", "-v"}:
+        return False
+    if first == "--":
+        return True
+    if not first.startswith("-"):
+        return first not in CLAUDE_MANAGEMENT_COMMANDS
+
+    # Claude documents this daemon-specific exception for aliases that put a
+    # permission flag first.  No other leading option is inferred here.
+    permission_flags = {
+        "--dangerously-skip-permissions",
+        "--allow-dangerously-skip-permissions",
+    }
+    if first in permission_flags:
+        return not (len(rest) > 1 and rest[1] == "daemon")
+
+    if first == "--model":
+        command = rest[2] if len(rest) > 2 else ""
+        return command not in _CLAUDE_MODEL_PREFIX_MANAGEMENT_COMMANDS
+    if first.startswith("--model="):
+        command = rest[1] if len(rest) > 1 else ""
+        return command not in _CLAUDE_MODEL_PREFIX_MANAGEMENT_COMMANDS
     return True
 
 

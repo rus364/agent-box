@@ -225,11 +225,19 @@ class LaunchDecisionTests(unittest.TestCase):
         self.assertEqual(env, ["TELEGRAM_BOT_TOKEN="])
         self.assertIsNone(channel.channel_owner(self.lock))
 
-    def test_mcp_management_with_a_global_option_does_not_take_the_channel(self):
+    def test_leading_model_mcp_does_not_take_the_channel(self):
+        """Claude accepts --model before mcp, unlike daemon and logs."""
         flags, env, _ = self._decide(rest=["--model", "opus", "mcp", "list"])
         self.assertEqual(flags, [])
         self.assertEqual(env, ["TELEGRAM_BOT_TOKEN="])
         self.assertIsNone(channel.channel_owner(self.lock))
+
+    def test_leading_model_before_daemon_is_a_session(self):
+        """Claude treats ``--model opus daemon status`` as prompt input."""
+        flags, env, _ = self._decide(rest=["--model", "opus", "daemon", "status"])
+        self.assertEqual(flags, ["--channels", CLAUDE_TELEGRAM_CHANNEL])
+        self.assertEqual(env, ["AGENT_BOX_SUPPRESS_NOTIFY=1"])
+        self.assertIsNotNone(channel.channel_owner(self.lock))
 
     def test_second_session_falls_back_to_a_normal_claude(self):
         self._decide()
@@ -360,14 +368,43 @@ class ClaudeManagementArgvTests(unittest.TestCase):
         self.assertIn("TELEGRAM_BOT_TOKEN=", extra_env)
         self.assertIsNone(channel.channel_owner(self.lock))
 
-    def test_import_utility_keeps_argv_without_session_flags_or_a_lock(self):
-        rest = ["import", "--dry-run", "codex"]
+    def test_leading_model_mcp_keeps_argv_without_session_flags(self):
+        rest = ["--model", "opus", "mcp", "list"]
         argv, extra_env = self._launch(rest)
-        self.assertEqual(argv[-4:], ["claude", *rest])
+        self.assertEqual(argv[-5:], ["claude", *rest])
         self.assertNotIn("--channels", argv)
         self.assertNotIn("--dangerously-skip-permissions", argv)
         self.assertIn("TELEGRAM_BOT_TOKEN=", extra_env)
         self.assertIsNone(channel.channel_owner(self.lock))
+
+    def test_import_starts_a_session_with_flags_and_a_channel(self):
+        rest = ["import", "--dry-run", "codex"]
+        argv, extra_env = self._launch(rest)
+        self.assertEqual(argv[-7:], [
+            "claude", "--dangerously-skip-permissions", *rest,
+            "--channels", CLAUDE_TELEGRAM_CHANNEL,
+        ])
+        self.assertEqual(extra_env, ["AGENT_BOX_SUPPRESS_NOTIFY=1"])
+        self.assertIsNotNone(channel.channel_owner(self.lock))
+
+    def test_daemon_keeps_argv_without_session_flags(self):
+        rest = ["daemon", "status"]
+        argv, extra_env = self._launch(rest)
+        self.assertEqual(argv[-3:], ["claude", *rest])
+        self.assertNotIn("--channels", argv)
+        self.assertNotIn("--dangerously-skip-permissions", argv)
+        self.assertIn("TELEGRAM_BOT_TOKEN=", extra_env)
+        self.assertIsNone(channel.channel_owner(self.lock))
+
+    def test_leading_model_before_daemon_keeps_session_behavior(self):
+        rest = ["--model", "opus", "daemon", "status"]
+        argv, extra_env = self._launch(rest)
+        self.assertEqual(argv[-8:], [
+            "claude", "--dangerously-skip-permissions", *rest,
+            "--channels", CLAUDE_TELEGRAM_CHANNEL,
+        ])
+        self.assertEqual(extra_env, ["AGENT_BOX_SUPPRESS_NOTIFY=1"])
+        self.assertIsNotNone(channel.channel_owner(self.lock))
 
 
 class RuntimeNotificationSelectionTests(unittest.TestCase):
