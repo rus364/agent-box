@@ -295,10 +295,15 @@ class ClaudeManagementArgvTests(unittest.TestCase):
     def _launch(self, rest):
         home = claude_home(str(self.root / "claude"), plugin=True, token=True)
         captured = []
+        extra_env = []
 
         def fake_execvp(_, argv):
             captured.append(argv)
             raise SystemExit
+
+        def fake_container_argv(*args):
+            extra_env.extend(args[5])
+            return ["podman", "run"]
 
         with mock.patch.object(runtime.shutil, "which", return_value="/usr/bin/podman"), \
              mock.patch.object(runtime, "resolve_workspace", return_value=self.workspace), \
@@ -307,19 +312,61 @@ class ClaudeManagementArgvTests(unittest.TestCase):
              mock.patch.object(runtime, "load_config", return_value=self.config), \
              mock.patch.object(runtime, "image_exists", return_value=True), \
              mock.patch.object(runtime, "sync_claude_agent_skills"), \
-             mock.patch.object(runtime, "container_argv", return_value=["podman", "run"]), \
+             mock.patch.object(runtime, "container_argv", side_effect=fake_container_argv), \
              mock.patch.object(runtime.os, "execvp", side_effect=fake_execvp), \
              mock.patch.object(channel, "CLAUDE_HOME", home), \
              mock.patch.object(channel, "CHANNEL_LOCK", self.lock):
             with self.assertRaises(SystemExit):
                 runtime.runtime_main(["claude", *rest], Path(__file__).parents[1])
-        return captured[0]
+        return captured[0], extra_env
 
-    def test_plugin_marketplace_update_keeps_argv_without_channels_or_a_lock(self):
+    def test_bare_session_gets_the_container_bypass_and_telegram_channel(self):
+        argv, extra_env = self._launch([])
+        self.assertEqual(argv[-4:], [
+            "claude", "--dangerously-skip-permissions", "--channels", CLAUDE_TELEGRAM_CHANNEL,
+        ])
+        self.assertEqual(extra_env, ["AGENT_BOX_SUPPRESS_NOTIFY=1"])
+        self.assertIsNotNone(channel.channel_owner(self.lock))
+
+    def test_positional_prompt_precedes_the_variadic_telegram_channel(self):
+        argv, _ = self._launch(["review this change"])
+        self.assertEqual(argv[-5:], [
+            "claude", "--dangerously-skip-permissions", "review this change",
+            "--channels", CLAUDE_TELEGRAM_CHANNEL,
+        ])
+
+    def test_model_and_positional_prompt_precede_the_telegram_channel(self):
+        argv, _ = self._launch(["--model", "opus", "review this change"])
+        self.assertEqual(argv[-7:], [
+            "claude", "--dangerously-skip-permissions", "--model", "opus", "review this change",
+            "--channels", CLAUDE_TELEGRAM_CHANNEL,
+        ])
+
+    def test_plugin_marketplace_update_keeps_argv_without_session_flags_or_a_lock(self):
         rest = ["plugin", "marketplace", "update", "flow-next"]
-        argv = self._launch(rest)
-        self.assertEqual(argv[-6:], ["claude", "--dangerously-skip-permissions", *rest])
+        argv, extra_env = self._launch(rest)
+        self.assertEqual(argv[-5:], ["claude", *rest])
         self.assertNotIn("--channels", argv)
+        self.assertNotIn("--dangerously-skip-permissions", argv)
+        self.assertIn("TELEGRAM_BOT_TOKEN=", extra_env)
+        self.assertIsNone(channel.channel_owner(self.lock))
+
+    def test_mcp_management_keeps_argv_without_session_flags_or_a_lock(self):
+        rest = ["mcp", "list"]
+        argv, extra_env = self._launch(rest)
+        self.assertEqual(argv[-3:], ["claude", *rest])
+        self.assertNotIn("--channels", argv)
+        self.assertNotIn("--dangerously-skip-permissions", argv)
+        self.assertIn("TELEGRAM_BOT_TOKEN=", extra_env)
+        self.assertIsNone(channel.channel_owner(self.lock))
+
+    def test_import_utility_keeps_argv_without_session_flags_or_a_lock(self):
+        rest = ["import", "--dry-run", "codex"]
+        argv, extra_env = self._launch(rest)
+        self.assertEqual(argv[-4:], ["claude", *rest])
+        self.assertNotIn("--channels", argv)
+        self.assertNotIn("--dangerously-skip-permissions", argv)
+        self.assertIn("TELEGRAM_BOT_TOKEN=", extra_env)
         self.assertIsNone(channel.channel_owner(self.lock))
 
 

@@ -643,6 +643,21 @@ def is_claude_session_invocation(rest: list[str]) -> bool:
     return True
 
 
+def claude_session_args(rest: list[str], channel: list[str]) -> list[str]:
+    """Add a variadic channel option after all ordinary Claude arguments.
+
+    Claude's ``--channels`` consumes every following non-option argument.  By
+    appending it after the session argv, a positional prompt cannot become a
+    channel entry.  An explicit ``--`` ends Claude option parsing, so insert
+    the option immediately before that separator when present.
+    """
+    try:
+        separator = rest.index("--")
+    except ValueError:
+        return [*rest, *channel]
+    return [*rest[:separator], *channel, *rest[separator:]]
+
+
 def claude_channel_args(
     agent: str, config: Config, workspace: Workspace, rest: list[str] | None = None,
 ) -> tuple[list[str], list[str]]:
@@ -751,7 +766,11 @@ def runtime_main(args: list[str], script_dir: Path, extra_mount_specs: list[str]
     if agent == "doctor":
         os.execvp("podman", [*podman, "bash", "-c", DOCTOR_SCRIPT])
     if agent == "claude":
-        os.execvp("podman", [*podman, "claude", "--dangerously-skip-permissions", *channel, *rest])
+        if is_claude_session_invocation(rest):
+            claude_args = ["--dangerously-skip-permissions", *claude_session_args(rest, channel)]
+        else:
+            claude_args = rest
+        os.execvp("podman", [*podman, "claude", *claude_args])
     os.execvp("podman", [*podman, *codex_command(rest, config)])
 
 
