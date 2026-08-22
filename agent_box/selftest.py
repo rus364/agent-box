@@ -104,7 +104,7 @@ def run_selftest() -> int:
     os.environ[SUPPRESS_NOTIFY_ENV] = "1"
     try:
         check(notify_module.outbound_suppressed(), True, "official channel mode detected")
-        check(notify_module.claude_interaction_suppressed("Notification"), True,
+        check(notify_module.claude_interaction_suppressed("Notification", "permission_prompt"), True,
               "official channel suppresses interactive Claude notifications")
         check(notify_module.claude_interaction_suppressed("Stop"), False,
               "official channel keeps Claude completion notifications")
