@@ -9,11 +9,13 @@ on (see :mod:`agent_box.config`).
 """
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
 import sys
 import time
+import tomllib
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -34,10 +36,54 @@ from .workspace import Workspace, resolve_workspace
 
 IMAGE = os.environ.get("AGENT_BOX_IMAGE", "localhost/agent-box:latest")
 DEFAULT_AGENT = os.environ.get("AGENT_BOX_AGENT", "claude")
+CHATGPT_DESKTOP_RESOURCES = "/usr/lib/chatgpt/resources/"
 
 
 def warn(message: str) -> None:
     print(f"agent-box: warning: {message}", file=sys.stderr)
+
+
+def codex_runtime_overrides() -> list[str]:
+    """Disable MCPs that only the host ChatGPT desktop application provides.
+
+    ``CODEX_HOME`` remains the normal bind-mounted home.  These ephemeral
+    command-line settings merely stop Codex in the container from trying to
+    execute binaries that are not mounted there.
+    """
+    config_path = CODEX_HOME / "config.toml"
+    if not config_path.is_file():
+        return []
+    try:
+        data = tomllib.loads(config_path.read_text())
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+        warn(f"could not parse Codex config at {config_path}; not filtering MCP servers")
+        return []
+    servers = data.get("mcp_servers")
+    if not isinstance(servers, dict):
+        return []
+
+    overrides = []
+    for name in sorted(servers):
+        server = servers[name]
+        command = server.get("command") if isinstance(server, dict) else None
+        if not isinstance(name, str) or not isinstance(command, str):
+            continue
+        if not command.startswith(CHATGPT_DESKTOP_RESOURCES):
+            continue
+        key = name if name.replace("_", "").replace("-", "").isalnum() else json.dumps(name)
+        overrides.append(f"mcp_servers.{key}.enabled=false")
+        warn(f"ignoring Codex MCP '{name}' inside container: ChatGPT desktop resource")
+    return overrides
+
+
+def codex_command(rest: list[str], config: Config) -> list[str]:
+    """Build the Codex command, including all container-only config overrides."""
+    command = ["codex"]
+    if config.notifications.usable:
+        command += ["-c", 'notify=["agent-box","notify","codex"]']
+    for override in codex_runtime_overrides():
+        command += ["-c", override]
+    return [*command, "--dangerously-bypass-approvals-and-sandbox", *rest]
 
 
 def ensure_state_dirs() -> None:
@@ -609,5 +655,4 @@ def runtime_main(args: list[str], script_dir: Path, extra_mount_specs: list[str]
         os.execvp("podman", [*podman, "bash", "-c", DOCTOR_SCRIPT])
     if agent == "claude":
         os.execvp("podman", [*podman, "claude", "--dangerously-skip-permissions", *channel, *rest])
-    notify = ["-c", 'notify=["agent-box","notify","codex"]'] if config.notifications.usable else []
-    os.execvp("podman", [*podman, "codex", *notify, "--dangerously-bypass-approvals-and-sandbox", *rest])
+    os.execvp("podman", [*podman, *codex_command(rest, config)])

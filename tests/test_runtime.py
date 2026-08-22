@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest import mock
 
 from agent_box import runtime
+from agent_box.config import Config, NotificationsConfig
 from agent_box.mounts import MountSpec
 from agent_box.workspace import Workspace
 
@@ -105,6 +106,109 @@ class ContainerArgvTests(IsolatedRuntimeTest):
             argv = runtime.container_argv(workspace, [], Path(project), ["codex"])
             self.assertIn("--cap-drop=all", argv)
             self.assertIn("--security-opt=no-new-privileges", argv)
+
+
+class CodexRuntimeOverridesTests(IsolatedRuntimeTest):
+    def _overrides_for(self, config_text: str | None) -> tuple[list[str], tuple[bytes, bytes]]:
+        with tempfile.TemporaryDirectory() as tmp:
+            codex_home = Path(tmp) / "codex-home"
+            codex_home.mkdir()
+            config_path = codex_home / "config.toml"
+            if config_text is not None:
+                config_path.write_text(config_text)
+            before = config_path.read_bytes() if config_path.exists() else b""
+            with mock.patch.object(runtime, "CODEX_HOME", codex_home):
+                overrides = runtime.codex_runtime_overrides()
+            after = config_path.read_bytes() if config_path.exists() else b""
+            return overrides, (before, after)
+
+    def test_suppresses_chatgpt_desktop_mcp_without_mutating_config(self):
+        overrides, contents = self._overrides_for(
+            "[mcp_servers.node_repl]\n"
+            'command = "/usr/lib/chatgpt/resources/cua_node/bin/node_repl"\n'
+            "args = []\n"
+        )
+        self.assertEqual(overrides, ["mcp_servers.node_repl.enabled=false"])
+        self.assertEqual(contents[0], contents[1])
+
+    def test_leaves_command_name_and_normal_absolute_path_mcps_enabled(self):
+        overrides, _contents = self._overrides_for(
+            "[mcp_servers.example]\ncommand = \"npx\"\nargs = [\"example-mcp\"]\n"
+            "[mcp_servers.custom]\ncommand = \"/usr/local/bin/custom-mcp\"\n"
+        )
+        self.assertEqual(overrides, [])
+
+    def test_suppresses_only_chatgpt_desktop_mcps_when_multiple_are_configured(self):
+        overrides, _contents = self._overrides_for(
+            "[mcp_servers.node_repl]\n"
+            'command = "/usr/lib/chatgpt/resources/cua_node/bin/node_repl"\n'
+            "[mcp_servers.custom]\ncommand = \"uvx\"\nargs = [\"foo\"]\n"
+            "[mcp_servers.desktop_other]\n"
+            'command = "/usr/lib/chatgpt/resources/something/bin/server"\n'
+        )
+        self.assertEqual(overrides, [
+            "mcp_servers.desktop_other.enabled=false",
+            "mcp_servers.node_repl.enabled=false",
+        ])
+
+    def test_missing_or_unrelated_config_has_no_mcp_overrides(self):
+        missing_overrides, _contents = self._overrides_for(None)
+        no_mcp_overrides, _contents = self._overrides_for(
+            "model = \"gpt-5\"\n[mcp_servers.no_command]\nargs = []\n"
+        )
+        self.assertEqual(missing_overrides, [])
+        self.assertEqual(no_mcp_overrides, [])
+
+    def test_malformed_config_warns_and_launch_overrides_remain_empty(self):
+        with mock.patch.object(runtime, "warn") as warn:
+            overrides, _contents = self._overrides_for("[mcp_servers.node_repl\n")
+        self.assertEqual(overrides, [])
+        warn.assert_called_once()
+        self.assertIn("could not parse Codex config", warn.call_args.args[0])
+
+    def test_notification_and_mcp_overrides_compose(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            codex_home = Path(tmp) / "alternative-codex-home"
+            codex_home.mkdir()
+            (codex_home / "config.toml").write_text(
+                "[mcp_servers.node_repl]\n"
+                'command = "/usr/lib/chatgpt/resources/cua_node/bin/node_repl"\n'
+            )
+            config = Config(notifications=NotificationsConfig(
+                enabled=True, telegram_token="token", telegram_chat_id="chat",
+            ))
+            with mock.patch.object(runtime, "CODEX_HOME", codex_home):
+                command = runtime.codex_command(["exec", "hello"], config)
+        self.assertEqual(command, [
+            "codex",
+            "-c", 'notify=["agent-box","notify","codex"]',
+            "-c", "mcp_servers.node_repl.enabled=false",
+            "--dangerously-bypass-approvals-and-sandbox",
+            "exec", "hello",
+        ])
+
+    def test_non_codex_launches_do_not_inspect_codex_mcp_configuration(self):
+        workspace = Workspace(Path.cwd(), Path.cwd())
+
+        class ExecCalled(Exception):
+            pass
+
+        for agent in ("claude", "shell", "doctor"):
+            with self.subTest(agent=agent), \
+                 mock.patch.object(runtime.shutil, "which", return_value="/usr/bin/podman"), \
+                 mock.patch.object(runtime, "resolve_workspace", return_value=workspace), \
+                 mock.patch.object(runtime, "ensure_state_dirs"), \
+                 mock.patch.object(runtime, "ensure_refresh_token"), \
+                 mock.patch.object(runtime, "load_config", return_value=Config()), \
+                 mock.patch.object(runtime, "image_exists", return_value=True), \
+                 mock.patch.object(runtime, "sync_claude_agent_skills"), \
+                 mock.patch.object(runtime, "claude_channel_args", return_value=([], [])), \
+                 mock.patch.object(runtime, "container_argv", return_value=["podman"]), \
+                 mock.patch.object(runtime, "codex_runtime_overrides") as overrides, \
+                 mock.patch.object(runtime.os, "execvp", side_effect=ExecCalled):
+                with self.assertRaises(ExecCalled):
+                    runtime.runtime_main([agent], Path.cwd())
+                overrides.assert_not_called()
 
 
 if __name__ == "__main__":
