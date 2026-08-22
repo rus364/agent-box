@@ -589,14 +589,68 @@ fi
 '''
 
 
+CLAUDE_MANAGEMENT_COMMANDS = frozenset({
+    "agents", "auth", "auto-mode", "doctor", "gateway", "import", "install",
+    "mcp", "plugin", "plugins", "project", "setup-token", "ultrareview", "update", "upgrade",
+})
+
+# The option syntax is from the installed Claude CLI's ``claude --help`` output.
+# This only parses far enough to find a possible top-level command; Claude still
+# receives the original argv and remains responsible for full validation.
+_CLAUDE_OPTIONS_WITH_VALUE = frozenset({
+    "--agent", "--agents", "--append-system-prompt", "--autocompact", "--debug-file",
+    "--effort", "--environment", "--fallback-model", "--input-format", "--json-schema",
+    "--max-budget-usd", "--model", "--name", "--output-format", "--permission-mode",
+    "--plugin-dir", "--plugin-url", "--remote-control-session-name-prefix", "--session-id",
+    "--setting-sources", "--settings", "--system-prompt", "-n",
+})
+_CLAUDE_OPTIONS_WITH_OPTIONAL_VALUE = frozenset({
+    "--cloud", "--debug", "--from-pr", "--prompt-suggestions", "--remote-control",
+    "--resume", "--teleport", "--tmux", "--worktree", "-d", "-r", "-w",
+})
+_CLAUDE_OPTIONS_WITH_VARIADIC_VALUES = frozenset({
+    "--add-dir", "--allowedTools", "--allowed-tools", "--betas", "--disallowedTools",
+    "--disallowed-tools", "--file", "--mcp-config", "--tools",
+})
+
+
+def is_claude_session_invocation(rest: list[str]) -> bool:
+    """Whether Claude will start a session rather than run a management command."""
+    index = 0
+    while index < len(rest):
+        arg = rest[index]
+        if arg in {"--help", "-h", "--version", "-v"}:
+            return False
+        if arg == "--":
+            return True
+        if not arg.startswith("-"):
+            return arg not in CLAUDE_MANAGEMENT_COMMANDS
+        option, has_value, _ = arg.partition("=")
+        if has_value or option not in (
+            _CLAUDE_OPTIONS_WITH_VALUE
+            | _CLAUDE_OPTIONS_WITH_OPTIONAL_VALUE
+            | _CLAUDE_OPTIONS_WITH_VARIADIC_VALUES
+        ):
+            index += 1
+        elif option in _CLAUDE_OPTIONS_WITH_VALUE:
+            index += 2
+        elif option in _CLAUDE_OPTIONS_WITH_OPTIONAL_VALUE:
+            index += 2 if index + 1 < len(rest) and not rest[index + 1].startswith("-") else 1
+        else:
+            index += 1
+            while index < len(rest) and not rest[index].startswith("-"):
+                index += 1
+    return True
+
+
 def claude_channel_args(
-    agent: str, config: Config, workspace: Workspace,
+    agent: str, config: Config, workspace: Workspace, rest: list[str] | None = None,
 ) -> tuple[list[str], list[str]]:
     """Decide whether this Claude session gets the official Telegram channel.
 
     Three outcomes, none of which stops Claude from starting:
 
-    * not Claude, or the channel is switched off -- nothing to do.
+    * not Claude, a management command, or the channel is switched off -- nothing to do.
     * enabled but the plugin/token setup is incomplete -- warn and run without
       it. ``agent-box config`` refuses to enable the channel before the
       prerequisites exist, so this only happens if the plugin was uninstalled
@@ -619,6 +673,8 @@ def claude_channel_args(
     # getUpdates. Every non-owner needs this, including when the channel is
     # disabled, or a second normal Claude would steal the bot poller.
     isolated = ["TELEGRAM_BOT_TOKEN="]
+    if not is_claude_session_invocation(rest or []):
+        return [], isolated
     if not config.claude.telegram_channel:
         return [], isolated
     missing = channel_module.missing_requirements()
@@ -669,7 +725,7 @@ def runtime_main(args: list[str], script_dir: Path, extra_mount_specs: list[str]
     if agent not in {"claude", "codex", "shell", "doctor"}:
         raise AgentBoxError(f"unsupported agent '{agent}'; expected claude or codex")
 
-    channel, extra_env = claude_channel_args(agent, config, workspace)
+    channel, extra_env = claude_channel_args(agent, config, workspace, rest)
     extra_env = [*extra_env, *flow_next_launch_env(workspace.host_root, agent, config)]
 
     try:

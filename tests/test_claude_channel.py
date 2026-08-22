@@ -199,19 +199,37 @@ class LaunchDecisionTests(unittest.TestCase):
         self.config = Config()
         self.config.claude.telegram_channel = True
 
-    def _decide(self, *, ready=True):
+    def _decide(self, *, ready=True, rest=None):
         home = claude_home(str(self.root / "claude"), plugin=ready, token=ready)
         err = io.StringIO()
         with mock.patch.object(channel, "CLAUDE_HOME", home), \
              mock.patch.object(channel, "CHANNEL_LOCK", self.lock), \
              redirect_stderr(err):
-            flags, env = runtime.claude_channel_args("claude", self.config, self.workspace)
+            flags, env = runtime.claude_channel_args(
+                "claude", self.config, self.workspace, rest or [])
         return flags, env, err.getvalue()
 
     def test_ready_and_free_takes_the_channel(self):
         flags, env, _ = self._decide()
         self.assertEqual(flags, ["--channels", CLAUDE_TELEGRAM_CHANNEL])
         self.assertEqual(env, ["AGENT_BOX_SUPPRESS_NOTIFY=1"])
+
+    def test_session_options_before_a_prompt_keep_the_channel(self):
+        flags, env, _ = self._decide(rest=["--model", "opus", "review this change"])
+        self.assertEqual(flags, ["--channels", CLAUDE_TELEGRAM_CHANNEL])
+        self.assertEqual(env, ["AGENT_BOX_SUPPRESS_NOTIFY=1"])
+
+    def test_plugin_management_does_not_take_the_channel(self):
+        flags, env, _ = self._decide(rest=["plugin", "marketplace", "update", "flow-next"])
+        self.assertEqual(flags, [])
+        self.assertEqual(env, ["TELEGRAM_BOT_TOKEN="])
+        self.assertIsNone(channel.channel_owner(self.lock))
+
+    def test_mcp_management_with_a_global_option_does_not_take_the_channel(self):
+        flags, env, _ = self._decide(rest=["--model", "opus", "mcp", "list"])
+        self.assertEqual(flags, [])
+        self.assertEqual(env, ["TELEGRAM_BOT_TOKEN="])
+        self.assertIsNone(channel.channel_owner(self.lock))
 
     def test_second_session_falls_back_to_a_normal_claude(self):
         self._decide()
@@ -262,6 +280,47 @@ class LaunchDecisionTests(unittest.TestCase):
             {"pid": 2 ** 30, "pid_start": "999", "boot_id": channel._boot_id()}))
         flags, _, _ = self._decide()
         self.assertEqual(flags, ["--channels", CLAUDE_TELEGRAM_CHANNEL])
+
+
+class ClaudeManagementArgvTests(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        self.lock = self.root / "runtime/telegram-channel.json"
+        self.workspace = Workspace(self.root, self.root)
+        self.config = Config()
+        self.config.claude.telegram_channel = True
+
+    def _launch(self, rest):
+        home = claude_home(str(self.root / "claude"), plugin=True, token=True)
+        captured = []
+
+        def fake_execvp(_, argv):
+            captured.append(argv)
+            raise SystemExit
+
+        with mock.patch.object(runtime.shutil, "which", return_value="/usr/bin/podman"), \
+             mock.patch.object(runtime, "resolve_workspace", return_value=self.workspace), \
+             mock.patch.object(runtime, "ensure_state_dirs"), \
+             mock.patch.object(runtime, "ensure_refresh_token"), \
+             mock.patch.object(runtime, "load_config", return_value=self.config), \
+             mock.patch.object(runtime, "image_exists", return_value=True), \
+             mock.patch.object(runtime, "sync_claude_agent_skills"), \
+             mock.patch.object(runtime, "container_argv", return_value=["podman", "run"]), \
+             mock.patch.object(runtime.os, "execvp", side_effect=fake_execvp), \
+             mock.patch.object(channel, "CLAUDE_HOME", home), \
+             mock.patch.object(channel, "CHANNEL_LOCK", self.lock):
+            with self.assertRaises(SystemExit):
+                runtime.runtime_main(["claude", *rest], Path(__file__).parents[1])
+        return captured[0]
+
+    def test_plugin_marketplace_update_keeps_argv_without_channels_or_a_lock(self):
+        rest = ["plugin", "marketplace", "update", "flow-next"]
+        argv = self._launch(rest)
+        self.assertEqual(argv[-6:], ["claude", "--dangerously-skip-permissions", *rest])
+        self.assertNotIn("--channels", argv)
+        self.assertIsNone(channel.channel_owner(self.lock))
 
 
 class RuntimeNotificationSelectionTests(unittest.TestCase):
