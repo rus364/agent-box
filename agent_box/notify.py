@@ -246,13 +246,10 @@ def notify_claude() -> None:
             message or "Claude is waiting for your input.",
         ))
     elif event == "Stop":
-        if tasks:
-            count = len(tasks)
-            label = "task" if count == 1 else "tasks"
-            telegram_send(telegram_notice(
-                "⚙️", "Claude", project, f"Background work continues · {count} {label}"
-            ))
-        else:
+        # A Stop with live background tasks is only a pause in the visible turn,
+        # not completion. Keep it silent; a later Stop with no tasks reports the
+        # actual terminal completion.
+        if not tasks:
             telegram_send(telegram_notice("✅", "Claude", project, "Turn finished"))
     elif event == "StopFailure":
         telegram_send(telegram_notice(

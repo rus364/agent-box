@@ -161,16 +161,14 @@ class NotifyLogicTests(unittest.TestCase):
             with self.subTest(event=payload["hook_event_name"]):
                 self.assertEqual(self._claude_notices(payload), [expected])
 
-    def test_official_channel_reports_background_work_without_false_completion(self):
+    def test_background_stop_is_silent(self):
         notices = self._claude_notices({
             "hook_event_name": "Stop",
             "cwd": "/work/project",
             "session_id": "session-1",
             "background_tasks": [{"task_id": "background-1"}],
         }, official_channel=True)
-        self.assertEqual(notices, [
-            "⚙️ <b>Claude · project</b>\nBackground work continues · 1 task",
-        ])
+        self.assertEqual(notices, [])
 
     def test_codex_notification_is_not_suppressed_by_claude_channel_mode(self):
         sent: list[str] = []
@@ -199,7 +197,7 @@ class NotifyLogicTests(unittest.TestCase):
             "✅ <b>Codex · project</b>\nTurn finished\nCompleted the task.",
         ])
 
-    def test_background_work_suppresses_the_following_idle_prompt(self):
+    def test_background_work_stays_quiet_until_final_stop(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             notices = self._claude_notices({
@@ -210,8 +208,12 @@ class NotifyLogicTests(unittest.TestCase):
                 "hook_event_name": "Notification", "notification_type": "idle_prompt",
                 "cwd": "/work/project", "session_id": "session-1",
             }, state_root=root)
+            notices += self._claude_notices({
+                "hook_event_name": "Stop", "cwd": "/work/project", "session_id": "session-1",
+                "background_tasks": [],
+            }, state_root=root)
         self.assertEqual(notices, [
-            "⚙️ <b>Claude · project</b>\nBackground work continues · 1 task",
+            "✅ <b>Claude · project</b>\nTurn finished",
         ])
 
 
