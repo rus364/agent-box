@@ -1,9 +1,25 @@
 FROM docker.io/library/ubuntu:24.04
 
 ARG DEBIAN_FRONTEND=noninteractive
-ARG USER_NAME=rus364
-ARG USER_UID=1000
-ARG USER_GID=1000
+# The container user mirrors the *building* host's real Unix identity
+# (name/uid/gid/home, from agent_box.identity.detect_host_identity), so that
+# host-absolute paths -- the project workspace, extra --mount targets, and
+# host-authored symlinks such as ~/.claude/skills entries -- resolve
+# identically inside the container.
+#
+# These ARGs deliberately have NO defaults. An earlier revision defaulted them
+# to a fixed name, uid 1000, gid 1000 and an invented home directory, which
+# meant a direct `podman build` (without agent-box's --build-arg values)
+# silently produced an image whose user and home did not match the host at
+# all: bind mounts landed at paths the
+# container user could not own, $HOME pointed at a directory nothing was
+# mounted into, and the mismatch only surfaced later as confusing runtime
+# failures. Failing the build immediately is the safe behavior -- see the
+# validation step in the "Container user" layer below.
+ARG USER_NAME
+ARG USER_UID
+ARG USER_GID
+ARG USER_HOME
 
 ENV LANG=C.UTF-8 \
     LC_ALL=C.UTF-8 \
@@ -112,6 +128,26 @@ RUN set -eux; \
 #   - create the user/group normally when UID/GID are free.
 #
 
+# Identity args are required: fail fast and explain, rather than inventing a
+# fallback identity that will not match the host at runtime.
+RUN set -eu; \
+    missing=""; \
+    [ -n "${USER_NAME:-}" ] || missing="${missing} USER_NAME"; \
+    [ -n "${USER_UID:-}" ] || missing="${missing} USER_UID"; \
+    [ -n "${USER_GID:-}" ] || missing="${missing} USER_GID"; \
+    [ -n "${USER_HOME:-}" ] || missing="${missing} USER_HOME"; \
+    if [ -n "${missing}" ]; then \
+        echo "agent-box: missing required --build-arg:${missing}" >&2; \
+        echo "agent-box: build this image with 'agent-box build', which derives" >&2; \
+        echo "agent-box: USER_NAME/USER_UID/USER_GID/USER_HOME from the host passwd" >&2; \
+        echo "agent-box: entry, or pass all four --build-arg values explicitly." >&2; \
+        exit 1; \
+    fi; \
+    case "${USER_UID}" in ''|*[!0-9]*) echo "agent-box: USER_UID must be numeric: ${USER_UID}" >&2; exit 1;; esac; \
+    case "${USER_GID}" in ''|*[!0-9]*) echo "agent-box: USER_GID must be numeric: ${USER_GID}" >&2; exit 1;; esac; \
+    case "${USER_HOME}" in /*) ;; *) echo "agent-box: USER_HOME must be an absolute path: ${USER_HOME}" >&2; exit 1;; esac; \
+    printf '%s\n' "agent-box: building for ${USER_NAME} (${USER_UID}:${USER_GID}) home=${USER_HOME}"
+
 RUN set -eux; \
     existing_group="$(getent group "${USER_GID}" | cut -d: -f1 || true)"; \
     if [ -n "${existing_group}" ]; then \
@@ -126,7 +162,7 @@ RUN set -eux; \
         if [ "${existing_user}" != "${USER_NAME}" ]; then \
             usermod \
                 --login "${USER_NAME}" \
-                --home "/home/${USER_NAME}" \
+                --home "${USER_HOME}" \
                 --shell /bin/bash \
                 "${existing_user}"; \
         fi; \
@@ -135,17 +171,16 @@ RUN set -eux; \
         useradd \
             --uid "${USER_UID}" \
             --gid "${USER_GID}" \
-            --home-dir "/home/${USER_NAME}" \
+            --home-dir "${USER_HOME}" \
             --shell /bin/bash \
             "${USER_NAME}"; \
     fi; \
     mkdir -p \
-        "/home/${USER_NAME}" \
-        "/home/${USER_NAME}/code" \
-        "/home/${USER_NAME}/.cache" \
-        "/home/${USER_NAME}/.local/share/uv" \
-        "/home/${USER_NAME}/.local/share/mise"; \
-    chown -R "${USER_UID}:${USER_GID}" "/home/${USER_NAME}"
+        "${USER_HOME}" \
+        "${USER_HOME}/.cache" \
+        "${USER_HOME}/.local/share/uv" \
+        "${USER_HOME}/.local/share/mise"; \
+    chown -R "${USER_UID}:${USER_GID}" "${USER_HOME}"
 
 #
 # ---------------------------------------------------------------------------
@@ -220,6 +255,24 @@ RUN set -eux; \
     apt-get install -y --no-install-recommends nodejs; \
     apt-get clean; \
     rm -rf /var/lib/apt/lists/*
+
+#
+# Bun
+#
+# Required by Anthropic's official Telegram channel plugin
+# (telegram@claude-plugins-official): its MCP server is a TypeScript file run
+# directly by Bun, and its own `bun install` step fetches the plugin's
+# dependencies on first start. Claude Code passes `bun` as a bare command, so
+# it has to be on PATH for every user of the image, not just in a shell that
+# sourced an installer profile snippet.
+#
+
+RUN set -eux; \
+    export BUN_INSTALL=/usr/local; \
+    curl -fsSL https://bun.sh/install -o /tmp/bun-install.sh; \
+    bash /tmp/bun-install.sh; \
+    rm -f /tmp/bun-install.sh; \
+    test -x /usr/local/bin/bun
 
 #
 # Coding agents
@@ -324,6 +377,7 @@ RUN set -eux; \
     uv --version; \
     node --version; \
     npm --version; \
+    bun --version; \
     codex --version; \
     claude --version; \
     mise --version; \
@@ -350,10 +404,14 @@ RUN set -eux; \
 
 USER ${USER_NAME}
 
-ENV HOME=/home/${USER_NAME} \
-    MISE_DATA_DIR=/home/${USER_NAME}/.local/share/mise \
-    UV_CACHE_DIR=/home/${USER_NAME}/.cache/uv
+ENV HOME=${USER_HOME} \
+    MISE_DATA_DIR=${USER_HOME}/.local/share/mise \
+    UV_CACHE_DIR=${USER_HOME}/.cache/uv
 
-WORKDIR /home/${USER_NAME}/code
+# No fixed WORKDIR: agent_box.runtime always passes an explicit --workdir
+# matching the host's absolute project/cwd path, which is bind-mounted at
+# that same path (see workspace.py). This WORKDIR is only a sane default
+# for `podman run` invocations that don't set one (e.g. manual debugging).
+WORKDIR ${USER_HOME}
 
 CMD ["/bin/bash"]

@@ -1,72 +1,260 @@
 # agent-box
 
-`agent-box` runs Codex CLI and Claude Code inside the same rootless Podman development container.
+`agent-box` runs Claude Code and Codex CLI inside disposable rootless Podman containers built from one development image.
 
-The container mounts the host `~/code` tree at the same logical path, preserves agent configuration and authentication, provides the development tools used by the projects in that tree, and can pass through KVM when available.
+It mounts your current project into the container at the *same absolute path* it has on the host, builds a container user that mirrors your real Unix identity, and preserves agent configuration/authentication across disposable runs.
+
+There are four separate things in here, and it's worth keeping them apart:
+
+| | What it is | Who implements it |
+| --- | --- | --- |
+| **Local containerized agents** | `agent-box claude` / `agent-box codex` in a hardened, disposable container | agent-box |
+| **Claude Telegram channel** | Control the live Claude session from Telegram | **Anthropic's official plugin** — agent-box only passes the flag |
+| **Outbound notifications** | One-way "turn finished / waiting / failed" pings | agent-box |
+| **Codex remote control** | Driving Codex from elsewhere | **OpenAI's official ChatGPT/Codex experience**, where supported |
+
+agent-box implements no Telegram bot, no remote-control daemon, and no session routing of its own. Earlier versions did; that whole subsystem has been removed.
 
 ## Requirements
 
 - Linux
 - Python 3.10+
 - Podman
-- `~/code` must exist (it may be a symlink)
 
-The launcher itself uses only the Python standard library. There are no Python package dependencies.
+The launcher uses only the Python standard library. There are no Python package dependencies.
 
-## Install the launcher
+## Install
 
-Clone the repository somewhere under `~/code`, then expose the launcher on `PATH`:
+Clone the repository anywhere — it does not need to live inside your projects tree:
 
 ```bash
-ln -s ~/code/agent-box/agent-box ~/.local/bin/agent-box
+git clone <this repo> ~/.local/src/agent-box
+ln -s ~/.local/src/agent-box/agent-box ~/.local/bin/agent-box
 ```
 
-If the repository lives at another path under `~/code`, adjust the source path accordingly.
+(Any directory on `PATH` works.)
 
 ## Build
 
 ```bash
-agent-box build
-```
-
-The image is also built automatically on first use.
-
-Image management commands:
-
-```bash
 agent-box build    # regular cached build
-agent-box update   # refresh frequently updated tools while preserving base layers
+agent-box update   # refresh frequently updated tools, preserving base layers
 agent-box rebuild  # refresh tools and rebuild without cache
 ```
 
-The default image is `localhost/agent-box:latest`. Override it with `AGENT_BOX_IMAGE`.
+The image is also built automatically on first use. Build args are derived from your real Unix identity (`pwd.getpwuid(os.getuid())`) — see "Container identity".
 
-## Run Claude Code
+The default image is `localhost/agent-box:latest`. Override it with `AGENT_BOX_IMAGE`. If you change host user/UID/GID (or share the image across users), rebuild.
+
+The image contains Claude Code, Codex CLI, Node 22, **Bun** (required by the official Telegram channel plugin), Python + uv, mise, git/git-lfs/gh, kubectl/helm/yq/jq, QEMU (x86-64 and aarch64), and the usual build and network tooling.
+
+## Run Claude Code or Codex
 
 ```bash
-agent-box
+cd /any/path/to/your/project
+agent-box            # default agent (claude)
 agent-box claude
 agent-box claude -p "summarize this repository"
-```
-
-Claude Code is the default agent. To change the default:
-
-```bash
-export AGENT_BOX_AGENT=codex
-```
-
-Claude Code is installed from the official `@anthropic-ai/claude-code` npm package. Its `~/.claude` state is mounted from the host so authentication, settings, and history survive disposable container runs.
-
-If `~/.claude.json` already exists on the host, it is mounted as well.
-
-The launcher also forwards common Anthropic/provider variables when they are already set on the host, including `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`, Bedrock/Vertex selectors, and common HTTP/TLS proxy variables.
-
-## Run Codex
-
-```bash
 agent-box codex
 agent-box codex exec "inspect this repository"
+agent-box shell      # a plain shell in an identically configured container
 ```
+
+This works from **any** directory — there is no requirement to keep projects under a fixed host directory such as `~/code`.
+
+Claude Code is the default agent; change it with `export AGENT_BOX_AGENT=codex`.
+
+Their `~/.claude` and `~/.codex` state directories are mounted from the host so authentication, settings, and history survive disposable runs. If `~/.claude.json` exists on the host it is mounted too.
+
+## Configuration
+
+One command, one file:
+
+```bash
+agent-box config          # interactive setup
+agent-box config show     # current settings, bot token redacted
+agent-box config check    # verify the official Claude Telegram channel setup
+```
+
+Settings are stored as a small versioned JSON document at `~/.config/agent-box/config.json` (mode 0600, since it may hold a Telegram bot token):
+
+```json
+{
+  "version": 1,
+  "claude":        { "telegram_channel": false },
+  "notifications": { "enabled": false, "telegram_token": "", "telegram_chat_id": "" },
+  "github":        { "gh_token": false, "gh_config": false },
+  "git":           { "identity": true, "full_config": false },
+  "providers":     { "api_keys": false, "transport": true }
+}
+```
+
+### What each setting exposes to the container
+
+| Setting | Default | What it does |
+| --- | --- | --- |
+| `claude.telegram_channel` | **off** | Adds `--channels plugin:telegram@claude-plugins-official` to `agent-box claude` |
+| `notifications.enabled` | **off** | Outbound-only Telegram pings; needs a token and chat id to become active |
+| `github.gh_token` | **off** | Permits an exported token, or obtains `gh auth token`, and forwards it as `GH_TOKEN` |
+| `github.gh_config` | **off** | Copies the host's `~/.config/gh` (which stores that token) into the container |
+| `git.identity` | **on** | Seeds only global `user.name` and `user.email` for commit attribution |
+| `git.full_config` | **off** | Copies the complete host Git configuration; opt in only if you accept its credential helpers, headers, includes, and rewrites being exposed |
+| `providers.api_keys` | **off** | Forwards exported `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` |
+| `providers.transport` | **on** | Forwards endpoint, Bedrock/Vertex, proxy, and CA transport settings (turn off if your proxy URL carries credentials) |
+
+**Security-sensitive host integration is explicit.** In particular, being logged in to `gh` on the host is *not* consent to hand a live GitHub credential to every container — `github.gh_token` must be turned on deliberately. (An earlier agent-box forwarded the token whenever `gh` happened to be authenticated. It no longer does.)
+
+Provider values, exported GitHub tokens, and a GitHub token obtained from `gh auth token` are forwarded to Podman by name (`--env=NAME`), never as `--env=NAME=value`; the latter would expose the value in process argv. `AGENT_BOX_GH_TOKEN=0` denies GitHub passthrough for one run and `=1` permits it.
+
+### Environment overrides
+
+Persistent config is the primary mechanism, but a few variables still override for a single command:
+
+```text
+AGENT_BOX_AGENT           Default agent when claude/codex is omitted (default: claude)
+AGENT_BOX_IMAGE           Container image name (default: localhost/agent-box:latest)
+AGENT_BOX_KVM=0           Disable KVM passthrough
+AGENT_BOX_GH_TOKEN=0|1    Withhold / force the host GitHub token for this run
+AGENT_BOX_WORKSPACE_ROOT  Override the host directory mounted into the container
+AGENT_BOX_STATE_DIR       Override ~/.local/share/agent-box
+AGENT_BOX_CONFIG_DIR      Override ~/.config/agent-box
+```
+
+## Claude Telegram channel (official plugin)
+
+Telegram control of a Claude session is provided entirely by Anthropic's official `telegram@claude-plugins-official` plugin. agent-box does **not** reimplement access control, pairing, permissions, message delivery, questions, or Telegram polling — the plugin owns all of it.
+
+What agent-box does is small and explicit: when `claude.telegram_channel` is on, `agent-box claude` starts the normal interactive Claude Code CLI with
+
+```bash
+claude --dangerously-skip-permissions --channels plugin:telegram@claude-plugins-official
+```
+
+**The terminal TUI stays the primary interface.** Telegram controls that same live session through the official channel — it is not a second, separate session.
+
+### Setup (once per host)
+
+The plugin is installed and configured through Claude Code's own supported mechanisms, from inside a Claude session. agent-box does not install or configure it silently.
+
+1. Create a bot with [@BotFather](https://t.me/BotFather) and copy the token.
+2. Start a session and install the plugin:
+
+   ```text
+   agent-box claude
+   /plugin install telegram@claude-plugins-official
+   /telegram:configure 123456789:AAHfiqksKZ8...
+   ```
+
+   The token is written to `~/.claude/channels/telegram/.env`.
+3. Turn the channel on in agent-box, then start a fresh session:
+
+   ```bash
+   agent-box config      # answer yes to "Enable Claude Telegram channel"
+   agent-box claude
+   ```
+4. DM your bot; it replies with a pairing code. Back in the session:
+
+   ```text
+   /telegram:access pair <code>
+   /telegram:access policy allowlist
+   ```
+
+`agent-box config check` reports whether the plugin and token are in place and prints these steps if not.
+
+Because `~/.claude` is bind-mounted read-write at its host path, a plugin installed once is present in every container, and its state (`~/.claude/channels/telegram/`: token, allowlist, inbox) persists across disposable runs. Bun is in the image because the plugin's MCP server runs on it and `bun install`s its own dependencies on first start; that download is cached in the container-only cache directory.
+
+### What still requires manual setup
+
+- Creating the bot with BotFather and running `/plugin install` + `/telegram:configure` (step 2 above). These are Claude Code slash commands; there is no supported way to do them from outside a session, and agent-box deliberately does not write Claude's plugin state behind its back.
+- Pairing and the allowlist policy (step 4).
+- On a managed claude.ai Teams/Enterprise account, channels are off unless an administrator enables them. Personal/Console accounts do not need this.
+
+If the channel is enabled in config but the plugin or token is missing, `agent-box claude` prints instructions and starts as a normal local Claude session.
+
+### One active Telegram owner
+
+Telegram permits only one `getUpdates` consumer per bot token. agent-box records one live channel owner using PID, process-start time, and boot ID; stale records are recovered automatically. A second `agent-box claude` prints `Telegram channel already active in another Claude session`, starts normally, and does not receive `--channels`.
+
+The official plugin can still be globally loaded by Claude Code in that second process, even without `--channels`. Its current server loads its persisted `.env` only when `TELEGRAM_BOT_TOKEN` is undefined. agent-box therefore passes an explicit empty `TELEGRAM_BOT_TOKEN` to every non-owner Claude container (including when the channel is disabled). The official plugin exits before polling instead of falling back to the shared token, so it cannot steal or kill the owner's poller. This is isolation around an upstream multi-process limitation, not a second Telegram controller.
+
+## Codex remote control
+
+agent-box has no Telegram or remote-control integration for Codex. Use the official ChatGPT/Codex remote-control experience where it is supported.
+
+`agent-box codex` is purely the local, containerized path: a normal interactive Codex CLI, isolated in the container, with the same mounts and hardening as Claude.
+
+## Outbound notifications
+
+Remote control and notifications are separate features. Notifications are strictly **one-directional**: agent-box sends `sendMessage` calls and nothing else. There is no polling daemon, no `getUpdates`, no callbacks, and no way to drive a session from a notification.
+
+```bash
+agent-box config        # enable, with bot token + chat id
+agent-box notify test   # send a test message
+```
+
+What gets sent:
+
+- **Codex** — turn completed, with the last assistant message.
+- **Claude** — waiting for input, permission required, turn finished, stopped with an error.
+
+Claude's "turn finished" is suppressed while background tasks from that turn are still running, so a long background job doesn't ping you as though it needed input.
+
+**No double notifications.** When a Claude session owns the official channel, it already relays replies and prompts to the paired chat, so agent-box suppresses its Claude hooks (`AGENT_BOX_SUPPRESS_NOTIFY=1`). Codex notifications are unaffected.
+
+The main configuration file is never mounted into a container. When outbound notifications are usable, agent-box derives a minimal mode-0600 runtime `notify.json` containing only the bot token and chat id, then mounts that file read-only. It is available to Codex and to non-channel Claude sessions only; shell, doctor, and the Claude channel owner do not receive it. Disabled notifications mean no notification credential mount.
+
+Enabling notifications installs Claude hooks into `~/.claude/settings.json`; disabling removes them. Codex is wired up per-run with `-c notify=[...]`.
+
+## Container identity
+
+The container's user, UID, GID, and home directory mirror the **real host identity that built the image** (`agent_box.identity.detect_host_identity`, backed by `pwd.getpwuid`, not `$USER`/`$HOME`, which a shell can set to anything). Another user rebuilding this project on their own machine gets their own identity automatically — nothing in the source names a specific person or machine. Rootless Podman's `--userns=keep-id` maps that identity back to the real host UID/GID, so files created in the container are owned by you on the host.
+
+This matters beyond ownership: because the container user's home is the same path as your real home, host-authored absolute-path symlinks — notably the shared skill symlinks agent-box writes into `~/.claude/skills` — resolve correctly inside the container without any path rewriting.
+
+If the username reported by the OS isn't a legal Linux login name, it's sanitized deterministically rather than replaced with something invented; if even that fails, it falls back to `user<uid>`.
+
+**One home directory, from one source.** The home used for the build identity, the container's runtime `HOME`, every bind mount's host side, and the state/config defaults is always the passwd entry's `pw_dir` (`agent_box.paths.passwd_home`). `$HOME` is never consulted, and neither is anything that consults it internally — `Path.home()` and `Path.expanduser()` both read `$HOME` first, so `~` in a setting like `XDG_DATA_HOME`, `CLAUDE_CONFIG_DIR`, `AGENT_BOX_WORKSPACE_ROOT`, or `--mount` is expanded against the passwd home explicitly. A poisoned `$HOME` therefore cannot relocate any of it, which matters because `--userns=keep-id` maps the *passwd* identity back to the host regardless of what a shell variable says.
+
+Building the image requires that identity to be passed explicitly: the `Containerfile`'s `USER_NAME`/`USER_UID`/`USER_GID`/`USER_HOME` args have no defaults, and a build without them fails immediately with a message saying what to pass. `agent-box build` supplies all four.
+
+## Workspace behavior
+
+`agent-box` resolves a single project root and mounts it into the container **at the same absolute path it has on the host** — there is no fixed `/workspace` remap. The container's working directory mirrors your host working directory exactly, including any subdirectory:
+
+```text
+host:      /home/alex/code/infrado
+cwd:       /home/alex/code/infrado/sub/dir
+
+container: /home/alex/code/infrado   (mounted at the same path)
+workdir:   /home/alex/code/infrado/sub/dir
+```
+
+Root resolution:
+
+1. If you're inside a git repository/worktree, its top-level directory is the workspace root.
+2. Otherwise, the current directory itself is the workspace root.
+3. `AGENT_BOX_WORKSPACE_ROOT=/some/big/tree` overrides both — set it if you deliberately want a larger directory mounted; the current directory must be inside it.
+
+Only the resolved root is mounted; unrelated host directories are never exposed implicitly.
+
+### Mounting additional host paths (`--mount`)
+
+Sometimes an agent needs to see something outside the project root — a sibling repository, a data directory, generated output elsewhere:
+
+```bash
+agent-box --mount ~/code claude                                # a parent directory containing the project
+agent-box --mount /mnt/data/specs:ro codex                     # an unrelated directory, read-only
+agent-box --mount /mnt/data/specs:ro --mount /srv/gen claude   # repeatable
+```
+
+Grammar: `agent-box [--mount PATH[:ro]]... [claude|codex|shell|doctor] [provider args...]`. Agent-box's own options must come *before* the subcommand; everything from the subcommand onward is passed through untouched, so `agent-box claude --model opus` is never misparsed, and a hypothetical Claude/Codex flag also spelled `--mount` is never mistaken for agent-box's. Use `--` to stop agent-box's own option parsing early.
+
+Each `--mount` path must be an existing absolute directory; it's mounted at that same path, read-write by default or read-only with `:ro`. Paths (including ones with spaces) are resolved to their canonical, symlink-free form before use, both as the mount source and for overlap checking, so a mount can't be silently widened by a symlink.
+
+Overlapping mounts (including the implicit project-root mount) resolve deterministically rather than being left to Podman's ordering:
+
+- identical paths collapse to one;
+- if one mount's path contains another's, only the broader one is kept — but only when they agree on read-only/read-write; a mismatch is rejected as ambiguous instead of silently picking a side.
 
 ## Shared agent skills
 
@@ -75,46 +263,35 @@ agent-box codex exec "inspect this repository"
 Before starting a container, `agent-box` exposes each valid shared skill to Claude Code by creating a matching symlink:
 
 ```text
-~/.agents/skills/systematic-debugging
-        -> ~/.claude/skills/systematic-debugging
+~/.claude/skills/systematic-debugging -> ~/.agents/skills/systematic-debugging
 ```
 
-The skill contents are not copied. Both agents therefore use the same `SKILL.md` and supporting files.
+Contents are not copied, so both agents use the same `SKILL.md`. Existing Claude-specific skills are preserved: if `~/.claude/skills/<name>` already exists and doesn't point at the shared skill, agent-box leaves it alone and warns.
 
-Existing Claude-specific skills are preserved. If `~/.claude/skills/<name>` already exists and does not point to the corresponding shared skill, `agent-box` leaves it unchanged and prints a warning instead of overwriting it.
+### What exactly gets mounted from `~/.agents`
 
-Shared skills may themselves be symlinks to directories elsewhere on the host. `agent-box` mounts those resolved targets read-only into the container so the links remain valid for both Codex and Claude Code.
+If `~/.agents` exists, the **whole tree** is bind-mounted read-only at its own path, and agent-box walks **all of it** — not just `skills/` — for symlinks pointing outside the tree, mounting each distinct target read-only at its own path too.
 
-`agent-box doctor` verifies both the original `~/.agents/skills` links and their Claude Code counterparts.
+That scope is deliberate. Since the tree itself is already visible to the container, narrowing the walk to `skills/` would hide nothing; it would just leave every non-skill symlink (a shared agent definition, a command, a prompt fragment) dangling inside a directory the container can already read.
+
+Guarantees:
+
+- Every one of these mounts is **read-only**, external targets included. agent-box exposes your shared agent material; it does not let the container rewrite your library.
+- Symlinks pointing back inside `~/.agents` are skipped — the tree mount covers them.
+- Each distinct target is mounted once, deterministically.
+- A broken symlink warns and is skipped; it never fails the run.
+
+If you keep something under `~/.agents` a container shouldn't read, move it out — the read-only tree mount is unconditional.
 
 ## Git and GitHub
 
-`git` and `gh` configuration is reseeded from the host on every start into private container state:
+`git` and `gh` configuration directories are always mounted (so both tools work), but only *populated* from the host when you opt in — see the configuration table above. They're reseeded as a **copy**, not a bind mount, because `git`/`gh` rewrite config via temp-file-plus-rename, which fails on a bind-mounted file. The host stays the source of truth; anything written inside the container is discarded at the next start.
 
-```text
-~/.gitconfig, ~/.config/git   -> container ~/.config/git   (GIT_CONFIG_GLOBAL)
-~/.config/gh                  -> container ~/.config/gh     (GH_CONFIG_DIR)
-```
+With `github.gh_config` off, the directory is empty and `gh` runs unauthenticated. With `github.gh_token` off (or `AGENT_BOX_GH_TOKEN=0`), no `GH_TOKEN` or `GITHUB_TOKEN` is forwarded.
 
-These are directories rather than bind-mounted files on purpose: `git` and `gh` rewrite their configuration through a temporary file plus rename, and renaming over a bind-mounted file fails with `Device or resource busy`. The host remains the source of truth, and configuration written inside the container is discarded at the next start.
-
-`gh auth login` is not meant to be run inside the container — the token lives in the host keyring, and the container is disposable. Authenticate on the host instead:
-
-```bash
-gh auth login
-```
-
-At startup the launcher reads `gh auth token` on the host and passes it in as `GH_TOKEN`, which authenticates both `gh` and the `gh auth git-credential` helper used by `git` over HTTPS. An already exported `GH_TOKEN`/`GITHUB_TOKEN` is forwarded as-is and takes precedence. Disable the passthrough with:
-
-```bash
-AGENT_BOX_GH_TOKEN=0 agent-box codex
-```
-
-Only HTTPS remotes are authenticated this way; the container has no SSH keys or agent socket, so `git@github.com:` remotes will fail.
+`gh auth login` is not meant to run inside the container — authenticate on the host. With `github.gh_token` on, agent-box permits an already-exported `GH_TOKEN`/`GITHUB_TOKEN`, or reads `gh auth token` and places it only in the launcher environment before Podman is exec'd. In both cases Podman receives `--env=NAME`, never the token value in argv. Only HTTPS remotes are authenticated this way; the container has no SSH keys or agent socket.
 
 ## Usage limits
-
-Usage reporting is built into `agent-box`; there are no separate helper scripts:
 
 ```bash
 agent-box usage codex
@@ -122,133 +299,82 @@ agent-box usage claude
 agent-box usage all
 ```
 
-The combined command prints both subscriptions on one line, making it convenient for direct use in a terminal:
+The combined command prints both subscriptions on one line:
 
 ```text
 Claude 97/88 · 4h51m/5d23h │ Codex 83/61 · 3h24m/4d11h
 ```
 
-Both providers use a 60-second cache to avoid unnecessary polling. The commands run directly on the host and do not start a Podman container.
+Both providers cache for 60 seconds and run directly on the host (no container). Claude Code's `statusLine` can use `agent-box usage all --statusline`.
 
-Claude Code's `statusLine` uses the same combined output through:
+## Configuration paths
 
-```bash
-agent-box usage all --statusline
-```
-
-In status-line mode, Claude usage normally comes from the payload that Claude Code provides on stdin. If the payload is absent or does not contain rate-limit data, `agent-box` falls back to the regular cached/OAuth Claude usage path. Codex usage uses the same cached subscription query as `agent-box usage codex`.
-
-When `agent-box` sees either the old `~/.local/bin/claude-usage --statusline` command or the previous `~/.local/bin/agent-box usage claude --statusline` command in `~/.claude/settings.json`, it migrates it automatically to the combined command while preserving the rest of the settings file.
-
-## Telegram notifications
-
-`agent-box` can send Telegram notifications from both Claude Code and Codex.
-
-Create a bot with BotFather, start a chat with it, then run:
-
-```bash
-agent-box notify setup
-```
-
-The setup asks for the bot token and Telegram chat ID, sends a test message, and configures Claude Code hooks automatically. The token and chat ID are stored locally in:
+`agent-box` respects `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, and `XDG_CACHE_HOME`. By default:
 
 ```text
-~/.config/agent-box/telegram.json
+~/.config/agent-box/config.json   the one agent-box config file (mode 0600)
+~/.local/share/agent-box/         build markers, seeded git/gh config, notify state
+~/.claude/, ~/.codex/             agent auth and state (unchanged locations)
+~/.claude/channels/telegram/      official Telegram plugin state (token, allowlist, inbox)
 ```
 
-The file is created with mode `600`. When notification configuration exists, it is mounted read-only into the agent container.
+`CLAUDE_CONFIG_DIR` and `CODEX_HOME` are honored. When `CLAUDE_CONFIG_DIR` is set, the relocated directory is bind-mounted at its host path *and* the resolved value is forwarded into the container, so `claude` there reads the same configuration instead of an empty `$HOME/.claude`.
 
-Claude Code notifications cover permission prompts, idle prompts, completed turns, background work, and stop failures. Notifications use Telegram HTML formatting and status-specific emoji.
+Container runs themselves are disposable (`podman run --rm`); only these host paths persist.
 
-Claude Code can emit an `idle_prompt` while the parent turn is idle but background agents are still running. To avoid falsely reporting that human input is required, `agent-box` records the `background_tasks` supplied by Claude Code's `Stop` hook per `session_id`. While that mechanically reported background-task state is active, `idle_prompt` notifications for the same session are suppressed. Permission prompts and failures are never suppressed. The next `Stop` with no background tasks clears the state and sends the normal completed-turn notification. Stale state expires after 30 minutes as a safety fallback.
+## Container hardening
 
-Typical Claude notifications look like:
-
-```text
-🔐 Claude · project
-Permission required
-
-⚙️ Claude · project
-Background work continues · 1 task
-
-💬 Claude · project
-Waiting for input
-
-✅ Claude · project
-Turn finished
-
-❌ Claude · project
-Stopped with an error
-```
-
-Codex receives an `agent-turn-complete` notifier automatically when launched through `agent-box` and uses the same formatted Telegram style.
-
-Useful commands:
-
-```bash
-agent-box notify test
-agent-box notify status
-agent-box notify disable
-```
-
-`notify disable` removes the Telegram configuration, background-notification state, and only the Claude hooks installed by `agent-box`; unrelated Claude settings and hooks are preserved.
+Every run gets `--rm --userns=keep-id --cap-drop=all --security-opt=no-new-privileges`, an isolated container-only cache directory (never your real `~/.cache`), and only the mounts described above. There is exactly one function that decides what a container can see (`agent_box.runtime.base_podman_args`).
 
 ## Self-tests
 
-The small pure-logic test suite is embedded in the launcher itself:
-
 ```bash
-agent-box selftest
+agent-box selftest                     # fast, no Podman or network
+python3 -m unittest discover -s tests  # full suite
 ```
 
-It checks duration formatting, Claude/Codex usage parsing, notification payload handling, Telegram formatting, and background-task state without starting Podman or accessing the network. There is no separate test framework or test file.
+The full suite covers config defaults and round-tripping, host-exposure gating (gh token/config, git config, provider env), the Claude channel preflight, `--mount` parsing and overlap planning, workspace resolution, host identity, passwd-anchored `~` expansion under a poisoned `$HOME`, `~/.agents` mount scope, notification payload handling and hook install/remove, usage formatting, and the Containerfile's identity-arg validation (executed through a real shell).
 
-## Shell and diagnostics
+No credentials are required and no network calls are made.
 
-Open a shell in the same container environment:
-
-```bash
-agent-box shell
-```
-
-Check both agents, development tools, QEMU, KVM, and shared agent skills:
+## Diagnostics
 
 ```bash
 agent-box doctor
 ```
 
+Checks both agents, Bun, development tools, QEMU, KVM, shared agent skills, and whether the Telegram channel has a token — all from inside the container.
+
 ## KVM
 
-When `/dev/kvm` is accessible, it is passed through automatically. Disable passthrough explicitly with:
+When `/dev/kvm` is accessible it is passed through automatically. Disable with `AGENT_BOX_KVM=0`. ARM64 QEMU remains available through TCG regardless.
 
-```bash
-AGENT_BOX_KVM=0 agent-box codex
-```
+## Troubleshooting
 
-ARM64 QEMU remains available through TCG.
+- **`podman not found`** — install Podman; agent-box does not fall back to Docker.
+- **`current directory is not inside the configured workspace root`** — you set `AGENT_BOX_WORKSPACE_ROOT` and `cd`'d outside it.
+- **`--mount` rejects a path** — it must be an existing absolute directory; a relative path, a file, or a not-yet-created directory is rejected rather than silently mounted.
+- **`the Claude Telegram channel is enabled ... but`** — run `agent-box config check` and follow the printed steps, or turn the channel off with `agent-box config`.
+- **Telegram is silent even though the channel is on** — first make sure another Claude session is not reported as the active owner; then pair the plugin user with `/telegram:access pair <code>`. On managed Teams/Enterprise accounts, channels also need an administrator to enable them.
+- **Claude/Codex not authenticated in the container** — authenticate on the host first; the container mounts `~/.claude` and `~/.codex` rather than managing its own credentials.
+- **`gh` is unauthenticated in the container** — that's the default. Turn on `github.gh_token` (and optionally `github.gh_config`) in `agent-box config`.
+- **Shared skill shows MISSING/MISMATCH in `agent-box doctor`** — a `~/.claude/skills/<name>` entry already exists and doesn't point at the shared skill; remove or rename it if you want it linked.
 
-## Persistent host state
+## Known limitations
 
-The launcher uses:
+- `~/.agents` is mounted read-only in full, and every external symlink target under it too. Deliberate, but it does mean the container can read anything you keep there, not only skills.
+- The official Telegram plugin is outside agent-box's control. Its current global-plugin startup behavior requires the empty-token isolation above; a plugin change to its environment precedence or state layout may require an agent-box update.
+- `--channels` is verified against Claude Code 2.1.239.
+- There is no remote equivalent of `--mount`, and no way to start a container from Telegram. The channel attaches to a session you started locally.
 
-```text
-~/.local/share/agent-box/
-~/.codex/
-~/.claude/
-```
+## Migration from older agent-box versions
 
-Container runs themselves are disposable (`podman run --rm`).
+**The custom Telegram remote-control subsystem has been removed entirely, with no compatibility layer.** If you used it, these are gone: `agent-box telegram serve`, the Telegram daemon, Telegram-created Claude/Codex sessions, session routing/resume/ownership, the custom `AskUserQuestion` bridge, the Codex `requestUserInput` bridge, and remote-control session persistence. Use the official Claude Telegram plugin (above) instead.
 
-## Migration from codex-box
-
-The launcher, image, hostname, environment variables, and persistent state directory were renamed from `codex-box` to `agent-box`:
-
-```text
-codex-box                         -> agent-box
-CODEX_BOX_IMAGE                   -> AGENT_BOX_IMAGE
-CODEX_BOX_KVM                     -> AGENT_BOX_KVM
-localhost/codex-box:latest        -> localhost/agent-box:latest
-~/.local/share/codex-box/         -> ~/.local/share/agent-box/
-```
-
-The old `codex-box` launcher is intentionally not kept in the repository.
+- **`~/.config/agent-box/telegram.json` is not read.** Configuration now lives in `~/.config/agent-box/config.json` and there is no migration — run `agent-box config` once to set things up again. Delete the old file.
+- **Command changes:** `agent-box notify setup|status|disable` → `agent-box config`. `agent-box telegram *` → gone. `agent-box notify test|claude|codex` still exist (the last two are the hook entry points).
+- **The GitHub token is no longer forwarded by default.** It used to travel whenever `gh` was authenticated on the host; now it requires `github.gh_token` in `agent-box config`. Same for copying `~/.config/gh`, which is now `github.gh_config` and also off by default.
+- **Legacy notify hooks are cleaned up.** Running `agent-box config` removes the old `~/.local/bin/agent-box notify claude` entries when it installs current hooks.
+- The `statusLine` auto-migration is gone; if yours still points at an old command, set it to `agent-box usage all --statusline`.
+- `podman build` on the `Containerfile` requires explicit `USER_NAME`/`USER_UID`/`USER_GID`/`USER_HOME` args — use `agent-box build`, or pass all four yourself.
+- The mandatory `~/code` workspace requirement is gone; set `AGENT_BOX_WORKSPACE_ROOT=~/code` if you want the old "one big mounted tree" behavior.
