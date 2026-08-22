@@ -150,10 +150,11 @@ class DoneDetectionTests(unittest.TestCase):
             self.assertFalse(flow_push.handle_post_tool_use(payload))
 
     def test_dict_shaped_error_tool_response_does_not_arm(self):
-        """Legacy/alternate-shape defensive compatibility: current docs say
-        Bash's `PostToolUse` tool_response is a plain string with no
-        separate error field, but an explicit failure indicator on a
-        dict-shaped response must still be honored if one is ever seen."""
+        """Legacy/alternate-shape defensive compatibility: the documented
+        current Bash tool_response object (stdout/stderr/interrupted/
+        isImage) has no `is_error`/`success` field of its own, but if a
+        dict-shaped response with one is ever seen, it must still be
+        honored as an explicit failure indicator."""
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             _init_repo(repo)
@@ -168,13 +169,30 @@ class DoneDetectionTests(unittest.TestCase):
             payload = self._payload("flowctl done fn-1", str(repo), tool_response={"success": False})
             self.assertFalse(flow_push.handle_post_tool_use(payload))
 
-    def test_string_tool_response_is_treated_as_success(self):
+    def test_documented_structured_tool_response_arms_marker(self):
         """The documented current shape: PostToolUse's tool_response for
-        Bash is a plain string (its stdout), e.g. `"PASSED: 342 tests..."`
-        per Claude Code's own hooks reference example -- this is not a
-        failure signal, and a PostToolUse firing at all already means the
-        command succeeded (a nonzero exit produces PostToolUseFailure
-        instead, which this hook never receives)."""
+        Bash is a structured object -- {stdout, stderr, interrupted,
+        isImage} -- with no separate success/failure field, since
+        PostToolUse firing at all already means the command succeeded (a
+        nonzero exit produces PostToolUseFailure instead, which this hook
+        never receives, per handle_post_tool_use's strict event check)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            _init_repo(repo)
+            payload = self._payload("flowctl done fn-1", str(repo), tool_response={
+                "stdout": "fn-1 marked done\n",
+                "stderr": "",
+                "interrupted": False,
+                "isImage": False,
+            })
+            self.assertTrue(flow_push.handle_post_tool_use(payload))
+
+    def test_string_tool_response_is_treated_as_success(self):
+        """Compatibility behavior, not the documented current Bash shape
+        (see test_documented_structured_tool_response_arms_marker above):
+        a plain-string tool_response is still treated as success rather
+        than misread as a failure, in case an alternate integration or
+        older Claude Code version ever sends one."""
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             _init_repo(repo)
@@ -516,6 +534,329 @@ class StaleCachedOriginHeadTests(unittest.TestCase):
         self.assertEqual(remote_sha_before, remote_sha_after, "main must not have moved on the remote")
 
 
+class EffectivePushDestinationTests(unittest.TestCase):
+    """`origin` can fetch from one repository and push to a completely
+    different one (`remote.origin.pushurl`), including several push URLs at
+    once. The safety preflight must inspect exactly the repository `git
+    push` will actually reach, never `origin`'s fetch URL, and must refuse
+    outright whenever that destination isn't pinned down to exactly one
+    repository."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+        self.repo_a = self.root / "repo-a.git"  # fetch URL: wrong repo
+        self.repo_b = self.root / "repo-b.git"  # actual push URL
+        _git(self.root, "init", "-q", "--bare", "-b", "main", str(self.repo_a))
+        _git(self.root, "init", "-q", "--bare", "-b", "trunk", str(self.repo_b))
+        self.repo = self.root / "repo"
+        self.repo.mkdir()
+        _init_repo(self.repo, branch="main")
+        (self.repo / ".flow").mkdir()
+        (self.repo / ".flow" / "config.json").write_text("{}")
+        _git(self.repo, "add", ".flow")
+        _git(self.repo, "commit", "-q", "-m", "flow-next marker")
+        _git(self.repo, "remote", "add", "origin", str(self.repo_a))
+        _git(self.repo, "config", "remote.origin.pushurl", str(self.repo_b))
+        # Establish trunk (repo-b's real default) so it can push there once.
+        _git(self.repo, "checkout", "-q", "-b", "trunk")
+        _git(self.repo, "push", "-q", "-u", "origin", "trunk")
+        _git(self.repo, "checkout", "-q", "main")
+        _git(self.repo, "branch", "-D", "trunk")
+
+    def test_fetch_url_and_pushurl_differ_blocks_push_on_pushurl_default_branch(self):
+        """Current branch is `trunk` -- repo-B's (the real receiving repo)
+        actual default branch, even though repo-A's (the fetch URL's)
+        default is `main`. A naive fetch-URL-based check would wrongly
+        conclude `trunk` is a safe feature branch here."""
+        _git(self.repo, "checkout", "-q", "-b", "trunk")
+        remote_sha_before = subprocess.run(
+            ["git", "ls-remote", str(self.repo_b), "refs/heads/trunk"],
+            capture_output=True, text=True, check=True,
+        ).stdout.split()[0]
+        (self.repo / "w.txt").write_text("work\n")
+        _git(self.repo, "add", "w.txt")
+        _git(self.repo, "commit", "-q", "-m", "would-be push")
+        flow_push.arm_marker(self.repo)
+
+        decision = flow_push.guarded_push(self.repo, auto_push_enabled=True)
+
+        self.assertEqual(decision.action, "invalidated")
+        remote_sha_after = subprocess.run(
+            ["git", "ls-remote", str(self.repo_b), "refs/heads/trunk"],
+            capture_output=True, text=True, check=True,
+        ).stdout.split()[0]
+        self.assertEqual(remote_sha_before, remote_sha_after, "repo-B/trunk must not have moved")
+
+    def test_feature_branch_pushes_to_the_actual_pushurl_repository(self):
+        _git(self.repo, "checkout", "-q", "-b", "feature-q")
+        (self.repo / "w.txt").write_text("work\n")
+        _git(self.repo, "add", "w.txt")
+        _git(self.repo, "commit", "-q", "-m", "feature work")
+        flow_push.arm_marker(self.repo)
+
+        decision = flow_push.guarded_push(self.repo, auto_push_enabled=True)
+
+        self.assertEqual(decision.action, "pushed")
+        pushed = subprocess.run(
+            ["git", "ls-remote", "--heads", str(self.repo_b), "feature-q"],
+            capture_output=True, text=True, check=True,
+        ).stdout
+        self.assertIn("feature-q", pushed)
+        # repo-A (the fetch URL) must remain completely unaffected.
+        untouched = subprocess.run(
+            ["git", "ls-remote", "--heads", str(self.repo_a), "feature-q"],
+            capture_output=True, text=True, check=True,
+        ).stdout
+        self.assertEqual(untouched, "")
+
+    def test_multiple_push_urls_refuses_and_modifies_nothing(self):
+        repo_c = self.root / "repo-c.git"
+        _git(self.root, "init", "-q", "--bare", "-b", "main", str(repo_c))
+        _git(self.repo, "remote", "set-url", "--push", "--add", "origin", str(repo_c))
+        urls = subprocess.run(
+            ["git", "remote", "get-url", "--push", "--all", "origin"],
+            cwd=self.repo, capture_output=True, text=True, check=True,
+        ).stdout.splitlines()
+        self.assertEqual(len(urls), 2, "test setup must actually configure two push URLs")
+
+        _git(self.repo, "checkout", "-q", "-b", "feature-multi")
+        (self.repo / "w.txt").write_text("work\n")
+        _git(self.repo, "add", "w.txt")
+        _git(self.repo, "commit", "-q", "-m", "work")
+        flow_push.arm_marker(self.repo)
+
+        decision = flow_push.guarded_push(self.repo, auto_push_enabled=True)
+
+        self.assertEqual(decision.action, "skipped")
+        self.assertIsNotNone(flow_push.read_marker(self.repo))
+        for repo in (self.repo_a, self.repo_b, repo_c):
+            result = subprocess.run(
+                ["git", "ls-remote", "--heads", str(repo), "feature-multi"],
+                capture_output=True, text=True, check=True,
+            ).stdout
+            self.assertEqual(result, "", f"{repo} must not have received the push")
+
+    def test_no_remote_configured_refuses(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            _init_repo(repo, branch="feature-no-remote")
+            (repo / ".flow").mkdir()
+            (repo / ".flow" / "config.json").write_text("{}")
+            _git(repo, "add", ".flow")
+            _git(repo, "commit", "-q", "-m", "flow-next marker")
+            flow_push.arm_marker(repo)
+            decision = flow_push.guarded_push(repo, auto_push_enabled=True)
+            self.assertEqual(decision.action, "skipped")
+            self.assertIsNotNone(flow_push.read_marker(repo))
+
+    def test_push_url_rewriting_is_resolved_through_git_not_guessed(self):
+        """`url.<base>.pushInsteadOf` rewriting must be resolved by asking
+        Git itself (`git remote get-url --push --all`), not by reading
+        stored remote config literally -- prove the actually-queried and
+        actually-pushed-to repository is the *rewritten* target, using a
+        placeholder URL whose scheme has no real transport at all (so any
+        code path that failed to apply the rewrite would error out loudly
+        instead of silently querying/pushing the wrong place).
+
+        (Mechanically verified separately: `git remote get-url --push --all`
+        reliably applies `pushInsteadOf` rewriting for the common case of a
+        single `remote.<name>.url` matched by the rule -- not for a
+        distinct, separately configured `remote.<name>.pushurl`, which Git
+        itself does not rewrite either when actually pushing. This test
+        exercises the case Git itself supports.)
+        """
+        real_remote = self.root / "rewrite-target.git"
+        _git(self.root, "init", "-q", "--bare", "-b", "main", str(real_remote))
+        repo = self.root / "rewrite-repo"
+        repo.mkdir()
+        _init_repo(repo, branch="main")
+        (repo / ".flow").mkdir()
+        (repo / ".flow" / "config.json").write_text("{}")
+        _git(repo, "add", ".flow")
+        _git(repo, "commit", "-q", "-m", "flow-next marker")
+
+        placeholder = "agent-box-test://placeholder"
+        _git(repo, "remote", "add", "origin", placeholder)
+        _git(repo, "config", f"url.{real_remote}.pushInsteadOf", placeholder)
+        resolved = subprocess.run(
+            ["git", "remote", "get-url", "--push", "--all", "origin"],
+            cwd=repo, capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        self.assertEqual(resolved, str(real_remote), "the rewrite must resolve to the real repository")
+        _git(repo, "push", "-q", "-u", "origin", "main")
+
+        _git(repo, "checkout", "-q", "-b", "feature-rewrite")
+        (repo / "w.txt").write_text("work\n")
+        _git(repo, "add", "w.txt")
+        _git(repo, "commit", "-q", "-m", "feature work")
+        flow_push.arm_marker(repo)
+
+        decision = flow_push.guarded_push(repo, auto_push_enabled=True)
+
+        self.assertEqual(decision.action, "pushed")
+        pushed = subprocess.run(
+            ["git", "ls-remote", "--heads", str(real_remote), "feature-rewrite"],
+            capture_output=True, text=True, check=True,
+        ).stdout
+        self.assertIn("feature-rewrite", pushed)
+
+
+class PushEffectNeutralizationTests(unittest.TestCase):
+    """Safe argv is not the same as safe effective behavior: `push.
+    followTags`/`push.recurseSubmodules` can silently widen a plain `git
+    push -u origin HEAD` into pushing unrelated tags or an entirely
+    different (submodule) repository. These must be neutralized for the
+    auto-push subprocess only, without ever mutating the user's stored
+    config."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+        self.repo = self.root / "repo"
+        self.repo.mkdir()
+        _init_repo(self.repo, branch="main")
+        (self.repo / ".flow").mkdir()
+        (self.repo / ".flow" / "config.json").write_text("{}")
+        _git(self.repo, "add", ".flow")
+        _git(self.repo, "commit", "-q", "-m", "flow-next marker")
+        self.remote = self.root / "remote.git"
+        _init_bare_remote(self.remote, self.repo, default_branch="main")
+        _git(self.repo, "push", "-q", "-u", "origin", "main")
+
+    def test_follow_tags_does_not_push_annotated_tag(self):
+        _git(self.repo, "checkout", "-q", "-b", "feature-tags")
+        (self.repo / "w.txt").write_text("work\n")
+        _git(self.repo, "add", "w.txt")
+        _git(self.repo, "commit", "-q", "-m", "feature work")
+        _git(self.repo, "tag", "-a", "v1", "-m", "release v1")
+        _git(self.repo, "config", "push.followTags", "true")
+
+        flow_push.arm_marker(self.repo)
+        decision = flow_push.guarded_push(self.repo, auto_push_enabled=True)
+
+        self.assertEqual(decision.action, "pushed")
+        branch_on_remote = subprocess.run(
+            ["git", "ls-remote", "--heads", str(self.remote), "feature-tags"],
+            capture_output=True, text=True, check=True,
+        ).stdout
+        self.assertIn("feature-tags", branch_on_remote)
+        tag_on_remote = subprocess.run(
+            ["git", "ls-remote", "--tags", str(self.remote), "v1"],
+            capture_output=True, text=True, check=True,
+        ).stdout
+        self.assertEqual(tag_on_remote, "", "the annotated tag must NOT have been pushed")
+        # The user's own stored setting is untouched by agent-box.
+        self.assertEqual(
+            subprocess.run(
+                ["git", "config", "--get", "push.followTags"], cwd=self.repo,
+                capture_output=True, text=True, check=True,
+            ).stdout.strip(),
+            "true",
+        )
+
+    def test_recurse_submodules_does_not_push_the_submodule_repository(self):
+        sub_remote = self.root / "sub-remote.git"
+        _git(self.root, "init", "-q", "--bare", "-b", "main", str(sub_remote))
+        sub_work = self.root / "sub-work"
+        sub_work.mkdir()
+        _init_repo(sub_work, branch="main")
+        _git(sub_work, "remote", "add", "origin", str(sub_remote))
+        _git(sub_work, "push", "-q", "-u", "origin", "main")
+
+        _git(self.repo, "checkout", "-q", "-b", "feature-submodule")
+        subprocess.run(
+            ["git", "-c", "protocol.file.allow=always", "submodule", "add", "-q",
+             str(sub_remote), "subdir"],
+            cwd=self.repo, check=True, capture_output=True, text=True,
+        )
+        _git(self.repo, "commit", "-q", "-m", "add submodule")
+
+        sub_sha_before = subprocess.run(
+            ["git", "ls-remote", "--heads", str(sub_remote), "main"],
+            capture_output=True, text=True, check=True,
+        ).stdout.split()[0]
+
+        subdir = self.repo / "subdir"
+        (subdir / "extra.txt").write_text("submodule change\n")
+        _git(subdir, "add", "extra.txt")
+        _git(subdir, "commit", "-q", "-m", "submodule change")
+        _git(self.repo, "add", "subdir")
+        _git(self.repo, "commit", "-q", "-m", "bump submodule pointer")
+        _git(self.repo, "config", "push.recurseSubmodules", "on-demand")
+
+        flow_push.arm_marker(self.repo)
+        decision = flow_push.guarded_push(self.repo, auto_push_enabled=True)
+
+        self.assertEqual(decision.action, "pushed")
+        main_repo_branch = subprocess.run(
+            ["git", "ls-remote", "--heads", str(self.remote), "feature-submodule"],
+            capture_output=True, text=True, check=True,
+        ).stdout
+        self.assertIn("feature-submodule", main_repo_branch)
+        sub_sha_after = subprocess.run(
+            ["git", "ls-remote", "--heads", str(sub_remote), "main"],
+            capture_output=True, text=True, check=True,
+        ).stdout.split()[0]
+        self.assertEqual(
+            sub_sha_before, sub_sha_after, "the submodule's own repository must not have been pushed")
+        self.assertEqual(
+            subprocess.run(
+                ["git", "config", "--get", "push.recurseSubmodules"], cwd=self.repo,
+                capture_output=True, text=True, check=True,
+            ).stdout.strip(),
+            "on-demand",
+        )
+
+    def test_mirror_config_does_not_expand_the_push(self):
+        """`remote.origin.mirror=true` combined with an explicit refspec
+        makes git fail outright rather than expand the push -- this is
+        already safe by construction (no neutralization needed), verified
+        here so the invariant doesn't silently regress."""
+        _git(self.repo, "checkout", "-q", "-b", "feature-mirror")
+        (self.repo / "w.txt").write_text("work\n")
+        _git(self.repo, "add", "w.txt")
+        _git(self.repo, "commit", "-q", "-m", "feature work")
+        _git(self.repo, "config", "remote.origin.mirror", "true")
+
+        flow_push.arm_marker(self.repo)
+        decision = flow_push.guarded_push(self.repo, auto_push_enabled=True)
+
+        self.assertEqual(decision.action, "failed")
+        self.assertIsNotNone(flow_push.read_marker(self.repo))
+        branch_on_remote = subprocess.run(
+            ["git", "ls-remote", "--heads", str(self.remote), "feature-mirror"],
+            capture_output=True, text=True, check=True,
+        ).stdout
+        self.assertEqual(branch_on_remote, "", "the mirror-config push must not have gone through at all")
+
+    def test_custom_remote_push_refspec_is_overridden_by_explicit_head(self):
+        """`remote.origin.push` (a custom default refspec) is ignored once
+        an explicit refspec is given on the command line -- verified here
+        so this invariant doesn't silently regress either."""
+        _git(self.repo, "checkout", "-q", "-b", "feature-refspec")
+        (self.repo / "w.txt").write_text("work\n")
+        _git(self.repo, "add", "w.txt")
+        _git(self.repo, "commit", "-q", "-m", "feature work")
+        _git(self.repo, "config", "remote.origin.push", "refs/heads/feature-refspec:refs/heads/renamed")
+
+        flow_push.arm_marker(self.repo)
+        decision = flow_push.guarded_push(self.repo, auto_push_enabled=True)
+
+        self.assertEqual(decision.action, "pushed")
+        renamed = subprocess.run(
+            ["git", "ls-remote", "--heads", str(self.remote), "renamed"],
+            capture_output=True, text=True, check=True,
+        ).stdout
+        self.assertEqual(renamed, "", "the custom push refspec must not have been honored")
+        real_branch = subprocess.run(
+            ["git", "ls-remote", "--heads", str(self.remote), "feature-refspec"],
+            capture_output=True, text=True, check=True,
+        ).stdout
+        self.assertIn("feature-refspec", real_branch)
+
 
 class PushTargetTests(unittest.TestCase):
     """The push always targets `origin/<branch>`; safety decisions must be
@@ -799,10 +1140,10 @@ class PushGuardTests(unittest.TestCase):
         from unittest import mock
         real_run = flow_push._run
 
-        def fake_run(args, cwd=None, timeout=10):
+        def fake_run(args, cwd=None, timeout=10, extra_config=None):
             if args[:2] == ["git", "push"]:
                 raise _subprocess.TimeoutExpired(cmd=args, timeout=timeout)
-            return real_run(args, cwd=cwd, timeout=timeout)
+            return real_run(args, cwd=cwd, timeout=timeout, extra_config=extra_config)
 
         with mock.patch.object(flow_push, "_run", side_effect=fake_run):
             decision = flow_push.guarded_push(self.repo, auto_push_enabled=True)

@@ -63,10 +63,38 @@ _SHELL_CHAINING_RE = re.compile(r"[;&|`\n]|\$\(")
 _FLOWCTL_DONE_RE = re.compile(r"^(?:\S*/)?flowctl(?:\.\w+)?\s+done(?:\s+\S.*)?$")
 
 
+#: Applied only to the final `git push` subprocess (see `guarded_push`),
+#: never written to the repository or global config -- `git push -u origin
+#: HEAD` already names one branch and one remote explicitly, but two Git
+#: settings can still silently widen what that command actually does:
+#: `push.followTags` pushes annotated tags reachable from the pushed
+#: commit, and `push.recurseSubmodules` can push into an entirely
+#: different (submodule) repository. Both were mechanically reproduced and
+#: are neutralized here via Git's own environment-based config mechanism
+#: (`GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n`), which
+#: overrides for this one subprocess only and leaves the user's stored
+#: config completely untouched. `push.default`, `remote.<name>.push`, and
+#: `remote.<name>.mirror` are deliberately not neutralized: the explicit
+#: `HEAD` refspec on the command line already makes the first two moot and
+#: makes the third fail outright (`--mirror can't be combined with
+#: refspecs`) rather than expand anything -- verified mechanically, see
+#: flow_push tests.
+_PUSH_CONFIG_OVERRIDES = {
+    "push.followTags": "false",
+    "push.recurseSubmodules": "no",
+}
+
+
 def _run(
     args: list[str], cwd: Path | str | None = None, timeout: float = 10,
+    extra_config: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess:
     env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+    if extra_config:
+        env["GIT_CONFIG_COUNT"] = str(len(extra_config))
+        for i, (key, value) in enumerate(extra_config.items()):
+            env[f"GIT_CONFIG_KEY_{i}"] = key
+            env[f"GIT_CONFIG_VALUE_{i}"] = value
     return subprocess.run(
         args, cwd=str(cwd) if cwd else None, capture_output=True, text=True,
         timeout=timeout, check=False, env=env,
@@ -181,16 +209,18 @@ def _bash_call_succeeded(payload: dict[str, Any]) -> bool:
     (documented with an ``error`` field such as ``"Exit code 1: ..."``), and
     :func:`handle_post_tool_use` below only accepts ``hook_event_name ==
     "PostToolUse"`` -- so a failed Bash command never reaches this function
-    at all. The documented current shape of ``tool_response`` for ``Bash``
-    is a plain string (the command's stdout), carrying no separate
-    success/failure field to inspect.
+    at all. That event-level contract, not anything inside ``tool_response``
+    itself, is what actually establishes success here.
 
-    The dict-shaped check below (``is_error``/``isError``/``success``) is
-    kept only as defensive compatibility with an alternate or older
-    ``tool_response`` shape, not because current documentation describes it
-    for Bash -- if such a shape is ever seen, it is treated as failure;
-    otherwise (a plain string, or the field absent) this is success, exactly
-    matching the documented contract above.
+    The current documented shape of ``tool_response`` for ``Bash`` is a
+    structured object -- ``{"stdout": ..., "stderr": ..., "interrupted":
+    bool, "isImage": bool}`` -- with no separate success/failure field of
+    its own (there is nothing to fail on, since ``PostToolUse`` already only
+    fires on success). The ``is_error``/``isError``/``success`` dict check
+    below, and treating a *plain string* ``tool_response`` as success, are
+    both kept only as defensive compatibility with an alternate or older
+    shape some integration or Claude Code version might send -- not because
+    either is the documented current Bash shape.
     """
     response = payload.get("tool_response")
     if isinstance(response, dict):
@@ -283,11 +313,40 @@ class RemoteState:
         return self.default_branch is not None
 
 
-def _query_origin(cwd: Path, branch: str) -> RemoteState | None:
-    """One bounded, read-only ``git ls-remote --symref origin HEAD
+def _effective_push_url(cwd: Path) -> str | None:
+    """``origin``'s single effective push destination, or ``None``.
+
+    ``origin`` can have a fetch URL that differs from its push URL
+    (``remote.origin.pushurl``), including *multiple* push URLs, and either
+    can be affected by ``url.<base>.pushInsteadOf``/``insteadOf``
+    rewriting. ``git remote get-url --push --all`` is git's own
+    authoritative resolver for this (rewriting included) -- mechanically
+    verified to return the real rewritten destination, not the configured
+    placeholder -- so this never parses ``.git/config`` by hand.
+
+    Returns ``None`` (fail closed) whenever there is not *exactly* one
+    resolved push destination: zero (no remote/no usable URL) or more than
+    one both mean the actual receiving repository can't be pinned down
+    safely, and this module must never guess or push to more than one
+    destination.
+    """
+    result = _run(["git", "remote", "get-url", "--push", "--all", "origin"], cwd=cwd)
+    if result.returncode != 0:
+        return None
+    urls = [line for line in result.stdout.splitlines() if line.strip()]
+    return urls[0] if len(urls) == 1 else None
+
+
+def _query_origin(cwd: Path, branch: str, remote_url: str) -> RemoteState | None:
+    """One bounded, read-only ``git ls-remote --symref <remote_url> HEAD
     refs/heads/<branch>`` call answering both the remote's current default
     branch and the current state of the actual push target in a single
     network round trip.
+
+    ``remote_url`` must be the resolved *push* destination from
+    :func:`_effective_push_url`, not the bare name ``origin`` -- querying
+    ``origin`` by name would consult its *fetch* URL, which can be a
+    different repository than what ``git push`` actually reaches.
 
     Returns ``None`` on any failure, timeout, or output with no resolvable
     default-branch symref -- callers must treat that as "cannot be
@@ -298,7 +357,7 @@ def _query_origin(cwd: Path, branch: str) -> RemoteState | None:
     branch_ref = f"refs/heads/{branch}"
     try:
         result = _run(
-            ["git", "ls-remote", "--symref", "origin", "HEAD", branch_ref],
+            ["git", "ls-remote", "--symref", remote_url, "HEAD", branch_ref],
             cwd=cwd, timeout=REMOTE_QUERY_TIMEOUT,
         )
     except subprocess.TimeoutExpired:
@@ -371,12 +430,24 @@ def push_preflight(cwd: Path, auto_push_enabled: bool) -> PushDecision:
     if not _worktree_clean(cwd):
         return PushDecision("skipped", "worktree is dirty; marker kept for a later clean Stop")
 
-    # One live, bounded query answers both "what is origin's current default
-    # branch" and "what does origin/<branch> currently look like". Neither
-    # question is ever answered from a local cache: a cached
+    # `origin` can fetch from one repository and push to a different one
+    # (remote.origin.pushurl, possibly URL-rewritten), so the safety query
+    # below must be aimed at the exact repository `git push` will actually
+    # reach -- never at `origin`'s fetch URL, and never at more than one
+    # destination.
+    push_url = _effective_push_url(cwd)
+    if push_url is None:
+        return PushDecision(
+            "skipped",
+            "origin does not resolve to exactly one push destination; refusing to auto-push")
+
+    # One live, bounded query answers both "what is the receiving repo's
+    # current default branch" and "what does its <branch> currently look
+    # like". Neither question is ever answered from a local cache: a cached
     # refs/remotes/origin/HEAD can go stale the moment the remote's default
-    # branch changes, so only what `origin` reports *right now* counts.
-    state = _query_origin(cwd, branch)
+    # branch changes, so only what the actual push destination reports
+    # *right now* counts.
+    state = _query_origin(cwd, branch, push_url)
     if state is None:
         return PushDecision(
             "skipped", "current remote default branch could not be determined; refusing to auto-push")
@@ -401,17 +472,25 @@ def guarded_push(cwd: Path, auto_push_enabled: bool) -> PushDecision:
 
     The only command this ever runs is ``git push -u origin HEAD`` -- never
     ``--force``/``--force-with-lease``, never another branch, never tags,
-    never another remote. A push failure, timeout, or any other operational
-    problem keeps the marker so a later, clean Stop can retry; it never
-    forces anything and never blocks Claude from stopping (see
-    :func:`run_stop_hook`, which is the only caller that needs to be
-    exception-safe against this).
+    never another remote. By the time this runs, :func:`push_preflight` has
+    already proven ``origin`` resolves to exactly one push destination and
+    queried that exact destination, so ``origin`` here is unambiguous.
+    ``_PUSH_CONFIG_OVERRIDES`` additionally neutralizes the Git settings
+    that could otherwise widen a plain push beyond that one branch (see its
+    docstring) without touching the user's stored config. A push failure,
+    timeout, or any other operational problem keeps the marker so a later,
+    clean Stop can retry; it never forces anything and never blocks Claude
+    from stopping (see :func:`run_stop_hook`, which is the only caller that
+    needs to be exception-safe against this).
     """
     decision = push_preflight(cwd, auto_push_enabled)
     if decision.action != "ready":
         return decision
     try:
-        result = _run(["git", "push", "-u", "origin", "HEAD"], cwd=cwd, timeout=60)
+        result = _run(
+            ["git", "push", "-u", "origin", "HEAD"], cwd=cwd, timeout=60,
+            extra_config=_PUSH_CONFIG_OVERRIDES,
+        )
     except subprocess.TimeoutExpired:
         return PushDecision("failed", "git push timed out")
     if result.returncode == 0:
