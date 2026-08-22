@@ -298,6 +298,18 @@ class HostModeTests(IsolatedRuntimeTest):
             argv = call.call_args.args[0]
             self.assertEqual(argv, ["/usr/local/bin/claude", "--model", "opus"])
 
+    def test_host_claude_never_adds_the_container_permission_bypass(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp), Path(tmp))
+            with mock.patch.object(runtime.shutil, "which", return_value="/usr/local/bin/claude"), \
+                 mock.patch.object(runtime, "resolve_workspace", return_value=workspace), \
+                 mock.patch.object(runtime, "load_config", return_value=Config()), \
+                 mock.patch.object(runtime.subprocess, "call", return_value=0) as call:
+                runtime.host_main("claude", ["import", "codex"])
+            self.assertEqual(
+                call.call_args.args[0], ["/usr/local/bin/claude", "import", "codex"]
+            )
+
     def test_host_codex_selects_host_codex_executable(self):
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Workspace(Path(tmp), Path(tmp))
