@@ -3,9 +3,9 @@ hooks that drive both.
 
 The contract is deliberately narrow:
 
-* a successful *actual* ``flowctl done`` invocation -- detected from a Claude
-  ``PostToolUse`` hook on the ``Bash`` tool -- arms a small marker recorded in
-  git's own private state for the current repository and branch;
+* a successful *actual, unchained* ``flowctl done`` invocation -- detected
+  from a Claude ``PostToolUse`` hook on the ``Bash`` tool -- arms a small
+  marker recorded in git's own private state for the repository and branch;
 * a later Claude ``Stop`` consumes that marker and, only if every guard in
   :func:`push_preflight` passes, runs exactly ``git push -u origin HEAD``.
 
@@ -13,10 +13,18 @@ Nothing here decides whether tests passed, review shipped, or a quality
 audit succeeded -- that is Flow-Next's job, expressed entirely through
 whether ``flowctl done`` itself exited zero. This module never parses Claude
 or reviewer prose, never merges/rebases/resets, and never force-pushes.
+
+Both entry points normalize whatever ``cwd`` Claude reports to the git
+worktree top-level directory (:func:`agent_box.workspace.git_toplevel`) --
+the same resolver the launcher uses -- so a session started in a nested
+directory or a linked worktree agrees with the launcher on what "the
+workspace" is; see the module docstring note in ``run_post_tool_use_hook``/
+``run_stop_hook``.
 """
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -24,8 +32,8 @@ from pathlib import Path
 from typing import Any
 
 from .atomicio import atomic_write_json, read_json
-from .errors import AgentBoxError
 from .flow_next import AUTO_PUSH_ENV, is_flow_next_workspace
+from .workspace import git_toplevel
 
 #: Relative to `git rev-parse --git-path <name>` -- resolved through git
 #: itself rather than assuming ``.git/...`` literally, because `.git` is a
@@ -39,16 +47,47 @@ PROTECTED_BRANCHES = {"main", "master"}
 POST_TOOL_USE_COMMAND = "agent-box flow-next post-tool-use"
 STOP_COMMAND = "agent-box flow-next stop"
 
-#: Matches `flowctl done ...` or `/any/path/flowctl done ...`, anchored at the
-#: start of the command so `echo "flowctl done"` or `flowctl list`/`show`
-#: never match.
-FLOWCTL_DONE_RE = re.compile(r"^(?:\S*/)?flowctl(?:\.\w+)?\s+done(?:\s|$)")
+#: A bounded network round trip (`git ls-remote`) is used only as a
+#: fail-closed fallback when the answer can't be found locally -- never to
+#: repair anything, and never allowed to hang the Stop hook indefinitely.
+REMOTE_QUERY_TIMEOUT = 8.0
+
+#: Any of these mean the text is not a single, unchained, un-piped,
+#: un-backgrounded command -- so a successful overall Bash result would not
+#: reliably mean `flowctl done` itself is what exited zero (`flowctl done
+#: ... || true` still reports a normal Bash success). Rejecting these is a
+#: deliberate, narrow syntax gate, not a shell parser.
+_SHELL_CHAINING_RE = re.compile(r"[;&|`\n]|\$\(")
+#: `flowctl done ...` or `/abs/path/flowctl done ...`, anchored at both ends
+#: once chaining characters have already been ruled out above.
+_FLOWCTL_DONE_RE = re.compile(r"^(?:\S*/)?flowctl(?:\.\w+)?\s+done(?:\s+\S.*)?$")
 
 
-def _run(args: list[str], cwd: Path | str | None = None, timeout: float = 10) -> subprocess.CompletedProcess:
+def _run(
+    args: list[str], cwd: Path | str | None = None, timeout: float = 10,
+) -> subprocess.CompletedProcess:
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
     return subprocess.run(
-        args, cwd=str(cwd) if cwd else None, capture_output=True, text=True, timeout=timeout, check=False,
+        args, cwd=str(cwd) if cwd else None, capture_output=True, text=True,
+        timeout=timeout, check=False, env=env,
     )
+
+
+def _hook_workspace_root(cwd_value: Any) -> Path:
+    """The same repository root the launcher would resolve for this ``cwd``.
+
+    Claude reports whatever directory the session's ``cwd`` happens to be --
+    a nested subdirectory, or a linked worktree -- not necessarily the
+    repository root the launcher mounted/resolved
+    (``agent_box.workspace.resolve_workspace``). Every Flow-Next detection,
+    marker, and push-guard decision below must agree on the same root, so
+    this is the one place that normalizes it via ``git rev-parse
+    --show-toplevel``. Outside a git repository, `git_toplevel` returns None
+    and the raw value is used as-is -- every check below already fails
+    safely (no marker, "not a git repository", etc.) in that case.
+    """
+    cwd = Path(cwd_value) if isinstance(cwd_value, str) and cwd_value else Path.cwd()
+    return git_toplevel(cwd) or cwd
 
 
 # -- git-local marker -------------------------------------------------------
@@ -116,44 +155,73 @@ def clear_marker(cwd: Path) -> None:
 
 # -- done detection (PostToolUse) -------------------------------------------
 
-def _bash_call_succeeded(payload: dict[str, Any]) -> bool:
-    """Best-effort success signal for a completed Bash tool call.
+def _is_bare_flowctl_done(command: str) -> bool:
+    """Whether ``command`` is *exactly* one unchained ``flowctl done`` call.
 
-    Claude Code's public hook schema does not (as of this writing) document a
-    dedicated exit-code field on ``tool_response`` for the Bash tool. This
-    treats an explicit failure indicator -- ``is_error``/``isError`` true, or
-    ``success`` false -- as a failure, and otherwise assumes success. That is
-    a deliberate fail-open choice: worst case a marker is armed one Stop early
-    for a command that actually failed, and it is still gated by every other
-    push guard below, none of which can be satisfied by a `flowctl done` that
-    didn't actually run.
+    Rejects anything that could let a shell mask ``flowctl done``'s own exit
+    status while the overall Bash tool call still reports success --
+    ``flowctl done ... || true``, ``; echo ok``, ``| cat``, background ``&``,
+    command substitution, multiple lines. Wrapper forms such as ``env FOO=bar
+    flowctl done`` or ``cd repo && flowctl done`` are deliberately rejected
+    rather than special-cased: this is a narrow syntax gate, not a shell
+    parser, and it is safe to under-detect here (see module docstring).
+    """
+    command = command.strip()
+    if not command or _SHELL_CHAINING_RE.search(command):
+        return False
+    return bool(_FLOWCTL_DONE_RE.match(command))
+
+
+def _bash_call_succeeded(payload: dict[str, Any]) -> bool:
+    """Best-effort success signal for a completed ``Bash`` ``PostToolUse``.
+
+    Claude Code's documented ``PostToolUse`` payload for the ``Bash`` tool
+    does not expose the command's own exit code, and public reports disagree
+    on whether ``PostToolUse`` even fires for a nonzero-exit Bash command (as
+    opposed to the separate ``PostToolUseFailure`` event, which this hook is
+    never registered for and so never receives regardless). ``tool_response``
+    itself may be a plain string (commonly documented as the command's
+    stdout) or, on some versions, a richer object; this only treats an
+    explicit failure indicator on a dict-shaped response (``is_error``/
+    ``isError`` true, or ``success`` false) as failure, and otherwise assumes
+    success. That is a deliberate fail-open choice for this one signal --
+    the real defense against a masked failure is the narrow, unchained
+    command syntax required by :func:`_is_bare_flowctl_done`, not this check.
     """
     response = payload.get("tool_response")
-    if response is None:
-        return True
-    if not isinstance(response, dict):
-        return False
-    if response.get("is_error") or response.get("isError"):
-        return False
-    return response.get("success") is not False
+    if isinstance(response, dict):
+        if response.get("is_error") or response.get("isError"):
+            return False
+        if response.get("success") is False:
+            return False
+    return True
 
 
 def handle_post_tool_use(payload: dict[str, Any]) -> bool:
-    """Arm the pending-push marker if this Bash call was a successful
-    ``flowctl done``. Returns whether it was armed (for tests); never raises.
+    """Arm the pending-push marker if this Bash call was a successful,
+    unchained ``flowctl done``. Returns whether it was armed (for tests);
+    never raises.
     """
+    if payload.get("hook_event_name") not in (None, "PostToolUse"):
+        return False
     if payload.get("tool_name") != "Bash":
         return False
-    command = payload.get("tool_input", {})
-    command = command.get("command") if isinstance(command, dict) else None
-    if not isinstance(command, str) or not FLOWCTL_DONE_RE.match(command.strip()):
+    tool_input = payload.get("tool_input")
+    if not isinstance(tool_input, dict):
+        return False
+    if tool_input.get("run_in_background"):
+        # A backgrounded command has not necessarily finished by the time
+        # PostToolUse fires; there is no completion signal to trust here.
+        return False
+    command = tool_input.get("command")
+    if not isinstance(command, str) or not _is_bare_flowctl_done(command):
         return False
     if not _bash_call_succeeded(payload):
         return False
     cwd = payload.get("cwd")
     if not isinstance(cwd, str) or not cwd:
         return False
-    arm_marker(Path(cwd))
+    arm_marker(_hook_workspace_root(cwd))
     return True
 
 
@@ -178,21 +246,60 @@ class PushDecision:
         return f"PushDecision({self.action!r}, {self.detail!r})"
 
 
-def _remote_default_branch(cwd: Path) -> str | None:
-    """The repo's remote default branch, from local state only.
-
-    Deliberately not a network call: this reads the cached
-    ``refs/remotes/origin/HEAD`` symref (set by `git clone`/`git remote
-    set-head`) rather than asking the remote, so an auto-push decision never
-    blocks on network access. Absent that ref, this returns None and the
-    guard simply does not apply -- `main`/`master` are still covered
-    explicitly above it.
-    """
+def _local_remote_head_branch(cwd: Path) -> str | None:
+    """The cached ``refs/remotes/origin/HEAD`` symref, if one is set locally
+    (by `git clone` or `git remote set-head`). No network access."""
     result = _run(["git", "symbolic-ref", "--short", "-q", "refs/remotes/origin/HEAD"], cwd=cwd)
     if result.returncode != 0:
         return None
     ref = result.stdout.strip()
-    return ref.split("/", 1)[1] if "/" in ref else ref or None
+    if not ref:
+        return None
+    return ref.split("/", 1)[1] if "/" in ref else ref
+
+
+def _queried_remote_head_branch(cwd: Path) -> str | None:
+    """A bounded, read-only ``git ls-remote --symref origin HEAD`` query.
+
+    Used only when the local symref above is missing or stale, so a custom
+    default branch (e.g. ``trunk``) with no cached ``origin/HEAD`` can still
+    be recognized. Returns None on any failure, timeout, or ambiguous output
+    -- callers must treat that as "cannot be determined", never as "safe to
+    push".
+    """
+    try:
+        result = _run(["git", "ls-remote", "--symref", "origin", "HEAD"], cwd=cwd, timeout=REMOTE_QUERY_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return None
+    if result.returncode != 0:
+        return None
+    for line in result.stdout.splitlines():
+        if not line.startswith("ref:"):
+            continue
+        rest = line[len("ref:"):].strip()
+        ref, _, target = rest.rpartition("\t")
+        if target != "HEAD" or not ref.startswith("refs/heads/"):
+            continue
+        return ref[len("refs/heads/"):]
+    return None
+
+
+def remote_default_branch(cwd: Path) -> tuple[bool, str | None]:
+    """``(determined, branch)`` for the remote's default branch.
+
+    ``determined`` is False whenever the default branch cannot be established
+    safely -- no cached symref *and* the bounded query above failed, timed
+    out, or returned nothing. Callers must fail closed on that: an
+    undetermined default branch means "refuse to auto-push", never "assume
+    it's safe" (see module docstring / :func:`push_preflight`).
+    """
+    branch = _local_remote_head_branch(cwd)
+    if branch:
+        return True, branch
+    branch = _queried_remote_head_branch(cwd)
+    if branch:
+        return True, branch
+    return False, None
 
 
 def _worktree_clean(cwd: Path) -> bool:
@@ -200,14 +307,36 @@ def _worktree_clean(cwd: Path) -> bool:
     return result.returncode == 0 and result.stdout.strip() == ""
 
 
-def _upstream_ref(cwd: Path) -> str | None:
-    result = _run(["git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], cwd=cwd)
-    return result.stdout.strip() if result.returncode == 0 else None
-
-
 def _is_ancestor(cwd: Path, ancestor: str, descendant: str) -> bool:
     result = _run(["git", "merge-base", "--is-ancestor", ancestor, descendant], cwd=cwd)
     return result.returncode == 0
+
+
+def _remote_branch_sha(cwd: Path, branch: str) -> tuple[bool, str | None]:
+    """``(determined, sha)`` for ``origin/<branch>`` -- the actual push
+    target, queried live rather than trusted from a possibly stale or absent
+    local tracking ref (``@{u}`` can point at a different remote entirely,
+    e.g. a ``fork`` remote, while the push always goes to ``origin``).
+
+    ``determined=False`` means the query itself failed/timed out (offline,
+    unreachable remote): callers must refuse to push, not guess. ``sha=None``
+    with ``determined=True`` means the remote reached us and confirmed the
+    branch does not exist there yet -- a normal new-branch push.
+    """
+    try:
+        result = _run(
+            ["git", "ls-remote", "--exit-code", "origin", f"refs/heads/{branch}"],
+            cwd=cwd, timeout=REMOTE_QUERY_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        return False, None
+    if result.returncode == 2:
+        return True, None  # remote reachable; ref does not exist there
+    if result.returncode != 0:
+        return False, None
+    line = result.stdout.strip().splitlines()[0] if result.stdout.strip() else ""
+    sha = line.split()[0] if line else None
+    return (True, sha) if sha else (False, None)
 
 
 def push_preflight(cwd: Path, auto_push_enabled: bool) -> PushDecision:
@@ -229,6 +358,9 @@ def push_preflight(cwd: Path, auto_push_enabled: bool) -> PushDecision:
 
     branch = current_branch(cwd)
     if branch is None:
+        # Usually transient (mid-rebase, a temporary detached checkout); the
+        # marker is kept so a later Stop back on the recorded branch can
+        # still complete the push, per module docstring on marker lifetime.
         return PushDecision("skipped", "HEAD is detached")
 
     if marker.get("branch") != branch:
@@ -239,22 +371,29 @@ def push_preflight(cwd: Path, auto_push_enabled: bool) -> PushDecision:
         clear_marker(cwd)
         return PushDecision("invalidated", f"'{branch}' is a protected branch")
 
-    default_branch = _remote_default_branch(cwd)
-    if default_branch and branch == default_branch:
+    determined, default_branch = remote_default_branch(cwd)
+    if not determined:
+        # Fail closed: an unknown remote default branch must never be
+        # treated as "probably not the default, so probably safe".
+        return PushDecision("skipped", "remote default branch could not be determined; refusing to auto-push")
+    if branch == default_branch:
         clear_marker(cwd)
         return PushDecision("invalidated", f"'{branch}' is the remote default branch")
 
     if not _worktree_clean(cwd):
         return PushDecision("skipped", "worktree is dirty; marker kept for a later clean Stop")
 
-    upstream = _upstream_ref(cwd)
-    if upstream is not None:
-        upstream_sha = _run(["git", "rev-parse", upstream], cwd=cwd).stdout.strip()
-        if upstream_sha and upstream_sha == head_sha(cwd):
+    determined, remote_sha = _remote_branch_sha(cwd, branch)
+    if not determined:
+        return PushDecision("skipped", f"could not query 'origin/{branch}'; refusing to auto-push")
+    if remote_sha is not None:
+        local_sha = head_sha(cwd)
+        if remote_sha == local_sha:
             clear_marker(cwd)
             return PushDecision("invalidated", "nothing new to push")
-        if not _is_ancestor(cwd, upstream, "HEAD"):
-            return PushDecision("skipped", f"'{branch}' has diverged from '{upstream}'; refusing to repair it")
+        if not _is_ancestor(cwd, remote_sha, "HEAD"):
+            return PushDecision(
+                "skipped", f"'origin/{branch}' is not an ancestor of HEAD; refusing to repair it")
 
     return PushDecision("ready")
 
@@ -285,10 +424,9 @@ def run_stop_hook(stdin_text: str) -> PushDecision:
     except json.JSONDecodeError:
         payload = {}
     cwd_value = payload.get("cwd") if isinstance(payload, dict) else None
-    cwd = Path(cwd_value) if isinstance(cwd_value, str) and cwd_value else Path.cwd()
-    import os
+    root = _hook_workspace_root(cwd_value)
     auto_push_enabled = bool(os.environ.get(AUTO_PUSH_ENV, "").strip())
-    decision = guarded_push(cwd, auto_push_enabled)
+    decision = guarded_push(root, auto_push_enabled)
     if decision.action in ("pushed", "failed", "invalidated"):
         print(f"agent-box flow-next: {decision.action}: {decision.detail}", file=sys.stderr)
     return decision
@@ -304,13 +442,6 @@ def _stop_entry() -> dict[str, Any]:
     return {"hooks": [{"type": "command", "command": STOP_COMMAND}]}
 
 
-def _uses_command(entry: Any, command: str) -> bool:
-    return isinstance(entry, dict) and isinstance(entry.get("hooks"), list) and any(
-        isinstance(h, dict) and h.get("type") == "command" and h.get("command") == command
-        for h in entry["hooks"]
-    )
-
-
 def install_flow_push_hooks(settings_path: Path) -> None:
     """Install the PostToolUse/Bash and Stop hooks that drive auto-push.
 
@@ -318,46 +449,20 @@ def install_flow_push_hooks(settings_path: Path) -> None:
     coexist under the same ``Stop`` event, each identified by its own stable
     command string, and installing/removing one never touches the other or
     any unrelated hook the user configured by hand. Idempotent: running this
-    again with the hooks already present changes nothing.
+    again with the hooks already present changes nothing. Deliberately never
+    installs a ``StopFailure`` hook -- a failed Claude turn must never push.
     """
-    settings = read_json(settings_path) if settings_path.exists() else {}
-    if not isinstance(settings, dict):
-        raise AgentBoxError(f"{settings_path} must contain a JSON object")
-    hooks = settings.setdefault("hooks", {})
-    if not isinstance(hooks, dict):
-        raise AgentBoxError(f"{settings_path}: hooks must be a JSON object")
-    for event, entry in (
+    from .claude_settings import install_hook_entries
+    install_hook_entries(settings_path, [
         ("PostToolUse", _post_tool_use_entry()),
         ("Stop", _stop_entry()),
-    ):
-        items = hooks.setdefault(event, [])
-        if not isinstance(items, list):
-            raise AgentBoxError(f"{settings_path}: hooks.{event} must be a list")
-        if entry not in items:
-            items.append(entry)
-    atomic_write_json(settings_path, settings)
+    ])
 
 
 def remove_flow_push_hooks(settings_path: Path) -> None:
     """Remove only the hooks installed by :func:`install_flow_push_hooks`."""
-    if not settings_path.exists():
-        return
-    settings = read_json(settings_path)
-    if not isinstance(settings, dict):
-        raise AgentBoxError(f"{settings_path} must contain a JSON object")
-    hooks = settings.get("hooks")
-    if isinstance(hooks, dict):
-        cleaned = {}
-        for event, items in hooks.items():
-            if not isinstance(items, list):
-                cleaned[event] = items
-                continue
-            owned = (POST_TOOL_USE_COMMAND,) if event == "PostToolUse" else (STOP_COMMAND,)
-            remaining = [x for x in items if not any(_uses_command(x, cmd) for cmd in owned)]
-            if remaining:
-                cleaned[event] = remaining
-        if cleaned:
-            settings["hooks"] = cleaned
-        else:
-            settings.pop("hooks", None)
-    atomic_write_json(settings_path, settings)
+    from .claude_settings import remove_hook_commands
+    remove_hook_commands(settings_path, {
+        "PostToolUse": (POST_TOOL_USE_COMMAND,),
+        "Stop": (STOP_COMMAND,),
+    })

@@ -259,60 +259,26 @@ def hook_entry(matcher: str | None = None) -> dict[str, Any]:
 
 
 def install_claude_notify_hooks(settings_path: Path) -> None:
-    from .errors import AgentBoxError
-    settings = read_json(settings_path) if settings_path.exists() else {}
-    if not isinstance(settings, dict):
-        raise AgentBoxError(f"{settings_path} must contain a JSON object")
-    hooks = settings.setdefault("hooks", {})
-    if not isinstance(hooks, dict):
-        raise AgentBoxError(f"{settings_path}: hooks must be a JSON object")
-    for event, items in list(hooks.items()):
-        if isinstance(items, list):
-            hooks[event] = [x for x in items if not _uses_command(x, STALE_NOTIFY_COMMAND)]
-    for event, entry in (
+    from .claude_settings import install_hook_entries, remove_hook_commands
+    # The stale command is removed first (a separate, pre-existing owned
+    # command from an older agent-box), then the current entries are
+    # installed -- both go through the same shared, generic mechanics.
+    remove_hook_commands(settings_path, {
+        "Notification": (STALE_NOTIFY_COMMAND,),
+        "Stop": (STALE_NOTIFY_COMMAND,),
+        "StopFailure": (STALE_NOTIFY_COMMAND,),
+    })
+    install_hook_entries(settings_path, [
         ("Notification", hook_entry("permission_prompt")),
         ("Notification", hook_entry("idle_prompt")),
         ("Stop", hook_entry()),
         ("StopFailure", hook_entry()),
-    ):
-        items = hooks.setdefault(event, [])
-        if not isinstance(items, list):
-            raise AgentBoxError(f"{settings_path}: hooks.{event} must be a list")
-        if entry not in items:
-            items.append(entry)
-    atomic_write_json(settings_path, settings)
-
-
-def _uses_command(entry: Any, command: str) -> bool:
-    return isinstance(entry, dict) and isinstance(entry.get("hooks"), list) and any(
-        isinstance(h, dict) and h.get("type") == "command" and h.get("command") == command
-        for h in entry["hooks"]
-    )
-
-
-def _uses_notify(entry: Any) -> bool:
-    return _uses_command(entry, NOTIFY_COMMAND) or _uses_command(entry, STALE_NOTIFY_COMMAND)
+    ])
 
 
 def remove_claude_notify_hooks(settings_path: Path) -> None:
-    from .errors import AgentBoxError
-    if not settings_path.exists():
-        return
-    settings = read_json(settings_path)
-    if not isinstance(settings, dict):
-        raise AgentBoxError(f"{settings_path} must contain a JSON object")
-    hooks = settings.get("hooks")
-    if isinstance(hooks, dict):
-        cleaned = {}
-        for event, items in hooks.items():
-            if not isinstance(items, list):
-                cleaned[event] = items
-                continue
-            remaining = [x for x in items if not _uses_notify(x)]
-            if remaining:
-                cleaned[event] = remaining
-        if cleaned:
-            settings["hooks"] = cleaned
-        else:
-            settings.pop("hooks", None)
-    atomic_write_json(settings_path, settings)
+    from .claude_settings import remove_hook_commands
+    owned = (NOTIFY_COMMAND, STALE_NOTIFY_COMMAND)
+    remove_hook_commands(settings_path, {
+        "Notification": owned, "Stop": owned, "StopFailure": owned,
+    })
