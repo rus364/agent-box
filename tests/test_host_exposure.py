@@ -31,7 +31,12 @@ def _argv(config, env=None, gh_token="gho_secrettoken"):
     base["AGENT_BOX_KVM"] = "0"
     base.update(env or {})
     try:
+        state = project / "state"
         with mock.patch.dict(os.environ, base, clear=True), \
+             mock.patch.object(runtime, "STATE_ROOT", state), \
+             mock.patch.object(runtime, "BUILD_STATE", state / "build"), \
+             mock.patch.object(runtime, "NOTIFY_STATE_ROOT", state / "notify"), \
+             mock.patch.object(runtime, "NOTIFY_CREDENTIALS", state / "runtime/notify.json"), \
              mock.patch.object(runtime.shutil, "which", return_value="/usr/bin/gh"), \
              mock.patch.object(runtime.subprocess, "run",
                                return_value=mock.Mock(returncode=0, stdout=gh_token + "\n")):
@@ -64,7 +69,9 @@ class GitHubCredentialGatingTests(unittest.TestCase):
     def test_enabled_forwards_the_host_derived_token(self):
         config = Config()
         config.github.gh_token = True
-        self.assertIn("--env=GH_TOKEN=gho_secrettoken", _argv(config))
+        argv = _argv(config)
+        self.assertIn("--env=GH_TOKEN", argv)
+        self.assertNotIn("gho_secrettoken", " ".join(argv))
 
     def test_enabled_forwards_an_exported_token_by_name_only(self):
         config = Config()
@@ -75,7 +82,8 @@ class GitHubCredentialGatingTests(unittest.TestCase):
 
     def test_override_1_allows_for_one_run(self):
         argv = _argv(Config(), env={"AGENT_BOX_GH_TOKEN": "1"})
-        self.assertIn("--env=GH_TOKEN=gho_secrettoken", argv)
+        self.assertIn("--env=GH_TOKEN", argv)
+        self.assertNotIn("gho_secrettoken", " ".join(argv))
 
     def test_override_0_denies_even_when_configured_on(self):
         config = Config()
@@ -225,6 +233,30 @@ class NotificationCredentialMountTests(unittest.TestCase):
         # Only the two keys the hook needs; no host-integration switches.
         self.assertNotIn("gh_token", contents)
         self.assertNotIn("telegram_channel", contents)
+
+    def test_shell_or_channel_owner_can_skip_the_notification_credential(self):
+        config = Config()
+        config.notifications.enabled = True
+        config.notifications.telegram_token = "123:SECRETTOKEN"
+        config.notifications.telegram_chat_id = "555"
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        state = root / "state"
+        home = root / "home"
+        home.mkdir()
+        project = root / "project"
+        project.mkdir()
+        with mock.patch.object(runtime, "STATE_ROOT", state), \
+             mock.patch.object(runtime, "BUILD_STATE", state / "build"), \
+             mock.patch.object(runtime, "NOTIFY_STATE_ROOT", state / "notify"), \
+             mock.patch.object(runtime, "NOTIFY_CREDENTIALS", state / "runtime/notify.json"), \
+             mock.patch.object(runtime, "HOST_HOME", home), \
+             mock.patch.object(runtime.subprocess, "run", return_value=mock.Mock(returncode=0, stdout="")):
+            flags = runtime.build_mounts(Workspace(project, project), [], root, config,
+                                         mount_notifications=False)
+        self.assertFalse([flag for flag in flags if "notify.json" in flag])
+        self.assertFalse((state / "runtime/notify.json").exists())
 
     def test_turning_notifications_off_removes_a_previously_written_file(self):
         config = Config()

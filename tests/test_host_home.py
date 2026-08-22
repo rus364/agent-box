@@ -86,12 +86,14 @@ class PasswdHomeTests(unittest.TestCase):
     def test_container_home_and_mounts_ignore_env_home(self):
         from agent_box import paths, runtime
         from agent_box.workspace import Workspace
-        with mock.patch.dict(os.environ, {"HOME": POISON, "PATH": os.environ.get("PATH", "")}):
-            importlib.reload(paths)
-            importlib.reload(runtime)
-            with tempfile.TemporaryDirectory() as project:
-                workspace = Workspace(Path(project), Path(project))
-                argv = runtime.container_argv(workspace, [], Path(project), ["claude"])
+        with tempfile.TemporaryDirectory() as state:
+            with mock.patch.dict(os.environ, {"HOME": POISON, "PATH": os.environ.get("PATH", ""),
+                                               "AGENT_BOX_STATE_DIR": state}):
+                importlib.reload(paths)
+                importlib.reload(runtime)
+                with tempfile.TemporaryDirectory() as project:
+                    workspace = Workspace(Path(project), Path(project))
+                    argv = runtime.container_argv(workspace, [], Path(project), ["claude"])
         self.assertIn(f"--env=HOME={real_home()}", argv)
         self.assertNotIn(POISON, " ".join(argv))
 
@@ -129,6 +131,7 @@ class ClaudeConfigDirTests(unittest.TestCase):
         from agent_box.workspace import Workspace
         full = dict(os.environ)
         full.update(env)
+        full["AGENT_BOX_STATE_DIR"] = str(Path(project).parent / "state")
         with mock.patch.dict(os.environ, full, clear=True):
             importlib.reload(paths)
             importlib.reload(runtime)
@@ -152,6 +155,7 @@ class ClaudeConfigDirTests(unittest.TestCase):
             project = Path(tmp) / "project"
             project.mkdir()
             env = {k: v for k, v in os.environ.items() if k != "CLAUDE_CONFIG_DIR"}
+            env["AGENT_BOX_STATE_DIR"] = str(Path(tmp) / "state")
             from agent_box import paths, runtime
             from agent_box.workspace import Workspace
             with mock.patch.dict(os.environ, env, clear=True):
