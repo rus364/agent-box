@@ -24,6 +24,7 @@ from . import notify as notify_module
 from .atomicio import atomic_write_text
 from .config import Config, load_config
 from .errors import AgentBoxError
+from .flow_next import flow_next_launch_env
 from .identity import HostIdentity, detect_host_identity
 from .mounts import MountSpec
 from .notify import SUPPRESS_NOTIFY_ENV
@@ -630,6 +631,7 @@ def runtime_main(args: list[str], script_dir: Path, extra_mount_specs: list[str]
         raise AgentBoxError(f"unsupported agent '{agent}'; expected claude or codex")
 
     channel, extra_env = claude_channel_args(agent, config, workspace)
+    extra_env = [*extra_env, *flow_next_launch_env(workspace.host_root, agent, config)]
 
     try:
         mount_notifications = bool(config.notifications.usable and (
@@ -656,3 +658,33 @@ def runtime_main(args: list[str], script_dir: Path, extra_mount_specs: list[str]
     if agent == "claude":
         os.execvp("podman", [*podman, "claude", "--dangerously-skip-permissions", *channel, *rest])
     os.execvp("podman", [*podman, *codex_command(rest, config)])
+
+
+def host_main(agent: str, rest: list[str]) -> int:
+    """``agent-box --host claude|codex``: run the installed host executable
+    directly, no Podman.
+
+    Shares :func:`flow_next.flow_next_launch_env` with the containerized path
+    (``runtime_main`` above) so the two cannot drift on Flow-Next detection or
+    the FLOW_REVIEW_BACKEND/auto-push policy -- it is the same function call,
+    just applied to the host environment instead of ``--env`` flags on a
+    ``podman run``. Everything else about host mode is intentionally plain:
+    the pass-through args are forwarded unmodified, and the host's normal
+    environment (git/gh credentials included) flows through unchanged except
+    for this one deliberate override.
+    """
+    executable = shutil.which(agent)
+    if not executable:
+        raise AgentBoxError(f"'{agent}' not found on PATH; install it on the host to use --host")
+    try:
+        workspace = resolve_workspace()
+    except (NotADirectoryError, ValueError) as exc:
+        raise AgentBoxError(str(exc)) from exc
+
+    config = load_config()
+    env = dict(os.environ)
+    for pair in flow_next_launch_env(workspace.host_root, agent, config):
+        name, _, value = pair.partition("=")
+        env[name] = value
+
+    return subprocess.call([executable, *rest], cwd=str(workspace.container_cwd), env=env)

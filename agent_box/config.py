@@ -25,8 +25,16 @@ Schema (version 1)::
       "notifications": {"enabled": false, "telegram_token": "", "telegram_chat_id": ""},
       "github": {"gh_token": false, "gh_config": false},
       "git": {"identity": true, "full_config": false},
-      "providers": {"api_keys": false, "transport": true}
+      "providers": {"api_keys": false, "transport": true},
+      "flow_next": {
+        "review_backends": {"claude": "codex:gpt-5.6-sol:medium", "codex": "codex:gpt-5.6-sol:medium"},
+        "auto_push": false
+      }
     }
+
+``flow_next`` is new but does not bump ``version``: an old config file without
+it loads fine and gets the defaults above, matching the "partial file" schema
+tolerance the rest of this module already relies on.
 """
 from __future__ import annotations
 
@@ -178,6 +186,53 @@ class ProvidersConfig:
         return cls(api_keys=_bool(data, "api_keys", False), transport=_bool(data, "transport", True))
 
 
+#: Flow-Next review routing is selected by *primary CLI*, not by any quota or
+#: cost signal -- agent-box never inspects usage to pick a backend, it just
+#: looks up which agent launched. Codex reviewing Codex is intentional for
+#: now: Flow-Next has no native executable Claude review backend yet, so the
+#: "claude" mapping also points at Codex until upstream adds one. Changing
+#: that later is a config edit, not a code change.
+DEFAULT_FLOW_REVIEW_BACKENDS: dict[str, str] = {
+    "claude": "codex:gpt-5.6-sol:medium",
+    "codex": "codex:gpt-5.6-sol:medium",
+}
+FLOW_REVIEW_BACKEND_AGENTS = ("claude", "codex")
+
+
+@dataclass
+class FlowNextConfig:
+    """Deterministic Flow-Next runtime policy, owned by agent-box.
+
+    ``review_backends`` maps the *primary* agent (``claude``/``codex``) to a
+    full Flow-Next backend spec (``provider:model:effort``) forwarded to the
+    launch as ``FLOW_REVIEW_BACKEND``. Values are opaque strings agent-box
+    never parses -- changing the routing later (e.g. once Flow-Next gains a
+    native Claude review backend) is a config edit, not a code change.
+
+    ``auto_push`` is the opt-in Claude-only Flow-Next auto-push lifecycle
+    (see ``agent_box.flow_push``); it defaults off because this must never
+    turn every Claude Stop into a git push.
+    """
+
+    review_backends: dict[str, str] = field(
+        default_factory=lambda: dict(DEFAULT_FLOW_REVIEW_BACKENDS))
+    auto_push: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"review_backends": dict(self.review_backends), "auto_push": self.auto_push}
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "FlowNextConfig":
+        backends = dict(DEFAULT_FLOW_REVIEW_BACKENDS)
+        raw = data.get("review_backends") if isinstance(data, dict) else None
+        if isinstance(raw, dict):
+            for agent in FLOW_REVIEW_BACKEND_AGENTS:
+                value = raw.get(agent)
+                if isinstance(value, str) and value.strip():
+                    backends[agent] = value.strip()
+        return cls(review_backends=backends, auto_push=_bool(data, "auto_push", False))
+
+
 @dataclass
 class Config:
     claude: ClaudeConfig = field(default_factory=ClaudeConfig)
@@ -185,6 +240,7 @@ class Config:
     github: GitHubConfig = field(default_factory=GitHubConfig)
     git: GitConfig = field(default_factory=GitConfig)
     providers: ProvidersConfig = field(default_factory=ProvidersConfig)
+    flow_next: FlowNextConfig = field(default_factory=FlowNextConfig)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -194,6 +250,7 @@ class Config:
             "github": self.github.to_dict(),
             "git": self.git.to_dict(),
             "providers": self.providers.to_dict(),
+            "flow_next": self.flow_next.to_dict(),
         }
 
     @classmethod
@@ -206,6 +263,7 @@ class Config:
             github=GitHubConfig.from_dict(data.get("github")),
             git=GitConfig.from_dict(data.get("git")),
             providers=ProvidersConfig.from_dict(data.get("providers")),
+            flow_next=FlowNextConfig.from_dict(data.get("flow_next")),
         )
 
 

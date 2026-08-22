@@ -66,6 +66,17 @@ Claude Code is the default agent; change it with `export AGENT_BOX_AGENT=codex`.
 
 Their `~/.claude` and `~/.codex` state directories are mounted from the host so authentication, settings, and history survive disposable runs. If `~/.claude.json` exists on the host it is mounted too. For `agent-box codex`, MCP commands under `/usr/lib/chatgpt/resources/` are disabled only for that container run because those ChatGPT desktop resources are not present in the image; the host Codex configuration is never modified.
 
+### Host mode (`--host`)
+
+```bash
+agent-box --host claude
+agent-box --host codex
+```
+
+Runs the installed host `claude`/`codex` executable directly in the resolved workspace — no Podman, no container hardening, your normal host git/gh credentials. Pass-through arguments and the real exit status work exactly as in container mode. `agent-box claude`/`agent-box codex` (without `--host`) keep meaning containerized execution; primary-agent choice is always explicit either way — agent-box never picks or balances between Claude and Codex for you.
+
+Container mode and host mode resolve Flow-Next detection and the `FLOW_REVIEW_BACKEND`/auto-push policy through the exact same function, so the two cannot drift apart (see below).
+
 ## Configuration
 
 One command, one file:
@@ -85,7 +96,11 @@ Settings are stored as a small versioned JSON document at `~/.config/agent-box/c
   "notifications": { "enabled": false, "telegram_token": "", "telegram_chat_id": "" },
   "github":        { "gh_token": false, "gh_config": false },
   "git":           { "identity": true, "full_config": false },
-  "providers":     { "api_keys": false, "transport": true }
+  "providers":     { "api_keys": false, "transport": true },
+  "flow_next": {
+    "review_backends": { "claude": "codex:gpt-5.6-sol:medium", "codex": "codex:gpt-5.6-sol:medium" },
+    "auto_push": false
+  }
 }
 ```
 
@@ -101,6 +116,8 @@ Settings are stored as a small versioned JSON document at `~/.config/agent-box/c
 | `git.full_config` | **off** | Copies the complete host Git configuration; opt in only if you accept its credential helpers, headers, includes, and rewrites being exposed |
 | `providers.api_keys` | **off** | Forwards exported `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` |
 | `providers.transport` | **on** | Forwards endpoint, Bedrock/Vertex, proxy, and CA transport settings (turn off if your proxy URL carries credentials) |
+| `flow_next.review_backends` | see below | Flow-Next review backend spec, by primary agent (`claude`/`codex`) |
+| `flow_next.auto_push` | **off** | Opt-in, Claude-only Flow-Next auto-push (see below) |
 
 **Security-sensitive host integration is explicit.** In particular, being logged in to `gh` on the host is *not* consent to hand a live GitHub credential to every container — `github.gh_token` must be turned on deliberately. (An earlier agent-box forwarded the token whenever `gh` happened to be authenticated. It no longer does.)
 
@@ -291,6 +308,32 @@ With `github.gh_config` off, the directory is empty and `gh` runs unauthenticate
 
 `gh auth login` is not meant to run inside the container — authenticate on the host. With `github.gh_token` on, agent-box permits an already-exported `GH_TOKEN`/`GITHUB_TOKEN`, or reads `gh auth token` and places it only in the launcher environment before Podman is exec'd. In both cases Podman receives `--env=NAME`, never the token value in argv. Only HTTPS remotes are authenticated this way; the container has no SSH keys or agent socket.
 
+## Flow-Next
+
+agent-box owns deterministic Flow-Next *runtime policy* — model routing and push behavior — so individual projects no longer need to encode it in `AGENTS.md`. Flow-Next itself, its quality gates, and its review pipeline are untouched.
+
+**Detection.** A workspace is Flow-Next when its root has a `.flow/config.json` file. Nothing is invoked and nothing is mutated to check this.
+
+**Review backend routing.** Every Claude or Codex launch (container or `--host`) into a Flow-Next workspace gets `FLOW_REVIEW_BACKEND` set from `flow_next.review_backends`, keyed by the *primary* agent you launched — never by quota, cost, or any inferred signal:
+
+```json
+"flow_next": {
+  "review_backends": {
+    "claude": "codex:gpt-5.6-sol:medium",
+    "codex":  "codex:gpt-5.6-sol:medium"
+  }
+}
+```
+
+Codex reviewing Codex is intentional for now: Flow-Next has no native, executable Claude review backend yet, so `claude`'s mapping also points at Codex until upstream adds one. Changing this later is a config edit (`agent-box config`), not a code change. Primary-agent selection stays entirely explicit — `agent-box claude`/`agent-box codex`; agent-box never balances between them.
+
+**Auto-push (opt-in, Claude only).** `flow_next.auto_push` (default **off**) wires two managed Claude hooks:
+
+- a successful `flowctl done` (matched from a `PostToolUse`/`Bash` hook, including an absolute-path invocation) arms a small pending-push marker stored in git's own private state (`git rev-parse --git-path`), tagged with the current branch and HEAD;
+- the next Claude `Stop` consumes that marker and pushes **only** if every guard passes: this launch has auto-push enabled, the workspace is Flow-Next, the marker matches the current branch, HEAD is attached, the branch isn't `main`/`master`/the repo's detected remote default, the worktree is clean, there is something new to push, and any existing remote branch is a fast-forward ancestor of HEAD.
+
+The only command it ever runs is exactly `git push -u origin HEAD` — never `--force`, never another branch, remote, or tag, never a merge/rebase/reset to repair divergence. A dirty worktree or a failed/diverged push keeps the marker for a later retry; `StopFailure` never pushes. Container auto-push over HTTPS uses the existing `github.gh_token` credential forwarding — no new authentication mechanism is added.
+
 ## Usage limits
 
 ```bash
@@ -333,7 +376,7 @@ agent-box selftest                     # fast, no Podman or network
 python3 -m unittest discover -s tests  # full suite
 ```
 
-The full suite covers config defaults and round-tripping, host-exposure gating (gh token/config, git config, provider env), the Claude channel preflight, `--mount` parsing and overlap planning, workspace resolution, host identity, passwd-anchored `~` expansion under a poisoned `$HOME`, `~/.agents` mount scope, notification payload handling and hook install/remove, usage formatting, and the Containerfile's identity-arg validation (executed through a real shell).
+The full suite covers config defaults and round-tripping, host-exposure gating (gh token/config, git config, provider env), the Claude channel preflight, `--mount` parsing and overlap planning, workspace resolution, host identity, passwd-anchored `~` expansion under a poisoned `$HOME`, `~/.agents` mount scope, notification payload handling and hook install/remove, usage formatting, the Containerfile's identity-arg validation (executed through a real shell), Flow-Next workspace detection and review-backend routing (container and host mode), `--host` launch behavior, `flowctl done` detection, and the auto-push guard chain against real temporary git repositories.
 
 No credentials are required and no network calls are made.
 
