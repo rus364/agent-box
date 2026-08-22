@@ -234,7 +234,7 @@ class NotificationCredentialMountTests(unittest.TestCase):
         self.assertNotIn("gh_token", contents)
         self.assertNotIn("telegram_channel", contents)
 
-    def test_shell_or_channel_owner_can_skip_the_notification_credential(self):
+    def test_callers_that_cannot_send_notifications_can_skip_the_credential(self):
         config = Config()
         config.notifications.enabled = True
         config.notifications.telegram_token = "123:SECRETTOKEN"

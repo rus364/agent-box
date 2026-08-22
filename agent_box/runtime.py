@@ -697,10 +697,10 @@ def claude_channel_args(
       run without it. The bot has one conversation; two sessions answering
       every inbound message is worse than the second one being local-only.
 
-    When the channel *is* taken, outbound notification hooks stand down for
-    this container: the channel already relays this session's replies and
-    prompts to the paired chat, and the hooks would post the same interaction
-    again to the notification chat, which is a different audience.
+    When the channel is taken, the Claude hook entry point suppresses only
+    interactive prompt notifications: the channel already relays those to the
+    paired chat.  Mechanical Stop/StopFailure lifecycle notifications remain
+    enabled so the notification bot still reports completion and errors.
     """
     if agent != "claude":
         return [], []
@@ -763,13 +763,21 @@ def runtime_main(args: list[str], script_dir: Path, extra_mount_specs: list[str]
     if agent not in {"claude", "codex", "shell", "doctor"}:
         raise AgentBoxError(f"unsupported agent '{agent}'; expected claude or codex")
 
+    if agent == "claude" and is_claude_session_invocation(rest):
+        # Existing users commonly launch Claude repeatedly without reopening
+        # the interactive config UI.  Launch is therefore the lifecycle that
+        # guarantees the legacy absolute-path hook is migrated.
+        notify_module.reconcile_claude_notify_hooks(
+            CLAUDE_HOME / "settings.json", config.notifications.enabled)
+
     channel, extra_env = claude_channel_args(agent, config, workspace, rest)
     extra_env = [*extra_env, *flow_next_launch_env(workspace.host_root, agent, config)]
 
     try:
-        mount_notifications = bool(config.notifications.usable and (
-            agent == "codex" or (agent == "claude" and not channel)
-        ))
+        # Claude's official Telegram channel suppresses only its duplicated
+        # interactive events.  Keep the derived credential mounted there too
+        # so Stop/StopFailure and background lifecycle hooks can still notify.
+        mount_notifications = bool(config.notifications.usable and agent in {"claude", "codex"})
         podman = container_argv(
             workspace, extra_mounts, script_dir, [], config, extra_env, mount_notifications,
         )
@@ -819,6 +827,9 @@ def host_main(agent: str, rest: list[str]) -> int:
         raise AgentBoxError(str(exc)) from exc
 
     config = load_config()
+    if agent == "claude" and is_claude_session_invocation(rest):
+        notify_module.reconcile_claude_notify_hooks(
+            CLAUDE_HOME / "settings.json", config.notifications.enabled)
     env = dict(os.environ)
     # A non-Flow-Next launch must not inherit a stale FLOW_REVIEW_BACKEND/
     # auto-push value the parent shell happens to have exported -- clear

@@ -1,10 +1,11 @@
+import json
 import os
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
-from agent_box import runtime
+from agent_box import notify, runtime
 from agent_box.config import Config, NotificationsConfig
 from agent_box.mounts import MountSpec
 from agent_box.workspace import Workspace
@@ -20,6 +21,7 @@ class IsolatedRuntimeTest(unittest.TestCase):
             mock.patch.object(runtime, "BUILD_STATE", state / "build"),
             mock.patch.object(runtime, "NOTIFY_STATE_ROOT", state / "notify"),
             mock.patch.object(runtime, "NOTIFY_CREDENTIALS", state / "runtime/notify.json"),
+            mock.patch.object(runtime, "CLAUDE_HOME", state / "claude"),
         ]
         for patch in self._patches:
             patch.start()
@@ -275,6 +277,93 @@ class ContainerFlowNextEnvTests(IsolatedRuntimeTest):
             ):
                 runtime.runtime_main(["claude"], Path.cwd())
             self.assertEqual(captured["extra_env"], [])
+
+
+class ClaudeNotifyHookLifecycleTests(IsolatedRuntimeTest):
+    def test_claude_launch_migrates_legacy_notify_hooks_without_duplicates(self):
+        """A user who already configured agent-box must not need to rerun config.
+
+        This fails if the normal Claude-launch lifecycle stops reconciling the
+        managed hook entries, if it leaves the old executable path behind, or
+        if a repeat launch appends another current hook.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            claude_home = root / "claude"
+            claude_home.mkdir()
+            settings_path = claude_home / "settings.json"
+            settings_path.write_text(json.dumps({
+                "model": "opus",
+                "hooks": {
+                    "PreToolUse": [{"matcher": "Bash", "hooks": [
+                        {"type": "command", "command": "my-user-hook"},
+                    ]}],
+                    "Notification": [
+                        {"matcher": "permission_prompt", "hooks": [
+                            {"type": "command", "command": notify.STALE_NOTIFY_COMMAND},
+                        ]},
+                        {"matcher": "other", "hooks": [
+                            {"type": "command", "command": "my-other-hook"},
+                        ]},
+                    ],
+                    "Stop": [{"hooks": [
+                        {"type": "command", "command": notify.STALE_NOTIFY_COMMAND},
+                        {"type": "command", "command": "my-stop-hook"},
+                    ]}],
+                    "StopFailure": [{"hooks": [
+                        {"type": "command", "command": notify.STALE_NOTIFY_COMMAND},
+                    ]}],
+                },
+            }))
+            config = Config(notifications=NotificationsConfig(
+                enabled=True, telegram_token="token", telegram_chat_id="chat",
+            ))
+
+            class ExecCalled(Exception):
+                pass
+
+            with (
+                mock.patch.object(runtime.shutil, "which", return_value="/usr/bin/podman"),
+                mock.patch.object(runtime, "resolve_workspace", return_value=Workspace(root, root)),
+                mock.patch.object(runtime, "ensure_state_dirs"),
+                mock.patch.object(runtime, "ensure_refresh_token"),
+                mock.patch.object(runtime, "load_config", return_value=config),
+                mock.patch.object(runtime, "image_exists", return_value=True),
+                mock.patch.object(runtime, "sync_claude_agent_skills"),
+                mock.patch.object(runtime, "claude_channel_args", return_value=([], [])),
+                mock.patch.object(runtime, "container_argv", return_value=["podman"]),
+                mock.patch.object(runtime, "CLAUDE_HOME", claude_home),
+                mock.patch.object(runtime.os, "execvp", side_effect=ExecCalled),
+            ):
+                for _ in range(2):
+                    with self.assertRaises(ExecCalled):
+                        runtime.runtime_main(["claude"], Path(__file__).resolve().parent.parent)
+
+            settings = json.loads(settings_path.read_text())
+            self.assertEqual(settings["model"], "opus")
+            self.assertEqual(
+                settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"], "my-user-hook")
+            other_notification = next(
+                entry for entry in settings["hooks"]["Notification"]
+                if entry.get("matcher") == "other")
+            self.assertEqual(
+                other_notification["hooks"][0]["command"], "my-other-hook")
+            self.assertEqual(
+                settings["hooks"]["Stop"][0]["hooks"][0]["command"], "my-stop-hook")
+
+            managed_counts = {event: 0 for event in ("Notification", "Stop", "StopFailure")}
+            stale_count = 0
+            for event, entries in settings["hooks"].items():
+                if not isinstance(entries, list):
+                    continue
+                for entry in entries:
+                    for handler in entry.get("hooks", []):
+                        if handler.get("command") == notify.NOTIFY_COMMAND:
+                            managed_counts[event] = managed_counts.get(event, 0) + 1
+                        if handler.get("command") == notify.STALE_NOTIFY_COMMAND:
+                            stale_count += 1
+            self.assertEqual(stale_count, 0)
+            self.assertEqual(managed_counts, {"Notification": 2, "Stop": 1, "StopFailure": 1})
 
 
 class HostModeTests(IsolatedRuntimeTest):

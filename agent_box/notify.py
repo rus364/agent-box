@@ -45,13 +45,24 @@ NOTIFY_COMMAND = "agent-box notify claude"
 STALE_NOTIFY_COMMAND = "~/.local/bin/agent-box notify claude"
 #: Set by ``agent_box.runtime`` on containers whose Claude session already
 #: talks to Telegram through the official channel plugin. Those sessions relay
-#: their own replies, prompts and questions to the paired chat; letting the
-#: hooks fire as well would post the same interaction twice.
+#: interactive replies, prompts and questions to the paired chat, so only the
+#: matching ``Notification`` hooks need to stand down.
 SUPPRESS_NOTIFY_ENV = "AGENT_BOX_SUPPRESS_NOTIFY"
 
 
 def outbound_suppressed() -> bool:
     return bool(os.environ.get(SUPPRESS_NOTIFY_ENV, "").strip())
+
+
+def claude_interaction_suppressed(event: str) -> bool:
+    """Whether the official Claude Telegram channel already owns ``event``.
+
+    The channel relays interactive prompts to its paired chat, so agent-box's
+    Notification hooks would duplicate those messages.  Stop and StopFailure
+    are lifecycle signals, not interactive channel traffic; keep sending them
+    so the notification bot reports terminal success/failure reliably.
+    """
+    return outbound_suppressed() and event == "Notification"
 
 
 def sync_credentials(config: Any, path: Path = NOTIFY_CREDENTIALS) -> None:
@@ -94,8 +105,6 @@ def load_credentials(path: Path = NOTIFY_CREDENTIALS) -> tuple[str, str] | None:
 def telegram_send(text: str) -> bool:
     """POST one HTML message to the configured chat. Never raises, never logs
     the bot token."""
-    if outbound_suppressed():
-        return True
     credentials = load_credentials()
     if credentials is None:
         return True
@@ -212,6 +221,13 @@ def notify_claude() -> None:
     elif event == "StopFailure":
         update_claude_background_state(session_id, [])
 
+    # The official channel owns prompt/input messages, but not the mechanical
+    # lifecycle hooks below.  Decide that at the Claude-event boundary rather
+    # than silently dropping every notification in telegram_send(), which is
+    # also shared with Codex.
+    if claude_interaction_suppressed(event):
+        return
+
     if (event, kind) == ("Notification", "permission_prompt"):
         telegram_send(telegram_notice(
             "🔐", "Claude", project, "Permission required",
@@ -282,3 +298,17 @@ def remove_claude_notify_hooks(settings_path: Path) -> None:
     remove_hook_commands(settings_path, {
         "Notification": owned, "Stop": owned, "StopFailure": owned,
     })
+
+
+def reconcile_claude_notify_hooks(settings_path: Path, notifications_enabled: bool) -> None:
+    """Synchronize owned Claude notification hooks for a Claude session launch.
+
+    Configuration remains the source of truth, but launch is the ordinary
+    lifecycle every existing installation passes through.  Reconciling here
+    migrates legacy absolute-path hooks even when a user does not reopen the
+    interactive config screen after upgrading.
+    """
+    if notifications_enabled:
+        install_claude_notify_hooks(settings_path)
+    else:
+        remove_claude_notify_hooks(settings_path)
