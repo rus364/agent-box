@@ -1,3 +1,4 @@
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -356,6 +357,40 @@ class HostModeTests(IsolatedRuntimeTest):
                 runtime.host_main("claude", [])
             env = call.call_args.kwargs["env"]
             self.assertNotIn("FLOW_REVIEW_BACKEND", env)
+
+    def test_flow_next_workspace_overrides_stale_host_env(self):
+        """A pre-existing (wrong) host FLOW_REVIEW_BACKEND must not survive:
+        agent-box's configured policy is authoritative for this launch."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._flow_next_workspace(tmp)
+            workspace = Workspace(root, root)
+            with mock.patch.dict(os.environ, {"FLOW_REVIEW_BACKEND": "stale-wrong-value"}), \
+                 mock.patch.object(runtime.shutil, "which", return_value="/usr/local/bin/claude"), \
+                 mock.patch.object(runtime, "resolve_workspace", return_value=workspace), \
+                 mock.patch.object(runtime, "load_config", return_value=Config()), \
+                 mock.patch.object(runtime.subprocess, "call", return_value=0) as call:
+                runtime.host_main("claude", [])
+            env = call.call_args.kwargs["env"]
+            self.assertEqual(env.get("FLOW_REVIEW_BACKEND"), "codex:gpt-5.6-sol:medium")
+
+    def test_non_flow_next_workspace_strips_stale_host_env(self):
+        """A non-Flow-Next launch must not merely fail to *add* the policy
+        env -- it must actively strip whatever the parent shell exported,
+        or a stale value would silently leak through untouched."""
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp), Path(tmp))
+            with mock.patch.dict(os.environ, {
+                "FLOW_REVIEW_BACKEND": "stale-wrong-value",
+                "AGENT_BOX_FLOW_NEXT_AUTO_PUSH": "1",
+            }), \
+                 mock.patch.object(runtime.shutil, "which", return_value="/usr/local/bin/claude"), \
+                 mock.patch.object(runtime, "resolve_workspace", return_value=workspace), \
+                 mock.patch.object(runtime, "load_config", return_value=Config()), \
+                 mock.patch.object(runtime.subprocess, "call", return_value=0) as call:
+                runtime.host_main("claude", [])
+            env = call.call_args.kwargs["env"]
+            self.assertNotIn("FLOW_REVIEW_BACKEND", env)
+            self.assertNotIn("AGENT_BOX_FLOW_NEXT_AUTO_PUSH", env)
 
     def test_real_exit_status_propagated(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -32,6 +32,13 @@ AUTO_PUSH_ENV = "AGENT_BOX_FLOW_NEXT_AUTO_PUSH"
 #: merely a suggestion a stale host value could defeat.
 REVIEW_BACKEND_ENV = "FLOW_REVIEW_BACKEND"
 
+#: Every environment variable agent-box's Flow-Next policy owns. A launcher
+#: that starts from an inherited environment (host mode) must clear all of
+#: these before applying :func:`flow_next_launch_env`'s decision, so a stale
+#: value from the parent shell can never survive into a launch the resolver
+#: decided should get none (e.g. a non-Flow-Next workspace).
+POLICY_ENV_VARS = (REVIEW_BACKEND_ENV, AUTO_PUSH_ENV)
+
 
 def is_flow_next_workspace(workspace_root: Path) -> bool:
     """Whether ``workspace_root`` is a Flow-Next repository.

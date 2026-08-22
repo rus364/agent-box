@@ -15,23 +15,31 @@ import shutil
 import subprocess
 import sys
 import time
-import tomllib
 from datetime import datetime, timezone
 from pathlib import Path
+
+import tomllib
 
 from . import channel as channel_module
 from . import notify as notify_module
 from .atomicio import atomic_write_text
 from .config import Config, load_config
 from .errors import AgentBoxError
-from .flow_next import flow_next_launch_env
+from .flow_next import POLICY_ENV_VARS, flow_next_launch_env
 from .identity import HostIdentity, detect_host_identity
 from .mounts import MountSpec
 from .notify import SUPPRESS_NOTIFY_ENV
 from .paths import (
-    BUILD_STATE, CLAUDE_HOME, CODEX_HOME, CONTAINER_NOTIFY_CREDENTIALS,
-    HOST_HOME, NOTIFY_CREDENTIALS, NOTIFY_STATE_ROOT, STATE_ROOT,
-    TOOLS_REFRESH_FILE, XDG_CACHE_HOME,
+    BUILD_STATE,
+    CLAUDE_HOME,
+    CODEX_HOME,
+    CONTAINER_NOTIFY_CREDENTIALS,
+    HOST_HOME,
+    NOTIFY_CREDENTIALS,
+    NOTIFY_STATE_ROOT,
+    STATE_ROOT,
+    TOOLS_REFRESH_FILE,
+    XDG_CACHE_HOME,
 )
 from .workspace import Workspace, resolve_workspace
 
@@ -171,11 +179,34 @@ def seed_state_dir(target: Path, *sources: Path) -> None:
 
 GIT_IDENTITY_KEYS = ("user.name", "user.email")
 
+#: Scoped to github.com only -- GH_TOKEN is a GitHub credential, not a
+#: generic one, so this must not apply to any other remote host.
+GH_CREDENTIAL_URL = "https://github.com"
+#: Delegates to the GitHub CLI's own credential support (the same mechanism
+#: `gh auth setup-git` configures). `gh` picks up GH_TOKEN/GITHUB_TOKEN from
+#: its own process environment -- which is exactly how the token already
+#: reaches the container (see `github_env`) -- so this line never embeds the
+#: token value itself; it only tells git which program to ask. The
+#: container's image always has `gh` on PATH (see README).
+GH_CREDENTIAL_HELPER = "!gh auth git-credential"
+
+
+def _set_git_config(config_file: Path, key: str, value: str) -> None:
+    """Set ``key`` to exactly one value, even if the file (e.g. a copied-in
+    full host gitconfig) already defines it multiple times -- plain ``git
+    config --file ... key value`` refuses to overwrite an ambiguous
+    multi-valued key outright, so this always uses ``--replace-all``."""
+    config_file.parent.mkdir(parents=True, exist_ok=True)
+    config_file.touch(exist_ok=True)
+    subprocess.run(
+        ["git", "config", "--file", str(config_file), "--replace-all", key, value], check=False,
+    )
+
 
 def seed_git_config(target: Path, config: Config) -> None:
     """Populate the container's git config directory.
 
-    Three outcomes, by design:
+    Three outcomes for the bulk of it, by design:
 
     * ``full_config`` on -- copy the host's git configuration wholesale. A
       real ``~/.gitconfig`` commonly carries ``credential.helper`` entries,
@@ -187,23 +218,31 @@ def seed_git_config(target: Path, config: Config) -> None:
       it reveals nothing beyond a name and address the commits would carry
       anyway.
     * both off -- an empty directory; git falls back to its own defaults.
+
+    Independently of those three, when GitHub token passthrough is enabled
+    (``github_enabled``, which also honors ``AGENT_BOX_GH_TOKEN``), a
+    ``credential.https://github.com.helper`` entry is added so a plain
+    ``git push`` over HTTPS actually has a usable credential path -- without
+    this, forwarding ``GH_TOKEN`` into the container environment alone does
+    nothing, because plain git never consults it on its own.
     """
     if config.git.full_config:
         seed_state_dir(target, HOST_HOME / ".config/git", HOST_HOME / ".gitconfig")
-        return
-    seed_state_dir(target)
-    if not config.git.identity:
-        return
-    lines = []
-    for key in GIT_IDENTITY_KEYS:
-        result = subprocess.run(
-            ["git", "config", "--global", "--get", key], text=True, capture_output=True,
-        )
-        value = result.stdout.strip() if result.returncode == 0 else ""
-        if value:
-            lines.append(f"\t{key.split('.', 1)[1]} = {value}")
-    if lines:
-        atomic_write_text(target / "config", "[user]\n" + "\n".join(lines) + "\n")
+    else:
+        seed_state_dir(target)
+        if config.git.identity:
+            lines = []
+            for key in GIT_IDENTITY_KEYS:
+                result = subprocess.run(
+                    ["git", "config", "--global", "--get", key], text=True, capture_output=True,
+                )
+                value = result.stdout.strip() if result.returncode == 0 else ""
+                if value:
+                    lines.append(f"\t{key.split('.', 1)[1]} = {value}")
+            if lines:
+                atomic_write_text(target / "config", "[user]\n" + "\n".join(lines) + "\n")
+    if github_enabled(config):
+        _set_git_config(target / "config", f"credential.{GH_CREDENTIAL_URL}.helper", GH_CREDENTIAL_HELPER)
 
 
 def agent_tree_mounts() -> list[tuple[Path, Path, bool]]:
@@ -683,6 +722,13 @@ def host_main(agent: str, rest: list[str]) -> int:
 
     config = load_config()
     env = dict(os.environ)
+    # A non-Flow-Next launch must not inherit a stale FLOW_REVIEW_BACKEND/
+    # auto-push value the parent shell happens to have exported -- clear
+    # every agent-box-owned policy variable before applying this launch's
+    # actual decision, so an empty result from the resolver really means
+    # "no policy", not "whatever was already there".
+    for name in POLICY_ENV_VARS:
+        env.pop(name, None)
     for pair in flow_next_launch_env(workspace.host_root, agent, config):
         name, _, value = pair.partition("=")
         env[name] = value
