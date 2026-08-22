@@ -334,6 +334,7 @@ class ClaudeManagementArgvTests(unittest.TestCase):
              mock.patch.object(runtime, "sync_claude_agent_skills"), \
              mock.patch.object(runtime, "container_argv", side_effect=fake_container_argv), \
              mock.patch.object(runtime.os, "execvp", side_effect=fake_execvp), \
+             mock.patch.object(runtime, "CLAUDE_HOME", home), \
              mock.patch.object(channel, "CLAUDE_HOME", home), \
              mock.patch.object(channel, "CHANNEL_LOCK", self.lock):
             with self.assertRaises(SystemExit):
@@ -461,7 +462,8 @@ class RuntimeNotificationSelectionTests(unittest.TestCase):
             captured.append(kwargs.get("mount_notifications", args[-1]))
             return ["podman"]
 
-        with mock.patch.object(runtime.shutil, "which", return_value="/usr/bin/podman"), \
+        with tempfile.TemporaryDirectory() as tmp, \
+             mock.patch.object(runtime.shutil, "which", return_value="/usr/bin/podman"), \
              mock.patch.object(runtime, "resolve_workspace", return_value=workspace), \
              mock.patch.object(runtime, "ensure_state_dirs"), \
              mock.patch.object(runtime, "ensure_refresh_token"), \
@@ -470,6 +472,7 @@ class RuntimeNotificationSelectionTests(unittest.TestCase):
              mock.patch.object(runtime, "sync_claude_agent_skills"), \
              mock.patch.object(runtime, "claude_channel_args", return_value=(channel, [])), \
              mock.patch.object(runtime, "container_argv", side_effect=fake_argv), \
+             mock.patch.object(runtime, "CLAUDE_HOME", Path(tmp) / "claude"), \
              mock.patch.object(runtime.os, "execvp", side_effect=SystemExit):
             with self.assertRaises(SystemExit):
                 runtime.runtime_main([agent], Path(__file__).parents[1])
@@ -478,7 +481,7 @@ class RuntimeNotificationSelectionTests(unittest.TestCase):
     def test_credentials_are_scoped_by_actual_launch_role(self):
         self.assertEqual(self._run("codex", []), [True])
         self.assertEqual(self._run("claude", []), [True])
-        self.assertEqual(self._run("claude", ["--channels", CLAUDE_TELEGRAM_CHANNEL]), [False])
+        self.assertEqual(self._run("claude", ["--channels", CLAUDE_TELEGRAM_CHANNEL]), [True])
         self.assertEqual(self._run("shell", []), [False])
         self.assertEqual(self._run("doctor", []), [False])
 

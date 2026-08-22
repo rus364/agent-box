@@ -340,10 +340,7 @@ def config_interactive() -> None:
     # independently of each other -- each owns only its own hook commands.
     notify_module.sync_credentials(config)
     settings = CLAUDE_HOME / "settings.json"
-    if config.notifications.enabled:
-        notify_module.install_claude_notify_hooks(settings)
-    else:
-        notify_module.remove_claude_notify_hooks(settings)
+    notify_module.reconcile_claude_notify_hooks(settings, config.notifications.enabled)
     from . import flow_push
     if config.flow_next.auto_push:
         flow_push.install_flow_push_hooks(settings)

@@ -103,8 +103,11 @@ def run_selftest() -> int:
     saved_flag = os.environ.get(SUPPRESS_NOTIFY_ENV)
     os.environ[SUPPRESS_NOTIFY_ENV] = "1"
     try:
-        check(notify_module.outbound_suppressed(), True, "outbound notifications suppressed")
-        check(notify_module.telegram_send("unused"), True, "suppressed send is a silent success")
+        check(notify_module.outbound_suppressed(), True, "official channel mode detected")
+        check(notify_module.claude_interaction_suppressed("Notification"), True,
+              "official channel suppresses interactive Claude notifications")
+        check(notify_module.claude_interaction_suppressed("Stop"), False,
+              "official channel keeps Claude completion notifications")
     finally:
         if saved_flag is None:
             os.environ.pop(SUPPRESS_NOTIFY_ENV, None)
