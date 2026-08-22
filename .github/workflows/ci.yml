@@ -25,7 +25,7 @@ jobs:
         uses: astral-sh/ruff-action@v4.1.0
         with:
           version: "latest"
-          args: "check"
+          args: "check --select E,F"
 
   tests:
     name: Python ${{ matrix.python-version }}
@@ -48,6 +48,11 @@ jobs:
         uses: actions/setup-python@v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
+
+      - name: Configure test Git identity
+        run: |
+          git config --global user.name "agent-box CI"
+          git config --global user.email "agent-box-ci@example.invalid"
 
       - name: Run fast self-tests
         run: python agent-box selftest
