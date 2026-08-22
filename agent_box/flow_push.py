@@ -173,20 +173,24 @@ def _is_bare_flowctl_done(command: str) -> bool:
 
 
 def _bash_call_succeeded(payload: dict[str, Any]) -> bool:
-    """Best-effort success signal for a completed ``Bash`` ``PostToolUse``.
+    """Whether this ``Bash`` ``PostToolUse`` represents a successful command.
 
-    Claude Code's documented ``PostToolUse`` payload for the ``Bash`` tool
-    does not expose the command's own exit code, and public reports disagree
-    on whether ``PostToolUse`` even fires for a nonzero-exit Bash command (as
-    opposed to the separate ``PostToolUseFailure`` event, which this hook is
-    never registered for and so never receives regardless). ``tool_response``
-    itself may be a plain string (commonly documented as the command's
-    stdout) or, on some versions, a richer object; this only treats an
-    explicit failure indicator on a dict-shaped response (``is_error``/
-    ``isError`` true, or ``success`` false) as failure, and otherwise assumes
-    success. That is a deliberate fail-open choice for this one signal --
-    the real defense against a masked failure is the narrow, unchained
-    command syntax required by :func:`_is_bare_flowctl_done`, not this check.
+    Per Claude Code's current documented hook contract, ``PostToolUse``
+    fires only after a tool call *succeeds*; a Bash command that exits
+    nonzero instead produces the separate ``PostToolUseFailure`` event
+    (documented with an ``error`` field such as ``"Exit code 1: ..."``), and
+    :func:`handle_post_tool_use` below only accepts ``hook_event_name ==
+    "PostToolUse"`` -- so a failed Bash command never reaches this function
+    at all. The documented current shape of ``tool_response`` for ``Bash``
+    is a plain string (the command's stdout), carrying no separate
+    success/failure field to inspect.
+
+    The dict-shaped check below (``is_error``/``isError``/``success``) is
+    kept only as defensive compatibility with an alternate or older
+    ``tool_response`` shape, not because current documentation describes it
+    for Bash -- if such a shape is ever seen, it is treated as failure;
+    otherwise (a plain string, or the field absent) this is success, exactly
+    matching the documented contract above.
     """
     response = payload.get("tool_response")
     if isinstance(response, dict):
@@ -202,7 +206,13 @@ def handle_post_tool_use(payload: dict[str, Any]) -> bool:
     unchained ``flowctl done``. Returns whether it was armed (for tests);
     never raises.
     """
-    if payload.get("hook_event_name") not in (None, "PostToolUse"):
+    if payload.get("hook_event_name") != "PostToolUse":
+        # Strict, not `in (None, "PostToolUse")`: this hook is registered
+        # only under the PostToolUse event key (see
+        # `install_flow_push_hooks`), and Claude Code always sends
+        # `hook_event_name` on every real invocation. Accepting a missing
+        # value would only be accommodating an incomplete synthetic
+        # payload, not real hook traffic.
         return False
     if payload.get("tool_name") != "Bash":
         return False
@@ -246,60 +256,74 @@ class PushDecision:
         return f"PushDecision({self.action!r}, {self.detail!r})"
 
 
-def _local_remote_head_branch(cwd: Path) -> str | None:
-    """The cached ``refs/remotes/origin/HEAD`` symref, if one is set locally
-    (by `git clone` or `git remote set-head`). No network access."""
-    result = _run(["git", "symbolic-ref", "--short", "-q", "refs/remotes/origin/HEAD"], cwd=cwd)
-    if result.returncode != 0:
-        return None
-    ref = result.stdout.strip()
-    if not ref:
-        return None
-    return ref.split("/", 1)[1] if "/" in ref else ref
+class RemoteState:
+    """What one bounded, live query of ``origin`` established.
 
-
-def _queried_remote_head_branch(cwd: Path) -> str | None:
-    """A bounded, read-only ``git ls-remote --symref origin HEAD`` query.
-
-    Used only when the local symref above is missing or stale, so a custom
-    default branch (e.g. ``trunk``) with no cached ``origin/HEAD`` can still
-    be recognized. Returns None on any failure, timeout, or ambiguous output
-    -- callers must treat that as "cannot be determined", never as "safe to
-    push".
+    Both ``default_branch`` and ``branch_sha`` are answered by the *same*
+    ``git ls-remote`` round trip (see :func:`_query_origin`) -- there is no
+    separate "trust the local cache" path for either question. A cached
+    ``refs/remotes/origin/HEAD`` symref is not authoritative evidence: it
+    can go stale the moment the remote's default branch changes underneath
+    it, and a decision this consequential must be based on what ``origin``
+    says *right now*, not what a prior ``clone``/``fetch`` happened to
+    record locally.
     """
+
+    def __init__(self, default_branch: str | None, branch_sha: str | None, branch_exists: bool):
+        #: None means the query could not positively determine it -- callers
+        #: must fail closed, never fall back to a local guess.
+        self.default_branch = default_branch
+        #: The current SHA of ``refs/heads/<branch>`` on ``origin``, or None
+        #: if ``branch_exists`` is False (a normal new-branch push).
+        self.branch_sha = branch_sha
+        self.branch_exists = branch_exists
+
+    @property
+    def default_determined(self) -> bool:
+        return self.default_branch is not None
+
+
+def _query_origin(cwd: Path, branch: str) -> RemoteState | None:
+    """One bounded, read-only ``git ls-remote --symref origin HEAD
+    refs/heads/<branch>`` call answering both the remote's current default
+    branch and the current state of the actual push target in a single
+    network round trip.
+
+    Returns ``None`` on any failure, timeout, or output with no resolvable
+    default-branch symref -- callers must treat that as "cannot be
+    determined", never as "safe to push". A missing ``refs/heads/<branch>``
+    line (with the query otherwise successful) means the remote confirmed
+    the branch doesn't exist there yet, which is a normal new-branch push.
+    """
+    branch_ref = f"refs/heads/{branch}"
     try:
-        result = _run(["git", "ls-remote", "--symref", "origin", "HEAD"], cwd=cwd, timeout=REMOTE_QUERY_TIMEOUT)
+        result = _run(
+            ["git", "ls-remote", "--symref", "origin", "HEAD", branch_ref],
+            cwd=cwd, timeout=REMOTE_QUERY_TIMEOUT,
+        )
     except subprocess.TimeoutExpired:
         return None
     if result.returncode != 0:
         return None
+    default_branch: str | None = None
+    branch_sha: str | None = None
+    branch_exists = False
     for line in result.stdout.splitlines():
-        if not line.startswith("ref:"):
+        if line.startswith("ref:"):
+            rest = line[len("ref:"):].strip()
+            ref, _, target = rest.rpartition("\t")
+            if target == "HEAD" and ref.startswith("refs/heads/"):
+                default_branch = ref[len("refs/heads/"):]
             continue
-        rest = line[len("ref:"):].strip()
-        ref, _, target = rest.rpartition("\t")
-        if target != "HEAD" or not ref.startswith("refs/heads/"):
-            continue
-        return ref[len("refs/heads/"):]
-    return None
-
-
-def remote_default_branch(cwd: Path) -> tuple[bool, str | None]:
-    """``(determined, branch)`` for the remote's default branch.
-
-    ``determined`` is False whenever the default branch cannot be established
-    safely -- no cached symref *and* the bounded query above failed, timed
-    out, or returned nothing. Callers must fail closed on that: an
-    undetermined default branch means "refuse to auto-push", never "assume
-    it's safe" (see module docstring / :func:`push_preflight`).
-    """
-    branch = _local_remote_head_branch(cwd)
-    if branch:
-        return True, branch
-    branch = _queried_remote_head_branch(cwd)
-    if branch:
-        return True, branch
-    return False, None
+        sha, _, ref = line.partition("\t")
+        if ref == branch_ref and sha:
+            branch_sha = sha
+            branch_exists = True
+    if default_branch is None:
+        # Ambiguous/unborn remote HEAD: cannot positively determine the
+        # default branch from this query, so nothing here can be trusted.
+        return None
+    return RemoteState(default_branch, branch_sha, branch_exists)
 
 
 def _worktree_clean(cwd: Path) -> bool:
@@ -310,33 +334,6 @@ def _worktree_clean(cwd: Path) -> bool:
 def _is_ancestor(cwd: Path, ancestor: str, descendant: str) -> bool:
     result = _run(["git", "merge-base", "--is-ancestor", ancestor, descendant], cwd=cwd)
     return result.returncode == 0
-
-
-def _remote_branch_sha(cwd: Path, branch: str) -> tuple[bool, str | None]:
-    """``(determined, sha)`` for ``origin/<branch>`` -- the actual push
-    target, queried live rather than trusted from a possibly stale or absent
-    local tracking ref (``@{u}`` can point at a different remote entirely,
-    e.g. a ``fork`` remote, while the push always goes to ``origin``).
-
-    ``determined=False`` means the query itself failed/timed out (offline,
-    unreachable remote): callers must refuse to push, not guess. ``sha=None``
-    with ``determined=True`` means the remote reached us and confirmed the
-    branch does not exist there yet -- a normal new-branch push.
-    """
-    try:
-        result = _run(
-            ["git", "ls-remote", "--exit-code", "origin", f"refs/heads/{branch}"],
-            cwd=cwd, timeout=REMOTE_QUERY_TIMEOUT,
-        )
-    except subprocess.TimeoutExpired:
-        return False, None
-    if result.returncode == 2:
-        return True, None  # remote reachable; ref does not exist there
-    if result.returncode != 0:
-        return False, None
-    line = result.stdout.strip().splitlines()[0] if result.stdout.strip() else ""
-    sha = line.split()[0] if line else None
-    return (True, sha) if sha else (False, None)
 
 
 def push_preflight(cwd: Path, auto_push_enabled: bool) -> PushDecision:
@@ -371,27 +368,28 @@ def push_preflight(cwd: Path, auto_push_enabled: bool) -> PushDecision:
         clear_marker(cwd)
         return PushDecision("invalidated", f"'{branch}' is a protected branch")
 
-    determined, default_branch = remote_default_branch(cwd)
-    if not determined:
-        # Fail closed: an unknown remote default branch must never be
-        # treated as "probably not the default, so probably safe".
-        return PushDecision("skipped", "remote default branch could not be determined; refusing to auto-push")
-    if branch == default_branch:
-        clear_marker(cwd)
-        return PushDecision("invalidated", f"'{branch}' is the remote default branch")
-
     if not _worktree_clean(cwd):
         return PushDecision("skipped", "worktree is dirty; marker kept for a later clean Stop")
 
-    determined, remote_sha = _remote_branch_sha(cwd, branch)
-    if not determined:
-        return PushDecision("skipped", f"could not query 'origin/{branch}'; refusing to auto-push")
-    if remote_sha is not None:
+    # One live, bounded query answers both "what is origin's current default
+    # branch" and "what does origin/<branch> currently look like". Neither
+    # question is ever answered from a local cache: a cached
+    # refs/remotes/origin/HEAD can go stale the moment the remote's default
+    # branch changes, so only what `origin` reports *right now* counts.
+    state = _query_origin(cwd, branch)
+    if state is None:
+        return PushDecision(
+            "skipped", "current remote default branch could not be determined; refusing to auto-push")
+    if branch == state.default_branch:
+        clear_marker(cwd)
+        return PushDecision("invalidated", f"'{branch}' is the remote default branch")
+
+    if state.branch_exists:
         local_sha = head_sha(cwd)
-        if remote_sha == local_sha:
+        if state.branch_sha == local_sha:
             clear_marker(cwd)
             return PushDecision("invalidated", "nothing new to push")
-        if not _is_ancestor(cwd, remote_sha, "HEAD"):
+        if not _is_ancestor(cwd, state.branch_sha, "HEAD"):
             return PushDecision(
                 "skipped", f"'origin/{branch}' is not an ancestor of HEAD; refusing to repair it")
 
@@ -403,14 +401,19 @@ def guarded_push(cwd: Path, auto_push_enabled: bool) -> PushDecision:
 
     The only command this ever runs is ``git push -u origin HEAD`` -- never
     ``--force``/``--force-with-lease``, never another branch, never tags,
-    never another remote. A push failure (auth/network) keeps the marker so
-    a later, clean Stop can retry; it never forces anything and never blocks
-    Claude from stopping.
+    never another remote. A push failure, timeout, or any other operational
+    problem keeps the marker so a later, clean Stop can retry; it never
+    forces anything and never blocks Claude from stopping (see
+    :func:`run_stop_hook`, which is the only caller that needs to be
+    exception-safe against this).
     """
     decision = push_preflight(cwd, auto_push_enabled)
     if decision.action != "ready":
         return decision
-    result = _run(["git", "push", "-u", "origin", "HEAD"], cwd=cwd, timeout=60)
+    try:
+        result = _run(["git", "push", "-u", "origin", "HEAD"], cwd=cwd, timeout=60)
+    except subprocess.TimeoutExpired:
+        return PushDecision("failed", "git push timed out")
     if result.returncode == 0:
         clear_marker(cwd)
         return PushDecision("pushed", "git push -u origin HEAD")
@@ -418,7 +421,17 @@ def guarded_push(cwd: Path, auto_push_enabled: bool) -> PushDecision:
 
 
 def run_stop_hook(stdin_text: str) -> PushDecision:
-    """The Stop hook entry point. Never raises and never blocks the stop."""
+    """The Stop hook entry point. Never raises and never blocks the stop.
+
+    Every operational failure -- a timeout, a missing ``git``, an
+    unexpected exception anywhere in the guard chain -- is caught here and
+    turned into a ``"failed"`` decision with the marker left untouched,
+    rather than letting an exception escape into Claude's hook runner. This
+    is deliberately the only place that catches broadly: every helper above
+    already fails closed on its own terms, this is just the outermost net
+    so a genuinely unexpected error still can't produce a stop-loop or a
+    traceback where Claude expects a hook to just finish.
+    """
     try:
         payload = json.loads(stdin_text)
     except json.JSONDecodeError:
@@ -426,7 +439,10 @@ def run_stop_hook(stdin_text: str) -> PushDecision:
     cwd_value = payload.get("cwd") if isinstance(payload, dict) else None
     root = _hook_workspace_root(cwd_value)
     auto_push_enabled = bool(os.environ.get(AUTO_PUSH_ENV, "").strip())
-    decision = guarded_push(root, auto_push_enabled)
+    try:
+        decision = guarded_push(root, auto_push_enabled)
+    except Exception as exc:  # noqa: BLE001 - the outermost safety net, see docstring
+        decision = PushDecision("failed", f"unexpected error: {exc}")
     if decision.action in ("pushed", "failed", "invalidated"):
         print(f"agent-box flow-next: {decision.action}: {decision.detail}", file=sys.stderr)
     return decision
