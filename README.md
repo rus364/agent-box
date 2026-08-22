@@ -64,7 +64,7 @@ This works from **any** directory — there is no requirement to keep projects u
 
 Claude Code is the default agent; change it with `export AGENT_BOX_AGENT=codex`.
 
-Their `~/.claude` and `~/.codex` state directories are mounted from the host so authentication, settings, and history survive disposable runs. If `~/.claude.json` exists on the host it is mounted too.
+Their `~/.claude` and `~/.codex` state directories are mounted from the host so authentication, settings, and history survive disposable runs. If `~/.claude.json` exists on the host it is mounted too. For `agent-box codex`, MCP commands under `/usr/lib/chatgpt/resources/` are disabled only for that container run because those ChatGPT desktop resources are not present in the image; the host Codex configuration is never modified.
 
 ## Configuration
 
