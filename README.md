@@ -308,7 +308,7 @@ If you keep something under `~/.agents` a container shouldn't read, move it out 
 
 ## Git and GitHub
 
-`git` and `gh` configuration directories are always mounted (so both tools work), but only *populated* from the host when you opt in — see the configuration table above. They're reseeded as a **copy**, not a bind mount, because `git`/`gh` rewrite config via temp-file-plus-rename, which fails on a bind-mounted file. The host stays the source of truth; anything written inside the container is discarded at the next start.
+`git` and `gh` configuration directories are always mounted (so both tools work), but only *populated* from the host when you opt in — see the configuration table above. They're seeded as a **copy**, not a bind mount, because `git`/`gh` rewrite config via temp-file-plus-rename, which fails on a bind-mounted file. The snapshot is prepared immediately before a new workspace box is created and stays stable for that box's lifetime: later Claude/Codex/shell attaches never replace its mounted source directories. The host stays the source of truth; anything written inside the box is discarded when the next box is created.
 
 With `github.gh_config` off, the directory is empty and `gh` runs unauthenticated. With `github.gh_token` off (or `AGENT_BOX_GH_TOKEN=0`), no `GH_TOKEN` or `GITHUB_TOKEN` is forwarded.
 

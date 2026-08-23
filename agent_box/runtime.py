@@ -19,7 +19,7 @@ import subprocess
 import sys
 import time
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -258,6 +258,26 @@ def seed_git_config(target: Path, config: Config) -> None:
         _set_git_config(target / "config", f"credential.{GH_CREDENTIAL_URL}.helper", GH_CREDENTIAL_HELPER)
 
 
+def prepare_container_lifetime_state(config: Config, *, mount_notifications: bool) -> None:
+    """Seed bind-mount sources immediately before creating a new box.
+
+    ``git`` and ``gh`` are directory bind mounts.  Reseeding them replaces
+    their root inodes, so it is safe only when no workspace container is using
+    them.  Callers for persistent boxes therefore invoke this only from the
+    new-container branch under the workspace transition lock.  The retained
+    disposable argv helper prepares on every run because its box has no
+    surviving mounts.
+    """
+    ensure_state_dirs()
+    seed_git_config(STATE_ROOT / "git", config)
+    seed_state_dir(
+        STATE_ROOT / "gh",
+        *((HOST_HOME / ".config/gh",) if config.github.gh_config else ()),
+    )
+    if mount_notifications:
+        notify_module.sync_credentials(config, NOTIFY_CREDENTIALS)
+
+
 def agent_tree_mounts() -> list[tuple[Path, Path, bool]]:
     """Read-only mounts for ``~/.agents`` and everything it symlinks out to.
 
@@ -313,14 +333,13 @@ def build_mounts(
     container-specific home or workspace root to translate to, because the
     container's user/home mirror the host's (agent_box.identity).
 
-    Ensures the host-side directories these mounts bind from actually exist
-    first, because podman fails a bind mount outright if its source is
-    missing.
+    This is deliberately a pure rendering step.  Call
+    :func:`prepare_container_lifetime_state` before creating a new container
+    so every bind source exists and mutable Git/GH source directories have
+    been seeded without replacing roots of a live box.
     """
     from .mounts import MountSpec, plan_mounts
 
-    config = load_config() if config is None else config
-    ensure_state_dirs()
     # The project root and any explicit --mount paths can legitimately
     # overlap (a --mount of a parent directory containing the project is
     # the documented way to expose sibling repos); plan_mounts collapses
@@ -353,8 +372,6 @@ def build_mounts(
     # boxes deliberately pass ``mount_notifications=False`` and use per-exec
     # forwarding instead, because a shared bind mount would expose it to every
     # concurrent process in that box.
-    if mount_notifications:
-        notify_module.sync_credentials(config, NOTIFY_CREDENTIALS)
     if mount_notifications and NOTIFY_CREDENTIALS.is_file():
         pairs.append((NOTIFY_CREDENTIALS, CONTAINER_NOTIFY_CREDENTIALS, True))
     # Claude Code's ~/.claude.json sits *beside* the config directory rather
@@ -366,14 +383,8 @@ def build_mounts(
             pairs.append((claude_json, claude_json, False))
 
     # Both directories are always mounted so git and gh work inside the
-    # container, but what goes into them depends on the config. Copies, not
-    # bind mounts of the originals, so a container can never write back to the
-    # host's real git/gh configuration.
-    seed_git_config(STATE_ROOT / "git", config)
-    seed_state_dir(
-        STATE_ROOT / "gh",
-        *((HOST_HOME / ".config/gh",) if config.github.gh_config else ()),
-    )
+    # container. Their source contents are prepared separately at box
+    # creation, never while merely calculating an attach spec.
     pairs += [
         (STATE_ROOT / "git", HOST_HOME / ".config/git", False),
         (STATE_ROOT / "gh", HOST_HOME / ".config/gh", False),
@@ -543,6 +554,7 @@ def base_podman_args(
     avoids changing callers that only inspect the old command construction.
     """
     config = load_config() if config is None else config
+    prepare_container_lifetime_state(config, mount_notifications=mount_notifications)
     args = ["run", "--rm", "--interactive", f"--workdir={workspace.container_cwd}"]
     args += container_lifetime_args(
         workspace, extra_mounts, script_dir, config, mount_notifications,
@@ -587,6 +599,7 @@ class WorkspaceContainerSpec:
     extra_mounts_hash: str
     mounts_explicit: bool
     create_argv: list[str]
+    creation_config: Config = field(repr=False, compare=False)
 
 
 def workspace_container_spec(
@@ -596,31 +609,23 @@ def workspace_container_spec(
     lifetime = container_lifetime_args(
         workspace, extra_mounts, script_dir, config, mount_notifications=False,
     )
+    base_lifetime = container_lifetime_args(
+        workspace, [], script_dir, config, mount_notifications=False,
+    )
     extra_mounts_hash = hashlib.sha256(json.dumps([
         (str(mount.path), mount.read_only)
         for mount in plan_mounts(extra_mounts)
     ], separators=(",", ":")).encode()).hexdigest()[:16]
-    extra_paths = {mount.path for mount in plan_mounts(extra_mounts)}
-    def is_extra_mount(value: str) -> bool:
-        parts = dict(part.split("=", 1) for part in value.split(",") if "=" in part)
-        return Path(parts.get("src", "/not-an-extra-mount")) in extra_paths
-
     # Extra binds are the only structural setting that an omitted later
-    # --mount may deliberately inherit. Everything else is a strict box
-    # compatibility boundary, including image, KVM, homes and hardening.
-    base_args: list[str] = []
-    index = 0
-    while index < len(lifetime):
-        if lifetime[index] == "--mount" and index + 1 < len(lifetime) and is_extra_mount(lifetime[index + 1]):
-            index += 2
-            continue
-        base_args.append(lifetime[index])
-        index += 1
+    # --mount may deliberately inherit. Derive the base identity from an
+    # independently rendered no-extra box rather than subtracting flags from
+    # the flattened argv: an explicit parent mount can subsume the project
+    # mount during Podman mount planning.
     base_structural = json.dumps({
         "schema": WORKSPACE_CONTAINER_SCHEMA,
         "workspace": str(workspace.host_root.resolve()),
         "image": IMAGE,
-        "args": base_args,
+        "args": base_lifetime,
     }, separators=(",", ":"), sort_keys=True).encode()
     base_config_hash = hashlib.sha256(base_structural).hexdigest()[:16]
     name = workspace_container_name(workspace)
@@ -641,6 +646,7 @@ def workspace_container_spec(
             "podman", "create", "--name", name, "--rm", "--init", *labels, *lifetime,
             IMAGE, "bash", str(KEEPER_PATH), str(workspace_lock_path(workspace)),
         ],
+        creation_config=config,
     )
 
 
@@ -750,6 +756,7 @@ def ensure_workspace_container(spec: WorkspaceContainerSpec) -> None:
             subprocess.run(["podman", "rm", "-f", spec.name], check=False)
             current = None
     if current is None:
+        prepare_container_lifetime_state(spec.creation_config, mount_notifications=False)
         created = subprocess.run(spec.create_argv, text=True, capture_output=True)
         if created.returncode:
             # Podman's name uniqueness is the final arbiter when two first
