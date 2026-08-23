@@ -103,6 +103,109 @@ class WorkspaceContainerLifecycleTests(unittest.TestCase):
         self.assertEqual(self.spec.create_argv[-3], "bash")
         self.assertEqual(self.spec.create_argv[-2], str(runtime.KEEPER_PATH))
 
+    def test_confirmed_absence_permits_snapshot_reseed_and_creation(self):
+        with mock.patch.object(runtime, "workspace_container_exists", return_value=False), \
+             mock.patch.object(runtime, "prepare_container_lifetime_state") as prepare, \
+             mock.patch.object(runtime.subprocess, "run", return_value=mock.Mock(returncode=0, stderr="")) as run:
+            runtime.ensure_workspace_container(self.spec)
+
+        prepare.assert_called_once_with(
+            self.spec.creation_config, mount_notifications=False, runtime_state=self.spec.runtime_state,
+        )
+        self.assertEqual(
+            [call.args[0] for call in run.call_args_list],
+            [self.spec.create_argv, ["podman", "start", self.spec.name]],
+        )
+
+    def test_container_exists_operational_failure_fails_closed_before_reseed(self):
+        with mock.patch.object(
+            runtime.subprocess, "run", return_value=mock.Mock(returncode=125, stderr="storage failure"),
+        ) as run, mock.patch.object(runtime, "prepare_container_lifetime_state") as prepare:
+            with self.assertRaisesRegex(AgentBoxError, "could not determine workspace container state"):
+                runtime.ensure_workspace_container(self.spec)
+
+        prepare.assert_not_called()
+        self.assertEqual([call.args[0] for call in run.call_args_list], [
+            ["podman", "container", "exists", self.spec.name],
+        ])
+
+    def test_inspect_operational_failure_after_exists_fails_closed(self):
+        responses = [
+            mock.Mock(returncode=0, stdout="", stderr=""),
+            mock.Mock(returncode=125, stdout="", stderr="inspect failed"),
+            mock.Mock(returncode=0, stdout="", stderr=""),
+        ]
+        with mock.patch.object(runtime.subprocess, "run", side_effect=responses) as run, \
+             mock.patch.object(runtime, "prepare_container_lifetime_state") as prepare:
+            with self.assertRaisesRegex(AgentBoxError, "could not inspect workspace container"):
+                runtime.ensure_workspace_container(self.spec)
+
+        prepare.assert_not_called()
+        self.assertEqual([call.args[0] for call in run.call_args_list], [
+            ["podman", "container", "exists", self.spec.name],
+            ["podman", "container", "inspect", self.spec.name],
+            ["podman", "container", "exists", self.spec.name],
+        ])
+
+    def test_container_disappearing_between_exists_and_inspect_is_rechecked_before_creation(self):
+        responses = [
+            mock.Mock(returncode=0, stdout="", stderr=""),
+            mock.Mock(returncode=125, stdout="", stderr="no such container"),
+            mock.Mock(returncode=1, stdout="", stderr=""),
+            mock.Mock(returncode=0, stdout="", stderr=""),
+            mock.Mock(returncode=0, stdout="", stderr=""),
+        ]
+        with mock.patch.object(runtime.subprocess, "run", side_effect=responses) as run, \
+             mock.patch.object(runtime, "prepare_container_lifetime_state") as prepare:
+            runtime.ensure_workspace_container(self.spec)
+
+        prepare.assert_called_once()
+        self.assertEqual([call.args[0] for call in run.call_args_list], [
+            ["podman", "container", "exists", self.spec.name],
+            ["podman", "container", "inspect", self.spec.name],
+            ["podman", "container", "exists", self.spec.name],
+            self.spec.create_argv,
+            ["podman", "start", self.spec.name],
+        ])
+
+    def test_cleanup_query_failure_leaves_container_untouched(self):
+        with mock.patch.object(runtime, "inspect_workspace_container", side_effect=AgentBoxError("query failed")), \
+             mock.patch.object(runtime.subprocess, "run") as run:
+            with self.assertRaisesRegex(AgentBoxError, "query failed"):
+                runtime.cleanup_workspace_container_if_idle(self.spec)
+        run.assert_not_called()
+
+    def test_stale_container_must_be_confirmed_absent_before_snapshot_reseed(self):
+        stale = self._container("exited")
+        with mock.patch.object(runtime, "inspect_workspace_container", side_effect=[stale, stale]), \
+             mock.patch.object(runtime, "prepare_container_lifetime_state") as prepare, \
+             mock.patch.object(runtime.subprocess, "run", return_value=mock.Mock(returncode=0, stderr="")) as run:
+            with self.assertRaisesRegex(AgentBoxError, "container still exists after removal"):
+                runtime.ensure_workspace_container(self.spec)
+
+        prepare.assert_not_called()
+        self.assertEqual([call.args[0] for call in run.call_args_list], [
+            ["podman", "rm", "-f", self.spec.name],
+        ])
+
+    def test_ambiguous_keeper_query_refuses_to_admit_work_into_a_dying_box(self):
+        with mock.patch.object(runtime, "inspect_workspace_container", return_value=self._container()), \
+             mock.patch.object(runtime, "container_has_keeper", return_value=None), \
+             mock.patch.object(runtime, "prepare_container_lifetime_state") as prepare, \
+             mock.patch.object(runtime.subprocess, "run") as run:
+            with self.assertRaisesRegex(AgentBoxError, "could not determine workspace keeper state"):
+                runtime.ensure_workspace_container(self.spec)
+
+        prepare.assert_not_called()
+        run.assert_not_called()
+
+    def test_exiting_keeper_rechecks_until_old_box_is_confirmed_absent(self):
+        with mock.patch.object(runtime, "inspect_workspace_container", return_value=None), \
+             mock.patch.object(runtime, "container_has_keeper", return_value=False), \
+             mock.patch.object(runtime.time, "monotonic", side_effect=[0, 0]), \
+             mock.patch.object(runtime.time, "sleep"):
+            self.assertIsNone(runtime._wait_for_exiting_keeper(self.spec.name, self._container()))
+
     def test_spec_calculation_preserves_existing_git_and_gh_source_directory_inodes(self):
         """Catches reseeding a live bind source while merely attaching."""
         git_source = self.spec.runtime_state.git
@@ -167,14 +270,14 @@ class WorkspaceContainerLifecycleTests(unittest.TestCase):
         run.assert_not_called()
 
     def test_stopped_workspace_is_removed_and_recreated(self):
-        with mock.patch.object(runtime, "inspect_workspace_container", return_value=self._container("exited")), \
+        with mock.patch.object(runtime, "inspect_workspace_container", side_effect=[self._container("exited"), None]), \
              mock.patch.object(runtime.subprocess, "run", return_value=mock.Mock(returncode=0, stderr="")) as run:
             runtime.ensure_workspace_container(self.spec)
         podman_calls = [call.args[0] for call in run.call_args_list if call.args[0][0] == "podman"]
         self.assertEqual(podman_calls[:2], [["podman", "rm", "-f", self.spec.name], self.spec.create_argv])
 
     def test_stopped_incompatible_workspace_is_removed_and_recreated(self):
-        with mock.patch.object(runtime, "inspect_workspace_container", return_value=self._container("exited", base_hash="old")), \
+        with mock.patch.object(runtime, "inspect_workspace_container", side_effect=[self._container("exited", base_hash="old"), None]), \
              mock.patch.object(runtime.subprocess, "run", return_value=mock.Mock(returncode=0, stderr="")) as run:
             runtime.ensure_workspace_container(self.spec)
         podman_calls = [call.args[0] for call in run.call_args_list if call.args[0][0] == "podman"]
@@ -183,7 +286,7 @@ class WorkspaceContainerLifecycleTests(unittest.TestCase):
     def test_stopped_prior_schema_workspace_is_recreated(self):
         stale = self._container("exited")
         stale["Config"]["Labels"][runtime.WORKSPACE_CONTAINER_SCHEMA_LABEL] = "1"
-        with mock.patch.object(runtime, "inspect_workspace_container", return_value=stale), \
+        with mock.patch.object(runtime, "inspect_workspace_container", side_effect=[stale, None]), \
              mock.patch.object(runtime.subprocess, "run", return_value=mock.Mock(returncode=0, stderr="")) as run:
             runtime.ensure_workspace_container(self.spec)
         self.assertEqual(run.call_args_list[0].args[0], ["podman", "rm", "-f", self.spec.name])
@@ -354,7 +457,7 @@ class WorkspaceContainerLifecycleTests(unittest.TestCase):
         run.assert_not_called()
 
     def test_idle_container_is_removed(self):
-        with mock.patch.object(runtime, "inspect_workspace_container", return_value=self._container()), \
+        with mock.patch.object(runtime, "inspect_workspace_container", side_effect=[self._container(), None]), \
              mock.patch.object(runtime, "container_has_workloads", return_value=False), \
              mock.patch.object(runtime.subprocess, "run") as run:
             runtime.cleanup_workspace_container_if_idle(self.spec)

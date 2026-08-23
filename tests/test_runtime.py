@@ -7,6 +7,7 @@ from unittest import mock
 
 from agent_box import claude_settings, notify, runtime
 from agent_box.config import Config, NotificationsConfig
+from agent_box.errors import AgentBoxError
 from agent_box.mounts import MountSpec
 from agent_box.workspace import Workspace
 
@@ -43,6 +44,20 @@ class ContainerStatePreparationTests(IsolatedRuntimeTest):
                 self.assertTrue((state_root / "uv").is_dir())
                 self.assertTrue((state_root / "mise").is_dir())
                 self.assertTrue((state_root / "notify").is_dir())
+
+
+class ImageExistenceTests(unittest.TestCase):
+    def test_missing_image_is_distinct_from_podman_storage_failure(self):
+        with mock.patch.object(
+            runtime.subprocess, "run", return_value=mock.Mock(returncode=1, stdout="", stderr=""),
+        ):
+            self.assertFalse(runtime.image_exists())
+
+        with mock.patch.object(
+            runtime.subprocess, "run", return_value=mock.Mock(returncode=125, stdout="", stderr="storage failure"),
+        ):
+            with self.assertRaisesRegex(AgentBoxError, "could not determine image state"):
+                runtime.image_exists()
 
 
 class MountOverlapWithProjectRootTests(IsolatedRuntimeTest):
