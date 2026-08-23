@@ -1,6 +1,10 @@
+import json
 import unittest
+import unittest.mock
 
-from agent_box.cli import parse_global_args
+from agent_box import flow_push
+from agent_box import notify as notify_module
+from agent_box.cli import flow_next_command, notify_command, parse_global_args
 
 
 class ParseGlobalArgsTests(unittest.TestCase):
@@ -69,6 +73,55 @@ class ParseGlobalArgsTests(unittest.TestCase):
         self.assertEqual(mounts, ["/foo"])
         self.assertTrue(host)
         self.assertEqual(rest, ["codex"])
+
+
+class FlowNextDispatchTests(unittest.TestCase):
+    """`flow_next_command` is Claude's Stop hook entry point only now --
+    the PostToolUse/`flowctl done` detector was removed along with the
+    marker mechanism it drove."""
+
+    def test_stop_dispatches_to_run_stop_hook(self):
+        with unittest.mock.patch.object(flow_push, "run_stop_hook") as run_stop_hook, \
+             unittest.mock.patch("sys.stdin") as stdin:
+            stdin.read.return_value = '{"cwd": "/work"}'
+            flow_next_command(["stop"])
+        run_stop_hook.assert_called_once_with('{"cwd": "/work"}')
+
+    def test_post_tool_use_is_no_longer_a_valid_action(self):
+        with self.assertRaises(SystemExit):
+            flow_next_command(["post-tool-use"])
+
+    def test_unknown_action_dies(self):
+        with self.assertRaises(SystemExit):
+            flow_next_command(["bogus"])
+
+
+class NotifyCodexDispatchTests(unittest.TestCase):
+    """Codex supports exactly one `notify` program, so `agent-box notify
+    codex` must drive both outbound notifications and the Flow-Next
+    auto-push turn-complete adapter from the same one payload read."""
+
+    def test_payload_argument_reaches_both_notify_and_flow_push(self):
+        payload = json.dumps({"type": "agent-turn-complete", "cwd": "/work/project"})
+        with unittest.mock.patch.object(notify_module, "notify_codex") as notify_codex, \
+             unittest.mock.patch.object(flow_push, "run_codex_turn_complete_hook") as run_hook:
+            notify_command(["codex", payload])
+        notify_codex.assert_called_once_with(payload)
+        run_hook.assert_called_once_with(payload)
+
+    def test_stdin_payload_reaches_both_notify_and_flow_push(self):
+        payload = json.dumps({"type": "agent-turn-complete", "cwd": "/work/project"})
+        with unittest.mock.patch.object(notify_module, "notify_codex") as notify_codex, \
+             unittest.mock.patch.object(flow_push, "run_codex_turn_complete_hook") as run_hook, \
+             unittest.mock.patch("sys.stdin") as stdin:
+            stdin.read.return_value = payload
+            notify_command(["codex"])
+        notify_codex.assert_called_once_with(payload)
+        run_hook.assert_called_once_with(payload)
+
+    def test_too_many_payload_arguments_dies(self):
+        with self.assertRaises(SystemExit):
+            notify_command(["codex", "a", "b"])
 
 
 if __name__ == "__main__":

@@ -30,7 +30,7 @@ from . import notify as notify_module
 from .atomicio import atomic_write_text
 from .config import Config, load_config
 from .errors import AgentBoxError
-from .flow_next import POLICY_ENV_VARS, flow_next_launch_env
+from .flow_next import AUTO_PUSH_ENV, POLICY_ENV_VARS, flow_next_launch_env
 from .identity import HostIdentity, detect_host_identity
 from .mounts import MountSpec, plan_mounts
 from .notify import SUPPRESS_NOTIFY_ENV
@@ -98,10 +98,18 @@ def codex_runtime_overrides() -> list[str]:
     return overrides
 
 
-def codex_command(rest: list[str], config: Config) -> list[str]:
-    """Build the Codex command, including all container-only config overrides."""
+def codex_command(rest: list[str], config: Config, flow_next_auto_push_active: bool = False) -> list[str]:
+    """Build the Codex command, including all container-only config overrides.
+
+    Codex supports exactly one `notify` program, so it is registered whenever
+    *either* outbound Telegram notifications are usable *or* this launch's
+    Flow-Next auto-push policy is active (``flow_next_auto_push_active``,
+    derived by the caller from ``flow_next_launch_env``'s
+    ``AGENT_BOX_FLOW_NEXT_AUTO_PUSH`` signal) -- `agent-box notify codex`
+    itself dispatches to both independently (see `agent_box.cli`).
+    """
     command = ["codex"]
-    if config.notifications.usable:
+    if config.notifications.usable or flow_next_auto_push_active:
         command += ["-c", 'notify=["agent-box","notify","codex"]']
     for override in codex_runtime_overrides():
         command += ["-c", override]
@@ -1318,7 +1326,10 @@ def runtime_main(args: list[str], script_dir: Path, extra_mount_specs: list[str]
             else:
                 command = ["claude", *rest]
         else:
-            command = codex_command(rest, config)
+            flow_next_auto_push_active = any(
+                pair.startswith(f"{AUTO_PUSH_ENV}=") for pair in extra_env
+            )
+            command = codex_command(rest, config, flow_next_auto_push_active)
         spec = workspace_container_spec(workspace, extra_mounts, script_dir, config)
         invocation, process_env = invocation_env(config, agent)
         # Channel/Flow-Next values are invocation policy, not box identity.

@@ -171,27 +171,34 @@ def notify_command(args: list[str]) -> None:
     elif action == "codex":
         if len(rest) > 1:
             die("agent-box notify codex accepts at most one payload argument")
-        notify_module.notify_codex(rest[0] if rest else None)
+        # Codex supports exactly one `notify` program, so this single entry
+        # point carries both outbound notifications and the Flow-Next
+        # auto-push turn-complete adapter. The payload is read once here and
+        # handed to each independently, so neither one can starve the other
+        # of stdin.
+        payload_text = rest[0] if rest else sys.stdin.read()
+        notify_module.notify_codex(payload_text)
+        from . import flow_push
+        flow_push.run_codex_turn_complete_hook(payload_text)
     else:
         die(f"unsupported notify action '{action}'; expected test, claude, or codex")
 
 
 # -- flow-next ---------------------------------------------------------------
 #
-# Internal hook entry points for the managed Claude PostToolUse/Stop hooks
-# that drive Flow-Next auto-push (see agent_box.flow_push). Not meant to be
-# typed by a user; agent-box config installs these as the literal hook
-# commands in ~/.claude/settings.json.
+# Internal hook entry point for the managed Claude Stop hook that drives
+# Flow-Next auto-push (see agent_box.flow_push). Not meant to be typed by a
+# user; agent-box config installs this as the literal hook command in
+# ~/.claude/settings.json. Codex's turn-complete adapter is reached through
+# `notify_command` above instead, since Codex has only one notify program.
 
 def flow_next_command(args: list[str]) -> None:
     from . import flow_push
 
-    if args == ["post-tool-use"]:
-        flow_push.run_post_tool_use_hook(sys.stdin.read())
-    elif args == ["stop"]:
+    if args == ["stop"]:
         flow_push.run_stop_hook(sys.stdin.read())
     else:
-        die("unsupported flow-next action; expected post-tool-use or stop")
+        die("unsupported flow-next action; expected stop")
 
 
 # -- config ----------------------------------------------------------------
@@ -328,10 +335,11 @@ def config_interactive() -> None:
         "Forward endpoint/proxy settings from this shell (base URL, proxies, CA bundle)",
         config.providers.transport)
 
-    print("\n-- Flow-Next auto-push (opt-in, Claude only) --")
-    print("On a successful 'flowctl done', arms a marker; the next Claude Stop")
-    print("pushes the current feature branch only if every safety check passes")
-    print("(clean worktree, not main/master/default, no diverged remote, no force).")
+    print("\n-- Flow-Next auto-push (opt-in) --")
+    print("At the end of a Claude/Codex turn, pushes the current feature branch")
+    print("only if Git shows locally unpushed commits, Flow-Next confirms one of")
+    print("their tasks is actually done, and every safety check passes (clean")
+    print("worktree, not main/master/default, no diverged remote, no force).")
     config.flow_next.auto_push = _prompt_bool(
         "Enable Flow-Next auto-push", config.flow_next.auto_push)
 

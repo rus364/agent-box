@@ -1,74 +1,64 @@
-"""Flow-Next auto-push: pending marker, guarded push, and the managed Claude
-hooks that drive both.
+"""Flow-Next auto-push: state reconciliation at agent-turn completion, and
+the managed Claude/Codex adapters that drive it.
 
-The contract is deliberately narrow:
+The contract is a reconciliation, not an event detector:
 
-* a successful *actual, unchained* ``flowctl done`` invocation -- detected
-  from a Claude ``PostToolUse`` hook on the ``Bash`` tool -- arms a small
-  marker recorded in git's own private state for the repository;
-* a later Claude ``Stop`` consumes that marker and, only if every guard in
-  :func:`push_preflight` passes, runs exactly ``git push -u origin HEAD``.
+* at the end of an agent turn (Claude ``Stop``, Codex's turn-complete notify
+  event), the workspace for that event's ``cwd`` is resolved;
+* Git itself is asked what is locally committed on the current branch but not
+  yet on ``origin`` -- the *unpushed range*;
+* the paths that changed within that range are inspected for tracked
+  Flow-Next task receipts (``.flow/tasks/<task-id>.md``);
+* for each such task id, Flow-Next's own CLI (``flowctl show <id> --json``)
+  is asked for that task's current, authoritative status;
+* if at least one of those tasks is confirmed ``"done"``, every guard in
+  :func:`push_preflight` runs, and only if all of them pass does this push
+  exactly ``git push -u origin HEAD``.
 
-The marker is a deliberately narrow capability, and reads as exactly one
-sentence: *this repository/worktree, on this branch, at this commit,
-successfully completed Flow-Next.* It is never "this branch was completed
-at some point in the past" -- both the branch and the recorded ``head``
-must still match at push time, so a marker retained across a retryable
-failure can authorize a retry of *that same commit* and nothing else.
-Commits created afterwards need their own successful ``flowctl done``.
+Nothing here parses shell commands, commit messages, or prose to infer
+completion -- Flow-Next's CLI is the sole authority on task status, and Git
+is the sole authority on what is locally new. There is no marker, no pending
+state, and nothing to invalidate: every reconciliation starts from scratch,
+so it is safe to call repeatedly (a later call after a real push finds
+nothing new and simply does nothing) and safe across any number of
+independent sessions/workspaces sharing one long-lived container -- each
+event is scoped only by the workspace resolved from its own ``cwd``.
 
-Nothing here decides whether tests passed, review shipped, or a quality
-audit succeeded -- that is Flow-Next's job, expressed entirely through
-whether ``flowctl done`` itself exited zero. This module never parses Claude
-or reviewer prose, never merges/rebases/resets, and never force-pushes.
-
-Both entry points normalize whatever ``cwd`` Claude reports to the git
-worktree top-level directory (:func:`agent_box.workspace.git_toplevel`) --
-the same resolver the launcher uses -- so a session started in a nested
-directory or a linked worktree agrees with the launcher on what "the
-workspace" is; see the module docstring note in ``run_post_tool_use_hook``/
-``run_stop_hook``.
+A missed auto-push is an acceptable outcome (the user can always run ``git
+push`` manually), so every ambiguous or undeterminable condition -- an
+unresolved Flowctl executable, a malformed Flowctl response, an
+undeterminable remote state, a dirty worktree -- fails closed to "skip", not
+to "push anyway".
 """
 from __future__ import annotations
 
 import json
 import os
-import re
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any
 
-from .atomicio import atomic_write_json, read_json
-from .flow_next import AUTO_PUSH_ENV, is_flow_next_workspace
+from .flow_next import AUTO_PUSH_ENV, FLOWCTL_ENV, is_flow_next_workspace
 from .workspace import git_toplevel
-
-#: Relative to `git rev-parse --git-path <name>` -- resolved through git
-#: itself rather than assuming ``.git/...`` literally, because `.git` is a
-#: *file* (not a directory) in a linked worktree.
-MARKER_GIT_PATH = "agent-box/flow-next-push-pending.json"
 
 PROTECTED_BRANCHES = {"main", "master"}
 
-#: Stable, distinct command identifiers so hook ownership/removal is
+#: Stable, distinct command identifier so hook ownership/removal is
 #: deterministic and independent of the notification hooks in `agent_box.notify`.
-POST_TOOL_USE_COMMAND = "agent-box flow-next post-tool-use"
 STOP_COMMAND = "agent-box flow-next stop"
 
-#: A bounded network round trip (`git ls-remote`) is used only as a
-#: fail-closed fallback when the answer can't be found locally -- never to
-#: repair anything, and never allowed to hang the Stop hook indefinitely.
+#: Bounded network round trips (`git ls-remote`) and Flowctl invocations are
+#: used only as fail-closed answers to "what does origin/Flow-Next currently
+#: say" -- never to repair anything, and never allowed to hang a Stop/notify
+#: hook indefinitely.
 REMOTE_QUERY_TIMEOUT = 8.0
+FLOWCTL_TIMEOUT = 15.0
 
-#: Any of these mean the text is not a single, unchained, un-piped,
-#: un-backgrounded command -- so a successful overall Bash result would not
-#: reliably mean `flowctl done` itself is what exited zero (`flowctl done
-#: ... || true` still reports a normal Bash success). Rejecting these is a
-#: deliberate, narrow syntax gate, not a shell parser.
-_SHELL_CHAINING_RE = re.compile(r"[;&|`\n]|\$\(")
-#: `flowctl done ...` or `/abs/path/flowctl done ...`, anchored at both ends
-#: once chaining characters have already been ruled out above.
-_FLOWCTL_DONE_RE = re.compile(r"^(?:\S*/)?flowctl(?:\.\w+)?\s+done(?:\s+\S.*)?$")
+#: Tracked Flow-Next task receipts live at exactly this flat path shape
+#: relative to the workspace root; nothing below this module ever looks
+#: inside a task file's content, only at whether its path changed.
+FLOW_TASKS_DIR = ".flow/tasks/"
 
 
 #: Applied only to the final `git push` subprocess (see `guarded_push`),
@@ -87,18 +77,11 @@ _FLOWCTL_DONE_RE = re.compile(r"^(?:\S*/)?flowctl(?:\.\w+)?\s+done(?:\s+\S.*)?$"
 #:   there is. It therefore overrides an inherited `GIT_CONFIG_PARAMETERS`
 #:   (also command scope, but `-c` is appended after it, and last wins) as
 #:   well as an inherited `GIT_CONFIG_COUNT` entry (merely *environment*
-#:   scope). The environment mechanism these overrides used previously did
-#:   NOT have that property: an inherited `GIT_CONFIG_PARAMETERS` beat it
-#:   outright, and a hostile `push.followTags=true` survived into the real
-#:   push.
+#:   scope).
 #: * `-c` is purely *additive*. It leaves every inherited `GIT_CONFIG_*`
 #:   entry in place, so the final push resolves `remote.origin.url`,
 #:   `remote.origin.pushurl`, and `url.*.insteadOf`/`pushInsteadOf` from
-#:   exactly the same configuration the preflight queries saw. Writing
-#:   `GIT_CONFIG_COUNT`/`KEY_n`/`VALUE_n` instead *replaced* the inherited
-#:   entries, which could silently delete an inherited
-#:   `remote.origin.pushurl` and send the push to a different repository
-#:   than the one preflight inspected. See `_push_config_args`.
+#:   exactly the same configuration the preflight queries saw.
 #:
 #: `push.default`, `remote.<name>.push`, and `remote.<name>.mirror` are
 #: deliberately not neutralized: the explicit `HEAD` refspec on the command
@@ -119,13 +102,15 @@ def _push_config_args() -> list[str]:
 def _run(
     args: list[str], cwd: Path | str | None = None, timeout: float = 10,
 ) -> subprocess.CompletedProcess:
-    """Run a git command with a *single*, uniform environment.
+    """Run one git or Flowctl subprocess with a *single*, uniform environment.
 
-    Every git invocation in this module -- preflight queries and the final
-    push alike -- inherits exactly the same environment, so they cannot
-    disagree about what ``origin`` resolves to. The push's extra safety
-    settings ride on the command line instead (see `_push_config_args`)
-    precisely so that this stays true.
+    Every invocation in this module -- preflight queries, the Flowctl query,
+    and the final push alike -- inherits exactly the same environment, so
+    they cannot disagree about what ``origin`` resolves to. The push's extra
+    safety settings ride on the command line instead (see
+    `_push_config_args`) precisely so that this stays true. Always argv-style
+    (never ``shell=True``): every caller passes a literal list, so a task id
+    or path can never be interpreted as shell syntax.
     """
     env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
     return subprocess.run(
@@ -137,34 +122,23 @@ def _run(
 def _hook_workspace_root(cwd_value: Any) -> Path:
     """The same repository root the launcher would resolve for this ``cwd``.
 
-    Claude reports whatever directory the session's ``cwd`` happens to be --
-    a nested subdirectory, or a linked worktree -- not necessarily the
+    An agent reports whatever directory its session's ``cwd`` happens to be
+    -- a nested subdirectory, or a linked worktree -- not necessarily the
     repository root the launcher mounted/resolved
-    (``agent_box.workspace.resolve_workspace``). Every Flow-Next detection,
-    marker, and push-guard decision below must agree on the same root, so
-    this is the one place that normalizes it via ``git rev-parse
-    --show-toplevel``. Outside a git repository, `git_toplevel` returns None
-    and the raw value is used as-is -- every check below already fails
-    safely (no marker, "not a git repository", etc.) in that case.
+    (``agent_box.workspace.resolve_workspace``). Every Flow-Next detection
+    and push-guard decision below must agree on the same root, so this is the
+    one place that normalizes it via ``git rev-parse --show-toplevel``.
+    Outside a git repository, `git_toplevel` returns None and the raw value
+    is used as-is -- every check below already fails safely ("not a git
+    repository", etc.) in that case.
+
+    This is also the isolation boundary for multiple independent sessions
+    sharing one long-lived container: each event is resolved from its own
+    ``cwd`` alone, so a completion in ``/project/a`` can never touch
+    ``/project/b``, and no state here is ever shared across workspaces.
     """
     cwd = Path(cwd_value) if isinstance(cwd_value, str) and cwd_value else Path.cwd()
     return git_toplevel(cwd) or cwd
-
-
-# -- git-local marker -------------------------------------------------------
-
-def _git_path(cwd: Path, name: str) -> Path | None:
-    """Resolve a private git path via ``git rev-parse --git-path``.
-
-    Deliberately not ``cwd / ".git" / name``: ``.git`` is a plain file (not a
-    directory) inside a linked worktree, so only git itself knows the real
-    location of its own state.
-    """
-    result = _run(["git", "rev-parse", "--git-path", name], cwd=cwd)
-    if result.returncode != 0:
-        return None
-    path = result.stdout.strip()
-    return (cwd / path).resolve() if path else None
 
 
 def current_branch(cwd: Path) -> str | None:
@@ -181,147 +155,11 @@ def head_sha(cwd: Path) -> str | None:
     return result.stdout.strip() if result.returncode == 0 else None
 
 
-def arm_marker(cwd: Path) -> None:
-    """Record "a Flow-Next task just completed *here*" for a later Stop.
-
-    "Here" is deliberately narrow: this exact branch **at this exact
-    commit**. Both fields are authorization state consumed by
-    :func:`push_preflight`, not diagnostic metadata -- see that function on
-    why the recorded ``head`` must still match at push time.
-
-    No-ops (silently) outside a git repository, with a detached HEAD, or on
-    an unborn branch with no commit to name -- there is nothing safe to
-    record, and this must never raise into the caller's hook process.
-    """
-    marker_path = _git_path(cwd, MARKER_GIT_PATH)
-    if marker_path is None:
-        return
-    branch = current_branch(cwd)
-    if branch is None:
-        return
-    head = head_sha(cwd)
-    if not head:
-        # Nothing to bind the capability to; arming a headless marker would
-        # only create a marker that can never validate.
-        return
-    atomic_write_json(marker_path, {"branch": branch, "head": head})
-
-
-def read_marker(cwd: Path) -> dict[str, Any] | None:
-    marker_path = _git_path(cwd, MARKER_GIT_PATH)
-    if marker_path is None or not marker_path.is_file():
-        return None
-    try:
-        data = read_json(marker_path)
-    except (OSError, ValueError):
-        return None
-    return data if isinstance(data, dict) else None
-
-
-def clear_marker(cwd: Path) -> None:
-    marker_path = _git_path(cwd, MARKER_GIT_PATH)
-    if marker_path is not None:
-        marker_path.unlink(missing_ok=True)
-
-
-# -- done detection (PostToolUse) -------------------------------------------
-
-def _is_bare_flowctl_done(command: str) -> bool:
-    """Whether ``command`` is *exactly* one unchained ``flowctl done`` call.
-
-    Rejects anything that could let a shell mask ``flowctl done``'s own exit
-    status while the overall Bash tool call still reports success --
-    ``flowctl done ... || true``, ``; echo ok``, ``| cat``, background ``&``,
-    command substitution, multiple lines. Wrapper forms such as ``env FOO=bar
-    flowctl done`` or ``cd repo && flowctl done`` are deliberately rejected
-    rather than special-cased: this is a narrow syntax gate, not a shell
-    parser, and it is safe to under-detect here (see module docstring).
-    """
-    command = command.strip()
-    if not command or _SHELL_CHAINING_RE.search(command):
-        return False
-    return bool(_FLOWCTL_DONE_RE.match(command))
-
-
-def _bash_call_succeeded(payload: dict[str, Any]) -> bool:
-    """Whether this ``Bash`` ``PostToolUse`` represents a successful command.
-
-    Per Claude Code's current documented hook contract, ``PostToolUse``
-    fires only after a tool call *succeeds*; a Bash command that exits
-    nonzero instead produces the separate ``PostToolUseFailure`` event
-    (documented with an ``error`` field such as ``"Exit code 1: ..."``), and
-    :func:`handle_post_tool_use` below only accepts ``hook_event_name ==
-    "PostToolUse"`` -- so a failed Bash command never reaches this function
-    at all. That event-level contract, not anything inside ``tool_response``
-    itself, is what actually establishes success here.
-
-    The current documented shape of ``tool_response`` for ``Bash`` is a
-    structured object -- ``{"stdout": ..., "stderr": ..., "interrupted":
-    bool, "isImage": bool}`` -- with no separate success/failure field of
-    its own (there is nothing to fail on, since ``PostToolUse`` already only
-    fires on success). The ``is_error``/``isError``/``success`` dict check
-    below, and treating a *plain string* ``tool_response`` as success, are
-    both kept only as defensive compatibility with an alternate or older
-    shape some integration or Claude Code version might send -- not because
-    either is the documented current Bash shape.
-    """
-    response = payload.get("tool_response")
-    if isinstance(response, dict):
-        if response.get("is_error") or response.get("isError"):
-            return False
-        if response.get("success") is False:
-            return False
-    return True
-
-
-def handle_post_tool_use(payload: dict[str, Any]) -> bool:
-    """Arm the pending-push marker if this Bash call was a successful,
-    unchained ``flowctl done``. Returns whether it was armed (for tests);
-    never raises.
-    """
-    if payload.get("hook_event_name") != "PostToolUse":
-        # Strict, not `in (None, "PostToolUse")`: this hook is registered
-        # only under the PostToolUse event key (see
-        # `install_flow_push_hooks`), and Claude Code always sends
-        # `hook_event_name` on every real invocation. Accepting a missing
-        # value would only be accommodating an incomplete synthetic
-        # payload, not real hook traffic.
-        return False
-    if payload.get("tool_name") != "Bash":
-        return False
-    tool_input = payload.get("tool_input")
-    if not isinstance(tool_input, dict):
-        return False
-    if tool_input.get("run_in_background"):
-        # A backgrounded command has not necessarily finished by the time
-        # PostToolUse fires; there is no completion signal to trust here.
-        return False
-    command = tool_input.get("command")
-    if not isinstance(command, str) or not _is_bare_flowctl_done(command):
-        return False
-    if not _bash_call_succeeded(payload):
-        return False
-    cwd = payload.get("cwd")
-    if not isinstance(cwd, str) or not cwd:
-        return False
-    arm_marker(_hook_workspace_root(cwd))
-    return True
-
-
-def run_post_tool_use_hook(stdin_text: str) -> None:
-    try:
-        payload = json.loads(stdin_text)
-    except json.JSONDecodeError:
-        return
-    if isinstance(payload, dict):
-        handle_post_tool_use(payload)
-
-
 # -- push preflight / guarded push -------------------------------------------
 
 class PushDecision:
     def __init__(self, action: str, detail: str = ""):
-        #: One of "pushed", "skipped", "invalidated", "failed".
+        #: One of "pushed", "skipped", "failed".
         self.action = action
         self.detail = detail
 
@@ -332,28 +170,31 @@ class PushDecision:
 class RemoteState:
     """What one bounded, live query of ``origin`` established.
 
-    Both ``default_branch`` and ``branch_sha`` are answered by the *same*
-    ``git ls-remote`` round trip (see :func:`_query_origin`) -- there is no
-    separate "trust the local cache" path for either question. A cached
-    ``refs/remotes/origin/HEAD`` symref is not authoritative evidence: it
-    can go stale the moment the remote's default branch changes underneath
-    it, and a decision this consequential must be based on what ``origin``
-    says *right now*, not what a prior ``clone``/``fetch`` happened to
-    record locally.
+    Every field is answered by the *same* ``git ls-remote`` round trip (see
+    :func:`_query_origin`) -- there is no separate "trust the local cache"
+    path for any of them. A cached ``refs/remotes/origin/HEAD`` symref is not
+    authoritative evidence: it can go stale the moment the remote's default
+    branch changes underneath it, and a decision this consequential must be
+    based on what ``origin`` says *right now*, not what a prior
+    ``clone``/``fetch`` happened to record locally.
     """
 
-    def __init__(self, default_branch: str | None, branch_sha: str | None, branch_exists: bool):
+    def __init__(
+        self, default_branch: str | None, default_branch_sha: str | None,
+        branch_sha: str | None, branch_exists: bool,
+    ):
         #: None means the query could not positively determine it -- callers
         #: must fail closed, never fall back to a local guess.
         self.default_branch = default_branch
+        #: The current tip SHA of `origin`'s default branch, from the same
+        #: `HEAD` line of the same round trip -- used only to bound the
+        #: unpushed-range scan for a brand-new branch (see `push_preflight`),
+        #: never for a push-safety decision.
+        self.default_branch_sha = default_branch_sha
         #: The current SHA of ``refs/heads/<branch>`` on ``origin``, or None
         #: if ``branch_exists`` is False (a normal new-branch push).
         self.branch_sha = branch_sha
         self.branch_exists = branch_exists
-
-    @property
-    def default_determined(self) -> bool:
-        return self.default_branch is not None
 
 
 def _effective_push_url(cwd: Path) -> str | None:
@@ -363,9 +204,8 @@ def _effective_push_url(cwd: Path) -> str | None:
     (``remote.origin.pushurl``), including *multiple* push URLs, and either
     can be affected by ``url.<base>.pushInsteadOf``/``insteadOf``
     rewriting. ``git remote get-url --push --all`` is git's own
-    authoritative resolver for this (rewriting included) -- mechanically
-    verified to return the real rewritten destination, not the configured
-    placeholder -- so this never parses ``.git/config`` by hand.
+    authoritative resolver for this (rewriting included), so this never
+    parses ``.git/config`` by hand.
 
     Returns ``None`` (fail closed) whenever there is not *exactly* one
     resolved push destination: zero (no remote/no usable URL) or more than
@@ -382,9 +222,9 @@ def _effective_push_url(cwd: Path) -> str | None:
 
 def _query_origin(cwd: Path, branch: str, remote_url: str) -> RemoteState | None:
     """One bounded, read-only ``git ls-remote --symref <remote_url> HEAD
-    refs/heads/<branch>`` call answering both the remote's current default
-    branch and the current state of the actual push target in a single
-    network round trip.
+    refs/heads/<branch>`` call answering the remote's current default branch
+    (name and tip SHA) and the current state of the actual push target, in a
+    single network round trip.
 
     ``remote_url`` must be the resolved *push* destination from
     :func:`_effective_push_url`, not the bare name ``origin`` -- querying
@@ -408,6 +248,7 @@ def _query_origin(cwd: Path, branch: str, remote_url: str) -> RemoteState | None
     if result.returncode != 0:
         return None
     default_branch: str | None = None
+    default_branch_sha: str | None = None
     branch_sha: str | None = None
     branch_exists = False
     for line in result.stdout.splitlines():
@@ -418,6 +259,11 @@ def _query_origin(cwd: Path, branch: str, remote_url: str) -> RemoteState | None
                 default_branch = ref[len("refs/heads/"):]
             continue
         sha, _, ref = line.partition("\t")
+        if ref == "HEAD" and sha:
+            # The same query's plain `HEAD` line: its SHA is, by definition,
+            # the current tip of whatever branch the `ref:` symref line above
+            # names -- one round trip, no extra network call.
+            default_branch_sha = sha
         if ref == branch_ref and sha:
             branch_sha = sha
             branch_exists = True
@@ -425,7 +271,7 @@ def _query_origin(cwd: Path, branch: str, remote_url: str) -> RemoteState | None
         # Ambiguous/unborn remote HEAD: cannot positively determine the
         # default branch from this query, so nothing here can be trusted.
         return None
-    return RemoteState(default_branch, branch_sha, branch_exists)
+    return RemoteState(default_branch, default_branch_sha, branch_sha, branch_exists)
 
 
 def _worktree_clean(cwd: Path) -> bool:
@@ -438,64 +284,98 @@ def _is_ancestor(cwd: Path, ancestor: str, descendant: str) -> bool:
     return result.returncode == 0
 
 
-def push_preflight(cwd: Path, auto_push_enabled: bool) -> PushDecision:
+def _merge_base(cwd: Path, a: str, b: str) -> str | None:
+    result = _run(["git", "merge-base", a, b], cwd=cwd)
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
+# -- proving a local Flow-Next completion ------------------------------------
+
+def changed_flow_task_ids(cwd: Path, base: str, head: str) -> list[str]:
+    """Task ids whose tracked receipt (``.flow/tasks/<id>.md``) changed
+    between ``base`` and ``head``.
+
+    The task id is derived mechanically from the known, flat Flow-Next task
+    path shape (the filename stem) -- never inferred from a commit message,
+    a diff's content, or any prose. A nested path under ``.flow/tasks/`` is
+    not a task receipt and is ignored.
+    """
+    result = _run(["git", "diff", "--name-only", base, head, "--", ".flow/tasks"], cwd=cwd)
+    if result.returncode != 0:
+        return []
+    ids: list[str] = []
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if not line.startswith(FLOW_TASKS_DIR) or not line.endswith(".md"):
+            continue
+        task_id = line[len(FLOW_TASKS_DIR):-len(".md")]
+        if task_id and "/" not in task_id:
+            ids.append(task_id)
+    return ids
+
+
+def flowctl_show(flowctl: Path, cwd: Path, task_id: str) -> dict[str, Any] | None:
+    """``flowctl show <task_id> --json``, parsed -- or ``None`` on any
+    failure (missing/non-executable Flowctl, non-zero exit, timeout,
+    malformed JSON, or a JSON value that isn't an object).
+
+    Argv-style only: ``task_id`` reaches the subprocess as one argv element
+    and is never interpolated into a shell command string.
+    """
+    try:
+        result = _run([str(flowctl), "show", task_id, "--json"], cwd=cwd, timeout=FLOWCTL_TIMEOUT)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def task_confirmed_done(flowctl: Path, cwd: Path, task_id: str) -> bool:
+    """Whether Flow-Next's own CLI currently reports ``task_id`` as done.
+
+    Trusts ``flowctl show``'s merged answer outright rather than re-deriving
+    Flow-Next's own runtime/committed status-merging rules here -- Flow-Next
+    already decided which source (`status_source`) is authoritative for this
+    task; duplicating that logic in agent-box would only risk disagreeing
+    with it.
+    """
+    data = flowctl_show(flowctl, cwd, task_id)
+    return isinstance(data, dict) and data.get("status") == "done"
+
+
+def push_preflight(cwd: Path, auto_push_enabled: bool, flowctl: Path | None) -> PushDecision:
     """Every required guard, in order; the first failure decides the outcome.
 
     Returns a :class:`PushDecision` describing what happened (or would have
     happened) without performing the push itself -- see :func:`guarded_push`.
+    There is no persistent state to invalidate: every call recomputes the
+    answer from Git and Flow-Next's current state, so calling this again
+    after a real push (or with nothing new completed) simply finds nothing
+    to do.
     """
     if not auto_push_enabled:
         return PushDecision("skipped", "auto-push not enabled for this launch")
     if not is_flow_next_workspace(cwd):
         return PushDecision("skipped", "not a Flow-Next workspace")
-    marker = read_marker(cwd)
-    if marker is None:
-        return PushDecision("skipped", "no pending marker")
-
     if _run(["git", "rev-parse", "--is-inside-work-tree"], cwd=cwd).returncode != 0:
         return PushDecision("skipped", "not a git repository")
 
     branch = current_branch(cwd)
     if branch is None:
-        # Usually transient (mid-rebase, a temporary detached checkout); the
-        # marker is kept so a later Stop back on the recorded branch can
-        # still complete the push -- but only if that branch is still at the
-        # recorded commit, which the HEAD check below enforces. Nothing here
-        # widens the capability; it just doesn't burn it on a transient
-        # state.
         return PushDecision("skipped", "HEAD is detached")
-
-    if marker.get("branch") != branch:
-        clear_marker(cwd)
-        return PushDecision("invalidated", f"marker was for '{marker.get('branch')}', not '{branch}'")
-
-    # The marker authorizes exactly one commit: the HEAD that was current
-    # when `flowctl done` succeeded. Without this check a marker retained
-    # across a retryable failure would keep authorizing whatever HEAD
-    # happens to be current later, so a single successful `flowctl done` at
-    # commit A would silently license pushing B, C, D... -- commits no
-    # Flow-Next completion ever vouched for.
-    #
-    # A mismatch *invalidates* rather than skips. The marker describes a
-    # repository state that no longer exists, so there is nothing for a
-    # later Stop to retry: keeping it would only produce an unbounded run
-    # of Stop hooks re-deciding the same refusal. Re-authorizing the new
-    # HEAD is exactly what the next successful `flowctl done` does -- it
-    # re-arms the marker at that commit (see `arm_marker`).
-    head = head_sha(cwd)
-    if head is None or marker.get("head") != head:
-        clear_marker(cwd)
-        return PushDecision(
-            "invalidated",
-            f"marker was for commit {marker.get('head')}, but HEAD is now {head}; "
-            "a new successful 'flowctl done' is required")
-
     if branch in PROTECTED_BRANCHES:
-        clear_marker(cwd)
-        return PushDecision("invalidated", f"'{branch}' is a protected branch")
-
+        return PushDecision("skipped", f"'{branch}' is a protected branch")
     if not _worktree_clean(cwd):
-        return PushDecision("skipped", "worktree is dirty; marker kept for a later clean Stop")
+        return PushDecision("skipped", "worktree is dirty")
+
+    head = head_sha(cwd)
+    if head is None:
+        return PushDecision("skipped", "HEAD could not be resolved")
 
     # `origin` can fetch from one repository and push to a different one
     # (remote.origin.pushurl, possibly URL-rewritten), so the safety query
@@ -508,32 +388,49 @@ def push_preflight(cwd: Path, auto_push_enabled: bool) -> PushDecision:
             "skipped",
             "origin does not resolve to exactly one push destination; refusing to auto-push")
 
-    # One live, bounded query answers both "what is the receiving repo's
-    # current default branch" and "what does its <branch> currently look
-    # like". Neither question is ever answered from a local cache: a cached
-    # refs/remotes/origin/HEAD can go stale the moment the remote's default
-    # branch changes, so only what the actual push destination reports
-    # *right now* counts.
+    # One live, bounded query answers "what is the receiving repo's current
+    # default branch" and "what does its <branch> currently look like" --
+    # never from a local cache: a cached refs/remotes/origin/HEAD can go
+    # stale the moment the remote's default branch changes.
     state = _query_origin(cwd, branch, push_url)
     if state is None:
         return PushDecision(
             "skipped", "current remote default branch could not be determined; refusing to auto-push")
     if branch == state.default_branch:
-        clear_marker(cwd)
-        return PushDecision("invalidated", f"'{branch}' is the remote default branch")
+        return PushDecision("skipped", f"'{branch}' is the remote default branch")
 
     if state.branch_exists:
         if state.branch_sha == head:
-            clear_marker(cwd)
-            return PushDecision("invalidated", "nothing new to push")
+            return PushDecision("skipped", "nothing new to push")
         if not _is_ancestor(cwd, state.branch_sha, "HEAD"):
             return PushDecision(
                 "skipped", f"'origin/{branch}' is not an ancestor of HEAD; refusing to repair it")
+        base = state.branch_sha
+    else:
+        # A brand-new branch: everything on it is "unpushed" relative to
+        # origin. Bound the completion scan to this branch's own work by
+        # diffing from its merge-base with the remote's default branch,
+        # rather than the entire branch history back to the root commit.
+        if state.default_branch_sha is None:
+            return PushDecision("skipped", "could not determine a base commit for a new branch push")
+        base = _merge_base(cwd, state.default_branch_sha, head) or state.default_branch_sha
+
+    if flowctl is None:
+        return PushDecision("skipped", "Flowctl could not be resolved for this launch")
+    task_ids = changed_flow_task_ids(cwd, base, head)
+    if not task_ids:
+        return PushDecision("skipped", "no Flow-Next task files changed in the unpushed range")
+    # A turn can legitimately touch more than one task's receipt (plan-sync
+    # neighboring metadata, for instance) -- requiring *every* changed task
+    # to be done would reject an otherwise-legitimate completion, so one
+    # confirmed completion among the changed ones is sufficient.
+    if not any(task_confirmed_done(flowctl, cwd, task_id) for task_id in task_ids):
+        return PushDecision("skipped", "no confirmed Flow-Next task completion in the unpushed range")
 
     return PushDecision("ready")
 
 
-def guarded_push(cwd: Path, auto_push_enabled: bool) -> PushDecision:
+def guarded_push(cwd: Path, auto_push_enabled: bool, flowctl: Path | None) -> PushDecision:
     """Run :func:`push_preflight` and, only when it says ``ready``, push.
 
     The only command this ever runs is ``git push -u origin HEAD`` -- never
@@ -547,13 +444,12 @@ def guarded_push(cwd: Path, auto_push_enabled: bool) -> PushDecision:
     so the two cannot disagree about which repository receives the push.
     ``_PUSH_CONFIG_OVERRIDES`` additionally neutralizes the Git settings
     that could otherwise widen a plain push beyond that one branch (see its
-    docstring) without touching the user's stored config. A push failure,
-    timeout, or any other operational problem keeps the marker so a later,
-    clean Stop can retry; it never forces anything and never blocks Claude
-    from stopping (see :func:`run_stop_hook`, which is the only caller that
-    needs to be exception-safe against this).
+    docstring) without touching the user's stored config. A push failure or
+    timeout is simply reported; there is no marker or retry state to keep --
+    the next completion event recomputes everything from scratch, and since
+    the same local commits are still unpushed, it can try again the same way.
     """
-    decision = push_preflight(cwd, auto_push_enabled)
+    decision = push_preflight(cwd, auto_push_enabled, flowctl)
     if decision.action != "ready":
         return decision
     try:
@@ -563,70 +459,93 @@ def guarded_push(cwd: Path, auto_push_enabled: bool) -> PushDecision:
     except subprocess.TimeoutExpired:
         return PushDecision("failed", "git push timed out")
     if result.returncode == 0:
-        clear_marker(cwd)
         return PushDecision("pushed", "git push -u origin HEAD")
     return PushDecision("failed", (result.stderr or result.stdout or "git push failed").strip())
 
 
+def _reconcile_from_env(cwd_value: Any) -> PushDecision:
+    """Resolve the workspace/policy for one completion event and run the
+    guarded push -- shared by every provider adapter below.
+
+    Reads :data:`AUTO_PUSH_ENV`/:data:`FLOWCTL_ENV` from *this* process's
+    environment, which is exactly the per-launch policy
+    ``flow_next_launch_env`` forwarded when this agent was started (via
+    ``podman exec --env`` for a container launch, or the host process
+    environment for ``--host``) -- never a value stored or shared across
+    workspaces.
+    """
+    root = _hook_workspace_root(cwd_value)
+    auto_push_enabled = bool(os.environ.get(AUTO_PUSH_ENV, "").strip())
+    flowctl_value = os.environ.get(FLOWCTL_ENV, "").strip()
+    flowctl = Path(flowctl_value) if flowctl_value else None
+    try:
+        decision = guarded_push(root, auto_push_enabled, flowctl)
+    except Exception as exc:  # noqa: BLE001 - the outermost safety net, see docstring below
+        decision = PushDecision("failed", f"unexpected error: {exc}")
+    if decision.action in ("pushed", "failed"):
+        print(f"agent-box flow-next: {decision.action}: {decision.detail}", file=sys.stderr)
+    return decision
+
+
 def run_stop_hook(stdin_text: str) -> PushDecision:
-    """The Stop hook entry point. Never raises and never blocks the stop.
+    """The Claude ``Stop`` hook entry point. Never raises and never blocks
+    the stop.
 
     Every operational failure -- a timeout, a missing ``git``, an
-    unexpected exception anywhere in the guard chain -- is caught here and
-    turned into a ``"failed"`` decision with the marker left untouched,
-    rather than letting an exception escape into Claude's hook runner. This
-    is deliberately the only place that catches broadly: every helper above
-    already fails closed on its own terms, this is just the outermost net
-    so a genuinely unexpected error still can't produce a stop-loop or a
-    traceback where Claude expects a hook to just finish.
+    unexpected exception anywhere in the guard chain -- is caught in
+    :func:`_reconcile_from_env` and turned into a ``"failed"`` decision,
+    rather than letting an exception escape into Claude's hook runner.
     """
     try:
         payload = json.loads(stdin_text)
     except json.JSONDecodeError:
         payload = {}
     cwd_value = payload.get("cwd") if isinstance(payload, dict) else None
-    root = _hook_workspace_root(cwd_value)
-    auto_push_enabled = bool(os.environ.get(AUTO_PUSH_ENV, "").strip())
+    return _reconcile_from_env(cwd_value)
+
+
+def run_codex_turn_complete_hook(payload_text: str) -> PushDecision | None:
+    """The Codex turn-completion notify adapter.
+
+    Codex's ``notify`` program is invoked for every notify event with one
+    JSON payload argument; only ``"agent-turn-complete"`` is a real turn
+    completion, so anything else (and any payload that fails to parse) is a
+    silent no-op, returning ``None`` rather than a decision. This mirrors
+    :func:`run_stop_hook` using Codex's own completion event and its own
+    ``cwd`` instead of Claude's, but drives the identical shared reconciler.
+    """
     try:
-        decision = guarded_push(root, auto_push_enabled)
-    except Exception as exc:  # noqa: BLE001 - the outermost safety net, see docstring
-        decision = PushDecision("failed", f"unexpected error: {exc}")
-    if decision.action in ("pushed", "failed", "invalidated"):
-        print(f"agent-box flow-next: {decision.action}: {decision.detail}", file=sys.stderr)
-    return decision
+        payload = json.loads(payload_text)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict) or payload.get("type") != "agent-turn-complete":
+        return None
+    return _reconcile_from_env(payload.get("cwd"))
 
 
 # -- managed Claude hooks -----------------------------------------------------
-
-def _post_tool_use_entry() -> dict[str, Any]:
-    return {"matcher": "Bash", "hooks": [{"type": "command", "command": POST_TOOL_USE_COMMAND}]}
-
 
 def _stop_entry() -> dict[str, Any]:
     return {"hooks": [{"type": "command", "command": STOP_COMMAND}]}
 
 
 def install_flow_push_hooks(settings_path: Path) -> None:
-    """Install the PostToolUse/Bash and Stop hooks that drive auto-push.
+    """Install the Claude ``Stop`` hook that drives auto-push.
 
     Independent of the notification hooks in ``agent_box.notify`` -- both may
     coexist under the same ``Stop`` event, each identified by its own stable
     command string, and installing/removing one never touches the other or
     any unrelated hook the user configured by hand. Idempotent: running this
-    again with the hooks already present changes nothing. Deliberately never
+    again with the hook already present changes nothing. Deliberately never
     installs a ``StopFailure`` hook -- a failed Claude turn must never push.
+    Codex needs no managed-settings hook: its turn-complete event is wired
+    through the ``-c notify=[...]`` launch argument in ``agent_box.runtime``.
     """
     from .claude_settings import install_hook_entries
-    install_hook_entries(settings_path, [
-        ("PostToolUse", _post_tool_use_entry()),
-        ("Stop", _stop_entry()),
-    ])
+    install_hook_entries(settings_path, [("Stop", _stop_entry())])
 
 
 def remove_flow_push_hooks(settings_path: Path) -> None:
-    """Remove only the hooks installed by :func:`install_flow_push_hooks`."""
+    """Remove only the hook installed by :func:`install_flow_push_hooks`."""
     from .claude_settings import remove_hook_commands
-    remove_hook_commands(settings_path, {
-        "PostToolUse": (POST_TOOL_USE_COMMAND,),
-        "Stop": (STOP_COMMAND,),
-    })
+    remove_hook_commands(settings_path, {"Stop": (STOP_COMMAND,)})

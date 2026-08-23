@@ -209,9 +209,10 @@ class FlowNextConfig:
     never parses -- changing the routing later (e.g. once Flow-Next gains a
     native Claude review backend) is a config edit, not a code change.
 
-    ``auto_push`` is the opt-in Claude-only Flow-Next auto-push lifecycle
-    (see ``agent_box.flow_push``); it defaults off because this must never
-    turn every Claude Stop into a git push.
+    ``auto_push`` is the opt-in Flow-Next auto-push reconciler (see
+    ``agent_box.flow_push``), applied identically to Claude and Codex
+    launches; it defaults off because this must never turn every agent turn
+    into a git push.
     """
 
     review_backends: dict[str, str] = field(

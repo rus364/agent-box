@@ -220,6 +220,16 @@ class CodexRuntimeOverridesTests(IsolatedRuntimeTest):
             "exec", "hello",
         ])
 
+    def test_flow_next_auto_push_registers_notify_even_without_notifications(self):
+        """Codex has only one `notify` program; Flow-Next auto-push needs it
+        registered even when Telegram notifications are off."""
+        command = runtime.codex_command(["exec", "hello"], Config(), flow_next_auto_push_active=True)
+        self.assertIn('notify=["agent-box","notify","codex"]', command)
+
+    def test_neither_notifications_nor_auto_push_omits_notify(self):
+        command = runtime.codex_command(["exec", "hello"], Config(), flow_next_auto_push_active=False)
+        self.assertNotIn('notify=["agent-box","notify","codex"]', command)
+
     def test_non_codex_launches_do_not_inspect_codex_mcp_configuration(self):
         workspace = Workspace(Path.cwd(), Path.cwd())
 
@@ -324,6 +334,69 @@ class ContainerFlowNextEnvTests(IsolatedRuntimeTest):
             ):
                 runtime.runtime_main(["claude"], Path.cwd())
             self.assertIn("FLOW_REVIEW_BACKEND=codex:gpt-5.6-terra:high", captured["extra_env"])
+
+    def test_codex_auto_push_wires_notify_end_to_end(self):
+        """A Flow-Next workspace with auto_push enabled must register Codex's
+        `notify` program even with Telegram notifications off, so the shared
+        auto-push reconciler's turn-complete adapter actually gets invoked."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".flow").mkdir()
+            (root / ".flow" / "config.json").write_text("{}")
+            workspace = Workspace(root, root)
+            config = Config()
+            config.flow_next.auto_push = True
+
+            captured = {}
+
+            def fake_launch(spec, workspace, command, extra_env, process_env):
+                captured["command"] = command
+                captured["extra_env"] = extra_env
+                return 0
+
+            with (
+                mock.patch.object(runtime.shutil, "which", return_value="/usr/bin/podman"),
+                mock.patch.object(runtime, "resolve_workspace", return_value=workspace),
+                mock.patch.object(runtime, "ensure_state_dirs"),
+                mock.patch.object(runtime, "ensure_refresh_token"),
+                mock.patch.object(runtime, "load_config", return_value=config),
+                mock.patch.object(runtime, "image_exists", return_value=True),
+                mock.patch.object(runtime, "sync_claude_agent_skills"),
+                mock.patch.object(runtime, "claude_channel_args", return_value=([], [])),
+                mock.patch.object(runtime, "launch_in_workspace_container", side_effect=fake_launch),
+                self.assertRaises(SystemExit),
+            ):
+                runtime.runtime_main(["codex"], Path.cwd())
+            self.assertIn('notify=["agent-box","notify","codex"]', captured["command"])
+            self.assertIn("AGENT_BOX_FLOW_NEXT_AUTO_PUSH=1", captured["extra_env"])
+
+    def test_codex_without_auto_push_or_notifications_omits_notify(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".flow").mkdir()
+            (root / ".flow" / "config.json").write_text("{}")
+            workspace = Workspace(root, root)
+
+            captured = {}
+
+            def fake_launch(spec, workspace, command, extra_env, process_env):
+                captured["command"] = command
+                return 0
+
+            with (
+                mock.patch.object(runtime.shutil, "which", return_value="/usr/bin/podman"),
+                mock.patch.object(runtime, "resolve_workspace", return_value=workspace),
+                mock.patch.object(runtime, "ensure_state_dirs"),
+                mock.patch.object(runtime, "ensure_refresh_token"),
+                mock.patch.object(runtime, "load_config", return_value=Config()),
+                mock.patch.object(runtime, "image_exists", return_value=True),
+                mock.patch.object(runtime, "sync_claude_agent_skills"),
+                mock.patch.object(runtime, "claude_channel_args", return_value=([], [])),
+                mock.patch.object(runtime, "launch_in_workspace_container", side_effect=fake_launch),
+                self.assertRaises(SystemExit),
+            ):
+                runtime.runtime_main(["codex"], Path.cwd())
+            self.assertNotIn('notify=["agent-box","notify","codex"]', captured["command"])
 
 
 class ClaudeNotifyHookLifecycleTests(IsolatedRuntimeTest):
