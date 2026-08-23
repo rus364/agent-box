@@ -10,10 +10,13 @@ The contract is a reconciliation, not an event detector:
 * the paths that changed within that range are inspected for tracked
   Flow-Next task receipts (``.flow/tasks/<task-id>.md``);
 * for each such task id, Flow-Next's own CLI (``flowctl show <id> --json``)
-  is asked for that task's current, authoritative status;
-* if at least one of those tasks is confirmed ``"done"``, every guard in
-  :func:`push_preflight` runs, and only if all of them pass does this push
-  exactly ``git push -u origin HEAD``.
+  is asked for that task's current status and its provenance
+  (``status_source``);
+* if at least one of those tasks is confirmed ``"done"`` with an
+  authoritative ``status_source`` (``"flow-state"`` -- Flow-Next's own
+  runtime state answered, never the possibly-stale ``"committed"`` tracked
+  snapshot), every guard in :func:`push_preflight` runs, and only if all of
+  them pass does this push exactly ``git push -u origin HEAD``.
 
 Nothing here parses shell commands, commit messages, or prose to infer
 completion -- Flow-Next's CLI is the sole authority on task status, and Git
@@ -26,9 +29,9 @@ event is scoped only by the workspace resolved from its own ``cwd``.
 
 A missed auto-push is an acceptable outcome (the user can always run ``git
 push`` manually), so every ambiguous or undeterminable condition -- an
-unresolved Flowctl executable, a malformed Flowctl response, an
-undeterminable remote state, a dirty worktree -- fails closed to "skip", not
-to "push anyway".
+unresolved Flowctl executable, a malformed Flowctl response, a non-
+authoritative ``status_source``, an undeterminable remote state, a dirty
+worktree -- fails closed to "skip", not to "push anyway".
 """
 from __future__ import annotations
 
@@ -335,17 +338,38 @@ def flowctl_show(flowctl: Path, cwd: Path, task_id: str) -> dict[str, Any] | Non
     return data if isinstance(data, dict) else None
 
 
-def task_confirmed_done(flowctl: Path, cwd: Path, task_id: str) -> bool:
-    """Whether Flow-Next's own CLI currently reports ``task_id`` as done.
+#: The only `status_source` value Flow-Next documents as authoritative --
+#: the runtime Flow-Next state itself answered. `"committed"` means the
+#: answer instead fell back to the tracked task snapshot, which Flow-Next
+#: explicitly documents can be arbitrarily stale (for example on a fresh or
+#: diff-scoped checkout that never ran Flow-Next's runtime state). Auto-push
+#: is convenience-only, so that ambiguity must fail closed rather than being
+#: treated as good enough.
+AUTHORITATIVE_STATUS_SOURCE = "flow-state"
 
-    Trusts ``flowctl show``'s merged answer outright rather than re-deriving
-    Flow-Next's own runtime/committed status-merging rules here -- Flow-Next
-    already decided which source (`status_source`) is authoritative for this
-    task; duplicating that logic in agent-box would only risk disagreeing
-    with it.
+
+def task_confirmed_done(flowctl: Path, cwd: Path, task_id: str) -> bool:
+    """Whether Flow-Next's own CLI currently reports ``task_id`` as
+    authoritatively done.
+
+    Trusts ``flowctl show``'s merged ``status`` outright rather than
+    re-deriving Flow-Next's own runtime/committed status-merging rules here
+    -- Flow-Next already decided which source is authoritative for this
+    task and reports it as ``status_source``; duplicating that merge logic
+    in agent-box would only risk disagreeing with it. What this function
+    adds is refusing to *act* on a ``status_source`` other than
+    :data:`AUTHORITATIVE_STATUS_SOURCE` -- a done status sourced from the
+    committed snapshot (`"committed"`) or with no provenance at all is not
+    trusted to authorize a push. There is no fallback: missing, unexpected,
+    or absent provenance always means "not confirmed", never "assume
+    authoritative".
     """
     data = flowctl_show(flowctl, cwd, task_id)
-    return isinstance(data, dict) and data.get("status") == "done"
+    return (
+        isinstance(data, dict)
+        and data.get("status") == "done"
+        and data.get("status_source") == AUTHORITATIVE_STATUS_SOURCE
+    )
 
 
 def push_preflight(cwd: Path, auto_push_enabled: bool, flowctl: Path | None) -> PushDecision:

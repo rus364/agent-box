@@ -36,15 +36,23 @@ def _init_bare_remote(
     _git(repo, "remote", "add", remote_name, str(remote_dir))
 
 
-def _write_fake_flowctl(path: Path, statuses: dict[str, str]) -> Path:
-    """A tiny fake `flowctl` executable.
+def _write_fake_flowctl(path: Path, statuses: dict[str, str | dict[str, object]]) -> Path:
+    """A tiny fake `flowctl` executable, standing in for realistic Flow-Next
+    `show <id> --json` output.
 
-    Answers exactly `show <id> --json` with `{"id", "status", "status_source"}`
-    for ids present in `statuses` (default status "todo" for anything else,
-    so an id this fake was never told about behaves like an ordinary
-    incomplete task rather than an error); anything else (a different
-    subcommand, missing `--json`) exits non-zero with no stdout, exactly like
-    a real CLI misuse would.
+    Each value in `statuses` is either:
+
+    * a plain string -- shorthand for the ordinary, fully-authoritative
+      case: `{"id", "status": <value>, "status_source": "flow-state"}`; or
+    * a dict -- used verbatim (merged with `"id"`) as the full JSON payload,
+      so a test can represent any real or degenerate shape: a `"committed"`
+      `status_source`, a `"done"` status with `status_source` omitted
+      entirely, or any other field combination Flow-Next might emit.
+
+    An id not present in `statuses` at all answers `status: "todo"` (an
+    ordinary incomplete task, not an error). Anything other than `show <id>
+    --json` (a different subcommand, missing `--json`) exits non-zero with
+    no stdout, exactly like a real CLI misuse would.
     """
     script = textwrap.dedent(f"""\
         #!/usr/bin/env python3
@@ -53,8 +61,12 @@ def _write_fake_flowctl(path: Path, statuses: dict[str, str]) -> Path:
         args = sys.argv[1:]
         if len(args) == 3 and args[0] == "show" and args[2] == "--json":
             task_id = args[1]
-            status = statuses.get(task_id, "todo")
-            print(json.dumps({{"id": task_id, "status": status, "status_source": "flow-state"}}))
+            entry = statuses.get(task_id, "todo")
+            if isinstance(entry, dict):
+                payload = {{"id": task_id, **entry}}
+            else:
+                payload = {{"id": task_id, "status": entry, "status_source": "flow-state"}}
+            print(json.dumps(payload))
             sys.exit(0)
         sys.exit(1)
         """)
@@ -144,6 +156,64 @@ class CompletionDetectionTests(FlowPushTestCase):
         ).stdout
         self.assertIn("feature-x", pushed)
 
+    def test_done_sourced_from_committed_snapshot_does_not_authorize(self):
+        """`status_source: "committed"` means the answer only fell back to
+        the tracked task snapshot on disk, which Flow-Next documents can be
+        arbitrarily stale (e.g. a fresh or diff-scoped checkout that never
+        ran Flow-Next's runtime state). A `"done"` status from that source
+        must not authorize a push -- only the runtime-state-backed
+        `"flow-state"` answer is trusted."""
+        self._feature_branch()
+        _add_task_file(self.repo, "fn-1.1")
+        flowctl = self._fake_flowctl({"fn-1.1": {"status": "done", "status_source": "committed"}})
+        decision = self.push(flowctl)
+        self.assertEqual(decision.action, "skipped")
+        self.assertIn("no confirmed Flow-Next task completion", decision.detail)
+
+    def test_done_with_missing_status_source_does_not_authorize(self):
+        """No provenance at all must never be treated as good enough --
+        there is no default/fallback that assumes authoritative."""
+        self._feature_branch()
+        _add_task_file(self.repo, "fn-1.1")
+        flowctl = self._fake_flowctl({"fn-1.1": {"status": "done"}})
+        decision = self.push(flowctl)
+        self.assertEqual(decision.action, "skipped")
+        self.assertIn("no confirmed Flow-Next task completion", decision.detail)
+
+    def test_in_progress_with_authoritative_source_does_not_authorize(self):
+        self._feature_branch()
+        _add_task_file(self.repo, "fn-1.1")
+        flowctl = self._fake_flowctl({"fn-1.1": {"status": "in_progress", "status_source": "flow-state"}})
+        decision = self.push(flowctl)
+        self.assertEqual(decision.action, "skipped")
+
+    def test_done_with_authoritative_flow_state_source_pushes(self):
+        self._feature_branch()
+        _add_task_file(self.repo, "fn-1.1")
+        flowctl = self._fake_flowctl({"fn-1.1": {"status": "done", "status_source": "flow-state"}})
+        decision = self.push(flowctl)
+        self.assertEqual(decision.action, "pushed")
+
+    def test_push_preflight_end_to_end_refuses_committed_sourced_done_task(self):
+        """End-to-end proof at the `push_preflight` level (not just the
+        higher-level `guarded_push` wrapper): a changed task file whose
+        Flowctl result is `{"status": "done", "status_source": "committed"}`
+        must never reach "ready", so the real `git push` subprocess is never
+        even attempted."""
+        self._feature_branch()
+        _add_task_file(self.repo, "fn-1.1")
+        flowctl = self._fake_flowctl({"fn-1.1": {"status": "done", "status_source": "committed"}})
+
+        preflight = flow_push.push_preflight(self.repo, True, flowctl)
+
+        self.assertNotEqual(preflight.action, "ready")
+        self.assertEqual(preflight.action, "skipped")
+        remote_heads = subprocess.run(
+            ["git", "ls-remote", "--heads", str(self.remote), "feature-x"],
+            capture_output=True, text=True, check=True,
+        ).stdout
+        self.assertEqual(remote_heads, "", "no push may have been attempted, let alone succeeded")
+
     def test_previously_completed_task_outside_the_unpushed_range_does_not_authorize(self):
         """A task done in an *already-pushed* commit must not license a later,
         unrelated push -- only a receipt that changed within the currently
@@ -215,7 +285,7 @@ class CompletionDetectionTests(FlowPushTestCase):
             import json, sys
             with open({str(recorder)!r}, "w") as f:
                 json.dump(sys.argv[1:], f)
-            print(json.dumps({{"id": sys.argv[2], "status": "done"}}))
+            print(json.dumps({{"id": sys.argv[2], "status": "done", "status_source": "flow-state"}}))
             """)
         self.flowctl_path.write_text(script)
         self.flowctl_path.chmod(self.flowctl_path.stat().st_mode | stat.S_IEXEC)
