@@ -10,10 +10,9 @@ much smaller feature: "something happened in a container you left running".
 
 Claude delivers events through hooks installed in its ``settings.json``
 (``agent-box notify claude``), Codex through its ``notify`` program setting
-(``agent-box notify codex``). Both run *inside* the container, which is why a
-minimal derived credential file and notification state directory are mounted
-only for agents that can use outbound notifications; the main config file is
-never mounted.
+(``agent-box notify codex``). Both run *inside* the container. The main
+config file is never mounted; persistent workspace boxes receive notification
+credentials only through the relevant exec environment.
 """
 from __future__ import annotations
 
@@ -96,14 +95,13 @@ def load_credentials(path: Path = NOTIFY_CREDENTIALS) -> tuple[str, str] | None:
     """The bot token and chat id, or None when notifications are not active.
 
     The same code path runs on the host (``agent-box notify test``) and inside
-    the container (the Claude/Codex hooks), so both read exactly the file that
-    is mounted -- there is no second, host-only way to reach the token.
+    the container (the Claude/Codex hooks). The host fallback uses the local
+    file; persistent container sessions use the explicitly forwarded env.
     """
-    # A persistent workspace box cannot safely have a credential file mounted
-    # only for Claude/Codex: every concurrent shell in that box could read it.
-    # Runtime therefore injects these values only into notification-capable
-    # exec sessions. Keep the file fallback for host-side `notify test` and
-    # compatibility with older disposable containers.
+    # Runtime injects these values only into notification-capable exec
+    # sessions so they never enter persistent box metadata or a shared file.
+    # Same-user peers in the shared PID namespace may still inspect a running
+    # process's environment; this is metadata minimisation, not isolation.
     token = os.environ.get(NOTIFY_TOKEN_ENV, "")
     chat_id = os.environ.get(NOTIFY_CHAT_ID_ENV, "")
     if token and chat_id:

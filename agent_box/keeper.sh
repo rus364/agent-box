@@ -1,14 +1,24 @@
 #!/usr/bin/env bash
 # Minimal workspace-container keeper. Podman's --init is PID 1; this script
-# is its PID 2 child. It exits only after three consecutive idle checks, which
-# lets Podman's --rm remove the transient workspace box once no agent or
-# daemon process remains. The scan deliberately uses shell builtins and /proc
-# so its own inspection does not create a process that looks like workload.
+# is its PID 2 child. Its final idle decision takes the exact flock used by
+# host-side exec admission, so a new admitted workload and idle shutdown are
+# mutually exclusive.
 set -u
+
+lock_path=${1:?agent-box keeper requires a lock path}
+# `flock` locks the open file description inherited from this shell.  This is
+# the usual fd-lock idiom: the external `flock` command returns, but the lock
+# remains held by this keeper until it explicitly unlocks or exits.
+exec {lock_fd}>"$lock_path"
 
 idle_checks=0
 while :; do
+  flock -x "$lock_fd"
   workloads=0
+  # The scan uses only shell builtins while the shared lifecycle lock is held.
+  # There are no helper processes to ignore here: PID 1 is Podman's init and
+  # PID 2 is this keeper. Any other PID is a user/agent workload, including a
+  # daemon re-parented to PID 1.
   for proc in /proc/[0-9]*; do
     pid=${proc##*/}
     (( pid <= 2 )) && continue
@@ -21,7 +31,11 @@ while :; do
     idle_checks=0
   else
     ((idle_checks += 1))
+    # Exit while still holding the same lock used by host-side exec admission.
+    # A newly admitted exec therefore either acquired the lock first and is
+    # observed above, or waits until this old box has disappeared.
     (( idle_checks >= 3 )) && exit 0
   fi
+  flock -u "$lock_fd"
   sleep 1
 done

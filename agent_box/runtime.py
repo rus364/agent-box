@@ -52,13 +52,13 @@ IMAGE = os.environ.get("AGENT_BOX_IMAGE", "localhost/agent-box:latest")
 DEFAULT_AGENT = os.environ.get("AGENT_BOX_AGENT", "claude")
 CHATGPT_DESKTOP_RESOURCES = "/usr/lib/chatgpt/resources/"
 
-WORKSPACE_CONTAINER_SCHEMA = "1"
+WORKSPACE_CONTAINER_SCHEMA = "2"
 WORKSPACE_CONTAINER_LABEL = "io.agent-box.managed"
 WORKSPACE_CONTAINER_WORKSPACE_LABEL = "io.agent-box.workspace"
-WORKSPACE_CONTAINER_CONFIG_LABEL = "io.agent-box.config-hash"
-WORKSPACE_CONTAINER_MOUNTS_LABEL = "io.agent-box.mounts-hash"
+WORKSPACE_CONTAINER_BASE_CONFIG_LABEL = "io.agent-box.base-config-hash"
+WORKSPACE_CONTAINER_EXTRA_MOUNTS_LABEL = "io.agent-box.extra-mounts-hash"
 WORKSPACE_CONTAINER_SCHEMA_LABEL = "io.agent-box.schema"
-KEEPER_COMMAND = ("bash", str(HOST_HOME / ".local/lib/agent-box/agent_box/keeper.sh"))
+KEEPER_PATH = HOST_HOME / ".local/lib/agent-box/agent_box/keeper.sh"
 
 
 def warn(message: str) -> None:
@@ -111,7 +111,7 @@ def codex_command(rest: list[str], config: Config) -> list[str]:
 def ensure_state_dirs() -> None:
     for path in (
         BUILD_STATE, STATE_ROOT / "cache", STATE_ROOT / "uv", STATE_ROOT / "mise", NOTIFY_STATE_ROOT,
-        STATE_ROOT / "git", STATE_ROOT / "gh", CODEX_HOME, CLAUDE_HOME,
+        STATE_ROOT / "git", STATE_ROOT / "gh", STATE_ROOT / "runtime/workspaces", CODEX_HOME, CLAUDE_HOME,
         XDG_CACHE_HOME / "claude-code", XDG_CACHE_HOME / "claude-cli-nodejs",
     ):
         path.mkdir(parents=True, exist_ok=True)
@@ -341,16 +341,18 @@ def build_mounts(
         (STATE_ROOT / "uv", HOST_HOME / ".local/share/uv", False),
         (STATE_ROOT / "mise", HOST_HOME / ".local/share/mise", False),
         (NOTIFY_STATE_ROOT, HOST_HOME / ".local/share/agent-box/notify", False),
+        # Shared with the keeper solely for advisory lifecycle locking. This
+        # directory contains no credentials or user configuration.
+        (STATE_ROOT / "runtime/workspaces", STATE_ROOT / "runtime/workspaces", False),
         (script_dir / "agent-box", HOST_HOME / ".local/bin/agent-box", True),
     ]
     if (script_dir / "agent_box").is_dir():
         pairs.append((script_dir / "agent_box", HOST_HOME / ".local/lib/agent-box/agent_box", True))
-    # The container never sees config.json. It would carry the bot token into
-    # every container even with notifications off, plus host-integration
-    # settings the container has no business reading. Instead the host derives
-    # a two-key credential file (notify.sync_credentials) and mounts it
-    # read-only, and only while notifications are actually usable -- so a
-    # disabled feature exposes no token at all rather than an ignored one.
+    # The container never sees config.json. The legacy disposable argv helper
+    # may request a derived two-key credential file; persistent workspace
+    # boxes deliberately pass ``mount_notifications=False`` and use per-exec
+    # forwarding instead, because a shared bind mount would expose it to every
+    # concurrent process in that box.
     if mount_notifications:
         notify_module.sync_credentials(config, NOTIFY_CREDENTIALS)
     if mount_notifications and NOTIFY_CREDENTIALS.is_file():
@@ -581,8 +583,8 @@ def workspace_container_name(workspace: Workspace) -> str:
 class WorkspaceContainerSpec:
     name: str
     workspace_id: str
-    config_hash: str
-    mounts_hash: str
+    base_config_hash: str
+    extra_mounts_hash: str
     mounts_explicit: bool
     create_argv: list[str]
 
@@ -594,34 +596,50 @@ def workspace_container_spec(
     lifetime = container_lifetime_args(
         workspace, extra_mounts, script_dir, config, mount_notifications=False,
     )
-    mounts_hash = hashlib.sha256(json.dumps([
+    extra_mounts_hash = hashlib.sha256(json.dumps([
         (str(mount.path), mount.read_only)
-        for mount in plan_mounts([MountSpec(workspace.host_root, False), *extra_mounts])
+        for mount in plan_mounts(extra_mounts)
     ], separators=(",", ":")).encode()).hexdigest()[:16]
-    structural = json.dumps({
+    extra_paths = {mount.path for mount in plan_mounts(extra_mounts)}
+    def is_extra_mount(value: str) -> bool:
+        parts = dict(part.split("=", 1) for part in value.split(",") if "=" in part)
+        return Path(parts.get("src", "/not-an-extra-mount")) in extra_paths
+
+    # Extra binds are the only structural setting that an omitted later
+    # --mount may deliberately inherit. Everything else is a strict box
+    # compatibility boundary, including image, KVM, homes and hardening.
+    base_args: list[str] = []
+    index = 0
+    while index < len(lifetime):
+        if lifetime[index] == "--mount" and index + 1 < len(lifetime) and is_extra_mount(lifetime[index + 1]):
+            index += 2
+            continue
+        base_args.append(lifetime[index])
+        index += 1
+    base_structural = json.dumps({
         "schema": WORKSPACE_CONTAINER_SCHEMA,
         "workspace": str(workspace.host_root.resolve()),
         "image": IMAGE,
-        "args": lifetime,
+        "args": base_args,
     }, separators=(",", ":"), sort_keys=True).encode()
-    config_hash = hashlib.sha256(structural).hexdigest()[:16]
+    base_config_hash = hashlib.sha256(base_structural).hexdigest()[:16]
     name = workspace_container_name(workspace)
     labels = [
         f"--label={WORKSPACE_CONTAINER_LABEL}=true",
         f"--label={WORKSPACE_CONTAINER_WORKSPACE_LABEL}={workspace_identity(workspace)}",
         f"--label={WORKSPACE_CONTAINER_SCHEMA_LABEL}={WORKSPACE_CONTAINER_SCHEMA}",
-        f"--label={WORKSPACE_CONTAINER_CONFIG_LABEL}={config_hash}",
-        f"--label={WORKSPACE_CONTAINER_MOUNTS_LABEL}={mounts_hash}",
+        f"--label={WORKSPACE_CONTAINER_BASE_CONFIG_LABEL}={base_config_hash}",
+        f"--label={WORKSPACE_CONTAINER_EXTRA_MOUNTS_LABEL}={extra_mounts_hash}",
     ]
     return WorkspaceContainerSpec(
         name=name,
         workspace_id=workspace_identity(workspace),
-        config_hash=config_hash,
-        mounts_hash=mounts_hash,
+        base_config_hash=base_config_hash,
+        extra_mounts_hash=extra_mounts_hash,
         mounts_explicit=bool(extra_mounts),
         create_argv=[
             "podman", "create", "--name", name, "--rm", "--init", *labels, *lifetime,
-            IMAGE, *KEEPER_COMMAND,
+            IMAGE, "bash", str(KEEPER_PATH), str(workspace_lock_path(workspace)),
         ],
     )
 
@@ -629,15 +647,19 @@ def workspace_container_spec(
 @contextmanager
 def workspace_transition_lock(workspace: Workspace):
     """Short advisory lock for create/exec/idle-delete transition windows."""
-    lock_dir = STATE_ROOT / "runtime/workspaces"
-    lock_dir.mkdir(parents=True, exist_ok=True)
-    fd = os.open(lock_dir / f"{workspace_identity(workspace)}.lock", os.O_CREAT | os.O_RDWR, 0o600)
+    lock_path = workspace_lock_path(workspace)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX)
         yield
     finally:
         fcntl.flock(fd, fcntl.LOCK_UN)
         os.close(fd)
+
+
+def workspace_lock_path(workspace: Workspace) -> Path:
+    return STATE_ROOT / "runtime/workspaces" / f"{workspace_identity(workspace)}.lock"
 
 
 def inspect_workspace_container(name: str) -> dict | None:
@@ -659,7 +681,7 @@ def _container_matches(container: dict, spec: WorkspaceContainerSpec) -> bool:
         labels.get(WORKSPACE_CONTAINER_LABEL) == "true"
         and labels.get(WORKSPACE_CONTAINER_WORKSPACE_LABEL) == spec.workspace_id
         and labels.get(WORKSPACE_CONTAINER_SCHEMA_LABEL) == WORKSPACE_CONTAINER_SCHEMA
-        and labels.get(WORKSPACE_CONTAINER_CONFIG_LABEL) == spec.config_hash
+        and labels.get(WORKSPACE_CONTAINER_BASE_CONFIG_LABEL) == spec.base_config_hash
     )
 
 
@@ -672,26 +694,50 @@ def _container_belongs_to_workspace(container: dict, spec: WorkspaceContainerSpe
     )
 
 
+def _container_is_managed_workspace(container: dict, spec: WorkspaceContainerSpec) -> bool:
+    labels = container.get("Config", {}).get("Labels", {})
+    return isinstance(labels, dict) and (
+        labels.get(WORKSPACE_CONTAINER_LABEL) == "true"
+        and labels.get(WORKSPACE_CONTAINER_WORKSPACE_LABEL) == spec.workspace_id
+    )
+
+
 def _container_mounts_match(container: dict, spec: WorkspaceContainerSpec) -> bool:
     labels = container.get("Config", {}).get("Labels", {})
-    return isinstance(labels, dict) and labels.get(WORKSPACE_CONTAINER_MOUNTS_LABEL) == spec.mounts_hash
+    return isinstance(labels, dict) and labels.get(WORKSPACE_CONTAINER_EXTRA_MOUNTS_LABEL) == spec.extra_mounts_hash
 
 
 def ensure_workspace_container(spec: WorkspaceContainerSpec) -> None:
     """Create/start a compatible workspace box, recovering stopped stale boxes."""
     current = inspect_workspace_container(spec.name)
     if current is not None:
+        current = _wait_for_exiting_keeper(spec.name, current)
+    if current is not None:
         if not _container_belongs_to_workspace(current, spec):
-            raise AgentBoxError("workspace container name is occupied by an incompatible container")
-        if not _container_matches(current, spec):
+            if (
+                _container_is_managed_workspace(current, spec)
+                and current.get("State", {}).get("Status") != "running"
+            ):
+                subprocess.run(["podman", "rm", "-f", spec.name], check=False)
+                current = None
+            else:
+                raise AgentBoxError("workspace container name is occupied by an incompatible container")
+        if current is None:
+            pass
+        elif not _container_matches(current, spec):
             state = str(current.get("State", {}).get("Status", "unknown"))
-            # Omitting --mount means "join this existing box", including a
-            # box that was originally created with extra mounts. Explicit
-            # mounts are an assertion about its immutable structural config.
-            if state == "running" and spec.mounts_explicit and not _container_mounts_match(current, spec):
+            if state == "running":
                 raise AgentBoxError(
-                    "workspace container is already running with a different mount or container configuration"
+                    "workspace container is already running with incompatible container-level configuration"
                 )
+            subprocess.run(["podman", "rm", "-f", spec.name], check=False)
+            current = None
+        elif not _container_mounts_match(current, spec):
+            state = str(current.get("State", {}).get("Status", "unknown"))
+            # Omitting --mount means join an existing box, even if it was
+            # originally created with extra paths. Explicit mounts are exact.
+            if state == "running" and spec.mounts_explicit:
+                raise AgentBoxError("workspace container is already running with different mount configuration")
             if state == "running":
                 return
             subprocess.run(["podman", "rm", "-f", spec.name], check=False)
@@ -729,22 +775,72 @@ def exec_argv(name: str, workspace: Workspace, command: list[str], extra_env: li
 
 
 def parse_top_workloads(output: str) -> list[tuple[int, str]]:
-    """Return non-init/non-keeper processes from ``podman top pid,ppid,args``."""
-    workloads: list[tuple[int, str]] = []
+    """Return processes outside the init/keeper process subtree.
+
+    The keeper occasionally needs helper children (for example ``flock`` or a
+    delay). Excluding its *tree* is structural and cannot hide an unrelated
+    user ``sleep``/daemon merely because it has a familiar command name.
+    """
+    processes: dict[int, tuple[int, str]] = {}
     for line in output.splitlines()[1:]:  # first line is Podman's header
         fields = line.strip().split(None, 2)
         if len(fields) < 3:
             continue
         try:
-            pid = int(fields[0])
+            pid, parent = int(fields[0]), int(fields[1])
         except ValueError:
             continue
-        # --init is PID 1 and the explicit keeper is PID 2.  Filtering by
-        # identity rather than process name keeps arbitrary daemon children
-        # authoritative, including ones re-parented to PID 1.
-        if pid > 2:
-            workloads.append((pid, fields[2]))
-    return workloads
+        processes[pid] = (parent, fields[2])
+
+    # PID 1 is catatonit, but user daemons can be re-parented directly to it;
+    # only descendants of the keeper (PID 2) are internal.
+    internal = {2}
+    changed = True
+    while changed:
+        changed = False
+        for pid, (parent, _args) in processes.items():
+            if parent in internal and pid not in internal:
+                internal.add(pid)
+                changed = True
+    return [(pid, args) for pid, (_parent, args) in processes.items() if pid not in internal and pid != 1]
+
+
+def container_has_keeper(name: str) -> bool | None:
+    result = subprocess.run(["podman", "top", name, "pid,ppid,args"], text=True, capture_output=True)
+    if result.returncode:
+        return None
+    for line in result.stdout.splitlines()[1:]:
+        fields = line.strip().split(None, 2)
+        if len(fields) >= 2:
+            try:
+                if int(fields[0]) == 2 and int(fields[1]) == 1:
+                    return True
+            except ValueError:
+                continue
+    return False
+
+
+def _wait_for_exiting_keeper(name: str, current: dict) -> dict | None:
+    """Wait out the brief state-reporting lag after a keeper exits.
+
+    The caller holds the shared transition lock. If the keeper is gone, no
+    exec is admitted until Podman reports the old box stopped/removed.
+    """
+    if current.get("State", {}).get("Status") != "running" or container_has_keeper(name) is not False:
+        return current
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        time.sleep(0.02)
+        current = inspect_workspace_container(name)
+        if current is None or current.get("State", {}).get("Status") != "running":
+            return current
+        if container_has_keeper(name) is True:
+            return current
+    # Never admit an exec to a box whose keeper has already gone away.  Podman
+    # normally removes this state immediately; if it does not, failing is safer
+    # than allowing a side-effecting provider command to start in a box that is
+    # in the middle of disappearing.
+    raise AgentBoxError("workspace container is shutting down; retry the command")
 
 
 def container_has_workloads(name: str) -> bool | None:
@@ -772,38 +868,28 @@ def launch_in_workspace_container(
     process_env: dict[str, str] | None = None,
 ) -> int:
     """Start one exec under the transition lock, then clean up after it exits."""
-    for attempt in range(2):
+    with workspace_transition_lock(workspace):
+        ensure_workspace_container(spec)
+        process = subprocess.Popen(exec_argv(spec.name, workspace, command, extra_env), env=process_env)
+        # The keeper takes this same advisory lock before it makes its final
+        # idle-to-exit decision. Holding it until a real non-keeper process is
+        # visible makes admission and shutdown mutually exclusive.
+        while process.poll() is None:
+            if container_has_workloads(spec.name) is True:
+                break
+            time.sleep(0.01)
+    rc = process.wait()
+    try:
         with workspace_transition_lock(workspace):
-            ensure_workspace_container(spec)
-            process = subprocess.Popen(exec_argv(spec.name, workspace, command, extra_env), env=process_env)
-            # Popen returning means Podman has accepted the exec request. Keep
-            # the transition lock through one process-table read so a
-            # concurrent idle cleanup cannot remove the box in the tiny
-            # create-to-exec window.
-            deadline = time.monotonic() + 0.5
-            while process.poll() is None and time.monotonic() < deadline:
-                if container_has_workloads(spec.name) is True:
-                    break
-                # podman exec has accepted the client connection but may not
-                # yet have spawned inside the container. Do not expose that
-                # tiny interval to a concurrent idle cleanup.
-                time.sleep(0.01)
-        rc = process.wait()
-        try:
-            with workspace_transition_lock(workspace):
-                disappeared = inspect_workspace_container(spec.name) is None
-                cleanup_workspace_container_if_idle(spec)
-        except (OSError, subprocess.SubprocessError) as exc:
-            # The agent command's status is more meaningful than a best-effort
-            # post-exit cleanup problem. A later launch will recover stale
-            # stopped/idle containers automatically.
-            warn(f"could not clean up workspace container: {exc}")
-            disappeared = False
-        # podman uses 125 for launcher failures.  Retrying only when the box
-        # actually vanished avoids changing a provider's meaningful exit code.
-        if not (attempt == 0 and rc == 125 and disappeared):
-            return rc
-    return 125
+            cleanup_workspace_container_if_idle(spec)
+    except (OSError, subprocess.SubprocessError) as exc:
+        # The agent command's status is more meaningful than a best-effort
+        # post-exit cleanup problem. A later launch will recover stale
+        # stopped/idle containers automatically.
+        warn(f"could not clean up workspace container: {exc}")
+    # Never retry an exec command: after Popen starts, its provider command
+    # may already have performed side effects even if Podman returns 125.
+    return rc
 
 
 def invocation_env(config: Config, agent: str) -> tuple[list[str], dict[str, str]]:
@@ -811,6 +897,9 @@ def invocation_env(config: Config, agent: str) -> tuple[list[str], dict[str, str
 
     Secret values are placed in Popen's environment and forwarded by *name*,
     never embedded in the Podman argv or a persistent container label/env.
+    Processes inside one shared workspace box are nevertheless one trust
+    boundary: same-UID peers can inspect each other's /proc environment on
+    ordinary Linux/Podman setups.
     """
     forwarded = [*github_env(config), *provider_env(config)]
     # github_env may obtain a token from `gh auth token` and add it to the
