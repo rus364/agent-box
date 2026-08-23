@@ -308,7 +308,7 @@ If you keep something under `~/.agents` a container shouldn't read, move it out 
 
 ## Git and GitHub
 
-`git` and `gh` configuration directories are always mounted (so both tools work), but only *populated* from the host when you opt in — see the configuration table above. They're seeded as a **copy**, not a bind mount, because `git`/`gh` rewrite config via temp-file-plus-rename, which fails on a bind-mounted file. The snapshot is prepared immediately before a new workspace box is created and stays stable for that box's lifetime: later Claude/Codex/shell attaches never replace its mounted source directories. The host stays the source of truth; anything written inside the box is discarded when the next box is created.
+`git` and `gh` configuration directories are always mounted (so both tools work), but only *populated* from the host when you opt in — see the configuration table above. Every workspace box gets its own writable snapshot, seeded as a **copy**, not a bind mount, because `git`/`gh` rewrite config via temp-file-plus-rename, which fails on a bind-mounted file. A snapshot is prepared immediately before that workspace's new box is created and stays stable for its lifetime: later Claude/Codex/shell attaches never replace it, and creating another workspace box cannot alter it. The host stays the source of truth; anything written inside a box is discarded when that workspace's next box is created.
 
 With `github.gh_config` off, the directory is empty and `gh` runs unauthenticated. With `github.gh_token` off (or `AGENT_BOX_GH_TOKEN=0`), no `GH_TOKEN` or `GITHUB_TOKEN` is forwarded.
 
@@ -366,7 +366,7 @@ Both providers cache for 60 seconds and run directly on the host (no container).
 
 ```text
 ~/.config/agent-box/config.json   the one agent-box config file (mode 0600)
-~/.local/share/agent-box/         build markers, seeded git/gh config, notify state
+~/.local/share/agent-box/         build markers, per-workspace git/gh snapshots, notify state
 ~/.claude/, ~/.codex/             agent auth and state (unchanged locations)
 ~/.claude/channels/telegram/      official Telegram plugin state (token, allowlist, inbox)
 ```
