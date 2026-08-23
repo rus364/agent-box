@@ -123,6 +123,8 @@ Settings are stored as a small versioned JSON document at `~/.config/agent-box/c
 
 Provider values, exported GitHub tokens, and a GitHub token obtained from `gh auth token` are forwarded to Podman by name (`--env=NAME`), never as `--env=NAME=value`; the latter would expose the value in process argv. `AGENT_BOX_GH_TOKEN=0` denies GitHub passthrough for one run and `=1` permits it.
 
+**A shared workspace box is one trust boundary.** Claude, Codex, shells, hooks, and daemons in that box share a PID namespace and Unix user. Per-exec environment forwarding avoids putting secret values in Podman argv, labels, or persistent container metadata, but it does not make those values confidential from other same-user processes in that same box: on normal Linux/Podman setups they can read `/proc/<pid>/environ`. Only enable GitHub, provider, or notification credentials for a workspace whose concurrent processes you trust.
+
 ### Environment overrides
 
 Persistent config is the primary mechanism, but a few variables still override for a single command:
@@ -218,7 +220,7 @@ Claude's "turn finished" is suppressed while background tasks from that turn are
 
 **No double notifications.** When a Claude session owns the official channel, it already relays replies and prompts to the paired chat, so agent-box suppresses only its duplicate Claude interaction hooks (permission and waiting-for-input). Its mechanical `Stop`/`StopFailure` hooks still send completion, background-work, and error notifications; the official channel does not reliably replace those lifecycle signals. Codex notifications are unaffected.
 
-The main configuration file is never mounted into a container. When outbound notifications are usable, agent-box derives a minimal mode-0600 runtime `notify.json` containing only the bot token and chat id, then mounts that file read-only for Claude and Codex sessions. Shell and doctor do not receive it. Disabled notifications mean no notification credential mount.
+The main configuration file is never mounted into a container. When outbound notifications are usable, agent-box forwards the bot token and chat id only to the Claude/Codex exec session that needs them; shell and doctor do not receive them directly. Because a workspace box is a shared same-user PID namespace, this limits accidental exposure in metadata and ordinary shell environment setup, not exposure to another process deliberately inspecting a running agent's `/proc` environment. Disabled notifications mean no notification credential forwarding.
 
 Enabling notifications installs Claude hooks into `~/.claude/settings.json`; disabling removes them. Claude session launch also reconciles those managed hooks, so upgrades migrate the former `~/.local/bin/agent-box notify claude` command without requiring a manual settings edit or rerunning `agent-box config`. Codex is wired up per-run with `-c notify=[...]`.
 
@@ -274,6 +276,8 @@ Overlapping mounts (including the implicit project-root mount) resolve determini
 - if one mount's path contains another's, only the broader one is kept — but only when they agree on read-only/read-write; a mismatch is rejected as ambiguous instead of silently picking a side.
 
 Additional mounts are part of the workspace box's immutable configuration. If a live box was created with `--mount /foo`, a later command without `--mount` simply joins that existing box. A later command that explicitly requests a different mount set fails clearly instead of recreating the box and interrupting running work. Equivalent mount sets are order-independent.
+
+The same rule applies to the rest of the box definition: the image, agent home/config paths, cache/state layout, and KVM/security settings cannot change underneath a live workspace box. If an invocation requests an incompatible box-level configuration, it fails rather than joining an environment other than the one requested; after an idle or stopped box is removed, the next launch creates one with the new configuration.
 
 ## Shared agent skills
 
@@ -373,7 +377,7 @@ Workspace containers are transient but shared: the first local agent command cre
 
 ## Container hardening
 
-Every workspace box gets `--userns=keep-id --cap-drop=all --security-opt=no-new-privileges`, an isolated container-only cache directory (never your real `~/.cache`), and only the mounts described above. A minimal init plus a small `/proc` keeper keeps the box alive while agent commands run through `podman exec`; once only those internal processes remain, the keeper exits and Podman's `--rm` removes the box. There is exactly one container-level definition of what a box can see (`agent_box.runtime.container_lifetime_args`).
+Every workspace box gets `--userns=keep-id --cap-drop=all --security-opt=no-new-privileges`, an isolated container-only cache directory (never your real `~/.cache`), and only the mounts described above. A minimal init plus a small `/proc` keeper keeps the box alive while agent commands run through `podman exec`; its final idle decision takes the same short lifecycle lock as exec admission, so it cannot shut down an admitted session. Once only those internal processes remain, the keeper exits and Podman's `--rm` removes the box. There is exactly one container-level definition of what a box can see (`agent_box.runtime.container_lifetime_args`).
 
 ## Self-tests
 

@@ -86,7 +86,7 @@ class ContainerArgvTests(IsolatedRuntimeTest):
             self.assertIn("podman", argv)
             self.assertIn(f"--workdir={project}", argv)
             self.assertTrue(any(f"src={project},dst={project}" in a for a in argv))
-            self.assertNotIn("/workspace", " ".join(argv))
+            self.assertNotIn("dst=/workspace", " ".join(argv))
 
     def test_extra_env_is_passed_before_the_image(self):
         with tempfile.TemporaryDirectory() as project:
