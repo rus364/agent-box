@@ -111,6 +111,19 @@ class ContainerArgvTests(IsolatedRuntimeTest):
             self.assertIn("--security-opt=no-new-privileges", argv)
 
 
+class InvocationEnvironmentTests(unittest.TestCase):
+    def test_github_token_discovered_for_this_exec_is_inherited_by_name(self):
+        config = Config()
+        with mock.patch.dict(os.environ, {}, clear=True), \
+             mock.patch.object(runtime, "github_env", side_effect=lambda _config: (
+                 os.environ.__setitem__("GH_TOKEN", "derived-token") or ["--env=GH_TOKEN"]
+             )), \
+             mock.patch.object(runtime, "provider_env", return_value=[]):
+            flags, env = runtime.invocation_env(config, "codex")
+        self.assertIn("GH_TOKEN", flags)
+        self.assertEqual(env["GH_TOKEN"], "derived-token")
+
+
 class CodexRuntimeOverridesTests(IsolatedRuntimeTest):
     def _overrides_for(self, config_text: str | None) -> tuple[list[str], tuple[bytes, bytes]]:
         with tempfile.TemporaryDirectory() as tmp:
@@ -193,9 +206,6 @@ class CodexRuntimeOverridesTests(IsolatedRuntimeTest):
     def test_non_codex_launches_do_not_inspect_codex_mcp_configuration(self):
         workspace = Workspace(Path.cwd(), Path.cwd())
 
-        class ExecCalled(Exception):
-            pass
-
         for agent in ("claude", "shell", "doctor"):
             with self.subTest(agent=agent), \
                  mock.patch.object(runtime.shutil, "which", return_value="/usr/bin/podman"), \
@@ -206,12 +216,11 @@ class CodexRuntimeOverridesTests(IsolatedRuntimeTest):
                  mock.patch.object(runtime, "image_exists", return_value=True), \
                  mock.patch.object(runtime, "sync_claude_agent_skills"), \
                  mock.patch.object(runtime, "claude_channel_args", return_value=([], [])), \
-                 mock.patch.object(runtime, "container_argv", return_value=["podman"]), \
+                 mock.patch.object(runtime, "launch_in_workspace_container", return_value=0), \
                  mock.patch.object(runtime, "codex_runtime_overrides") as overrides, \
-                 mock.patch.object(runtime.os, "execvp", side_effect=ExecCalled):
-                with self.assertRaises(ExecCalled):
-                    runtime.runtime_main([agent], Path.cwd())
-                overrides.assert_not_called()
+                 self.assertRaises(SystemExit):
+                runtime.runtime_main([agent], Path.cwd())
+            overrides.assert_not_called()
 
 
 class ContainerFlowNextEnvTests(IsolatedRuntimeTest):
@@ -222,15 +231,11 @@ class ContainerFlowNextEnvTests(IsolatedRuntimeTest):
             (root / ".flow" / "config.json").write_text("{}")
             workspace = Workspace(root, root)
 
-            class ExecCalled(Exception):
-                pass
-
             captured = {}
 
-            def fake_container_argv(workspace, extra_mounts, script_dir, command, config=None,
-                                     extra_env=None, mount_notifications=True):
+            def fake_launch(spec, workspace, command, extra_env, process_env):
                 captured["extra_env"] = extra_env
-                return ["podman"]
+                return 0
 
             with (
                 mock.patch.object(runtime.shutil, "which", return_value="/usr/bin/podman"),
@@ -241,9 +246,8 @@ class ContainerFlowNextEnvTests(IsolatedRuntimeTest):
                 mock.patch.object(runtime, "image_exists", return_value=True),
                 mock.patch.object(runtime, "sync_claude_agent_skills"),
                 mock.patch.object(runtime, "claude_channel_args", return_value=([], [])),
-                mock.patch.object(runtime, "container_argv", side_effect=fake_container_argv),
-                mock.patch.object(runtime.os, "execvp", side_effect=ExecCalled),
-                self.assertRaises(ExecCalled),
+                mock.patch.object(runtime, "launch_in_workspace_container", side_effect=fake_launch),
+                self.assertRaises(SystemExit),
             ):
                 runtime.runtime_main(["claude"], Path.cwd())
             self.assertIn("FLOW_REVIEW_BACKEND=codex:gpt-5.6-sol:medium", captured["extra_env"])
@@ -252,15 +256,11 @@ class ContainerFlowNextEnvTests(IsolatedRuntimeTest):
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Workspace(Path(tmp), Path(tmp))
 
-            class ExecCalled(Exception):
-                pass
-
             captured = {}
 
-            def fake_container_argv(workspace, extra_mounts, script_dir, command, config=None,
-                                     extra_env=None, mount_notifications=True):
+            def fake_launch(spec, workspace, command, extra_env, process_env):
                 captured["extra_env"] = extra_env
-                return ["podman"]
+                return 0
 
             with (
                 mock.patch.object(runtime.shutil, "which", return_value="/usr/bin/podman"),
@@ -271,12 +271,11 @@ class ContainerFlowNextEnvTests(IsolatedRuntimeTest):
                 mock.patch.object(runtime, "image_exists", return_value=True),
                 mock.patch.object(runtime, "sync_claude_agent_skills"),
                 mock.patch.object(runtime, "claude_channel_args", return_value=([], [])),
-                mock.patch.object(runtime, "container_argv", side_effect=fake_container_argv),
-                mock.patch.object(runtime.os, "execvp", side_effect=ExecCalled),
-                self.assertRaises(ExecCalled),
+                mock.patch.object(runtime, "launch_in_workspace_container", side_effect=fake_launch),
+                self.assertRaises(SystemExit),
             ):
                 runtime.runtime_main(["claude"], Path.cwd())
-            self.assertEqual(captured["extra_env"], [])
+            self.assertFalse(any(pair.startswith("FLOW_") for pair in captured["extra_env"]))
 
 
 class ClaudeNotifyHookLifecycleTests(IsolatedRuntimeTest):
@@ -319,9 +318,6 @@ class ClaudeNotifyHookLifecycleTests(IsolatedRuntimeTest):
                 enabled=True, telegram_token="token", telegram_chat_id="chat",
             ))
 
-            class ExecCalled(Exception):
-                pass
-
             with (
                 mock.patch.object(runtime.shutil, "which", return_value="/usr/bin/podman"),
                 mock.patch.object(runtime, "resolve_workspace", return_value=Workspace(root, root)),
@@ -331,18 +327,17 @@ class ClaudeNotifyHookLifecycleTests(IsolatedRuntimeTest):
                 mock.patch.object(runtime, "image_exists", return_value=True),
                 mock.patch.object(runtime, "sync_claude_agent_skills"),
                 mock.patch.object(runtime, "claude_channel_args", return_value=([], [])),
-                mock.patch.object(runtime, "container_argv", return_value=["podman"]),
+                mock.patch.object(runtime, "launch_in_workspace_container", return_value=0),
                 mock.patch.object(runtime, "CLAUDE_HOME", claude_home),
-                mock.patch.object(runtime.os, "execvp", side_effect=ExecCalled),
             ):
                 with mock.patch.object(
                     claude_settings, "atomic_write_json", wraps=claude_settings.atomic_write_json,
                 ) as write_json:
-                    with self.assertRaises(ExecCalled):
+                    with self.assertRaises(SystemExit):
                         runtime.runtime_main(["claude"], Path(__file__).resolve().parent.parent)
                     self.assertEqual(write_json.call_count, 1, "migration must write settings once")
                     write_json.reset_mock()
-                    with self.assertRaises(ExecCalled):
+                    with self.assertRaises(SystemExit):
                         runtime.runtime_main(["claude"], Path(__file__).resolve().parent.parent)
                     write_json.assert_not_called()
 

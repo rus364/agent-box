@@ -102,6 +102,12 @@ class PlanMountsTests(unittest.TestCase):
         result = plan_mounts([self._spec("parent"), self._spec("other")])
         self.assertEqual({r.path for r in result}, {self.root / "parent", self.root / "other"})
 
+    def test_unrelated_mount_order_is_canonical(self):
+        (self.root / "other").mkdir()
+        forward = plan_mounts([self._spec("parent"), self._spec("other")])
+        reverse = plan_mounts([self._spec("other"), self._spec("parent")])
+        self.assertEqual(forward, reverse)
+
     def test_empty_input(self):
         self.assertEqual(plan_mounts([]), [])
 

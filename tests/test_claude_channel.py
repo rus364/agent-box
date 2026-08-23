@@ -20,7 +20,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
-from agent_box import channel, cli, runtime
+from agent_box import channel, cli, notify, runtime
 from agent_box.config import CLAUDE_TELEGRAM_CHANNEL, CLAUDE_TELEGRAM_PLUGIN, Config
 from agent_box.workspace import Workspace
 
@@ -317,13 +317,10 @@ class ClaudeManagementArgvTests(unittest.TestCase):
         captured = []
         extra_env = []
 
-        def fake_execvp(_, argv):
-            captured.append(argv)
-            raise SystemExit
-
-        def fake_container_argv(*args):
-            extra_env.extend(args[5])
-            return ["podman", "run"]
+        def fake_launch(_spec, _workspace, command, env, _process_env):
+            captured.append(command)
+            extra_env.extend(env)
+            return 0
 
         with mock.patch.object(runtime.shutil, "which", return_value="/usr/bin/podman"), \
              mock.patch.object(runtime, "resolve_workspace", return_value=self.workspace), \
@@ -332,8 +329,8 @@ class ClaudeManagementArgvTests(unittest.TestCase):
              mock.patch.object(runtime, "load_config", return_value=self.config), \
              mock.patch.object(runtime, "image_exists", return_value=True), \
              mock.patch.object(runtime, "sync_claude_agent_skills"), \
-             mock.patch.object(runtime, "container_argv", side_effect=fake_container_argv), \
-             mock.patch.object(runtime.os, "execvp", side_effect=fake_execvp), \
+             mock.patch.object(runtime, "workspace_container_spec", return_value=mock.Mock()), \
+             mock.patch.object(runtime, "launch_in_workspace_container", side_effect=fake_launch), \
              mock.patch.object(runtime, "CLAUDE_HOME", home), \
              mock.patch.object(channel, "CLAUDE_HOME", home), \
              mock.patch.object(channel, "CHANNEL_LOCK", self.lock):
@@ -346,8 +343,8 @@ class ClaudeManagementArgvTests(unittest.TestCase):
         self.assertEqual(argv[-4:], [
             "claude", "--dangerously-skip-permissions", "--channels", CLAUDE_TELEGRAM_CHANNEL,
         ])
-        self.assertEqual(extra_env, ["AGENT_BOX_SUPPRESS_NOTIFY=1"])
-        self.assertIsNotNone(channel.channel_owner(self.lock))
+        self.assertIn("AGENT_BOX_SUPPRESS_NOTIFY=1", extra_env)
+        self.assertIsNone(channel.channel_owner(self.lock))
 
     def test_positional_prompt_precedes_the_variadic_telegram_channel(self):
         argv, _ = self._launch(["review this change"])
@@ -397,8 +394,8 @@ class ClaudeManagementArgvTests(unittest.TestCase):
             "claude", "--dangerously-skip-permissions", *rest,
             "--channels", CLAUDE_TELEGRAM_CHANNEL,
         ])
-        self.assertEqual(extra_env, ["AGENT_BOX_SUPPRESS_NOTIFY=1"])
-        self.assertIsNotNone(channel.channel_owner(self.lock))
+        self.assertIn("AGENT_BOX_SUPPRESS_NOTIFY=1", extra_env)
+        self.assertIsNone(channel.channel_owner(self.lock))
 
     def test_daemon_keeps_argv_without_session_flags(self):
         rest = ["daemon", "status"]
@@ -416,8 +413,8 @@ class ClaudeManagementArgvTests(unittest.TestCase):
             "claude", "--dangerously-skip-permissions", *rest,
             "--channels", CLAUDE_TELEGRAM_CHANNEL,
         ])
-        self.assertEqual(extra_env, ["AGENT_BOX_SUPPRESS_NOTIFY=1"])
-        self.assertIsNotNone(channel.channel_owner(self.lock))
+        self.assertIn("AGENT_BOX_SUPPRESS_NOTIFY=1", extra_env)
+        self.assertIsNone(channel.channel_owner(self.lock))
 
     def test_init_only_keeps_argv_without_session_flags(self):
         rest = ["--init-only"]
@@ -458,9 +455,9 @@ class RuntimeNotificationSelectionTests(unittest.TestCase):
         workspace = Workspace(Path("/project"), Path("/project"))
         captured = []
 
-        def fake_argv(*args, **kwargs):
-            captured.append(kwargs.get("mount_notifications", args[-1]))
-            return ["podman"]
+        def fake_launch(_spec, _workspace, _command, env, _process_env):
+            captured.append(env)
+            return 0
 
         with tempfile.TemporaryDirectory() as tmp, \
              mock.patch.object(runtime.shutil, "which", return_value="/usr/bin/podman"), \
@@ -471,19 +468,21 @@ class RuntimeNotificationSelectionTests(unittest.TestCase):
              mock.patch.object(runtime, "image_exists", return_value=True), \
              mock.patch.object(runtime, "sync_claude_agent_skills"), \
              mock.patch.object(runtime, "claude_channel_args", return_value=(channel, [])), \
-             mock.patch.object(runtime, "container_argv", side_effect=fake_argv), \
-             mock.patch.object(runtime, "CLAUDE_HOME", Path(tmp) / "claude"), \
-             mock.patch.object(runtime.os, "execvp", side_effect=SystemExit):
+             mock.patch.object(runtime, "workspace_container_spec", return_value=mock.Mock()), \
+             mock.patch.object(runtime, "launch_in_workspace_container", side_effect=fake_launch), \
+             mock.patch.object(runtime, "CLAUDE_HOME", Path(tmp) / "claude"):
             with self.assertRaises(SystemExit):
                 runtime.runtime_main([agent], Path(__file__).parents[1])
         return captured
 
     def test_credentials_are_scoped_by_actual_launch_role(self):
-        self.assertEqual(self._run("codex", []), [True])
-        self.assertEqual(self._run("claude", []), [True])
-        self.assertEqual(self._run("claude", ["--channels", CLAUDE_TELEGRAM_CHANNEL]), [True])
-        self.assertEqual(self._run("shell", []), [False])
-        self.assertEqual(self._run("doctor", []), [False])
+        for agent, channel_flags, expected in (
+            ("codex", [], True), ("claude", [], True),
+            ("claude", ["--channels", CLAUDE_TELEGRAM_CHANNEL], True),
+            ("shell", [], False), ("doctor", [], False),
+        ):
+            env = self._run(agent, channel_flags)[0]
+            self.assertEqual(notify.NOTIFY_TOKEN_ENV in env, expected)
 
 
 class ConfigEnableGatingTests(unittest.TestCase):

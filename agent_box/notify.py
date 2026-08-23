@@ -48,6 +48,8 @@ STALE_NOTIFY_COMMAND = "~/.local/bin/agent-box notify claude"
 #: interactive replies, prompts and questions to the paired chat, so only the
 #: matching ``Notification`` hooks need to stand down.
 SUPPRESS_NOTIFY_ENV = "AGENT_BOX_SUPPRESS_NOTIFY"
+NOTIFY_TOKEN_ENV = "AGENT_BOX_NOTIFY_TOKEN"
+NOTIFY_CHAT_ID_ENV = "AGENT_BOX_NOTIFY_CHAT_ID"
 OFFICIAL_CHANNEL_NOTIFICATION_TYPES = frozenset({"permission_prompt", "idle_prompt"})
 
 
@@ -97,6 +99,15 @@ def load_credentials(path: Path = NOTIFY_CREDENTIALS) -> tuple[str, str] | None:
     the container (the Claude/Codex hooks), so both read exactly the file that
     is mounted -- there is no second, host-only way to reach the token.
     """
+    # A persistent workspace box cannot safely have a credential file mounted
+    # only for Claude/Codex: every concurrent shell in that box could read it.
+    # Runtime therefore injects these values only into notification-capable
+    # exec sessions. Keep the file fallback for host-side `notify test` and
+    # compatibility with older disposable containers.
+    token = os.environ.get(NOTIFY_TOKEN_ENV, "")
+    chat_id = os.environ.get(NOTIFY_CHAT_ID_ENV, "")
+    if token and chat_id:
+        return token, chat_id
     try:
         data = read_json(path)
     except (OSError, ValueError):
