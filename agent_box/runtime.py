@@ -111,7 +111,7 @@ def codex_command(rest: list[str], config: Config) -> list[str]:
 def ensure_state_dirs() -> None:
     for path in (
         BUILD_STATE, STATE_ROOT / "cache", STATE_ROOT / "uv", STATE_ROOT / "mise", NOTIFY_STATE_ROOT,
-        STATE_ROOT / "git", STATE_ROOT / "gh", STATE_ROOT / "runtime/workspaces", CODEX_HOME, CLAUDE_HOME,
+        STATE_ROOT / "runtime/workspaces", CODEX_HOME, CLAUDE_HOME,
         XDG_CACHE_HOME / "claude-code", XDG_CACHE_HOME / "claude-cli-nodejs",
     ):
         path.mkdir(parents=True, exist_ok=True)
@@ -258,7 +258,32 @@ def seed_git_config(target: Path, config: Config) -> None:
         _set_git_config(target / "config", f"credential.{GH_CREDENTIAL_URL}.helper", GH_CREDENTIAL_HELPER)
 
 
-def prepare_container_lifetime_state(config: Config, *, mount_notifications: bool) -> None:
+@dataclass(frozen=True)
+class WorkspaceRuntimeState:
+    """Mutable bind sources owned by one resolved workspace box."""
+
+    root: Path
+    git: Path
+    gh: Path
+
+
+def workspace_runtime_state(workspace: Workspace) -> WorkspaceRuntimeState:
+    root = STATE_ROOT / "runtime/workspaces" / workspace_identity(workspace)
+    return WorkspaceRuntimeState(root=root, git=root / "git", gh=root / "gh")
+
+
+def legacy_runtime_state() -> WorkspaceRuntimeState:
+    """State used only by the retained disposable argv compatibility path."""
+    return WorkspaceRuntimeState(
+        root=STATE_ROOT,
+        git=STATE_ROOT / "git",
+        gh=STATE_ROOT / "gh",
+    )
+
+
+def prepare_container_lifetime_state(
+    config: Config, *, mount_notifications: bool, runtime_state: WorkspaceRuntimeState | None = None,
+) -> None:
     """Seed bind-mount sources immediately before creating a new box.
 
     ``git`` and ``gh`` are directory bind mounts.  Reseeding them replaces
@@ -268,10 +293,11 @@ def prepare_container_lifetime_state(config: Config, *, mount_notifications: boo
     disposable argv helper prepares on every run because its box has no
     surviving mounts.
     """
+    runtime_state = runtime_state or legacy_runtime_state()
     ensure_state_dirs()
-    seed_git_config(STATE_ROOT / "git", config)
+    seed_git_config(runtime_state.git, config)
     seed_state_dir(
-        STATE_ROOT / "gh",
+        runtime_state.gh,
         *((HOST_HOME / ".config/gh",) if config.github.gh_config else ()),
     )
     if mount_notifications:
@@ -325,6 +351,7 @@ def agent_tree_mounts() -> list[tuple[Path, Path, bool]]:
 def build_mounts(
     workspace: Workspace, extra_mounts: list[MountSpec], script_dir: Path,
     config: Config | None = None, mount_notifications: bool = True,
+    runtime_state: WorkspaceRuntimeState | None = None,
 ) -> list[str]:
     """Build ``--mount`` flags.
 
@@ -340,6 +367,8 @@ def build_mounts(
     """
     from .mounts import MountSpec, plan_mounts
 
+    mount_workspace_runtime_state = runtime_state is not None
+    runtime_state = runtime_state or legacy_runtime_state()
     # The project root and any explicit --mount paths can legitimately
     # overlap (a --mount of a parent directory containing the project is
     # the documented way to expose sibling repos); plan_mounts collapses
@@ -348,23 +377,30 @@ def build_mounts(
     project_mounts = plan_mounts([MountSpec(workspace.host_root, False, "project root"), *extra_mounts])
 
     pairs: list[tuple[Path, Path, bool]] = [
+        # Agent homes intentionally remain host-backed and shared: they hold
+        # the user's provider authentication and durable agent settings. Git
+        # and gh below are different because their copied, writable config is
+        # a snapshot owned by one workspace box lifetime.
         (CODEX_HOME, CODEX_HOME, False),
         (CLAUDE_HOME, CLAUDE_HOME, False),
-        # An isolated, container-only cache directory -- deliberately not
-        # the host's real ~/.cache -- mounted at the same path the
-        # container's XDG_CACHE_HOME env var points at (see
-        # base_podman_args) so the two stay consistent.
+        # Shared container-only cache: intentionally global so tool downloads
+        # survive short-lived boxes without exposing the host's real ~/.cache.
         (STATE_ROOT / "cache", XDG_CACHE_HOME, False),
         (XDG_CACHE_HOME / "claude-code", XDG_CACHE_HOME / "claude-code", False),
         (XDG_CACHE_HOME / "claude-cli-nodejs", XDG_CACHE_HOME / "claude-cli-nodejs", False),
+        # Shared tool caches; uv/mise own their concurrency handling and their
+        # caches are not workspace configuration snapshots.
         (STATE_ROOT / "uv", HOST_HOME / ".local/share/uv", False),
         (STATE_ROOT / "mise", HOST_HOME / ".local/share/mise", False),
+        # Notification hook delivery state is intentionally host-global so
+        # duplicate suppression and rate tracking work across agent sessions.
         (NOTIFY_STATE_ROOT, HOST_HOME / ".local/share/agent-box/notify", False),
-        # Shared with the keeper solely for advisory lifecycle locking. This
-        # directory contains no credentials or user configuration.
-        (STATE_ROOT / "runtime/workspaces", STATE_ROOT / "runtime/workspaces", False),
         (script_dir / "agent-box", HOST_HOME / ".local/bin/agent-box", True),
     ]
+    if mount_workspace_runtime_state:
+        # The keeper needs only this workspace's lifecycle lock and snapshots,
+        # never another workspace's writable runtime state.
+        pairs.append((runtime_state.root, runtime_state.root, False))
     if (script_dir / "agent_box").is_dir():
         pairs.append((script_dir / "agent_box", HOST_HOME / ".local/lib/agent-box/agent_box", True))
     # The container never sees config.json. The legacy disposable argv helper
@@ -386,8 +422,8 @@ def build_mounts(
     # container. Their source contents are prepared separately at box
     # creation, never while merely calculating an attach spec.
     pairs += [
-        (STATE_ROOT / "git", HOST_HOME / ".config/git", False),
-        (STATE_ROOT / "gh", HOST_HOME / ".config/gh", False),
+        (runtime_state.git, HOST_HOME / ".config/git", False),
+        (runtime_state.gh, HOST_HOME / ".config/gh", False),
     ]
 
     pairs += agent_tree_mounts()
@@ -500,6 +536,7 @@ def provider_env(config: Config) -> list[str]:
 def container_lifetime_args(
     workspace: Workspace, extra_mounts: list[MountSpec], script_dir: Path,
     config: Config | None = None, mount_notifications: bool = False,
+    runtime_state: WorkspaceRuntimeState | None = None,
 ) -> list[str]:
     """Container-level arguments shared by workspace creation and legacy argv tests.
 
@@ -531,7 +568,7 @@ def container_lifetime_args(
         # A workspace box is shared by shell/Claude/Codex, while notification
         # access is an agent-invocation capability.  The hooks receive their
         # two credentials through podman exec instead (see notification_env).
-        *build_mounts(workspace, extra_mounts, script_dir, config, mount_notifications),
+        *build_mounts(workspace, extra_mounts, script_dir, config, mount_notifications, runtime_state),
     ]
     # A host that relocates Claude Code's config directory must have the
     # container agree: CLAUDE_HOME is already bind-mounted at its host path,
@@ -554,7 +591,10 @@ def base_podman_args(
     avoids changing callers that only inspect the old command construction.
     """
     config = load_config() if config is None else config
-    prepare_container_lifetime_state(config, mount_notifications=mount_notifications)
+    runtime_state = legacy_runtime_state()
+    prepare_container_lifetime_state(
+        config, mount_notifications=mount_notifications, runtime_state=runtime_state,
+    )
     args = ["run", "--rm", "--interactive", f"--workdir={workspace.container_cwd}"]
     args += container_lifetime_args(
         workspace, extra_mounts, script_dir, config, mount_notifications,
@@ -600,17 +640,19 @@ class WorkspaceContainerSpec:
     mounts_explicit: bool
     create_argv: list[str]
     creation_config: Config = field(repr=False, compare=False)
+    runtime_state: WorkspaceRuntimeState
 
 
 def workspace_container_spec(
     workspace: Workspace, extra_mounts: list[MountSpec], script_dir: Path, config: Config,
 ) -> WorkspaceContainerSpec:
     """The immutable box definition; deliberately excludes per-exec secrets/policy."""
+    runtime_state = workspace_runtime_state(workspace)
     lifetime = container_lifetime_args(
-        workspace, extra_mounts, script_dir, config, mount_notifications=False,
+        workspace, extra_mounts, script_dir, config, mount_notifications=False, runtime_state=runtime_state,
     )
     base_lifetime = container_lifetime_args(
-        workspace, [], script_dir, config, mount_notifications=False,
+        workspace, [], script_dir, config, mount_notifications=False, runtime_state=runtime_state,
     )
     extra_mounts_hash = hashlib.sha256(json.dumps([
         (str(mount.path), mount.read_only)
@@ -647,6 +689,7 @@ def workspace_container_spec(
             IMAGE, "bash", str(KEEPER_PATH), str(workspace_lock_path(workspace)),
         ],
         creation_config=config,
+        runtime_state=runtime_state,
     )
 
 
@@ -665,7 +708,7 @@ def workspace_transition_lock(workspace: Workspace):
 
 
 def workspace_lock_path(workspace: Workspace) -> Path:
-    return STATE_ROOT / "runtime/workspaces" / f"{workspace_identity(workspace)}.lock"
+    return workspace_runtime_state(workspace).root / "lifecycle.lock"
 
 
 def inspect_workspace_container(name: str) -> dict | None:
@@ -756,7 +799,9 @@ def ensure_workspace_container(spec: WorkspaceContainerSpec) -> None:
             subprocess.run(["podman", "rm", "-f", spec.name], check=False)
             current = None
     if current is None:
-        prepare_container_lifetime_state(spec.creation_config, mount_notifications=False)
+        prepare_container_lifetime_state(
+            spec.creation_config, mount_notifications=False, runtime_state=spec.runtime_state,
+        )
         created = subprocess.run(spec.create_argv, text=True, capture_output=True)
         if created.returncode:
             # Podman's name uniqueness is the final arbiter when two first

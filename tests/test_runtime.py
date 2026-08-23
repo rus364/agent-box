@@ -84,6 +84,12 @@ class ContainerArgvTests(IsolatedRuntimeTest):
             self.assertTrue(any(f"src={project},dst={project}" in a for a in argv))
             self.assertNotIn("dst=/workspace", " ".join(argv))
 
+    def test_legacy_disposable_argv_does_not_mount_all_runtime_state(self):
+        with tempfile.TemporaryDirectory() as project:
+            workspace = Workspace(Path(project), Path(project))
+            argv = runtime.container_argv(workspace, [], Path(project), ["codex"])
+        self.assertNotIn(f"src={runtime.STATE_ROOT},dst={runtime.STATE_ROOT}", argv)
+
     def test_extra_env_is_passed_before_the_image(self):
         with tempfile.TemporaryDirectory() as project:
             workspace = Workspace(Path(project), Path(project))

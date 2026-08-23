@@ -32,6 +32,35 @@ class WorkspaceContainerIdentityTests(unittest.TestCase):
             name = runtime.workspace_container_name(Workspace(root, root))
         self.assertRegex(name, r"^[a-z0-9][a-z0-9_.-]*$")
 
+    def test_different_workspaces_render_distinct_git_and_gh_snapshot_sources(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            first_root = root / "first"
+            second_root = root / "second"
+            first_root.mkdir()
+            second_root.mkdir()
+            config = runtime.Config()
+            script_dir = Path(__file__).parents[1]
+            first = runtime.workspace_container_spec(
+                Workspace(first_root, first_root), [], script_dir, config,
+            )
+            second = runtime.workspace_container_spec(
+                Workspace(second_root, second_root), [], script_dir, config,
+            )
+
+            def source_for(spec, destination):
+                mount = next(arg for arg in spec.create_argv if f"dst={destination}" in arg)
+                return mount.split("src=", 1)[1].split(",", 1)[0]
+
+            self.assertNotEqual(
+                source_for(first, runtime.HOST_HOME / ".config/git"),
+                source_for(second, runtime.HOST_HOME / ".config/git"),
+            )
+            self.assertNotEqual(
+                source_for(first, runtime.HOST_HOME / ".config/gh"),
+                source_for(second, runtime.HOST_HOME / ".config/gh"),
+            )
+
 
 class WorkspaceContainerLifecycleTests(unittest.TestCase):
     def setUp(self):
@@ -76,8 +105,8 @@ class WorkspaceContainerLifecycleTests(unittest.TestCase):
 
     def test_spec_calculation_preserves_existing_git_and_gh_source_directory_inodes(self):
         """Catches reseeding a live bind source while merely attaching."""
-        git_source = runtime.STATE_ROOT / "git"
-        gh_source = runtime.STATE_ROOT / "gh"
+        git_source = self.spec.runtime_state.git
+        gh_source = self.spec.runtime_state.gh
         git_source.mkdir(parents=True, exist_ok=True)
         gh_source.mkdir(parents=True, exist_ok=True)
         (git_source / "config").write_text("[user]\n\tname = live identity\n")
@@ -89,6 +118,47 @@ class WorkspaceContainerLifecycleTests(unittest.TestCase):
         self.assertEqual((git_source.stat().st_ino, gh_source.stat().st_ino), before)
         self.assertIn("live identity", (git_source / "config").read_text())
         self.assertTrue((gh_source / "hosts.yml").is_file())
+
+    def test_preparing_second_workspace_preserves_first_snapshot_inode_and_contents(self):
+        first_state = self.spec.runtime_state
+        second_root = Path(self.tmp.name) / "second-project"
+        second_root.mkdir()
+        second_spec = runtime.workspace_container_spec(
+            Workspace(second_root, second_root), [], self.script_dir, self.config,
+        )
+        runtime.prepare_container_lifetime_state(
+            self.config, mount_notifications=False, runtime_state=first_state,
+        )
+        (first_state.git / "config").write_text("[user]\n\tname = workspace-a\n")
+        (first_state.gh / "hosts.yml").write_text("workspace-a\n")
+        before = (first_state.git.stat().st_ino, first_state.gh.stat().st_ino)
+
+        runtime.prepare_container_lifetime_state(
+            self.config, mount_notifications=False, runtime_state=second_spec.runtime_state,
+        )
+
+        self.assertEqual((first_state.git.stat().st_ino, first_state.gh.stat().st_ino), before)
+        self.assertIn("workspace-a", (first_state.git / "config").read_text())
+        self.assertEqual((first_state.gh / "hosts.yml").read_text(), "workspace-a\n")
+        self.assertNotEqual(first_state.git, second_spec.runtime_state.git)
+        self.assertNotEqual(first_state.gh, second_spec.runtime_state.gh)
+
+    def test_preparing_recreated_workspace_reseeds_its_own_snapshot(self):
+        config = runtime.Config()
+        config.git.identity = False
+        state = self.spec.runtime_state
+        runtime.prepare_container_lifetime_state(
+            config, mount_notifications=False, runtime_state=state,
+        )
+        (state.git / "old-box").write_text("stale")
+        (state.gh / "old-box").write_text("stale")
+
+        runtime.prepare_container_lifetime_state(
+            config, mount_notifications=False, runtime_state=state,
+        )
+
+        self.assertFalse((state.git / "old-box").exists())
+        self.assertFalse((state.gh / "old-box").exists())
 
     def test_running_workspace_is_reused_without_create_or_start(self):
         with mock.patch.object(runtime, "inspect_workspace_container", return_value=self._container()), \

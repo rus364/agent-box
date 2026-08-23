@@ -73,8 +73,8 @@ XDG_CONFIG_HOME = env_path("XDG_CONFIG_HOME", HOST_HOME / ".config")
 XDG_DATA_HOME = env_path("XDG_DATA_HOME", HOST_HOME / ".local/share")
 XDG_CACHE_HOME = env_path("XDG_CACHE_HOME", HOST_HOME / ".cache")
 
-# agent-box's own persistent state (build markers, seeded git/gh config,
-# notification state).
+# agent-box's own persistent state (build markers, per-workspace git/gh
+# snapshots, notification state).
 STATE_ROOT = env_path("AGENT_BOX_STATE_DIR", XDG_DATA_HOME / "agent-box")
 CONFIG_ROOT = env_path("AGENT_BOX_CONFIG_DIR", XDG_CONFIG_HOME / "agent-box")
 
