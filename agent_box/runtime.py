@@ -146,9 +146,21 @@ def build_image(script_dir: Path, refresh: bool, no_cache: bool, identity: HostI
 
 
 def image_exists() -> bool:
-    return subprocess.run(
-        ["podman", "image", "exists", IMAGE], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-    ).returncode == 0
+    """Return a definite image-exists answer without hiding storage failures."""
+    command = ["podman", "image", "exists", IMAGE]
+    try:
+        result = subprocess.run(command, text=True, capture_output=True)
+    except OSError as exc:
+        raise AgentBoxError(f"could not determine image state: {' '.join(command)} failed: {exc}") from exc
+    if result.returncode == 0:
+        return True
+    if result.returncode == 1:
+        return False
+    detail = result.stderr.strip() or result.stdout.strip() or "no diagnostic from podman"
+    raise AgentBoxError(
+        f"could not determine image state: {' '.join(command)} "
+        f"failed with exit {result.returncode}: {detail}"
+    )
 
 
 def sync_claude_agent_skills() -> None:
@@ -695,7 +707,14 @@ def workspace_container_spec(
 
 @contextmanager
 def workspace_transition_lock(workspace: Workspace):
-    """Short advisory lock for create/exec/idle-delete transition windows."""
+    """Short advisory lock for create/exec/idle-delete transition windows.
+
+    The keeper and host flock separate open file descriptions of the same
+    lock inode.  An accidental unlink does not release either already-held
+    flock, although a trusted workspace peer that replaces the pathname can defeat future lock
+    acquisition.  Workspace-box processes are trusted peers; preserving the
+    simple shared lock is preferable to adding a second lifecycle mechanism.
+    """
     lock_path = workspace_lock_path(workspace)
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
@@ -711,17 +730,82 @@ def workspace_lock_path(workspace: Workspace) -> Path:
     return workspace_runtime_state(workspace).root / "lifecycle.lock"
 
 
-def inspect_workspace_container(name: str) -> dict | None:
-    result = subprocess.run(
-        ["podman", "container", "inspect", name], text=True, capture_output=True,
+def workspace_container_exists(name: str) -> bool:
+    """Return a definite Podman container-exists answer, or fail closed.
+
+    ``podman container exists`` reserves exit status 1 for a missing
+    container and 125 for a storage/runtime failure.  Only the former can
+    authorize replacing this workspace's Git/GH bind-source roots.
+    """
+    command = ["podman", "container", "exists", name]
+    try:
+        result = subprocess.run(command, text=True, capture_output=True)
+    except OSError as exc:
+        raise AgentBoxError(
+            f"could not determine workspace container state: {' '.join(command)} failed: {exc}"
+        ) from exc
+    if result.returncode == 0:
+        return True
+    if result.returncode == 1:
+        return False
+    detail = result.stderr.strip() or result.stdout.strip() or "no diagnostic from podman"
+    raise AgentBoxError(
+        f"could not determine workspace container state: {' '.join(command)} "
+        f"failed with exit {result.returncode}: {detail}"
     )
-    if result.returncode:
+
+
+def inspect_workspace_container(name: str) -> dict | None:
+    """Inspect a box, returning ``None`` only after confirmed absence.
+
+    An inspect can race a container's normal removal.  Rechecking explicit
+    existence makes that race safe; every other inspect failure is ambiguous
+    and therefore raises instead of looking like a missing container.
+    """
+    if not workspace_container_exists(name):
         return None
+    command = ["podman", "container", "inspect", name]
+    try:
+        result = subprocess.run(command, text=True, capture_output=True)
+    except OSError as exc:
+        raise AgentBoxError(
+            f"could not inspect workspace container: {' '.join(command)} failed: {exc}"
+        ) from exc
+    if result.returncode:
+        # The keeper may have just exited and Podman may have removed the box
+        # between the explicit exists and inspect calls.  Re-evaluate only
+        # that narrow race; a still-existing box means inspect was ambiguous.
+        if not workspace_container_exists(name):
+            return None
+        detail = result.stderr.strip() or result.stdout.strip() or "no diagnostic from podman"
+        raise AgentBoxError(
+            f"could not inspect workspace container: {' '.join(command)} "
+            f"failed with exit {result.returncode}: {detail}"
+        )
     try:
         payload = json.loads(result.stdout)
-    except json.JSONDecodeError:
-        return None
-    return payload[0] if isinstance(payload, list) and isinstance(payload[0], dict) else None
+    except json.JSONDecodeError as exc:
+        raise AgentBoxError("could not inspect workspace container: invalid JSON from podman") from exc
+    if isinstance(payload, list) and payload and isinstance(payload[0], dict):
+        return payload[0]
+    raise AgentBoxError("could not inspect workspace container: unexpected response from podman")
+
+
+def remove_workspace_container_then_confirm_absent(name: str) -> None:
+    """Remove a stale box and establish that its bind mounts are no longer live."""
+    command = ["podman", "rm", "-f", name]
+    try:
+        result = subprocess.run(command, text=True, capture_output=True)
+    except OSError as exc:
+        raise AgentBoxError(f"could not remove workspace container: {' '.join(command)} failed: {exc}") from exc
+    current = inspect_workspace_container(name)
+    if current is None:
+        return
+    detail = (
+        (result.stderr.strip() or result.stdout.strip() or "no diagnostic from podman")
+        if result.returncode else "container still exists after removal"
+    )
+    raise AgentBoxError(f"could not remove workspace container: {' '.join(command)} failed: {detail}")
 
 
 def _container_matches(container: dict, spec: WorkspaceContainerSpec) -> bool:
@@ -767,7 +851,7 @@ def ensure_workspace_container(spec: WorkspaceContainerSpec) -> None:
                 _container_is_managed_workspace(current, spec)
                 and current.get("State", {}).get("Status") != "running"
             ):
-                subprocess.run(["podman", "rm", "-f", spec.name], check=False)
+                remove_workspace_container_then_confirm_absent(spec.name)
                 current = None
             else:
                 raise AgentBoxError("workspace container name is occupied by an incompatible container")
@@ -779,7 +863,7 @@ def ensure_workspace_container(spec: WorkspaceContainerSpec) -> None:
                 raise AgentBoxError(
                     "workspace container is already running with incompatible container-level configuration"
                 )
-            subprocess.run(["podman", "rm", "-f", spec.name], check=False)
+            remove_workspace_container_then_confirm_absent(spec.name)
             current = None
         elif not _container_mounts_match(current, spec):
             state = str(current.get("State", {}).get("Status", "unknown"))
@@ -789,16 +873,19 @@ def ensure_workspace_container(spec: WorkspaceContainerSpec) -> None:
                 raise AgentBoxError("workspace container is already running with different mount configuration")
             if state == "running":
                 return
-            subprocess.run(["podman", "rm", "-f", spec.name], check=False)
+            remove_workspace_container_then_confirm_absent(spec.name)
             current = None
         elif current.get("State", {}).get("Status") == "running":
             return
         else:
             # A stopped container can hold stale state from a crash or an old
             # image. Recreate rather than guessing whether it is safe to resume.
-            subprocess.run(["podman", "rm", "-f", spec.name], check=False)
+            remove_workspace_container_then_confirm_absent(spec.name)
             current = None
     if current is None:
+        # ``inspect_workspace_container`` returns None only after Podman's
+        # explicit exists query confirmed absence (including after removal).
+        # This is the safety boundary: do not reseed live Git/GH bind roots.
         prepare_container_lifetime_state(
             spec.creation_config, mount_notifications=False, runtime_state=spec.runtime_state,
         )
@@ -878,8 +965,13 @@ def _wait_for_exiting_keeper(name: str, current: dict) -> dict | None:
     The caller holds the shared transition lock. If the keeper is gone, no
     exec is admitted until Podman reports the old box stopped/removed.
     """
-    if current.get("State", {}).get("Status") != "running" or container_has_keeper(name) is not False:
+    if current.get("State", {}).get("Status") != "running":
         return current
+    keeper = container_has_keeper(name)
+    if keeper is True:
+        return current
+    if keeper is None:
+        raise AgentBoxError("could not determine workspace keeper state")
     deadline = time.monotonic() + 2
     while time.monotonic() < deadline:
         time.sleep(0.02)
@@ -908,11 +1000,11 @@ def cleanup_workspace_container_if_idle(spec: WorkspaceContainerSpec) -> None:
     if current is None:
         return
     if current.get("State", {}).get("Status") != "running":
-        subprocess.run(["podman", "rm", "-f", spec.name], check=False)
+        remove_workspace_container_then_confirm_absent(spec.name)
         return
     workloads = container_has_workloads(spec.name)
     if workloads is False:
-        subprocess.run(["podman", "rm", "-f", spec.name], check=False)
+        remove_workspace_container_then_confirm_absent(spec.name)
 
 
 def launch_in_workspace_container(
@@ -934,7 +1026,7 @@ def launch_in_workspace_container(
     try:
         with workspace_transition_lock(workspace):
             cleanup_workspace_container_if_idle(spec)
-    except (OSError, subprocess.SubprocessError) as exc:
+    except (AgentBoxError, OSError, subprocess.SubprocessError) as exc:
         # The agent command's status is more meaningful than a best-effort
         # post-exit cleanup problem. A later launch will recover stale
         # stopped/idle containers automatically.
