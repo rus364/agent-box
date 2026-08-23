@@ -294,6 +294,37 @@ class ContainerFlowNextEnvTests(IsolatedRuntimeTest):
                 runtime.runtime_main(["claude"], Path.cwd())
             self.assertFalse(any(pair.startswith("FLOW_") for pair in captured["extra_env"]))
 
+    def test_explicit_host_env_overrides_configured_backend(self):
+        """An explicit FLOW_REVIEW_BACKEND from the launching shell wins over
+        agent-box's configured policy for that one launch (container mode)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".flow").mkdir()
+            (root / ".flow" / "config.json").write_text("{}")
+            workspace = Workspace(root, root)
+
+            captured = {}
+
+            def fake_launch(spec, workspace, command, extra_env, process_env):
+                captured["extra_env"] = extra_env
+                return 0
+
+            with (
+                mock.patch.dict(os.environ, {"FLOW_REVIEW_BACKEND": "codex:gpt-5.6-terra:high"}),
+                mock.patch.object(runtime.shutil, "which", return_value="/usr/bin/podman"),
+                mock.patch.object(runtime, "resolve_workspace", return_value=workspace),
+                mock.patch.object(runtime, "ensure_state_dirs"),
+                mock.patch.object(runtime, "ensure_refresh_token"),
+                mock.patch.object(runtime, "load_config", return_value=Config()),
+                mock.patch.object(runtime, "image_exists", return_value=True),
+                mock.patch.object(runtime, "sync_claude_agent_skills"),
+                mock.patch.object(runtime, "claude_channel_args", return_value=([], [])),
+                mock.patch.object(runtime, "launch_in_workspace_container", side_effect=fake_launch),
+                self.assertRaises(SystemExit),
+            ):
+                runtime.runtime_main(["claude"], Path.cwd())
+            self.assertIn("FLOW_REVIEW_BACKEND=codex:gpt-5.6-terra:high", captured["extra_env"])
+
 
 class ClaudeNotifyHookLifecycleTests(IsolatedRuntimeTest):
     def test_claude_launch_migrates_legacy_notify_hooks_without_duplicates(self):
@@ -510,20 +541,51 @@ class HostModeTests(IsolatedRuntimeTest):
             env = call.call_args.kwargs["env"]
             self.assertNotIn("FLOW_REVIEW_BACKEND", env)
 
-    def test_flow_next_workspace_overrides_stale_host_env(self):
-        """A pre-existing (wrong) host FLOW_REVIEW_BACKEND must not survive:
-        agent-box's configured policy is authoritative for this launch."""
+    def test_explicit_host_env_overrides_configured_backend(self):
+        """An explicit FLOW_REVIEW_BACKEND from the launching shell wins over
+        agent-box's configured policy for that one launch (host mode)."""
         with tempfile.TemporaryDirectory() as tmp:
             root = self._flow_next_workspace(tmp)
             workspace = Workspace(root, root)
-            with mock.patch.dict(os.environ, {"FLOW_REVIEW_BACKEND": "stale-wrong-value"}), \
+            with mock.patch.dict(os.environ, {"FLOW_REVIEW_BACKEND": "codex:gpt-5.6-terra:high"}), \
                  mock.patch.object(runtime.shutil, "which", return_value="/usr/local/bin/claude"), \
                  mock.patch.object(runtime, "resolve_workspace", return_value=workspace), \
                  mock.patch.object(runtime, "load_config", return_value=Config()), \
                  mock.patch.object(runtime.subprocess, "call", return_value=0) as call:
                 runtime.host_main("claude", [])
             env = call.call_args.kwargs["env"]
-            self.assertEqual(env.get("FLOW_REVIEW_BACKEND"), "codex:gpt-5.6-sol:medium")
+            self.assertEqual(env.get("FLOW_REVIEW_BACKEND"), "codex:gpt-5.6-terra:high")
+
+    def test_explicit_host_env_overrides_configured_backend_for_codex(self):
+        """Same override precedence applies to 'agent-box codex'."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._flow_next_workspace(tmp)
+            workspace = Workspace(root, root)
+            with mock.patch.dict(os.environ, {"FLOW_REVIEW_BACKEND": "codex:gpt-5.6-terra:high"}), \
+                 mock.patch.object(runtime.shutil, "which", return_value="/usr/local/bin/codex"), \
+                 mock.patch.object(runtime, "resolve_workspace", return_value=workspace), \
+                 mock.patch.object(runtime, "load_config", return_value=Config()), \
+                 mock.patch.object(runtime.subprocess, "call", return_value=0) as call:
+                runtime.host_main("codex", ["exec", "hello"])
+            env = call.call_args.kwargs["env"]
+            self.assertEqual(env.get("FLOW_REVIEW_BACKEND"), "codex:gpt-5.6-terra:high")
+
+    def test_explicit_host_env_does_not_affect_auto_push(self):
+        """Overriding FLOW_REVIEW_BACKEND must not change AGENT_BOX_FLOW_NEXT_AUTO_PUSH."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._flow_next_workspace(tmp)
+            workspace = Workspace(root, root)
+            config = Config()
+            config.flow_next.auto_push = True
+            with mock.patch.dict(os.environ, {"FLOW_REVIEW_BACKEND": "codex:gpt-5.6-terra:high"}), \
+                 mock.patch.object(runtime.shutil, "which", return_value="/usr/local/bin/claude"), \
+                 mock.patch.object(runtime, "resolve_workspace", return_value=workspace), \
+                 mock.patch.object(runtime, "load_config", return_value=config), \
+                 mock.patch.object(runtime.subprocess, "call", return_value=0) as call:
+                runtime.host_main("claude", [])
+            env = call.call_args.kwargs["env"]
+            self.assertEqual(env.get("FLOW_REVIEW_BACKEND"), "codex:gpt-5.6-terra:high")
+            self.assertEqual(env.get("AGENT_BOX_FLOW_NEXT_AUTO_PUSH"), "1")
 
     def test_non_flow_next_workspace_strips_stale_host_env(self):
         """A non-Flow-Next launch must not merely fail to *add* the policy
@@ -581,6 +643,27 @@ class ContainerHostParityTests(IsolatedRuntimeTest):
                  mock.patch.object(runtime.subprocess, "call", return_value=0) as call:
                 runtime.host_main("claude", [])
             host_env = call.call_args.kwargs["env"]
+            for pair in container_env:
+                name, _, value = pair.partition("=")
+                self.assertEqual(host_env.get(name), value)
+
+    def test_container_and_host_agree_on_explicit_override(self):
+        """The explicit-override precedence must not diverge between modes."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".flow").mkdir()
+            (root / ".flow" / "config.json").write_text("{}")
+            config = Config()
+            from agent_box.flow_next import flow_next_launch_env
+            with mock.patch.dict(os.environ, {"FLOW_REVIEW_BACKEND": "codex:gpt-5.6-terra:high"}):
+                container_env = flow_next_launch_env(root, "claude", config)
+                with mock.patch.object(runtime.shutil, "which", return_value="/usr/local/bin/claude"), \
+                     mock.patch.object(runtime, "resolve_workspace", return_value=Workspace(root, root)), \
+                     mock.patch.object(runtime, "load_config", return_value=config), \
+                     mock.patch.object(runtime.subprocess, "call", return_value=0) as call:
+                    runtime.host_main("claude", [])
+            host_env = call.call_args.kwargs["env"]
+            self.assertIn("FLOW_REVIEW_BACKEND=codex:gpt-5.6-terra:high", container_env)
             for pair in container_env:
                 name, _, value = pair.partition("=")
                 self.assertEqual(host_env.get(name), value)

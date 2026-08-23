@@ -1366,8 +1366,10 @@ def host_main(agent: str, rest: list[str]) -> int:
     env = dict(os.environ)
     # A non-Flow-Next launch must not inherit a stale FLOW_REVIEW_BACKEND/
     # auto-push value the parent shell happens to have exported -- clear
-    # every agent-box-owned policy variable before applying this launch's
-    # actual decision, so an empty result from the resolver really means
+    # every agent-box-owned policy variable, then let flow_next_launch_env
+    # re-derive the decision (including an explicit FLOW_REVIEW_BACKEND the
+    # shell set for this one launch, which it reads from the real process
+    # environment), so an empty result from the resolver really means
     # "no policy", not "whatever was already there".
     for name in POLICY_ENV_VARS:
         env.pop(name, None)

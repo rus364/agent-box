@@ -98,7 +98,9 @@ shell/doctor, which are container-only.
 
 Flow-Next workspaces (a '.flow/config.json' present) get a deterministic
 FLOW_REVIEW_BACKEND from agent-box config in both modes; see
-'flow_next' in 'agent-box config show'.
+'flow_next' in 'agent-box config show'. Set FLOW_REVIEW_BACKEND in the
+shell before invoking agent-box to override it for that one launch, e.g.
+'FLOW_REVIEW_BACKEND=codex:gpt-5.6-terra:high agent-box claude'.
 
 Examples:
   agent-box

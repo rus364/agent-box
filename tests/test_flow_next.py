@@ -91,6 +91,56 @@ class ReviewEnvRoutingTests(unittest.TestCase):
             env = flow_next_launch_env(root, "claude", Config())
         self.assertFalse(any(e.startswith(AUTO_PUSH_ENV) for e in env))
 
+    def test_explicit_host_env_overrides_configured_backend(self):
+        """An explicit FLOW_REVIEW_BACKEND in the launching shell's
+        environment wins over the configured flow_next.review_backends entry
+        for this one launch -- the precedence a one-shot shell override
+        depends on."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._flow_next_root(tmp)
+            env = flow_next_launch_env(
+                root, "claude", Config(),
+                host_env={"FLOW_REVIEW_BACKEND": "codex:gpt-5.6-terra:high"},
+            )
+        self.assertIn(f"{REVIEW_BACKEND_ENV}=codex:gpt-5.6-terra:high", env)
+
+    def test_explicit_host_env_overrides_for_codex_too(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._flow_next_root(tmp)
+            env = flow_next_launch_env(
+                root, "codex", Config(),
+                host_env={"FLOW_REVIEW_BACKEND": "codex:gpt-5.6-terra:high"},
+            )
+        self.assertIn(f"{REVIEW_BACKEND_ENV}=codex:gpt-5.6-terra:high", env)
+
+    def test_no_explicit_host_env_falls_back_to_configured_backend(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._flow_next_root(tmp)
+            env = flow_next_launch_env(root, "claude", Config(), host_env={})
+        self.assertIn(f"{REVIEW_BACKEND_ENV}=codex:gpt-5.6-sol:medium", env)
+
+    def test_non_flow_next_workspace_ignores_explicit_host_env(self):
+        """A non-Flow-Next workspace must not receive an agent-box-generated
+        review backend even when the shell happens to export one."""
+        with tempfile.TemporaryDirectory() as tmp:
+            env = flow_next_launch_env(
+                Path(tmp), "claude", Config(),
+                host_env={"FLOW_REVIEW_BACKEND": "codex:gpt-5.6-terra:high"},
+            )
+        self.assertEqual(env, [])
+
+    def test_explicit_host_env_does_not_affect_auto_push(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._flow_next_root(tmp)
+            config = Config()
+            config.flow_next.auto_push = True
+            env = flow_next_launch_env(
+                root, "claude", config,
+                host_env={"FLOW_REVIEW_BACKEND": "codex:gpt-5.6-terra:high"},
+            )
+        self.assertIn(f"{REVIEW_BACKEND_ENV}=codex:gpt-5.6-terra:high", env)
+        self.assertIn(f"{AUTO_PUSH_ENV}=1", env)
+
 
 if __name__ == "__main__":
     unittest.main()
