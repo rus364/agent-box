@@ -2,7 +2,11 @@
 level -- a real Claude hook entry can group several handlers under one
 outer matcher/group object, and agent-box may only ever touch the handler(s)
 it owns, never an entry wholesale merely because one of its handlers happens
-to be agent-box's."""
+to be agent-box's.
+
+Matcher-scoped mixed-entry coverage below is driven through `notify` (its
+Notification hooks carry a matcher) rather than `flow_push`, since Flow-Next
+auto-push's only managed Claude hook (`Stop`) carries no matcher of its own."""
 import json
 import tempfile
 import unittest
@@ -28,21 +32,21 @@ class MixedEntryRemovalTests(unittest.TestCase):
             commands = [h["command"] for h in stop_entries[0]["hooks"]]
             self.assertEqual(commands, ["my-important-user-hook"])
 
-    def test_shared_post_tool_use_entry_removes_only_owned_handler(self):
+    def test_shared_matcher_entry_removes_only_owned_handler(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "settings.json"
-            path.write_text(json.dumps({"hooks": {"PostToolUse": [{
-                "matcher": "Bash",
+            path.write_text(json.dumps({"hooks": {"Notification": [{
+                "matcher": "permission_prompt",
                 "hooks": [
-                    {"type": "command", "command": flow_push.POST_TOOL_USE_COMMAND},
+                    {"type": "command", "command": notify.NOTIFY_COMMAND},
                     {"type": "command", "command": "my-user-handler"},
                 ],
             }]}}))
-            flow_push.remove_flow_push_hooks(path)
+            notify.remove_claude_notify_hooks(path)
             settings = json.loads(path.read_text())
-            entries = settings["hooks"]["PostToolUse"]
+            entries = settings["hooks"]["Notification"]
             self.assertEqual(len(entries), 1)
-            self.assertEqual(entries[0]["matcher"], "Bash")
+            self.assertEqual(entries[0]["matcher"], "permission_prompt")
             self.assertEqual(
                 [h["command"] for h in entries[0]["hooks"]], ["my-user-handler"])
 
@@ -69,18 +73,18 @@ class MixedEntryRemovalTests(unittest.TestCase):
         be preserved exactly, not reconstructed."""
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "settings.json"
-            path.write_text(json.dumps({"hooks": {"PostToolUse": [{
-                "matcher": "Bash",
+            path.write_text(json.dumps({"hooks": {"Notification": [{
+                "matcher": "permission_prompt",
                 "timeout": 30,
                 "statusMessage": "Running checks...",
                 "once": True,
                 "hooks": [
-                    {"type": "command", "command": flow_push.POST_TOOL_USE_COMMAND},
+                    {"type": "command", "command": notify.NOTIFY_COMMAND},
                     {"type": "command", "command": "my-user-handler"},
                 ],
             }]}}))
-            flow_push.remove_flow_push_hooks(path)
-            entry = json.loads(path.read_text())["hooks"]["PostToolUse"][0]
+            notify.remove_claude_notify_hooks(path)
+            entry = json.loads(path.read_text())["hooks"]["Notification"][0]
             self.assertEqual(entry["timeout"], 30)
             self.assertEqual(entry["statusMessage"], "Running checks...")
             self.assertEqual(entry["once"], True)
@@ -100,22 +104,20 @@ class InstallIdempotenceWithMixedEntriesTests(unittest.TestCase):
     def test_reinstall_with_managed_command_already_inside_mixed_entry(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "settings.json"
-            path.write_text(json.dumps({"hooks": {"PostToolUse": [{
-                "matcher": "Bash",
+            path.write_text(json.dumps({"hooks": {"Notification": [{
+                "matcher": "permission_prompt",
                 "hooks": [
-                    {"type": "command", "command": flow_push.POST_TOOL_USE_COMMAND},
+                    {"type": "command", "command": notify.NOTIFY_COMMAND},
                     {"type": "command", "command": "my-user-handler"},
                 ],
             }]}}))
-            flow_push.install_flow_push_hooks(path)
+            notify.install_claude_notify_hooks(path)
             settings = json.loads(path.read_text())
-            entries = settings["hooks"]["PostToolUse"]
+            entries = [e for e in settings["hooks"]["Notification"] if e["matcher"] == "permission_prompt"]
             self.assertEqual(len(entries), 1, "must not add a second, duplicate outer entry")
             commands = [h["command"] for h in entries[0]["hooks"]]
-            self.assertEqual(commands.count(flow_push.POST_TOOL_USE_COMMAND), 1)
+            self.assertEqual(commands.count(notify.NOTIFY_COMMAND), 1)
             self.assertIn("my-user-handler", commands)
-            # Stop is unaffected by this and gets its normal managed entry.
-            self.assertIn("Stop", settings["hooks"])
 
     def test_reinstall_after_normal_install_stays_single_handler(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -124,7 +126,7 @@ class InstallIdempotenceWithMixedEntriesTests(unittest.TestCase):
             flow_push.install_flow_push_hooks(path)
             settings = json.loads(path.read_text())
             self.assertEqual(len(settings["hooks"]["Stop"]), 1)
-            self.assertEqual(len(settings["hooks"]["PostToolUse"]), 1)
+            self.assertNotIn("PostToolUse", settings["hooks"])
 
     def test_distinct_matchers_with_the_same_notify_command_both_survive_reinstall(self):
         """Notify installs two different Notification entries (matchers

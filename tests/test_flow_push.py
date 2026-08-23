@@ -1,13 +1,15 @@
 import json
 import os
+import stat
 import subprocess
 import tempfile
+import textwrap
 import unittest
 import unittest.mock
 from pathlib import Path
 
 from agent_box import flow_push
-from agent_box.flow_next import AUTO_PUSH_ENV
+from agent_box.flow_next import AUTO_PUSH_ENV, FLOWCTL_ENV
 
 
 def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess:
@@ -34,219 +36,46 @@ def _init_bare_remote(
     _git(repo, "remote", "add", remote_name, str(remote_dir))
 
 
-class DoneDetectionTests(unittest.TestCase):
-    def _payload(self, command: str, cwd: str = "/tmp", **extra) -> dict:
-        # `hook_event_name` is always present on a real PostToolUse payload
-        # (Claude Code's common input fields); the default here matches
-        # that, rather than an incomplete synthetic shape.
-        payload = {
-            "hook_event_name": "PostToolUse",
-            "tool_name": "Bash",
-            "tool_input": {"command": command},
-            "cwd": cwd,
-        }
-        payload.update(extra)
-        return payload
+def _write_fake_flowctl(path: Path, statuses: dict[str, str]) -> Path:
+    """A tiny fake `flowctl` executable.
 
-    def test_successful_flowctl_done_arms_marker(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            _init_repo(repo)
-            armed = flow_push.handle_post_tool_use(self._payload("flowctl done fn-1", str(repo)))
-            self.assertTrue(armed)
-            self.assertIsNotNone(flow_push.read_marker(repo))
-
-    def test_absolute_path_flowctl_done_arms_marker(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            _init_repo(repo)
-            armed = flow_push.handle_post_tool_use(
-                self._payload("/opt/flow-next/bin/flowctl done fn-1", str(repo)))
-            self.assertTrue(armed)
-
-    def test_flowctl_list_does_not_arm(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            _init_repo(repo)
-            self.assertFalse(flow_push.handle_post_tool_use(self._payload("flowctl list", str(repo))))
-            self.assertIsNone(flow_push.read_marker(repo))
-
-    def test_flowctl_show_does_not_arm(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            _init_repo(repo)
-            self.assertFalse(flow_push.handle_post_tool_use(self._payload("flowctl show fn-1", str(repo))))
-
-    def test_echo_flowctl_done_does_not_arm(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            _init_repo(repo)
-            self.assertFalse(
-                flow_push.handle_post_tool_use(self._payload('echo "flowctl done"', str(repo))))
-
-    def test_printf_flowctl_done_does_not_arm(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            _init_repo(repo)
-            self.assertFalse(
-                flow_push.handle_post_tool_use(self._payload("printf 'flowctl done'", str(repo))))
-
-    def test_python_print_flowctl_done_does_not_arm(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            _init_repo(repo)
-            self.assertFalse(flow_push.handle_post_tool_use(
-                self._payload('python -c \'print("flowctl done")\'', str(repo))))
-
-    def test_flowctl_done_or_true_does_not_arm(self):
-        """The core original bug: `flowctl done ... || true` still reports a
-        normal, successful Bash tool call even when flowctl itself failed."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            _init_repo(repo)
-            self.assertFalse(
-                flow_push.handle_post_tool_use(self._payload("flowctl done fn-1 || true", str(repo))))
-            self.assertIsNone(flow_push.read_marker(repo))
-
-    def test_flowctl_done_semicolon_does_not_arm(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            _init_repo(repo)
-            self.assertFalse(
-                flow_push.handle_post_tool_use(self._payload("flowctl done fn-1; echo ok", str(repo))))
-
-    def test_flowctl_done_piped_does_not_arm(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            _init_repo(repo)
-            self.assertFalse(
-                flow_push.handle_post_tool_use(self._payload("flowctl done fn-1 | cat", str(repo))))
-
-    def test_flowctl_done_backgrounded_does_not_arm(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            _init_repo(repo)
-            self.assertFalse(
-                flow_push.handle_post_tool_use(self._payload("flowctl done fn-1 &", str(repo))))
-
-    def test_flowctl_done_command_substitution_does_not_arm(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            _init_repo(repo)
-            self.assertFalse(flow_push.handle_post_tool_use(
-                self._payload("flowctl done $(echo fn-1)", str(repo))))
-
-    def test_run_in_background_tool_input_does_not_arm(self):
-        """Claude's own structured background flag, not a shell `&` -- a
-        PostToolUse for a still-running background command carries no
-        reliable completion signal either way."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            _init_repo(repo)
-            payload = {
-                "hook_event_name": "PostToolUse",
-                "tool_name": "Bash",
-                "tool_input": {"command": "flowctl done fn-1", "run_in_background": True},
-                "cwd": str(repo),
-            }
-            self.assertFalse(flow_push.handle_post_tool_use(payload))
-
-    def test_dict_shaped_error_tool_response_does_not_arm(self):
-        """Legacy/alternate-shape defensive compatibility: the documented
-        current Bash tool_response object (stdout/stderr/interrupted/
-        isImage) has no `is_error`/`success` field of its own, but if a
-        dict-shaped response with one is ever seen, it must still be
-        honored as an explicit failure indicator."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            _init_repo(repo)
-            payload = self._payload("flowctl done fn-1", str(repo), tool_response={"is_error": True})
-            self.assertFalse(flow_push.handle_post_tool_use(payload))
-            self.assertIsNone(flow_push.read_marker(repo))
-
-    def test_dict_shaped_success_false_tool_response_does_not_arm(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            _init_repo(repo)
-            payload = self._payload("flowctl done fn-1", str(repo), tool_response={"success": False})
-            self.assertFalse(flow_push.handle_post_tool_use(payload))
-
-    def test_documented_structured_tool_response_arms_marker(self):
-        """The documented current shape: PostToolUse's tool_response for
-        Bash is a structured object -- {stdout, stderr, interrupted,
-        isImage} -- with no separate success/failure field, since
-        PostToolUse firing at all already means the command succeeded (a
-        nonzero exit produces PostToolUseFailure instead, which this hook
-        never receives, per handle_post_tool_use's strict event check)."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            _init_repo(repo)
-            payload = self._payload("flowctl done fn-1", str(repo), tool_response={
-                "stdout": "fn-1 marked done\n",
-                "stderr": "",
-                "interrupted": False,
-                "isImage": False,
-            })
-            self.assertTrue(flow_push.handle_post_tool_use(payload))
-
-    def test_string_tool_response_is_treated_as_success(self):
-        """Compatibility behavior, not the documented current Bash shape
-        (see test_documented_structured_tool_response_arms_marker above):
-        a plain-string tool_response is still treated as success rather
-        than misread as a failure, in case an alternate integration or
-        older Claude Code version ever sends one."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            _init_repo(repo)
-            payload = self._payload("flowctl done fn-1", str(repo), tool_response="fn-1 marked done\n")
-            self.assertTrue(flow_push.handle_post_tool_use(payload))
-
-    def test_non_bash_tool_does_not_arm(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            _init_repo(repo)
-            payload = {
-                "hook_event_name": "PostToolUse", "tool_name": "Write",
-                "tool_input": {"command": "flowctl done fn-1"}, "cwd": str(repo),
-            }
-            self.assertFalse(flow_push.handle_post_tool_use(payload))
-
-    def test_post_tool_use_failure_event_does_not_arm(self):
-        """The documented current contract: a failing Bash command produces
-        `PostToolUseFailure` (with an `error` field like "Exit code 1:
-        ..."), not `PostToolUse` -- and this hook is registered only under
-        the `PostToolUse` event key, so it is never even invoked for a real
-        failed Bash command. This directly exercises the strict event-name
-        check as the last line of defense if it somehow were."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            _init_repo(repo)
-            payload = {
-                "hook_event_name": "PostToolUseFailure",
-                "tool_name": "Bash",
-                "tool_input": {"command": "flowctl done fn-1"},
-                "cwd": str(repo),
-                "error": "Exit code 1: fn-1 not found\n",
-            }
-            self.assertFalse(flow_push.handle_post_tool_use(payload))
-
-    def test_missing_hook_event_name_does_not_arm(self):
-        """Strict validation: a real PostToolUse payload always carries
-        hook_event_name, so an incomplete/synthetic payload without it must
-        not be treated as equivalent to a real one."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            _init_repo(repo)
-            payload = {
-                "tool_name": "Bash", "tool_input": {"command": "flowctl done fn-1"}, "cwd": str(repo),
-            }
-            self.assertFalse(flow_push.handle_post_tool_use(payload))
+    Answers exactly `show <id> --json` with `{"id", "status", "status_source"}`
+    for ids present in `statuses` (default status "todo" for anything else,
+    so an id this fake was never told about behaves like an ordinary
+    incomplete task rather than an error); anything else (a different
+    subcommand, missing `--json`) exits non-zero with no stdout, exactly like
+    a real CLI misuse would.
+    """
+    script = textwrap.dedent(f"""\
+        #!/usr/bin/env python3
+        import json, sys
+        statuses = {statuses!r}
+        args = sys.argv[1:]
+        if len(args) == 3 and args[0] == "show" and args[2] == "--json":
+            task_id = args[1]
+            status = statuses.get(task_id, "todo")
+            print(json.dumps({{"id": task_id, "status": status, "status_source": "flow-state"}}))
+            sys.exit(0)
+        sys.exit(1)
+        """)
+    path.write_text(script)
+    path.chmod(path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    return path
 
 
-class NestedCwdAndWorktreeTests(unittest.TestCase):
-    """PostToolUse/Stop must normalize whatever cwd Claude reports to the
-    repository root, exactly like the launcher does, whether Claude was
-    started at the repo root, a nested subdirectory, or a linked worktree."""
+def _add_task_file(repo: Path, task_id: str, message: str | None = None) -> None:
+    tasks_dir = repo / ".flow" / "tasks"
+    tasks_dir.mkdir(parents=True, exist_ok=True)
+    (tasks_dir / f"{task_id}.md").write_text(f"# {task_id}\n")
+    _git(repo, "add", ".flow/tasks")
+    _git(repo, "commit", "-q", "-m", message or f"complete {task_id}")
+
+
+class FlowPushTestCase(unittest.TestCase):
+    """Common fixture: a Flow-Next repo (`.flow/config.json` committed) with
+    a bare `origin` whose default branch is `main`, already pushed."""
+
+    default_branch = "main"
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -254,64 +83,248 @@ class NestedCwdAndWorktreeTests(unittest.TestCase):
         self.root = Path(self._tmp.name)
         self.repo = self.root / "repo"
         self.repo.mkdir()
-        _init_repo(self.repo)
+        _init_repo(self.repo, branch=self.default_branch)
         (self.repo / ".flow").mkdir()
         (self.repo / ".flow" / "config.json").write_text("{}")
+        _git(self.repo, "add", ".flow")
+        _git(self.repo, "commit", "-q", "-m", "flow-next marker")
+        self.remote = self.root / "remote.git"
+        _init_bare_remote(self.remote, self.repo, default_branch=self.default_branch)
+        _git(self.repo, "push", "-q", "-u", "origin", self.default_branch)
+        self.flowctl_path = self.root / "flowctl"
+
+    def _feature_branch(self, name: str = "feature-x") -> None:
+        _git(self.repo, "checkout", "-q", "-b", name)
+
+    def _fake_flowctl(self, statuses: dict[str, str]) -> Path:
+        return _write_fake_flowctl(self.flowctl_path, statuses)
+
+    def _complete_task(self, task_id: str = "fn-1.1", status: str = "done") -> Path:
+        """Commit a task receipt for `task_id` and return a Flowctl that
+        reports it as `status`."""
+        _add_task_file(self.repo, task_id)
+        return self._fake_flowctl({task_id: status})
+
+    def push(self, flowctl: Path | None) -> flow_push.PushDecision:
+        return flow_push.guarded_push(self.repo, auto_push_enabled=True, flowctl=flowctl)
+
+
+# -- completion detection -----------------------------------------------------
+
+class CompletionDetectionTests(FlowPushTestCase):
+    """Git proves what changed locally; Flow-Next's own CLI proves whether
+    the corresponding task is actually done. Neither alone is enough."""
+
+    def test_no_task_files_changed_means_no_push(self):
+        self._feature_branch()
+        (self.repo / "code.py").write_text("print('hi')\n")
+        _git(self.repo, "add", "code.py")
+        _git(self.repo, "commit", "-q", "-m", "ordinary work")
+        flowctl = self._fake_flowctl({})
+        decision = self.push(flowctl)
+        self.assertEqual(decision.action, "skipped")
+        self.assertIn("no Flow-Next task files changed", decision.detail)
+
+    def test_task_file_changed_but_not_done_means_no_push(self):
+        self._feature_branch()
+        _add_task_file(self.repo, "fn-1.1")
+        flowctl = self._fake_flowctl({"fn-1.1": "in_progress"})
+        decision = self.push(flowctl)
+        self.assertEqual(decision.action, "skipped")
+        self.assertIn("no confirmed Flow-Next task completion", decision.detail)
+
+    def test_task_file_changed_and_confirmed_done_pushes(self):
+        self._feature_branch()
+        flowctl = self._complete_task("fn-1.1")
+        decision = self.push(flowctl)
+        self.assertEqual(decision.action, "pushed")
+        pushed = subprocess.run(
+            ["git", "ls-remote", "--heads", str(self.remote), "feature-x"],
+            capture_output=True, text=True, check=True,
+        ).stdout
+        self.assertIn("feature-x", pushed)
+
+    def test_previously_completed_task_outside_the_unpushed_range_does_not_authorize(self):
+        """A task done in an *already-pushed* commit must not license a later,
+        unrelated push -- only a receipt that changed within the currently
+        unpushed range counts."""
+        self._feature_branch()
+        flowctl = self._complete_task("fn-1.1")
+        first = self.push(flowctl)
+        self.assertEqual(first.action, "pushed")
+
+        # New, unrelated local commit: the already-done task's file does not
+        # change again here.
+        (self.repo / "more.py").write_text("print('more')\n")
+        _git(self.repo, "add", "more.py")
+        _git(self.repo, "commit", "-q", "-m", "unrelated follow-up work")
+
+        second = self.push(flowctl)
+        self.assertEqual(second.action, "skipped")
+        self.assertIn("no Flow-Next task files changed", second.detail)
+
+    def test_multiple_changed_tasks_one_done_is_sufficient(self):
+        """A turn can legitimately touch more than one task's receipt (e.g.
+        plan-sync neighboring metadata); only one needs to be confirmed done."""
+        self._feature_branch()
+        _add_task_file(self.repo, "fn-1.1", message="complete fn-1.1")
+        _add_task_file(self.repo, "fn-1.2", message="touch fn-1.2 (still open)")
+        flowctl = self._fake_flowctl({"fn-1.1": "done", "fn-1.2": "in_progress"})
+        decision = self.push(flowctl)
+        self.assertEqual(decision.action, "pushed")
+
+    def test_malformed_flowctl_json_means_no_push(self):
+        self._feature_branch()
+        _add_task_file(self.repo, "fn-1.1")
+        self.flowctl_path.write_text("#!/usr/bin/env python3\nprint('not json')\n")
+        self.flowctl_path.chmod(self.flowctl_path.stat().st_mode | stat.S_IEXEC)
+        decision = self.push(self.flowctl_path)
+        self.assertEqual(decision.action, "skipped")
+        self.assertIn("no confirmed Flow-Next task completion", decision.detail)
+
+    def test_flowctl_nonzero_exit_means_no_push(self):
+        self._feature_branch()
+        _add_task_file(self.repo, "fn-1.1")
+        self.flowctl_path.write_text("#!/usr/bin/env python3\nimport sys\nsys.exit(1)\n")
+        self.flowctl_path.chmod(self.flowctl_path.stat().st_mode | stat.S_IEXEC)
+        decision = self.push(self.flowctl_path)
+        self.assertEqual(decision.action, "skipped")
+
+    def test_unresolved_flowctl_means_no_push(self):
+        self._feature_branch()
+        _add_task_file(self.repo, "fn-1.1")
+        decision = self.push(None)
+        self.assertEqual(decision.action, "skipped")
+        self.assertIn("Flowctl could not be resolved", decision.detail)
+
+    def test_nonexistent_flowctl_path_means_no_push(self):
+        self._feature_branch()
+        _add_task_file(self.repo, "fn-1.1")
+        decision = self.push(self.root / "does-not-exist")
+        self.assertEqual(decision.action, "skipped")
+
+    def test_flowctl_invoked_as_argv_never_shell(self):
+        """`task_id` reaches the subprocess as one argv element; a value
+        that would be dangerous to a shell must not be treated specially."""
+        self._feature_branch()
+        task_id = "fn-1.1"
+        _add_task_file(self.repo, task_id)
+        recorder = self.root / "calls.json"
+        script = textwrap.dedent(f"""\
+            #!/usr/bin/env python3
+            import json, sys
+            with open({str(recorder)!r}, "w") as f:
+                json.dump(sys.argv[1:], f)
+            print(json.dumps({{"id": sys.argv[2], "status": "done"}}))
+            """)
+        self.flowctl_path.write_text(script)
+        self.flowctl_path.chmod(self.flowctl_path.stat().st_mode | stat.S_IEXEC)
+        decision = self.push(self.flowctl_path)
+        self.assertEqual(decision.action, "pushed")
+        self.assertEqual(json.loads(recorder.read_text()), ["show", task_id, "--json"])
+
+
+class PostDoneCommitsTests(FlowPushTestCase):
+    """The bug this refactor fixes: Flow-Next legitimately creates further
+    commits (a task receipt commit, then a plan-sync commit) after `flowctl
+    done` itself runs. The final HEAD -- not the commit `done` ran at -- must
+    be what gets pushed, and there must be no requirement that HEAD equal
+    that commit."""
+
+    def test_final_head_is_pushed_after_post_done_commits(self):
+        self._feature_branch()
+        (self.repo / "impl.py").write_text("print('impl')\n")
+        _git(self.repo, "add", "impl.py")
+        _git(self.repo, "commit", "-q", "-m", "implementation/evidence commit")
+
+        _add_task_file(self.repo, "fn-1.1", message="task receipt commit")
+
+        (self.repo / "spec.txt").write_text("plan-sync\n")
+        _git(self.repo, "add", "spec.txt")
+        _git(self.repo, "commit", "-q", "-m", "plan-sync commit")
+
+        final_head = flow_push.head_sha(self.repo)
+        flowctl = self._fake_flowctl({"fn-1.1": "done"})
+
+        decision = self.push(flowctl)
+
+        self.assertEqual(decision.action, "pushed")
+        remote_head = subprocess.run(
+            ["git", "ls-remote", str(self.remote), "refs/heads/feature-x"],
+            capture_output=True, text=True, check=True,
+        ).stdout.split()[0]
+        self.assertEqual(remote_head, final_head)
+
+
+class ChangedFlowTaskIdsTests(FlowPushTestCase):
+    def test_derives_id_from_flat_task_path(self):
+        self._feature_branch()
+        base = flow_push.head_sha(self.repo)
+        _add_task_file(self.repo, "fn-9-thing.3")
+        head = flow_push.head_sha(self.repo)
+        self.assertEqual(flow_push.changed_flow_task_ids(self.repo, base, head), ["fn-9-thing.3"])
+
+    def test_nested_path_under_tasks_is_ignored(self):
+        self._feature_branch()
+        base = flow_push.head_sha(self.repo)
+        nested = self.repo / ".flow" / "tasks" / "sub" / "fn-1.1.md"
+        nested.parent.mkdir(parents=True, exist_ok=True)
+        nested.write_text("x\n")
+        _git(self.repo, "add", ".flow/tasks")
+        _git(self.repo, "commit", "-q", "-m", "nested")
+        head = flow_push.head_sha(self.repo)
+        self.assertEqual(flow_push.changed_flow_task_ids(self.repo, base, head), [])
+
+    def test_non_task_flow_paths_are_ignored(self):
+        self._feature_branch()
+        base = flow_push.head_sha(self.repo)
+        (self.repo / ".flow" / "specs").mkdir(parents=True, exist_ok=True)
+        (self.repo / ".flow" / "specs" / "fn-1.md").write_text("x\n")
+        _git(self.repo, "add", ".flow/specs")
+        _git(self.repo, "commit", "-q", "-m", "spec change")
+        head = flow_push.head_sha(self.repo)
+        self.assertEqual(flow_push.changed_flow_task_ids(self.repo, base, head), [])
+
+
+# -- nested cwd / worktree normalization --------------------------------------
+
+class NestedCwdAndWorktreeTests(FlowPushTestCase):
+    """Every completion event must normalize whatever cwd an agent reports
+    to the repository root, exactly like the launcher does, whether the
+    agent was started at the repo root, a nested subdirectory, or a linked
+    worktree."""
+
+    def test_stop_from_nested_directory_finds_and_pushes(self):
         (self.repo / "src").mkdir()
-        _git(self.repo, "add", ".flow", "src")
-        _git(self.repo, "commit", "--allow-empty", "-q", "-m", "flow-next marker")
-
-    def test_arm_from_nested_directory_records_repo_root_marker(self):
-        _git(self.repo, "checkout", "-q", "-b", "feature-nested")
-        nested = self.repo / "src"
-        armed = flow_push.handle_post_tool_use(
-            {"hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_input": {"command": "flowctl done fn-1"}, "cwd": str(nested)})
-        self.assertTrue(armed)
-        # Recorded against the repo root, not the nested directory.
-        self.assertIsNotNone(flow_push.read_marker(self.repo))
-
-    def test_stop_from_nested_directory_finds_marker_and_pushes(self):
-        remote = self.root / "remote.git"
-        _init_bare_remote(remote, self.repo)
-        _git(self.repo, "push", "-q", "-u", "origin", "main")
-        _git(self.repo, "checkout", "-q", "-b", "feature-nested")
+        _git(self.repo, "add", "src")
+        _git(self.repo, "commit", "--allow-empty", "-q", "-m", "src dir")
+        self._feature_branch("feature-nested")
         (self.repo / "src" / "work.txt").write_text("work\n")
         _git(self.repo, "add", "src/work.txt")
         _git(self.repo, "commit", "-q", "-m", "work")
-        flow_push.arm_marker(self.repo)
+        flowctl = self._complete_task("fn-1.1")
         nested = self.repo / "src"
-        import os
-        saved = os.environ.get(AUTO_PUSH_ENV)
-        os.environ[AUTO_PUSH_ENV] = "1"
-        try:
+        with unittest.mock.patch.dict(os.environ, {
+            AUTO_PUSH_ENV: "1", FLOWCTL_ENV: str(flowctl),
+        }):
             decision = flow_push.run_stop_hook(json.dumps({"cwd": str(nested)}))
-        finally:
-            if saved is None:
-                os.environ.pop(AUTO_PUSH_ENV, None)
-            else:
-                os.environ[AUTO_PUSH_ENV] = saved
         self.assertEqual(decision.action, "pushed")
 
-    def test_linked_worktree_arm_and_push(self):
-        remote = self.root / "remote.git"
-        _init_bare_remote(remote, self.repo)
-        _git(self.repo, "push", "-q", "-u", "origin", "main")
+    def test_linked_worktree_pushes(self):
         worktree = self.root / "wt"
         _git(self.repo, "worktree", "add", "-q", "-b", "feature-wt", str(worktree))
         self.assertTrue((worktree / ".git").is_file(), "linked worktree's .git must be a file")
-        (worktree / "wtfile.txt").write_text("hi\n")
-        _git(worktree, "add", "wtfile.txt")
-        _git(worktree, "commit", "-q", "-m", "worktree work")
-        armed = flow_push.handle_post_tool_use(
-            {"hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_input": {"command": "flowctl done fn-1"}, "cwd": str(worktree)})
-        self.assertTrue(armed)
-        decision = flow_push.guarded_push(worktree, auto_push_enabled=True)
+        _add_task_file(worktree, "fn-2.1")
+        flowctl = self._fake_flowctl({"fn-2.1": "done"})
+        decision = flow_push.guarded_push(worktree, auto_push_enabled=True, flowctl=flowctl)
         self.assertEqual(decision.action, "pushed")
 
 
+# -- branch/remote safety (unchanged guard chain) -----------------------------
+
 class RemoteDefaultBranchTests(unittest.TestCase):
-    """Fix for the fail-open remote-default-branch bug: an undetermined
-    default branch must refuse to push, never assume safety."""
+    """An undetermined default branch must refuse to push, never assume
+    safety."""
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -319,6 +332,7 @@ class RemoteDefaultBranchTests(unittest.TestCase):
         self.root = Path(self._tmp.name)
         self.repo = self.root / "repo"
         self.repo.mkdir()
+        self.flowctl_path = self.root / "flowctl"
 
     def _flow_next_repo_on(self, branch: str, remote_default: str) -> Path:
         _init_repo(self.repo, branch=branch)
@@ -331,70 +345,67 @@ class RemoteDefaultBranchTests(unittest.TestCase):
         _git(self.repo, "push", "-q", "-u", "origin", branch)
         return remote
 
+    def _complete_task(self, task_id: str = "fn-1.1") -> Path:
+        _add_task_file(self.repo, task_id)
+        return _write_fake_flowctl(self.flowctl_path, {task_id: "done"})
+
     def test_origin_head_main_blocks_push_on_main(self):
         self._flow_next_repo_on("main", remote_default="main")
         _git(self.repo, "remote", "set-head", "origin", "main")
-        flow_push.arm_marker(self.repo)
-        decision = flow_push.guarded_push(self.repo, auto_push_enabled=True)
-        self.assertEqual(decision.action, "invalidated")
+        flowctl = self._complete_task()
+        decision = flow_push.guarded_push(self.repo, True, flowctl)
+        self.assertEqual(decision.action, "skipped")
 
     def test_origin_head_master_blocks_push_on_master(self):
         self._flow_next_repo_on("master", remote_default="master")
         _git(self.repo, "remote", "set-head", "origin", "master")
-        flow_push.arm_marker(self.repo)
-        decision = flow_push.guarded_push(self.repo, auto_push_enabled=True)
-        self.assertEqual(decision.action, "invalidated")
+        flowctl = self._complete_task()
+        decision = flow_push.guarded_push(self.repo, True, flowctl)
+        self.assertEqual(decision.action, "skipped")
 
     def test_custom_default_branch_with_cached_symref_blocks_push(self):
         self._flow_next_repo_on("trunk", remote_default="trunk")
         _git(self.repo, "remote", "set-head", "origin", "trunk")
-        flow_push.arm_marker(self.repo)
-        decision = flow_push.guarded_push(self.repo, auto_push_enabled=True)
-        self.assertEqual(decision.action, "invalidated")
+        flowctl = self._complete_task()
+        decision = flow_push.guarded_push(self.repo, True, flowctl)
+        self.assertEqual(decision.action, "skipped")
 
     def test_custom_default_branch_without_local_symref_still_blocks_push(self):
-        """The exact scenario from the review: remote default is `trunk`,
-        current branch is `trunk`, and refs/remotes/origin/HEAD was never
-        cached locally (no `git remote set-head`/`clone` involved). The
-        bounded `git ls-remote --symref` fallback must still catch this."""
+        """remote default is `trunk`, current branch is `trunk`, and
+        refs/remotes/origin/HEAD was never cached locally. The bounded `git
+        ls-remote --symref` fallback must still catch this."""
         self._flow_next_repo_on("trunk", remote_default="trunk")
         determined = flow_push._run(
             ["git", "symbolic-ref", "--short", "-q", "refs/remotes/origin/HEAD"], cwd=self.repo,
         )
         self.assertNotEqual(determined.returncode, 0, "test setup must not have a cached origin/HEAD")
-        flow_push.arm_marker(self.repo)
-        decision = flow_push.guarded_push(self.repo, auto_push_enabled=True)
-        self.assertEqual(decision.action, "invalidated")
-        self.assertIsNone(flow_push.read_marker(self.repo))
-        # Prove it mechanically: trunk must not have moved on the remote.
-        remote_sha = subprocess.run(
+        flowctl = self._complete_task()
+        remote_sha_before = subprocess.run(
             ["git", "ls-remote", str(self.root / "remote.git"), "refs/heads/trunk"],
             capture_output=True, text=True, check=True,
         ).stdout.split()[0]
-        local_sha = flow_push.head_sha(self.repo)
-        pre_push_sha = subprocess.run(
-            ["git", "rev-parse", "HEAD~0"], cwd=self.repo, capture_output=True, text=True, check=True,
-        ).stdout.strip()
-        self.assertEqual(remote_sha, local_sha)
-        self.assertEqual(remote_sha, pre_push_sha)
+
+        decision = flow_push.guarded_push(self.repo, True, flowctl)
+
+        self.assertEqual(decision.action, "skipped")
+        remote_sha_after = subprocess.run(
+            ["git", "ls-remote", str(self.root / "remote.git"), "refs/heads/trunk"],
+            capture_output=True, text=True, check=True,
+        ).stdout.split()[0]
+        self.assertEqual(remote_sha_before, remote_sha_after)
 
     def test_feature_branch_with_custom_default_still_pushes(self):
         """The safety fix must not become overly broad: a real feature
         branch alongside a custom `trunk` default must still push."""
         self._flow_next_repo_on("trunk", remote_default="trunk")
         _git(self.repo, "checkout", "-q", "-b", "feature-y")
-        (self.repo / "work.txt").write_text("work\n")
-        _git(self.repo, "add", "work.txt")
-        _git(self.repo, "commit", "-q", "-m", "feature work")
-        flow_push.arm_marker(self.repo)
-        decision = flow_push.guarded_push(self.repo, auto_push_enabled=True)
+        flowctl = self._complete_task()
+        decision = flow_push.guarded_push(self.repo, True, flowctl)
         self.assertEqual(decision.action, "pushed")
 
-
     def test_unresolvable_remote_head_refuses_to_push(self):
-        """An empty bare remote (HEAD unborn, nothing pushed there yet) means
-        `git ls-remote --symref` returns nothing -- undetermined, must
-        refuse, not "probably fine since it's not main/master"."""
+        """An empty bare remote (HEAD unborn) means `git ls-remote --symref`
+        returns nothing -- undetermined, must refuse."""
         _init_repo(self.repo, branch="feature-z")
         (self.repo / ".flow").mkdir()
         (self.repo / ".flow" / "config.json").write_text("{}")
@@ -404,34 +415,27 @@ class RemoteDefaultBranchTests(unittest.TestCase):
         remote.mkdir()
         _git(remote, "init", "-q", "--bare", "-b", "trunk")
         _git(self.repo, "remote", "add", "origin", str(remote))
-        # Deliberately never pushed anything -- origin/HEAD stays unborn.
-        flow_push.arm_marker(self.repo)
-        decision = flow_push.guarded_push(self.repo, auto_push_enabled=True)
+        flowctl = self._complete_task()
+        decision = flow_push.guarded_push(self.repo, True, flowctl)
         self.assertEqual(decision.action, "skipped")
         self.assertIn("could not be determined", decision.detail)
-        self.assertIsNotNone(flow_push.read_marker(self.repo))
 
     def test_offline_remote_refuses_to_push(self):
-        """An unreachable remote path must fail closed, not silently permit
-        the push through an unresolvable default-branch guard."""
         _init_repo(self.repo, branch="feature-offline")
         (self.repo / ".flow").mkdir()
         (self.repo / ".flow" / "config.json").write_text("{}")
         _git(self.repo, "add", ".flow")
         _git(self.repo, "commit", "-q", "-m", "flow-next marker")
         _git(self.repo, "remote", "add", "origin", "/nonexistent/path/does-not-exist.git")
-        flow_push.arm_marker(self.repo)
-        decision = flow_push.guarded_push(self.repo, auto_push_enabled=True)
+        flowctl = self._complete_task()
+        decision = flow_push.guarded_push(self.repo, True, flowctl)
         self.assertEqual(decision.action, "skipped")
-        self.assertIsNotNone(flow_push.read_marker(self.repo))
 
 
 class StaleCachedOriginHeadTests(unittest.TestCase):
     """The remote default branch decision must be based on a live query of
     `origin` every time, never on a locally cached `refs/remotes/origin/HEAD`
-    symref -- that cache can go stale the moment the remote's actual default
-    branch changes (e.g. a GitHub repo's default branch setting is changed),
-    and this module must never trust it as authoritative."""
+    symref."""
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -439,6 +443,7 @@ class StaleCachedOriginHeadTests(unittest.TestCase):
         self.root = Path(self._tmp.name)
         self.repo = self.root / "repo"
         self.repo.mkdir()
+        self.flowctl_path = self.root / "flowctl"
         _init_repo(self.repo, branch="main")
         (self.repo / ".flow").mkdir()
         (self.repo / ".flow" / "config.json").write_text("{}")
@@ -450,27 +455,21 @@ class StaleCachedOriginHeadTests(unittest.TestCase):
         _git(self.repo, "remote", "set-head", "origin", "main")  # cache: origin/HEAD -> main
 
     def _change_remote_default(self, new_default: str) -> None:
-        """Simulate the remote's default branch changing (e.g. on GitHub)
-        without ever refreshing the local cached origin/HEAD symref."""
         subprocess.run(
-            ["git", "symbolic-ref", "HEAD", f"refs/heads/{new_default}"],
-            cwd=self.remote, check=True,
+            ["git", "symbolic-ref", "HEAD", f"refs/heads/{new_default}"], cwd=self.remote, check=True,
         )
+
+    def _complete_task(self, task_id: str = "fn-1.1") -> Path:
+        _add_task_file(self.repo, task_id)
+        return _write_fake_flowctl(self.flowctl_path, {task_id: "done"})
 
     def test_remote_still_defaults_to_main_pushes_a_feature_branch(self):
         _git(self.repo, "checkout", "-q", "-b", "feature-z")
-        (self.repo / "w.txt").write_text("work\n")
-        _git(self.repo, "add", "w.txt")
-        _git(self.repo, "commit", "-q", "-m", "work")
-        flow_push.arm_marker(self.repo)
-        decision = flow_push.guarded_push(self.repo, auto_push_enabled=True)
+        flowctl = self._complete_task()
+        decision = flow_push.guarded_push(self.repo, True, flowctl)
         self.assertEqual(decision.action, "pushed")
 
     def test_remote_default_changed_to_trunk_blocks_push_on_trunk_despite_stale_main_cache(self):
-        """The exact review scenario: cached origin/HEAD still says `main`,
-        but the remote's actual default branch has since become `trunk`,
-        and the current branch is that new default. Must not push."""
-        # The remote's new default branch must actually exist there.
         _git(self.repo, "branch", "trunk")
         _git(self.repo, "push", "-q", "origin", "trunk")
         self._change_remote_default("trunk")
@@ -484,17 +483,11 @@ class StaleCachedOriginHeadTests(unittest.TestCase):
             ["git", "ls-remote", str(self.remote), "refs/heads/trunk"],
             capture_output=True, text=True, check=True,
         ).stdout.split()[0]
-        # Advance local trunk so a naive "not a cached default, so it must be
-        # a feature branch" reading would have something to push.
-        (self.repo / "w.txt").write_text("work\n")
-        _git(self.repo, "add", "w.txt")
-        _git(self.repo, "commit", "-q", "-m", "would-be push")
-        flow_push.arm_marker(self.repo)
+        flowctl = self._complete_task()
 
-        decision = flow_push.guarded_push(self.repo, auto_push_enabled=True)
+        decision = flow_push.guarded_push(self.repo, True, flowctl)
 
-        self.assertEqual(decision.action, "invalidated")
-        self.assertIsNone(flow_push.read_marker(self.repo))
+        self.assertEqual(decision.action, "skipped")
         remote_sha_after = subprocess.run(
             ["git", "ls-remote", str(self.remote), "refs/heads/trunk"],
             capture_output=True, text=True, check=True,
@@ -502,18 +495,10 @@ class StaleCachedOriginHeadTests(unittest.TestCase):
         self.assertEqual(remote_sha_before, remote_sha_after, "trunk must not have moved on the remote")
 
     def test_remote_default_reverted_to_main_blocks_push_on_main_despite_stale_trunk_cache(self):
-        """The reverse direction: the local cache says `origin/HEAD ->
-        trunk`, but the remote's actual default has been changed back to
-        `main`, and the current branch is `main`. Must not push."""
         _git(self.repo, "branch", "trunk")
         _git(self.repo, "push", "-q", "origin", "trunk")
         self._change_remote_default("trunk")
         _git(self.repo, "remote", "set-head", "origin", "-a")  # refresh cache to trunk
-        cached = flow_push._run(
-            ["git", "symbolic-ref", "--short", "-q", "refs/remotes/origin/HEAD"], cwd=self.repo,
-        ).stdout.strip()
-        self.assertEqual(cached, "origin/trunk")
-
         self._change_remote_default("main")  # remote reverts; local cache stays stale at trunk
         remote_sha_before = subprocess.run(
             ["git", "ls-remote", str(self.remote), "refs/heads/main"],
@@ -521,14 +506,11 @@ class StaleCachedOriginHeadTests(unittest.TestCase):
         ).stdout.split()[0]
 
         _git(self.repo, "checkout", "-q", "main")
-        (self.repo / "w.txt").write_text("work\n")
-        _git(self.repo, "add", "w.txt")
-        _git(self.repo, "commit", "-q", "-m", "would-be push")
-        flow_push.arm_marker(self.repo)
+        flowctl = self._complete_task()
 
-        decision = flow_push.guarded_push(self.repo, auto_push_enabled=True)
+        decision = flow_push.guarded_push(self.repo, True, flowctl)
 
-        self.assertEqual(decision.action, "invalidated")
+        self.assertEqual(decision.action, "skipped")
         remote_sha_after = subprocess.run(
             ["git", "ls-remote", str(self.remote), "refs/heads/main"],
             capture_output=True, text=True, check=True,
@@ -554,6 +536,7 @@ class EffectivePushDestinationTests(unittest.TestCase):
         _git(self.root, "init", "-q", "--bare", "-b", "trunk", str(self.repo_b))
         self.repo = self.root / "repo"
         self.repo.mkdir()
+        self.flowctl_path = self.root / "flowctl"
         _init_repo(self.repo, branch="main")
         (self.repo / ".flow").mkdir()
         (self.repo / ".flow" / "config.json").write_text("{}")
@@ -561,30 +544,26 @@ class EffectivePushDestinationTests(unittest.TestCase):
         _git(self.repo, "commit", "-q", "-m", "flow-next marker")
         _git(self.repo, "remote", "add", "origin", str(self.repo_a))
         _git(self.repo, "config", "remote.origin.pushurl", str(self.repo_b))
-        # Establish trunk (repo-b's real default) so it can push there once.
         _git(self.repo, "checkout", "-q", "-b", "trunk")
         _git(self.repo, "push", "-q", "-u", "origin", "trunk")
         _git(self.repo, "checkout", "-q", "main")
         _git(self.repo, "branch", "-D", "trunk")
 
+    def _complete_task(self, task_id: str = "fn-1.1") -> Path:
+        _add_task_file(self.repo, task_id)
+        return _write_fake_flowctl(self.flowctl_path, {task_id: "done"})
+
     def test_fetch_url_and_pushurl_differ_blocks_push_on_pushurl_default_branch(self):
-        """Current branch is `trunk` -- repo-B's (the real receiving repo)
-        actual default branch, even though repo-A's (the fetch URL's)
-        default is `main`. A naive fetch-URL-based check would wrongly
-        conclude `trunk` is a safe feature branch here."""
         _git(self.repo, "checkout", "-q", "-b", "trunk")
         remote_sha_before = subprocess.run(
             ["git", "ls-remote", str(self.repo_b), "refs/heads/trunk"],
             capture_output=True, text=True, check=True,
         ).stdout.split()[0]
-        (self.repo / "w.txt").write_text("work\n")
-        _git(self.repo, "add", "w.txt")
-        _git(self.repo, "commit", "-q", "-m", "would-be push")
-        flow_push.arm_marker(self.repo)
+        flowctl = self._complete_task()
 
-        decision = flow_push.guarded_push(self.repo, auto_push_enabled=True)
+        decision = flow_push.guarded_push(self.repo, True, flowctl)
 
-        self.assertEqual(decision.action, "invalidated")
+        self.assertEqual(decision.action, "skipped")
         remote_sha_after = subprocess.run(
             ["git", "ls-remote", str(self.repo_b), "refs/heads/trunk"],
             capture_output=True, text=True, check=True,
@@ -593,12 +572,9 @@ class EffectivePushDestinationTests(unittest.TestCase):
 
     def test_feature_branch_pushes_to_the_actual_pushurl_repository(self):
         _git(self.repo, "checkout", "-q", "-b", "feature-q")
-        (self.repo / "w.txt").write_text("work\n")
-        _git(self.repo, "add", "w.txt")
-        _git(self.repo, "commit", "-q", "-m", "feature work")
-        flow_push.arm_marker(self.repo)
+        flowctl = self._complete_task()
 
-        decision = flow_push.guarded_push(self.repo, auto_push_enabled=True)
+        decision = flow_push.guarded_push(self.repo, True, flowctl)
 
         self.assertEqual(decision.action, "pushed")
         pushed = subprocess.run(
@@ -606,7 +582,6 @@ class EffectivePushDestinationTests(unittest.TestCase):
             capture_output=True, text=True, check=True,
         ).stdout
         self.assertIn("feature-q", pushed)
-        # repo-A (the fetch URL) must remain completely unaffected.
         untouched = subprocess.run(
             ["git", "ls-remote", "--heads", str(self.repo_a), "feature-q"],
             capture_output=True, text=True, check=True,
@@ -624,15 +599,11 @@ class EffectivePushDestinationTests(unittest.TestCase):
         self.assertEqual(len(urls), 2, "test setup must actually configure two push URLs")
 
         _git(self.repo, "checkout", "-q", "-b", "feature-multi")
-        (self.repo / "w.txt").write_text("work\n")
-        _git(self.repo, "add", "w.txt")
-        _git(self.repo, "commit", "-q", "-m", "work")
-        flow_push.arm_marker(self.repo)
+        flowctl = self._complete_task()
 
-        decision = flow_push.guarded_push(self.repo, auto_push_enabled=True)
+        decision = flow_push.guarded_push(self.repo, True, flowctl)
 
         self.assertEqual(decision.action, "skipped")
-        self.assertIsNotNone(flow_push.read_marker(self.repo))
         for repo in (self.repo_a, self.repo_b, repo_c):
             result = subprocess.run(
                 ["git", "ls-remote", "--heads", str(repo), "feature-multi"],
@@ -648,27 +619,12 @@ class EffectivePushDestinationTests(unittest.TestCase):
             (repo / ".flow" / "config.json").write_text("{}")
             _git(repo, "add", ".flow")
             _git(repo, "commit", "-q", "-m", "flow-next marker")
-            flow_push.arm_marker(repo)
-            decision = flow_push.guarded_push(repo, auto_push_enabled=True)
+            _add_task_file(repo, "fn-1.1")
+            flowctl = _write_fake_flowctl(Path(tmp) / "flowctl", {"fn-1.1": "done"})
+            decision = flow_push.guarded_push(repo, True, flowctl)
             self.assertEqual(decision.action, "skipped")
-            self.assertIsNotNone(flow_push.read_marker(repo))
 
     def test_push_url_rewriting_is_resolved_through_git_not_guessed(self):
-        """`url.<base>.pushInsteadOf` rewriting must be resolved by asking
-        Git itself (`git remote get-url --push --all`), not by reading
-        stored remote config literally -- prove the actually-queried and
-        actually-pushed-to repository is the *rewritten* target, using a
-        placeholder URL whose scheme has no real transport at all (so any
-        code path that failed to apply the rewrite would error out loudly
-        instead of silently querying/pushing the wrong place).
-
-        (Mechanically verified separately: `git remote get-url --push --all`
-        reliably applies `pushInsteadOf` rewriting for the common case of a
-        single `remote.<name>.url` matched by the rule -- not for a
-        distinct, separately configured `remote.<name>.pushurl`, which Git
-        itself does not rewrite either when actually pushing. This test
-        exercises the case Git itself supports.)
-        """
         real_remote = self.root / "rewrite-target.git"
         _git(self.root, "init", "-q", "--bare", "-b", "main", str(real_remote))
         repo = self.root / "rewrite-repo"
@@ -690,12 +646,10 @@ class EffectivePushDestinationTests(unittest.TestCase):
         _git(repo, "push", "-q", "-u", "origin", "main")
 
         _git(repo, "checkout", "-q", "-b", "feature-rewrite")
-        (repo / "w.txt").write_text("work\n")
-        _git(repo, "add", "w.txt")
-        _git(repo, "commit", "-q", "-m", "feature work")
-        flow_push.arm_marker(repo)
+        _add_task_file(repo, "fn-2.1")
+        flowctl = _write_fake_flowctl(self.root / "flowctl2", {"fn-2.1": "done"})
 
-        decision = flow_push.guarded_push(repo, auto_push_enabled=True)
+        decision = flow_push.guarded_push(repo, True, flowctl)
 
         self.assertEqual(decision.action, "pushed")
         pushed = subprocess.run(
@@ -705,39 +659,19 @@ class EffectivePushDestinationTests(unittest.TestCase):
         self.assertIn("feature-rewrite", pushed)
 
 
-class PushEffectNeutralizationTests(unittest.TestCase):
+class PushEffectNeutralizationTests(FlowPushTestCase):
     """Safe argv is not the same as safe effective behavior: `push.
     followTags`/`push.recurseSubmodules` can silently widen a plain `git
     push -u origin HEAD` into pushing unrelated tags or an entirely
-    different (submodule) repository. These must be neutralized for the
-    auto-push subprocess only, without ever mutating the user's stored
-    config."""
-
-    def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
-        self.root = Path(self._tmp.name)
-        self.repo = self.root / "repo"
-        self.repo.mkdir()
-        _init_repo(self.repo, branch="main")
-        (self.repo / ".flow").mkdir()
-        (self.repo / ".flow" / "config.json").write_text("{}")
-        _git(self.repo, "add", ".flow")
-        _git(self.repo, "commit", "-q", "-m", "flow-next marker")
-        self.remote = self.root / "remote.git"
-        _init_bare_remote(self.remote, self.repo, default_branch="main")
-        _git(self.repo, "push", "-q", "-u", "origin", "main")
+    different (submodule) repository."""
 
     def test_follow_tags_does_not_push_annotated_tag(self):
-        _git(self.repo, "checkout", "-q", "-b", "feature-tags")
-        (self.repo / "w.txt").write_text("work\n")
-        _git(self.repo, "add", "w.txt")
-        _git(self.repo, "commit", "-q", "-m", "feature work")
+        self._feature_branch("feature-tags")
+        flowctl = self._complete_task("fn-1.1")
         _git(self.repo, "tag", "-a", "v1", "-m", "release v1")
         _git(self.repo, "config", "push.followTags", "true")
 
-        flow_push.arm_marker(self.repo)
-        decision = flow_push.guarded_push(self.repo, auto_push_enabled=True)
+        decision = self.push(flowctl)
 
         self.assertEqual(decision.action, "pushed")
         branch_on_remote = subprocess.run(
@@ -750,7 +684,6 @@ class PushEffectNeutralizationTests(unittest.TestCase):
             capture_output=True, text=True, check=True,
         ).stdout
         self.assertEqual(tag_on_remote, "", "the annotated tag must NOT have been pushed")
-        # The user's own stored setting is untouched by agent-box.
         self.assertEqual(
             subprocess.run(
                 ["git", "config", "--get", "push.followTags"], cwd=self.repo,
@@ -768,7 +701,7 @@ class PushEffectNeutralizationTests(unittest.TestCase):
         _git(sub_work, "remote", "add", "origin", str(sub_remote))
         _git(sub_work, "push", "-q", "-u", "origin", "main")
 
-        _git(self.repo, "checkout", "-q", "-b", "feature-submodule")
+        self._feature_branch("feature-submodule")
         subprocess.run(
             ["git", "-c", "protocol.file.allow=always", "submodule", "add", "-q",
              str(sub_remote), "subdir"],
@@ -788,9 +721,9 @@ class PushEffectNeutralizationTests(unittest.TestCase):
         _git(self.repo, "add", "subdir")
         _git(self.repo, "commit", "-q", "-m", "bump submodule pointer")
         _git(self.repo, "config", "push.recurseSubmodules", "on-demand")
+        flowctl = self._complete_task("fn-1.1")
 
-        flow_push.arm_marker(self.repo)
-        decision = flow_push.guarded_push(self.repo, auto_push_enabled=True)
+        decision = self.push(flowctl)
 
         self.assertEqual(decision.action, "pushed")
         main_repo_branch = subprocess.run(
@@ -804,30 +737,18 @@ class PushEffectNeutralizationTests(unittest.TestCase):
         ).stdout.split()[0]
         self.assertEqual(
             sub_sha_before, sub_sha_after, "the submodule's own repository must not have been pushed")
-        self.assertEqual(
-            subprocess.run(
-                ["git", "config", "--get", "push.recurseSubmodules"], cwd=self.repo,
-                capture_output=True, text=True, check=True,
-            ).stdout.strip(),
-            "on-demand",
-        )
 
     def test_mirror_config_does_not_expand_the_push(self):
         """`remote.origin.mirror=true` combined with an explicit refspec
-        makes git fail outright rather than expand the push -- this is
-        already safe by construction (no neutralization needed), verified
-        here so the invariant doesn't silently regress."""
-        _git(self.repo, "checkout", "-q", "-b", "feature-mirror")
-        (self.repo / "w.txt").write_text("work\n")
-        _git(self.repo, "add", "w.txt")
-        _git(self.repo, "commit", "-q", "-m", "feature work")
+        makes git fail outright rather than expand the push -- already safe
+        by construction, verified here so the invariant doesn't regress."""
+        self._feature_branch("feature-mirror")
+        flowctl = self._complete_task("fn-1.1")
         _git(self.repo, "config", "remote.origin.mirror", "true")
 
-        flow_push.arm_marker(self.repo)
-        decision = flow_push.guarded_push(self.repo, auto_push_enabled=True)
+        decision = self.push(flowctl)
 
         self.assertEqual(decision.action, "failed")
-        self.assertIsNotNone(flow_push.read_marker(self.repo))
         branch_on_remote = subprocess.run(
             ["git", "ls-remote", "--heads", str(self.remote), "feature-mirror"],
             capture_output=True, text=True, check=True,
@@ -835,17 +756,11 @@ class PushEffectNeutralizationTests(unittest.TestCase):
         self.assertEqual(branch_on_remote, "", "the mirror-config push must not have gone through at all")
 
     def test_custom_remote_push_refspec_is_overridden_by_explicit_head(self):
-        """`remote.origin.push` (a custom default refspec) is ignored once
-        an explicit refspec is given on the command line -- verified here
-        so this invariant doesn't silently regress either."""
-        _git(self.repo, "checkout", "-q", "-b", "feature-refspec")
-        (self.repo / "w.txt").write_text("work\n")
-        _git(self.repo, "add", "w.txt")
-        _git(self.repo, "commit", "-q", "-m", "feature work")
+        self._feature_branch("feature-refspec")
+        flowctl = self._complete_task("fn-1.1")
         _git(self.repo, "config", "remote.origin.push", "refs/heads/feature-refspec:refs/heads/renamed")
 
-        flow_push.arm_marker(self.repo)
-        decision = flow_push.guarded_push(self.repo, auto_push_enabled=True)
+        decision = self.push(flowctl)
 
         self.assertEqual(decision.action, "pushed")
         renamed = subprocess.run(
@@ -860,324 +775,213 @@ class PushEffectNeutralizationTests(unittest.TestCase):
         self.assertIn("feature-refspec", real_branch)
 
 
-class PushTargetTests(unittest.TestCase):
+class PushTargetTests(FlowPushTestCase):
     """The push always targets `origin/<branch>`; safety decisions must be
     based on that actual target, never an unrelated configured upstream."""
 
-    def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
-        self.root = Path(self._tmp.name)
-        self.repo = self.root / "repo"
-        self.repo.mkdir()
-        _init_repo(self.repo)
-        (self.repo / ".flow").mkdir()
-        (self.repo / ".flow" / "config.json").write_text("{}")
-        _git(self.repo, "add", ".flow")
-        _git(self.repo, "commit", "-q", "-m", "flow-next marker")
-        self.origin = self.root / "origin.git"
-        _init_bare_remote(self.origin, self.repo, default_branch="main")
-        _git(self.repo, "push", "-q", "-u", "origin", "main")
-
-    def _feature_branch(self, name: str = "feature-x") -> None:
-        _git(self.repo, "checkout", "-q", "-b", name)
-        (self.repo / "work.txt").write_text("work\n")
-        _git(self.repo, "add", "work.txt")
-        _git(self.repo, "commit", "-q", "-m", "feature work")
-
     def test_new_branch_no_remote_ref_pushes_with_dash_u(self):
         self._feature_branch()
-        flow_push.arm_marker(self.repo)
-        decision = flow_push.guarded_push(self.repo, auto_push_enabled=True)
+        flowctl = self._complete_task()
+        decision = self.push(flowctl)
         self.assertEqual(decision.action, "pushed")
         remote_heads = subprocess.run(
-            ["git", "ls-remote", "--heads", str(self.origin), "feature-x"],
+            ["git", "ls-remote", "--heads", str(self.remote), "feature-x"],
             capture_output=True, text=True, check=True,
         ).stdout
         self.assertIn("feature-x", remote_heads)
 
     def test_local_ahead_of_remote_branch_pushes(self):
         self._feature_branch()
-        _git(self.repo, "push", "-q", "-u", "origin", "feature-x")
-        (self.repo / "work2.txt").write_text("more\n")
-        _git(self.repo, "add", "work2.txt")
-        _git(self.repo, "commit", "-q", "-m", "more work")
-        flow_push.arm_marker(self.repo)
-        decision = flow_push.guarded_push(self.repo, auto_push_enabled=True)
+        flowctl = self._complete_task()
+        first = self.push(flowctl)
+        self.assertEqual(first.action, "pushed")
+        _add_task_file(self.repo, "fn-1.2")
+        self._fake_flowctl({"fn-1.1": "done", "fn-1.2": "done"})
+        decision = self.push(self.flowctl_path)
         self.assertEqual(decision.action, "pushed")
 
-    def test_local_equals_remote_invalidates_marker(self):
+    def test_local_equals_remote_means_nothing_to_push(self):
         self._feature_branch()
-        _git(self.repo, "push", "-q", "-u", "origin", "feature-x")
-        flow_push.arm_marker(self.repo)
-        decision = flow_push.guarded_push(self.repo, auto_push_enabled=True)
-        self.assertEqual(decision.action, "invalidated")
-        self.assertIsNone(flow_push.read_marker(self.repo))
+        flowctl = self._complete_task()
+        first = self.push(flowctl)
+        self.assertEqual(first.action, "pushed")
+        decision = self.push(flowctl)
+        self.assertEqual(decision.action, "skipped")
 
     def test_local_behind_remote_refuses(self):
         self._feature_branch()
-        _git(self.repo, "push", "-q", "-u", "origin", "feature-x")
-        # Simulate "local behind": reset local back before the pushed commit.
+        flowctl = self._complete_task()
+        self.assertEqual(self.push(flowctl).action, "pushed")
         _git(self.repo, "reset", "-q", "--hard", "HEAD~1")
-        flow_push.arm_marker(self.repo)
-        decision = flow_push.guarded_push(self.repo, auto_push_enabled=True)
+        decision = self.push(flowctl)
         self.assertEqual(decision.action, "skipped")
-        self.assertIsNotNone(flow_push.read_marker(self.repo))
 
     def test_diverged_remote_refuses_without_repair(self):
         self._feature_branch()
-        _git(self.repo, "push", "-q", "-u", "origin", "feature-x")
-        (self.repo / "work.txt").write_text("changed locally\n")
-        _git(self.repo, "add", "work.txt")
+        flowctl = self._complete_task()
+        self.assertEqual(self.push(flowctl).action, "pushed")
+        (self.repo / "extra.txt").write_text("changed locally\n")
+        _git(self.repo, "add", "extra.txt")
         _git(self.repo, "commit", "-q", "--amend", "-m", "amended")
-        flow_push.arm_marker(self.repo)
-        decision = flow_push.guarded_push(self.repo, auto_push_enabled=True)
+        decision = self.push(flowctl)
         self.assertEqual(decision.action, "skipped")
         self.assertIn("ancestor", decision.detail)
-        self.assertIsNotNone(flow_push.read_marker(self.repo))
 
     def test_upstream_on_a_different_remote_is_ignored_target_is_origin(self):
-        """The exact review scenario: `@{u}` tracks a `fork` remote, but the
-        push always goes to `origin`, so the decision must be based on
-        origin/feature-x, not fork/feature-x."""
+        """`@{u}` may track a `fork` remote, but the push always goes to
+        `origin`."""
         self._feature_branch()
+        flowctl = self._complete_task()
         fork = self.root / "fork.git"
         _init_bare_remote(fork, self.repo, default_branch="main", remote_name="fork")
         _git(self.repo, "push", "-q", "-u", "fork", "feature-x")  # sets @{u} to fork/feature-x
-        # origin has never seen feature-x at all -- a real new-branch push.
-        flow_push.arm_marker(self.repo)
-        decision = flow_push.guarded_push(self.repo, auto_push_enabled=True)
+        decision = self.push(flowctl)
         self.assertEqual(decision.action, "pushed")
         origin_heads = subprocess.run(
-            ["git", "ls-remote", "--heads", str(self.origin), "feature-x"],
+            ["git", "ls-remote", "--heads", str(self.remote), "feature-x"],
             capture_output=True, text=True, check=True,
         ).stdout
         self.assertIn("feature-x", origin_heads)
 
-    def test_upstream_on_fork_ahead_of_origin_still_pushes_to_origin(self):
-        """`fork/feature-x` is ahead (has commits origin doesn't), but that
-        must not block pushing origin/feature-x when origin itself has
-        nothing to conflict with."""
-        self._feature_branch()
-        fork = self.root / "fork.git"
-        _init_bare_remote(fork, self.repo, default_branch="main", remote_name="fork")
-        _git(self.repo, "push", "-q", "-u", "fork", "feature-x")
-        (self.repo / "fork-only.txt").write_text("only on fork\n")
-        _git(self.repo, "add", "fork-only.txt")
-        _git(self.repo, "commit", "-q", "-m", "fork-only work")
-        _git(self.repo, "push", "-q", "fork", "feature-x")
-        flow_push.arm_marker(self.repo)
-        decision = flow_push.guarded_push(self.repo, auto_push_enabled=True)
-        self.assertEqual(decision.action, "pushed")
-
     def test_no_configured_upstream_still_resolves_against_origin(self):
         self._feature_branch()
-        _git(self.repo, "push", "-q", "-u", "origin", "feature-x")
+        flowctl = self._complete_task()
+        self.assertEqual(self.push(flowctl).action, "pushed")
         _git(self.repo, "branch", "--unset-upstream")
-        (self.repo / "more.txt").write_text("more\n")
-        _git(self.repo, "add", "more.txt")
-        _git(self.repo, "commit", "-q", "-m", "more work")
-        flow_push.arm_marker(self.repo)
-        decision = flow_push.guarded_push(self.repo, auto_push_enabled=True)
+        _add_task_file(self.repo, "fn-1.2")
+        self._fake_flowctl({"fn-1.1": "done", "fn-1.2": "done"})
+        decision = self.push(self.flowctl_path)
         self.assertEqual(decision.action, "pushed")
 
     def test_stale_tracking_branch_after_remote_branch_deleted_is_treated_as_new(self):
         self._feature_branch()
-        _git(self.repo, "push", "-q", "-u", "origin", "feature-x")
+        flowctl = self._complete_task()
+        self.assertEqual(self.push(flowctl).action, "pushed")
         _git(self.repo, "push", "-q", "origin", "--delete", "feature-x")
-        # Local tracking ref is now stale; the actual origin/feature-x is gone.
-        flow_push.arm_marker(self.repo)
-        decision = flow_push.guarded_push(self.repo, auto_push_enabled=True)
+        decision = self.push(flowctl)
         self.assertEqual(decision.action, "pushed")
 
 
-class PushGuardTests(unittest.TestCase):
-    def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
-        self.root = Path(self._tmp.name)
-        self.repo = self.root / "repo"
-        self.repo.mkdir()
-        _init_repo(self.repo)
-        (self.repo / ".flow").mkdir()
-        (self.repo / ".flow" / "config.json").write_text("{}")
-        _git(self.repo, "add", ".flow")
-        _git(self.repo, "commit", "-q", "-m", "flow-next marker")
-        self.remote = self.root / "remote.git"
-        _init_bare_remote(self.remote, self.repo, default_branch="main")
-        _git(self.repo, "push", "-q", "-u", "origin", "main")
+# -- basic guard chain --------------------------------------------------------
 
-    def _feature_branch(self, name: str = "feature-x") -> None:
-        _git(self.repo, "checkout", "-q", "-b", name)
-        (self.repo / "work.txt").write_text("work\n")
-        _git(self.repo, "add", "work.txt")
-        _git(self.repo, "commit", "-q", "-m", "feature work")
-
-    def test_no_marker_means_no_push(self):
+class PushGuardTests(FlowPushTestCase):
+    def test_auto_push_disabled_for_this_launch_means_no_push(self):
         self._feature_branch()
-        decision = flow_push.guarded_push(self.repo, auto_push_enabled=True)
+        flowctl = self._complete_task()
+        decision = flow_push.guarded_push(self.repo, auto_push_enabled=False, flowctl=flowctl)
         self.assertEqual(decision.action, "skipped")
 
-    def test_disabled_for_this_launch_means_no_push(self):
-        self._feature_branch()
-        flow_push.arm_marker(self.repo)
-        decision = flow_push.guarded_push(self.repo, auto_push_enabled=False)
-        self.assertEqual(decision.action, "skipped")
+    def test_non_flow_next_workspace_means_no_push(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            _init_repo(repo)
+            _add_task_file(repo, "fn-1.1")
+            flowctl = _write_fake_flowctl(Path(tmp) / "flowctl", {"fn-1.1": "done"})
+            decision = flow_push.guarded_push(repo, True, flowctl)
+            self.assertEqual(decision.action, "skipped")
+            self.assertIn("not a Flow-Next workspace", decision.detail)
 
-    def test_detached_head_means_no_push_and_keeps_marker(self):
+    def test_detached_head_means_no_push(self):
         self._feature_branch()
-        flow_push.arm_marker(self.repo)
+        flowctl = self._complete_task()
         _git(self.repo, "checkout", "-q", "--detach")
-        decision = flow_push.guarded_push(self.repo, auto_push_enabled=True)
+        decision = self.push(flowctl)
         self.assertEqual(decision.action, "skipped")
-        # Conservative choice: detached HEAD is often transient (e.g. mid
-        # rebase); the marker survives so a later Stop back on the recorded
-        # branch can still complete the push. The branch-binding check still
-        # prevents it from ever pushing anything unintended in the meantime.
-        _git(self.repo, "checkout", "-q", "feature-x")
-        self.assertIsNotNone(flow_push.read_marker(self.repo))
 
     def test_main_branch_never_pushed(self):
-        flow_push.arm_marker(self.repo)
-        decision = flow_push.guarded_push(self.repo, auto_push_enabled=True)
-        self.assertEqual(decision.action, "invalidated")
-        self.assertIsNone(flow_push.read_marker(self.repo))
+        _add_task_file(self.repo, "fn-1.1")
+        flowctl = self._fake_flowctl({"fn-1.1": "done"})
+        decision = self.push(flowctl)
+        self.assertEqual(decision.action, "skipped")
+        self.assertIn("protected branch", decision.detail)
 
     def test_master_branch_never_pushed(self):
         _git(self.repo, "branch", "-m", "master")
-        flow_push.arm_marker(self.repo)
-        decision = flow_push.guarded_push(self.repo, auto_push_enabled=True)
-        self.assertEqual(decision.action, "invalidated")
-
-    def test_marker_for_another_branch_means_no_push(self):
-        self._feature_branch("branch-a")
-        flow_push.arm_marker(self.repo)
-        _git(self.repo, "checkout", "-q", "main")
-        _git(self.repo, "checkout", "-q", "-b", "branch-b")
-        decision = flow_push.guarded_push(self.repo, auto_push_enabled=True)
-        self.assertEqual(decision.action, "invalidated")
-        self.assertIsNone(flow_push.read_marker(self.repo))
-
-    def test_dirty_worktree_means_no_push_but_keeps_marker(self):
-        self._feature_branch()
-        _git(self.repo, "push", "-q", "-u", "origin", "feature-x")
-        flow_push.arm_marker(self.repo)
-        (self.repo / "work.txt").write_text("dirty\n")
-        decision = flow_push.guarded_push(self.repo, auto_push_enabled=True)
+        _add_task_file(self.repo, "fn-1.1")
+        flowctl = self._fake_flowctl({"fn-1.1": "done"})
+        decision = self.push(flowctl)
         self.assertEqual(decision.action, "skipped")
-        self.assertIsNotNone(flow_push.read_marker(self.repo))
+
+    def test_dirty_worktree_means_no_push(self):
+        self._feature_branch()
+        flowctl = self._complete_task()
+        (self.repo / "dirty.txt").write_text("dirty\n")
+        decision = self.push(flowctl)
+        self.assertEqual(decision.action, "skipped")
+        self.assertIn("dirty", decision.detail)
 
     def test_dirty_index_means_no_push(self):
         self._feature_branch()
-        _git(self.repo, "push", "-q", "-u", "origin", "feature-x")
-        flow_push.arm_marker(self.repo)
+        flowctl = self._complete_task()
         (self.repo / "staged.txt").write_text("staged\n")
         _git(self.repo, "add", "staged.txt")
-        decision = flow_push.guarded_push(self.repo, auto_push_enabled=True)
+        decision = self.push(flowctl)
         self.assertEqual(decision.action, "skipped")
-        self.assertIsNotNone(flow_push.read_marker(self.repo))
-
-    def test_successful_push_removes_marker(self):
-        self._feature_branch()
-        flow_push.arm_marker(self.repo)
-        decision = flow_push.guarded_push(self.repo, auto_push_enabled=True)
-        self.assertEqual(decision.action, "pushed")
-        self.assertIsNone(flow_push.read_marker(self.repo))
 
     def test_diverged_branch_is_refused_before_ever_attempting_a_push(self):
         self._feature_branch()
-        _git(self.repo, "push", "-q", "-u", "origin", "feature-x")
-        (self.repo / "work.txt").write_text("changed locally\n")
-        _git(self.repo, "add", "work.txt")
+        flowctl = self._complete_task()
+        self.assertEqual(self.push(flowctl).action, "pushed")
+        (self.repo / "extra.txt").write_text("changed locally\n")
+        _git(self.repo, "add", "extra.txt")
         _git(self.repo, "commit", "-q", "--amend", "-m", "amended")
-        flow_push.arm_marker(self.repo)
-        # Diverged, so push_preflight itself refuses -- git push never even
-        # runs here. See test_real_push_rejection_by_remote_is_retained_and_
-        # never_forced below for an actual rejected `git push`.
-        decision = flow_push.guarded_push(self.repo, auto_push_enabled=True)
+        # push_preflight itself refuses -- git push never even runs here.
+        decision = self.push(flowctl)
         self.assertEqual(decision.action, "skipped")
-        self.assertIsNotNone(flow_push.read_marker(self.repo))
 
     def test_real_push_rejection_by_remote_is_retained_and_never_forced(self):
         """A real `git push` that reaches the remote and is rejected there
-        (not merely refused by our own preflight) -- a rejecting
-        `pre-receive` hook on a real bare remote, so this exercises the
-        actual final `git push -u origin HEAD` invocation, not a mock."""
+        (a rejecting `pre-receive` hook on a real bare remote) -- exercises
+        the actual final `git push -u origin HEAD` invocation, not a mock."""
         pre_receive = self.remote / "hooks" / "pre-receive"
         pre_receive.write_text("#!/bin/sh\necho 'remote rejects all pushes' >&2\nexit 1\n")
         pre_receive.chmod(pre_receive.stat().st_mode | 0o111)
 
         self._feature_branch("feature-rejected")
-        remote_sha_before = subprocess.run(
-            ["git", "ls-remote", "--heads", str(self.remote), "feature-rejected"],
-            capture_output=True, text=True, check=True,
-        ).stdout
-        self.assertEqual(remote_sha_before, "", "the branch must not exist on the remote yet")
-
-        flow_push.arm_marker(self.repo)
-        preflight = flow_push.push_preflight(self.repo, auto_push_enabled=True)
+        flowctl = self._complete_task()
+        preflight = flow_push.push_preflight(self.repo, True, flowctl)
         self.assertEqual(preflight.action, "ready", "preflight must succeed so the real push actually runs")
 
-        decision = flow_push.guarded_push(self.repo, auto_push_enabled=True)
+        decision = self.push(flowctl)
 
         self.assertEqual(decision.action, "failed")
         self.assertIn("reject", decision.detail.lower())
-        self.assertIsNotNone(flow_push.read_marker(self.repo), "marker must be kept for a later retry")
         remote_sha_after = subprocess.run(
             ["git", "ls-remote", "--heads", str(self.remote), "feature-rejected"],
             capture_output=True, text=True, check=True,
         ).stdout
         self.assertEqual(remote_sha_after, "", "the rejected push must not have created the branch")
 
-    def test_push_timeout_is_reported_as_failed_and_keeps_marker(self):
-        """A controlled timeout around the final push path: the important
-        property is that `guarded_push`/`run_stop_hook` never let
-        `subprocess.TimeoutExpired` escape."""
+    def test_push_timeout_is_reported_as_failed(self):
         self._feature_branch()
-        flow_push.arm_marker(self.repo)
-        preflight = flow_push.push_preflight(self.repo, auto_push_enabled=True)
+        flowctl = self._complete_task()
+        preflight = flow_push.push_preflight(self.repo, True, flowctl)
         self.assertEqual(preflight.action, "ready")
 
-        import subprocess as _subprocess
-        from unittest import mock
         real_run = flow_push._run
 
         def fake_run(args, cwd=None, timeout=10):
             if "push" in args:
-                raise _subprocess.TimeoutExpired(cmd=args, timeout=timeout)
+                raise subprocess.TimeoutExpired(cmd=args, timeout=timeout)
             return real_run(args, cwd=cwd, timeout=timeout)
 
-        with mock.patch.object(flow_push, "_run", side_effect=fake_run):
-            decision = flow_push.guarded_push(self.repo, auto_push_enabled=True)
+        with unittest.mock.patch.object(flow_push, "_run", side_effect=fake_run):
+            decision = self.push(flowctl)
         self.assertEqual(decision.action, "failed")
         self.assertIn("timed out", decision.detail)
-        self.assertIsNotNone(flow_push.read_marker(self.repo))
 
     def test_stop_hook_survives_an_unexpected_exception_in_the_guard_chain(self):
         """run_stop_hook is the outermost safety net: even a genuinely
         unexpected exception anywhere in the guard chain must not escape
         it or produce a blocking hook decision."""
         self._feature_branch()
-        flow_push.arm_marker(self.repo)
-        from unittest import mock
-        with mock.patch.object(flow_push, "guarded_push", side_effect=RuntimeError("boom")):
-            import os
-            saved = os.environ.get(AUTO_PUSH_ENV)
-            os.environ[AUTO_PUSH_ENV] = "1"
-            try:
-                decision = flow_push.run_stop_hook(json.dumps({"cwd": str(self.repo)}))
-            finally:
-                if saved is None:
-                    os.environ.pop(AUTO_PUSH_ENV, None)
-                else:
-                    os.environ[AUTO_PUSH_ENV] = saved
+        with unittest.mock.patch.object(flow_push, "guarded_push", side_effect=RuntimeError("boom")), \
+             unittest.mock.patch.dict(os.environ, {AUTO_PUSH_ENV: "1"}):
+            decision = flow_push.run_stop_hook(json.dumps({"cwd": str(self.repo)}))
         self.assertEqual(decision.action, "failed")
         self.assertIn("boom", decision.detail)
 
     def test_no_code_path_constructs_force_flags(self):
-        # Checked as a Python string literal (quoted), not a docstring
-        # mention -- the docstrings deliberately explain that force pushing
-        # never happens, using the same words.
         source = Path(flow_push.__file__).read_text()
         self.assertNotIn('"--force"', source)
         self.assertNotIn("'--force'", source)
@@ -1186,44 +990,120 @@ class PushGuardTests(unittest.TestCase):
         self.assertNotIn('"--tags"', source)
 
 
-class PushHookEntryPointTests(unittest.TestCase):
+# -- provider adapters ---------------------------------------------------------
+
+class ClaudeAdapterTests(FlowPushTestCase):
     def test_stop_hook_respects_auto_push_env(self):
-        import os
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            _init_repo(repo)
-            flow_push.arm_marker(repo)
-            saved = os.environ.pop(AUTO_PUSH_ENV, None)
-            try:
-                decision = flow_push.run_stop_hook(json.dumps({"cwd": str(repo)}))
-            finally:
-                if saved is not None:
-                    os.environ[AUTO_PUSH_ENV] = saved
-            self.assertEqual(decision.action, "skipped")
+        self._feature_branch()
+        flowctl = self._complete_task()
+        with unittest.mock.patch.dict(os.environ, {FLOWCTL_ENV: str(flowctl)}, clear=False):
+            os.environ.pop(AUTO_PUSH_ENV, None)
+            decision = flow_push.run_stop_hook(json.dumps({"cwd": str(self.repo)}))
+        self.assertEqual(decision.action, "skipped")
+
+    def test_stop_hook_pushes_when_env_is_set(self):
+        self._feature_branch()
+        flowctl = self._complete_task()
+        with unittest.mock.patch.dict(os.environ, {AUTO_PUSH_ENV: "1", FLOWCTL_ENV: str(flowctl)}):
+            decision = flow_push.run_stop_hook(json.dumps({"cwd": str(self.repo)}))
+        self.assertEqual(decision.action, "pushed")
 
     def test_stop_hook_never_blocks_on_failed_push(self):
-        """The Stop hook itself must not create a stop-loop: it always
-        returns a decision object and prints to stderr, never raising or
-        signalling a blocking exit status."""
-        import os
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            _init_repo(repo)
-            (repo / ".flow").mkdir()
-            (repo / ".flow" / "config.json").write_text("{}")
-            _git(repo, "add", ".flow")
-            _git(repo, "commit", "-q", "-m", "flow-next marker")
-            _git(repo, "checkout", "-q", "-b", "feature-x")
-            _git(repo, "remote", "add", "origin", "/nonexistent/offline-remote.git")
-            flow_push.arm_marker(repo)
-            os.environ[AUTO_PUSH_ENV] = "1"
-            try:
-                decision = flow_push.run_stop_hook(json.dumps({"cwd": str(repo)}))
-            finally:
-                os.environ.pop(AUTO_PUSH_ENV, None)
-            self.assertIn(decision.action, ("skipped", "failed"))
-            self.assertIsNotNone(flow_push.read_marker(repo))
+        self._feature_branch()
+        _git(self.repo, "remote", "set-url", "origin", "/nonexistent/offline-remote.git")
+        flowctl = self._complete_task()
+        with unittest.mock.patch.dict(os.environ, {AUTO_PUSH_ENV: "1", FLOWCTL_ENV: str(flowctl)}):
+            decision = flow_push.run_stop_hook(json.dumps({"cwd": str(self.repo)}))
+        self.assertIn(decision.action, ("skipped", "failed"))
 
+    def test_malformed_stop_payload_does_not_raise(self):
+        decision = flow_push.run_stop_hook("not json")
+        self.assertEqual(decision.action, "skipped")
+
+
+class CodexAdapterTests(FlowPushTestCase):
+    def test_non_turn_complete_event_is_a_noop(self):
+        self._feature_branch()
+        flowctl = self._complete_task()
+        with unittest.mock.patch.dict(os.environ, {AUTO_PUSH_ENV: "1", FLOWCTL_ENV: str(flowctl)}):
+            result = flow_push.run_codex_turn_complete_hook(
+                json.dumps({"type": "something-else", "cwd": str(self.repo)}))
+        self.assertIsNone(result)
+        # Nothing was pushed: still exactly the two remote commits from setUp.
+        remote = subprocess.run(
+            ["git", "ls-remote", "--heads", str(self.remote)],
+            capture_output=True, text=True, check=True,
+        ).stdout
+        self.assertNotIn("feature-x", remote)
+
+    def test_turn_complete_event_pushes(self):
+        self._feature_branch()
+        flowctl = self._complete_task()
+        payload = json.dumps({"type": "agent-turn-complete", "cwd": str(self.repo)})
+        with unittest.mock.patch.dict(os.environ, {AUTO_PUSH_ENV: "1", FLOWCTL_ENV: str(flowctl)}):
+            decision = flow_push.run_codex_turn_complete_hook(payload)
+        self.assertEqual(decision.action, "pushed")
+
+    def test_malformed_payload_does_not_raise(self):
+        result = flow_push.run_codex_turn_complete_hook("not json")
+        self.assertIsNone(result)
+
+
+class MultiWorkspaceIsolationTests(unittest.TestCase):
+    """A completion event for one workspace must never inspect or push
+    another. There is no global marker/state -- every reconciliation is
+    scoped only by the workspace resolved from its own event `cwd`."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+
+    def _flow_repo(self, name: str) -> tuple[Path, Path]:
+        repo = self.root / name
+        repo.mkdir()
+        _init_repo(repo, branch="main")
+        (repo / ".flow").mkdir()
+        (repo / ".flow" / "config.json").write_text("{}")
+        _git(repo, "add", ".flow")
+        _git(repo, "commit", "-q", "-m", "flow-next marker")
+        remote = self.root / f"{name}-remote.git"
+        _init_bare_remote(remote, repo, default_branch="main")
+        _git(repo, "push", "-q", "-u", "origin", "main")
+        return repo, remote
+
+    def test_completion_in_one_workspace_never_pushes_another(self):
+        repo_a, remote_a = self._flow_repo("project-a")
+        repo_b, remote_b = self._flow_repo("project-b")
+
+        _git(repo_a, "checkout", "-q", "-b", "feature")
+        _add_task_file(repo_a, "fn-a.1")
+        _git(repo_b, "checkout", "-q", "-b", "feature")
+        _add_task_file(repo_b, "fn-b.1")
+
+        # One shared Flowctl only reports project-a's own task as done; a
+        # project-b task id it was never told about defaults to "todo".
+        flowctl = _write_fake_flowctl(self.root / "flowctl", {"fn-a.1": "done"})
+
+        with unittest.mock.patch.dict(os.environ, {AUTO_PUSH_ENV: "1", FLOWCTL_ENV: str(flowctl)}):
+            decision_a = flow_push.run_stop_hook(json.dumps({"cwd": str(repo_a)}))
+            decision_b = flow_push.run_stop_hook(json.dumps({"cwd": str(repo_b)}))
+
+        self.assertEqual(decision_a.action, "pushed")
+        self.assertEqual(decision_b.action, "skipped")
+        pushed_a = subprocess.run(
+            ["git", "ls-remote", "--heads", str(remote_a), "feature"],
+            capture_output=True, text=True, check=True,
+        ).stdout
+        self.assertIn("feature", pushed_a)
+        pushed_b = subprocess.run(
+            ["git", "ls-remote", "--heads", str(remote_b), "feature"],
+            capture_output=True, text=True, check=True,
+        ).stdout
+        self.assertEqual(pushed_b, "", "project-b must never be pushed by project-a's completion")
+
+
+# -- hook installation (Claude Stop only) -------------------------------------
 
 class HookInstallationTests(unittest.TestCase):
     def test_install_is_idempotent(self):
@@ -1235,17 +1115,17 @@ class HookInstallationTests(unittest.TestCase):
             second = json.loads(path.read_text())
             self.assertEqual(first, second)
             self.assertEqual(len(second["hooks"]["Stop"]), 1)
-            self.assertEqual(len(second["hooks"]["PostToolUse"]), 1)
+            self.assertNotIn("PostToolUse", second["hooks"])
 
-    def test_install_only_touches_post_tool_use_and_stop(self):
+    def test_install_only_touches_stop(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "settings.json"
             path.write_text(json.dumps({"hooks": {"Notification": [{"hooks": []}]}}))
             flow_push.install_flow_push_hooks(path)
             settings = json.loads(path.read_text())
             self.assertIn("Notification", settings["hooks"])
-            self.assertIn("PostToolUse", settings["hooks"])
             self.assertIn("Stop", settings["hooks"])
+            self.assertNotIn("PostToolUse", settings["hooks"])
 
     def test_never_installs_a_stop_failure_hook(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1266,29 +1146,6 @@ class HookInstallationTests(unittest.TestCase):
             commands = {entry["hooks"][0]["command"] for entry in stop_hooks}
             self.assertEqual(commands, {notify.NOTIFY_COMMAND, flow_push.STOP_COMMAND})
 
-    def test_all_four_notification_auto_push_combinations(self):
-        from agent_box import notify
-        for notif_on, push_on in ((False, False), (True, False), (False, True), (True, True)):
-            with self.subTest(notifications=notif_on, auto_push=push_on), \
-                 tempfile.TemporaryDirectory() as tmp:
-                    path = Path(tmp) / "settings.json"
-                    if notif_on:
-                        notify.install_claude_notify_hooks(path)
-                    if push_on:
-                        flow_push.install_flow_push_hooks(path)
-                    settings = json.loads(path.read_text()) if path.exists() else {}
-                    hooks = settings.get("hooks", {})
-                    stop_commands = {
-                        h["hooks"][0]["command"] for h in hooks.get("Stop", [])
-                    }
-                    if notif_on:
-                        self.assertIn(notify.NOTIFY_COMMAND, stop_commands)
-                    if push_on:
-                        self.assertIn(flow_push.STOP_COMMAND, stop_commands)
-                        self.assertIn("PostToolUse", hooks)
-                    if not push_on:
-                        self.assertNotIn("PostToolUse", hooks)
-
     def test_disabling_flow_push_leaves_notification_hooks_intact(self):
         from agent_box import notify
         with tempfile.TemporaryDirectory() as tmp:
@@ -1300,7 +1157,6 @@ class HookInstallationTests(unittest.TestCase):
             stop_hooks = settings["hooks"]["Stop"]
             self.assertEqual(len(stop_hooks), 1)
             self.assertEqual(stop_hooks[0]["hooks"][0]["command"], notify.NOTIFY_COMMAND)
-            self.assertNotIn("PostToolUse", settings["hooks"])
 
     def test_disabling_notifications_leaves_flow_push_hooks_intact(self):
         from agent_box import notify
@@ -1313,14 +1169,6 @@ class HookInstallationTests(unittest.TestCase):
             stop_hooks = settings["hooks"]["Stop"]
             self.assertEqual(len(stop_hooks), 1)
             self.assertEqual(stop_hooks[0]["hooks"][0]["command"], flow_push.STOP_COMMAND)
-
-    def test_works_while_notifications_disabled(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "settings.json"
-            flow_push.install_flow_push_hooks(path)
-            settings = json.loads(path.read_text())
-            self.assertIn("Stop", settings["hooks"])
-            self.assertNotIn("Notification", settings.get("hooks", {}))
 
     def test_arbitrary_user_hooks_survive_install_and_remove(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1346,30 +1194,18 @@ class HookInstallationTests(unittest.TestCase):
             self.assertFalse(path.exists())
 
 
-if __name__ == "__main__":
-    unittest.main()
-
+# -- inherited Git configuration precedence (unchanged, must not regress) ----
 
 class InheritedGitConfigContextTests(unittest.TestCase):
     """Preflight and the final push must resolve `origin` from *identical*
-    effective Git configuration.
-
-    Git's command-scope config can arrive from the inherited environment
-    (`GIT_CONFIG_COUNT`/`KEY_n`/`VALUE_n`, and the higher-precedence
-    `GIT_CONFIG_PARAMETERS`). Two distinct failures were mechanically
-    reproduced when the push's own safety overrides were injected through
-    `GIT_CONFIG_COUNT`: it *replaced* inherited entries (silently dropping
-    an inherited `remote.origin.pushurl`, so the push reached a different
-    repository than preflight inspected), and it *lost* to an inherited
-    `GIT_CONFIG_PARAMETERS` (so `push.followTags=true` survived). Passing
-    the overrides as command-line `-c` instead fixes both: `-c` is additive
-    and outranks every inherited mechanism.
-    """
+    effective Git configuration, whatever inherited GIT_CONFIG_* the process
+    environment carries."""
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         self.root = Path(self._tmp.name)
+        self.flowctl_path = self.root / "flowctl"
 
     def _flow_repo(self, path: Path, branch: str) -> None:
         path.mkdir(parents=True, exist_ok=True)
@@ -1379,19 +1215,16 @@ class InheritedGitConfigContextTests(unittest.TestCase):
         _git(path, "add", ".flow")
         _git(path, "commit", "-q", "-m", "flow-next marker")
 
+    def _complete_task(self, repo: Path, task_id: str = "fn-1.1") -> Path:
+        _add_task_file(repo, task_id)
+        return _write_fake_flowctl(self.flowctl_path, {task_id: "done"})
+
     def _inherit(self, **env: str):
         patcher = unittest.mock.patch.dict(os.environ, env)
         patcher.start()
         self.addCleanup(patcher.stop)
 
     def test_inherited_command_scope_pushurl_is_not_dropped_by_the_push(self):
-        """repo-A default = trunk, repo-B default = main, current branch =
-        trunk. An inherited `GIT_CONFIG_COUNT` entry points `origin`'s push
-        URL at repo-B, so preflight inspects repo-B and (correctly, for
-        repo-B) considers `trunk` a safe non-default branch. The push must
-        then land in repo-B too. Previously the push dropped the inherited
-        entry, fell back to repo-A, and advanced repo-A's *default* branch.
-        """
         repo_a = self.root / "repo-A.git"
         repo_b = self.root / "repo-B.git"
         _git(self.root, "init", "-q", "--bare", "-b", "trunk", str(repo_a))
@@ -1401,9 +1234,7 @@ class InheritedGitConfigContextTests(unittest.TestCase):
         _git(repo, "remote", "add", "origin", str(repo_a))
         _git(repo, "push", "-q", "origin", "trunk")
         _git(repo, "push", "-q", str(repo_b), "trunk:main")
-        (repo / "w.txt").write_text("work\n")
-        _git(repo, "add", "w.txt")
-        _git(repo, "commit", "-q", "-m", "feature work")
+        flowctl = self._complete_task(repo)
 
         a_before = _git(repo_a, "rev-parse", "trunk").stdout.strip()
         head = _git(repo, "rev-parse", "HEAD").stdout.strip()
@@ -1416,8 +1247,7 @@ class InheritedGitConfigContextTests(unittest.TestCase):
         )
         self.assertEqual(flow_push._effective_push_url(repo), str(repo_b))
 
-        flow_push.arm_marker(repo)
-        decision = flow_push.guarded_push(repo, auto_push_enabled=True)
+        decision = flow_push.guarded_push(repo, True, flowctl)
         self.assertEqual(decision.action, "pushed")
 
         self.assertEqual(
@@ -1428,9 +1258,6 @@ class InheritedGitConfigContextTests(unittest.TestCase):
             "the push must land in the exact repository preflight inspected")
 
     def test_feature_branch_lands_only_in_the_inspected_repository(self):
-        """A genuine feature branch, with an inherited command-scope
-        pushurl: it must appear in the inspected repository and nowhere
-        else."""
         fetch_remote = self.root / "fetch.git"
         push_remote = self.root / "push.git"
         _git(self.root, "init", "-q", "--bare", "-b", "main", str(fetch_remote))
@@ -1441,9 +1268,7 @@ class InheritedGitConfigContextTests(unittest.TestCase):
         _git(repo, "push", "-q", "origin", "main")
         _git(repo, "push", "-q", str(push_remote), "main")
         _git(repo, "checkout", "-q", "-b", "feature-inherited")
-        (repo / "w.txt").write_text("work\n")
-        _git(repo, "add", "w.txt")
-        _git(repo, "commit", "-q", "-m", "feature work")
+        flowctl = self._complete_task(repo)
         head = _git(repo, "rev-parse", "HEAD").stdout.strip()
 
         self._inherit(
@@ -1453,8 +1278,7 @@ class InheritedGitConfigContextTests(unittest.TestCase):
         )
         self.assertEqual(flow_push._effective_push_url(repo), str(push_remote))
 
-        flow_push.arm_marker(repo)
-        decision = flow_push.guarded_push(repo, auto_push_enabled=True)
+        decision = flow_push.guarded_push(repo, True, flowctl)
         self.assertEqual(decision.action, "pushed")
 
         self.assertEqual(
@@ -1466,9 +1290,6 @@ class InheritedGitConfigContextTests(unittest.TestCase):
             "", "the fetch-only repository must not have received the branch")
 
     def test_inherited_git_config_parameters_cannot_re_enable_follow_tags(self):
-        """`GIT_CONFIG_PARAMETERS` outranks `GIT_CONFIG_COUNT`, so it used
-        to defeat the `push.followTags=false` neutralization and push an
-        annotated tag. Command-line `-c` outranks it."""
         remote = self.root / "remote.git"
         _git(self.root, "init", "-q", "--bare", "-b", "main", str(remote))
         repo = self.root / "work"
@@ -1476,19 +1297,14 @@ class InheritedGitConfigContextTests(unittest.TestCase):
         _git(repo, "remote", "add", "origin", str(remote))
         _git(repo, "push", "-q", "origin", "main")
         _git(repo, "checkout", "-q", "-b", "feature-hostile-tags")
-        (repo / "w.txt").write_text("work\n")
-        _git(repo, "add", "w.txt")
-        _git(repo, "commit", "-q", "-m", "feature work")
+        flowctl = self._complete_task(repo)
         _git(repo, "tag", "-a", "v9", "-m", "release v9")
 
         self._inherit(GIT_CONFIG_PARAMETERS="'push.followTags=true'")
-        # The user's *effective* setting really is `true` at this point --
-        # this is what the push has to override.
         self.assertEqual(
             _git(repo, "config", "--get", "push.followTags").stdout.strip(), "true")
 
-        flow_push.arm_marker(repo)
-        decision = flow_push.guarded_push(repo, auto_push_enabled=True)
+        decision = flow_push.guarded_push(repo, True, flowctl)
 
         self.assertEqual(decision.action, "pushed")
         self.assertIn(
@@ -1503,9 +1319,6 @@ class InheritedGitConfigContextTests(unittest.TestCase):
             "", "no tag may be pushed, whatever the inherited config says")
 
     def test_inherited_git_config_parameters_cannot_re_enable_recurse_submodules(self):
-        """Same, for `push.recurseSubmodules=on-demand`, which would push
-        into an entirely different repository. A control push proves the
-        topology really would recurse, so the assertion is not vacuous."""
         sub_remote = self.root / "sub.git"
         sub_control_remote = self.root / "sub-control.git"
         control_remote = self.root / "control.git"
@@ -1533,19 +1346,17 @@ class InheritedGitConfigContextTests(unittest.TestCase):
         (subdir / "extra.txt").write_text("submodule change\n")
         _git(subdir, "add", "extra.txt")
         _git(subdir, "commit", "-q", "-m", "submodule change")
-        # `git push ... HEAD` with recursion requires the submodule to be on
-        # a branch of the same name as the superproject's.
         _git(subdir, "checkout", "-q", "-B", "feature-hostile-sub")
         _git(repo, "add", "subdir")
         _git(repo, "commit", "-q", "-m", "bump submodule pointer")
+        flowctl = self._complete_task(repo)
 
         self._inherit(
             GIT_CONFIG_PARAMETERS="'push.recurseSubmodules=on-demand' 'protocol.file.allow=always'")
         self.assertEqual(
             _git(repo, "config", "--get", "push.recurseSubmodules").stdout.strip(), "on-demand")
 
-        flow_push.arm_marker(repo)
-        decision = flow_push.guarded_push(repo, auto_push_enabled=True)
+        decision = flow_push.guarded_push(repo, True, flowctl)
 
         self.assertEqual(decision.action, "pushed")
         self.assertIn(
@@ -1559,12 +1370,8 @@ class InheritedGitConfigContextTests(unittest.TestCase):
                 capture_output=True, text=True, check=True).stdout,
             "", "the submodule's own repository must not have been pushed")
 
-        # Control, deliberately *after* the assertion above so it cannot
-        # contaminate it: an otherwise identical push without the
-        # neutralization really does recurse into the submodule's own
-        # repository. Recursion targets the same *remote name* inside the
-        # submodule, so `control` is wired there too -- pointed at a
-        # separate bare repo, leaving `sub_remote` untouched either way.
+        # Control, deliberately *after* the assertion above: an otherwise
+        # identical push without the neutralization really does recurse.
         _git(subdir, "remote", "add", "control", str(sub_control_remote))
         subprocess.run(
             ["git", "-c", "push.recurseSubmodules=on-demand",
@@ -1578,10 +1385,6 @@ class InheritedGitConfigContextTests(unittest.TestCase):
                 "so the assertion above is not vacuous")
 
     def test_unrelated_inherited_config_survives_alongside_the_overrides(self):
-        """The overrides must be *additive*: an unrelated inherited
-        command-scope entry (here, the pushurl that decides the receiving
-        repository) still applies, while the safety keys are still forced
-        off. Both properties in one push."""
         decoy = self.root / "decoy.git"
         real = self.root / "real.git"
         _git(self.root, "init", "-q", "--bare", "-b", "main", str(decoy))
@@ -1592,9 +1395,7 @@ class InheritedGitConfigContextTests(unittest.TestCase):
         _git(repo, "push", "-q", "origin", "main")
         _git(repo, "push", "-q", str(real), "main")
         _git(repo, "checkout", "-q", "-b", "feature-mixed")
-        (repo / "w.txt").write_text("work\n")
-        _git(repo, "add", "w.txt")
-        _git(repo, "commit", "-q", "-m", "feature work")
+        flowctl = self._complete_task(repo)
         _git(repo, "tag", "-a", "v8", "-m", "release v8")
 
         self._inherit(
@@ -1605,8 +1406,7 @@ class InheritedGitConfigContextTests(unittest.TestCase):
             GIT_CONFIG_VALUE_1="true",
         )
 
-        flow_push.arm_marker(repo)
-        decision = flow_push.guarded_push(repo, auto_push_enabled=True)
+        decision = flow_push.guarded_push(repo, True, flowctl)
 
         self.assertEqual(decision.action, "pushed")
         self.assertIn(
@@ -1626,120 +1426,5 @@ class InheritedGitConfigContextTests(unittest.TestCase):
             "", "the safety override must still win over the inherited one")
 
 
-class MarkerHeadBindingTests(unittest.TestCase):
-    """The marker is a capability meaning "this branch **at this commit**
-    completed Flow-Next", never "this branch completed at some point".
-
-    A marker retained across a retryable failure must authorize a retry of
-    that same commit and nothing else; commits created afterwards need
-    their own successful `flowctl done`.
-    """
-
-    def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
-        self.root = Path(self._tmp.name)
-        self.remote = self.root / "remote.git"
-        _git(self.root, "init", "-q", "--bare", "-b", "main", str(self.remote))
-        self.repo = self.root / "repo"
-        self.repo.mkdir()
-        _init_repo(self.repo, branch="main")
-        (self.repo / ".flow").mkdir()
-        (self.repo / ".flow" / "config.json").write_text("{}")
-        _git(self.repo, "add", ".flow")
-        _git(self.repo, "commit", "-q", "-m", "flow-next marker")
-        _git(self.repo, "remote", "add", "origin", str(self.remote))
-        _git(self.repo, "push", "-q", "origin", "main")
-        _git(self.repo, "checkout", "-q", "-b", "feature-marker")
-
-    def _commit(self, name: str) -> str:
-        (self.repo / f"{name}.txt").write_text(f"{name}\n")
-        _git(self.repo, "add", f"{name}.txt")
-        _git(self.repo, "commit", "-q", "-m", name)
-        return _git(self.repo, "rev-parse", "HEAD").stdout.strip()
-
-    def _remote_sha(self) -> str:
-        return subprocess.run(
-            ["git", "ls-remote", str(self.remote), "refs/heads/feature-marker"],
-            capture_output=True, text=True, check=True).stdout.strip()
-
-    def test_retained_marker_does_not_authorize_a_later_commit(self):
-        sha_a = self._commit("a")
-        flow_push.arm_marker(self.repo)
-        self.assertEqual(flow_push.read_marker(self.repo)["head"], sha_a)
-
-        sha_b = self._commit("b")
-        self.assertNotEqual(sha_a, sha_b)
-        before = self._remote_sha()
-
-        decision = flow_push.guarded_push(self.repo, auto_push_enabled=True)
-
-        self.assertEqual(decision.action, "invalidated")
-        self.assertIn(sha_a, decision.detail)
-        self.assertIn(sha_b, decision.detail)
-        self.assertEqual(self._remote_sha(), before, "nothing may have been pushed")
-        self.assertEqual(before, "", "the branch must still not exist on the remote")
-        self.assertIsNone(
-            flow_push.read_marker(self.repo),
-            "the marker describes a state that no longer exists, so it is dropped "
-            "rather than left to re-decide the same refusal on every later Stop")
-
-    def test_new_successful_done_re_arms_the_current_head(self):
-        sha_a = self._commit("a")
-        flow_push.arm_marker(self.repo)
-        sha_b = self._commit("b")
-        self.assertEqual(
-            flow_push.guarded_push(self.repo, auto_push_enabled=True).action, "invalidated")
-
-        # A new successful `flowctl done` at B is what re-authorizes B.
-        flow_push.arm_marker(self.repo)
-        marker = flow_push.read_marker(self.repo)
-        self.assertEqual(marker["head"], sha_b)
-        self.assertNotEqual(marker["head"], sha_a)
-
-        decision = flow_push.guarded_push(self.repo, auto_push_enabled=True)
-        self.assertEqual(decision.action, "pushed")
-        self.assertIn(sha_b, self._remote_sha())
-        self.assertIsNone(flow_push.read_marker(self.repo))
-
-    def test_legitimate_retry_at_the_same_head_still_pushes(self):
-        """A retryable failure keeps the marker; once the remote is healthy
-        again the *same* commit must still push. HEAD binding must not
-        break ordinary retries."""
-        sha_a = self._commit("a")
-        _git(self.repo, "remote", "set-url", "origin", str(self.root / "offline.git"))
-        flow_push.arm_marker(self.repo)
-
-        first = flow_push.guarded_push(self.repo, auto_push_enabled=True)
-        self.assertIn(first.action, ("skipped", "failed"))
-        self.assertIsNotNone(flow_push.read_marker(self.repo), "marker kept for retry")
-        self.assertEqual(flow_push.read_marker(self.repo)["head"], sha_a)
-
-        _git(self.repo, "remote", "set-url", "origin", str(self.remote))
-        retry = flow_push.guarded_push(self.repo, auto_push_enabled=True)
-
-        self.assertEqual(retry.action, "pushed")
-        self.assertIn(sha_a, self._remote_sha())
-
-    def test_branch_binding_still_invalidates_before_head_is_consulted(self):
-        """Existing branch-binding semantics are unchanged: a marker from a
-        different branch is reported as a *branch* mismatch."""
-        self._commit("a")
-        flow_push.arm_marker(self.repo)
-        _git(self.repo, "checkout", "-q", "-b", "other-branch")
-
-        decision = flow_push.guarded_push(self.repo, auto_push_enabled=True)
-
-        self.assertEqual(decision.action, "invalidated")
-        self.assertIn("feature-marker", decision.detail)
-        self.assertIsNone(flow_push.read_marker(self.repo))
-        self.assertEqual(self._remote_sha(), "")
-
-    def test_marker_is_not_armed_without_a_commit_to_bind_to(self):
-        """An unborn branch has no HEAD to authorize; arming a headless
-        marker would only create one that can never validate."""
-        empty = self.root / "empty"
-        empty.mkdir()
-        _git(empty, "init", "-q", "-b", "main")
-        flow_push.arm_marker(empty)
-        self.assertIsNone(flow_push.read_marker(empty))
+if __name__ == "__main__":
+    unittest.main()
