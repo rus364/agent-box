@@ -28,21 +28,17 @@ class IsolatedRuntimeTest(unittest.TestCase):
             self.addCleanup(patch.stop)
 
 
-class BuildMountsEnsuresStateDirsTests(IsolatedRuntimeTest):
-    """podman fails a bind mount outright when its source is missing, so
-    build_mounts must create the host-side state directories itself rather
-    than trusting a caller to have done it."""
+class ContainerStatePreparationTests(IsolatedRuntimeTest):
+    """A new box prepares bind sources before mount argv rendering."""
 
-    def test_build_mounts_creates_missing_state_dirs(self):
+    def test_preparation_creates_missing_state_dirs(self):
         with tempfile.TemporaryDirectory() as tmp:
             state_root = Path(tmp) / "state"
             with mock.patch.object(runtime, "STATE_ROOT", state_root), \
                  mock.patch.object(runtime, "BUILD_STATE", state_root / "build"), \
-                 mock.patch.object(runtime, "NOTIFY_STATE_ROOT", state_root / "notify"):
+                mock.patch.object(runtime, "NOTIFY_STATE_ROOT", state_root / "notify"):
                 self.assertFalse(state_root.exists())
-                with tempfile.TemporaryDirectory() as project:
-                    workspace = Workspace(Path(project), Path(project))
-                    runtime.build_mounts(workspace, [], Path(tmp))
+                runtime.prepare_container_lifetime_state(Config(), mount_notifications=False)
                 self.assertTrue((state_root / "cache").is_dir())
                 self.assertTrue((state_root / "uv").is_dir())
                 self.assertTrue((state_root / "mise").is_dir())

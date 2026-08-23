@@ -67,12 +67,28 @@ class WorkspaceContainerLifecycleTests(unittest.TestCase):
         with mock.patch.object(runtime, "inspect_workspace_container", return_value=None), \
              mock.patch.object(runtime.subprocess, "run", return_value=mock.Mock(returncode=0, stderr="")) as run:
             runtime.ensure_workspace_container(self.spec)
-        self.assertEqual(run.call_args_list[0].args[0], self.spec.create_argv)
-        self.assertEqual(run.call_args_list[1].args[0], ["podman", "start", self.spec.name])
+        podman_calls = [call.args[0] for call in run.call_args_list if call.args[0][0] == "podman"]
+        self.assertEqual(podman_calls, [self.spec.create_argv, ["podman", "start", self.spec.name]])
         self.assertIn("--init", self.spec.create_argv)
         self.assertIn("--rm", self.spec.create_argv)
         self.assertEqual(self.spec.create_argv[-3], "bash")
         self.assertEqual(self.spec.create_argv[-2], str(runtime.KEEPER_PATH))
+
+    def test_spec_calculation_preserves_existing_git_and_gh_source_directory_inodes(self):
+        """Catches reseeding a live bind source while merely attaching."""
+        git_source = runtime.STATE_ROOT / "git"
+        gh_source = runtime.STATE_ROOT / "gh"
+        git_source.mkdir(parents=True, exist_ok=True)
+        gh_source.mkdir(parents=True, exist_ok=True)
+        (git_source / "config").write_text("[user]\n\tname = live identity\n")
+        (gh_source / "hosts.yml").write_text("github.com:\n")
+        before = (git_source.stat().st_ino, gh_source.stat().st_ino)
+
+        runtime.workspace_container_spec(self.workspace, [], self.script_dir, self.config)
+
+        self.assertEqual((git_source.stat().st_ino, gh_source.stat().st_ino), before)
+        self.assertIn("live identity", (git_source / "config").read_text())
+        self.assertTrue((gh_source / "hosts.yml").is_file())
 
     def test_running_workspace_is_reused_without_create_or_start(self):
         with mock.patch.object(runtime, "inspect_workspace_container", return_value=self._container()), \
@@ -84,15 +100,15 @@ class WorkspaceContainerLifecycleTests(unittest.TestCase):
         with mock.patch.object(runtime, "inspect_workspace_container", return_value=self._container("exited")), \
              mock.patch.object(runtime.subprocess, "run", return_value=mock.Mock(returncode=0, stderr="")) as run:
             runtime.ensure_workspace_container(self.spec)
-        self.assertEqual(run.call_args_list[0].args[0], ["podman", "rm", "-f", self.spec.name])
-        self.assertEqual(run.call_args_list[1].args[0], self.spec.create_argv)
+        podman_calls = [call.args[0] for call in run.call_args_list if call.args[0][0] == "podman"]
+        self.assertEqual(podman_calls[:2], [["podman", "rm", "-f", self.spec.name], self.spec.create_argv])
 
     def test_stopped_incompatible_workspace_is_removed_and_recreated(self):
         with mock.patch.object(runtime, "inspect_workspace_container", return_value=self._container("exited", base_hash="old")), \
              mock.patch.object(runtime.subprocess, "run", return_value=mock.Mock(returncode=0, stderr="")) as run:
             runtime.ensure_workspace_container(self.spec)
-        self.assertEqual(run.call_args_list[0].args[0], ["podman", "rm", "-f", self.spec.name])
-        self.assertEqual(run.call_args_list[1].args[0], self.spec.create_argv)
+        podman_calls = [call.args[0] for call in run.call_args_list if call.args[0][0] == "podman"]
+        self.assertEqual(podman_calls[:2], [["podman", "rm", "-f", self.spec.name], self.spec.create_argv])
 
     def test_stopped_prior_schema_workspace_is_recreated(self):
         stale = self._container("exited")
@@ -117,6 +133,81 @@ class WorkspaceContainerLifecycleTests(unittest.TestCase):
              mock.patch.object(runtime.subprocess, "run") as run:
             runtime.ensure_workspace_container(self.spec)
         run.assert_not_called()
+
+    def test_parent_extra_mount_and_omitted_mount_have_the_same_base_configuration(self):
+        parent = Path(self.tmp.name) / "code"
+        project = parent / "project"
+        project.mkdir(parents=True)
+        workspace = Workspace(project, project)
+        mounted = runtime.workspace_container_spec(
+            workspace, [MountSpec(parent, False)], self.script_dir, self.config,
+        )
+        omitted = runtime.workspace_container_spec(workspace, [], self.script_dir, self.config)
+        self.assertEqual(mounted.base_config_hash, omitted.base_config_hash)
+        self.assertNotEqual(mounted.extra_mounts_hash, omitted.extra_mounts_hash)
+        running = {"State": {"Status": "running"}, "Config": {"Labels": {
+            runtime.WORKSPACE_CONTAINER_LABEL: "true",
+            runtime.WORKSPACE_CONTAINER_WORKSPACE_LABEL: mounted.workspace_id,
+            runtime.WORKSPACE_CONTAINER_SCHEMA_LABEL: runtime.WORKSPACE_CONTAINER_SCHEMA,
+            runtime.WORKSPACE_CONTAINER_BASE_CONFIG_LABEL: mounted.base_config_hash,
+            runtime.WORKSPACE_CONTAINER_EXTRA_MOUNTS_LABEL: mounted.extra_mounts_hash,
+        }}}
+        with mock.patch.object(runtime, "inspect_workspace_container", return_value=running), \
+             mock.patch.object(runtime.subprocess, "run") as run:
+            runtime.ensure_workspace_container(omitted)
+        run.assert_not_called()
+
+    def test_equivalent_explicit_parent_mount_has_one_identity(self):
+        parent = Path(self.tmp.name) / "code"
+        project = parent / "project"
+        project.mkdir(parents=True)
+        workspace = Workspace(project, project)
+        first = runtime.workspace_container_spec(
+            workspace, [MountSpec(parent, False)], self.script_dir, self.config,
+        )
+        second = runtime.workspace_container_spec(
+            workspace, [MountSpec(parent, False)], self.script_dir, self.config,
+        )
+        self.assertEqual(first.base_config_hash, second.base_config_hash)
+        self.assertEqual(first.extra_mounts_hash, second.extra_mounts_hash)
+
+    def test_child_extra_mount_does_not_change_base_configuration(self):
+        project = Path(self.tmp.name) / "project-with-child"
+        child = project / "nested"
+        child.mkdir(parents=True)
+        workspace = Workspace(project, project)
+        child_spec = runtime.workspace_container_spec(
+            workspace, [MountSpec(child, False)], self.script_dir, self.config,
+        )
+        plain_spec = runtime.workspace_container_spec(workspace, [], self.script_dir, self.config)
+        self.assertEqual(child_spec.base_config_hash, plain_spec.base_config_hash)
+        self.assertNotEqual(child_spec.extra_mounts_hash, plain_spec.extra_mounts_hash)
+
+    def test_explicit_ro_mount_does_not_join_live_rw_mount(self):
+        extra = Path(self.tmp.name) / "extra-mode"
+        extra.mkdir()
+        rw = runtime.workspace_container_spec(
+            self.workspace, [MountSpec(extra, False)], self.script_dir, self.config,
+        )
+        ro = runtime.workspace_container_spec(
+            self.workspace, [MountSpec(extra, True)], self.script_dir, self.config,
+        )
+        running = {"State": {"Status": "running"}, "Config": {"Labels": {
+            runtime.WORKSPACE_CONTAINER_LABEL: "true",
+            runtime.WORKSPACE_CONTAINER_WORKSPACE_LABEL: rw.workspace_id,
+            runtime.WORKSPACE_CONTAINER_SCHEMA_LABEL: runtime.WORKSPACE_CONTAINER_SCHEMA,
+            runtime.WORKSPACE_CONTAINER_BASE_CONFIG_LABEL: rw.base_config_hash,
+            runtime.WORKSPACE_CONTAINER_EXTRA_MOUNTS_LABEL: rw.extra_mounts_hash,
+        }}}
+        with mock.patch.object(runtime, "inspect_workspace_container", return_value=running):
+            with self.assertRaisesRegex(AgentBoxError, "different mount configuration"):
+                runtime.ensure_workspace_container(ro)
+
+    def test_running_box_is_not_reseeded_while_attaching(self):
+        with mock.patch.object(runtime, "inspect_workspace_container", return_value=self._container()), \
+             mock.patch.object(runtime, "prepare_container_lifetime_state") as prepare:
+            runtime.ensure_workspace_container(self.spec)
+        prepare.assert_not_called()
 
     def test_running_box_rejects_a_different_base_configuration(self):
         with mock.patch.object(runtime, "inspect_workspace_container", return_value=self._container(base_hash="other")):

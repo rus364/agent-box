@@ -147,6 +147,7 @@ class GitSeedingTests(unittest.TestCase):
              mock.patch.object(runtime, "HOST_HOME", home), \
              mock.patch.object(runtime.subprocess, "run",
                                return_value=mock.Mock(returncode=0, stdout=git_output + "\n")):
+            runtime.prepare_container_lifetime_state(config, mount_notifications=False)
             runtime.build_mounts(Workspace(project, project), [], root, config)
         return state
 
@@ -209,6 +210,7 @@ class NotificationCredentialMountTests(unittest.TestCase):
              mock.patch.object(runtime, "HOST_HOME", home), \
              mock.patch.object(runtime.subprocess, "run",
                                return_value=mock.Mock(returncode=0, stdout="")):
+            runtime.prepare_container_lifetime_state(config, mount_notifications=True)
             return runtime.build_mounts(Workspace(project, project), [], root, config), state
 
     def test_config_json_is_never_mounted(self):
@@ -253,6 +255,7 @@ class NotificationCredentialMountTests(unittest.TestCase):
              mock.patch.object(runtime, "NOTIFY_CREDENTIALS", state / "runtime/notify.json"), \
              mock.patch.object(runtime, "HOST_HOME", home), \
              mock.patch.object(runtime.subprocess, "run", return_value=mock.Mock(returncode=0, stdout="")):
+            runtime.prepare_container_lifetime_state(config, mount_notifications=False)
             flags = runtime.build_mounts(Workspace(project, project), [], root, config,
                                          mount_notifications=False)
         self.assertFalse([flag for flag in flags if "notify.json" in flag])
