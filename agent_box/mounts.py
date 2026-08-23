@@ -101,7 +101,10 @@ def plan_mounts(specs: list[MountSpec]) -> list[MountSpec]:
             )
         # identical duplicate; keep the first
 
-    ordered = sorted(by_path.values(), key=lambda s: len(s.path.parts))
+    # A persistent workspace compares its structural mount configuration by
+    # value.  Canonical ordering means equivalent `--mount` sets supplied in
+    # a different harmless order produce the same container identity.
+    ordered = sorted(by_path.values(), key=lambda s: (len(s.path.parts), str(s.path)))
     kept: list[MountSpec] = []
     for spec in ordered:
         covering = next((k for k in kept if _is_within(spec.path, k.path)), None)

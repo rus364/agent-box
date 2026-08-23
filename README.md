@@ -1,14 +1,14 @@
 # agent-box
 
-`agent-box` runs Claude Code and Codex CLI inside disposable rootless Podman containers built from one development image.
+`agent-box` runs Claude Code and Codex CLI in a transient, rootless Podman workspace container built from one development image. One workspace gets one shared box: Claude, Codex, and `agent-box shell` all execute in that same box while useful work remains.
 
-It mounts your current project into the container at the *same absolute path* it has on the host, builds a container user that mirrors your real Unix identity, and preserves agent configuration/authentication across disposable runs.
+It mounts your current project into the container at the *same absolute path* it has on the host, builds a container user that mirrors your real Unix identity, and preserves agent configuration/authentication across transient workspace boxes.
 
 There are four separate things in here, and it's worth keeping them apart:
 
 | | What it is | Who implements it |
 | --- | --- | --- |
-| **Local containerized agents** | `agent-box claude` / `agent-box codex` in a hardened, disposable container | agent-box |
+| **Local containerized agents** | `agent-box claude` / `agent-box codex` in a hardened shared workspace container | agent-box |
 | **Claude Telegram channel** | Control the live Claude session from Telegram | **Anthropic's official plugin** — agent-box only passes the flag |
 | **Outbound notifications** | One-way "turn finished / waiting / failed" pings | agent-box |
 | **Codex remote control** | Driving Codex from elsewhere | **OpenAI's official ChatGPT/Codex experience**, where supported |
@@ -57,14 +57,14 @@ agent-box claude
 agent-box claude -p "summarize this repository"
 agent-box codex
 agent-box codex exec "inspect this repository"
-agent-box shell      # a plain shell in an identically configured container
+agent-box shell      # a shell inside this workspace's shared agent-box container
 ```
 
 This works from **any** directory — there is no requirement to keep projects under a fixed host directory such as `~/code`.
 
 Claude Code is the default agent; change it with `export AGENT_BOX_AGENT=codex`.
 
-Their `~/.claude` and `~/.codex` state directories are mounted from the host so authentication, settings, and history survive disposable runs. If `~/.claude.json` exists on the host it is mounted too. For `agent-box codex`, MCP commands under `/usr/lib/chatgpt/resources/` are disabled only for that container run because those ChatGPT desktop resources are not present in the image; the host Codex configuration is never modified.
+The first command in a project creates its box lazily. Later `claude`, `codex`, and `shell` commands from that project use `podman exec` in the same process namespace, so a shell can see running agents and daemons. A different workspace gets a different box. The box is removed automatically after no useful workloads remain; no normal `up`/`down` lifecycle is required. This also lets a Codex remote-control/app-server process survive after its launcher command exits. Their `~/.claude` and `~/.codex` state directories are still mounted from the host, so authentication, settings, and history persist after the transient box is removed. If `~/.claude.json` exists on the host it is mounted too. For `agent-box codex`, MCP commands under `/usr/lib/chatgpt/resources/` are disabled only for that invocation because those ChatGPT desktop resources are not present in the image; the host Codex configuration is never modified.
 
 ### Host mode (`--host`)
 
@@ -178,7 +178,7 @@ The plugin is installed and configured through Claude Code's own supported mecha
 
 `agent-box config check` reports whether the plugin and token are in place and prints these steps if not.
 
-Because `~/.claude` is bind-mounted read-write at its host path, a plugin installed once is present in every container, and its state (`~/.claude/channels/telegram/`: token, allowlist, inbox) persists across disposable runs. Bun is in the image because the plugin's MCP server runs on it and `bun install`s its own dependencies on first start; that download is cached in the container-only cache directory.
+Because `~/.claude` is bind-mounted read-write at its host path, a plugin installed once is present in every workspace box, and its state (`~/.claude/channels/telegram/`: token, allowlist, inbox) persists across boxes. Bun is in the image because the plugin's MCP server runs on it and `bun install`s its own dependencies on first start; that download is cached in the container-only cache directory.
 
 ### What still requires manual setup
 
@@ -272,6 +272,8 @@ Overlapping mounts (including the implicit project-root mount) resolve determini
 
 - identical paths collapse to one;
 - if one mount's path contains another's, only the broader one is kept — but only when they agree on read-only/read-write; a mismatch is rejected as ambiguous instead of silently picking a side.
+
+Additional mounts are part of the workspace box's immutable configuration. If a live box was created with `--mount /foo`, a later command without `--mount` simply joins that existing box. A later command that explicitly requests a different mount set fails clearly instead of recreating the box and interrupting running work. Equivalent mount sets are order-independent.
 
 ## Shared agent skills
 
@@ -367,11 +369,11 @@ Both providers cache for 60 seconds and run directly on the host (no container).
 
 `CLAUDE_CONFIG_DIR` and `CODEX_HOME` are honored. When `CLAUDE_CONFIG_DIR` is set, the relocated directory is bind-mounted at its host path *and* the resolved value is forwarded into the container, so `claude` there reads the same configuration instead of an empty `$HOME/.claude`.
 
-Container runs themselves are disposable (`podman run --rm`); only these host paths persist.
+Workspace containers are transient but shared: the first local agent command creates one, concurrent commands for the same resolved project execute inside it, and it disappears automatically once only agent-box's internal init/keeper processes remain. Host-backed state above persists independently.
 
 ## Container hardening
 
-Every run gets `--rm --userns=keep-id --cap-drop=all --security-opt=no-new-privileges`, an isolated container-only cache directory (never your real `~/.cache`), and only the mounts described above. There is exactly one function that decides what a container can see (`agent_box.runtime.base_podman_args`).
+Every workspace box gets `--userns=keep-id --cap-drop=all --security-opt=no-new-privileges`, an isolated container-only cache directory (never your real `~/.cache`), and only the mounts described above. A minimal init plus a small `/proc` keeper keeps the box alive while agent commands run through `podman exec`; once only those internal processes remain, the keeper exits and Podman's `--rm` removes the box. There is exactly one container-level definition of what a box can see (`agent_box.runtime.container_lifetime_args`).
 
 ## Self-tests
 
