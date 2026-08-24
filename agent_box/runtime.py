@@ -570,7 +570,7 @@ def container_lifetime_args(
     home = HOST_HOME
     args = [
         "--userns=keep-id", *kvm_args(),
-        "--cap-drop=all", "--security-opt=no-new-privileges", "--hostname=agent-box",
+        "--cap-drop=all", "--security-opt=no-new-privileges", "--hostname=agent-box", "--tz=local",
         f"--env=HOME={home}",
         f"--env=PATH={home}/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
         f"--env=CODEX_HOME={CODEX_HOME}",
