@@ -389,6 +389,79 @@ class NotifyLogicTests(unittest.TestCase):
             signal.setitimer(signal.ITIMER_REAL, 0)
             signal.signal(signal.SIGALRM, previous_handler)
 
+    def test_codex_first_line_near_limit_fence_falls_back_without_emitting_it_partially(self):
+        prefix = "✅ **Codex · infrado**\nTurn finished\n\n"
+        marker = "```"
+        opener = marker + "x" * (notify.TELEGRAM_RICH_TEXT_LIMIT - len(marker) - 5)
+        trusted_literal = '<tg-button type="copy_text" text="x">Copy</tg-button>'
+        detail = f"{opener}\n{trusted_literal}\n{marker}"
+
+        self.assertEqual(
+            len(opener) + 1 + len(marker), notify.TELEGRAM_RICH_TEXT_LIMIT - 1,
+        )
+        self.assertGreater(
+            len(prefix) + len(opener) + 1 + len(marker),
+            notify.TELEGRAM_RICH_TEXT_LIMIT,
+        )
+
+        sent = self._codex_requests(detail)
+
+        self.assertTrue(all(method == "sendMessage" for method, _body in sent))
+        serialized = "".join(body["text"] for _method, body in sent)
+        self.assertEqual(
+            serialized,
+            "✅ <b>Codex · infrado</b>\nTurn finished\n" + notify.html.escape(detail),
+        )
+        self.assertIn("&lt;tg-button", serialized)
+        self.assertNotIn(trusted_literal, serialized)
+
+    def test_codex_first_line_pathological_fence_falls_back_before_splitting(self):
+        marker = "```"
+        available_fenced_payload = 64
+        opener = marker + "x" * (
+            notify.TELEGRAM_RICH_TEXT_LIMIT
+            - 2 * len(marker)
+            - 2
+            - available_fenced_payload
+        )
+        trusted_literal = '<tg-button type="copy_text" text="x">Copy</tg-button>'
+        detail = f"{opener}\n{trusted_literal}\n{'x' * notify.TELEGRAM_RICH_TEXT_LIMIT}\n{marker}"
+
+        self.assertEqual(
+            notify.TELEGRAM_RICH_TEXT_LIMIT - len(opener) - len(marker) - 2,
+            available_fenced_payload,
+        )
+
+        sent = self._codex_requests(detail)
+
+        self.assertTrue(sent)
+        self.assertTrue(all(method == "sendMessage" for method, _body in sent))
+        self.assertLess(len(sent), 20)
+        serialized = "".join(body["text"] for _method, body in sent)
+        self.assertEqual(
+            serialized,
+            "✅ <b>Codex · infrado</b>\nTurn finished\n" + notify.html.escape(detail),
+        )
+        self.assertIn("&lt;tg-button", serialized)
+        self.assertNotIn(trusted_literal, serialized)
+
+    def test_codex_oversized_inline_code_line_falls_back_without_exposing_literal_html(self):
+        prefix = "✅ **Codex · infrado**\nTurn finished\n\n"
+        trusted_literal = '<tg-button type="copy_text" text="x">Copy</tg-button>'
+        detail = "x" * (notify.TELEGRAM_RICH_TEXT_LIMIT - len(prefix) - 1)
+        detail += f"`{trusted_literal}`"
+
+        sent = self._codex_requests(detail)
+
+        self.assertTrue(all(method == "sendMessage" for method, _body in sent))
+        serialized = "".join(body["text"] for _method, body in sent)
+        self.assertEqual(
+            serialized,
+            "✅ <b>Codex · infrado</b>\nTurn finished\n" + notify.html.escape(detail),
+        )
+        self.assertIn("`&lt;tg-button", serialized)
+        self.assertNotIn(trusted_literal, serialized)
+
     def test_codex_rich_failure_retries_complete_report_as_safe_html(self):
         detail = "## Report\n\n- **unsafe <b>tag</b> & useful**"
 
