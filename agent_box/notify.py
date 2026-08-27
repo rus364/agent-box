@@ -57,7 +57,8 @@ TELEGRAM_TEXT_LIMIT = 4096
 TELEGRAM_RICH_TEXT_LIMIT = 32768
 # A notification should remain a concise signal, not a burst of rich-message
 # requests that can hit Telegram rate limits or duplicate a later fallback.
-MAX_RICH_MESSAGE_CHUNKS = 8
+MAX_TELEGRAM_REPORT_MESSAGES = 8
+MAX_RICH_MESSAGE_CHUNKS = MAX_TELEGRAM_REPORT_MESSAGES
 # A reopened fenced block consumes its complete opening line and synthetic
 # closing marker in every chunk.  Below this much payload capacity, a long
 # report would become a request storm of almost entirely wrapper text.
@@ -401,20 +402,54 @@ def _take_text_chunk(text: str, capacity: int) -> tuple[str, str]:
     return text[:cut], text[cut:]
 
 
-def telegram_send_plain_report(agent: str, project: str, status: str, detail: str) -> bool:
-    """Send a complete escaped report, split for regular-message limits."""
+def plan_plain_report(agent: str, project: str, status: str, detail: str) -> list[str]:
+    """Serialize a complete escaped report into regular Telegram messages."""
     visible_header = f"✅ {agent} · {project}\n{status}\n"
     html_header = f"✅ <b>{html.escape(agent)} · {html.escape(project)}</b>\n{html.escape(status)}\n"
     remaining = detail
     first = True
-    success = True
+    chunks: list[str] = []
     while remaining or first:
         capacity = TELEGRAM_TEXT_LIMIT - (len(visible_header) if first else 0)
+        if capacity <= 0:
+            raise ValueError("plain message header exceeds Telegram limit")
         piece, remaining = _take_text_chunk(remaining, capacity)
-        text = (html_header if first else "") + html.escape(piece)
-        success = telegram_send(text) and success
+        chunks.append((html_header if first else "") + html.escape(piece))
         first = False
-    return success
+    return chunks
+
+
+def _telegram_report_notice(agent: str, project: str, status: str, message: str) -> bool:
+    """Send one explicit, bounded notice when a full report cannot be sent."""
+    return telegram_send(
+        f"✅ <b>{html.escape(agent)} · {html.escape(project)}</b>\n"
+        f"{html.escape(status)}\n{message}",
+    )
+
+
+def telegram_send_plain_report(
+    agent: str, project: str, status: str, detail: str,
+    *, max_messages: int = MAX_TELEGRAM_REPORT_MESSAGES,
+) -> bool:
+    """Send a complete escaped report only when its complete plan is bounded."""
+    if max_messages <= 0:
+        return False
+    try:
+        chunks = plan_plain_report(agent, project, status, detail)
+    except ValueError:
+        return _telegram_report_notice(
+            agent, project, status,
+            "Full report was too large for bounded Telegram delivery.",
+        )
+    if len(chunks) > max_messages:
+        return _telegram_report_notice(
+            agent, project, status,
+            "Full report was too large for bounded Telegram delivery.",
+        )
+    for chunk in chunks:
+        if not telegram_send(chunk):
+            return False
+    return True
 
 
 def telegram_send_codex(project: str, detail: str) -> bool:
@@ -425,14 +460,33 @@ def telegram_send_codex(project: str, detail: str) -> bool:
     try:
         chunks = split_rich_markdown(markdown, first_prefix=prefix)
     except ValueError:
-        return telegram_send_plain_report("Codex", project, "Turn finished", detail)
+        return telegram_send_plain_report(
+            "Codex", project, "Turn finished", detail,
+            max_messages=MAX_TELEGRAM_REPORT_MESSAGES,
+        )
     if len(chunks) > MAX_RICH_MESSAGE_CHUNKS:
-        return telegram_send_plain_report("Codex", project, "Turn finished", detail)
+        return telegram_send_plain_report(
+            "Codex", project, "Turn finished", detail,
+            max_messages=MAX_TELEGRAM_REPORT_MESSAGES,
+        )
+    rich_successes = 0
     for chunk in chunks:
         if not _telegram_post("sendRichMessage", {
             "rich_message": {"markdown": chunk},
         }):
-            return telegram_send_plain_report("Codex", project, "Turn finished", detail)
+            remaining_messages = MAX_TELEGRAM_REPORT_MESSAGES - rich_successes - 1
+            if rich_successes:
+                if remaining_messages <= 0:
+                    return False
+                return _telegram_report_notice(
+                    "Codex", project, "Turn finished",
+                    "Some of the rich report was delivered; the remainder could not be sent.",
+                )
+            return telegram_send_plain_report(
+                "Codex", project, "Turn finished", detail,
+                max_messages=remaining_messages,
+            )
+        rich_successes += 1
     return True
 
 
