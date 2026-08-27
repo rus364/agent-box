@@ -45,6 +45,12 @@ class NotifyLogicTests(unittest.TestCase):
             }))
         return sent
 
+    def _codex_oversized_notice(self, project: str = "infrado") -> str:
+        return (
+            f"✅ <b>Codex · {project}</b>\nTurn finished\n"
+            "Full report was too large for bounded Telegram delivery."
+        )
+
     def _claude_notices(
         self, payload: dict, *, official_channel: bool = False, state_root: Path | None = None,
     ) -> list[str]:
@@ -377,14 +383,9 @@ class NotifyLogicTests(unittest.TestCase):
                         signal.setitimer(signal.ITIMER_REAL, 0)
 
                     self.assertTrue(sent)
+                    self.assertEqual(len(sent), 1)
                     self.assertTrue(all(method == "sendMessage" for method, _body in sent))
-                    self.assertTrue(all(
-                        len(body["text"].replace("<b>", "").replace("</b>", ""))
-                        <= notify.TELEGRAM_TEXT_LIMIT
-                        for _method, body in sent
-                    ))
-                    fallback_text = "".join(body["text"] for _method, body in sent)
-                    self.assertIn("```" + "x" * 100, fallback_text)
+                    self.assertEqual(sent[0][1]["text"], self._codex_oversized_notice())
         finally:
             signal.setitimer(signal.ITIMER_REAL, 0)
             signal.signal(signal.SIGALRM, previous_handler)
@@ -406,14 +407,10 @@ class NotifyLogicTests(unittest.TestCase):
 
         sent = self._codex_requests(detail)
 
+        self.assertEqual(len(sent), 1)
         self.assertTrue(all(method == "sendMessage" for method, _body in sent))
-        serialized = "".join(body["text"] for _method, body in sent)
-        self.assertEqual(
-            serialized,
-            "✅ <b>Codex · infrado</b>\nTurn finished\n" + notify.html.escape(detail),
-        )
-        self.assertIn("&lt;tg-button", serialized)
-        self.assertNotIn(trusted_literal, serialized)
+        self.assertEqual(sent[0][1]["text"], self._codex_oversized_notice())
+        self.assertNotIn(trusted_literal, sent[0][1]["text"])
 
     def test_codex_first_line_pathological_fence_falls_back_before_splitting(self):
         marker = "```"
@@ -435,15 +432,10 @@ class NotifyLogicTests(unittest.TestCase):
         sent = self._codex_requests(detail)
 
         self.assertTrue(sent)
+        self.assertEqual(len(sent), 1)
         self.assertTrue(all(method == "sendMessage" for method, _body in sent))
-        self.assertLess(len(sent), 20)
-        serialized = "".join(body["text"] for _method, body in sent)
-        self.assertEqual(
-            serialized,
-            "✅ <b>Codex · infrado</b>\nTurn finished\n" + notify.html.escape(detail),
-        )
-        self.assertIn("&lt;tg-button", serialized)
-        self.assertNotIn(trusted_literal, serialized)
+        self.assertEqual(sent[0][1]["text"], self._codex_oversized_notice())
+        self.assertNotIn(trusted_literal, sent[0][1]["text"])
 
     def test_codex_fence_plan_with_256_payload_chunks_falls_back_before_sending(self):
         marker = "```"
@@ -465,15 +457,10 @@ class NotifyLogicTests(unittest.TestCase):
         sent = self._codex_requests(detail)
 
         self.assertTrue(sent)
+        self.assertEqual(len(sent), 1)
         self.assertTrue(all(method == "sendMessage" for method, _body in sent))
-        self.assertLess(len(sent), 20)
-        serialized = "".join(body["text"] for _method, body in sent)
-        self.assertEqual(
-            serialized,
-            "✅ <b>Codex · infrado</b>\nTurn finished\n" + notify.html.escape(detail),
-        )
-        self.assertIn("&lt;tg-button", serialized)
-        self.assertNotIn(trusted_literal, serialized)
+        self.assertEqual(sent[0][1]["text"], self._codex_oversized_notice())
+        self.assertNotIn(trusted_literal, sent[0][1]["text"])
 
     def test_codex_allows_exactly_eight_planned_rich_chunks(self):
         rich_chunk_limit = 8
@@ -504,11 +491,90 @@ class NotifyLogicTests(unittest.TestCase):
 
         self.assertTrue(sent)
         self.assertTrue(all(method == "sendMessage" for method, _body in sent))
-        serialized = "".join(body["text"] for _method, body in sent)
+        self.assertEqual(sent, [("sendMessage", {
+            "chat_id": "chat",
+            "text": self._codex_oversized_notice(),
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True,
+        })])
+
+    def test_codex_allows_exactly_eight_planned_plain_messages(self):
+        plain_message_limit = 8
+        visible_header = "✅ Codex · infrado\nTurn finished\n"
+        inline_code = "`x`"
+        detail = "x" * (
+            notify.TELEGRAM_TEXT_LIMIT - len(visible_header)
+            + (plain_message_limit - 1) * notify.TELEGRAM_TEXT_LIMIT
+            - len(inline_code)
+        ) + inline_code
+
+        sent = self._codex_requests(detail)
+
+        self.assertEqual([method for method, _body in sent], ["sendMessage"] * plain_message_limit)
         self.assertEqual(
-            serialized,
+            "".join(body["text"] for _method, body in sent),
             "✅ <b>Codex · infrado</b>\nTurn finished\n" + notify.html.escape(detail),
         )
+
+    def test_codex_ninth_planned_plain_message_uses_compact_notice(self):
+        plain_message_limit = 8
+        visible_header = "✅ Codex · infrado\nTurn finished\n"
+        inline_code = "`x`"
+        detail = "x" * (
+            notify.TELEGRAM_TEXT_LIMIT - len(visible_header)
+            + plain_message_limit * notify.TELEGRAM_TEXT_LIMIT
+            - len(inline_code)
+        ) + inline_code
+
+        sent = self._codex_requests(detail)
+
+        self.assertEqual(sent, [("sendMessage", {
+            "chat_id": "chat",
+            "text": self._codex_oversized_notice(),
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True,
+        })])
+
+    def test_codex_plain_fallback_stops_after_first_transport_failure(self):
+        detail = "x" * (2 * notify.TELEGRAM_TEXT_LIMIT) + "`x`"
+
+        sent = self._codex_requests(detail, responses=[
+            b'{"ok": false}', b'{"ok": false}', b'{"ok": true}',
+        ])
+
+        self.assertEqual([method for method, _body in sent], ["sendRichMessage", "sendMessage"])
+
+    def test_codex_plain_fallback_stops_after_later_transport_failure(self):
+        detail = "x" * (2 * notify.TELEGRAM_TEXT_LIMIT) + "`x`"
+
+        sent = self._codex_requests(detail, responses=[
+            b'{"ok": false}', b'{"ok": true}', b'{"ok": false}', b'{"ok": true}',
+        ])
+
+        self.assertEqual(
+            [method for method, _body in sent],
+            ["sendRichMessage", "sendMessage", "sendMessage"],
+        )
+
+    def test_codex_partial_rich_failure_sends_one_compact_notice_without_resend(self):
+        prefix = "✅ **Codex · infrado**\nTurn finished\n\n"
+        detail = "x" * (
+            notify.TELEGRAM_RICH_TEXT_LIMIT - len(prefix)
+            + 2 * notify.TELEGRAM_RICH_TEXT_LIMIT
+        )
+
+        sent = self._codex_requests(detail, responses=[
+            b'{"ok": true}', b'{"ok": true}', b'{"ok": false}', b'{"ok": true}',
+        ])
+
+        self.assertEqual(
+            [method for method, _body in sent],
+            ["sendRichMessage", "sendRichMessage", "sendRichMessage", "sendMessage"],
+        )
+        self.assertEqual(sent[-1][1]["text"], (
+            "✅ <b>Codex · infrado</b>\nTurn finished\n"
+            "Some of the rich report was delivered; the remainder could not be sent."
+        ))
 
     def test_codex_oversized_inline_code_line_falls_back_without_exposing_literal_html(self):
         prefix = "✅ **Codex · infrado**\nTurn finished\n\n"
@@ -518,14 +584,10 @@ class NotifyLogicTests(unittest.TestCase):
 
         sent = self._codex_requests(detail)
 
+        self.assertEqual(len(sent), 1)
         self.assertTrue(all(method == "sendMessage" for method, _body in sent))
-        serialized = "".join(body["text"] for _method, body in sent)
-        self.assertEqual(
-            serialized,
-            "✅ <b>Codex · infrado</b>\nTurn finished\n" + notify.html.escape(detail),
-        )
-        self.assertIn("`&lt;tg-button", serialized)
-        self.assertNotIn(trusted_literal, serialized)
+        self.assertEqual(sent[0][1]["text"], self._codex_oversized_notice())
+        self.assertNotIn(trusted_literal, sent[0][1]["text"])
 
     def test_codex_rich_failure_retries_complete_report_as_safe_html(self):
         detail = "## Report\n\n- **unsafe <b>tag</b> & useful**"
