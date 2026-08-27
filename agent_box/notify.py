@@ -55,6 +55,9 @@ OFFICIAL_CHANNEL_NOTIFICATION_TYPES = frozenset({"permission_prompt", "idle_prom
 # sendRichMessage accepts up to 32768 UTF-8 characters in the rich text.
 TELEGRAM_TEXT_LIMIT = 4096
 TELEGRAM_RICH_TEXT_LIMIT = 32768
+# A notification should remain a concise signal, not a burst of rich-message
+# requests that can hit Telegram rate limits or duplicate a later fallback.
+MAX_RICH_MESSAGE_CHUNKS = 8
 # A reopened fenced block consumes its complete opening line and synthetic
 # closing marker in every chunk.  Below this much payload capacity, a long
 # report would become a request storm of almost entirely wrapper text.
@@ -422,6 +425,8 @@ def telegram_send_codex(project: str, detail: str) -> bool:
     try:
         chunks = split_rich_markdown(markdown, first_prefix=prefix)
     except ValueError:
+        return telegram_send_plain_report("Codex", project, "Turn finished", detail)
+    if len(chunks) > MAX_RICH_MESSAGE_CHUNKS:
         return telegram_send_plain_report("Codex", project, "Turn finished", detail)
     for chunk in chunks:
         if not _telegram_post("sendRichMessage", {
