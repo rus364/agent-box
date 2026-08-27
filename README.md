@@ -204,7 +204,7 @@ agent-box has no Telegram or remote-control integration for Codex. Use the offic
 
 ## Outbound notifications
 
-Remote control and notifications are separate features. Notifications are strictly **one-directional**: agent-box sends `sendMessage` calls and nothing else. There is no polling daemon, no `getUpdates`, no callbacks, and no way to drive a session from a notification.
+Remote control and notifications are separate features. Notifications are strictly **one-directional**: agent-box only sends Telegram messages. There is no polling daemon, no `getUpdates`, no callbacks, and no way to drive a session from a notification. Codex completion reports use Telegram Rich Markdown when available, with a safe plain-message fallback for older or incompatible Bot API deployments.
 
 ```bash
 agent-box config        # enable, with bot token + chat id

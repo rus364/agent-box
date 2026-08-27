@@ -1,7 +1,7 @@
 """Outbound-only Telegram notifications for Claude and Codex.
 
-Deliberately one-directional: this module sends ``sendMessage`` calls and
-nothing else. There is no polling, no ``getUpdates``, no callback handling and
+Deliberately one-directional: this module only sends Telegram messages. There
+is no polling, no ``getUpdates``, no callback handling and
 no way to drive a session from Telegram -- controlling a live Claude session
 from Telegram is the job of Anthropic's official ``telegram`` plugin (see
 ``agent_box.config.CLAUDE_TELEGRAM_CHANNEL``), and Codex users have the
@@ -19,6 +19,7 @@ from __future__ import annotations
 import html
 import json
 import os
+import re
 import stat
 import sys
 import time
@@ -50,6 +51,13 @@ SUPPRESS_NOTIFY_ENV = "AGENT_BOX_SUPPRESS_NOTIFY"
 NOTIFY_TOKEN_ENV = "AGENT_BOX_NOTIFY_TOKEN"
 NOTIFY_CHAT_ID_ENV = "AGENT_BOX_NOTIFY_CHAT_ID"
 OFFICIAL_CHANNEL_NOTIFICATION_TYPES = frozenset({"permission_prompt", "idle_prompt"})
+# Bot API limits: sendMessage text is 1-4096 characters after entity parsing;
+# sendRichMessage accepts up to 32768 UTF-8 characters in the rich text.
+TELEGRAM_TEXT_LIMIT = 4096
+TELEGRAM_RICH_TEXT_LIMIT = 32768
+
+_FENCE_RE = re.compile(r"^[ ]{0,3}(`{3,}|~{3,})([^\r\n]*)(?:\r?\n)?$")
+_MARKDOWN_PUNCTUATION_RE = re.compile(r"([\\`*_{}\[\]()#+.!|>~-])")
 
 
 def outbound_suppressed() -> bool:
@@ -116,20 +124,14 @@ def load_credentials(path: Path = NOTIFY_CREDENTIALS) -> tuple[str, str] | None:
     return (token, chat_id) if token and chat_id else None
 
 
-def telegram_send(text: str) -> bool:
-    """POST one HTML message to the configured chat. Never raises, never logs
-    the bot token."""
+def _telegram_post(method: str, body: dict[str, Any]) -> bool:
+    """POST one Bot API request. Never raises or exposes the bot token."""
     credentials = load_credentials()
     if credentials is None:
         return True
     token, chat_id = credentials
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
-    body = json.dumps({
-        "chat_id": chat_id,
-        "text": text,
-        "parse_mode": "HTML",
-        "disable_web_page_preview": True,
-    }).encode()
+    url = f"https://api.telegram.org/bot{token}/{method}"
+    body = json.dumps({"chat_id": chat_id, **body}).encode()
     request = urllib.request.Request(
         url, data=body, headers={"Content-Type": "application/json"}, method="POST",
     )
@@ -139,6 +141,222 @@ def telegram_send(text: str) -> bool:
     except (urllib.error.URLError, TimeoutError, OSError, ValueError):
         return False
     return bool(isinstance(payload, dict) and payload.get("ok"))
+
+
+def telegram_send(text: str) -> bool:
+    """POST one regular HTML message to the configured chat."""
+    return _telegram_post("sendMessage", {
+        "text": text,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True,
+    })
+
+
+def _escape_markdown_inline(text: str) -> str:
+    """Make trusted context data literal inside a Rich Markdown inline span."""
+    return _MARKDOWN_PUNCTUATION_RE.sub(r"\\\1", text.replace("\r", " ").replace("\n", " "))
+
+
+def _sanitize_markdown_line(line: str) -> str:
+    """Neutralize Rich Markdown extensions outside inline code spans.
+
+    Rich Markdown intentionally accepts raw Rich HTML, including interactive
+    buttons and media blocks. Model output gets ordinary Markdown semantics,
+    but raw tags, media image syntax, and Telegram-specific URLs are rendered
+    inert. Code spans are copied byte-for-byte because markup is not active in
+    them.
+    """
+    result: list[str] = []
+    index = 0
+    while index < len(line):
+        if line[index] == "`":
+            end = index + 1
+            while end < len(line) and line[end] == "`":
+                end += 1
+            delimiter = line[index:end]
+            closing = end
+            while True:
+                closing = line.find(delimiter, closing)
+                if closing < 0:
+                    break
+                before_is_tick = closing > 0 and line[closing - 1] == "`"
+                after = closing + len(delimiter)
+                after_is_tick = after < len(line) and line[after] == "`"
+                if not before_is_tick and not after_is_tick:
+                    break
+                closing = after
+            if closing >= 0:
+                closing += len(delimiter)
+                result.append(line[index:closing])
+                index = closing
+                continue
+            result.append(delimiter)
+            index = end
+            continue
+        if line.startswith("![", index):
+            result.append(r"\![")
+            index += 2
+            continue
+        if line[index] == "<":
+            result.append(r"\<")
+            index += 1
+            continue
+        if line[index:index + 5].lower() == "tg://":
+            result.append("tg:\u200b//")
+            index += 5
+            continue
+        result.append(line[index])
+        index += 1
+    return "".join(result)
+
+
+def sanitize_rich_markdown(markdown: str) -> str:
+    """Allow ordinary Markdown while disabling Telegram-specific extensions."""
+    result: list[str] = []
+    fence_character = ""
+    fence_length = 0
+    for line in markdown.splitlines(keepends=True):
+        match = _FENCE_RE.match(line)
+        if fence_character:
+            result.append(line)
+            if (
+                match
+                and match.group(1)[0] == fence_character
+                and len(match.group(1)) >= fence_length
+                and not match.group(2).strip()
+            ):
+                fence_character = ""
+                fence_length = 0
+            continue
+        if match:
+            marker = match.group(1)
+            fence_character = marker[0]
+            fence_length = len(marker)
+            result.append(line)
+            continue
+        result.append(_sanitize_markdown_line(line))
+    return "".join(result)
+
+
+def _fence_transition(
+    line: str, opening_line: str, closing_marker: str,
+) -> tuple[str, str]:
+    """Return updated fence reopening/closing strings after one whole line."""
+    match = _FENCE_RE.match(line)
+    if not match:
+        return opening_line, closing_marker
+    marker = match.group(1)
+    if not opening_line:
+        return line.rstrip("\r\n"), marker[0] * len(marker)
+    if marker[0] == closing_marker[0] and len(marker) >= len(closing_marker) and not match.group(2).strip():
+        return "", ""
+    return opening_line, closing_marker
+
+
+def split_rich_markdown(
+    markdown: str, *, first_prefix: str = "", limit: int = TELEGRAM_RICH_TEXT_LIMIT,
+) -> list[str]:
+    """Split Markdown without leaving a fence malformed at a message boundary."""
+    if len(first_prefix) > limit:
+        raise ValueError("rich message prefix exceeds Telegram limit")
+    if not markdown:
+        return [first_prefix] if first_prefix else []
+
+    chunks: list[str] = []
+    chunk = first_prefix
+    base_length = len(first_prefix)
+    opening_line = ""
+    closing_marker = ""
+
+    def close_and_store() -> None:
+        nonlocal chunk, base_length
+        if closing_marker:
+            if chunk and not chunk.endswith("\n"):
+                chunk += "\n"
+            chunk += closing_marker
+        if chunk:
+            chunks.append(chunk)
+        chunk = f"{opening_line}\n" if opening_line else ""
+        base_length = len(chunk)
+
+    for source_line in markdown.splitlines(keepends=True):
+        line = source_line
+        is_fence_line = _FENCE_RE.match(line) is not None
+        while line:
+            next_opening, next_closing = _fence_transition(
+                line, opening_line, closing_marker,
+            ) if is_fence_line else (opening_line, closing_marker)
+            closer_size = (1 if chunk and not (chunk + line).endswith("\n") else 0) + len(next_closing)
+            if len(chunk) + len(line) + closer_size <= limit:
+                chunk += line
+                opening_line, closing_marker = next_opening, next_closing
+                line = ""
+                continue
+
+            fresh_prefix_size = len(f"{opening_line}\n") if opening_line else 0
+            fresh_closer_size = len(closing_marker) + (1 if closing_marker else 0)
+            if len(chunk) > base_length and (
+                is_fence_line or len(line) + fresh_prefix_size + fresh_closer_size <= limit
+            ):
+                close_and_store()
+                continue
+
+            # A single source line is longer than a message. Fill the remaining
+            # capacity; slicing Python text keeps every emitted body valid UTF-8.
+            active_closer = closing_marker
+            reserve = len(active_closer) + (1 if active_closer else 0)
+            capacity = limit - len(chunk) - reserve
+            if capacity <= 0:
+                close_and_store()
+                continue
+            chunk += line[:capacity]
+            line = line[capacity:]
+            close_and_store()
+
+    if chunk:
+        close_and_store()
+    return chunks
+
+
+def _take_text_chunk(text: str, capacity: int) -> tuple[str, str]:
+    if len(text) <= capacity:
+        return text, ""
+    cut = text.rfind("\n", 0, capacity + 1)
+    if cut > 0:
+        cut += 1
+    else:
+        cut = capacity
+    return text[:cut], text[cut:]
+
+
+def telegram_send_plain_report(agent: str, project: str, status: str, detail: str) -> bool:
+    """Send a complete escaped report, split for regular-message limits."""
+    visible_header = f"✅ {agent} · {project}\n{status}\n"
+    html_header = f"✅ <b>{html.escape(agent)} · {html.escape(project)}</b>\n{html.escape(status)}\n"
+    remaining = detail
+    first = True
+    success = True
+    while remaining or first:
+        capacity = TELEGRAM_TEXT_LIMIT - (len(visible_header) if first else 0)
+        piece, remaining = _take_text_chunk(remaining, capacity)
+        text = (html_header if first else "") + html.escape(piece)
+        success = telegram_send(text) and success
+        first = False
+    return success
+
+
+def telegram_send_codex(project: str, detail: str) -> bool:
+    """Send Codex Markdown richly, falling back once to complete safe HTML."""
+    safe_project = _escape_markdown_inline(project)
+    prefix = f"✅ **Codex · {safe_project}**\nTurn finished\n\n"
+    markdown = sanitize_rich_markdown(detail)
+    chunks = split_rich_markdown(markdown, first_prefix=prefix)
+    for chunk in chunks:
+        if not _telegram_post("sendRichMessage", {
+            "rich_message": {"markdown": chunk},
+        }):
+            return telegram_send_plain_report("Codex", project, "Turn finished", detail)
+    return True
 
 
 def notify_project(cwd: str) -> str:
@@ -272,8 +490,8 @@ def notify_codex(payload: str | None) -> None:
     if obj.get("type") != "agent-turn-complete":
         return
     project = notify_project(str(obj.get("cwd") or os.getcwd()))
-    detail = str(obj.get("last-assistant-message") or "Turn completed.")
-    telegram_send(telegram_notice("✅", "Codex", project, "Turn finished", detail))
+    detail = str(obj.get("last-assistant-message") or "Turn completed.").strip()
+    telegram_send_codex(project, detail)
 
 
 # -- Claude settings.json hook wiring -------------------------------------

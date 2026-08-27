@@ -3,6 +3,7 @@ import json
 import os
 import tempfile
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest import mock
 
@@ -10,6 +11,39 @@ from agent_box import notify
 
 
 class NotifyLogicTests(unittest.TestCase):
+    def _codex_requests(
+        self, detail: str, *, responses: list[object] | None = None,
+        project: str = "infrado",
+    ) -> list[tuple[str, dict]]:
+        """Run the real Codex notifier and capture serialized Telegram requests."""
+        sent: list[tuple[str, dict]] = []
+        outcomes = iter(responses or [b'{"ok": true}'])
+
+        class Response(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                self.close()
+
+        def send_response(request, **_kwargs):
+            sent.append((request.full_url.rsplit("/", 1)[-1], json.loads(request.data.decode())))
+            outcome = next(outcomes, b'{"ok": true}')
+            if isinstance(outcome, BaseException):
+                raise outcome
+            return Response(outcome)
+
+        with (
+            mock.patch.object(notify, "load_credentials", return_value=("secret-token", "chat")),
+            mock.patch.object(notify.urllib.request, "urlopen", side_effect=send_response),
+        ):
+            notify.notify_codex(json.dumps({
+                "type": "agent-turn-complete",
+                "cwd": f"/work/{project}",
+                "last-assistant-message": detail,
+            }))
+        return sent
+
     def _claude_notices(
         self, payload: dict, *, official_channel: bool = False, state_root: Path | None = None,
     ) -> list[str]:
@@ -171,31 +205,155 @@ class NotifyLogicTests(unittest.TestCase):
         self.assertEqual(notices, [])
 
     def test_codex_notification_is_not_suppressed_by_claude_channel_mode(self):
-        sent: list[str] = []
-
-        class Response(io.BytesIO):
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *args):
-                self.close()
-
-        def send_response(request, **_kwargs):
-            sent.append(json.loads(request.data.decode())["text"])
-            return Response(b'{"ok": true}')
-
         with (
             mock.patch.dict(os.environ, {notify.SUPPRESS_NOTIFY_ENV: "1"}, clear=True),
-            mock.patch.object(notify, "load_credentials", return_value=("token", "chat")),
-            mock.patch.object(notify.urllib.request, "urlopen", side_effect=send_response),
         ):
-            notify.notify_codex(json.dumps({
-                "type": "agent-turn-complete", "cwd": "/work/project",
-                "last-assistant-message": "Completed the task.",
-            }))
-        self.assertEqual(sent, [
-            "✅ <b>Codex · project</b>\nTurn finished\nCompleted the task.",
+            sent = self._codex_requests("Completed the task.", project="project")
+        self.assertEqual(sent, [("sendRichMessage", {
+            "chat_id": "chat",
+            "rich_message": {
+                "markdown": "✅ **Codex · project**\nTurn finished\n\nCompleted the task.",
+            },
+        })])
+
+    def test_codex_sends_github_style_markdown_as_a_rich_message(self):
+        detail = (
+            "## Quality Audit — Standards axis\n\n"
+            "### Summary\n\n"
+            "- **Ship:** ✅ Ship\n"
+            "- `tests/unit/test_images.py` uses a < b & c > d\n\n"
+            "1. Keep _underscores_ and *emphasis*.\n"
+            "2. Visit [docs](https://example.test/a_(b)?x=1&y=2).\n\n"
+            "> quoted [text]\n\n"
+            "| File | Result |\n| --- | --- |\n| `a.py` | pass |\n\n"
+            "```python\nprint(\"<safe> & intact\")\n```"
+        )
+
+        sent = self._codex_requests(detail)
+
+        self.assertEqual(sent, [("sendRichMessage", {
+            "chat_id": "chat",
+            "rich_message": {
+                "markdown": (
+                    "✅ **Codex · infrado**\nTurn finished\n\n"
+                    "## Quality Audit — Standards axis\n\n"
+                    "### Summary\n\n"
+                    "- **Ship:** ✅ Ship\n"
+                    "- `tests/unit/test_images.py` uses a \\< b & c > d\n\n"
+                    "1. Keep _underscores_ and *emphasis*.\n"
+                    "2. Visit [docs](https://example.test/a_(b)?x=1&y=2).\n\n"
+                    "> quoted [text]\n\n"
+                    "| File | Result |\n| --- | --- |\n| `a.py` | pass |\n\n"
+                    "```python\nprint(\"<safe> & intact\")\n```"
+                ),
+            },
+        })])
+
+    def test_codex_neutralizes_model_html_and_telegram_specific_content(self):
+        detail = (
+            '<tg-button type="callback_data" data="do-it">Run</tg-button> '
+            '<b>model bold</b> ![media](https://example.test/image.png) '
+            '[mention](tg://user?id=123) '
+            '`<b>code stays exact</b>`\n'
+            '```html\n<tg-map lat="1" long="2"/>\n```'
+        )
+
+        sent = self._codex_requests(detail)
+        markdown = sent[0][1]["rich_message"]["markdown"]
+
+        self.assertIn(r'\<tg-button type="callback_data" data="do-it">Run\</tg-button>', markdown)
+        self.assertIn(r'\<b>model bold\</b>', markdown)
+        self.assertIn(r'\![media](https://example.test/image.png)', markdown)
+        self.assertNotIn("tg://", markdown)
+        self.assertIn("tg:\u200b//user?id=123", markdown)
+        self.assertIn('`<b>code stays exact</b>`', markdown)
+        self.assertIn('```html\n<tg-map lat="1" long="2"/>\n```', markdown)
+
+    def test_codex_does_not_trust_mismatched_backtick_runs_as_code(self):
+        sent = self._codex_requests('` <tg-button type="callback_data">Run</tg-button> ``')
+
+        markdown = sent[0][1]["rich_message"]["markdown"]
+        self.assertIn(r'` \<tg-button type="callback_data">Run\</tg-button> ``', markdown)
+
+    def test_codex_rich_failure_retries_complete_report_as_safe_html(self):
+        detail = "## Report\n\n- **unsafe <b>tag</b> & useful**"
+
+        sent = self._codex_requests(detail, responses=[
+            b'{"ok": false, "error_code": 400, "description": "unsupported markup"}',
+            b'{"ok": true}',
         ])
+
+        self.assertEqual([method for method, _body in sent], ["sendRichMessage", "sendMessage"])
+        self.assertEqual(sent[1][1], {
+            "chat_id": "chat",
+            "text": (
+                "✅ <b>Codex · infrado</b>\nTurn finished\n"
+                "## Report\n\n- **unsafe &lt;b&gt;tag&lt;/b&gt; &amp; useful**"
+            ),
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True,
+        })
+
+    def test_codex_rich_messages_split_at_documented_limit(self):
+        prefix = "✅ **Codex · infrado**\nTurn finished\n\n"
+        detail = "a" * (notify.TELEGRAM_RICH_TEXT_LIMIT - len(prefix) + 1)
+
+        sent = self._codex_requests(detail)
+
+        self.assertEqual([method for method, _body in sent], ["sendRichMessage", "sendRichMessage"])
+        chunks = [body["rich_message"]["markdown"] for _method, body in sent]
+        self.assertEqual(len(chunks[0]), notify.TELEGRAM_RICH_TEXT_LIMIT)
+        self.assertEqual(chunks[0], prefix + detail[:-1])
+        self.assertEqual(chunks[1], "a")
+
+    def test_codex_exact_rich_limit_stays_in_one_unicode_safe_request(self):
+        prefix = "✅ **Codex · infrado**\nTurn finished\n\n"
+        detail = "🙂" * (notify.TELEGRAM_RICH_TEXT_LIMIT - len(prefix))
+
+        sent = self._codex_requests(detail)
+
+        self.assertEqual(len(sent), 1)
+        markdown = sent[0][1]["rich_message"]["markdown"]
+        self.assertEqual(len(markdown), notify.TELEGRAM_RICH_TEXT_LIMIT)
+        self.assertEqual(markdown, prefix + detail)
+
+    def test_codex_split_closes_and_reopens_fenced_code(self):
+        prefix = "✅ **Codex · infrado**\nTurn finished\n\n"
+        detail = "```text\n" + "x" * notify.TELEGRAM_RICH_TEXT_LIMIT + "\n```"
+
+        sent = self._codex_requests(detail)
+        chunks = [body["rich_message"]["markdown"] for _method, body in sent]
+
+        self.assertGreater(len(chunks), 1)
+        self.assertTrue(chunks[0].startswith(prefix + "```text\n"))
+        self.assertTrue(chunks[0].endswith("\n```"))
+        self.assertTrue(chunks[1].startswith("```text\n"))
+        self.assertTrue(all(len(chunk) <= notify.TELEGRAM_RICH_TEXT_LIMIT for chunk in chunks))
+        self.assertTrue(chunks[-1].endswith("\n```"))
+
+    def test_codex_plain_fallback_splits_at_regular_message_limit(self):
+        visible_header = "✅ Codex · infrado\nTurn finished\n"
+        detail = "🙂" * (notify.TELEGRAM_TEXT_LIMIT - len(visible_header) + 1)
+
+        sent = self._codex_requests(detail, responses=[b'{"ok": false}'])
+
+        fallback = [body for method, body in sent if method == "sendMessage"]
+        self.assertEqual(len(fallback), 2)
+        self.assertEqual(
+            len(fallback[0]["text"].replace("<b>", "").replace("</b>", "")),
+            notify.TELEGRAM_TEXT_LIMIT,
+        )
+        self.assertEqual(fallback[1]["text"], "🙂")
+
+    def test_telegram_errors_do_not_leak_token(self):
+        output = io.StringIO()
+        error = urllib.error.URLError("request failed for secret-token")
+
+        with mock.patch("sys.stdout", output), mock.patch("sys.stderr", output):
+            sent = self._codex_requests("report", responses=[error, error])
+
+        self.assertEqual([method for method, _body in sent], ["sendRichMessage", "sendMessage"])
+        self.assertNotIn("secret-token", output.getvalue())
 
     def test_background_work_stays_quiet_until_final_stop(self):
         with tempfile.TemporaryDirectory() as tmp:
