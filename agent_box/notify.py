@@ -55,6 +55,10 @@ OFFICIAL_CHANNEL_NOTIFICATION_TYPES = frozenset({"permission_prompt", "idle_prom
 # sendRichMessage accepts up to 32768 UTF-8 characters in the rich text.
 TELEGRAM_TEXT_LIMIT = 4096
 TELEGRAM_RICH_TEXT_LIMIT = 32768
+# A reopened fenced block consumes its complete opening line and synthetic
+# closing marker in every chunk.  Below this much payload capacity, a long
+# report would become a request storm of almost entirely wrapper text.
+MIN_FENCED_CODE_PAYLOAD = 256
 
 _FENCE_RE = re.compile(r"^[ ]{0,3}(`{3,}|~{3,})([^\r\n]*)(?:\r?\n)?$")
 _MARKDOWN_PUNCTUATION_RE = re.compile(r"([\\`*_{}\[\]()#+.!|>~-])")
@@ -325,15 +329,32 @@ def split_rich_markdown(
             if (
                 not opening_line
                 and next_opening
-                and len(next_opening) + 1 + len(next_closing) >= limit
+                and (
+                    len(next_opening)
+                    + len(next_closing)
+                    + 2
+                    + MIN_FENCED_CODE_PAYLOAD
+                    > limit
+                )
             ):
-                raise ValueError("fenced-code opener leaves no room for content")
+                raise ValueError("fenced-code opener leaves too little room for content")
             closer_size = (1 if chunk and not (chunk + line).endswith("\n") else 0) + len(next_closing)
             if len(chunk) + len(line) + closer_size <= limit:
                 chunk += line
                 opening_line, closing_marker = next_opening, next_closing
                 line = ""
                 continue
+
+            # A recognized fence opener establishes the sanitizer's trusted
+            # literal region.  It is atomic: flush any prefix or preceding
+            # content, then retry the complete opener in a fresh chunk rather
+            # than letting the generic long-line branch split it before the
+            # fence state is active.
+            if not opening_line and next_opening:
+                if chunk:
+                    close_and_store()
+                    continue
+                raise ValueError("fenced-code opener exceeds Telegram limit")
 
             fresh_prefix_size = len(f"{opening_line}\n") if opening_line else 0
             fresh_closer_size = len(closing_marker) + (1 if closing_marker else 0)
@@ -342,6 +363,13 @@ def split_rich_markdown(
             ):
                 close_and_store()
                 continue
+
+            # Inline-code spans are sanitizer-trusted literal regions too,
+            # but their state is local to a source line.  Do not split any
+            # oversized non-fenced line that might contain one; use the
+            # complete escaped HTML fallback instead.
+            if not opening_line and "`" in line:
+                raise ValueError("oversized line may contain inline code")
 
             # A single source line is longer than a message. Fill the remaining
             # capacity; slicing Python text keeps every emitted body valid UTF-8.
