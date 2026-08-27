@@ -445,6 +445,71 @@ class NotifyLogicTests(unittest.TestCase):
         self.assertIn("&lt;tg-button", serialized)
         self.assertNotIn(trusted_literal, serialized)
 
+    def test_codex_fence_plan_with_256_payload_chunks_falls_back_before_sending(self):
+        marker = "```"
+        available_fenced_payload = 256
+        opener = marker + "x" * (
+            notify.TELEGRAM_RICH_TEXT_LIMIT
+            - 2 * len(marker)
+            - 2
+            - available_fenced_payload
+        )
+        trusted_literal = '<tg-button type="copy_text" text="x">Copy</tg-button>'
+        detail = f"{opener}\n{trusted_literal}\n{'x' * notify.TELEGRAM_RICH_TEXT_LIMIT}\n{marker}"
+
+        self.assertEqual(
+            notify.TELEGRAM_RICH_TEXT_LIMIT - len(opener) - len(marker) - 2,
+            available_fenced_payload,
+        )
+
+        sent = self._codex_requests(detail)
+
+        self.assertTrue(sent)
+        self.assertTrue(all(method == "sendMessage" for method, _body in sent))
+        self.assertLess(len(sent), 20)
+        serialized = "".join(body["text"] for _method, body in sent)
+        self.assertEqual(
+            serialized,
+            "✅ <b>Codex · infrado</b>\nTurn finished\n" + notify.html.escape(detail),
+        )
+        self.assertIn("&lt;tg-button", serialized)
+        self.assertNotIn(trusted_literal, serialized)
+
+    def test_codex_allows_exactly_eight_planned_rich_chunks(self):
+        rich_chunk_limit = 8
+        prefix = "✅ **Codex · infrado**\nTurn finished\n\n"
+        detail = "x" * (
+            notify.TELEGRAM_RICH_TEXT_LIMIT - len(prefix)
+            + (rich_chunk_limit - 1) * notify.TELEGRAM_RICH_TEXT_LIMIT
+        )
+
+        sent = self._codex_requests(detail)
+
+        self.assertEqual([method for method, _body in sent], ["sendRichMessage"] * rich_chunk_limit)
+        chunks = [body["rich_message"]["markdown"] for _method, body in sent]
+        self.assertEqual("".join(chunks), prefix + detail)
+        self.assertTrue(all(
+            len(chunk) <= notify.TELEGRAM_RICH_TEXT_LIMIT for chunk in chunks
+        ))
+
+    def test_codex_ninth_planned_rich_chunk_falls_back_before_any_rich_send(self):
+        rich_chunk_limit = 8
+        prefix = "✅ **Codex · infrado**\nTurn finished\n\n"
+        detail = "x" * (
+            notify.TELEGRAM_RICH_TEXT_LIMIT - len(prefix)
+            + rich_chunk_limit * notify.TELEGRAM_RICH_TEXT_LIMIT
+        )
+
+        sent = self._codex_requests(detail)
+
+        self.assertTrue(sent)
+        self.assertTrue(all(method == "sendMessage" for method, _body in sent))
+        serialized = "".join(body["text"] for _method, body in sent)
+        self.assertEqual(
+            serialized,
+            "✅ <b>Codex · infrado</b>\nTurn finished\n" + notify.html.escape(detail),
+        )
+
     def test_codex_oversized_inline_code_line_falls_back_without_exposing_literal_html(self):
         prefix = "✅ **Codex · infrado**\nTurn finished\n\n"
         trusted_literal = '<tg-button type="copy_text" text="x">Copy</tg-button>'
