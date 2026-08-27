@@ -1,6 +1,7 @@
 import io
 import json
 import os
+import signal
 import tempfile
 import unittest
 import urllib.error
@@ -239,9 +240,9 @@ class NotifyLogicTests(unittest.TestCase):
                     "## Quality Audit — Standards axis\n\n"
                     "### Summary\n\n"
                     "- **Ship:** ✅ Ship\n"
-                    "- `tests/unit/test_images.py` uses a \\< b & c > d\n\n"
+                    "- `tests/unit/test_images.py` uses a &lt; b &amp; c > d\n\n"
                     "1. Keep _underscores_ and *emphasis*.\n"
-                    "2. Visit [docs](https://example.test/a_(b)?x=1&y=2).\n\n"
+                    "2. Visit [docs](https://example.test/a_(b)?x=1&amp;y=2).\n\n"
                     "> quoted [text]\n\n"
                     "| File | Result |\n| --- | --- |\n| `a.py` | pass |\n\n"
                     "```python\nprint(\"<safe> & intact\")\n```"
@@ -261,11 +262,13 @@ class NotifyLogicTests(unittest.TestCase):
         sent = self._codex_requests(detail)
         markdown = sent[0][1]["rich_message"]["markdown"]
 
-        self.assertIn(r'\<tg-button type="callback_data" data="do-it">Run\</tg-button>', markdown)
-        self.assertIn(r'\<b>model bold\</b>', markdown)
-        self.assertIn(r'\![media](https://example.test/image.png)', markdown)
+        self.assertIn(
+            '&lt;tg-button type="callback_data" data="do-it">Run&lt;/tg-button>', markdown,
+        )
+        self.assertIn('&lt;b>model bold&lt;/b>', markdown)
+        self.assertIn('&#33;[media](https://example.test/image.png)', markdown)
         self.assertNotIn("tg://", markdown)
-        self.assertIn("tg:\u200b//user?id=123", markdown)
+        self.assertIn("t\u200bg://user?id=123", markdown)
         self.assertIn('`<b>code stays exact</b>`', markdown)
         self.assertIn('```html\n<tg-map lat="1" long="2"/>\n```', markdown)
 
@@ -273,7 +276,118 @@ class NotifyLogicTests(unittest.TestCase):
         sent = self._codex_requests('` <tg-button type="callback_data">Run</tg-button> ``')
 
         markdown = sent[0][1]["rich_message"]["markdown"]
-        self.assertIn(r'` \<tg-button type="callback_data">Run\</tg-button> ``', markdown)
+        self.assertIn(
+            '` &lt;tg-button type="callback_data">Run&lt;/tg-button> ``', markdown,
+        )
+
+    def test_codex_encodes_escaped_image_and_html_introducers_as_text(self):
+        detail = (
+            "\\![image](https://example.test/image.png)\n"
+            "\\\\![even](https://example.test/even.png)\n"
+            '\\<tg-button type="copy_text" text="secret">Copy\\</tg-button>\n'
+            '\\\\<tg-button type="copy_text" text="even">Copy\\\\</tg-button>'
+        )
+
+        sent = self._codex_requests(detail)
+        markdown = sent[0][1]["rich_message"]["markdown"]
+
+        self.assertIn(r"\&#33;[image](https://example.test/image.png)", markdown)
+        self.assertIn(r"\\&#33;[even](https://example.test/even.png)", markdown)
+        self.assertIn(
+            r'\&lt;tg-button type="copy_text" text="secret">Copy\&lt;/tg-button>',
+            markdown,
+        )
+        self.assertIn(
+            r'\\&lt;tg-button type="copy_text" text="even">Copy\\&lt;/tg-button>',
+            markdown,
+        )
+        self.assertNotIn("![", markdown)
+        self.assertNotIn("<tg-button", markdown)
+
+    def test_codex_distinguishes_escaped_and_valid_inline_code_spans(self):
+        detail = (
+            '\\`<tg-button type="copy_text" text="x">Copy</tg-button>`\n'
+            '`<tg-button type="copy_text" text="valid">Copy</tg-button>`\n'
+            '``<tg-button type="copy_text" text="multi">Copy</tg-button>``\n'
+            '``<tg-button type="copy_text" text="unmatched">Copy</tg-button>`\n'
+            '\\\\`<tg-button type="copy_text" text="even">Copy</tg-button>`'
+        )
+
+        sent = self._codex_requests(detail)
+        markdown = sent[0][1]["rich_message"]["markdown"]
+
+        self.assertIn(
+            r'\`&lt;tg-button type="copy_text" text="x">Copy&lt;/tg-button>`',
+            markdown,
+        )
+        self.assertIn(
+            '`<tg-button type="copy_text" text="valid">Copy</tg-button>`', markdown,
+        )
+        self.assertIn(
+            '``<tg-button type="copy_text" text="multi">Copy</tg-button>``', markdown,
+        )
+        self.assertIn(
+            '``&lt;tg-button type="copy_text" text="unmatched">Copy&lt;/tg-button>`',
+            markdown,
+        )
+        self.assertIn(
+            '\\\\`<tg-button type="copy_text" text="even">Copy</tg-button>`', markdown,
+        )
+
+    def test_codex_preserves_backslashes_inside_an_open_code_span(self):
+        detail = '`<tg-button type="copy_text">Copy</tg-button>\\` tail'
+
+        sent = self._codex_requests(detail)
+
+        self.assertIn(detail, sent[0][1]["rich_message"]["markdown"])
+
+    def test_codex_neutralizes_escaped_and_entity_encoded_telegram_targets(self):
+        detail = (
+            "[raw](tg://user?id=1)\n"
+            "[escaped](tg\\://user?id=2)\n"
+            "[entity](tg&#58;//user?id=3)"
+        )
+
+        sent = self._codex_requests(detail)
+        markdown = sent[0][1]["rich_message"]["markdown"]
+
+        self.assertIn("[raw](t\u200bg://user?id=1)", markdown)
+        self.assertIn("[escaped](t\u200bg\\://user?id=2)", markdown)
+        self.assertIn("[entity](tg&amp;#58;//user?id=3)", markdown)
+        self.assertNotIn("tg://", markdown.lower())
+
+    def test_codex_falls_back_without_hanging_on_oversized_fence_opener(self):
+        def timeout_handler(_signum, _frame):
+            raise TimeoutError("splitter made no progress")
+
+        previous_handler = signal.signal(signal.SIGALRM, timeout_handler)
+        try:
+            for info_length in (
+                notify.TELEGRAM_RICH_TEXT_LIMIT - 7,
+                notify.TELEGRAM_RICH_TEXT_LIMIT,
+            ):
+                with self.subTest(info_length=info_length):
+                    detail = "intro\n```" + "x" * info_length + "\nbody\n```"
+                    signal.setitimer(signal.ITIMER_REAL, 1)
+                    try:
+                        sent = self._codex_requests(detail)
+                    except TimeoutError:
+                        self.fail("split_rich_markdown did not terminate")
+                    finally:
+                        signal.setitimer(signal.ITIMER_REAL, 0)
+
+                    self.assertTrue(sent)
+                    self.assertTrue(all(method == "sendMessage" for method, _body in sent))
+                    self.assertTrue(all(
+                        len(body["text"].replace("<b>", "").replace("</b>", ""))
+                        <= notify.TELEGRAM_TEXT_LIMIT
+                        for _method, body in sent
+                    ))
+                    fallback_text = "".join(body["text"] for _method, body in sent)
+                    self.assertIn("```" + "x" * 100, fallback_text)
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, previous_handler)
 
     def test_codex_rich_failure_retries_complete_report_as_safe_html(self):
         detail = "## Report\n\n- **unsafe <b>tag</b> & useful**"

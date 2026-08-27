@@ -163,8 +163,10 @@ def _sanitize_markdown_line(line: str) -> str:
     Rich Markdown intentionally accepts raw Rich HTML, including interactive
     buttons and media blocks. Model output gets ordinary Markdown semantics,
     but raw tags, media image syntax, and Telegram-specific URLs are rendered
-    inert. Code spans are copied byte-for-byte because markup is not active in
-    them.
+    inert. Dangerous introducers become character references, which CommonMark
+    resolves as text without parsing the result again. Existing ampersands are
+    encoded first so model-provided references can't synthesize an introducer.
+    Code spans are copied byte-for-byte because markup is not active in them.
     """
     result: list[str] = []
     index = 0
@@ -174,6 +176,15 @@ def _sanitize_markdown_line(line: str) -> str:
             while end < len(line) and line[end] == "`":
                 end += 1
             delimiter = line[index:end]
+            backslashes = 0
+            before = index - 1
+            while before >= 0 and line[before] == "\\":
+                backslashes += 1
+                before -= 1
+            if backslashes % 2:
+                result.append(delimiter)
+                index = end
+                continue
             closing = end
             while True:
                 closing = line.find(delimiter, closing)
@@ -194,20 +205,48 @@ def _sanitize_markdown_line(line: str) -> str:
             index = end
             continue
         if line.startswith("![", index):
-            result.append(r"\![")
+            result.append("&#33;[")
             index += 2
             continue
         if line[index] == "<":
-            result.append(r"\<")
+            result.append("&lt;")
             index += 1
             continue
-        if line[index:index + 5].lower() == "tg://":
-            result.append("tg:\u200b//")
-            index += 5
+        if line[index] == "&":
+            result.append("&amp;")
+            index += 1
             continue
+        if line[index:index + 2].lower() == "tg":
+            target = index + 2
+            while target < len(line) and line[target] == "\\":
+                target += 1
+            if target < len(line) and line[target] == ":":
+                result.append(f"{line[index]}\u200b{line[index + 1]}")
+                index += 2
+                continue
         result.append(line[index])
         index += 1
     return "".join(result)
+
+
+def _fence_opening(line: str) -> re.Match[str] | None:
+    match = _FENCE_RE.match(line)
+    if not match:
+        return None
+    marker, info = match.groups()
+    if marker[0] == "`" and "`" in info:
+        return None
+    return match
+
+
+def _fence_closes(line: str, character: str, length: int) -> bool:
+    match = _FENCE_RE.match(line)
+    return bool(
+        match
+        and match.group(1)[0] == character
+        and len(match.group(1)) >= length
+        and not match.group(2).strip()
+    )
 
 
 def sanitize_rich_markdown(markdown: str) -> str:
@@ -216,18 +255,13 @@ def sanitize_rich_markdown(markdown: str) -> str:
     fence_character = ""
     fence_length = 0
     for line in markdown.splitlines(keepends=True):
-        match = _FENCE_RE.match(line)
         if fence_character:
             result.append(line)
-            if (
-                match
-                and match.group(1)[0] == fence_character
-                and len(match.group(1)) >= fence_length
-                and not match.group(2).strip()
-            ):
+            if _fence_closes(line, fence_character, fence_length):
                 fence_character = ""
                 fence_length = 0
             continue
+        match = _fence_opening(line)
         if match:
             marker = match.group(1)
             fence_character = marker[0]
@@ -247,8 +281,10 @@ def _fence_transition(
         return opening_line, closing_marker
     marker = match.group(1)
     if not opening_line:
+        if not _fence_opening(line):
+            return "", ""
         return line.rstrip("\r\n"), marker[0] * len(marker)
-    if marker[0] == closing_marker[0] and len(marker) >= len(closing_marker) and not match.group(2).strip():
+    if _fence_closes(line, closing_marker[0], len(closing_marker)):
         return "", ""
     return opening_line, closing_marker
 
@@ -286,6 +322,12 @@ def split_rich_markdown(
             next_opening, next_closing = _fence_transition(
                 line, opening_line, closing_marker,
             ) if is_fence_line else (opening_line, closing_marker)
+            if (
+                not opening_line
+                and next_opening
+                and len(next_opening) + 1 + len(next_closing) >= limit
+            ):
+                raise ValueError("fenced-code opener leaves no room for content")
             closer_size = (1 if chunk and not (chunk + line).endswith("\n") else 0) + len(next_closing)
             if len(chunk) + len(line) + closer_size <= limit:
                 chunk += line
@@ -307,8 +349,7 @@ def split_rich_markdown(
             reserve = len(active_closer) + (1 if active_closer else 0)
             capacity = limit - len(chunk) - reserve
             if capacity <= 0:
-                close_and_store()
-                continue
+                raise ValueError("fenced-code wrapper exceeds Telegram limit")
             chunk += line[:capacity]
             line = line[capacity:]
             close_and_store()
@@ -350,7 +391,10 @@ def telegram_send_codex(project: str, detail: str) -> bool:
     safe_project = _escape_markdown_inline(project)
     prefix = f"✅ **Codex · {safe_project}**\nTurn finished\n\n"
     markdown = sanitize_rich_markdown(detail)
-    chunks = split_rich_markdown(markdown, first_prefix=prefix)
+    try:
+        chunks = split_rich_markdown(markdown, first_prefix=prefix)
+    except ValueError:
+        return telegram_send_plain_report("Codex", project, "Turn finished", detail)
     for chunk in chunks:
         if not _telegram_post("sendRichMessage", {
             "rich_message": {"markdown": chunk},
