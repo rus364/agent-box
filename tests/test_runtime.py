@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from agent_box import claude_settings, notify, runtime
+from agent_box import claude_settings, flow_next, notify, runtime
 from agent_box.config import Config, NotificationsConfig
 from agent_box.errors import AgentBoxError
 from agent_box.mounts import MountSpec
@@ -251,6 +251,45 @@ class CodexRuntimeOverridesTests(IsolatedRuntimeTest):
 
 
 class ContainerFlowNextEnvTests(IsolatedRuntimeTest):
+    def test_resolved_flowctl_prepends_to_controlled_container_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".flow").mkdir()
+            (root / ".flow" / "config.json").write_text("{}")
+            workspace = Workspace(root, root)
+            flowctl = Path(tmp) / "codex-home" / "scripts" / "flowctl"
+            captured = {}
+
+            def fake_launch(spec, workspace, command, extra_env, process_env):
+                captured["extra_env"] = extra_env
+                return 0
+
+            with (
+                mock.patch.dict(os.environ, {"PATH": "/host-only/bin:/usr/bin"}),
+                mock.patch.object(flow_next, "resolve_flowctl", return_value=flowctl),
+                mock.patch.object(runtime.shutil, "which", return_value="/usr/bin/podman"),
+                mock.patch.object(runtime, "resolve_workspace", return_value=workspace),
+                mock.patch.object(runtime, "ensure_state_dirs"),
+                mock.patch.object(runtime, "ensure_refresh_token"),
+                mock.patch.object(runtime, "load_config", return_value=Config()),
+                mock.patch.object(runtime, "image_exists", return_value=True),
+                mock.patch.object(runtime, "sync_claude_agent_skills"),
+                mock.patch.object(runtime, "claude_channel_args", return_value=([], [])),
+                mock.patch.object(runtime, "launch_in_workspace_container", side_effect=fake_launch),
+                self.assertRaises(SystemExit),
+            ):
+                runtime.runtime_main(["codex"], Path.cwd())
+
+            path_pair = next(pair for pair in captured["extra_env"] if pair.startswith("PATH="))
+            self.assertEqual(
+                path_pair,
+                f"PATH={flowctl.parent}:"
+                f"{runtime.HOST_HOME}/.local/bin:/usr/local/sbin:/usr/local/bin:"
+                "/usr/sbin:/usr/bin:/sbin:/bin",
+            )
+            self.assertNotIn("/host-only/bin", path_pair)
+            self.assertIn(f"AGENT_BOX_FLOWCTL={flowctl}", captured["extra_env"])
+
     def test_flow_next_workspace_injects_review_backend_env(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -303,6 +342,7 @@ class ContainerFlowNextEnvTests(IsolatedRuntimeTest):
             ):
                 runtime.runtime_main(["claude"], Path.cwd())
             self.assertFalse(any(pair.startswith("FLOW_") for pair in captured["extra_env"]))
+            self.assertFalse(any(pair.startswith("PATH=") for pair in captured["extra_env"]))
 
     def test_explicit_host_env_overrides_configured_backend(self):
         """An explicit FLOW_REVIEW_BACKEND from the launching shell wins over
@@ -603,6 +643,23 @@ class HostModeTests(IsolatedRuntimeTest):
             env = call.call_args.kwargs["env"]
             self.assertEqual(env.get("FLOW_REVIEW_BACKEND"), "codex:gpt-5.6-sol:medium")
 
+    def test_host_flowctl_prepends_to_inherited_path_with_auto_push_disabled(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._flow_next_workspace(tmp)
+            workspace = Workspace(root, root)
+            flowctl = Path(tmp) / "claude-plugin" / "scripts" / "flowctl"
+            with mock.patch.dict(os.environ, {"PATH": "/host/bin:/usr/bin"}), \
+                 mock.patch.object(flow_next, "resolve_flowctl", return_value=flowctl), \
+                 mock.patch.object(runtime.shutil, "which", return_value="/usr/local/bin/claude"), \
+                 mock.patch.object(runtime, "resolve_workspace", return_value=workspace), \
+                 mock.patch.object(runtime, "load_config", return_value=Config()), \
+                 mock.patch.object(runtime.subprocess, "call", return_value=0) as call:
+                runtime.host_main("claude", [])
+            env = call.call_args.kwargs["env"]
+            self.assertEqual(env.get("PATH"), f"{flowctl.parent}:/host/bin:/usr/bin")
+            self.assertEqual(env.get("AGENT_BOX_FLOWCTL"), str(flowctl))
+            self.assertNotIn("AGENT_BOX_FLOW_NEXT_AUTO_PUSH", env)
+
     def test_no_flow_next_env_for_non_flow_next_host_workspace(self):
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Workspace(Path(tmp), Path(tmp))
@@ -613,6 +670,7 @@ class HostModeTests(IsolatedRuntimeTest):
                 runtime.host_main("claude", [])
             env = call.call_args.kwargs["env"]
             self.assertNotIn("FLOW_REVIEW_BACKEND", env)
+            self.assertEqual(env.get("PATH"), os.environ.get("PATH"))
 
     def test_explicit_host_env_overrides_configured_backend(self):
         """An explicit FLOW_REVIEW_BACKEND from the launching shell wins over
@@ -669,6 +727,7 @@ class HostModeTests(IsolatedRuntimeTest):
             with mock.patch.dict(os.environ, {
                 "FLOW_REVIEW_BACKEND": "stale-wrong-value",
                 "AGENT_BOX_FLOW_NEXT_AUTO_PUSH": "1",
+                "AGENT_BOX_FLOWCTL": "/stale/flowctl",
             }), \
                  mock.patch.object(runtime.shutil, "which", return_value="/usr/local/bin/claude"), \
                  mock.patch.object(runtime, "resolve_workspace", return_value=workspace), \
@@ -678,6 +737,7 @@ class HostModeTests(IsolatedRuntimeTest):
             env = call.call_args.kwargs["env"]
             self.assertNotIn("FLOW_REVIEW_BACKEND", env)
             self.assertNotIn("AGENT_BOX_FLOW_NEXT_AUTO_PUSH", env)
+            self.assertNotIn("AGENT_BOX_FLOWCTL", env)
 
     def test_real_exit_status_propagated(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -708,17 +768,24 @@ class ContainerHostParityTests(IsolatedRuntimeTest):
             (root / ".flow").mkdir()
             (root / ".flow" / "config.json").write_text("{}")
             config = Config()
+            flowctl = Path(tmp) / "plugin" / "scripts" / "flowctl"
             from agent_box.flow_next import flow_next_launch_env
-            container_env = flow_next_launch_env(root, "claude", config)
-            with mock.patch.object(runtime.shutil, "which", return_value="/usr/local/bin/claude"), \
+            with mock.patch.dict(os.environ, {"PATH": "/host/bin:/usr/bin"}), \
+                 mock.patch.object(flow_next, "resolve_flowctl", return_value=flowctl), \
+                 mock.patch.object(runtime.shutil, "which", return_value="/usr/local/bin/claude"), \
                  mock.patch.object(runtime, "resolve_workspace", return_value=Workspace(root, root)), \
                  mock.patch.object(runtime, "load_config", return_value=config), \
                  mock.patch.object(runtime.subprocess, "call", return_value=0) as call:
+                container_env = flow_next_launch_env(
+                    root, "claude", config, runtime_path=runtime.CONTAINER_RUNTIME_PATH)
                 runtime.host_main("claude", [])
             host_env = call.call_args.kwargs["env"]
             for pair in container_env:
                 name, _, value = pair.partition("=")
-                self.assertEqual(host_env.get(name), value)
+                if name != "PATH":
+                    self.assertEqual(host_env.get(name), value)
+            self.assertIn(f"PATH={flowctl.parent}:{runtime.CONTAINER_RUNTIME_PATH}", container_env)
+            self.assertEqual(host_env.get("PATH"), f"{flowctl.parent}:/host/bin:/usr/bin")
 
     def test_container_and_host_agree_on_explicit_override(self):
         """The explicit-override precedence must not diverge between modes."""
@@ -727,9 +794,14 @@ class ContainerHostParityTests(IsolatedRuntimeTest):
             (root / ".flow").mkdir()
             (root / ".flow" / "config.json").write_text("{}")
             config = Config()
+            flowctl = Path(tmp) / "plugin" / "scripts" / "flowctl"
             from agent_box.flow_next import flow_next_launch_env
-            with mock.patch.dict(os.environ, {"FLOW_REVIEW_BACKEND": "codex:gpt-5.6-terra:high"}):
-                container_env = flow_next_launch_env(root, "claude", config)
+            with mock.patch.dict(os.environ, {
+                "FLOW_REVIEW_BACKEND": "codex:gpt-5.6-terra:high",
+                "PATH": "/host/bin:/usr/bin",
+            }), mock.patch.object(flow_next, "resolve_flowctl", return_value=flowctl):
+                container_env = flow_next_launch_env(
+                    root, "claude", config, runtime_path=runtime.CONTAINER_RUNTIME_PATH)
                 with mock.patch.object(runtime.shutil, "which", return_value="/usr/local/bin/claude"), \
                      mock.patch.object(runtime, "resolve_workspace", return_value=Workspace(root, root)), \
                      mock.patch.object(runtime, "load_config", return_value=config), \
@@ -739,7 +811,10 @@ class ContainerHostParityTests(IsolatedRuntimeTest):
             self.assertIn("FLOW_REVIEW_BACKEND=codex:gpt-5.6-terra:high", container_env)
             for pair in container_env:
                 name, _, value = pair.partition("=")
-                self.assertEqual(host_env.get(name), value)
+                if name != "PATH":
+                    self.assertEqual(host_env.get(name), value)
+            self.assertIn(f"PATH={flowctl.parent}:{runtime.CONTAINER_RUNTIME_PATH}", container_env)
+            self.assertEqual(host_env.get("PATH"), f"{flowctl.parent}:/host/bin:/usr/bin")
 
 
 if __name__ == "__main__":

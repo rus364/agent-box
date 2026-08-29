@@ -59,6 +59,9 @@ WORKSPACE_CONTAINER_BASE_CONFIG_LABEL = "io.agent-box.base-config-hash"
 WORKSPACE_CONTAINER_EXTRA_MOUNTS_LABEL = "io.agent-box.extra-mounts-hash"
 WORKSPACE_CONTAINER_SCHEMA_LABEL = "io.agent-box.schema"
 KEEPER_PATH = HOST_HOME / ".local/lib/agent-box/agent_box/keeper.sh"
+CONTAINER_RUNTIME_PATH = (
+    f"{HOST_HOME}/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+)
 
 
 def warn(message: str) -> None:
@@ -572,7 +575,7 @@ def container_lifetime_args(
         "--userns=keep-id", *kvm_args(),
         "--cap-drop=all", "--security-opt=no-new-privileges", "--hostname=agent-box", "--tz=local",
         f"--env=HOME={home}",
-        f"--env=PATH={home}/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        f"--env=PATH={CONTAINER_RUNTIME_PATH}",
         f"--env=CODEX_HOME={CODEX_HOME}",
         f"--env=GIT_CONFIG_GLOBAL={home}/.config/git/config",
         f"--env=GH_CONFIG_DIR={home}/.config/gh",
@@ -1313,7 +1316,11 @@ def runtime_main(args: list[str], script_dir: Path, extra_mount_specs: list[str]
             CLAUDE_HOME / "settings.json", config.notifications.enabled)
 
     channel, extra_env = claude_channel_args(agent, config, workspace, rest)
-    extra_env = [*extra_env, *flow_next_launch_env(workspace.host_root, agent, config)]
+    extra_env = [
+        *extra_env,
+        *flow_next_launch_env(
+            workspace.host_root, agent, config, runtime_path=CONTAINER_RUNTIME_PATH),
+    ]
 
     try:
         if agent == "shell":
@@ -1355,12 +1362,12 @@ def host_main(agent: str, rest: list[str]) -> int:
 
     Shares :func:`flow_next.flow_next_launch_env` with the containerized path
     (``runtime_main`` above) so the two cannot drift on Flow-Next detection or
-    the FLOW_REVIEW_BACKEND/auto-push policy -- it is the same function call,
+    the Flow-Next launch policy -- it is the same function call,
     just applied to the host environment instead of ``--env`` flags on a
-    ``podman run``. Everything else about host mode is intentionally plain:
+    ``podman exec``. Everything else about host mode is intentionally plain:
     the pass-through args are forwarded unmodified, and the host's normal
     environment (git/gh credentials included) flows through unchanged except
-    for this one deliberate override.
+    for the invocation-scoped Flow-Next overrides.
     """
     executable = shutil.which(agent)
     if not executable:
@@ -1375,16 +1382,17 @@ def host_main(agent: str, rest: list[str]) -> int:
         notify_module.reconcile_claude_notify_hooks(
             CLAUDE_HOME / "settings.json", config.notifications.enabled)
     env = dict(os.environ)
-    # A non-Flow-Next launch must not inherit a stale FLOW_REVIEW_BACKEND/
-    # auto-push value the parent shell happens to have exported -- clear
-    # every agent-box-owned policy variable, then let flow_next_launch_env
+    # A non-Flow-Next launch must not inherit stale Flow-Next policy values
+    # the parent shell happens to have exported -- clear every agent-box-owned
+    # policy variable, then let flow_next_launch_env
     # re-derive the decision (including an explicit FLOW_REVIEW_BACKEND the
     # shell set for this one launch, which it reads from the real process
     # environment), so an empty result from the resolver really means
     # "no policy", not "whatever was already there".
     for name in POLICY_ENV_VARS:
         env.pop(name, None)
-    for pair in flow_next_launch_env(workspace.host_root, agent, config):
+    for pair in flow_next_launch_env(
+        workspace.host_root, agent, config, runtime_path=env.get("PATH", "")):
         name, _, value = pair.partition("=")
         env[name] = value
 

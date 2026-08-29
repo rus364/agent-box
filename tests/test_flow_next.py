@@ -53,32 +53,35 @@ class ReviewEnvRoutingTests(unittest.TestCase):
     def test_flow_next_claude_gets_expected_backend(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = self._flow_next_root(tmp)
-            env = flow_next_launch_env(root, "claude", Config())
+            env = flow_next_launch_env(root, "claude", Config(), runtime_path="/runtime/bin")
         self.assertIn(f"{REVIEW_BACKEND_ENV}=codex:gpt-5.6-sol:medium", env)
 
     def test_flow_next_codex_gets_expected_backend(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = self._flow_next_root(tmp)
-            env = flow_next_launch_env(root, "codex", Config())
+            env = flow_next_launch_env(root, "codex", Config(), runtime_path="/runtime/bin")
         self.assertIn(f"{REVIEW_BACKEND_ENV}=codex:gpt-5.6-sol:medium", env)
 
     def test_non_flow_next_workspace_gets_no_injected_env(self):
         with tempfile.TemporaryDirectory() as tmp:
-            env = flow_next_launch_env(Path(tmp), "claude", Config())
+            env = flow_next_launch_env(
+                Path(tmp), "claude", Config(), runtime_path="/controlled/bin")
         self.assertEqual(env, [])
 
     def test_non_claude_codex_agent_gets_no_injected_env(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = self._flow_next_root(tmp)
-            self.assertEqual(flow_next_launch_env(root, "shell", Config()), [])
-            self.assertEqual(flow_next_launch_env(root, "doctor", Config()), [])
+            self.assertEqual(
+                flow_next_launch_env(root, "shell", Config(), runtime_path="/controlled/bin"), [])
+            self.assertEqual(
+                flow_next_launch_env(root, "doctor", Config(), runtime_path="/controlled/bin"), [])
 
     def test_mapping_change_is_reflected_without_code_changes(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = self._flow_next_root(tmp)
             config = Config()
             config.flow_next.review_backends["claude"] = "claude:future-model:high"
-            env = flow_next_launch_env(root, "claude", config)
+            env = flow_next_launch_env(root, "claude", config, runtime_path="/runtime/bin")
         self.assertIn(f"{REVIEW_BACKEND_ENV}=claude:future-model:high", env)
 
     def test_auto_push_env_set_for_both_claude_and_codex_when_enabled(self):
@@ -86,15 +89,18 @@ class ReviewEnvRoutingTests(unittest.TestCase):
             root = self._flow_next_root(tmp)
             config = Config()
             config.flow_next.auto_push = True
-            claude_env = flow_next_launch_env(root, "claude", config)
-            codex_env = flow_next_launch_env(root, "codex", config)
+            claude_env = flow_next_launch_env(
+                root, "claude", config, runtime_path="/runtime/bin")
+            codex_env = flow_next_launch_env(
+                root, "codex", config, runtime_path="/runtime/bin")
         self.assertIn(f"{AUTO_PUSH_ENV}=1", claude_env)
         self.assertIn(f"{AUTO_PUSH_ENV}=1", codex_env)
 
     def test_auto_push_env_absent_when_disabled(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = self._flow_next_root(tmp)
-            env = flow_next_launch_env(root, "claude", Config())
+            env = flow_next_launch_env(
+                root, "claude", Config(), runtime_path="/runtime/bin")
         self.assertFalse(any(e.startswith(AUTO_PUSH_ENV) for e in env))
 
     def test_explicit_host_env_overrides_configured_backend(self):
@@ -107,6 +113,7 @@ class ReviewEnvRoutingTests(unittest.TestCase):
             env = flow_next_launch_env(
                 root, "claude", Config(),
                 host_env={"FLOW_REVIEW_BACKEND": "codex:gpt-5.6-terra:high"},
+                runtime_path="/runtime/bin",
             )
         self.assertIn(f"{REVIEW_BACKEND_ENV}=codex:gpt-5.6-terra:high", env)
 
@@ -116,13 +123,15 @@ class ReviewEnvRoutingTests(unittest.TestCase):
             env = flow_next_launch_env(
                 root, "codex", Config(),
                 host_env={"FLOW_REVIEW_BACKEND": "codex:gpt-5.6-terra:high"},
+                runtime_path="/runtime/bin",
             )
         self.assertIn(f"{REVIEW_BACKEND_ENV}=codex:gpt-5.6-terra:high", env)
 
     def test_no_explicit_host_env_falls_back_to_configured_backend(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = self._flow_next_root(tmp)
-            env = flow_next_launch_env(root, "claude", Config(), host_env={})
+            env = flow_next_launch_env(
+                root, "claude", Config(), host_env={}, runtime_path="/runtime/bin")
         self.assertIn(f"{REVIEW_BACKEND_ENV}=codex:gpt-5.6-sol:medium", env)
 
     def test_non_flow_next_workspace_ignores_explicit_host_env(self):
@@ -132,6 +141,7 @@ class ReviewEnvRoutingTests(unittest.TestCase):
             env = flow_next_launch_env(
                 Path(tmp), "claude", Config(),
                 host_env={"FLOW_REVIEW_BACKEND": "codex:gpt-5.6-terra:high"},
+                runtime_path="/runtime/bin",
             )
         self.assertEqual(env, [])
 
@@ -143,6 +153,7 @@ class ReviewEnvRoutingTests(unittest.TestCase):
             env = flow_next_launch_env(
                 root, "claude", config,
                 host_env={"FLOW_REVIEW_BACKEND": "codex:gpt-5.6-terra:high"},
+                runtime_path="/runtime/bin",
             )
         self.assertIn(f"{REVIEW_BACKEND_ENV}=codex:gpt-5.6-terra:high", env)
         self.assertIn(f"{AUTO_PUSH_ENV}=1", env)
@@ -241,9 +252,7 @@ class ResolveFlowctlTests(unittest.TestCase):
 
 
 class FlowctlLaunchEnvInjectionTests(unittest.TestCase):
-    """`AGENT_BOX_FLOWCTL` is forwarded alongside `AGENT_BOX_FLOW_NEXT_AUTO_PUSH`
-    only when auto-push is on and a Flowctl executable was actually
-    resolved -- never guessed."""
+    """Resolved Flowctl is launch integration, independent of auto-push."""
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -266,20 +275,77 @@ class FlowctlLaunchEnvInjectionTests(unittest.TestCase):
         flowctl = _make_executable(self.codex_home / "scripts" / "flowctl")
         config = Config()
         config.flow_next.auto_push = True
-        env = flow_next_launch_env(self.workspace_root, "codex", config)
+        env = flow_next_launch_env(
+            self.workspace_root, "codex", config, runtime_path="/controlled/bin")
         self.assertIn(f"{FLOWCTL_ENV}={flowctl}", env)
+        self.assertIn(f"PATH={flowctl.parent}:/controlled/bin", env)
 
     def test_flowctl_absent_when_unresolved_but_auto_push_still_enabled(self):
         config = Config()
         config.flow_next.auto_push = True
-        env = flow_next_launch_env(self.workspace_root, "codex", config)
+        env = flow_next_launch_env(
+            self.workspace_root, "codex", config, runtime_path="/controlled/bin")
         self.assertIn(f"{AUTO_PUSH_ENV}=1", env)
         self.assertFalse(any(e.startswith(f"{FLOWCTL_ENV}=") for e in env))
+        self.assertFalse(any(e.startswith("PATH=") for e in env))
 
-    def test_flowctl_absent_when_auto_push_disabled(self):
-        _make_executable(self.codex_home / "scripts" / "flowctl")
-        env = flow_next_launch_env(self.workspace_root, "codex", Config())
-        self.assertFalse(any(e.startswith(f"{FLOWCTL_ENV}=") for e in env))
+    def test_codex_flowctl_available_when_auto_push_disabled(self):
+        flowctl = _make_executable(self.codex_home / "scripts" / "flowctl")
+        env = flow_next_launch_env(
+            self.workspace_root, "codex", Config(), runtime_path="/controlled/bin")
+        self.assertIn(f"{FLOWCTL_ENV}={flowctl}", env)
+        self.assertIn(f"PATH={flowctl.parent}:/controlled/bin", env)
+        self.assertNotIn(f"{AUTO_PUSH_ENV}=1", env)
+
+    def test_empty_host_path_does_not_add_current_directory(self):
+        flowctl = _make_executable(self.codex_home / "scripts" / "flowctl")
+        env = flow_next_launch_env(
+            self.workspace_root, "codex", Config(), runtime_path="")
+        self.assertIn(f"PATH={flowctl.parent}", env)
+        self.assertNotIn(f"PATH={flowctl.parent}:", env)
+
+    def test_claude_flowctl_uses_its_plugin_directory(self):
+        install_path = self.root / "claude-plugin" / "4.5.1"
+        flowctl = _make_executable(install_path / "scripts" / "flowctl")
+        manifest = self.claude_home / "plugins" / "installed_plugins.json"
+        manifest.parent.mkdir(parents=True)
+        manifest.write_text(json.dumps({
+            "version": 2,
+            "plugins": {
+                "flow-next@flow-next": [
+                    {"scope": "user", "installPath": str(install_path)},
+                ],
+            },
+        }))
+        env = flow_next_launch_env(
+            self.workspace_root, "claude", Config(), runtime_path="/controlled/bin")
+        self.assertIn(f"{FLOWCTL_ENV}={flowctl}", env)
+        self.assertIn(f"PATH={flowctl.parent}:/controlled/bin", env)
+
+    def test_claude_and_codex_flowctl_paths_are_invocation_scoped(self):
+        codex_flowctl = _make_executable(self.codex_home / "scripts" / "flowctl")
+        install_path = self.root / "claude-plugin" / "4.5.1"
+        claude_flowctl = _make_executable(install_path / "scripts" / "flowctl")
+        manifest = self.claude_home / "plugins" / "installed_plugins.json"
+        manifest.parent.mkdir(parents=True)
+        manifest.write_text(json.dumps({
+            "version": 2,
+            "plugins": {
+                "flow-next@flow-next": [
+                    {"scope": "user", "installPath": str(install_path)},
+                ],
+            },
+        }))
+
+        claude_env = flow_next_launch_env(
+            self.workspace_root, "claude", Config(), runtime_path="/controlled/bin")
+        codex_env = flow_next_launch_env(
+            self.workspace_root, "codex", Config(), runtime_path="/controlled/bin")
+
+        self.assertIn(f"PATH={claude_flowctl.parent}:/controlled/bin", claude_env)
+        self.assertIn(f"{FLOWCTL_ENV}={claude_flowctl}", claude_env)
+        self.assertIn(f"PATH={codex_flowctl.parent}:/controlled/bin", codex_env)
+        self.assertIn(f"{FLOWCTL_ENV}={codex_flowctl}", codex_env)
 
 
 if __name__ == "__main__":
