@@ -4,13 +4,12 @@ This module owns three small, side-effect-free decisions:
 
 * whether the current workspace is a Flow-Next repository at all
   (:func:`is_flow_next_workspace`);
-* which ``FLOW_REVIEW_BACKEND`` (and auto-push signal) a launch of
-  ``claude``/``codex`` should receive (:func:`flow_next_launch_env`); and
+* which Flow-Next environment a launch of ``claude``/``codex`` should
+  receive (:func:`flow_next_launch_env`); and
 * which Flowctl executable belongs to the agent being launched
-  (:func:`resolve_flowctl`), so the auto-push reconciler (see
-  ``agent_box.flow_push``) never has to guess it later or fall back to
-  ``shutil.which("flowctl")`` -- upstream Flow-Next explicitly documents that
-  a global ``flowctl`` on ``PATH`` is not guaranteed.
+  (:func:`resolve_flowctl`), so both the agent's bare ``flowctl`` command and
+  the auto-push reconciler (see ``agent_box.flow_push``) use that exact
+  executable without guessing or falling back to ``shutil.which("flowctl")``.
 
 Primary-agent selection stays entirely explicit (``agent-box claude`` /
 ``agent-box codex``); nothing here inspects quota, balances providers, or
@@ -37,8 +36,9 @@ AUTO_PUSH_ENV = "AGENT_BOX_FLOW_NEXT_AUTO_PUSH"
 #: The absolute Flowctl executable resolved for this launch (see
 #: :func:`resolve_flowctl`), forwarded so the reconciler never has to
 #: re-derive it inside the container/host process that actually runs the
-#: Stop/turn-complete hook. Absent when auto-push is off, or when a Flowctl
-#: executable could not be determined for this agent/workspace.
+#: Stop/turn-complete hook. Its parent is also prepended to this invocation's
+#: ``PATH`` so the launched agent can use the same executable as bare
+#: ``flowctl``. Absent only when no executable can be determined.
 FLOWCTL_ENV = "AGENT_BOX_FLOWCTL"
 
 #: Injected into a Flow-Next launch to select the review backend. Flow-Next's
@@ -153,6 +153,8 @@ def flow_next_launch_env(
     agent: str,
     config: Config,
     host_env: Mapping[str, str] | None = None,
+    *,
+    runtime_path: str,
 ) -> list[str]:
     """``KEY=VALUE`` environment overrides for a Flow-Next launch.
 
@@ -167,12 +169,15 @@ def flow_next_launch_env(
     ``FLOW_REVIEW_BACKEND=... agent-box claude`` override the configured
     reviewer without agent-box needing a second, redundant env var.
 
-    ``flow_next.auto_push`` applies identically to Claude and Codex launches:
-    when it is on, :data:`AUTO_PUSH_ENV` is set so the shared auto-push
-    reconciler knows this launch's policy allows it, and
-    :func:`resolve_flowctl` is consulted so :data:`FLOWCTL_ENV` carries the
-    absolute executable the reconciler should use -- omitted (not guessed)
-    when it cannot be determined for this agent/host.
+    ``runtime_path`` is the PATH belonging to the target runtime. When
+    Flowctl resolves, its parent is prepended to that value so the agent can
+    execute bare ``flowctl`` while :data:`FLOWCTL_ENV` carries the exact same
+    absolute executable for the reconciler. Container callers pass their
+    controlled runtime PATH; host callers pass the inherited host PATH.
+
+    ``flow_next.auto_push`` is a separate decision: when it is on,
+    :data:`AUTO_PUSH_ENV` tells the shared reconciler to run. It neither
+    enables nor changes Flowctl resolution.
     """
     if agent not in ("claude", "codex"):
         return []
@@ -184,9 +189,13 @@ def flow_next_launch_env(
     backend = host_env.get(REVIEW_BACKEND_ENV) or review_backend_for(agent, config)
     if backend:
         env.append(f"{REVIEW_BACKEND_ENV}={backend}")
+    flowctl = resolve_flowctl(agent)
+    if flowctl is not None:
+        env.append(f"{FLOWCTL_ENV}={flowctl}")
+        path = str(flowctl.parent)
+        if runtime_path:
+            path += f"{os.pathsep}{runtime_path}"
+        env.append(f"PATH={path}")
     if config.flow_next.auto_push:
         env.append(f"{AUTO_PUSH_ENV}=1")
-        flowctl = resolve_flowctl(agent)
-        if flowctl is not None:
-            env.append(f"{FLOWCTL_ENV}={flowctl}")
     return env
