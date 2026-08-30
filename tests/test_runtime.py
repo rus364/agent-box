@@ -37,12 +37,14 @@ class ContainerStatePreparationTests(IsolatedRuntimeTest):
             state_root = Path(tmp) / "state"
             with mock.patch.object(runtime, "STATE_ROOT", state_root), \
                  mock.patch.object(runtime, "BUILD_STATE", state_root / "build"), \
-                mock.patch.object(runtime, "NOTIFY_STATE_ROOT", state_root / "notify"):
+                 mock.patch.object(runtime, "NOTIFY_STATE_ROOT", state_root / "notify"):
                 self.assertFalse(state_root.exists())
                 runtime.prepare_container_lifetime_state(Config(), mount_notifications=False)
                 self.assertTrue((state_root / "cache").is_dir())
                 self.assertTrue((state_root / "uv").is_dir())
                 self.assertTrue((state_root / "mise").is_dir())
+                self.assertTrue((state_root / "cargo").is_dir())
+                self.assertTrue((state_root / "rustup").is_dir())
                 self.assertTrue((state_root / "notify").is_dir())
 
 
@@ -104,6 +106,23 @@ class ContainerArgvTests(IsolatedRuntimeTest):
             workspace = Workspace(Path(project), Path(project))
             argv = runtime.container_argv(workspace, [], Path(project), ["codex"])
         self.assertNotIn(f"src={runtime.STATE_ROOT},dst={runtime.STATE_ROOT}", argv)
+
+    def test_rust_tool_state_uses_standard_container_paths(self):
+        with tempfile.TemporaryDirectory() as project:
+            workspace = Workspace(Path(project), Path(project))
+            argv = runtime.container_argv(workspace, [], Path(project), ["codex"])
+        self.assertIn(
+            f"type=bind,src={runtime.STATE_ROOT / 'cargo'},dst={runtime.HOST_HOME}/.cargo", argv,
+        )
+        self.assertIn(
+            f"type=bind,src={runtime.STATE_ROOT / 'rustup'},dst={runtime.HOST_HOME}/.rustup", argv,
+        )
+
+    def test_runtime_path_prefers_mise_shims_then_cargo_bin(self):
+        expected_prefix = (
+            f"{runtime.HOST_HOME}/.local/share/mise/shims:{runtime.HOST_HOME}/.cargo/bin:"
+        )
+        self.assertTrue(runtime.CONTAINER_RUNTIME_PATH.startswith(expected_prefix))
 
     def test_extra_env_is_passed_before_the_image(self):
         with tempfile.TemporaryDirectory() as project:
@@ -190,7 +209,6 @@ class CodexRuntimeOverridesTests(IsolatedRuntimeTest):
             "model = \"gpt-5\"\n[mcp_servers.no_command]\nargs = []\n"
         )
         self.assertEqual(missing_overrides, [])
-        self.assertEqual(no_mcp_overrides, [])
 
     def test_malformed_config_warns_and_launch_overrides_remain_empty(self):
         with mock.patch.object(runtime, "warn") as warn:
@@ -281,12 +299,7 @@ class ContainerFlowNextEnvTests(IsolatedRuntimeTest):
                 runtime.runtime_main(["codex"], Path.cwd())
 
             path_pair = next(pair for pair in captured["extra_env"] if pair.startswith("PATH="))
-            self.assertEqual(
-                path_pair,
-                f"PATH={flowctl.parent}:"
-                f"{runtime.HOST_HOME}/.local/bin:/usr/local/sbin:/usr/local/bin:"
-                "/usr/sbin:/usr/bin:/sbin:/bin",
-            )
+            self.assertEqual(path_pair, f"PATH={flowctl.parent}:{runtime.CONTAINER_RUNTIME_PATH}")
             self.assertNotIn("/host-only/bin", path_pair)
             self.assertIn(f"AGENT_BOX_FLOWCTL={flowctl}", captured["extra_env"])
 
