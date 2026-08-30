@@ -275,13 +275,14 @@ RUN set -eux; \
     test -x /usr/local/bin/bun
 
 #
-# Coding agents
+# Coding agents and agent-facing analysis tools
 #
 
 RUN set -eux; \
     npm install --global \
         @openai/codex@latest \
-        @anthropic-ai/claude-code@latest; \
+        @anthropic-ai/claude-code@latest \
+        jscpd@5.0.16; \
     npm cache clean --force
 
 #
@@ -380,6 +381,7 @@ RUN set -eux; \
     bun --version; \
     codex --version; \
     claude --version; \
+    jscpd --version; \
     mise --version; \
     git --version; \
     git-lfs --version; \
