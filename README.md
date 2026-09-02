@@ -392,9 +392,9 @@ The combined command prints both subscriptions on one line:
 Claude 97/88 · 4h51m/5d23h │ Codex 83/61 · 3h24m/4d11h
 ```
 
-Both providers cache for 60 seconds and run directly on the host (no container). `--statusline` reads Claude Code's status-line JSON from stdin, which lets the numbers come from the running session instead of a cached HTTP call; `agent-box statusline` (below) is the form to actually configure.
+Both providers cache for 60 seconds, run directly on the host (no container), and take no arguments and no stdin: `agent-box usage` answers only "how much is left". Anything that depends on a live session — the context segment, the session's own rate limits — belongs to `agent-box statusline` (below), which is the command Claude Code actually calls.
 
-Each segment of the **combined** line gets its own muted 256-colour hue — violet for context, terracotta for Claude, steel blue for Codex. `agent-box usage claude` and `agent-box usage codex` print plain: the colours exist to separate segments from each other, and a single-provider invocation has nothing to separate. Set `NO_COLOR` to switch colour off entirely; agent-box never probes for a terminal, because a status-line command never has one.
+Each segment of the **combined** line gets its own muted 256-colour hue — terracotta for Claude, steel blue for Codex (the status line adds violet for context). `agent-box usage claude` and `agent-box usage codex` print plain: the colours exist to separate segments from each other, and a single-provider invocation has nothing to separate. Set `NO_COLOR` to switch colour off entirely; agent-box never probes for a terminal, because a status-line command never has one.
 
 ## Status line
 
@@ -411,6 +411,8 @@ The one command to put in Claude Code's `statusLine`. It reads the JSON Claude C
 `statusLine` accepts exactly one command, so the shell-prompt half (clock, virtualenv, directory, git branch and dirty marker) and the usage half have to be composed somewhere. Doing it here rather than in a wrapper script next to `settings.json` is what keeps it version-controlled, tested, and identical on the host and inside the container, where `agent-box` is mounted onto `PATH`. Every git call is capped at one second, so a slow repository loses its segment instead of stalling a line that redraws constantly.
 
 The `ctx` segment is Claude Code's own accounting: it computes context consumption itself and ships it in the `context_window` field of that same payload, so agent-box neither parses a transcript nor spends session context to show it. The segment is absent before a session's first assistant message.
+
+The Claude numbers come from the same payload when it carries `rate_limits`, which is fresher and cheaper than an HTTP call; the cached/OAuth path from `agent-box usage claude` is the fallback when it does not.
 
 agent-box configures this for you. `claude.statusline` is on by default, and `agent-box claude` reconciles Claude's `statusLine` on every launch, in the same single settings write as the notification hooks:
 
@@ -491,5 +493,6 @@ When `/dev/kvm` is accessible it is passed through automatically. Disable with `
 - **The GitHub token is no longer forwarded by default.** It used to travel whenever `gh` was authenticated on the host; now it requires `github.gh_token` in `agent-box config`. Same for copying `~/.config/gh`, which is now `github.gh_config` and also off by default.
 - **Legacy notify hooks are cleaned up.** The next normal Claude session removes old `~/.local/bin/agent-box notify claude` entries and installs the PATH-based hook; `agent-box config` does the same.
 - The `statusLine` auto-migration is gone, and nothing rewrites an existing command in place. If yours still points at an old one, clear it (or set it to `agent-box statusline` yourself) and agent-box will keep it current from then on.
+- **`agent-box usage <provider> --statusline` is gone.** The flag existed back when `agent-box usage all --statusline` was the configured status line; `agent-box statusline` replaced that, and the flag had no callers left. `agent-box usage` now rejects arguments after the provider.
 - `podman build` on the `Containerfile` requires explicit `USER_NAME`/`USER_UID`/`USER_GID`/`USER_HOME` args — use `agent-box build`, or pass all four yourself.
 - The mandatory `~/code` workspace requirement is gone; set `AGENT_BOX_WORKSPACE_ROOT=~/code` if you want the old "one big mounted tree" behavior.
