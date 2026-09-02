@@ -1,12 +1,17 @@
-"""Small shared helpers for managing hook entries in Claude's
-``~/.claude/settings.json``.
+"""Everything agent-box manages inside Claude's ``~/.claude/settings.json``.
 
-Both ``agent_box.notify`` (outbound notifications) and ``agent_box.flow_push``
-(Flow-Next auto-push) install and remove their own managed hook commands from
-this one file, independently of each other and without disturbing any hook
-the user configured by hand. This module holds only the generic "append this
-entry if missing" / "remove entries using these commands" mechanics; each
-caller still owns its own command strings and entry shapes.
+Two kinds of setting live here. **Hook entries**: ``agent_box.notify``
+(outbound notifications) and ``agent_box.flow_push`` (Flow-Next auto-push)
+install and remove their own managed commands independently of each other and
+without disturbing any hook the user configured by hand, using the generic
+"append this entry if missing" / "remove entries using these commands"
+mechanics below; each caller still owns its own command strings and entry
+shapes. And the **status line**, which is agent-box's own and so is owned
+outright by this module.
+
+Everything here reconciles rather than overwrites, and every write goes
+through the atomic writer, because this file belongs to Claude Code and to the
+user -- agent-box is one of several things with an entry in it.
 """
 from __future__ import annotations
 
@@ -112,21 +117,27 @@ def reconcile_hook_entries(
     settings_path: Path,
     owned: dict[str, tuple[str, ...]],
     entries: list[tuple[str, dict[str, Any]]],
+    *,
+    statusline: bool | None = None,
 ) -> bool:
-    """Reconcile managed hook handlers with at most one settings-file write.
+    """Reconcile everything agent-box manages, with at most one file write.
 
-    The file is parsed once, all removals and additions are made in memory,
-    and its atomic writer runs only when the resulting data differs.  An empty
+    The file is parsed once, every removal and addition is made in memory, and
+    its atomic writer runs only when the resulting data differs.  An empty
     ``entries`` list is a removal-only operation, so a missing file remains
-    untouched.
+    untouched.  ``statusline`` is tri-state: ``None`` leaves the status line
+    alone entirely, which is what a caller that only owns hooks wants.
     """
-    if not settings_path.exists() and not entries:
+    creates_file = bool(entries) or statusline is True
+    if not settings_path.exists() and not creates_file:
         return False
     settings = read_json(settings_path) if settings_path.exists() else {}
     if not isinstance(settings, dict):
         raise AgentBoxError(f"{settings_path} must contain a JSON object")
     changed = _remove_hook_commands(settings, owned)
     changed = _install_hook_entries(settings, entries) or changed
+    if statusline is not None:
+        changed = _apply_statusline(settings, statusline) or changed
     if changed:
         atomic_write_json(settings_path, settings)
     return changed
@@ -140,3 +151,61 @@ def install_hook_entries(settings_path: Path, entries: list[tuple[str, dict[str,
 def remove_hook_commands(settings_path: Path, owned: dict[str, tuple[str, ...]]) -> bool:
     """Remove managed handlers, without rewriting an unchanged file."""
     return reconcile_hook_entries(settings_path, owned, [])
+
+
+#: The status-line command agent-box installs and, symmetrically, is the only
+#: one it will ever remove.
+STATUSLINE_COMMAND = "agent-box statusline"
+
+
+def statusline_is_ours(settings: dict[str, Any]) -> bool:
+    status = settings.get("statusLine")
+    return isinstance(status, dict) and status.get("command") == STATUSLINE_COMMAND
+
+
+def _apply_statusline(settings: dict[str, Any], enabled: bool) -> bool:
+    """Apply the status-line rules in memory; report whether anything changed.
+
+    Unlike the hook events above, ``statusLine`` is a single slot rather than a
+    list, so installing means occupying it. Two rules keep that honest. A
+    status line that is *someone else's* is never touched, whether it was
+    hand-written or installed by another tool -- agent-box fills the slot only
+    when it is empty or already holds its own command. And disabling removes
+    only that same command, so a setting agent-box did not write survives being
+    switched off.
+
+    This is deliberately not a migration: no earlier or alternative command
+    string is recognized, so an old `agent-box usage all --statusline` counts
+    as somebody else's line and is left exactly where it is.
+    """
+    ours = statusline_is_ours(settings)
+    if enabled:
+        if ours or "statusLine" in settings:
+            return False
+        settings["statusLine"] = {"type": "command", "command": STATUSLINE_COMMAND}
+        return True
+    if not ours:
+        return False
+    settings.pop("statusLine", None)
+    return True
+
+
+def reconcile_statusline(settings_path: Path, enabled: bool) -> bool:
+    """Reconcile only the status line, for a caller that owns nothing else."""
+    return reconcile_hook_entries(settings_path, {}, [], statusline=enabled)
+
+
+def reconcile_claude_settings(
+    settings_path: Path, *, notifications: bool, statusline: bool,
+) -> bool:
+    """Everything agent-box owns in ``settings.json``, in one read and write.
+
+    Claude launch and ``agent-box config`` both need the notification hooks
+    and the status line brought in line at the same moment. Doing them as two
+    separate reconciliations would parse and rewrite the same file twice; this
+    composes both plans and hands them to the single writer above.
+    """
+    from .notify import claude_notify_plan
+    owned, entries = claude_notify_plan(notifications)
+    return reconcile_hook_entries(
+        settings_path, owned, entries, statusline=statusline)

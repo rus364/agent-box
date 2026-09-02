@@ -26,6 +26,7 @@ from pathlib import Path
 import tomllib
 
 from . import channel as channel_module
+from . import claude_settings
 from . import notify as notify_module
 from .atomicio import atomic_write_text
 from .config import Config, load_config
@@ -1317,8 +1318,10 @@ def runtime_main(args: list[str], script_dir: Path, extra_mount_specs: list[str]
         # Existing users commonly launch Claude repeatedly without reopening
         # the interactive config UI.  Launch is therefore the lifecycle that
         # guarantees the legacy absolute-path hook is migrated.
-        notify_module.reconcile_claude_notify_hooks(
-            CLAUDE_HOME / "settings.json", config.notifications.enabled)
+        claude_settings.reconcile_claude_settings(
+            CLAUDE_HOME / "settings.json",
+            notifications=config.notifications.enabled,
+            statusline=config.claude.statusline)
 
     channel, extra_env = claude_channel_args(agent, config, workspace, rest)
     extra_env = [
@@ -1384,8 +1387,10 @@ def host_main(agent: str, rest: list[str]) -> int:
 
     config = load_config()
     if agent == "claude" and is_claude_session_invocation(rest):
-        notify_module.reconcile_claude_notify_hooks(
-            CLAUDE_HOME / "settings.json", config.notifications.enabled)
+        claude_settings.reconcile_claude_settings(
+            CLAUDE_HOME / "settings.json",
+            notifications=config.notifications.enabled,
+            statusline=config.claude.statusline)
     env = dict(os.environ)
     # A non-Flow-Next launch must not inherit stale Flow-Next policy values
     # the parent shell happens to have exported -- clear every agent-box-owned

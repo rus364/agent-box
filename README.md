@@ -92,7 +92,7 @@ Settings are stored as a small versioned JSON document at `~/.config/agent-box/c
 ```json
 {
   "version": 1,
-  "claude":        { "telegram_channel": false },
+  "claude":        { "telegram_channel": false, "statusline": true },
   "notifications": { "enabled": false, "telegram_token": "", "telegram_chat_id": "" },
   "github":        { "gh_token": false, "gh_config": false },
   "git":           { "identity": true, "full_config": false },
@@ -109,6 +109,7 @@ Settings are stored as a small versioned JSON document at `~/.config/agent-box/c
 | Setting | Default | What it does |
 | --- | --- | --- |
 | `claude.telegram_channel` | **off** | Adds `--channels plugin:telegram@claude-plugins-official` to `agent-box claude` |
+| `claude.statusline` | **on** | Keeps Claude's `statusLine` pointed at `agent-box statusline`; exposes nothing, and never overwrites a status line you configured yourself |
 | `notifications.enabled` | **off** | Outbound-only Telegram pings; needs a token and chat id to become active |
 | `github.gh_token` | **off** | Permits an exported token, or obtains `gh auth token`, and forwards it as `GH_TOKEN` |
 | `github.gh_config` | **off** | Copies the host's `~/.config/gh` (which stores that token) into the container |
@@ -387,13 +388,15 @@ The one command to put in Claude Code's `statusLine`. It reads the JSON Claude C
 
 The `ctx` segment is Claude Code's own accounting: it computes context consumption itself and ships it in the `context_window` field of that same payload, so agent-box neither parses a transcript nor spends session context to show it. The segment is absent before a session's first assistant message.
 
-Configure it by hand, once:
+agent-box configures this for you. `claude.statusline` is on by default, and `agent-box claude` reconciles Claude's `statusLine` on every launch, in the same single settings write as the notification hooks:
 
 ```json
 "statusLine": { "type": "command", "command": "agent-box statusline" }
 ```
 
-agent-box deliberately does not write this for you. It reconciles the hooks it owns in `~/.claude/settings.json`, but the status line is yours to set — it is the one place where a personal preference would otherwise be overwritten on every launch.
+It is the one integration that defaults on, because it exposes nothing: no credential leaves the host and nothing new reaches the container. What it costs is one line of Claude's own UI, which agent-box gives back the moment you turn the setting off in `agent-box config`.
+
+**A status line you configured yourself is never overwritten.** agent-box fills the slot only when it is empty or already holds `agent-box statusline`, and switching the setting off removes only that exact command. `agent-box config show` says which of the three cases you are in. This is deliberately not a migration either: an older `agent-box usage all --statusline` counts as somebody else's line and is left exactly where it is.
 
 ## Configuration paths
 
@@ -463,6 +466,6 @@ When `/dev/kvm` is accessible it is passed through automatically. Disable with `
 - **Command changes:** `agent-box notify setup|status|disable` → `agent-box config`. `agent-box telegram *` → gone. `agent-box notify test|claude|codex` still exist (the last two are the hook entry points).
 - **The GitHub token is no longer forwarded by default.** It used to travel whenever `gh` was authenticated on the host; now it requires `github.gh_token` in `agent-box config`. Same for copying `~/.config/gh`, which is now `github.gh_config` and also off by default.
 - **Legacy notify hooks are cleaned up.** The next normal Claude session removes old `~/.local/bin/agent-box notify claude` entries and installs the PATH-based hook; `agent-box config` does the same.
-- The `statusLine` auto-migration is gone; if yours still points at an old command, set it to `agent-box statusline`.
+- The `statusLine` auto-migration is gone, and nothing rewrites an existing command in place. If yours still points at an old one, clear it (or set it to `agent-box statusline` yourself) and agent-box will keep it current from then on.
 - `podman build` on the `Containerfile` requires explicit `USER_NAME`/`USER_UID`/`USER_GID`/`USER_HOME` args — use `agent-box build`, or pass all four yourself.
 - The mandatory `~/code` workspace requirement is gone; set `AGENT_BOX_WORKSPACE_ROOT=~/code` if you want the old "one big mounted tree" behavior.
