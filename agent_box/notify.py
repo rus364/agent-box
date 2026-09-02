@@ -653,40 +653,36 @@ def hook_entry(matcher: str | None = None) -> dict[str, Any]:
     return item
 
 
-def install_claude_notify_hooks(settings_path: Path) -> None:
-    from .claude_settings import reconcile_hook_entries
-    # The stale command is removed first (a separate, pre-existing owned
-    # command from an older agent-box), then the current entries are
-    # installed -- both go through the same shared, generic mechanics.
-    reconcile_hook_entries(settings_path, {
-        "Notification": (STALE_NOTIFY_COMMAND,),
-        "Stop": (STALE_NOTIFY_COMMAND,),
-        "StopFailure": (STALE_NOTIFY_COMMAND,),
-    }, [
+def claude_notify_plan(
+    enabled: bool,
+) -> tuple[dict[str, tuple[str, ...]], list[tuple[str, dict[str, Any]]]]:
+    """The owned commands and managed entries for a notification state.
+
+    Returned rather than applied, so a caller reconciling several unrelated
+    parts of ``settings.json`` can write the file once instead of once per
+    concern. When notifications are on, the stale command is listed as owned
+    too: it is removed in the same pass that installs the current entries,
+    because leaving it in place makes every Claude event fire the hook twice.
+    """
+    owned_commands = (
+        (NOTIFY_COMMAND, STALE_NOTIFY_COMMAND) if not enabled else (STALE_NOTIFY_COMMAND,)
+    )
+    owned = {event: owned_commands for event in ("Notification", "Stop", "StopFailure")}
+    if not enabled:
+        return owned, []
+    return owned, [
         ("Notification", hook_entry("permission_prompt")),
         ("Notification", hook_entry("idle_prompt")),
         ("Stop", hook_entry()),
         ("StopFailure", hook_entry()),
-    ])
+    ]
+
+
+def install_claude_notify_hooks(settings_path: Path) -> None:
+    from .claude_settings import reconcile_hook_entries
+    reconcile_hook_entries(settings_path, *claude_notify_plan(True))
 
 
 def remove_claude_notify_hooks(settings_path: Path) -> None:
-    from .claude_settings import remove_hook_commands
-    owned = (NOTIFY_COMMAND, STALE_NOTIFY_COMMAND)
-    remove_hook_commands(settings_path, {
-        "Notification": owned, "Stop": owned, "StopFailure": owned,
-    })
-
-
-def reconcile_claude_notify_hooks(settings_path: Path, notifications_enabled: bool) -> None:
-    """Synchronize owned Claude notification hooks for a Claude session launch.
-
-    Configuration remains the source of truth, but launch is the ordinary
-    lifecycle every existing installation passes through.  Reconciling here
-    migrates legacy absolute-path hooks even when a user does not reopen the
-    interactive config screen after upgrading.
-    """
-    if notifications_enabled:
-        install_claude_notify_hooks(settings_path)
-    else:
-        remove_claude_notify_hooks(settings_path)
+    from .claude_settings import reconcile_hook_entries
+    reconcile_hook_entries(settings_path, *claude_notify_plan(False))

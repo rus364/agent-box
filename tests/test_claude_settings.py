@@ -10,9 +10,11 @@ auto-push's only managed Claude hook (`Stop`) carries no matcher of its own."""
 import json
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
-from agent_box import flow_push, notify
+from agent_box import claude_settings, flow_push, notify
+from agent_box.errors import AgentBoxError
 
 
 class MixedEntryRemovalTests(unittest.TestCase):
@@ -160,6 +162,112 @@ class ArbitraryUserHooksSurviveTests(unittest.TestCase):
             self.assertEqual(settings["model"], "opus")
             self.assertEqual(
                 settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"], "my-custom-linter")
+
+
+class StatuslineReconcileTests(unittest.TestCase):
+    OURS = {"type": "command", "command": claude_settings.STATUSLINE_COMMAND}
+    THEIRS = {"type": "command", "command": "bash ~/my-prompt.sh"}
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.path = Path(self.tmp.name) / "settings.json"
+
+    def write(self, data: dict) -> None:
+        self.path.write_text(json.dumps(data))
+
+    def read(self) -> dict:
+        return json.loads(self.path.read_text())
+
+    def test_installs_into_an_empty_slot(self):
+        self.write({"model": "opus"})
+        self.assertTrue(claude_settings.reconcile_statusline(self.path, True))
+        self.assertEqual(self.read(), {"model": "opus", "statusLine": self.OURS})
+
+    def test_creates_the_file_when_there_is_none(self):
+        self.assertTrue(claude_settings.reconcile_statusline(self.path, True))
+        self.assertEqual(self.read(), {"statusLine": self.OURS})
+
+    def test_an_already_correct_file_is_not_rewritten(self):
+        self.write({"statusLine": self.OURS})
+        before = self.path.stat().st_mtime_ns
+        self.assertFalse(claude_settings.reconcile_statusline(self.path, True))
+        self.assertEqual(self.path.stat().st_mtime_ns, before)
+
+    def test_another_tools_status_line_is_never_overwritten(self):
+        self.write({"statusLine": self.THEIRS})
+        self.assertFalse(claude_settings.reconcile_statusline(self.path, True))
+        self.assertEqual(self.read()["statusLine"], self.THEIRS)
+
+    def test_disabling_removes_only_our_own_command(self):
+        self.write({"model": "opus", "statusLine": self.OURS})
+        self.assertTrue(claude_settings.reconcile_statusline(self.path, False))
+        self.assertEqual(self.read(), {"model": "opus"})
+
+    def test_disabling_leaves_another_tools_status_line_in_place(self):
+        self.write({"statusLine": self.THEIRS})
+        self.assertFalse(claude_settings.reconcile_statusline(self.path, False))
+        self.assertEqual(self.read()["statusLine"], self.THEIRS)
+
+    def test_disabling_never_creates_a_missing_file(self):
+        self.assertFalse(claude_settings.reconcile_statusline(self.path, False))
+        self.assertFalse(self.path.exists())
+
+    def test_an_old_agent_box_command_counts_as_somebody_elses(self):
+        # Deliberately not a migration: the previous command string is left
+        # exactly where it is rather than being rewritten in place.
+        legacy = {"type": "command", "command": "agent-box usage all --statusline"}
+        self.write({"statusLine": legacy})
+        self.assertFalse(claude_settings.reconcile_statusline(self.path, True))
+        self.assertEqual(self.read()["statusLine"], legacy)
+
+    def test_hooks_and_other_settings_survive_both_directions(self):
+        settings = {
+            "model": "opus",
+            "hooks": {"Stop": [{"hooks": [{"type": "command", "command": "mine"}]}]},
+        }
+        self.write(settings)
+        claude_settings.reconcile_statusline(self.path, True)
+        claude_settings.reconcile_statusline(self.path, False)
+        self.assertEqual(self.read(), settings)
+
+    def test_a_non_object_settings_file_is_an_error(self):
+        self.path.write_text("[]")
+        with self.assertRaises(AgentBoxError):
+            claude_settings.reconcile_statusline(self.path, True)
+
+    def test_hooks_and_status_line_land_in_a_single_write(self):
+        self.write({"model": "opus"})
+        with mock.patch.object(
+            claude_settings, "atomic_write_json", wraps=claude_settings.atomic_write_json
+        ) as write_json:
+            self.assertTrue(claude_settings.reconcile_claude_settings(
+                self.path, notifications=True, statusline=True))
+        self.assertEqual(write_json.call_count, 1)
+        settings = self.read()
+        self.assertEqual(settings["statusLine"], self.OURS)
+        self.assertEqual(len(settings["hooks"]["Notification"]), 2)
+
+    def test_the_combined_reconciler_can_take_both_back_out(self):
+        self.write({"model": "opus"})
+        claude_settings.reconcile_claude_settings(
+            self.path, notifications=True, statusline=True)
+        with mock.patch.object(
+            claude_settings, "atomic_write_json", wraps=claude_settings.atomic_write_json
+        ) as write_json:
+            self.assertTrue(claude_settings.reconcile_claude_settings(
+                self.path, notifications=False, statusline=False))
+        self.assertEqual(write_json.call_count, 1)
+        self.assertEqual(self.read(), {"model": "opus"})
+
+    def test_an_already_correct_file_is_left_untouched_by_the_combined_pass(self):
+        self.write({"model": "opus"})
+        claude_settings.reconcile_claude_settings(
+            self.path, notifications=True, statusline=True)
+        with mock.patch.object(claude_settings, "atomic_write_json") as write_json:
+            self.assertFalse(claude_settings.reconcile_claude_settings(
+                self.path, notifications=True, statusline=True))
+        write_json.assert_not_called()
 
 
 if __name__ == "__main__":

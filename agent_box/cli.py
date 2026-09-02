@@ -8,9 +8,11 @@ from pathlib import Path
 from typing import NoReturn
 
 from . import channel as channel_module
+from . import claude_settings
 from . import notify as notify_module
 from . import statusline as statusline_module
 from . import usage as usage_module
+from .atomicio import read_json
 from .config import CLAUDE_TELEGRAM_CHANNEL, load_config, save_config
 from .errors import AgentBoxError
 from .paths import CLAUDE_HOME, CONFIG_FILE
@@ -266,11 +268,32 @@ def _prompt_secret(label: str, current: str) -> str:
     return answer or current
 
 
+def _statusline_note(config) -> str:
+    """Say so when Claude's status line is somebody else's, not agent-box's.
+
+    Reconciliation never overwrites a status line it does not own, so "on"
+    alone could otherwise look like a promise agent-box is not keeping.
+    """
+    if not config.claude.statusline:
+        return ""
+    settings_path = CLAUDE_HOME / "settings.json"
+    try:
+        settings = read_json(settings_path) if settings_path.is_file() else {}
+    except (OSError, ValueError):
+        return ""
+    if not isinstance(settings, dict) or "statusLine" not in settings:
+        return " (installs on the next 'agent-box claude')"
+    if claude_settings.statusline_is_ours(settings):
+        return ""
+    return " (left alone: another status line is configured)"
+
+
 def config_show() -> None:
     config = load_config()
     print(f"Config file: {CONFIG_FILE}{'' if CONFIG_FILE.is_file() else ' (not created yet; showing defaults)'}")
     print()
     print(f"  Claude Telegram channel     {'on' if config.claude.telegram_channel else 'off'}")
+    print(f"  Claude status line          {'on' if config.claude.statusline else 'off'}{_statusline_note(config)}")
     print(f"  Outbound notifications      {'on' if config.notifications.enabled else 'off'}")
     print(f"    bot token                 {_redact(config.notifications.telegram_token)}")
     print(f"    chat id                   {config.notifications.telegram_chat_id or '(not set)'}")
@@ -340,6 +363,12 @@ def config_interactive() -> None:
         config.claude.telegram_channel = _prompt_bool(
             "Enable Claude Telegram channel", config.claude.telegram_channel)
 
+    print("\n-- Claude status line --")
+    print("Points Claude's statusLine at 'agent-box statusline'.")
+    print("A status line configured by anything else is never overwritten.")
+    config.claude.statusline = _prompt_bool(
+        "Let agent-box manage the Claude status line", config.claude.statusline)
+
     print("\n-- Outbound Telegram notifications --")
     print("One-way pings only (Codex turn complete, Claude waiting/finished/failed).")
     config.notifications.enabled = _prompt_bool("Enable outbound notifications", config.notifications.enabled)
@@ -378,12 +407,16 @@ def config_interactive() -> None:
 
     save_config(config)
     # Keep the derived artifacts in step with what was just saved: the
-    # container-visible credential file, and Claude's own hook entries. The
-    # notification hooks and the flow-next hooks are installed/removed
-    # independently of each other -- each owns only its own hook commands.
+    # container-visible credential file, and everything agent-box owns in
+    # Claude's settings.json -- its notification hooks and its status line, in
+    # one write. The flow-next hooks are reconciled separately below; each set
+    # owns only its own commands and never disturbs the other.
     notify_module.sync_credentials(config)
     settings = CLAUDE_HOME / "settings.json"
-    notify_module.reconcile_claude_notify_hooks(settings, config.notifications.enabled)
+    claude_settings.reconcile_claude_settings(
+        settings,
+        notifications=config.notifications.enabled,
+        statusline=config.claude.statusline)
     from . import flow_push
     if config.flow_next.auto_push:
         flow_push.install_flow_push_hooks(settings)

@@ -11,6 +11,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from agent_box import config as config_module
 from agent_box.config import Config, load_config, save_config
 
 
@@ -176,6 +177,25 @@ class NotificationsUsableTests(unittest.TestCase):
         config.notifications.telegram_token = "t"
         config.notifications.telegram_chat_id = "1"
         self.assertFalse(config.notifications.usable)
+
+
+class ClaudeStatuslineDefaultTests(unittest.TestCase):
+    def test_statusline_defaults_on(self):
+        self.assertTrue(config_module.ClaudeConfig().statusline)
+
+    def test_a_config_written_before_the_setting_existed_gets_the_default(self):
+        claude = config_module.ClaudeConfig.from_dict({"telegram_channel": True})
+        self.assertTrue(claude.statusline)
+        self.assertTrue(claude.telegram_channel)
+
+    def test_an_explicit_false_is_kept(self):
+        self.assertFalse(
+            config_module.ClaudeConfig.from_dict({"statusline": False}).statusline)
+
+    def test_round_trip(self):
+        claude = config_module.ClaudeConfig(telegram_channel=True, statusline=False)
+        self.assertEqual(
+            config_module.ClaudeConfig.from_dict(claude.to_dict()), claude)
 
 
 if __name__ == "__main__":

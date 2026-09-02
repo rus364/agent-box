@@ -21,7 +21,7 @@ Schema (version 1)::
 
     {
       "version": 1,
-      "claude": {"telegram_channel": false},
+      "claude": {"telegram_channel": false, "statusline": true},
       "notifications": {"enabled": false, "telegram_token": "", "telegram_chat_id": ""},
       "github": {"gh_token": false, "gh_config": false},
       "git": {"identity": true, "full_config": false},
@@ -70,13 +70,25 @@ def _str(data: Any, key: str) -> str:
 class ClaudeConfig:
     #: Start `agent-box claude` with --channels plugin:telegram@claude-plugins-official.
     telegram_channel: bool = False
+    #: Keep Claude's ``statusLine`` pointed at ``agent-box statusline``.
+    #:
+    #: Defaults on, unlike every other integration here, because it is the one
+    #: setting that exposes nothing: no credential leaves the host and nothing
+    #: reaches the container that was not already mounted. What it costs is a
+    #: line of Claude's own UI, which agent-box gives back the moment the
+    #: setting is turned off. A status line someone else configured is never
+    #: overwritten -- see ``agent_box.claude_settings.reconcile_statusline``.
+    statusline: bool = True
 
     def to_dict(self) -> dict[str, Any]:
-        return {"telegram_channel": self.telegram_channel}
+        return {"telegram_channel": self.telegram_channel, "statusline": self.statusline}
 
     @classmethod
     def from_dict(cls, data: Any) -> "ClaudeConfig":
-        return cls(telegram_channel=_bool(data, "telegram_channel", False))
+        return cls(
+            telegram_channel=_bool(data, "telegram_channel", False),
+            statusline=_bool(data, "statusline", True),
+        )
 
 
 @dataclass
