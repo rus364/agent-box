@@ -16,6 +16,37 @@ from .errors import AgentBoxError
 from .paths import CLAUDE_HOME, CODEX_HOME, XDG_CACHE_HOME, env_path
 
 PLACEHOLDER_USAGE = "—/— · —/—"
+#: Claude Code joins status-line segments nowhere; agent-box owns its own line,
+#: so one separator is used for every segment it prints.
+STATUSLINE_SEPARATOR = " │ "
+#: One muted 256-colour hue per segment, so the three numbers are told apart at
+#: a glance without competing with the transcript above them. Claude Code
+#: already renders a single-line status dim, which these are chosen to survive.
+#: Colour is applied by the combined `usage all` path only: it exists to tell
+#: several segments apart, and a single-provider `usage claude` / `usage codex`
+#: has nothing to disambiguate, so it prints plain.
+CONTEXT_COLOR = "38;5;140"   # muted violet
+CLAUDE_COLOR = "38;5;173"    # muted terracotta
+CODEX_COLOR = "38;5;110"     # muted steel blue
+#: End bold and restore the default foreground, and nothing else. A full reset
+#: (``0``) would also clear the dim attribute Claude Code wraps the status line
+#: in, making everything after it brighter than the rest of the line.
+COLOR_OFF = "\x1b[22;39m"
+
+
+def color_enabled() -> bool:
+    """Whether to emit colour. Honours NO_COLOR, never a terminal check.
+
+    A status line is always a piped command, so an ``isatty`` test would
+    suppress colour in exactly the case it is meant for.
+    """
+    return not os.environ.get("NO_COLOR", "")
+
+
+def colorize(text: str, color: str) -> str:
+    if not text or not color_enabled():
+        return text
+    return f"\x1b[{color}m{text}{COLOR_OFF}"
 
 
 def http_json(url: str, *, headers: dict[str, str] | None = None, data: bytes | None = None, timeout: float = 15) -> Any:
@@ -100,6 +131,44 @@ def format_claude_usage(data: Any, now: float | None = None) -> str:
     a, ar = fmt(rate.get("five_hour"))
     b, br = fmt(rate.get("seven_day"))
     return f"{a}/{b} · {ar}/{br}"
+
+
+def compact_tokens(count: float) -> str:
+    n = max(0, int(count))
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M"
+    if n >= 1_000:
+        return f"{round(n / 1_000)}k"
+    return str(n)
+
+
+def format_context_window(data: Any) -> str:
+    """Session context consumption, from a Claude status-line payload.
+
+    Claude Code computes this itself and ships it in the status-line JSON
+    (``context_window``), so agent-box neither reads the transcript nor asks
+    the API for it -- and, because a status line is a plain shell command whose
+    output only reaches the terminal, none of it costs session context.
+
+    Returns an empty segment before the first assistant message of a session,
+    when ``used_percentage`` is still null and there is nothing to report.
+    """
+    window = data.get("context_window") if isinstance(data, dict) else None
+    if not isinstance(window, dict):
+        return ""
+    used = window.get("used_percentage")
+    total = window.get("context_window_size")
+    tokens = window.get("total_input_tokens")
+    if not isinstance(used, (int, float)) or not isinstance(total, (int, float)) or total <= 0:
+        return ""
+    if not isinstance(tokens, (int, float)):
+        return ""
+    return f"ctx {int(used)}% · {compact_tokens(tokens)}/{compact_tokens(total)}"
+
+
+def join_segments(*segments: str) -> str:
+    """Join the non-empty status-line segments agent-box has to show."""
+    return STATUSLINE_SEPARATOR.join(segment for segment in segments if segment)
 
 
 def parse_payload(payload: str) -> dict[str, Any]:

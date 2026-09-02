@@ -204,7 +204,7 @@ agent-box has no Telegram or remote-control integration for Codex. Use the offic
 
 ## Outbound notifications
 
-Remote control and notifications are separate features. Notifications are strictly **one-directional**: agent-box only sends Telegram messages. There is no polling daemon, no `getUpdates`, no callbacks, and no way to drive a session from a notification. Codex completion reports use Telegram Rich Markdown when available, with a safe plain-message fallback for older or incompatible Bot API deployments.
+Remote control and notifications are separate features. Notifications are strictly **one-directional**: agent-box only sends Telegram messages. There is no polling daemon, no `getUpdates`, no callbacks, and no way to drive a session from a notification. Completion reports for both agents use Telegram Rich Markdown when available, with a safe plain-message fallback for older or incompatible Bot API deployments.
 
 ```bash
 agent-box config        # enable, with bot token + chat id
@@ -214,7 +214,9 @@ agent-box notify test   # send a test message
 What gets sent:
 
 - **Codex** — turn completed, with the last assistant message.
-- **Claude** — waiting for input, permission required, turn finished, stopped with an error.
+- **Claude** — waiting for input, permission required, turn finished (with the last assistant message), stopped with an error.
+
+Both completion reports carry the text the agent actually wrote, rendered as Markdown: Codex supplies it in its notify payload, Claude in the `Stop` hook's `last_assistant_message`. A turn that ends without closing prose still reports plain completion.
 
 Claude's "turn finished" is suppressed while background tasks from that turn are still running, so a long background job doesn't ping you as though it needed input.
 
@@ -365,7 +367,33 @@ The combined command prints both subscriptions on one line:
 Claude 97/88 · 4h51m/5d23h │ Codex 83/61 · 3h24m/4d11h
 ```
 
-Both providers cache for 60 seconds and run directly on the host (no container). Claude Code's `statusLine` can use `agent-box usage all --statusline`.
+Both providers cache for 60 seconds and run directly on the host (no container). `--statusline` reads Claude Code's status-line JSON from stdin, which lets the numbers come from the running session instead of a cached HTTP call; `agent-box statusline` (below) is the form to actually configure.
+
+Each segment of the **combined** line gets its own muted 256-colour hue — violet for context, terracotta for Claude, steel blue for Codex. `agent-box usage claude` and `agent-box usage codex` print plain: the colours exist to separate segments from each other, and a single-provider invocation has nothing to separate. Set `NO_COLOR` to switch colour off entirely; agent-box never probes for a terminal, because a status-line command never has one.
+
+## Status line
+
+```bash
+agent-box statusline
+```
+
+The one command to put in Claude Code's `statusLine`. It reads the JSON Claude Code pipes in on stdin and renders the whole bottom line:
+
+```text
+➜ [14:23] agent-box git:(main) ✗ │ ctx 31% · 62k/200k │ Claude 97/88 · 4h51m/5d23h │ Codex 83/61 · 3h24m/4d11h
+```
+
+`statusLine` accepts exactly one command, so the shell-prompt half (clock, virtualenv, directory, git branch and dirty marker) and the usage half have to be composed somewhere. Doing it here rather than in a wrapper script next to `settings.json` is what keeps it version-controlled, tested, and identical on the host and inside the container, where `agent-box` is mounted onto `PATH`. Every git call is capped at one second, so a slow repository loses its segment instead of stalling a line that redraws constantly.
+
+The `ctx` segment is Claude Code's own accounting: it computes context consumption itself and ships it in the `context_window` field of that same payload, so agent-box neither parses a transcript nor spends session context to show it. The segment is absent before a session's first assistant message.
+
+Configure it by hand, once:
+
+```json
+"statusLine": { "type": "command", "command": "agent-box statusline" }
+```
+
+agent-box deliberately does not write this for you. It reconciles the hooks it owns in `~/.claude/settings.json`, but the status line is yours to set — it is the one place where a personal preference would otherwise be overwritten on every launch.
 
 ## Configuration paths
 
@@ -435,6 +463,6 @@ When `/dev/kvm` is accessible it is passed through automatically. Disable with `
 - **Command changes:** `agent-box notify setup|status|disable` → `agent-box config`. `agent-box telegram *` → gone. `agent-box notify test|claude|codex` still exist (the last two are the hook entry points).
 - **The GitHub token is no longer forwarded by default.** It used to travel whenever `gh` was authenticated on the host; now it requires `github.gh_token` in `agent-box config`. Same for copying `~/.config/gh`, which is now `github.gh_config` and also off by default.
 - **Legacy notify hooks are cleaned up.** The next normal Claude session removes old `~/.local/bin/agent-box notify claude` entries and installs the PATH-based hook; `agent-box config` does the same.
-- The `statusLine` auto-migration is gone; if yours still points at an old command, set it to `agent-box usage all --statusline`.
+- The `statusLine` auto-migration is gone; if yours still points at an old command, set it to `agent-box statusline`.
 - `podman build` on the `Containerfile` requires explicit `USER_NAME`/`USER_UID`/`USER_GID`/`USER_HOME` args — use `agent-box build`, or pass all four yourself.
 - The mandatory `~/code` workspace requirement is gone; set `AGENT_BOX_WORKSPACE_ROOT=~/code` if you want the old "one big mounted tree" behavior.

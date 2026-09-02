@@ -9,6 +9,7 @@ from typing import NoReturn
 
 from . import channel as channel_module
 from . import notify as notify_module
+from . import statusline as statusline_module
 from . import usage as usage_module
 from .config import CLAUDE_TELEGRAM_CHANNEL, load_config, save_config
 from .errors import AgentBoxError
@@ -67,6 +68,7 @@ def usage_text() -> None:
   agent-box [--mount PATH[:ro]]... [--host] [codex|claude|shell|doctor] [arguments...]
   agent-box config [show|check]
   agent-box usage <codex|claude|all> [--statusline]
+  agent-box statusline
   agent-box notify <test|claude|codex>
   agent-box selftest
   agent-box build | update | rebuild
@@ -116,6 +118,25 @@ Examples:
 
 # -- usage -----------------------------------------------------------------
 
+def statusline_command(args: list[str]) -> None:
+    if args:
+        die("agent-box statusline takes no arguments")
+    print(statusline_module.render(sys.stdin.read()))
+
+
+def statusline_context(payload: str | None) -> str:
+    """The session-context segment, empty unless Claude supplied a payload.
+
+    Only Claude Code knows a session's context consumption, and it already
+    computes it for the status line, so this is a pure read of what arrived on
+    stdin. A manual `agent-box usage ...` run has no session and no payload,
+    and simply prints no context segment.
+    """
+    if payload is None:
+        return ""
+    return usage_module.format_context_window(usage_module.parse_payload(payload))
+
+
 def usage_command(args: list[str]) -> None:
     if not args:
         die("usage provider required; expected codex, claude, or all")
@@ -123,7 +144,12 @@ def usage_command(args: list[str]) -> None:
     if provider == "claude":
         if rest not in ([], ["--statusline"]):
             die("agent-box usage claude accepts only --statusline")
-        print(usage_module.claude_usage(bool(rest)))
+        statusline = rest == ["--statusline"]
+        payload = sys.stdin.read() if statusline else None
+        print(usage_module.join_segments(
+            statusline_context(payload),
+            usage_module.claude_usage(statusline, payload),
+        ))
     elif provider == "codex":
         if rest:
             die("agent-box usage codex takes no arguments")
@@ -141,7 +167,14 @@ def usage_command(args: list[str]) -> None:
             codex = usage_module.codex_usage()
         except Exception:
             codex = usage_module.PLACEHOLDER_USAGE
-        print(f"Claude {claude} │ Codex {codex}")
+        # Only the combined line colours its segments: the hues are there to
+        # separate context from Claude from Codex, which is a distinction a
+        # single-provider invocation does not have to make.
+        print(usage_module.join_segments(
+            usage_module.colorize(statusline_context(payload), usage_module.CONTEXT_COLOR),
+            usage_module.colorize(f"Claude {claude}", usage_module.CLAUDE_COLOR),
+            usage_module.colorize(f"Codex {codex}", usage_module.CODEX_COLOR),
+        ))
     else:
         die(f"unsupported usage provider '{provider}'; expected codex, claude, or all")
 
@@ -386,7 +419,7 @@ def selftest() -> None:
 # -- main ----------------------------------------------------------------
 
 NON_RUNTIME = {
-    "usage", "notify", "config", "selftest", "help", "-h", "--help",
+    "usage", "statusline", "notify", "config", "selftest", "help", "-h", "--help",
     "build", "update", "rebuild", "flow-next",
 }
 #: --host only makes sense for a real agent launch, never for these.
@@ -405,6 +438,8 @@ def main() -> None:
             die("--host does not use --mount; there is no container to mount into")
         if args and args[0] == "usage":
             usage_command(args[1:]); return
+        if args and args[0] == "statusline":
+            statusline_command(args[1:]); return
         if args and args[0] == "notify":
             notify_command(args[1:]); return
         if args and args[0] == "config":

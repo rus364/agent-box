@@ -452,21 +452,31 @@ def telegram_send_plain_report(
     return True
 
 
-def telegram_send_codex(project: str, detail: str) -> bool:
-    """Send Codex Markdown richly, falling back once to complete safe HTML."""
+def telegram_send_rich_report(
+    agent: str, project: str, status: str, detail: str,
+) -> bool:
+    """Send an agent's own Markdown richly, falling back to complete safe HTML.
+
+    Both agents hand agent-box the text they just wrote -- Codex through its
+    ``last-assistant-message`` notify field, Claude through the Stop hook's
+    ``last_assistant_message``. Neither is trusted markup: it is model output,
+    so it goes through the same sanitizer and the same bounded delivery plan.
+    """
+    safe_agent = _escape_markdown_inline(agent)
     safe_project = _escape_markdown_inline(project)
-    prefix = f"✅ **Codex · {safe_project}**\nTurn finished\n\n"
+    safe_status = _escape_markdown_inline(status)
+    prefix = f"✅ **{safe_agent} · {safe_project}**\n{safe_status}\n\n"
     markdown = sanitize_rich_markdown(detail)
     try:
         chunks = split_rich_markdown(markdown, first_prefix=prefix)
     except ValueError:
         return telegram_send_plain_report(
-            "Codex", project, "Turn finished", detail,
+            agent, project, status, detail,
             max_messages=MAX_TELEGRAM_REPORT_MESSAGES,
         )
     if len(chunks) > MAX_RICH_MESSAGE_CHUNKS:
         return telegram_send_plain_report(
-            "Codex", project, "Turn finished", detail,
+            agent, project, status, detail,
             max_messages=MAX_TELEGRAM_REPORT_MESSAGES,
         )
     rich_successes = 0
@@ -479,11 +489,11 @@ def telegram_send_codex(project: str, detail: str) -> bool:
                 if remaining_messages <= 0:
                     return False
                 return _telegram_report_notice(
-                    "Codex", project, "Turn finished",
+                    agent, project, status,
                     "Some of the rich report was delivered; the remainder could not be sent.",
                 )
             return telegram_send_plain_report(
-                "Codex", project, "Turn finished", detail,
+                agent, project, status, detail,
                 max_messages=remaining_messages,
             )
         rich_successes += 1
@@ -608,7 +618,16 @@ def notify_claude() -> None:
         # not completion. Keep it silent; a later Stop with no tasks reports the
         # actual terminal completion.
         if not tasks:
-            telegram_send(telegram_notice("✅", "Claude", project, "Turn finished"))
+            # Claude attaches the text of the turn's final assistant message, so
+            # the notification can carry what Claude actually said instead of a
+            # bare "finished" ping. It is optional in the hook schema, and a
+            # turn can end on a tool result with no closing prose, so a missing
+            # or empty message still reports plain completion.
+            summary = str(obj.get("last_assistant_message") or "").strip()
+            if summary:
+                telegram_send_rich_report("Claude", project, "Turn finished", summary)
+            else:
+                telegram_send(telegram_notice("✅", "Claude", project, "Turn finished"))
     elif event == "StopFailure":
         telegram_send(telegram_notice(
             "❌", "Claude", project, "Stopped with an error",
@@ -622,7 +641,7 @@ def notify_codex(payload: str | None) -> None:
         return
     project = notify_project(str(obj.get("cwd") or os.getcwd()))
     detail = str(obj.get("last-assistant-message") or "Turn completed.").strip()
-    telegram_send_codex(project, detail)
+    telegram_send_rich_report("Codex", project, "Turn finished", detail)
 
 
 # -- Claude settings.json hook wiring -------------------------------------
