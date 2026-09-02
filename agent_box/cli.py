@@ -284,6 +284,23 @@ def _statusline_note(config) -> str:
     return " (left alone: another status line is configured)"
 
 
+def _vikunja_note(config) -> str:
+    """Say what the container will actually reach, or why it will not.
+
+    "on" alone is not informative here: the switch exposes host state that
+    may not exist yet, and the URL the container gets is a rewritten form of
+    the host's, which is worth showing rather than leaving to be discovered
+    from a failing call.
+    """
+    if not config.vikunja.enabled:
+        return ""
+    from . import runtime
+    problems = runtime.vikunja_warnings(config)
+    if problems:
+        return f" ({problems[0].split('but ', 1)[-1]})"
+    return f" ({runtime.container_vikunja_url(runtime.host_vikunja_url())})"
+
+
 def config_show() -> None:
     config = load_config()
     print(f"Config file: {CONFIG_FILE}{'' if CONFIG_FILE.is_file() else ' (not created yet; showing defaults)'}")
@@ -299,6 +316,7 @@ def config_show() -> None:
     print(f"  Git full config copy        {'on' if config.git.full_config else 'off'}")
     print(f"  Provider API keys           {'on' if config.providers.api_keys else 'off'}")
     print(f"  Provider transport/proxy    {'on' if config.providers.transport else 'off'}")
+    print(f"  Vikunja skill access        {'on' if config.vikunja.enabled else 'off'}{_vikunja_note(config)}")
     print(f"  Flow-Next auto-push         {'on' if config.flow_next.auto_push else 'off'}")
     for agent, backend in sorted(config.flow_next.review_backends.items()):
         print(f"    review backend ({agent})    {backend}")
@@ -392,6 +410,18 @@ def config_interactive() -> None:
     config.providers.transport = _prompt_bool(
         "Forward endpoint/proxy settings from this shell (base URL, proxies, CA bundle)",
         config.providers.transport)
+
+    print("\n-- Vikunja skill access (opt-in) --")
+    print("Exposes ~/.config/vikunja (server URL + API token, read-only) and")
+    print("~/.local/state/vikunja (resumable import journals) to the container,")
+    print("and puts the skill's CLI on its PATH. A loopback URL is rewritten to")
+    print("host.containers.internal so the container reaches the host's server.")
+    print("The token can read and rewrite your entire task tracker.")
+    config.vikunja.enabled = _prompt_bool(
+        "Expose the host Vikunja credentials to the container", config.vikunja.enabled)
+    from . import runtime
+    for problem in runtime.vikunja_warnings(config):
+        print(f"  note: {problem}")
 
     print("\n-- Flow-Next auto-push (opt-in) --")
     print("At the end of a Claude/Codex turn, pushes the current feature branch")

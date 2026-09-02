@@ -121,6 +121,7 @@ Settings are stored as a small versioned JSON document at `~/.config/agent-box/c
   "github":        { "gh_token": false, "gh_config": false },
   "git":           { "identity": true, "full_config": false },
   "providers":     { "api_keys": false, "transport": true },
+  "vikunja":       { "enabled": false },
   "flow_next": {
     "review_backends": { "claude": "codex:gpt-5.6-sol:medium", "codex": "codex:gpt-5.6-sol:medium" },
     "auto_push": false
@@ -141,6 +142,7 @@ Settings are stored as a small versioned JSON document at `~/.config/agent-box/c
 | `git.full_config` | **off** | Copies the complete host Git configuration; opt in only if you accept its credential helpers, headers, includes, and rewrites being exposed |
 | `providers.api_keys` | **off** | Forwards exported `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` |
 | `providers.transport` | **on** | Forwards endpoint, Bedrock/Vertex, proxy, and CA transport settings (turn off if your proxy URL carries credentials) |
+| `vikunja.enabled` | **off** | Exposes the Vikunja skill's host credentials and puts its CLI on the container `PATH` (see below) |
 | `flow_next.review_backends` | see below | Flow-Next review backend spec, by primary agent (`claude`/`codex`) |
 | `flow_next.auto_push` | **off** | Opt-in Flow-Next auto-push, Claude and Codex (see below) |
 
@@ -333,6 +335,40 @@ Guarantees:
 
 If you keep something under `~/.agents` a container shouldn't read, move it out — the read-only tree mount is unconditional.
 
+## Vikunja skill
+
+The [`vikunja`](https://vikunja.io) skill drives a task tracker over its API v2. Its files travel into the container automatically as part of the `~/.agents` mount above, but a skill's *files* are not a working skill: its CLI has to be on `PATH`, its credentials have to be readable, and the server has to be reachable from inside a container's network namespace. `vikunja.enabled` (default **off**) is the one switch that arranges all three.
+
+Turning it on exposes exactly this, all derived from what the host already has — agent-box stores no Vikunja settings of its own:
+
+| What | Where in the container | Mode |
+| --- | --- | --- |
+| `~/.config/vikunja` — server URL and API token | `$HOME/.config/vikunja` | read-only |
+| `~/.local/state/vikunja` — resumable import journals | `$HOME/.local/state/vikunja` | read-write |
+| `~/.agents/skills/vikunja/scripts/vikunja.py` | `$HOME/.local/bin/vikunja` | read-only |
+
+The CLI bind adds no exposure the `~/.agents` mount did not already grant; it only gives the script the name the skill's own documentation tells an agent to invoke (`vikunja tasks get …`, not a path).
+
+**The loopback URL is rewritten.** A self-hosted Vikunja is almost always configured on the host as `http://127.0.0.1:3456`. Inside a container that address is the *container's* own loopback, so the skill would fail to connect with no useful hint. agent-box therefore forwards `VIKUNJA_URL` with only the host part replaced by `host.containers.internal`, which both pasta and slirp4netns write into the container's `/etc/hosts`; scheme, port, path, and any non-loopback host are left exactly as they are. Your host configuration is never modified — the same `~/.config/vikunja/config.json` keeps working outside agent-box.
+
+Unlike a token, a URL is an endpoint rather than a credential, so it is passed by value (`--env=VIKUNJA_URL=…`) the way `GIT_CONFIG_GLOBAL` is. Do not embed basic-auth credentials in it; the skill authenticates with the token file instead.
+
+**The token is the whole tracker.** `~/.config/vikunja/token` can read and rewrite every project and task the account can reach, which is why this defaults off and why the directory is mounted read-only. `agent-box config` shows what the container will actually reach, and says which half is missing when the skill, the token, or the URL is absent:
+
+```text
+Vikunja skill access        on (http://host.containers.internal:3456)
+```
+
+`agent-box doctor` answers the question that actually matters — whether a call gets through:
+
+```text
+vikunja url:         http://host.containers.internal:3456
+vikunja token:       present
+vikunja:             OK (admin)
+```
+
+Import journals are mounted read-write on purpose: a partially applied `vikunja import` is only resumable if its journal outlives the box.
+
 ## Git and GitHub
 
 `git` and `gh` configuration directories are always mounted (so both tools work), but only *populated* from the host when you opt in — see the configuration table above. Every workspace box gets its own writable snapshot, seeded as a **copy**, not a bind mount, because `git`/`gh` rewrite config via temp-file-plus-rename, which fails on a bind-mounted file. A snapshot is prepared immediately before that workspace's new box is created and stays stable for its lifetime: later Claude/Codex/shell attaches never replace it, and creating another workspace box cannot alter it. The host stays the source of truth; anything written inside a box is discarded when that workspace's next box is created.
@@ -450,7 +486,7 @@ agent-box selftest                     # fast, no Podman or network
 python3 -m unittest discover -s tests  # full suite
 ```
 
-The full suite covers config defaults and round-tripping, host-exposure gating (gh token/config, git config, provider env), the Claude channel preflight, `--mount` parsing and overlap planning, workspace resolution, host identity, passwd-anchored `~` expansion under a poisoned `$HOME`, `~/.agents` mount scope, notification payload handling, launch-time legacy-hook migration, event-level official-channel routing, and hook install/remove, usage formatting, the Containerfile's identity-arg validation (executed through a real shell), Flow-Next workspace detection and review-backend routing (container and host mode, including stale-host-env sanitization), `--host` launch behavior, deterministic and invocation-scoped Flowctl availability for Claude (from the plugin install-path record) and Codex (`$CODEX_HOME/scripts/flowctl`), the fail-closed remote-default-branch and actual-push-target guard chain — including a *stale locally cached* `origin/HEAD` that disagrees with the remote's current actual default branch, a fetch URL that differs from the effective push URL (including URL rewriting and multiple push URLs), `push.followTags`/`push.recurseSubmodules` neutralization proven against a real submodule and a real annotated tag — including against a hostile *inherited* `GIT_CONFIG_PARAMETERS`/`GIT_CONFIG_COUNT` environment that tries to force them back on or to redirect `origin`'s push URL between preflight and push, plus Flow-Next completion reconciliation (a changed-but-not-done task file never authorizes a push, a `"done"` status sourced from `status_source: "committed"` — or with no `status_source` at all — never authorizes a push either, a done task whose file didn't change in the unpushed range never authorizes a push, a completion followed by further commits — e.g. a receipt commit then a plan-sync commit — still pushes the final HEAD, and two independent workspaces' completions never cross-authorize each other) — and a real rejected `git push` against a bare remote with a rejecting `pre-receive` hook — all against real temporary git repositories and bare remotes; nested-directory and linked-worktree Flow-Next lifecycle handling; mixed-entry Claude hook ownership (agent-box removes only the handler it owns from an entry that also carries a user's own handler, leaving the entry and the user's handler intact); and the generated git credential-helper configuration for container auto-push.
+The full suite covers config defaults and round-tripping, host-exposure gating (gh token/config, git config, provider env, Vikunja credentials), Vikunja loopback-URL rewriting and URL precedence, the Claude channel preflight, `--mount` parsing and overlap planning, workspace resolution, host identity, passwd-anchored `~` expansion under a poisoned `$HOME`, `~/.agents` mount scope, notification payload handling, launch-time legacy-hook migration, event-level official-channel routing, and hook install/remove, usage formatting, the Containerfile's identity-arg validation (executed through a real shell), Flow-Next workspace detection and review-backend routing (container and host mode, including stale-host-env sanitization), `--host` launch behavior, deterministic and invocation-scoped Flowctl availability for Claude (from the plugin install-path record) and Codex (`$CODEX_HOME/scripts/flowctl`), the fail-closed remote-default-branch and actual-push-target guard chain — including a *stale locally cached* `origin/HEAD` that disagrees with the remote's current actual default branch, a fetch URL that differs from the effective push URL (including URL rewriting and multiple push URLs), `push.followTags`/`push.recurseSubmodules` neutralization proven against a real submodule and a real annotated tag — including against a hostile *inherited* `GIT_CONFIG_PARAMETERS`/`GIT_CONFIG_COUNT` environment that tries to force them back on or to redirect `origin`'s push URL between preflight and push, plus Flow-Next completion reconciliation (a changed-but-not-done task file never authorizes a push, a `"done"` status sourced from `status_source: "committed"` — or with no `status_source` at all — never authorizes a push either, a done task whose file didn't change in the unpushed range never authorizes a push, a completion followed by further commits — e.g. a receipt commit then a plan-sync commit — still pushes the final HEAD, and two independent workspaces' completions never cross-authorize each other) — and a real rejected `git push` against a bare remote with a rejecting `pre-receive` hook — all against real temporary git repositories and bare remotes; nested-directory and linked-worktree Flow-Next lifecycle handling; mixed-entry Claude hook ownership (agent-box removes only the handler it owns from an entry that also carries a user's own handler, leaving the entry and the user's handler intact); and the generated git credential-helper configuration for container auto-push.
 
 No credentials are required and no network calls are made.
 
