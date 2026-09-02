@@ -68,12 +68,26 @@ def parse_global_args(argv: list[str]) -> tuple[list[str], bool, list[str]]:
 def usage_text() -> None:
     print('''Usage:
   agent-box [--mount PATH[:ro]]... [--host] [codex|claude|shell|doctor] [arguments...]
+  agent-box attach [session]
+  agent-box stop
   agent-box config [show|check]
   agent-box usage <codex|claude|all> [--statusline]
   agent-box statusline
   agent-box notify <test|claude|codex>
   agent-box selftest
   agent-box build | update | rebuild
+
+Sessions:
+  An interactive claude/codex/shell session runs inside a tmux server in the
+  workspace box, so closing the terminal detaches it instead of orphaning it:
+  the agent keeps running and 'agent-box attach' takes it back. Detach on
+  purpose with 'C-\\ d'. A detached session keeps its box alive, so a box you
+  walked away from ends with 'agent-box stop'. Non-terminal runs
+  ('claude -p ...', pipes, CI) are never wrapped.
+
+  agent-box attach          Reattach to this workspace's session (names one
+                            when the box holds several)
+  agent-box stop            Remove this workspace's box and every session in it
 
 Configuration:
   agent-box config          Interactive setup. Persists to
@@ -85,6 +99,7 @@ Environment (overrides for a single command):
   AGENT_BOX_AGENT           Default agent when claude/codex is omitted (default: claude)
   AGENT_BOX_IMAGE           Container image name (default: localhost/agent-box:latest)
   AGENT_BOX_KVM=0           Disable KVM passthrough
+  AGENT_BOX_TMUX=0          Run the session directly, with no detachable tmux
   AGENT_BOX_GH_TOKEN=0|1    Withhold / force the host GitHub token for this run
   AGENT_BOX_WORKSPACE_ROOT  Override the host directory mounted into the container
 
@@ -114,6 +129,8 @@ Examples:
   agent-box --host codex
   agent-box --mount ~/code claude
   agent-box --mount /mnt/data/specs:ro --mount /srv/generated codex
+  agent-box attach
+  agent-box stop
   agent-box config
   agent-box usage all''')
 
@@ -453,7 +470,7 @@ def selftest() -> None:
 
 NON_RUNTIME = {
     "usage", "statusline", "notify", "config", "selftest", "help", "-h", "--help",
-    "build", "update", "rebuild", "flow-next",
+    "build", "update", "rebuild", "flow-next", "attach", "stop",
 }
 #: --host only makes sense for a real agent launch, never for these.
 HOST_ONLY_AGENTS = {"claude", "codex"}
@@ -490,6 +507,11 @@ def main() -> None:
             from . import runtime
             command = args[0]
             raise SystemExit(runtime.build_image(script_dir, command != "build", command == "rebuild"))
+        if args and args[0] in {"attach", "stop"}:
+            from . import runtime
+            if args[0] == "attach":
+                raise SystemExit(runtime.attach_main(args[1:]))
+            raise SystemExit(runtime.stop_main(args[1:]))
         if host:
             agent = args[0] if args else None
             if agent not in HOST_ONLY_AGENTS:

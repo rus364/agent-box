@@ -95,6 +95,7 @@ RUN set -eux; \
         \
         procps \
         psmisc \
+        tmux \
         lsof \
         strace \
         \
@@ -392,6 +393,7 @@ RUN set -eux; \
     fd --version; \
     just --version; \
     shellcheck --version; \
+    tmux -V; \
     kubectl version --client; \
     helm version --short; \
     qemu-system-x86_64 --version; \

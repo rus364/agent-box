@@ -57,6 +57,14 @@ class IdentityArgsTests(unittest.TestCase):
             self.assertIn(f'f"{name}={{identity.', source)
 
 
+class SessionToolingTests(unittest.TestCase):
+    def test_image_ships_tmux(self):
+        """Detachable sessions run under a tmux server inside the box."""
+        text = containerfile_text()
+        self.assertRegex(text, r"(?m)^\s+tmux \\$")
+        self.assertIn("tmux -V;", text)
+
+
 class IdentityValidationShellTests(unittest.TestCase):
     """Run the Containerfile's own validation snippet through /bin/sh.
 

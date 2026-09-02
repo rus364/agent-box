@@ -21,7 +21,10 @@ concurrent Claude sessions both holding the channel would both receive every
 inbound message and both answer it, which is worse than the second one simply
 not being connected. A small host-side lock file makes the first live session
 the owner; a second one runs as a normal local Claude session instead. There
-is no daemon and no coordination beyond that file.
+is no daemon and no coordination beyond that file. "Live" means the session,
+not the terminal it was started from: a detached session (see
+:mod:`agent_box.sessions`) is still answering Telegram, so it keeps the
+channel even though the launcher that claimed it has exited.
 
 Everything inspected lives under ``CLAUDE_HOME``, which agent-box bind-mounts
 read-write at its host path -- so a plugin installed once on the host is
@@ -39,6 +42,7 @@ from typing import Any
 from .atomicio import atomic_write_json, read_json
 from .config import CLAUDE_TELEGRAM_CHANNEL, CLAUDE_TELEGRAM_PLUGIN
 from .paths import CHANNEL_LOCK, CLAUDE_HOME
+from .sessions import tmux_session_exists
 
 INSTALLED_PLUGINS = "plugins/installed_plugins.json"
 #: Where the plugin's MCP server keeps its token, allowlist and inbox. The
@@ -124,12 +128,20 @@ def setup_instructions(claude_home: Path | None = None) -> str:
 
 # -- single-owner lock -----------------------------------------------------
 #
-# Ownership is recorded, not enforced by a held file descriptor: agent-box
-# ``execvp``s podman, and whether podman keeps an inherited fd open is not
-# something to depend on. Instead the lock file names the process that owns
-# the channel, and liveness is decided by asking the kernel about that process
-# directly. flock is used only to make the read-check-write sequence atomic
-# between two launchers racing at the same instant.
+# Ownership is recorded, not enforced by a held file descriptor: whether an
+# inherited fd stays open across the launcher's podman client is not something
+# to depend on. Instead the lock file names what owns the channel, and
+# liveness is decided by asking about it directly. flock is used only to make
+# the read-check-write sequence atomic between two launchers racing at the
+# same instant.
+#
+# A record names two things, and either one being alive means the channel is
+# taken: the launcher process, and the box session it started. The second
+# exists because a session outlives its launcher whenever the terminal goes
+# away -- Claude is still running in the box and still holds the bot, so
+# releasing the channel then would hand the bot to a second session while the
+# first one is still answering it. A launch with no session to name (a piped
+# ``claude -p`` run) records only the launcher, as before.
 
 def _boot_id() -> str:
     """Identifies this boot, so PIDs from before a reboot are never trusted."""
@@ -157,16 +169,33 @@ def _pid_start_ticks(pid: int) -> str:
     return fields[19] if len(fields) > 19 else ""
 
 
-def _owner_alive(record: Any) -> bool:
-    if not isinstance(record, dict):
-        return False
+def _launcher_alive(record: dict[str, Any]) -> bool:
     pid = record.get("pid")
     if not isinstance(pid, int) or pid <= 0:
         return False
-    if record.get("boot_id") != _boot_id():
-        return False  # written before a reboot
     start = _pid_start_ticks(pid)
     return bool(start) and start == record.get("pid_start")
+
+
+def _session_alive(record: dict[str, Any]) -> bool:
+    """Whether the box session this record named is still running.
+
+    This is what makes a detached Claude keep the channel after its terminal
+    is gone. A box that cannot be reached at all reads as gone, so a removed
+    container never leaves the channel permanently claimed.
+    """
+    container, session = record.get("container"), record.get("session")
+    if not (isinstance(container, str) and isinstance(session, str) and container and session):
+        return False
+    return tmux_session_exists(container, session)
+
+
+def _owner_alive(record: Any) -> bool:
+    if not isinstance(record, dict):
+        return False
+    if record.get("boot_id") != _boot_id():
+        return False  # written before a reboot: neither a PID nor a box survives one
+    return _launcher_alive(record) or _session_alive(record)
 
 
 def channel_owner(path: Path | None = None) -> dict[str, Any] | None:
@@ -182,14 +211,15 @@ def channel_owner(path: Path | None = None) -> dict[str, Any] | None:
     return record if _owner_alive(record) else None
 
 
-def acquire_channel(project: str = "", path: Path | None = None) -> bool:
-    """Claim the channel for this process. False means someone else has it.
+def acquire_channel(
+    project: str = "", path: Path | None = None, container: str = "", session: str = "",
+) -> bool:
+    """Claim the channel for this launch. False means someone else has it.
 
-    The PID recorded is this process's own, which is deliberate: the caller
-    ``execvp``s podman immediately afterwards, and exec keeps the PID. So the
-    record names the podman process that actually runs the session, and the
-    lock lasts exactly as long as that container does -- no release step, and
-    nothing to leak if the session is killed or the machine loses power.
+    ``container``/``session`` name the box session this launch is about to
+    start, when it has one. They are what keeps the claim standing after this
+    process exits with the session still running; a launch without them is
+    owned by this process alone and is free again the moment it ends.
     """
     path = _lock(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -203,6 +233,8 @@ def acquire_channel(project: str = "", path: Path | None = None) -> bool:
             "pid": pid,
             "pid_start": _pid_start_ticks(pid),
             "boot_id": _boot_id(),
+            "container": container,
+            "session": session,
             "project": project,
             "started_at": int(time.time()),
         }, stat.S_IRUSR | stat.S_IWUSR)
@@ -213,17 +245,26 @@ def acquire_channel(project: str = "", path: Path | None = None) -> bool:
 
 
 def release_channel(path: Path | None = None) -> None:
-    """Drop a record this process owns. Only needed when the exec never happens."""
+    """Drop this launch's record when its session is not still running.
+
+    A launcher exits both when its session ends and when it merely detaches
+    from one. Only the first frees the channel: in the second the agent is
+    still in its box, still connected to the bot, and reachable again with
+    ``agent-box attach``.
+    """
     path = _lock(path)
     record = channel_owner(path)
-    if isinstance(record, dict) and record.get("pid") == os.getpid():
+    if isinstance(record, dict) and record.get("pid") == os.getpid() and not _session_alive(record):
         path.unlink(missing_ok=True)
 
 
 def describe_owner(record: dict[str, Any]) -> str:
     project = str(record.get("project") or "")
-    pid = record.get("pid")
-    return f"pid {pid}" + (f", {project}" if project else "")
+    session = str(record.get("session") or "")
+    # Name the session when there is one: it is what the user can go back to,
+    # and after a closed terminal the recorded PID is long gone.
+    owner = f"session {session}" if session and not _launcher_alive(record) else f"pid {record.get('pid')}"
+    return owner + (f", {project}" if project else "")
 
 
 def channel_flag() -> list[str]:

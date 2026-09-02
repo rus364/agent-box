@@ -172,7 +172,7 @@ class WorkspaceContainerLifecycleTests(unittest.TestCase):
         with mock.patch.object(runtime, "inspect_workspace_container", side_effect=AgentBoxError("query failed")), \
              mock.patch.object(runtime.subprocess, "run") as run:
             with self.assertRaisesRegex(AgentBoxError, "query failed"):
-                runtime.cleanup_workspace_container_if_idle(self.spec)
+                runtime.cleanup_workspace_container_if_idle(self.spec.name)
         run.assert_not_called()
 
     def test_stale_container_must_be_confirmed_absent_before_snapshot_reseed(self):
@@ -453,14 +453,14 @@ class WorkspaceContainerLifecycleTests(unittest.TestCase):
         with mock.patch.object(runtime, "inspect_workspace_container", return_value=self._container()), \
              mock.patch.object(runtime, "container_has_workloads", return_value=True), \
              mock.patch.object(runtime.subprocess, "run") as run:
-            runtime.cleanup_workspace_container_if_idle(self.spec)
+            runtime.cleanup_workspace_container_if_idle(self.spec.name)
         run.assert_not_called()
 
     def test_idle_container_is_removed(self):
         with mock.patch.object(runtime, "inspect_workspace_container", side_effect=[self._container(), None]), \
              mock.patch.object(runtime, "container_has_workloads", return_value=False), \
              mock.patch.object(runtime.subprocess, "run") as run:
-            runtime.cleanup_workspace_container_if_idle(self.spec)
+            runtime.cleanup_workspace_container_if_idle(self.spec.name)
         self.assertEqual(run.call_args.args[0], ["podman", "rm", "-f", self.spec.name])
 
     def test_process_table_filters_only_init_and_keeper(self):
