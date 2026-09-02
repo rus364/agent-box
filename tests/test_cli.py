@@ -1,10 +1,14 @@
+import contextlib
+import io
 import json
+import os
 import unittest
 import unittest.mock
 
 from agent_box import flow_push
 from agent_box import notify as notify_module
-from agent_box.cli import flow_next_command, notify_command, parse_global_args
+from agent_box import usage as usage_module
+from agent_box.cli import flow_next_command, notify_command, parse_global_args, usage_command
 
 
 class ParseGlobalArgsTests(unittest.TestCase):
@@ -122,6 +126,68 @@ class NotifyCodexDispatchTests(unittest.TestCase):
     def test_too_many_payload_arguments_dies(self):
         with self.assertRaises(SystemExit):
             notify_command(["codex", "a", "b"])
+
+
+class UsageCommandColorTests(unittest.TestCase):
+    """Colour separates segments, so only the combined line carries it."""
+
+    STATUSLINE_PAYLOAD = json.dumps({"context_window": {
+        "total_input_tokens": 62_385, "context_window_size": 200_000,
+        "used_percentage": 31,
+    }})
+
+    def _run(self, args: list[str], *, stdin: str = "") -> str:
+        out = io.StringIO()
+        with (
+            unittest.mock.patch.dict(os.environ, {}, clear=True),
+            unittest.mock.patch.object(
+                usage_module, "claude_usage", return_value="88/59 · 2h29m/4d15h"),
+            unittest.mock.patch.object(
+                usage_module, "codex_usage", return_value="91/17 · 2h11m/4d9h"),
+            unittest.mock.patch("sys.stdin", io.StringIO(stdin)),
+            contextlib.redirect_stdout(out),
+        ):
+            usage_command(args)
+        return out.getvalue().rstrip("\n")
+
+    def test_single_provider_output_is_never_colored(self):
+        for args in (["claude"], ["codex"], ["claude", "--statusline"]):
+            with self.subTest(args=args):
+                self.assertNotIn("\x1b[", self._run(args, stdin=self.STATUSLINE_PAYLOAD))
+
+    def test_single_provider_statusline_still_reports_context(self):
+        self.assertEqual(
+            self._run(["claude", "--statusline"], stdin=self.STATUSLINE_PAYLOAD),
+            "ctx 31% · 62k/200k │ 88/59 · 2h29m/4d15h",
+        )
+
+    def test_combined_line_colors_every_segment(self):
+        line = self._run(["all", "--statusline"], stdin=self.STATUSLINE_PAYLOAD)
+        self.assertEqual(line, usage_module.STATUSLINE_SEPARATOR.join([
+            f"\x1b[{usage_module.CONTEXT_COLOR}mctx 31% · 62k/200k{usage_module.COLOR_OFF}",
+            f"\x1b[{usage_module.CLAUDE_COLOR}mClaude 88/59 · 2h29m/4d15h{usage_module.COLOR_OFF}",
+            f"\x1b[{usage_module.CODEX_COLOR}mCodex 91/17 · 2h11m/4d9h{usage_module.COLOR_OFF}",
+        ]))
+
+    def test_combined_line_without_a_payload_has_no_context_segment(self):
+        self.assertEqual(
+            self._run(["all"]),
+            usage_module.STATUSLINE_SEPARATOR.join([
+                f"\x1b[{usage_module.CLAUDE_COLOR}mClaude 88/59 · 2h29m/4d15h{usage_module.COLOR_OFF}",
+                f"\x1b[{usage_module.CODEX_COLOR}mCodex 91/17 · 2h11m/4d9h{usage_module.COLOR_OFF}",
+            ]),
+        )
+
+    def test_no_color_disables_the_combined_line_too(self):
+        out = io.StringIO()
+        with (
+            unittest.mock.patch.dict(os.environ, {"NO_COLOR": "1"}, clear=True),
+            unittest.mock.patch.object(usage_module, "claude_usage", return_value="a"),
+            unittest.mock.patch.object(usage_module, "codex_usage", return_value="b"),
+            contextlib.redirect_stdout(out),
+        ):
+            usage_command(["all"])
+        self.assertEqual(out.getvalue().rstrip("\n"), "Claude a │ Codex b")
 
 
 if __name__ == "__main__":

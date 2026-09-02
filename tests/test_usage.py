@@ -1,4 +1,6 @@
+import os
 import unittest
+from unittest import mock
 
 from agent_box import usage
 from agent_box.errors import AgentBoxError
@@ -39,6 +41,52 @@ class UsageFormattingTests(unittest.TestCase):
         now = 1_800_000_000
         data = {"rate_limits": {"five_hour": {"used_percentage": 10, "resets_at": now - 5}, "seven_day": None}}
         self.assertEqual(usage.format_claude_usage(data, now), "—/— · —/—")
+
+    def test_compact_tokens(self):
+        self.assertEqual(usage.compact_tokens(842), "842")
+        self.assertEqual(usage.compact_tokens(62_385), "62k")
+        self.assertEqual(usage.compact_tokens(200_000), "200k")
+        self.assertEqual(usage.compact_tokens(1_000_000), "1.0M")
+
+    CONTEXT_PAYLOAD = {"context_window": {
+        "total_input_tokens": 62_385, "context_window_size": 200_000,
+        "used_percentage": 31, "remaining_percentage": 69,
+    }}
+
+    def test_context_window_segment_is_plain(self):
+        # Colour is the caller's decision: only the combined line has segments
+        # to tell apart, so the formatter never applies it.
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(
+                usage.format_context_window(self.CONTEXT_PAYLOAD), "ctx 31% · 62k/200k")
+
+    def test_color_ends_without_clearing_the_dim_status_line(self):
+        # Bold and foreground are turned off individually. A full reset would
+        # also drop the dim attribute Claude Code wraps the status line in,
+        # brightening everything printed after this segment.
+        with mock.patch.dict(os.environ, {}, clear=True):
+            colored = usage.colorize("x", usage.CLAUDE_COLOR)
+        self.assertEqual(colored, f"\x1b[{usage.CLAUDE_COLOR}mx{usage.COLOR_OFF}")
+        self.assertNotIn("\x1b[0m", colored)
+        self.assertEqual(usage.COLOR_OFF, "\x1b[22;39m")
+
+    def test_no_color_env_disables_color_everywhere(self):
+        with mock.patch.dict(os.environ, {"NO_COLOR": "1"}):
+            self.assertEqual(usage.colorize("Codex 1/2", usage.CODEX_COLOR), "Codex 1/2")
+
+    def test_context_window_absent_before_the_first_assistant_message(self):
+        for payload in (
+            {},
+            {"context_window": None},
+            {"context_window": {"context_window_size": 200_000, "used_percentage": None}},
+            {"context_window": {"used_percentage": 0, "context_window_size": 0}},
+        ):
+            with self.subTest(payload=payload):
+                self.assertEqual(usage.format_context_window(payload), "")
+
+    def test_join_segments_drops_empty_ones(self):
+        self.assertEqual(usage.join_segments("", "Claude a", "Codex b"), "Claude a │ Codex b")
+        self.assertEqual(usage.join_segments("ctx 3%", "Claude a"), "ctx 3% │ Claude a")
 
     def test_parse_epoch_handles_z_suffix(self):
         self.assertIsNotNone(usage.parse_epoch("2024-01-01T00:00:00Z"))

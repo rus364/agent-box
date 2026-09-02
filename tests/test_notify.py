@@ -54,13 +54,20 @@ class NotifyLogicTests(unittest.TestCase):
     def _claude_notices(
         self, payload: dict, *, official_channel: bool = False, state_root: Path | None = None,
     ) -> list[str]:
-        """Run the real Claude hook sender and return its Telegram text bodies."""
+        """The plain-message text bodies the Claude hook sent."""
+        return [body["text"] for _method, body in self._claude_requests(
+            payload, official_channel=official_channel, state_root=state_root)]
+
+    def _claude_requests(
+        self, payload: dict, *, official_channel: bool = False, state_root: Path | None = None,
+    ) -> list[tuple[str, dict]]:
+        """Run the real Claude hook sender and capture its Telegram requests."""
         if state_root is None:
             with tempfile.TemporaryDirectory() as tmp:
-                return self._claude_notices(
+                return self._claude_requests(
                     payload, official_channel=official_channel, state_root=Path(tmp))
 
-        sent: list[str] = []
+        sent: list[tuple[str, dict]] = []
 
         class Response(io.BytesIO):
             def __enter__(self):
@@ -70,7 +77,10 @@ class NotifyLogicTests(unittest.TestCase):
                 self.close()
 
         def send_response(request, **_kwargs):
-            sent.append(json.loads(request.data.decode())["text"])
+            sent.append((
+                request.full_url.rsplit("/", 1)[-1],
+                json.loads(request.data.decode()),
+            ))
             return Response(b'{"ok": true}')
 
         update_state = notify.update_claude_background_state
@@ -201,6 +211,43 @@ class NotifyLogicTests(unittest.TestCase):
         for payload, expected in cases:
             with self.subTest(event=payload["hook_event_name"]):
                 self.assertEqual(self._claude_notices(payload), [expected])
+
+    def test_claude_stop_sends_the_assistant_message_as_rich_markdown(self):
+        sent = self._claude_requests({
+            "hook_event_name": "Stop", "cwd": "/work/project", "background_tasks": [],
+            "last_assistant_message": "## Done\n\n- Fixed `notify.py`\n- Ran the tests\n",
+        })
+        self.assertEqual(sent, [("sendRichMessage", {
+            "chat_id": "chat",
+            "rich_message": {"markdown": (
+                "✅ **Claude · project**\nTurn finished\n\n"
+                "## Done\n\n- Fixed `notify.py`\n- Ran the tests"
+            )},
+        })])
+
+    def test_claude_stop_without_a_message_still_reports_completion(self):
+        for message in ("", "   \n  ", None):
+            with self.subTest(message=message):
+                self.assertEqual(self._claude_notices({
+                    "hook_event_name": "Stop", "cwd": "/work/project",
+                    "background_tasks": [], "last_assistant_message": message,
+                }), ["✅ <b>Claude · project</b>\nTurn finished"])
+
+    def test_claude_stop_report_survives_the_official_channel(self):
+        sent = self._claude_requests({
+            "hook_event_name": "Stop", "cwd": "/work/project", "background_tasks": [],
+            "last_assistant_message": "All green.",
+        }, official_channel=True)
+        self.assertEqual([method for method, _body in sent], ["sendRichMessage"])
+
+    def test_claude_stop_message_is_sanitized_like_any_model_output(self):
+        sent = self._claude_requests({
+            "hook_event_name": "Stop", "cwd": "/work/project", "background_tasks": [],
+            "last_assistant_message": "<b>bold</b> and tg://resolve",
+        })
+        markdown = sent[0][1]["rich_message"]["markdown"]
+        self.assertNotIn("<b>", markdown)
+        self.assertNotIn("tg://", markdown)
 
     def test_background_stop_is_silent(self):
         notices = self._claude_notices({
