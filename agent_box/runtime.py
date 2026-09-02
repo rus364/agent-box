@@ -24,11 +24,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import tomllib
+import urllib.parse
 
 from . import channel as channel_module
 from . import claude_settings
 from . import notify as notify_module
-from .atomicio import atomic_write_text
+from .atomicio import atomic_write_text, read_json
 from .config import Config, load_config
 from .errors import AgentBoxError
 from .flow_next import AUTO_PUSH_ENV, POLICY_ENV_VARS, flow_next_launch_env
@@ -45,6 +46,8 @@ from .paths import (
     NOTIFY_STATE_ROOT,
     STATE_ROOT,
     TOOLS_REFRESH_FILE,
+    VIKUNJA_CONFIG_DIR,
+    VIKUNJA_STATE_DIR,
     XDG_CACHE_HOME,
 )
 from .sessions import tmux_argv, tmux_session_exists, tmux_sessions
@@ -332,6 +335,14 @@ def prepare_container_lifetime_state(
     )
     if mount_notifications:
         notify_module.sync_credentials(config, NOTIFY_CREDENTIALS)
+    if config.vikunja.enabled:
+        # Create the import-state source ourselves so Podman does not, which
+        # keeps ownership and mode the user's rather than whatever the bind
+        # would invent. The config directory is deliberately not created: an
+        # empty one would look configured while holding no token.
+        VIKUNJA_STATE_DIR.mkdir(parents=True, exist_ok=True)
+        for problem in vikunja_warnings(config):
+            warn(problem)
 
 
 def agent_tree_mounts() -> list[tuple[Path, Path, bool]]:
@@ -376,6 +387,158 @@ def agent_tree_mounts() -> list[tuple[Path, Path, bool]]:
         seen.add(host_target)
         mounts.append((host_target, host_target, True))
     return mounts
+
+
+#: Podman's stable name for the host as seen from inside a container. Both
+#: pasta and slirp4netns write it into the container's /etc/hosts, so it does
+#: not depend on which rootless network backend is in use.
+CONTAINER_HOST_ALIAS = "host.containers.internal"
+#: Host names that mean "this machine" to the host but would mean "this
+#: container" inside one. Compared lower-cased; an IPv6 literal has already
+#: had its brackets stripped by ``urlsplit``.
+LOOPBACK_HOSTNAMES = frozenset({"localhost", "127.0.0.1", "::1"})
+#: The Vikunja skill's canonical CLI. ``~/.agents`` is already bind-mounted
+#: read-only (see :func:`agent_tree_mounts`), so this second, narrow bind adds
+#: no new exposure -- it only gives the script a name on the container PATH,
+#: which is how the skill's own documentation tells an agent to invoke it.
+VIKUNJA_SKILL_ENTRYPOINT = HOST_HOME / ".agents/skills/vikunja/scripts/vikunja.py"
+
+
+def container_vikunja_url(raw: str) -> str:
+    """Rewrite a loopback Vikunja URL into one the container can reach.
+
+    A self-hosted Vikunja is almost always configured on the host as
+    ``http://127.0.0.1:3456``. Inside a container that address is the
+    *container's* own loopback, so the skill would fail to connect with no
+    hint as to why. Rewriting only the host part -- scheme, port and path are
+    preserved -- turns the host's own setting into a working one without
+    asking the user to maintain a second URL, and without touching the host
+    configuration the skill also uses outside agent-box.
+
+    Anything that is not a loopback name is returned unchanged: a Vikunja on
+    a LAN address or a public domain is already reachable from the container.
+    """
+    url = raw.strip()
+    if not url:
+        return ""
+    parts = urllib.parse.urlsplit(url)
+    try:
+        host, port = parts.hostname, parts.port
+    except ValueError:
+        # A malformed authority (e.g. a non-numeric port). Not agent-box's to
+        # repair: hand it through and let the skill report it.
+        return url
+    if host is None or host.lower() not in LOOPBACK_HOSTNAMES:
+        return url
+    netloc = CONTAINER_HOST_ALIAS if port is None else f"{CONTAINER_HOST_ALIAS}:{port}"
+    if parts.username:
+        credentials = parts.username
+        if parts.password:
+            credentials = f"{credentials}:{parts.password}"
+        netloc = f"{credentials}@{netloc}"
+    return urllib.parse.urlunsplit(parts._replace(netloc=netloc))
+
+
+def host_vikunja_url() -> str:
+    """The Vikunja server URL as the *host* resolves it, or ``""``.
+
+    Deliberately the same precedence the skill's own CLI applies --
+    ``VIKUNJA_URL`` first, then the ``url`` key of its config file -- so
+    agent-box never disagrees with the tool it is exposing.
+    """
+    from_env = os.environ.get("VIKUNJA_URL", "").strip()
+    if from_env:
+        return from_env
+    config_file = VIKUNJA_CONFIG_DIR / "config.json"
+    if not config_file.is_file():
+        return ""
+    try:
+        data = read_json(config_file)
+    except (OSError, ValueError):
+        return ""
+    if not isinstance(data, dict):
+        return ""
+    url = data.get("url")
+    return url.strip() if isinstance(url, str) else ""
+
+
+def vikunja_entrypoint() -> Path | None:
+    """The resolved Vikunja CLI script, or ``None`` when the skill is absent."""
+    try:
+        resolved = VIKUNJA_SKILL_ENTRYPOINT.resolve(strict=True)
+    except OSError:
+        return None
+    return resolved if resolved.is_file() else None
+
+
+def vikunja_mounts(config: Config) -> list[tuple[Path, Path, bool]]:
+    """Host Vikunja state exposed to the container, or nothing at all.
+
+    Pure and silent by design: this is part of the box's structural identity
+    (see :func:`workspace_container_spec`), so it must depend on the config
+    switch alone and must not print a warning every time an attach recomputes
+    the identity. Diagnostics live in :func:`vikunja_warnings`, which runs
+    only where a person is actually waiting on the answer.
+
+    Destinations are the literal ``$HOME`` paths the skill's CLI resolves from
+    ``~``, not the host's XDG-derived sources, so a host that relocates
+    ``XDG_CONFIG_HOME`` still lands the config where the CLI will look.
+
+    The config directory is read-only: it carries an API token, and an agent
+    has no reason to rewrite the user's credentials. The import state
+    directory is read-write, because a partially applied ``vikunja import``
+    is only resumable if its journal survives the box.
+    """
+    if not config.vikunja.enabled:
+        return []
+    mounts = [
+        (VIKUNJA_CONFIG_DIR, HOST_HOME / ".config/vikunja", True),
+        (VIKUNJA_STATE_DIR, HOST_HOME / ".local/state/vikunja", False),
+    ]
+    entrypoint = vikunja_entrypoint()
+    if entrypoint is not None:
+        mounts.append((entrypoint, HOST_HOME / ".local/bin/vikunja", True))
+    return mounts
+
+
+def vikunja_env(config: Config) -> list[str]:
+    """``--env=VIKUNJA_URL=...`` for the container, or nothing at all.
+
+    Unlike a token, a server URL is an endpoint rather than a credential, so
+    it is passed by value the way ``GIT_CONFIG_GLOBAL`` is -- the container
+    has no host config file to read it from, and forwarding by name would
+    make the value depend on whichever shell happened to create the box. A
+    URL that embeds basic-auth credentials would therefore appear in the
+    container's argv; the skill authenticates with a token file instead, so
+    do not put credentials in ``VIKUNJA_URL``.
+    """
+    if not config.vikunja.enabled:
+        return []
+    url = container_vikunja_url(host_vikunja_url())
+    return [f"--env=VIKUNJA_URL={url}"] if url else []
+
+
+def vikunja_warnings(config: Config) -> list[str]:
+    """Human-facing problems with an enabled Vikunja integration.
+
+    Returned rather than printed so both the launch path and
+    ``agent-box config`` can render them, and so neither has to guess which
+    of the two halves (skill, credentials) is missing.
+    """
+    if not config.vikunja.enabled:
+        return []
+    problems = []
+    if vikunja_entrypoint() is None:
+        problems.append(
+            f"Vikunja integration is on but the skill CLI is missing: {VIKUNJA_SKILL_ENTRYPOINT}")
+    if not (VIKUNJA_CONFIG_DIR / "token").is_file():
+        problems.append(
+            f"Vikunja integration is on but there is no API token at {VIKUNJA_CONFIG_DIR / 'token'}")
+    if not host_vikunja_url():
+        problems.append(
+            f"Vikunja integration is on but no server URL is set "
+            f"(VIKUNJA_URL, or 'url' in {VIKUNJA_CONFIG_DIR / 'config.json'})")
+    return problems
 
 
 def build_mounts(
@@ -460,6 +623,7 @@ def build_mounts(
     ]
 
     pairs += agent_tree_mounts()
+    pairs += vikunja_mounts(config)
 
     out = []
     seen_paths: set[Path] = set()
@@ -602,6 +766,10 @@ def container_lifetime_args(
         # access is an agent-invocation capability.  The hooks receive their
         # two credentials through podman exec instead (see notification_env).
         *build_mounts(workspace, extra_mounts, script_dir, config, mount_notifications, runtime_state),
+        # An endpoint, not a credential, and structural rather than per-exec:
+        # the box is where the Vikunja mounts live, so the URL that addresses
+        # them belongs to the same lifetime.
+        *vikunja_env(config),
     ]
     # A host that relocates Claude Code's config directory must have the
     # container agree: CLAUDE_HOME is already bind-mounted at its host path,
@@ -1247,6 +1415,24 @@ if [[ -d "$HOME/.agents/skills" ]]; then
     shared=$((shared + 1))
   done < <(find "$HOME/.agents/skills" -mindepth 1 -maxdepth 1 -print0)
   [[ "${broken}" -eq 0 ]] && echo "shared agent skills: OK (${shared})"
+fi
+echo
+# The Vikunja integration is off by default, so "not exposed" is a normal
+# answer here, not a fault. When it is on, the interesting question is not
+# "is the file mounted" but "does a call actually reach the server", because
+# the loopback URL rewrite (runtime.container_vikunja_url) is the part most
+# likely to be wrong.
+if command -v vikunja >/dev/null 2>&1; then
+  printf "%-20s %s\n" "vikunja url:" "${VIKUNJA_URL:-(unset; using ~/.config/vikunja/config.json)}"
+  printf "%-20s %s\n" "vikunja token:" "$([[ -r "$HOME/.config/vikunja/token" ]] && echo present || echo MISSING)"
+  if status="$(vikunja status 2>&1)"; then
+    printf "%-20s %s\n" "vikunja:" "OK ($(printf "%s" "${status}" | tr -d " \n" | sed -n 's/.*"user":"\([^"]*\)".*/\1/p'))"
+  else
+    printf "%-20s %s\n" "vikunja:" "FAILED"
+    printf "  %s\n" "${status}"
+  fi
+else
+  echo "vikunja:             not exposed (enable it with 'agent-box config')"
 fi
 '''
 

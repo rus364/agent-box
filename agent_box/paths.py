@@ -72,6 +72,7 @@ def expand_user(value: str) -> Path:
 XDG_CONFIG_HOME = env_path("XDG_CONFIG_HOME", HOST_HOME / ".config")
 XDG_DATA_HOME = env_path("XDG_DATA_HOME", HOST_HOME / ".local/share")
 XDG_CACHE_HOME = env_path("XDG_CACHE_HOME", HOST_HOME / ".cache")
+XDG_STATE_HOME = env_path("XDG_STATE_HOME", HOST_HOME / ".local/state")
 
 # agent-box's own persistent state (build markers, per-workspace git/gh
 # snapshots, notification state).
@@ -101,3 +102,16 @@ CHANNEL_LOCK = STATE_ROOT / "runtime/telegram-channel.json"
 
 CLAUDE_HOME = env_path("CLAUDE_CONFIG_DIR", HOST_HOME / ".claude")
 CODEX_HOME = env_path("CODEX_HOME", HOST_HOME / ".codex")
+
+# The Vikunja skill's own host state: its config directory holds the server
+# URL and an API token, its state directory holds resumable import journals.
+# agent-box only exposes these to the container; it never writes them, and the
+# skill -- not agent-box -- owns their format.
+#
+# The *source* honors the host's XDG layout, but the container-side
+# destination is always the literal ``$HOME/.config/vikunja`` /
+# ``$HOME/.local/state/vikunja`` (see runtime.vikunja_mounts), because the
+# skill's CLI resolves those two paths from ``~`` with no XDG variable of its
+# own.
+VIKUNJA_CONFIG_DIR = XDG_CONFIG_HOME / "vikunja"
+VIKUNJA_STATE_DIR = XDG_STATE_HOME / "vikunja"
