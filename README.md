@@ -46,7 +46,7 @@ The image is also built automatically on first use. Build args are derived from 
 
 The default image is `localhost/agent-box:latest`. Override it with `AGENT_BOX_IMAGE`. If you change host user/UID/GID (or share the image across users), rebuild.
 
-The image contains Claude Code, Codex CLI, Node 22, **Bun** (required by the official Telegram channel plugin), Python + uv, mise, git/git-lfs/gh, kubectl/helm/yq/jq, QEMU (x86-64 and aarch64), and the usual build and network tooling.
+The image contains Claude Code, Codex CLI, Node 22, **Bun** (required by the official Telegram channel plugin), Python + uv, mise, git/git-lfs/gh, kubectl/helm/yq/jq, QEMU (x86-64 and aarch64), tmux (which carries detachable sessions), and the usual build and network tooling.
 
 ## Run Claude Code or Codex
 
@@ -58,13 +58,37 @@ agent-box claude -p "summarize this repository"
 agent-box codex
 agent-box codex exec "inspect this repository"
 agent-box shell      # a shell inside this workspace's shared agent-box container
+agent-box attach     # return to a session whose terminal went away
+agent-box stop       # end this workspace's box and every session in it
 ```
 
 This works from **any** directory — there is no requirement to keep projects under a fixed host directory such as `~/code`.
 
 Claude Code is the default agent; change it with `export AGENT_BOX_AGENT=codex`.
 
-The first command in a project creates its box lazily. Later `claude`, `codex`, and `shell` commands from that project use `podman exec` in the same process namespace, so a shell can see running agents and daemons. A different workspace gets a different box. The box is removed automatically after no useful workloads remain; no normal `up`/`down` lifecycle is required. This also lets a Codex remote-control/app-server process survive after its launcher command exits. Their `~/.claude` and `~/.codex` state directories are still mounted from the host, so authentication, settings, and history persist after the transient box is removed. If `~/.claude.json` exists on the host it is mounted too. For `agent-box codex`, MCP commands under `/usr/lib/chatgpt/resources/` are disabled only for that invocation because those ChatGPT desktop resources are not present in the image; the host Codex configuration is never modified.
+The first command in a project creates its box lazily. Later `claude`, `codex`, and `shell` commands from that project use `podman exec` in the same process namespace, so a shell can see running agents and daemons. A different workspace gets a different box. The box is removed automatically after no useful workloads remain; no normal `up`/`down` lifecycle is required, though a detached session (see below) counts as a workload and `agent-box stop` ends a box you walked away from. This also lets a Codex remote-control/app-server process survive after its launcher command exits. Their `~/.claude` and `~/.codex` state directories are still mounted from the host, so authentication, settings, and history persist after the transient box is removed. If `~/.claude.json` exists on the host it is mounted too. For `agent-box codex`, MCP commands under `/usr/lib/chatgpt/resources/` are disabled only for that invocation because those ChatGPT desktop resources are not present in the image; the host Codex configuration is never modified.
+
+### Detachable sessions
+
+Closing a terminal used to be fatal in a useful sense and useless in every other: a `podman exec` session cannot be re-attached — `podman attach` reaches only the container's main process — so the agent kept running inside the box with nobody on the other end of its pty, and there was no way back to it.
+
+Interactive `claude`, `codex`, and `shell` sessions therefore run under a tmux server **inside** the box. The `podman exec` client then owns nothing but a tmux client, so losing it — a closed window, a dropped ssh connection, a laptop that slept — detaches the session instead of orphaning it:
+
+```bash
+agent-box claude     # terminal dies here
+agent-box attach     # ...and the same session comes back, still working
+```
+
+- `C-\ d` detaches on purpose. The inner prefix is `C-\` rather than `C-b` so a tmux you run on the host keeps its own prefix and no nesting gymnastics are needed.
+- `agent-box attach` takes the session back when the box holds exactly one, and lists them when it holds several (`agent-box attach claude-31337`). It always evicts whatever client is still holding the session: after a closed terminal that client is a ghost — conmon keeps its pty open, so tmux never learns nobody is there, and it would otherwise keep the session to itself.
+- Every launch is its own session. Two `agent-box claude` commands in one workspace are still two independent Claude sessions, exactly as before.
+- A detached session is a live workload, so its box no longer disappears on its own. `agent-box stop` ends the box and everything in it.
+- Only real terminals are wrapped. `claude -p '...'`, a pipe, a redirect, CI, and `agent-box doctor` run exactly as they did, straight to your stdout. `AGENT_BOX_TMUX=0` opts a single launch out.
+- The exit status is still the agent's own: tmux reports only its own, so the wrapped session records the real one in this workspace's runtime state and the launcher exits with it. A launcher that detached instead exits 0 and says which session is still running.
+- Nothing survives a host reboot or `podman kill` — the box is created with `--rm`. What survives that is what always did: `~/.claude` and `~/.codex` are host-mounted, so `claude --continue` picks the conversation back up.
+- The official Claude Telegram channel follows the session, not the terminal. Its single-owner record names the box session as well as the launcher, so a detached Claude keeps the bot it is still answering, and a second Claude started meanwhile is told which session holds it (`session claude-31337, /path/to/project`) instead of quietly taking the bot away. The channel is free again as soon as that session really ends.
+
+tmux is part of the image, so an existing installation needs one `agent-box build` before sessions become detachable — the base layer's instruction changed, so an ordinary cached build picks it up.
 
 ### Host mode (`--host`)
 
@@ -411,7 +435,7 @@ It is the one integration that defaults on, because it exposes nothing: no crede
 
 `CLAUDE_CONFIG_DIR` and `CODEX_HOME` are honored. When `CLAUDE_CONFIG_DIR` is set, the relocated directory is bind-mounted at its host path *and* the resolved value is forwarded into the container, so `claude` there reads the same configuration instead of an empty `$HOME/.claude`.
 
-Workspace containers are transient but shared: the first local agent command creates one, concurrent commands for the same resolved project execute inside it, and it disappears automatically once only agent-box's internal init/keeper processes remain. Host-backed state above persists independently.
+Workspace containers are transient but shared: the first local agent command creates one, concurrent commands for the same resolved project execute inside it, and it disappears automatically once only agent-box's internal init/keeper processes remain. A tmux server holding a detached session is not one of those internal processes, which is exactly why a session outlives the terminal that started it — and why `agent-box stop` exists. Host-backed state above persists independently.
 
 ## Container hardening
 

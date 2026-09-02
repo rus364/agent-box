@@ -138,8 +138,10 @@ class ChannelLockTests(unittest.TestCase):
         self.assertEqual(record["pid"], os.getpid())
         self.assertEqual(record["project"], "/p")
         self.assertEqual(
-            set(record) - {"pid", "pid_start", "boot_id", "project", "started_at"}, set(),
-            "the lock must stay minimal — no session state, no credentials",
+            set(record) - {
+                "pid", "pid_start", "boot_id", "container", "session", "project", "started_at",
+            }, set(),
+            "the lock must stay minimal — names of things to check, never credentials",
         )
 
     def test_lock_file_is_not_world_readable(self):
@@ -187,6 +189,73 @@ class ChannelLockTests(unittest.TestCase):
         self.assertTrue(self.lock.exists())
 
 
+class DetachedOwnerTests(unittest.TestCase):
+    """A session outlives the launcher that started it whenever the terminal
+    goes away, and it is still the one answering Telegram."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.lock = Path(tmp.name) / "runtime/telegram-channel.json"
+
+    def _record_from_a_dead_launcher(self):
+        self.lock.parent.mkdir(parents=True, exist_ok=True)
+        self.lock.write_text(json.dumps({
+            "pid": 2 ** 30, "pid_start": "999", "boot_id": channel._boot_id(),
+            "container": "agent-box-p-1", "session": "claude-4242", "project": "/p",
+        }))
+
+    def test_detached_session_keeps_the_channel_after_its_launcher_exits(self):
+        self._record_from_a_dead_launcher()
+        with mock.patch.object(channel, "tmux_session_exists", return_value=True) as alive:
+            self.assertIsNotNone(channel.channel_owner(self.lock))
+            self.assertFalse(channel.acquire_channel("/other", self.lock))
+        alive.assert_called_with("agent-box-p-1", "claude-4242")
+
+    def test_channel_is_free_once_that_session_is_gone_too(self):
+        self._record_from_a_dead_launcher()
+        with mock.patch.object(channel, "tmux_session_exists", return_value=False):
+            self.assertIsNone(channel.channel_owner(self.lock))
+            self.assertTrue(channel.acquire_channel("/other", self.lock))
+
+    def test_a_reboot_still_invalidates_a_session_record(self):
+        """Neither a PID nor a container survives one, so the box is not asked."""
+        self.lock.parent.mkdir(parents=True, exist_ok=True)
+        self.lock.write_text(json.dumps({
+            "pid": 2 ** 30, "pid_start": "999", "boot_id": "0000-before-the-reboot",
+            "container": "agent-box-p-1", "session": "claude-4242",
+        }))
+        with mock.patch.object(channel, "tmux_session_exists", return_value=True) as alive:
+            self.assertIsNone(channel.channel_owner(self.lock))
+        alive.assert_not_called()
+
+    def test_detaching_does_not_release_the_channel(self):
+        channel.acquire_channel("/p", self.lock, container="agent-box-p-1", session="claude-9")
+        with mock.patch.object(channel, "tmux_session_exists", return_value=True):
+            channel.release_channel(self.lock)
+        self.assertTrue(self.lock.exists())
+
+    def test_a_finished_session_releases_the_channel_normally(self):
+        channel.acquire_channel("/p", self.lock, container="agent-box-p-1", session="claude-9")
+        with mock.patch.object(channel, "tmux_session_exists", return_value=False):
+            channel.release_channel(self.lock)
+        self.assertFalse(self.lock.exists())
+
+    def test_a_launch_with_no_session_is_owned_by_its_launcher_alone(self):
+        """`claude -p ...` has no detachable session; nothing outlives it."""
+        channel.acquire_channel("/p", self.lock)
+        with mock.patch.object(channel, "tmux_session_exists") as alive:
+            channel.release_channel(self.lock)
+        self.assertFalse(self.lock.exists())
+        alive.assert_not_called()
+
+    def test_a_refused_second_launch_is_told_which_session_holds_the_channel(self):
+        self._record_from_a_dead_launcher()
+        with mock.patch.object(channel, "tmux_session_exists", return_value=True):
+            described = channel.describe_owner(channel.channel_owner(self.lock))
+        self.assertIn("claude-4242", described)
+
+
 class LaunchDecisionTests(unittest.TestCase):
     """runtime.claude_channel_args: never blocks Claude from starting."""
 
@@ -213,6 +282,21 @@ class LaunchDecisionTests(unittest.TestCase):
         flags, env, _ = self._decide()
         self.assertEqual(flags, ["--channels", CLAUDE_TELEGRAM_CHANNEL])
         self.assertEqual(env, ["AGENT_BOX_SUPPRESS_NOTIFY=1"])
+
+    def test_claim_names_the_session_so_a_detach_does_not_free_the_channel(self):
+        session = runtime.TmuxSession(name="claude-4242", status_path=self.root / "s")
+        home = claude_home(str(self.root / "claude"), plugin=True, token=True)
+        with mock.patch.object(channel, "CLAUDE_HOME", home), \
+             mock.patch.object(channel, "CHANNEL_LOCK", self.lock):
+            runtime.claude_channel_args("claude", self.config, self.workspace, [], session)
+        record = json.loads(self.lock.read_text())
+        self.assertEqual(record["session"], "claude-4242")
+        self.assertEqual(record["container"], runtime.workspace_container_name(self.workspace))
+
+    def test_a_launch_without_a_session_claims_the_channel_for_itself_alone(self):
+        self._decide()
+        record = json.loads(self.lock.read_text())
+        self.assertEqual((record["container"], record["session"]), ("", ""))
 
     def test_session_options_before_a_prompt_keep_the_channel(self):
         flags, env, _ = self._decide(rest=["--model", "opus", "review this change"])

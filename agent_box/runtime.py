@@ -47,6 +47,7 @@ from .paths import (
     TOOLS_REFRESH_FILE,
     XDG_CACHE_HOME,
 )
+from .sessions import tmux_argv, tmux_session_exists, tmux_sessions
 from .workspace import Workspace, resolve_workspace
 
 IMAGE = os.environ.get("AGENT_BOX_IMAGE", "localhost/agent-box:latest")
@@ -60,6 +61,9 @@ WORKSPACE_CONTAINER_BASE_CONFIG_LABEL = "io.agent-box.base-config-hash"
 WORKSPACE_CONTAINER_EXTRA_MOUNTS_LABEL = "io.agent-box.extra-mounts-hash"
 WORKSPACE_CONTAINER_SCHEMA_LABEL = "io.agent-box.schema"
 KEEPER_PATH = HOST_HOME / ".local/lib/agent-box/agent_box/keeper.sh"
+#: Only these run as a person's live session; ``doctor`` is a diagnostic
+#: script whose output belongs on the caller's stdout.
+TMUX_AGENTS = frozenset({"claude", "codex", "shell"})
 CONTAINER_RUNTIME_PATH = (
     f"{HOST_HOME}/.local/share/mise/shims:{HOST_HOME}/.cargo/bin:{HOST_HOME}/.local/bin:"
     "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
@@ -930,6 +934,113 @@ def exec_argv(name: str, workspace: Workspace, command: list[str], extra_env: li
     return [*args, name, *command]
 
 
+# -- detachable sessions ---------------------------------------------------
+#
+# A `podman exec` session cannot be re-attached: when the client dies (a
+# closed terminal, a dropped ssh connection) the process inside the box keeps
+# running with nobody on the other end of its pty, and Podman offers no way
+# back in -- `podman attach` only ever reaches the container's main process,
+# which here is the keeper. So agent-box runs interactive agent sessions
+# under a tmux server *inside* the box. The exec client then owns nothing but
+# a tmux client: losing it detaches the session instead of orphaning it.
+#
+# A detached session is still a workload for the keeper, so its box stays up
+# until the session ends or `agent-box stop` removes it.
+
+
+def tmux_enabled(agent: str) -> bool:
+    """Whether this launch gets a detachable session.
+
+    Only a real terminal is wrapped.  A piped or captured run (``claude -p``,
+    CI, a redirected ``agent-box shell -c``) must keep writing straight to the
+    caller's stdout, where that output is the entire point, and has no
+    terminal to be detached from in the first place.
+    """
+    if agent not in TMUX_AGENTS or os.environ.get("AGENT_BOX_TMUX", "1") == "0":
+        return False
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+@dataclass(frozen=True)
+class TmuxSession:
+    """One launch's detachable session, and the file it reports its status in.
+
+    Every launch gets its own session: two ``agent-box claude`` commands in
+    one workspace remain two independent Claude sessions, exactly as they
+    were before tmux existed here.
+    """
+
+    name: str
+    status_path: Path
+
+    def wrap(self, command: list[str]) -> list[str]:
+        # tmux reports its own exit status, not the wrapped program's, and
+        # returns 0 for a detach as well as for a finished session. The inner
+        # shell records the real status in the workspace's runtime state --
+        # which is bind-mounted at the same path on both sides -- so a
+        # launcher that is still alive can exit with it. Its absence is how
+        # `finish` tells a detached session from a finished one.
+        recorder = 'status=$1; shift; "$@"; printf %s "$?" >"$status"'
+        return tmux_argv(
+            "new-session", "-s", self.name, "--",
+            "bash", "-c", recorder, "agent-box-session", str(self.status_path), *command,
+        )
+
+    def recorded_status(self) -> int | None:
+        try:
+            recorded = self.status_path.read_text().strip()
+        except OSError:
+            return None
+        finally:
+            self.status_path.unlink(missing_ok=True)
+        return int(recorded) if recorded.isdigit() else None
+
+    def finish(self, container: str, rc: int) -> int:
+        """Translate the tmux client's exit into the launch's own exit."""
+        recorded = self.recorded_status()
+        if recorded is not None:
+            return recorded
+        if rc in {126, 127}:
+            warn("this workspace image has no tmux; run 'agent-box build'")
+            return rc
+        if tmux_session_exists(container, self.name):
+            print(
+                f"agent-box: session '{self.name}' is still running in this workspace's box; "
+                f"return to it with 'agent-box attach'",
+                file=sys.stderr,
+            )
+        return rc
+
+
+def tmux_session(agent: str, runtime_state: WorkspaceRuntimeState) -> TmuxSession:
+    sessions = runtime_state.root / "sessions"
+    sessions.mkdir(parents=True, exist_ok=True)
+    # The launcher's PID is unique among the live launches of one workspace,
+    # which is all the uniqueness a session name needs.
+    name = f"{agent}-{os.getpid()}"
+    return TmuxSession(name=name, status_path=sessions / f"{name}.status")
+
+
+def announce_existing_sessions(container: str) -> None:
+    """Say what this workspace's box already holds before adding to it.
+
+    A closed terminal leaves no trace on the host, so without this a second
+    launch silently starts a second agent beside the one still running there.
+    """
+    try:
+        if inspect_workspace_container(container) is None:
+            return
+        existing = tmux_sessions(container)
+    except AgentBoxError:
+        return
+    if existing:
+        print(
+            f"agent-box: this workspace's box already holds {len(existing)} session(s) "
+            f"({', '.join(existing)}); 'agent-box attach' returns to one",
+            file=sys.stderr,
+        )
+
+
 def parse_top_workloads(output: str) -> list[tuple[int, str]]:
     """Return processes outside the init/keeper process subtree.
 
@@ -1011,17 +1122,17 @@ def container_has_workloads(name: str) -> bool | None:
     return bool(parse_top_workloads(result.stdout))
 
 
-def cleanup_workspace_container_if_idle(spec: WorkspaceContainerSpec) -> None:
+def cleanup_workspace_container_if_idle(name: str) -> None:
     """Remove only a verified idle container; inspection failure is fail-safe."""
-    current = inspect_workspace_container(spec.name)
+    current = inspect_workspace_container(name)
     if current is None:
         return
     if current.get("State", {}).get("Status") != "running":
-        remove_workspace_container_then_confirm_absent(spec.name)
+        remove_workspace_container_then_confirm_absent(name)
         return
-    workloads = container_has_workloads(spec.name)
+    workloads = container_has_workloads(name)
     if workloads is False:
-        remove_workspace_container_then_confirm_absent(spec.name)
+        remove_workspace_container_then_confirm_absent(name)
 
 
 def launch_in_workspace_container(
@@ -1042,7 +1153,7 @@ def launch_in_workspace_container(
     rc = process.wait()
     try:
         with workspace_transition_lock(workspace):
-            cleanup_workspace_container_if_idle(spec)
+            cleanup_workspace_container_if_idle(spec.name)
     except (AgentBoxError, OSError, subprocess.SubprocessError) as exc:
         # The agent command's status is more meaningful than a best-effort
         # post-exit cleanup problem. A later launch will recover stale
@@ -1234,6 +1345,7 @@ def claude_session_args(rest: list[str], channel: list[str]) -> list[str]:
 
 def claude_channel_args(
     agent: str, config: Config, workspace: Workspace, rest: list[str] | None = None,
+    session: TmuxSession | None = None,
 ) -> tuple[list[str], list[str]]:
     """Decide whether this Claude session gets the official Telegram channel.
 
@@ -1271,7 +1383,14 @@ def claude_channel_args(
         warn("Telegram channel unavailable: " + " and ".join(missing))
         warn("run 'agent-box config check' for setup steps; starting Claude without it")
         return [], isolated
-    if not channel_module.acquire_channel(str(workspace.host_root)):
+    # Naming the session this launch is about to start is what keeps the claim
+    # standing if the terminal goes away: the detached Claude is still the one
+    # talking to the bot (see agent_box.channel).
+    if not channel_module.acquire_channel(
+        str(workspace.host_root),
+        container=workspace_container_name(workspace) if session is not None else "",
+        session=session.name if session is not None else "",
+    ):
         owner = channel_module.channel_owner()
         detail = f" ({channel_module.describe_owner(owner)})" if owner else ""
         print(f"agent-box: Telegram channel already active in another Claude session{detail}", file=sys.stderr)
@@ -1323,7 +1442,9 @@ def runtime_main(args: list[str], script_dir: Path, extra_mount_specs: list[str]
             notifications=config.notifications.enabled,
             statusline=config.claude.statusline)
 
-    channel, extra_env = claude_channel_args(agent, config, workspace, rest)
+    # Decided before the channel is claimed, because the claim records it.
+    session = tmux_session(agent, workspace_runtime_state(workspace)) if tmux_enabled(agent) else None
+    channel, extra_env = claude_channel_args(agent, config, workspace, rest, session)
     extra_env = [
         *extra_env,
         *flow_next_launch_env(
@@ -1349,7 +1470,12 @@ def runtime_main(args: list[str], script_dir: Path, extra_mount_specs: list[str]
         invocation, process_env = invocation_env(config, agent)
         # Channel/Flow-Next values are invocation policy, not box identity.
         invocation += extra_env
+        if session is not None:
+            announce_existing_sessions(spec.name)
+            command = session.wrap(command)
         rc = launch_in_workspace_container(spec, workspace, command, invocation, process_env)
+        if session is not None:
+            rc = session.finish(spec.name, rc)
     except BaseException as exc:
         # The lock names this PID and would go stale the moment we exit, but
         # releasing it explicitly means a failed launch never leaves a record
@@ -1362,6 +1488,93 @@ def runtime_main(args: list[str], script_dir: Path, extra_mount_specs: list[str]
         raise
     channel_module.release_channel()
     raise SystemExit(rc)
+
+
+def resolved_workspace() -> Workspace:
+    try:
+        return resolve_workspace()
+    except (NotADirectoryError, ValueError) as exc:
+        raise AgentBoxError(str(exc)) from exc
+
+
+def running_workspace_container(workspace: Workspace) -> str:
+    name = workspace_container_name(workspace)
+    current = inspect_workspace_container(name)
+    if current is None or current.get("State", {}).get("Status") != "running":
+        raise AgentBoxError("no running agent-box container for this workspace")
+    return name
+
+
+def choose_session(sessions: list[str], wanted: str | None) -> str:
+    if not sessions:
+        raise AgentBoxError("this workspace's box has no detachable sessions")
+    if wanted is not None:
+        if wanted not in sessions:
+            raise AgentBoxError(f"no session '{wanted}' in this workspace's box")
+        return wanted
+    if len(sessions) == 1:
+        return sessions[0]
+    listing = "\n".join(f"  {name}" for name in sessions)
+    raise AgentBoxError("this workspace's box holds several sessions; name one:\n" + listing)
+
+
+def attach_main(args: list[str]) -> int:
+    """``agent-box attach [session]``: take back a session from a dead terminal."""
+    if len(args) > 1:
+        raise AgentBoxError("usage: agent-box attach [session]")
+    if not shutil.which("podman"):
+        raise AgentBoxError("podman not found")
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        raise AgentBoxError("agent-box attach needs a terminal")
+    workspace = resolved_workspace()
+    name = running_workspace_container(workspace)
+    session = choose_session(tmux_sessions(name), args[0] if args else None)
+    # ``-d`` evicts whichever client still holds the session. After a closed
+    # terminal that client is a ghost: conmon keeps its pty open, so it never
+    # reads EOF and would otherwise keep the session to itself forever.
+    command = tmux_argv("attach-session", "-d", "-t", session)
+    with workspace_transition_lock(workspace):
+        # The box is holding a live tmux server, so unlike a first launch
+        # there is no idle window here for the keeper to shut down.
+        process = subprocess.Popen(exec_argv(name, workspace, command, []))
+    rc = process.wait()
+    try:
+        with workspace_transition_lock(workspace):
+            cleanup_workspace_container_if_idle(name)
+    except (AgentBoxError, OSError, subprocess.SubprocessError) as exc:
+        warn(f"could not clean up workspace container: {exc}")
+    return rc
+
+
+def stop_main(args: list[str]) -> int:
+    """``agent-box stop``: end this workspace's box, detached sessions included.
+
+    Ordinary boxes still disappear on their own once no workload remains. A
+    detached session *is* a workload, so a box someone walked away from needs
+    a way to be shut down deliberately.
+    """
+    if args:
+        raise AgentBoxError("agent-box stop takes no arguments")
+    if not shutil.which("podman"):
+        raise AgentBoxError("podman not found")
+    workspace = resolved_workspace()
+    name = workspace_container_name(workspace)
+    with workspace_transition_lock(workspace):
+        current = inspect_workspace_container(name)
+        if current is None:
+            print("agent-box: no workspace container for this project", file=sys.stderr)
+            return 0
+        if current.get("State", {}).get("Status") == "running":
+            try:
+                sessions = tmux_sessions(name)
+            except AgentBoxError:
+                sessions = []
+            if sessions:
+                print(f"agent-box: ending {len(sessions)} session(s): {', '.join(sessions)}", file=sys.stderr)
+        remove_workspace_container_then_confirm_absent(name)
+        shutil.rmtree(workspace_runtime_state(workspace).root / "sessions", ignore_errors=True)
+    print(f"agent-box: removed workspace container {name}", file=sys.stderr)
+    return 0
 
 
 def host_main(agent: str, rest: list[str]) -> int:
