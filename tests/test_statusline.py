@@ -2,6 +2,7 @@ import json
 import os
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -175,6 +176,25 @@ class RenderTests(unittest.TestCase):
             f"➜ [09:41] project │ ctx 31% · 62k/200k"
             f" │ Claude {usage.PLACEHOLDER_USAGE} │ Codex {usage.PLACEHOLDER_USAGE}",
         )
+
+    def test_session_rate_limits_are_preferred_over_the_cached_usage(self):
+        """The payload already carries the session's limits, so no HTTP call."""
+        payload = json.dumps({
+            "workspace": {"current_dir": "/srv/work/project"},
+            "rate_limits": {
+                "five_hour": {"used_percentage": 12, "resets_at": time.time() + 3600},
+                "seven_day": {"used_percentage": 34, "resets_at": time.time() + 86_400},
+            },
+        })
+        with (
+            mock.patch.dict(os.environ, {"NO_COLOR": "1"}, clear=True),
+            mock.patch.object(statusline, "git_branch", return_value=""),
+            mock.patch.object(usage, "atomic_write_json"),
+            mock.patch.object(usage, "claude_usage", side_effect=AssertionError("no fallback")),
+            mock.patch.object(usage, "codex_usage", return_value="b"),
+        ):
+            line = statusline.render(payload, now="09:41")
+        self.assertIn("Claude 88/66 · ", line)
 
     def test_unparseable_payload_still_renders_a_line(self):
         with (

@@ -131,12 +131,7 @@ class NotifyCodexDispatchTests(unittest.TestCase):
 class UsageCommandColorTests(unittest.TestCase):
     """Colour separates segments, so only the combined line carries it."""
 
-    STATUSLINE_PAYLOAD = json.dumps({"context_window": {
-        "total_input_tokens": 62_385, "context_window_size": 200_000,
-        "used_percentage": 31,
-    }})
-
-    def _run(self, args: list[str], *, stdin: str = "") -> str:
+    def _run(self, args: list[str]) -> str:
         out = io.StringIO()
         with (
             unittest.mock.patch.dict(os.environ, {}, clear=True),
@@ -144,39 +139,33 @@ class UsageCommandColorTests(unittest.TestCase):
                 usage_module, "claude_usage", return_value="88/59 · 2h29m/4d15h"),
             unittest.mock.patch.object(
                 usage_module, "codex_usage", return_value="91/17 · 2h11m/4d9h"),
-            unittest.mock.patch("sys.stdin", io.StringIO(stdin)),
             contextlib.redirect_stdout(out),
         ):
             usage_command(args)
         return out.getvalue().rstrip("\n")
 
     def test_single_provider_output_is_never_colored(self):
-        for args in (["claude"], ["codex"], ["claude", "--statusline"]):
+        for args in (["claude"], ["codex"]):
             with self.subTest(args=args):
-                self.assertNotIn("\x1b[", self._run(args, stdin=self.STATUSLINE_PAYLOAD))
+                self.assertNotIn("\x1b[", self._run(args))
 
-    def test_single_provider_statusline_still_reports_context(self):
-        self.assertEqual(
-            self._run(["claude", "--statusline"], stdin=self.STATUSLINE_PAYLOAD),
-            "ctx 31% · 62k/200k │ 88/59 · 2h29m/4d15h",
-        )
+    def test_single_provider_prints_only_the_numbers(self):
+        self.assertEqual(self._run(["claude"]), "88/59 · 2h29m/4d15h")
 
     def test_combined_line_colors_every_segment(self):
-        line = self._run(["all", "--statusline"], stdin=self.STATUSLINE_PAYLOAD)
-        self.assertEqual(line, usage_module.STATUSLINE_SEPARATOR.join([
-            f"\x1b[{usage_module.CONTEXT_COLOR}mctx 31% · 62k/200k{usage_module.COLOR_OFF}",
+        self.assertEqual(self._run(["all"]), usage_module.STATUSLINE_SEPARATOR.join([
             f"\x1b[{usage_module.CLAUDE_COLOR}mClaude 88/59 · 2h29m/4d15h{usage_module.COLOR_OFF}",
             f"\x1b[{usage_module.CODEX_COLOR}mCodex 91/17 · 2h11m/4d9h{usage_module.COLOR_OFF}",
         ]))
 
-    def test_combined_line_without_a_payload_has_no_context_segment(self):
-        self.assertEqual(
-            self._run(["all"]),
-            usage_module.STATUSLINE_SEPARATOR.join([
-                f"\x1b[{usage_module.CLAUDE_COLOR}mClaude 88/59 · 2h29m/4d15h{usage_module.COLOR_OFF}",
-                f"\x1b[{usage_module.CODEX_COLOR}mCodex 91/17 · 2h11m/4d9h{usage_module.COLOR_OFF}",
-            ]),
-        )
+    def test_every_provider_rejects_arguments(self):
+        for args in (["claude", "--statusline"], ["codex", "-x"], ["all", "--statusline"]):
+            with (
+                self.subTest(args=args),
+                contextlib.redirect_stderr(io.StringIO()),
+                self.assertRaises(SystemExit),
+            ):
+                self._run(args)
 
     def test_no_color_disables_the_combined_line_too(self):
         out = io.StringIO()

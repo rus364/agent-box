@@ -16,15 +16,18 @@ from .errors import AgentBoxError
 from .paths import CLAUDE_HOME, CODEX_HOME, XDG_CACHE_HOME, env_path
 
 PLACEHOLDER_USAGE = "—/— · —/—"
+#: Where Claude usage is cached, whether it arrived over OAuth or in a
+#: status-line payload. Both writers and the reader share this one path.
+CLAUDE_USAGE_CACHE = XDG_CACHE_HOME / "claude-code/rate-limits.json"
 #: Claude Code joins status-line segments nowhere; agent-box owns its own line,
 #: so one separator is used for every segment it prints.
 STATUSLINE_SEPARATOR = " │ "
 #: One muted 256-colour hue per segment, so the three numbers are told apart at
 #: a glance without competing with the transcript above them. Claude Code
 #: already renders a single-line status dim, which these are chosen to survive.
-#: Colour is applied by the combined `usage all` path only: it exists to tell
-#: several segments apart, and a single-provider `usage claude` / `usage codex`
-#: has nothing to disambiguate, so it prints plain.
+#: Colour is applied by the multi-segment lines only -- the status line and
+#: `usage all` -- since it exists to tell several segments apart, and a
+#: single-provider `usage claude` / `usage codex` prints plain.
 CONTEXT_COLOR = "38;5;140"   # muted violet
 CLAUDE_COLOR = "38;5;173"    # muted terracotta
 CODEX_COLOR = "38;5;110"     # muted steel blue
@@ -213,23 +216,29 @@ def codex_usage() -> str:
         raise AgentBoxError("Codex usage request failed")
 
 
-def claude_usage(statusline: bool = False, payload: str | None = None) -> str:
-    cache = XDG_CACHE_HOME / "claude-code/rate-limits.json"
+def claude_usage_from_payload(obj: dict[str, Any]) -> str:
+    """Claude's usage as the running session reported it, or "" if it did not.
+
+    A status-line payload carries the session's own ``rate_limits``, which are
+    fresher and cheaper than an HTTP call, so the numbers are taken from there
+    and written to the same cache ``claude_usage`` reads. An empty result means
+    the payload said nothing about rate limits and the caller should fall back.
+    """
+    if not isinstance(obj.get("rate_limits"), dict):
+        return ""
+    normalized = normalize_claude_usage(obj)
+    atomic_write_json(CLAUDE_USAGE_CACHE, normalized)
+    return format_claude_usage(normalized)
+
+
+def claude_usage() -> str:
+    cache = CLAUDE_USAGE_CACHE
     # Same reasoning as codex_usage: CLAUDE_HOME already honors
     # CLAUDE_CONFIG_DIR, so a relocated Claude config directory is picked up
     # here without this function knowing about that variable at all.
     credentials = env_path("CLAUDE_CREDENTIALS_PATH", CLAUDE_HOME / ".credentials.json")
     url = os.environ.get("CLAUDE_CODE_CUSTOM_OAUTH_URL", "https://api.anthropic.com").rstrip("/") + "/api/oauth/usage"
     ttl = int(os.environ.get("CLAUDE_USAGE_CACHE_TTL", "60"))
-    if statusline:
-        obj = parse_payload(payload if payload is not None else sys.stdin.read())
-        if isinstance(obj.get("rate_limits"), dict):
-            normalized = normalize_claude_usage(obj)
-            atomic_write_json(cache, normalized)
-            return format_claude_usage(normalized)
-        # A status-line invocation normally receives Claude's payload on stdin.
-        # When called manually (or with empty stdin), fall back to the regular
-        # cached/OAuth usage path instead of rendering an empty placeholder.
     if cache_fresh(cache, ttl):
         return format_claude_usage(read_json(cache))
     if credentials.is_file():
