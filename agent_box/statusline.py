@@ -124,6 +124,6 @@ def render(payload: str, *, now: str | None = None) -> str:
         ),
         usage_module.colorize(
             usage_module.format_context_window(obj), usage_module.CONTEXT_COLOR),
-        usage_module.colorize(f"Claude {claude}", usage_module.CLAUDE_COLOR),
-        usage_module.colorize(f"Codex {codex}", usage_module.CODEX_COLOR),
+        usage_module.colorize(claude, usage_module.CLAUDE_COLOR),
+        usage_module.colorize(codex, usage_module.CODEX_COLOR),
     )

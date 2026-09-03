@@ -168,12 +168,12 @@ def usage_command(args: list[str]) -> None:
             codex = usage_module.codex_usage()
         except Exception:
             codex = usage_module.PLACEHOLDER_USAGE
-        # Only the combined line colours its segments: the hues are there to
-        # tell Claude from Codex, which is a distinction a single-provider
-        # invocation does not have to make.
+        # Only the combined line colours its segments: the hues are what
+        # tell Claude from Codex once the provider names are gone, which is a
+        # distinction a single-provider invocation does not have to make.
         print(usage_module.join_segments(
-            usage_module.colorize(f"Claude {claude}", usage_module.CLAUDE_COLOR),
-            usage_module.colorize(f"Codex {codex}", usage_module.CODEX_COLOR),
+            usage_module.colorize(claude, usage_module.CLAUDE_COLOR),
+            usage_module.colorize(codex, usage_module.CODEX_COLOR),
         ))
 
 

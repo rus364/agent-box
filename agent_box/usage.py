@@ -25,9 +25,10 @@ STATUSLINE_SEPARATOR = " │ "
 #: One muted 256-colour hue per segment, so the three numbers are told apart at
 #: a glance without competing with the transcript above them. Claude Code
 #: already renders a single-line status dim, which these are chosen to survive.
-#: Colour is applied by the multi-segment lines only -- the status line and
-#: `usage all` -- since it exists to tell several segments apart, and a
-#: single-provider `usage claude` / `usage codex` prints plain.
+#: The segments carry no provider names -- hue is what identifies them, which
+#: is why colour is applied by the multi-segment lines only (the status line
+#: and `usage all`); a single-provider `usage claude` / `usage codex` names
+#: its provider in the command itself and prints plain.
 CONTEXT_COLOR = "38;5;140"   # muted violet
 CLAUDE_COLOR = "38;5;173"    # muted terracotta
 CODEX_COLOR = "38;5;110"     # muted steel blue
