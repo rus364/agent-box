@@ -154,8 +154,8 @@ class UsageCommandColorTests(unittest.TestCase):
 
     def test_combined_line_colors_every_segment(self):
         self.assertEqual(self._run(["all"]), usage_module.STATUSLINE_SEPARATOR.join([
-            f"\x1b[{usage_module.CLAUDE_COLOR}mClaude 88/59 · 2h29m/4d15h{usage_module.COLOR_OFF}",
-            f"\x1b[{usage_module.CODEX_COLOR}mCodex 91/17 · 2h11m/4d9h{usage_module.COLOR_OFF}",
+            f"\x1b[{usage_module.CLAUDE_COLOR}m88/59 · 2h29m/4d15h{usage_module.COLOR_OFF}",
+            f"\x1b[{usage_module.CODEX_COLOR}m91/17 · 2h11m/4d9h{usage_module.COLOR_OFF}",
         ]))
 
     def test_every_provider_rejects_arguments(self):
@@ -176,7 +176,7 @@ class UsageCommandColorTests(unittest.TestCase):
             contextlib.redirect_stdout(out),
         ):
             usage_command(["all"])
-        self.assertEqual(out.getvalue().rstrip("\n"), "Claude a │ Codex b")
+        self.assertEqual(out.getvalue().rstrip("\n"), "a │ b")
 
 
 if __name__ == "__main__":

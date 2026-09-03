@@ -396,8 +396,10 @@ agent-box usage all
 Example combined output:
 
 ```text
-Claude 97/88 · 4h51m/5d23h │ Codex 83/61 · 3h24m/4d11h
+97/88 · 4h51m/5d23h │ 83/61 · 3h24m/4d11h
 ```
+
+Segments are unlabeled: Claude comes first, Codex second, each in its own muted hue (terracotta and steel blue; the status line adds violet for context). Single-provider invocations print plain — the colours exist only to separate segments from each other.
 
 Claude Code can also use:
 

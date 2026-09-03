@@ -146,7 +146,7 @@ class RenderTests(unittest.TestCase):
         self.assertEqual(
             self._render(self.PAYLOAD, {"NO_COLOR": "1"}),
             "➜ [09:41] project git:(main) ✗ │ ctx 31% · 62k/200k"
-            " │ Claude 88/59 · 2h29m/4d15h │ Codex 91/17 · 2h11m/4d9h",
+            " │ 88/59 · 2h29m/4d15h │ 91/17 · 2h11m/4d9h",
         )
 
     def test_colored_line_carries_the_same_text(self):
@@ -161,7 +161,7 @@ class RenderTests(unittest.TestCase):
         line = self._render(json.dumps(
             {"workspace": {"current_dir": "/srv/work/project"}}), {"NO_COLOR": "1"})
         self.assertNotIn("ctx", line)
-        self.assertIn("Claude 88/59", line)
+        self.assertIn("88/59", line)
 
     def test_unusable_usage_degrades_to_placeholders(self):
         with (
@@ -174,7 +174,7 @@ class RenderTests(unittest.TestCase):
         self.assertEqual(
             line,
             f"➜ [09:41] project │ ctx 31% · 62k/200k"
-            f" │ Claude {usage.PLACEHOLDER_USAGE} │ Codex {usage.PLACEHOLDER_USAGE}",
+            f" │ {usage.PLACEHOLDER_USAGE} │ {usage.PLACEHOLDER_USAGE}",
         )
 
     def test_session_rate_limits_are_preferred_over_the_cached_usage(self):
@@ -194,7 +194,7 @@ class RenderTests(unittest.TestCase):
             mock.patch.object(usage, "codex_usage", return_value="b"),
         ):
             line = statusline.render(payload, now="09:41")
-        self.assertIn("Claude 88/66 · ", line)
+        self.assertIn("88/66 · ", line)
 
     def test_unparseable_payload_still_renders_a_line(self):
         with (
@@ -203,7 +203,7 @@ class RenderTests(unittest.TestCase):
             mock.patch.object(usage, "claude_usage", return_value="a"),
             mock.patch.object(usage, "codex_usage", return_value="b"),
         ):
-            self.assertIn("Claude a", statusline.render("not json", now="09:41"))
+            self.assertIn(" │ a │ b", statusline.render("not json", now="09:41"))
 
 
 if __name__ == "__main__":
