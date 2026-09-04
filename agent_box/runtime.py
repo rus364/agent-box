@@ -45,6 +45,7 @@ from .paths import (
     BUILD_STATE,
     CLAUDE_HOME,
     CODEX_HOME,
+    CODEX_PLUGIN_CACHE,
     CONFIG_ROOT,
     CONTAINER_NOTIFY_CREDENTIALS,
     CONTAINER_VIKUNJA_CONFIG_DIR,
@@ -86,12 +87,75 @@ def warn(message: str) -> None:
     print(f"agent-box: warning: {message}", file=sys.stderr)
 
 
+def _uses_chatgpt_desktop_resources(server: object) -> bool:
+    if not isinstance(server, dict):
+        return False
+    values = [server.get("command")]
+    args = server.get("args")
+    if isinstance(args, list):
+        values.extend(args)
+    env = server.get("env")
+    if isinstance(env, dict):
+        values.extend(env.values())
+    return any(
+        isinstance(value, str) and CHATGPT_DESKTOP_RESOURCES in value
+        for value in values
+    )
+
+
+def _plugin_mcp_overrides(config: dict) -> list[str]:
+    plugins = config.get("plugins")
+    if not isinstance(plugins, dict):
+        return []
+
+    overrides = []
+    for plugin_id, settings in plugins.items():
+        if not isinstance(plugin_id, str) or not isinstance(settings, dict):
+            continue
+        if settings.get("enabled") is not True:
+            continue
+        name, separator, marketplace = plugin_id.rpartition("@")
+        if not separator or not name or not marketplace:
+            continue
+        plugin_cache = CODEX_PLUGIN_CACHE / marketplace / name
+        for manifest_path in sorted(plugin_cache.glob("*/.codex-plugin/plugin.json")):
+            plugin_root = manifest_path.parent.parent
+            try:
+                manifest = json.loads(manifest_path.read_text())
+                mcp_config_name = manifest.get("mcpServers")
+                if not isinstance(mcp_config_name, str):
+                    continue
+                mcp_config_path = (plugin_root / mcp_config_name).resolve()
+                if not mcp_config_path.is_relative_to(plugin_root.resolve()):
+                    continue
+                mcp_config = json.loads(mcp_config_path.read_text())
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                warn(f"could not read Codex plugin MCP configuration for '{plugin_id}'")
+                continue
+            plugin_servers = mcp_config.get("mcpServers")
+            if not isinstance(plugin_servers, dict):
+                continue
+            for server_name, server in plugin_servers.items():
+                if not isinstance(server_name, str) or not _uses_chatgpt_desktop_resources(server):
+                    continue
+                if not re.fullmatch(r"[A-Za-z0-9_@-]+", plugin_id) or not re.fullmatch(
+                    r"[A-Za-z0-9_-]+", server_name,
+                ):
+                    warn(f"could not disable desktop MCP '{server_name}' from plugin '{plugin_id}'")
+                    continue
+                overrides.append(
+                    f"plugins.{plugin_id}.mcp_servers.{server_name}.enabled=false"
+                )
+    return overrides
+
+
 def codex_runtime_overrides() -> list[str]:
     """Disable MCPs that only the host ChatGPT desktop application provides.
 
-    ``CODEX_HOME`` remains the normal bind-mounted home.  These ephemeral
-    command-line settings merely stop Codex in the container from trying to
-    execute binaries that are not mounted there.
+    ``CODEX_HOME`` remains the normal bind-mounted home, so both the user's
+    explicit MCPs and MCPs contributed by enabled plugins must be inspected.
+    These ephemeral command-line settings stop Codex in the container from
+    trying to execute desktop resources without changing either source.
     """
     config_path = CODEX_HOME / "config.toml"
     if not config_path.is_file():
@@ -101,22 +165,20 @@ def codex_runtime_overrides() -> list[str]:
     except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
         warn(f"could not parse Codex config at {config_path}; not filtering MCP servers")
         return []
-    servers = data.get("mcp_servers")
-    if not isinstance(servers, dict):
-        return []
+    configured_servers = data.get("mcp_servers")
+    servers = configured_servers if isinstance(configured_servers, dict) else {}
 
     overrides = []
     for name in sorted(servers):
         server = servers[name]
-        command = server.get("command") if isinstance(server, dict) else None
-        if not isinstance(name, str) or not isinstance(command, str):
+        if not isinstance(name, str):
             continue
-        if not command.startswith(CHATGPT_DESKTOP_RESOURCES):
+        if not _uses_chatgpt_desktop_resources(server):
             continue
         key = name if name.replace("_", "").replace("-", "").isalnum() else json.dumps(name)
         overrides.append(f"mcp_servers.{key}.enabled=false")
-        warn(f"ignoring Codex MCP '{name}' inside container: ChatGPT desktop resource")
-    return overrides
+    overrides.extend(_plugin_mcp_overrides(data))
+    return sorted(set(overrides))
 
 
 def codex_command(

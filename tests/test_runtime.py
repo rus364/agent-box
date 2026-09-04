@@ -169,7 +169,8 @@ class CodexRuntimeOverridesTests(IsolatedRuntimeTest):
             if config_text is not None:
                 config_path.write_text(config_text)
             before = config_path.read_bytes() if config_path.exists() else b""
-            with mock.patch.object(runtime, "CODEX_HOME", codex_home):
+            with mock.patch.object(runtime, "CODEX_HOME", codex_home), \
+                 mock.patch.object(runtime, "CODEX_PLUGIN_CACHE", codex_home / "plugins/cache"):
                 overrides = runtime.codex_runtime_overrides()
             after = config_path.read_bytes() if config_path.exists() else b""
             return overrides, (before, after)
@@ -182,6 +183,56 @@ class CodexRuntimeOverridesTests(IsolatedRuntimeTest):
         )
         self.assertEqual(overrides, ["mcp_servers.node_repl.enabled=false"])
         self.assertEqual(contents[0], contents[1])
+
+    def test_expected_desktop_mcp_filtering_is_silent(self):
+        """An enforced container boundary is not a warning on every launch."""
+        with tempfile.TemporaryDirectory() as tmp:
+            codex_home = Path(tmp) / "codex-home"
+            codex_home.mkdir()
+            (codex_home / "config.toml").write_text(
+                "[mcp_servers.node_repl]\n"
+                'command = "/usr/lib/chatgpt/resources/cua_node/bin/node_repl"\n'
+            )
+            with mock.patch.object(runtime, "CODEX_HOME", codex_home), \
+                 mock.patch.object(runtime, "warn") as warn:
+                overrides = runtime.codex_runtime_overrides()
+
+        self.assertEqual(overrides, ["mcp_servers.node_repl.enabled=false"])
+        warn.assert_not_called()
+
+    def test_suppresses_chatgpt_desktop_mcp_loaded_by_enabled_plugin(self):
+        """Plugin MCPs need their plugin-scoped override or Codex treats the
+        override as a new, invalid top-level MCP configuration.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            codex_home = Path(tmp) / "codex-home"
+            plugin = codex_home / "plugins/cache/openai-bundled/computer-use/1.0.0"
+            (plugin / ".codex-plugin").mkdir(parents=True)
+            (codex_home / "config.toml").write_text(
+                '[plugins."computer-use@openai-bundled"]\n'
+                "enabled = true\n"
+            )
+            (plugin / ".codex-plugin/plugin.json").write_text(json.dumps({
+                "name": "computer-use",
+                "version": "1.0.0",
+                "mcpServers": "./.mcp.json",
+            }))
+            (plugin / ".mcp.json").write_text(json.dumps({
+                "mcpServers": {
+                    "cua_repl": {
+                        "command": "/usr/lib/chatgpt/resources/cua_node/bin/node",
+                        "args": ["scripts/launch.mjs"],
+                    },
+                },
+            }))
+
+            with mock.patch.object(runtime, "CODEX_HOME", codex_home), \
+                 mock.patch.object(runtime, "CODEX_PLUGIN_CACHE", codex_home / "plugins/cache"):
+                overrides = runtime.codex_runtime_overrides()
+
+        self.assertEqual(overrides, [
+            "plugins.computer-use@openai-bundled.mcp_servers.cua_repl.enabled=false",
+        ])
 
     def test_leaves_command_name_and_normal_absolute_path_mcps_enabled(self):
         overrides, _contents = self._overrides_for(
