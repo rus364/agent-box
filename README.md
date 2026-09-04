@@ -35,31 +35,56 @@ container while keeping the workflow close to local development:
 > A workspace box is one trust boundary. Claude, Codex, shells, hooks and
 > daemons inside the same box share the same Unix user and PID namespace.
 
-## Quick start
+## Installation
 
-Requirements: Linux, Python 3.11+, Podman. The launcher itself uses only the
-Python standard library.
+Requirements: Linux, Python 3.11+, Podman and Git. `gh` is optional, and only
+for passing a GitHub token into the box. The launcher itself uses only the
+Python standard library — there is nothing to build and nothing to install into
+Python.
+
+Git is a real dependency, not just how you get the code: agent-box asks it for
+the repository root to decide what to mount, and reads it for the status line
+and the auto-push safety checks.
+
+**1. Clone it.** Anywhere you like; this is the whole program.
 
 ```bash
 git clone https://github.com/rus364/agent-box.git ~/.local/src/agent-box
-ln -s ~/.local/src/agent-box/agent-box ~/.local/bin/agent-box   # must be on PATH
 ```
+
+**2. Configure it.** Run it by path the first time — its first question is
+putting `agent-box` on your PATH:
+
+```bash
+~/.local/src/agent-box/agent-box config
+```
+
+It offers the writable directories your PATH already has, or creates
+`~/.local/bin` and adds it. The symlink and the shell startup line are two
+separate questions, both declinable, and declining either prints the exact
+command to run yourself. Everything after that is optional integrations, all
+off by default.
+
+**3. Authenticate the agents on the host.** agent-box mounts your existing
+`~/.claude` and `~/.codex` rather than managing a second credential store, so
+`claude` and `codex` should be logged in before the first launch.
+
+**4. Run it.** The container image is built automatically on first use, which
+takes a few minutes once:
 
 ```bash
 cd ~/code/my-project
 agent-box claude          # or: agent-box codex
 ```
 
-The image is built automatically on first use. Authenticate `claude` and `codex`
-on the host first — agent-box mounts your existing agent state rather than
-managing a second credential store.
+Then, day to day:
 
 ```bash
 agent-box shell       # shell in this project's box
 agent-box attach      # reattach a detached session
 agent-box stop        # end the box and every session in it
 agent-box doctor      # verify the environment
-agent-box config      # configure optional integrations, then apply them
+agent-box upgrade     # move this checkout to the newest release
 ```
 
 ## How it works
@@ -173,14 +198,16 @@ One versioned JSON file:
 agent-box config        # ask, save, and apply
 agent-box config show   # print current settings, tokens redacted
 agent-box config check  # verify the Claude Telegram channel setup
-agent-box install       # apply the saved file without asking anything
+agent-box config apply  # apply the saved file without asking anything
 ```
 
 `agent-box config` ends by applying what you answered: installing the skills
 your integrations need, linking them for Claude, rendering credential files, and
-reconciling Claude's `settings.json`. `agent-box install` does the same from the
-saved file — which is what you want after pulling a newer agent-box, whose
-shipped skills may have changed, or after editing `config.json` by hand.
+reconciling Claude's `settings.json`. `agent-box config apply` does the same
+from the saved file, without any questions — which is what you want after
+editing `config.json` by hand. `agent-box upgrade` applies on its own once it
+has moved the checkout, so a newer agent-box never leaves you with its older
+skills installed.
 
 **Starting an agent applies nothing.** `agent-box claude` and `agent-box codex`
 read your configuration but never install a skill, write a symlink or rewrite
@@ -321,6 +348,24 @@ integrations you enabled are exposed.
 a poisoned environment cannot move a bind mount, a state directory or the
 container's home.
 
+## Updating
+
+```bash
+agent-box upgrade           # fetch, move to the newest release, apply
+agent-box upgrade --check   # report what is available, change nothing
+```
+
+Installing agent-box is a `git clone`, so upgrading it is a git operation on
+that checkout: it moves to the newest release tag, or fast-forwards the
+tracking branch while the repository has no tags yet. It refuses on a checkout
+with uncommitted changes or with commits no remote has — that is a working
+copy, not an installation, and the alternative to refusing would be stashing
+your work. Afterwards it applies your saved configuration, because the skills
+agent-box ships live in the checkout that just moved.
+
+Changing the tool groups still needs an explicit `agent-box build`; upgrading
+says when the image has drifted and leaves the decision to you.
+
 ## Uninstalling
 
 ```bash
@@ -329,13 +374,21 @@ agent-box uninstall
 
 Removes what agent-box wrote in places it does not own: its status line and
 hooks in Claude's `settings.json`, the skill links in `~/.claude/skills`, the
-skills it installed in `~/.agents/skills`, its rendered credential files, and
-every workspace box. Anything you wrote yourself in those places stays.
+skills it installed in `~/.agents/skills`, its rendered credential files, the
+symlink it put on your PATH, and every workspace box. Anything you wrote
+yourself in those places stays.
 
-Your configuration and state survive, so reinstalling picks up where you left
-off. Add `--purge` to delete those too — that includes stored tokens, so it asks
-first unless you pass `--yes`. The container image and this checkout are never
-removed for you; the command prints how.
+The PATH line in your shell startup file is the exception. It is left alone by
+default — a stray `export PATH` costs nothing, while deleting the wrong two
+lines of a login shell's startup file costs a lot — and `--purge` removes it
+only if it still matches, character for character, what agent-box wrote. An
+edited block is reported with its file and line numbers for you to decide
+about, never guessed at.
+
+Your configuration and state survive, so running `agent-box config` again picks
+up where you left off. Add `--purge` to delete those too — that includes stored
+tokens, so it asks first unless you pass `--yes`. The container image and this
+checkout are never removed for you; the command prints how.
 
 ## Diagnostics and tests
 
@@ -392,8 +445,9 @@ Project-specific toolchains belong in the project, declared through `mise`.
 <details>
 <summary><strong>A shared skill is missing or points somewhere unexpected</strong></summary>
 
-Run `agent-box doctor`, then `agent-box install`. agent-box never overwrites a
-skill directory or a link it did not create; it says so and keeps yours.
+Run `agent-box doctor`, then `agent-box config apply`. agent-box never
+overwrites a skill directory or a link it did not create; it says so and keeps
+yours.
 
 </details>
 

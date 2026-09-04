@@ -19,5 +19,5 @@ All of them are answered in one place:
 agent-box config
 ```
 
-and applied by that command, or later by `agent-box install`. Starting an agent
+and applied by that command, or later by `agent-box config apply`. Starting an agent
 applies nothing — see [Configuration](../../README.md#configuration).

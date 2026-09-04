@@ -11,6 +11,8 @@ agent_box/cli.py       argument parsing and the interactive config UI, nothing e
 agent_box/runtime.py   container lifecycle, mounts, launches, doctor
 agent_box/config.py    the whole config schema; flat dataclasses, no framework
 agent_box/paths.py     every host-side path; nothing else may hardcode a home layout
+agent_box/pathsetup.py the PATH symlink and the shell rc block, and their refusals
+agent_box/selfupdate.py `agent-box upgrade`: git operations on this checkout
 agent_box/skills/      skills agent-box ships and installs (vendored, checked in)
 Containerfile          the workspace image, with optional tool groups
 tests/                 unittest, no plugins
@@ -31,10 +33,19 @@ be able to move a bind mount, a state directory or the container's home.
 can reach starts disabled. The exceptions are documented in the dataclass that
 defines them, with the reason.
 
-**Applying is not launching.** Only `agent-box config`, `agent-box install` and
-`agent-box uninstall` may write into `~/.claude` or `~/.agents`. Launching an
+**Applying is not launching.** Only `agent-box config` (including `config
+apply`), `agent-box upgrade` and `agent-box uninstall` may write into
+`~/.claude` or `~/.agents`. Launching an
 agent reads configuration and changes nothing the user owns. `runtime.apply_config`
 is the single place that applies.
+
+**Adding to a user's file is not removing from it.** agent-box may append its
+marked block to `~/.bashrc`; it removes one only under `--purge`, and only when
+the contents between the markers still match, character for character, the
+line it generates. An edited block belongs to the user by then. Every case it
+will not touch is reported with a file and a line range instead. The same
+asymmetry governs the PATH symlink: a name that is not a symlink into an
+agent-box checkout is never replaced.
 
 **agent-box owns its integrations.** An integration configured somewhere else,
 that the user has to assemble first, is not an integration. Settings live in
@@ -67,7 +78,7 @@ Hook removal only ever touches agent-box's own commands.
 ## Commands
 
 ```bash
-python3 -m unittest discover -s tests    # full suite (~740 tests, no network)
+python3 -m unittest discover -s tests    # full suite (~830 tests, no network)
 ./agent-box selftest                     # fast, no Podman
 uvx ruff check --select E4,E9,F agent_box/ tests/   # what CI lints
 ./agent-box config show                  # inspect the live config, tokens redacted
@@ -82,6 +93,12 @@ run them through `discover`, not `python3 -m unittest tests.test_browser`.
   Anything that calls `config_interactive` or `apply_config` has to patch
   `runtime.CLAUDE_HOME`, `runtime.AGENT_SKILLS_DIR`, `runtime.MANAGED_SKILLS_SOURCE`
   and the credential paths. This has bitten before.
+- The same applies to PATH, and more sharply: `config_interactive` starts with
+  `cli._configure_path`, and `uninstall_main` scans the real PATH for symlinks
+  to remove. Tests must stub `cli._configure_path`, and patch
+  `pathsetup.path_entries`, `pathsetup.DEFAULT_BIN_DIR`, `pathsetup.rc_file`
+  and `pathsetup.checkout_root` — otherwise the suite deletes the developer's
+  own `agent-box` symlink or edits their `~/.bashrc`.
 - Module-level constants derived from `paths.py` (`AGENTS_DIR`, `VIKUNJA_*`,
   `CONTAINER_VIKUNJA_*`) are resolved at import; tests patch them on `runtime`,
   not on `paths`.

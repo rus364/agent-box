@@ -604,6 +604,7 @@ class ConfigEnableGatingTests(unittest.TestCase):
              mock.patch.object(runtime, "sync_managed_skills"), \
              mock.patch.object(runtime, "claude_skill_links"), \
              mock.patch.object(cli, "config_show"), \
+             mock.patch.object(cli, "_configure_path"), \
              mock.patch("builtins.input", side_effect=list(answers) + [""] * 40), \
              redirect_stdout(out):
             cli.config_interactive()

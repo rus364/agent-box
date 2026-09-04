@@ -20,7 +20,7 @@ Answer yes, then give it two things:
 Then apply and start a session:
 
 ```bash
-agent-box install     # only if you edited config.json by hand
+agent-box config apply   # only if you edited config.json by hand
 agent-box claude
 ```
 

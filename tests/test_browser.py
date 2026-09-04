@@ -449,9 +449,9 @@ class ConfigSurfaceTests(unittest.TestCase):
         """Run the interactive UI without touching anything the user owns.
 
         Every derived artifact it writes -- the credential file, Claude's
-        settings.json, the Flow-Next hooks -- belongs to the real host, so all
-        of them are stubbed; only the Config handed to save_config matters
-        here.
+        settings.json, the Flow-Next hooks, the symlink and shell rc line the
+        PATH step would install -- belongs to the real host, so all of them
+        are stubbed; only the Config handed to save_config matters here.
         """
         from agent_box import flow_push
 
@@ -459,6 +459,7 @@ class ConfigSurfaceTests(unittest.TestCase):
             lambda _label, _current: answer)
         with mock.patch.object(cli_module, "load_config", return_value=config), \
              mock.patch.object(cli_module, "save_config") as save, \
+             mock.patch.object(cli_module, "_configure_path"), \
              mock.patch.object(cli_module, "_prompt_bool", side_effect=answered), \
              mock.patch.object(cli_module, "_prompt_secret", side_effect=lambda _l, current: current), \
              mock.patch.object(cli_module, "_prompt_text", side_effect=lambda _l, current: current), \

@@ -92,13 +92,13 @@ def usage_text() -> None:
   agent-box [--mount PATH[:ro]]... [--env NAME[=VALUE]]... [--host] [codex|claude|shell|doctor] [arguments...]
   agent-box attach [session]
   agent-box stop
-  agent-box config [show|check]
+  agent-box config [show|check|apply]
   agent-box usage <codex|claude|all>
   agent-box statusline
   agent-box notify <test|claude|codex>
   agent-box selftest
   agent-box build | update | rebuild
-  agent-box install
+  agent-box upgrade [--check]
   agent-box uninstall [--purge] [--yes]
   agent-box skills vendor <upstream>
 
@@ -115,24 +115,34 @@ Sessions:
   agent-box stop            Remove this workspace's box and every session in it
 
 Configuration:
-  agent-box config          Interactive setup. Persists to
+  agent-box config          Interactive setup, starting with putting the
+                            agent-box command on your PATH. Persists to
                             ~/.config/agent-box/config.json
   agent-box config show     Print the current settings (token redacted)
   agent-box config check    Verify the official Claude Telegram channel setup
-  agent-box install         Apply the saved configuration without asking
-                            anything: install the skills it enables, link them
-                            for Claude, and reconcile Claude's settings.json.
-                            'agent-box config' ends by doing this, so it is
-                            only needed after updating the agent-box checkout
-                            or editing config.json by hand. Starting an agent
-                            never applies configuration by itself.
+  agent-box config apply    Apply the saved file without asking anything:
+                            install the skills it enables, link them for
+                            Claude, and reconcile Claude's settings.json.
+                            'agent-box config' and 'agent-box upgrade' both end
+                            by doing this, so it is only needed after editing
+                            config.json by hand. Starting an agent never
+                            applies configuration by itself.
+
+Installation:
+  agent-box upgrade         Fetch and move this checkout to the newest release
+                            tag (or fast-forward it, until the first tag
+                            exists), then apply the saved configuration.
+                            Refuses on a checkout with uncommitted changes or
+                            unpushed commits. --check only reports.
   agent-box uninstall       Undo what agent-box wrote outside its own
                             directories: the status line and hooks in Claude's
                             settings.json, its skill links and installed
-                            skills, its rendered credential files, and every
-                            workspace box. Add --purge to also delete
-                            agent-box's own config and state (tokens
-                            included); --yes skips that confirmation.
+                            skills, its rendered credential files, the symlink
+                            it put on your PATH, and every workspace box. Add
+                            --purge to also delete agent-box's own config and
+                            state (tokens included) and, when it still matches
+                            byte for byte, the PATH block it added to your
+                            shell startup file; --yes skips that confirmation.
 
 Environment (overrides for a single command):
   AGENT_BOX_AGENT           Default agent when claude/codex is omitted (default: claude)
@@ -506,10 +516,126 @@ def config_check() -> None:
     print(f"Ready. The next 'agent-box claude' will pass --channels {CLAUDE_TELEGRAM_CHANNEL}")
 
 
+def _prompt_bin_dir(choices: list) -> object | None:
+    """Pick the directory for the symlink, or decline the whole thing.
+
+    A menu rather than a yes/no, because the answer is genuinely the user's:
+    which of their PATH directories agent-box may write a name into is not
+    something a launcher gets to assume.
+    """
+    print("  Where should the symlink go?")
+    for index, choice in enumerate(choices, 1):
+        note = "" if choice.on_path else "  (not on PATH yet)"
+        missing = "" if choice.exists else "  (does not exist yet)"
+        print(f"    {index}) {choice.path}{note}{missing}")
+    print("    0) nowhere -- I will do it myself")
+    while True:
+        answer = input("  Choice [1]: ").strip() or "1"
+        if answer == "0":
+            return None
+        if answer.isdigit() and 1 <= int(answer) <= len(choices):
+            return choices[int(answer) - 1]
+        print(f"  Enter a number between 0 and {len(choices)}.")
+
+
+def _configure_path() -> None:
+    """Make ``agent-box`` resolvable from the shell -- the first question.
+
+    It comes first because it is the only one asked before agent-box works:
+    the command that gets someone here is ``./agent-box config`` from a fresh
+    clone. Two separate consents, never one, because putting a symlink in a
+    directory that is already on PATH and editing a shell startup file are
+    different sizes of favour to ask, and declining either prints the exact
+    thing to run instead.
+    """
+    from . import pathsetup
+
+    print("-- The agent-box command on PATH --")
+    state = pathsetup.link_state()
+    if state.kind == "ours":
+        print(f"'{pathsetup.COMMAND}' already resolves to this checkout, via {state.found}.\n")
+        return
+    if state.kind == "foreign":
+        print(f"'{pathsetup.COMMAND}' on your PATH is {state.target}, which is not an")
+        print("agent-box checkout. Leaving it alone -- it is not agent-box's to replace.\n")
+        return
+    if state.kind == "other":
+        print(f"'{pathsetup.COMMAND}' resolves to a different agent-box checkout:")
+        print(f"  {state.found} -> {state.target}")
+        print("This checkout is:")
+        print(f"  {pathsetup.shim_path()}")
+    else:
+        print(f"'{pathsetup.COMMAND}' is not on your PATH yet, so it can only be run")
+        print("by its full path. A symlink in a directory your shell already searches")
+        print("fixes that.")
+
+    choices = pathsetup.bin_dir_choices()
+    if not choices:
+        print("No directory on your PATH under your home is writable, and")
+        print(f"{pathsetup.DEFAULT_BIN_DIR} cannot be created either. By hand:")
+        for line in pathsetup.manual_instructions(pathsetup.DEFAULT_BIN_DIR):
+            print(line)
+        print()
+        return
+
+    chosen = _prompt_bin_dir(choices)
+    if chosen is None:
+        print("  Not touching anything. By hand:")
+        for line in pathsetup.manual_instructions(choices[0].path):
+            print(line)
+        print()
+        return
+
+    print("  That means:")
+    for step in chosen.actions():
+        print(f"    - {step}")
+    if not _prompt_bool("  Create the symlink now", True):
+        print("  Skipped. By hand:")
+        for line in pathsetup.manual_instructions(chosen.path):
+            print(line)
+        print()
+        return
+    try:
+        print(f"  {pathsetup.install_symlink(chosen.path)}")
+    except AgentBoxError as exc:
+        print(f"  not linked: {exc}")
+        print()
+        return
+
+    if not chosen.needs_rc_line:
+        print()
+        return
+
+    rc = pathsetup.rc_file()
+    block = pathsetup.rc_block(chosen.path)
+    if rc is None:
+        print(f"  {chosen.path} is not on your PATH, and agent-box does not know how")
+        print(f"  to write a PATH line for your login shell ({pathsetup.login_shell() or 'unknown'}).")
+        print("  Add the equivalent of this yourself:")
+        for line in block.splitlines():
+            print(f"    {line}")
+        print()
+        return
+    print(f"  {chosen.path} is not on your PATH. agent-box can append this to {rc}:")
+    for line in block.splitlines():
+        print(f"    {line}")
+    if _prompt_bool(f"  Let agent-box edit {rc}", False):
+        try:
+            print(f"  {pathsetup.append_rc_block(rc, chosen.path)}")
+            print(f"  Open a new shell, or run: source {rc}")
+        except AgentBoxError as exc:
+            print(f"  not edited: {exc}")
+    else:
+        print(f"  Not edited. Add those lines to {rc} yourself.")
+    print()
+
+
 def config_interactive() -> None:
     config = load_config()
     print(f"agent-box configuration ({CONFIG_FILE})")
     print("Press Enter to keep the current value shown in brackets.\n")
+
+    _configure_path()
 
     print("-- Claude Telegram channel (Anthropic's official plugin) --")
     print("Controls the live 'agent-box claude' session from Telegram.")
@@ -643,9 +769,9 @@ def config_interactive() -> None:
             config.flow_next.review_backends.pop(agent, None)
 
     save_config(config)
-    # Applying is not a second feature: `agent-box install` runs exactly this,
-    # so a configuration saved here and one edited by hand end up producing
-    # the same host state.
+    # Applying is not a second feature: `agent-box config apply` runs exactly
+    # this, so a configuration saved here and one edited by hand end up
+    # producing the same host state.
     print(f"\nSaved {CONFIG_FILE}\n")
     for line in runtime.apply_config(config):
         print(f"  {line}")
@@ -656,6 +782,25 @@ def config_interactive() -> None:
         print(channel_module.setup_instructions())
 
 
+def config_apply() -> None:
+    """``agent-box config apply``: apply the saved file, asking nothing.
+
+    The interactive flow ends by calling exactly this, so a configuration
+    answered in the UI and one edited by hand produce the same host state.
+    It is a subcommand of ``config`` rather than a verb of its own because
+    that is what it is -- there is no separate thing to install, and calling
+    it ``install`` only ever competed with the word for cloning the
+    repository. ``agent-box upgrade`` applies afterwards on its own, which
+    leaves hand-editing ``config.json`` as the one reason to run this.
+    """
+    from . import runtime
+    config = load_config()
+    for line in runtime.apply_config(config):
+        print(f"agent-box: {line}")
+    for problem in runtime.vikunja_warnings(config):
+        print(f"agent-box: warning: {problem}", file=sys.stderr)
+
+
 def config_command(args: list[str]) -> None:
     if not args:
         config_interactive()
@@ -663,8 +808,10 @@ def config_command(args: list[str]) -> None:
         config_show()
     elif args == ["check"]:
         config_check()
+    elif args == ["apply"]:
+        config_apply()
     else:
-        die("expected: agent-box config [show|check]")
+        die("expected: agent-box config [show|check|apply]")
 
 
 # -- selftest ----------------------------------------------------------
@@ -679,7 +826,7 @@ def selftest() -> None:
 
 NON_RUNTIME = {
     "usage", "statusline", "notify", "config", "selftest", "help", "-h", "--help",
-    "build", "update", "rebuild", "flow-next", "attach", "stop", "install", "uninstall",
+    "build", "update", "rebuild", "flow-next", "attach", "stop", "upgrade", "uninstall",
     "skills",
 }
 #: --host only makes sense for a real agent launch, never for these.
@@ -726,9 +873,9 @@ def main() -> None:
         if args and args[0] == "skills":
             from . import vendor
             raise SystemExit(vendor.vendor_main(args[1:]))
-        if args and args[0] == "install":
-            from . import runtime
-            raise SystemExit(runtime.install_main(args[1:]))
+        if args and args[0] == "upgrade":
+            from . import selfupdate
+            raise SystemExit(selfupdate.upgrade_main(args[1:]))
         if args and args[0] == "uninstall":
             from . import runtime
             raise SystemExit(runtime.uninstall_main(args[1:]))
