@@ -8,6 +8,7 @@ Matcher-scoped mixed-entry coverage below is driven through `notify` (its
 Notification hooks carry a matcher) rather than `flow_push`, since Flow-Next
 auto-push's only managed Claude hook (`Stop`) carries no matcher of its own."""
 import json
+import os
 import tempfile
 import unittest
 from unittest import mock
@@ -268,6 +269,53 @@ class StatuslineReconcileTests(unittest.TestCase):
             self.assertFalse(claude_settings.reconcile_claude_settings(
                 self.path, notifications=True, statusline=True))
         write_json.assert_not_called()
+
+
+class StatuslineOverrideTests(unittest.TestCase):
+    """``AGENT_BOX_STATUSLINE=0`` means "leave it alone", not "remove it".
+
+    settings.json belongs to the user and is read by Claude sessions that
+    never go through agent-box, so a per-run override that deleted the line
+    would make a one-shot variable a lasting change, with nothing to put it
+    back.
+    """
+
+    def test_unset_leaves_the_configured_intent_untouched(self):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop(claude_settings.STATUSLINE_ENV, None)
+            self.assertIs(claude_settings.statusline_intent(True), True)
+            self.assertIs(claude_settings.statusline_intent(False), False)
+
+    def test_zero_means_do_not_touch_it(self):
+        with mock.patch.dict(os.environ, {claude_settings.STATUSLINE_ENV: "0"}):
+            self.assertIsNone(claude_settings.statusline_intent(True))
+            self.assertIsNone(claude_settings.statusline_intent(False))
+
+    def test_any_other_value_is_not_an_override(self):
+        for value in ("1", "yes", ""):
+            with self.subTest(value=value):
+                with mock.patch.dict(os.environ, {claude_settings.STATUSLINE_ENV: value}):
+                    self.assertIs(claude_settings.statusline_intent(True), True)
+
+    def test_an_installed_line_survives_the_override(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "settings.json"
+            claude_settings.reconcile_statusline(path, True)
+            with mock.patch.dict(os.environ, {claude_settings.STATUSLINE_ENV: "0"}):
+                claude_settings.reconcile_claude_settings(
+                    path, notifications=False,
+                    statusline=claude_settings.statusline_intent(True))
+            settings = json.loads(path.read_text())
+            self.assertTrue(claude_settings.statusline_is_ours(settings))
+
+    def test_the_override_creates_no_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "settings.json"
+            with mock.patch.dict(os.environ, {claude_settings.STATUSLINE_ENV: "0"}):
+                claude_settings.reconcile_claude_settings(
+                    path, notifications=False,
+                    statusline=claude_settings.statusline_intent(True))
+            self.assertFalse(path.exists())
 
 
 if __name__ == "__main__":

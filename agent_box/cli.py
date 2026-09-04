@@ -13,7 +13,13 @@ from . import notify as notify_module
 from . import statusline as statusline_module
 from . import usage as usage_module
 from .atomicio import read_json
-from .config import CLAUDE_TELEGRAM_CHANNEL, load_config, save_config
+from .config import (
+    CLAUDE_TELEGRAM_CHANNEL,
+    FLOW_REVIEW_BACKEND_AGENTS,
+    FLOW_REVIEW_BACKEND_CHOICES,
+    load_config,
+    save_config,
+)
 from .errors import AgentBoxError
 from .paths import CLAUDE_HOME, CONFIG_FILE
 
@@ -76,6 +82,7 @@ def usage_text() -> None:
   agent-box notify <test|claude|codex>
   agent-box selftest
   agent-box build | update | rebuild
+  agent-box uninstall [--purge] [--yes]
 
 Sessions:
   An interactive claude/codex/shell session runs inside a tmux server in the
@@ -94,6 +101,13 @@ Configuration:
                             ~/.config/agent-box/config.json
   agent-box config show     Print the current settings (token redacted)
   agent-box config check    Verify the official Claude Telegram channel setup
+  agent-box uninstall       Undo what agent-box wrote outside its own
+                            directories: the status line and hooks in Claude's
+                            settings.json, its skill links and installed
+                            skills, its rendered credential files, and every
+                            workspace box. Add --purge to also delete
+                            agent-box's own config and state (tokens
+                            included); --yes skips that confirmation.
 
 Environment (overrides for a single command):
   AGENT_BOX_AGENT           Default agent when claude/codex is omitted (default: claude)
@@ -102,6 +116,8 @@ Environment (overrides for a single command):
   AGENT_BOX_TMUX=0          Run the session directly, with no detachable tmux
   AGENT_BOX_GH_TOKEN=0|1    Withhold / force the host GitHub token for this run
   AGENT_BOX_WORKSPACE_ROOT  Override the host directory mounted into the container
+  AGENT_BOX_STATUSLINE=0    Leave Claude's statusLine untouched for this run
+  AGENT_BOX_AGENTS_DIR      Override ~/.agents, the shared agent/skill tree
 
 --mount PATH[:ro] additionally bind-mounts PATH (an existing absolute host
 directory) into the container at that same path, read-write by default or
@@ -265,6 +281,59 @@ def _prompt_secret(label: str, current: str) -> str:
     return answer or current
 
 
+def _prompt_choice(label: str, choices: tuple[str, ...], current: str) -> str:
+    """Pick one of a fixed set of values, or none of them.
+
+    A menu rather than free text wherever a wrong answer only fails much
+    later: a mistyped Flow-Next backend spec, for instance, surfaces inside a
+    review Flow-Next has already started, with an error that points at
+    Flow-Next rather than at the typo here.
+    """
+    print(f"  {label}:")
+    for index, choice in enumerate(choices, 1):
+        marker = " (current)" if choice == current else ""
+        print(f"    {index}) {choice}{marker}")
+    none_marker = " (current)" if not current else ""
+    print(f"    0) none -- leave it to the tool's own default{none_marker}")
+    default = str(choices.index(current) + 1) if current in choices else "0"
+    while True:
+        answer = input(f"  Choice [{default}]: ").strip() or default
+        if answer == "0":
+            return ""
+        if answer.isdigit() and 1 <= int(answer) <= len(choices):
+            return choices[int(answer) - 1]
+        print(f"  Enter a number between 0 and {len(choices)}.")
+
+
+def _prompt_env_names(label: str, current: list[str]) -> list[str]:
+    """A whitespace- or comma-separated list of variable names."""
+    shown = " ".join(current) or "(none)"
+    answer = input(f"{label} [{shown}]: ").strip()
+    if not answer:
+        return list(current)
+    if answer == "-":
+        return []
+    return [name for name in answer.replace(",", " ").split() if name]
+
+
+def _prompt_env_assignments(label: str, current: dict[str, str]) -> dict[str, str]:
+    """Whitespace-separated ``NAME=VALUE`` pairs."""
+    shown = " ".join(f"{k}={v}" for k, v in sorted(current.items())) or "(none)"
+    answer = input(f"{label} [{shown}]: ").strip()
+    if not answer:
+        return dict(current)
+    if answer == "-":
+        return {}
+    pairs = {}
+    for token in answer.split():
+        name, sep, value = token.partition("=")
+        if sep and name:
+            pairs[name] = value
+        else:
+            print(f"  ignoring '{token}': expected NAME=VALUE")
+    return pairs
+
+
 def _statusline_note(config) -> str:
     """Say so when Claude's status line is somebody else's, not agent-box's.
 
@@ -299,7 +368,7 @@ def _vikunja_note(config) -> str:
     problems = runtime.vikunja_warnings(config)
     if problems:
         return f" ({problems[0].split('but ', 1)[-1]})"
-    return f" ({runtime.container_vikunja_url(runtime.host_vikunja_url())})"
+    return f" ({runtime.container_vikunja_url(config.vikunja.url)})"
 
 
 def _browser_note(config) -> str:
@@ -329,11 +398,22 @@ def config_show() -> None:
     print(f"  Git full config copy        {'on' if config.git.full_config else 'off'}")
     print(f"  Provider API keys           {'on' if config.providers.api_keys else 'off'}")
     print(f"  Provider transport/proxy    {'on' if config.providers.transport else 'off'}")
-    print(f"  Vikunja skill access        {'on' if config.vikunja.enabled else 'off'}{_vikunja_note(config)}")
+    print(f"  Share skills with Claude    {'on' if config.skills.claude_links else 'off'}")
+    print(f"  Vikunja integration         {'on' if config.vikunja.enabled else 'off'}{_vikunja_note(config)}")
+    if config.vikunja.enabled:
+        print(f"    server                    {config.vikunja.url or '(not set)'}")
+        print(f"    api token                 {_redact(config.vikunja.token)}")
     print(f"  Agent browser (containers)  {'on' if config.browser.enabled else 'off'}{_browser_note(config)}")
     print(f"  Flow-Next auto-push         {'on' if config.flow_next.auto_push else 'off'}")
-    for agent, backend in sorted(config.flow_next.review_backends.items()):
-        print(f"    review backend ({agent})    {backend}")
+    for agent in FLOW_REVIEW_BACKEND_AGENTS:
+        backend = config.flow_next.review_backends.get(agent)
+        shown = backend or "(Flow-Next's own default)"
+        label = f"review backend ({agent})"
+        print(f"    {label:<26}{shown}")
+    forwarded = ", ".join(config.env.forward) or "(none)"
+    print(f"  Forwarded env variables     {forwarded}")
+    assignments = ", ".join(f"{k}={v}" for k, v in sorted(config.env.set.items())) or "(none)"
+    print(f"  Set env variables           {assignments}")
 
 
 def config_check() -> None:
@@ -425,17 +505,35 @@ def config_interactive() -> None:
         "Forward endpoint/proxy settings from this shell (base URL, proxies, CA bundle)",
         config.providers.transport)
 
-    print("\n-- Vikunja skill access (opt-in) --")
-    print("Exposes ~/.config/vikunja (server URL + API token, read-only) and")
-    print("~/.local/state/vikunja (resumable import journals) to the container,")
-    print("and puts the skill's CLI on its PATH. A loopback URL is rewritten to")
-    print("host.containers.internal so the container reaches the host's server.")
+    print("\n-- Shared skills --")
+    print("~/.agents/skills is read by Codex directly; these symlinks let Claude")
+    print("read the same files. They live in your real ~/.claude/skills, so they")
+    print("also apply to Claude sessions started outside agent-box.")
+    config.skills.claude_links = _prompt_bool(
+        "Link shared skills into ~/.claude/skills", config.skills.claude_links)
+
+    print("\n-- Vikunja (opt-in) --")
+    print("Task tracking for both agents. agent-box installs the skill itself and")
+    print("holds the server URL and API token here, so there is nothing to set up")
+    print("on the host first. A loopback or LAN address is redirected so the")
+    print("container reaches your server rather than itself.")
     print("The token can read and rewrite your entire task tracker.")
-    config.vikunja.enabled = _prompt_bool(
-        "Expose the host Vikunja credentials to the container", config.vikunja.enabled)
+    config.vikunja.enabled = _prompt_bool("Enable the Vikunja integration", config.vikunja.enabled)
+    if config.vikunja.enabled:
+        config.vikunja.url = _prompt_text(
+            "  Server URL (e.g. http://localhost:3456)", config.vikunja.url)
+        config.vikunja.token = _prompt_secret("  API token", config.vikunja.token)
     from . import runtime
     for problem in runtime.vikunja_warnings(config):
         print(f"  note: {problem}")
+
+    print("\n-- Extra environment variables --")
+    print("Anything your projects need that agent-box does not know about.")
+    print("Enter names to forward from this shell (values stay out of the process")
+    print("list, so use this for secrets), or NAME=VALUE pairs stored in the")
+    print("config file. Enter '-' to clear a list.")
+    config.env.forward = _prompt_env_names("  Forward from this shell", config.env.forward)
+    config.env.set = _prompt_env_assignments("  Set explicitly", config.env.set)
 
     print("\n-- Agent-controlled browser (opt-in) --")
     print("Gives containerized Claude and Codex a Playwright MCP server driving a")
@@ -457,6 +555,19 @@ def config_interactive() -> None:
     config.flow_next.auto_push = _prompt_bool(
         "Enable Flow-Next auto-push", config.flow_next.auto_push)
 
+    print("\n-- Flow-Next review routing (optional) --")
+    print("Which backend reviews the work, chosen by the agent you launched.")
+    print("Leave both at 'none' to let Flow-Next resolve it from .flow/config.json.")
+    for agent in FLOW_REVIEW_BACKEND_AGENTS:
+        chosen = _prompt_choice(
+            f"Review backend when the primary agent is {agent}",
+            FLOW_REVIEW_BACKEND_CHOICES,
+            config.flow_next.review_backends.get(agent, ""))
+        if chosen:
+            config.flow_next.review_backends[agent] = chosen
+        else:
+            config.flow_next.review_backends.pop(agent, None)
+
     save_config(config)
     # Keep the derived artifacts in step with what was just saved: the
     # container-visible credential file, and everything agent-box owns in
@@ -464,6 +575,9 @@ def config_interactive() -> None:
     # one write. The flow-next hooks are reconciled separately below; each set
     # owns only its own commands and never disturbs the other.
     notify_module.sync_credentials(config)
+    runtime.sync_vikunja_credentials(config)
+    runtime.sync_managed_skills(config)
+    runtime.claude_skill_links(config)
     settings = CLAUDE_HOME / "settings.json"
     claude_settings.reconcile_claude_settings(
         settings,
@@ -505,7 +619,7 @@ def selftest() -> None:
 
 NON_RUNTIME = {
     "usage", "statusline", "notify", "config", "selftest", "help", "-h", "--help",
-    "build", "update", "rebuild", "flow-next", "attach", "stop",
+    "build", "update", "rebuild", "flow-next", "attach", "stop", "uninstall",
 }
 #: --host only makes sense for a real agent launch, never for these.
 HOST_ONLY_AGENTS = {"claude", "codex"}
@@ -542,6 +656,9 @@ def main() -> None:
             from . import runtime
             command = args[0]
             raise SystemExit(runtime.build_image(script_dir, command != "build", command == "rebuild"))
+        if args and args[0] == "uninstall":
+            from . import runtime
+            raise SystemExit(runtime.uninstall_main(args[1:]))
         if args and args[0] in {"attach", "stop"}:
             from . import runtime
             if args[0] == "attach":

@@ -103,15 +103,27 @@ CHANNEL_LOCK = STATE_ROOT / "runtime/telegram-channel.json"
 CLAUDE_HOME = env_path("CLAUDE_CONFIG_DIR", HOST_HOME / ".claude")
 CODEX_HOME = env_path("CODEX_HOME", HOST_HOME / ".codex")
 
-# The Vikunja skill's own host state: its config directory holds the server
-# URL and an API token, its state directory holds resumable import journals.
-# agent-box only exposes these to the container; it never writes them, and the
-# skill -- not agent-box -- owns their format.
-#
-# The *source* honors the host's XDG layout, but the container-side
-# destination is always the literal ``$HOME/.config/vikunja`` /
-# ``$HOME/.local/state/vikunja`` (see runtime.vikunja_mounts), because the
-# skill's CLI resolves those two paths from ``~`` with no XDG variable of its
-# own.
-VIKUNJA_CONFIG_DIR = XDG_CONFIG_HOME / "vikunja"
+# The shared agent tree. ``skills/`` under it is the canonical location both
+# Claude and Codex read, and the place agent-box installs the skills it ships
+# (see runtime.install_managed_skills).
+AGENTS_DIR = env_path("AGENT_BOX_AGENTS_DIR", HOST_HOME / ".agents")
+AGENT_SKILLS_DIR = AGENTS_DIR / "skills"
+
+# The skills agent-box ships and installs itself, inside the package.
+MANAGED_SKILLS_SOURCE = Path(__file__).resolve().parent / "skills"
+
+# Vikunja. agent-box owns the server URL and API token in its own config file
+# and renders this pair -- ``config.json`` plus ``token`` -- for the container
+# to read, exactly the way notifications derive NOTIFY_CREDENTIALS above. The
+# host is never asked to maintain a second configuration.
+VIKUNJA_CREDENTIALS_DIR = STATE_ROOT / "runtime/vikunja"
+# Resumable ``vikunja import`` journals. This one is genuine host state that
+# outlives a box, so it stays in the host's XDG location and is mounted
+# read-write.
 VIKUNJA_STATE_DIR = XDG_STATE_HOME / "vikunja"
+
+# Where the container looks for both: the skill's CLI resolves them from
+# ``~`` with no XDG variable of its own, so the destinations are the literal
+# ``$HOME`` paths regardless of how the host lays its XDG directories out.
+CONTAINER_VIKUNJA_CONFIG_DIR = HOST_HOME / ".config/vikunja"
+CONTAINER_VIKUNJA_STATE_DIR = HOST_HOME / ".local/state/vikunja"

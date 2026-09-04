@@ -259,7 +259,8 @@ class CodexRuntimeOverridesTests(IsolatedRuntimeTest):
                  mock.patch.object(runtime, "ensure_refresh_token"), \
                  mock.patch.object(runtime, "load_config", return_value=Config()), \
                  mock.patch.object(runtime, "image_exists", return_value=True), \
-                 mock.patch.object(runtime, "sync_claude_agent_skills"), \
+                 mock.patch.object(runtime, "sync_managed_skills"), \
+                 mock.patch.object(runtime, "claude_skill_links"), \
                  mock.patch.object(runtime, "claude_channel_args", return_value=([], [])), \
                  mock.patch.object(runtime, "launch_in_workspace_container", return_value=0), \
                  mock.patch.object(runtime, "codex_runtime_overrides") as overrides, \
@@ -291,7 +292,8 @@ class ContainerFlowNextEnvTests(IsolatedRuntimeTest):
                 mock.patch.object(runtime, "ensure_refresh_token"),
                 mock.patch.object(runtime, "load_config", return_value=Config()),
                 mock.patch.object(runtime, "image_exists", return_value=True),
-                mock.patch.object(runtime, "sync_claude_agent_skills"),
+                mock.patch.object(runtime, "sync_managed_skills"),
+                mock.patch.object(runtime, "claude_skill_links"),
                 mock.patch.object(runtime, "claude_channel_args", return_value=([], [])),
                 mock.patch.object(runtime, "launch_in_workspace_container", side_effect=fake_launch),
                 self.assertRaises(SystemExit),
@@ -311,6 +313,8 @@ class ContainerFlowNextEnvTests(IsolatedRuntimeTest):
             workspace = Workspace(root, root)
 
             captured = {}
+            routed = Config()
+            routed.flow_next.review_backends["claude"] = "codex:gpt-5.6-sol:medium"
 
             def fake_launch(spec, workspace, command, extra_env, process_env):
                 captured["extra_env"] = extra_env
@@ -321,9 +325,10 @@ class ContainerFlowNextEnvTests(IsolatedRuntimeTest):
                 mock.patch.object(runtime, "resolve_workspace", return_value=workspace),
                 mock.patch.object(runtime, "ensure_state_dirs"),
                 mock.patch.object(runtime, "ensure_refresh_token"),
-                mock.patch.object(runtime, "load_config", return_value=Config()),
+                mock.patch.object(runtime, "load_config", return_value=routed),
                 mock.patch.object(runtime, "image_exists", return_value=True),
-                mock.patch.object(runtime, "sync_claude_agent_skills"),
+                mock.patch.object(runtime, "sync_managed_skills"),
+                mock.patch.object(runtime, "claude_skill_links"),
                 mock.patch.object(runtime, "claude_channel_args", return_value=([], [])),
                 mock.patch.object(runtime, "launch_in_workspace_container", side_effect=fake_launch),
                 self.assertRaises(SystemExit),
@@ -348,7 +353,8 @@ class ContainerFlowNextEnvTests(IsolatedRuntimeTest):
                 mock.patch.object(runtime, "ensure_refresh_token"),
                 mock.patch.object(runtime, "load_config", return_value=Config()),
                 mock.patch.object(runtime, "image_exists", return_value=True),
-                mock.patch.object(runtime, "sync_claude_agent_skills"),
+                mock.patch.object(runtime, "sync_managed_skills"),
+                mock.patch.object(runtime, "claude_skill_links"),
                 mock.patch.object(runtime, "claude_channel_args", return_value=([], [])),
                 mock.patch.object(runtime, "launch_in_workspace_container", side_effect=fake_launch),
                 self.assertRaises(SystemExit),
@@ -380,7 +386,8 @@ class ContainerFlowNextEnvTests(IsolatedRuntimeTest):
                 mock.patch.object(runtime, "ensure_refresh_token"),
                 mock.patch.object(runtime, "load_config", return_value=Config()),
                 mock.patch.object(runtime, "image_exists", return_value=True),
-                mock.patch.object(runtime, "sync_claude_agent_skills"),
+                mock.patch.object(runtime, "sync_managed_skills"),
+                mock.patch.object(runtime, "claude_skill_links"),
                 mock.patch.object(runtime, "claude_channel_args", return_value=([], [])),
                 mock.patch.object(runtime, "launch_in_workspace_container", side_effect=fake_launch),
                 self.assertRaises(SystemExit),
@@ -414,7 +421,8 @@ class ContainerFlowNextEnvTests(IsolatedRuntimeTest):
                 mock.patch.object(runtime, "ensure_refresh_token"),
                 mock.patch.object(runtime, "load_config", return_value=config),
                 mock.patch.object(runtime, "image_exists", return_value=True),
-                mock.patch.object(runtime, "sync_claude_agent_skills"),
+                mock.patch.object(runtime, "sync_managed_skills"),
+                mock.patch.object(runtime, "claude_skill_links"),
                 mock.patch.object(runtime, "claude_channel_args", return_value=([], [])),
                 mock.patch.object(runtime, "launch_in_workspace_container", side_effect=fake_launch),
                 self.assertRaises(SystemExit),
@@ -443,7 +451,8 @@ class ContainerFlowNextEnvTests(IsolatedRuntimeTest):
                 mock.patch.object(runtime, "ensure_refresh_token"),
                 mock.patch.object(runtime, "load_config", return_value=Config()),
                 mock.patch.object(runtime, "image_exists", return_value=True),
-                mock.patch.object(runtime, "sync_claude_agent_skills"),
+                mock.patch.object(runtime, "sync_managed_skills"),
+                mock.patch.object(runtime, "claude_skill_links"),
                 mock.patch.object(runtime, "claude_channel_args", return_value=([], [])),
                 mock.patch.object(runtime, "launch_in_workspace_container", side_effect=fake_launch),
                 self.assertRaises(SystemExit),
@@ -499,7 +508,8 @@ class ClaudeNotifyHookLifecycleTests(IsolatedRuntimeTest):
                 mock.patch.object(runtime, "ensure_refresh_token"),
                 mock.patch.object(runtime, "load_config", return_value=config),
                 mock.patch.object(runtime, "image_exists", return_value=True),
-                mock.patch.object(runtime, "sync_claude_agent_skills"),
+                mock.patch.object(runtime, "sync_managed_skills"),
+                mock.patch.object(runtime, "claude_skill_links"),
                 mock.patch.object(runtime, "claude_channel_args", return_value=([], [])),
                 mock.patch.object(runtime, "launch_in_workspace_container", return_value=0),
                 mock.patch.object(runtime, "CLAUDE_HOME", claude_home),
@@ -648,9 +658,11 @@ class HostModeTests(IsolatedRuntimeTest):
         with tempfile.TemporaryDirectory() as tmp:
             root = self._flow_next_workspace(tmp)
             workspace = Workspace(root, root)
+            routed = Config()
+            routed.flow_next.review_backends["claude"] = "codex:gpt-5.6-sol:medium"
             with mock.patch.object(runtime.shutil, "which", return_value="/usr/local/bin/claude"), \
                  mock.patch.object(runtime, "resolve_workspace", return_value=workspace), \
-                 mock.patch.object(runtime, "load_config", return_value=Config()), \
+                 mock.patch.object(runtime, "load_config", return_value=routed), \
                  mock.patch.object(runtime.subprocess, "call", return_value=0) as call:
                 runtime.host_main("claude", [])
             env = call.call_args.kwargs["env"]
