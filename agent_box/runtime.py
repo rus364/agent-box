@@ -17,6 +17,7 @@ import os
 import re
 import shutil
 import socket
+import stat
 import subprocess
 import sys
 import time
@@ -39,16 +40,22 @@ from .identity import HostIdentity, detect_host_identity
 from .mounts import MountSpec, plan_mounts
 from .notify import SUPPRESS_NOTIFY_ENV
 from .paths import (
+    AGENT_SKILLS_DIR,
+    AGENTS_DIR,
     BUILD_STATE,
     CLAUDE_HOME,
     CODEX_HOME,
+    CONFIG_ROOT,
     CONTAINER_NOTIFY_CREDENTIALS,
+    CONTAINER_VIKUNJA_CONFIG_DIR,
+    CONTAINER_VIKUNJA_STATE_DIR,
     HOST_HOME,
+    MANAGED_SKILLS_SOURCE,
     NOTIFY_CREDENTIALS,
     NOTIFY_STATE_ROOT,
     STATE_ROOT,
     TOOLS_REFRESH_FILE,
-    VIKUNJA_CONFIG_DIR,
+    VIKUNJA_CREDENTIALS_DIR,
     VIKUNJA_STATE_DIR,
     XDG_CACHE_HOME,
 )
@@ -197,9 +204,133 @@ def image_exists() -> bool:
     )
 
 
-def sync_claude_agent_skills() -> None:
-    source = HOST_HOME / ".agents/skills"
-    target_root = CLAUDE_HOME / "skills"
+#: Marks a skill directory as one agent-box installed and therefore owns.
+#: Its ``digest`` is the fingerprint of the shipped copy that produced it, so
+#: an install can tell "already current" from "shipped copy changed" without
+#: comparing trees, and a directory with no marker is recognised as the
+#: user's own and never touched.
+MANAGED_SKILL_MARKER = ".agent-box-managed.json"
+
+
+def skill_tree_digest(root: Path) -> str:
+    """A content fingerprint of one skill directory.
+
+    Covers relative paths and file bytes, so a renamed or deleted file
+    changes the answer as surely as an edited one. The marker file itself is
+    excluded, because it carries the digest.
+    """
+    digest = hashlib.sha256()
+    for path in sorted(root.rglob("*")):
+        if path.name == MANAGED_SKILL_MARKER or "__pycache__" in path.parts:
+            continue
+        relative = path.relative_to(root).as_posix()
+        if path.is_dir():
+            digest.update(b"d\0" + relative.encode() + b"\0")
+            continue
+        digest.update(b"f\0" + relative.encode() + b"\0")
+        digest.update(path.read_bytes())
+    return digest.hexdigest()
+
+
+def shipped_skill(name: str) -> Path | None:
+    """The copy of *name* that ships inside this package, if it exists."""
+    source = MANAGED_SKILLS_SOURCE / name
+    return source if (source / "SKILL.md").is_file() else None
+
+
+def managed_skill_digest(target: Path) -> str | None:
+    """The digest recorded in *target*'s marker, or ``None`` when unmanaged."""
+    try:
+        data = read_json(target / MANAGED_SKILL_MARKER)
+    except (OSError, ValueError):
+        return None
+    digest = data.get("digest") if isinstance(data, dict) else None
+    return digest if isinstance(digest, str) else None
+
+
+def install_managed_skill(name: str) -> None:
+    """Install or refresh one shipped skill in the shared agent tree.
+
+    agent-box installs the skills its integrations need rather than waiting
+    for the user to produce them: an integration that can be switched on but
+    then reports a missing file is not an integration, it is a checklist.
+
+    Ownership is explicit and one-directional. A directory carrying the
+    managed marker belongs to agent-box and is replaced whenever the shipped
+    copy differs, so upgrading agent-box upgrades the skill. A directory
+    *without* the marker is the user's own -- hand-written, or a symlink into
+    a checkout they maintain -- and is left exactly where it is, with a
+    warning, because silently overwriting someone's working tree to install a
+    convenience is never the right trade.
+    """
+    source = shipped_skill(name)
+    if source is None:
+        warn(f"no skill named '{name}' ships with agent-box")
+        return
+    target = AGENT_SKILLS_DIR / name
+    digest = skill_tree_digest(source)
+    if target.exists() or target.is_symlink():
+        recorded = managed_skill_digest(target)
+        if recorded is None:
+            warn(f"skill '{name}' already exists and is not managed by agent-box; keeping {target}")
+            return
+        if recorded == digest:
+            return
+        shutil.rmtree(target, ignore_errors=True)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(source, target, ignore=shutil.ignore_patterns("__pycache__"))
+    atomic_write_json(target / MANAGED_SKILL_MARKER, {"skill": name, "digest": digest})
+
+
+def remove_managed_skill(name: str) -> None:
+    """Remove a skill agent-box installed; never one the user owns."""
+    target = AGENT_SKILLS_DIR / name
+    if managed_skill_digest(target) is not None:
+        shutil.rmtree(target, ignore_errors=True)
+
+
+def managed_skills(config: Config) -> set[str]:
+    """The shipped skills the current configuration asks for."""
+    return {"vikunja"} if config.vikunja.enabled else set()
+
+
+def sync_managed_skills(config: Config) -> None:
+    """Bring the shared tree in line with what the configuration enables."""
+    wanted = managed_skills(config)
+    for name in sorted(wanted):
+        install_managed_skill(name)
+    if not MANAGED_SKILLS_SOURCE.is_dir():
+        return
+    for source in sorted(MANAGED_SKILLS_SOURCE.iterdir()):
+        if source.name not in wanted and (source / "SKILL.md").is_file():
+            remove_managed_skill(source.name)
+
+
+def claude_skill_links(config: Config) -> None:
+    """Mirror the shared skill tree into Claude's own skills directory.
+
+    Claude reads ``~/.claude/skills`` while Codex reads ``~/.agents/skills``
+    directly, so without these symlinks the two agents would see different
+    skills. The links land in the user's real Claude configuration, which
+    Claude sessions started outside agent-box also read -- hence the switch,
+    and hence the care below.
+
+    A name already occupied by something that is not one of these links is
+    left alone with a warning: it is the user's, and a shared skill is not
+    worth overwriting a real directory for. Turning the switch off removes
+    only the links agent-box created, leaving anything else untouched.
+    """
+    source, target_root = AGENT_SKILLS_DIR, CLAUDE_HOME / "skills"
+
+    def points_into_tree(link: Path) -> bool:
+        return link.is_symlink() and os.readlink(link).startswith(str(source) + os.sep)
+
+    if not config.skills.claude_links:
+        if target_root.is_dir():
+            for link in target_root.iterdir():
+                if points_into_tree(link):
+                    link.unlink(missing_ok=True)
+        return
     if not source.is_dir():
         return
     target_root.mkdir(parents=True, exist_ok=True)
@@ -219,7 +350,7 @@ def sync_claude_agent_skills() -> None:
         else:
             target.symlink_to(skill)
     for link in target_root.iterdir():
-        if link.is_symlink() and os.readlink(link).startswith(str(source) + "/") and not link.exists():
+        if points_into_tree(link) and not link.exists():
             link.unlink(missing_ok=True)
 
 
@@ -351,9 +482,13 @@ def prepare_container_lifetime_state(
     if config.vikunja.enabled:
         # Create the import-state source ourselves so Podman does not, which
         # keeps ownership and mode the user's rather than whatever the bind
-        # would invent. The config directory is deliberately not created: an
-        # empty one would look configured while holding no token.
+        # would invent.
         VIKUNJA_STATE_DIR.mkdir(parents=True, exist_ok=True)
+        # The credential directory is rendered rather than created empty: an
+        # empty one would mount fine and look configured while holding no
+        # token, which is exactly the failure this integration used to have.
+        sync_vikunja_credentials(config)
+        VIKUNJA_CREDENTIALS_DIR.mkdir(parents=True, exist_ok=True)
         for problem in vikunja_warnings(config):
             warn(problem)
 
@@ -375,10 +510,10 @@ def agent_tree_mounts() -> list[tuple[Path, Path, bool]]:
     ``~/.agents`` are skipped (the whole-tree mounts already cover them), and
     a broken symlink is warned about and skipped rather than failing the run.
     """
-    agents = HOST_HOME / ".agents"
+    agents = AGENTS_DIR
     if not agents.is_dir():
         return []
-    skills = agents / "skills"
+    skills = AGENT_SKILLS_DIR
     mounts: list[tuple[Path, Path, bool]] = [(agents, agents, True)]
     if skills.is_dir() and not skills.is_symlink():
         mounts.append((skills, skills, False))
@@ -416,11 +551,14 @@ CONTAINER_HOST_GATEWAY = "host-gateway"
 #: container" inside one. Compared lower-cased; an IPv6 literal has already
 #: had its brackets stripped by ``urlsplit``.
 LOOPBACK_HOSTNAMES = frozenset({"localhost", "127.0.0.1", "::1"})
-#: The Vikunja skill's canonical CLI. ``~/.agents/skills`` is already
-#: bind-mounted (see :func:`agent_tree_mounts`), so this second, narrow bind adds
-#: no new exposure -- it only gives the script a name on the container PATH,
-#: which is how the skill's own documentation tells an agent to invoke it.
-VIKUNJA_SKILL_ENTRYPOINT = HOST_HOME / ".agents/skills/vikunja/scripts/vikunja.py"
+#: The Vikunja skill's CLI, inside the shared agent tree agent-box installs it
+#: into. That tree is already bind-mounted (see :func:`agent_tree_mounts`), so
+#: the second, narrow bind below adds no new exposure -- it only gives the
+#: script a name on the container PATH, which is how the skill's own
+#: documentation tells an agent to invoke it.
+VIKUNJA_SKILL_ENTRYPOINT = AGENT_SKILLS_DIR / "vikunja/scripts/vikunja.py"
+#: Where the container's copy of that CLI is named.
+CONTAINER_VIKUNJA_BIN = HOST_HOME / ".local/bin/vikunja"
 
 
 def is_ip_literal(host: str) -> bool:
@@ -505,40 +643,48 @@ def container_vikunja_url(raw: str) -> str:
     return urllib.parse.urlunsplit(parts._replace(netloc=netloc))
 
 
-def host_vikunja_url() -> str:
-    """The Vikunja server URL as the *host* resolves it, or ``""``.
+def sync_vikunja_credentials(config: Config, directory: Path | None = None) -> None:
+    """Render, or delete, the credential pair the container's skill reads.
 
-    Deliberately the same precedence the skill's own CLI applies --
-    ``VIKUNJA_URL`` first, then the ``url`` key of its config file -- so
-    agent-box never disagrees with the tool it is exposing.
+    The same shape as ``notify.sync_credentials`` and for the same reason:
+    agent-box's own ``config.json`` holds switches and secrets the container
+    has no business reading, so what gets mounted is a minimal artifact
+    derived from it -- here the two files the Vikunja CLI actually opens,
+    ``config.json`` (``url``) and ``token``. An incomplete or disabled
+    integration deletes them, so the credential stops being reachable rather
+    than merely being ignored.
+
+    The URL written here is the *container's* view of it
+    (:func:`container_vikunja_url`), which is why this is a render step
+    rather than a copy: the value the user configured stays the host's, and
+    the rewrite that makes it reachable from inside a box never leaks back
+    into their settings.
     """
-    from_env = os.environ.get("VIKUNJA_URL", "").strip()
-    if from_env:
-        return from_env
-    config_file = VIKUNJA_CONFIG_DIR / "config.json"
-    if not config_file.is_file():
-        return ""
-    try:
-        data = read_json(config_file)
-    except (OSError, ValueError):
-        return ""
-    if not isinstance(data, dict):
-        return ""
-    url = data.get("url")
-    return url.strip() if isinstance(url, str) else ""
+    directory = VIKUNJA_CREDENTIALS_DIR if directory is None else directory
+    if not config.vikunja.usable:
+        shutil.rmtree(directory, ignore_errors=True)
+        return
+    directory.mkdir(parents=True, exist_ok=True)
+    os.chmod(directory, 0o700)
+    atomic_write_json(
+        directory / "config.json",
+        {"url": container_vikunja_url(config.vikunja.url)},
+        stat.S_IRUSR | stat.S_IWUSR,
+    )
+    atomic_write_text(
+        directory / "token", config.vikunja.token + "\n", stat.S_IRUSR | stat.S_IWUSR)
 
 
-def vikunja_entrypoint() -> Path | None:
-    """The resolved Vikunja CLI script, or ``None`` when the skill is absent."""
+def vikunja_installed() -> bool:
+    """Whether the skill's CLI is present in the shared agent tree."""
     try:
-        resolved = VIKUNJA_SKILL_ENTRYPOINT.resolve(strict=True)
+        return VIKUNJA_SKILL_ENTRYPOINT.resolve(strict=True).is_file()
     except OSError:
-        return None
-    return resolved if resolved.is_file() else None
+        return False
 
 
 def vikunja_mounts(config: Config) -> list[tuple[Path, Path, bool]]:
-    """Host Vikunja state exposed to the container, or nothing at all.
+    """What the container gets for Vikunja, or nothing at all.
 
     Pure and silent by design: this is part of the box's structural identity
     (see :func:`workspace_container_spec`), so it must depend on the config
@@ -546,42 +692,24 @@ def vikunja_mounts(config: Config) -> list[tuple[Path, Path, bool]]:
     the identity. Diagnostics live in :func:`vikunja_warnings`, which runs
     only where a person is actually waiting on the answer.
 
-    Destinations are the literal ``$HOME`` paths the skill's CLI resolves from
-    ``~``, not the host's XDG-derived sources, so a host that relocates
-    ``XDG_CONFIG_HOME`` still lands the config where the CLI will look.
+    Destinations are the literal ``$HOME`` paths the skill's CLI resolves
+    from ``~``, not the host's XDG-derived sources, so a host that relocates
+    ``XDG_CONFIG_HOME`` still lands the configuration where the CLI looks.
 
-    The config directory is read-only: it carries an API token, and an agent
-    has no reason to rewrite the user's credentials. The import state
-    directory is read-write, because a partially applied ``vikunja import``
-    is only resumable if its journal survives the box.
+    The rendered credential directory is read-only: it carries an API token,
+    and an agent has no reason to rewrite the user's credentials. The import
+    state directory is read-write, because a partially applied
+    ``vikunja import`` is only resumable if its journal survives the box.
     """
     if not config.vikunja.enabled:
         return []
     mounts = [
-        (VIKUNJA_CONFIG_DIR, HOST_HOME / ".config/vikunja", True),
-        (VIKUNJA_STATE_DIR, HOST_HOME / ".local/state/vikunja", False),
+        (VIKUNJA_CREDENTIALS_DIR, CONTAINER_VIKUNJA_CONFIG_DIR, True),
+        (VIKUNJA_STATE_DIR, CONTAINER_VIKUNJA_STATE_DIR, False),
     ]
-    entrypoint = vikunja_entrypoint()
-    if entrypoint is not None:
-        mounts.append((entrypoint, HOST_HOME / ".local/bin/vikunja", True))
+    if vikunja_installed():
+        mounts.append((VIKUNJA_SKILL_ENTRYPOINT.resolve(), CONTAINER_VIKUNJA_BIN, True))
     return mounts
-
-
-def vikunja_env(config: Config) -> list[str]:
-    """``--env=VIKUNJA_URL=...`` for the container, or nothing at all.
-
-    Unlike a token, a server URL is an endpoint rather than a credential, so
-    it is passed by value the way ``GIT_CONFIG_GLOBAL`` is -- the container
-    has no host config file to read it from, and forwarding by name would
-    make the value depend on whichever shell happened to create the box. A
-    URL that embeds basic-auth credentials would therefore appear in the
-    container's argv; the skill authenticates with a token file instead, so
-    do not put credentials in ``VIKUNJA_URL``.
-    """
-    if not config.vikunja.enabled:
-        return []
-    url = container_vikunja_url(host_vikunja_url())
-    return [f"--env=VIKUNJA_URL={url}"] if url else []
 
 
 def vikunja_host_alias(raw: str) -> str:
@@ -617,14 +745,13 @@ def vikunja_host_args(config: Config) -> list[str]:
     see the name the server was configured for -- none of which survives a
     URL rewrite.
 
-    Structural rather than per-exec, like :func:`vikunja_env`: the mapping
-    belongs to the same container lifetime as the mounts it addresses, and
-    changing it therefore rebuilds the box rather than silently diverging
-    from the running one.
+    Structural rather than per-exec: the mapping belongs to the same
+    container lifetime as the mounts it addresses, and changing it therefore
+    rebuilds the box rather than silently diverging from the running one.
     """
     if not config.vikunja.enabled:
         return []
-    host = vikunja_host_alias(host_vikunja_url())
+    host = vikunja_host_alias(config.vikunja.url)
     return [f"--add-host={host}:{CONTAINER_HOST_GATEWAY}"] if host else []
 
 
@@ -638,16 +765,14 @@ def vikunja_warnings(config: Config) -> list[str]:
     if not config.vikunja.enabled:
         return []
     problems = []
-    if vikunja_entrypoint() is None:
+    if not config.vikunja.url:
+        problems.append("Vikunja integration is on but no server URL is configured")
+    if not config.vikunja.token:
+        problems.append("Vikunja integration is on but no API token is configured")
+    if not vikunja_installed():
         problems.append(
-            f"Vikunja integration is on but the skill CLI is missing: {VIKUNJA_SKILL_ENTRYPOINT}")
-    if not (VIKUNJA_CONFIG_DIR / "token").is_file():
-        problems.append(
-            f"Vikunja integration is on but there is no API token at {VIKUNJA_CONFIG_DIR / 'token'}")
-    if not host_vikunja_url():
-        problems.append(
-            f"Vikunja integration is on but no server URL is set "
-            f"(VIKUNJA_URL, or 'url' in {VIKUNJA_CONFIG_DIR / 'config.json'})")
+            f"Vikunja integration is on but its skill is not installed at "
+            f"{AGENT_SKILLS_DIR / 'vikunja'}")
     return problems
 
 
@@ -683,6 +808,12 @@ BROWSER_MCP_BROWSER = "chromium"
 #: How ``agent-box doctor`` learns whether the integration is switched on: the
 #: script runs inside the box, which never sees the host config file.
 BROWSER_ENABLED_ENV = "AGENT_BOX_BROWSER"
+#: Whether this configuration links shared skills into Claude's own skills
+#: directory. Forwarded to ``agent-box doctor`` for the same reason as the
+#: browser flag: the script runs inside the box and cannot read the host
+#: config, and without it a deliberately unlinked tree would be reported as
+#: broken.
+CLAUDE_SKILL_LINKS_ENV = "AGENT_BOX_CLAUDE_SKILL_LINKS"
 
 
 def browser_session_id(agent: str) -> str:
@@ -1044,6 +1175,34 @@ PROVIDER_TRANSPORT_ENV = (
 )
 
 
+def user_env(config: Config) -> list[str]:
+    """``--env`` flags for the variables the user asked agent-box to pass.
+
+    Two spellings, matching the two halves of ``config.env``. A forwarded
+    name becomes ``--env=NAME``, which tells Podman to inherit the value from
+    the client process, so a secret never lands in an argv that ``/proc``
+    exposes to other processes on the host; a name with no value in the
+    current environment is skipped rather than defined as empty, because an
+    empty variable and an absent one mean different things to most programs.
+    An explicit assignment becomes ``--env=NAME=VALUE`` and does appear in
+    the argv, which is why ``agent-box config`` steers secrets to the other
+    list.
+
+    An explicit assignment wins over a forward of the same name: it is the
+    more specific statement, and letting the shell silently override a value
+    written in the config file would make the file a suggestion.
+    """
+    assignments = config.env.set
+    names = [
+        name for name in config.env.forward
+        if name not in assignments and os.environ.get(name)
+    ]
+    return [
+        *(f"--env={name}" for name in names),
+        *(f"--env={name}={value}" for name, value in sorted(assignments.items())),
+    ]
+
+
 def provider_env(config: Config) -> list[str]:
     names = (
         *(PROVIDER_API_KEY_ENV if config.providers.api_keys else ()),
@@ -1090,10 +1249,11 @@ def container_lifetime_args(
         # access is an agent-invocation capability.  The hooks receive their
         # two credentials through podman exec instead (see notification_env).
         *build_mounts(workspace, extra_mounts, script_dir, config, mount_notifications, runtime_state),
-        # An endpoint, not a credential, and structural rather than per-exec:
-        # the box is where the Vikunja mounts live, so the URL that addresses
-        # them belongs to the same lifetime.
-        *vikunja_env(config),
+        # The Vikunja server URL is not passed as an environment variable: it
+        # is rendered into the credential directory mounted just above, so
+        # the address and the token have one source instead of two that can
+        # disagree. Only the host mapping is structural, because it is a
+        # container-creation flag rather than file content.
         *vikunja_host_args(config),
     ]
     # A host that relocates Claude Code's config directory must have the
@@ -1666,7 +1826,7 @@ def invocation_env(config: Config, agent: str) -> tuple[list[str], dict[str, str
     boundary: same-UID peers can inspect each other's /proc environment on
     ordinary Linux/Podman setups.
     """
-    forwarded = [*github_env(config), *provider_env(config)]
+    forwarded = [*github_env(config), *provider_env(config), *user_env(config)]
     # github_env may obtain a token from `gh auth token` and add it to the
     # current process environment. Snapshot only after that deliberate
     # discovery so podman exec can inherit the name it forwards.
@@ -1731,15 +1891,21 @@ if [[ -d "$HOME/.agents/skills" ]]; then
   while IFS= read -r -d "" link; do
     if [[ ! -e "${link}" ]]; then echo "BROKEN agent skill: ${link} -> $(readlink "${link}")"; broken=1; fi
   done < <(find "$HOME/.agents/skills" -maxdepth 1 -type l -print0)
-  while IFS= read -r -d "" skill; do
-    [[ -f "${skill}/SKILL.md" ]] || continue
-    name="$(basename -- "${skill}")"; claude_skill="${claude_home}/skills/${name}"
-    if [[ ! -f "${claude_skill}/SKILL.md" ]]; then echo "MISSING Claude skill: ${claude_skill}"; broken=1; continue; fi
-    agent_real="$(readlink -f -- "${skill}")"; claude_real="$(readlink -f -- "${claude_skill}")"
-    if [[ "${agent_real}" != "${claude_real}" ]]; then echo "MISMATCH Claude skill: ${claude_skill} -> ${claude_real} (expected ${agent_real})"; broken=1; continue; fi
-    shared=$((shared + 1))
-  done < <(find "$HOME/.agents/skills" -mindepth 1 -maxdepth 1 -print0)
-  [[ "${broken}" -eq 0 ]] && echo "shared agent skills: OK (${shared})"
+  # Claude's copies are only expected when the configuration asks for them;
+  # an unlinked tree is a deliberate answer, not a fault.
+  if [[ "${AGENT_BOX_CLAUDE_SKILL_LINKS:-1}" == "1" ]]; then
+    while IFS= read -r -d "" skill; do
+      [[ -f "${skill}/SKILL.md" ]] || continue
+      name="$(basename -- "${skill}")"; claude_skill="${claude_home}/skills/${name}"
+      if [[ ! -f "${claude_skill}/SKILL.md" ]]; then echo "MISSING Claude skill: ${claude_skill}"; broken=1; continue; fi
+      agent_real="$(readlink -f -- "${skill}")"; claude_real="$(readlink -f -- "${claude_skill}")"
+      if [[ "${agent_real}" != "${claude_real}" ]]; then echo "MISMATCH Claude skill: ${claude_skill} -> ${claude_real} (expected ${agent_real})"; broken=1; continue; fi
+      shared=$((shared + 1))
+    done < <(find "$HOME/.agents/skills" -mindepth 1 -maxdepth 1 -print0)
+    [[ "${broken}" -eq 0 ]] && echo "shared agent skills: OK (${shared})"
+  else
+    [[ "${broken}" -eq 0 ]] && echo "shared agent skills: not linked into Claude (turned off in 'agent-box config')"
+  fi
 fi
 echo
 # The Vikunja integration is off by default, so "not exposed" is a normal
@@ -1751,14 +1917,20 @@ echo
 # which is the difference between "the server is down" and "that address is
 # this container".
 if command -v vikunja >/dev/null 2>&1; then
-  printf "%-20s %s\n" "vikunja url:" "${VIKUNJA_URL:-(unset; using ~/.config/vikunja/config.json)}"
+  # The URL is rendered into the mounted credential directory by
+  # runtime.sync_vikunja_credentials rather than passed as an environment
+  # variable, so that the address and the token cannot disagree. Read it back
+  # from the same file the skill's CLI reads.
+  vikunja_url="$(sed -n 's/.*"url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+      "$HOME/.config/vikunja/config.json" 2>/dev/null)"
+  printf "%-20s %s\n" "vikunja url:" "${vikunja_url:-(not configured)}"
   printf "%-20s %s\n" "vikunja token:" "$([[ -r "$HOME/.config/vikunja/token" ]] && echo present || echo MISSING)"
   if status="$(vikunja status 2>&1)"; then
     printf "%-20s %s\n" "vikunja:" "OK ($(printf "%s" "${status}" | tr -d " \n" | sed -n 's/.*"user":"\([^"]*\)".*/\1/p'))"
   else
     printf "%-20s %s\n" "vikunja:" "FAILED"
     printf "  %s\n" "${status}"
-    host="$(printf "%s" "${VIKUNJA_URL:-}" | sed -n 's|^[a-zA-Z0-9+.-]*://||; s|^[^@]*@||; s|[/?#].*$||; s|:[0-9]*$||; p')"
+    host="$(printf "%s" "${vikunja_url}" | sed -n 's|^[a-zA-Z0-9+.-]*://||; s|^[^@]*@||; s|[/?#].*$||; s|:[0-9]*$||; p')"
     if [[ -n "${host}" ]] && command -v getent >/dev/null 2>&1; then
       printf "  %s\n" "${host} resolves to: $(getent hosts "${host}" | awk '{print $1}' | paste -sd, - || echo "(nothing)")"
       printf "  %s\n" "this container is: $(hostname -I 2>/dev/null | tr ' ' ',' | sed 's/,$//')"
@@ -1971,7 +2143,8 @@ def runtime_main(args: list[str], script_dir: Path, extra_mount_specs: list[str]
         if rc:
             raise SystemExit(rc)
 
-    sync_claude_agent_skills()
+    sync_managed_skills(config)
+    claude_skill_links(config)
 
     agent, rest = DEFAULT_AGENT, args
     if args and args[0] in {"claude", "codex", "shell", "doctor"}:
@@ -1986,7 +2159,7 @@ def runtime_main(args: list[str], script_dir: Path, extra_mount_specs: list[str]
         claude_settings.reconcile_claude_settings(
             CLAUDE_HOME / "settings.json",
             notifications=config.notifications.enabled,
-            statusline=config.claude.statusline)
+            statusline=claude_settings.statusline_intent(config.claude.statusline))
 
     # Decided before the channel is claimed, because the claim records it.
     runtime_state = workspace_runtime_state(workspace)
@@ -2008,7 +2181,11 @@ def runtime_main(args: list[str], script_dir: Path, extra_mount_specs: list[str]
         elif agent == "doctor":
             # The script runs inside the box and cannot read the host config,
             # so the one bit it needs is forwarded per-exec.
-            extra_env = [*extra_env, f"{BROWSER_ENABLED_ENV}={'1' if config.browser.enabled else '0'}"]
+            extra_env = [
+                *extra_env,
+                f"{BROWSER_ENABLED_ENV}={'1' if config.browser.enabled else '0'}",
+                f"{CLAUDE_SKILL_LINKS_ENV}={'1' if config.skills.claude_links else '0'}",
+            ]
             command = ["bash", "-c", DOCTOR_SCRIPT]
         elif agent == "claude":
             if is_claude_session_invocation(rest):
@@ -2138,6 +2315,107 @@ def stop_main(args: list[str]) -> int:
     return 0
 
 
+def managed_container_names() -> list[str]:
+    """Every workspace box agent-box created, across all projects."""
+    command = [
+        "podman", "ps", "--all", "--filter", f"label={WORKSPACE_CONTAINER_LABEL}=true",
+        "--format", "{{.Names}}",
+    ]
+    try:
+        result = subprocess.run(command, text=True, capture_output=True)
+    except OSError:
+        return []
+    if result.returncode:
+        return []
+    return [name for name in result.stdout.split() if name]
+
+
+def uninstall_main(args: list[str]) -> int:
+    """``agent-box uninstall``: undo everything agent-box wrote outside itself.
+
+    A launcher that reconciles the user's Claude settings, installs skills
+    into a shared tree and renders credential files owes them a way back. The
+    alternative is what agent-box had until now: deleting the program leaves a
+    ``statusLine`` pointing at a command that no longer exists, hooks that
+    fail on every turn, and skill symlinks dangling in a directory Claude
+    still reads.
+
+    Two levels, because they are different decisions. The default removes
+    what agent-box put in *other* people's places -- Claude's
+    ``settings.json``, ``~/.claude/skills``, the shared agent tree, the
+    rendered credential files -- and stops the boxes holding those mounts
+    open. ``--purge`` additionally deletes agent-box's own configuration and
+    state, which is where the Telegram and Vikunja tokens live; that one is
+    irreversible and is confirmed unless ``--yes`` says not to.
+
+    Neither level removes the container image or this source checkout: both
+    are large, both are trivially re-derived, and neither is something a
+    program should delete without being asked for it by name.
+    """
+    purge = False
+    assume_yes = False
+    for arg in args:
+        if arg == "--purge":
+            purge = True
+        elif arg == "--yes":
+            assume_yes = True
+        else:
+            raise AgentBoxError(f"unexpected argument '{arg}'; expected --purge and/or --yes")
+
+    done: list[str] = []
+
+    names = managed_container_names() if shutil.which("podman") else []
+    for name in names:
+        remove_workspace_container_then_confirm_absent(name)
+    if names:
+        done.append(f"removed {len(names)} workspace box(es)")
+
+    settings = CLAUDE_HOME / "settings.json"
+    from . import flow_push
+    if claude_settings.reconcile_claude_settings(
+            settings, notifications=False, statusline=False):
+        done.append(f"removed the agent-box status line and notification hooks from {settings}")
+    if flow_push.remove_flow_push_hooks(settings):
+        done.append(f"removed the Flow-Next auto-push hooks from {settings}")
+
+    disabled = Config()
+    disabled.skills.claude_links = False
+    claude_skill_links(disabled)
+    done.append(f"removed agent-box's skill links from {CLAUDE_HOME / 'skills'}")
+
+    sync_managed_skills(disabled)
+    done.append(f"removed the skills agent-box installed in {AGENT_SKILLS_DIR}")
+
+    NOTIFY_CREDENTIALS.unlink(missing_ok=True)
+    shutil.rmtree(VIKUNJA_CREDENTIALS_DIR, ignore_errors=True)
+    done.append("removed the rendered notification and Vikunja credentials")
+
+    if purge:
+        if not assume_yes:
+            print(f"This deletes {CONFIG_ROOT} and {STATE_ROOT}, including any stored tokens.")
+            try:
+                answer = input("Delete agent-box's configuration and state? [y/N]: ").strip().lower()
+            except (KeyboardInterrupt, EOFError):
+                answer = ""
+            if answer not in {"y", "yes"}:
+                print("Keeping configuration and state.")
+                purge = False
+        if purge:
+            shutil.rmtree(CONFIG_ROOT, ignore_errors=True)
+            shutil.rmtree(STATE_ROOT, ignore_errors=True)
+            done.append(f"deleted {CONFIG_ROOT} and {STATE_ROOT}")
+
+    for line in done:
+        print(f"agent-box: {line}")
+    print()
+    print("Remaining, deliberately left for you:")
+    if not purge:
+        print(f"  configuration and state   {CONFIG_ROOT}, {STATE_ROOT}")
+    print(f"  container image           podman rmi {IMAGE}")
+    print("  the agent-box checkout    remove it and its symlink on PATH")
+    return 0
+
+
 def host_main(agent: str, rest: list[str]) -> int:
     """``agent-box --host claude|codex``: run the installed host executable
     directly, no Podman.
@@ -2164,7 +2442,7 @@ def host_main(agent: str, rest: list[str]) -> int:
         claude_settings.reconcile_claude_settings(
             CLAUDE_HOME / "settings.json",
             notifications=config.notifications.enabled,
-            statusline=config.claude.statusline)
+            statusline=claude_settings.statusline_intent(config.claude.statusline))
     env = dict(os.environ)
     # A non-Flow-Next launch must not inherit stale Flow-Next policy values
     # the parent shell happens to have exported -- clear every agent-box-owned
@@ -2179,5 +2457,9 @@ def host_main(agent: str, rest: list[str]) -> int:
         workspace.host_root, agent, config, runtime_path=env.get("PATH", "")):
         name, _, value = pair.partition("=")
         env[name] = value
+    # ``env.set`` states what a session should have; a host session is still a
+    # session. ``env.forward`` has nothing to do here -- host mode already
+    # runs in the very shell those names would have been forwarded from.
+    env.update(config.env.set)
 
     return subprocess.call([executable, *rest], cwd=str(workspace.container_cwd), env=env)

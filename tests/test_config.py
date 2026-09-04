@@ -111,16 +111,18 @@ class FlowNextConfigTests(unittest.TestCase):
                 "providers": {"api_keys": False, "transport": True},
             }))
             config = load_config(path)
-        self.assertEqual(config.flow_next.review_backends["claude"], "codex:gpt-5.6-sol:medium")
-        self.assertEqual(config.flow_next.review_backends["codex"], "codex:gpt-5.6-sol:medium")
+        self.assertEqual(config.flow_next.review_backends, {})
         self.assertFalse(config.flow_next.auto_push)
 
-    def test_default_review_mapping(self):
-        config = Config()
-        self.assertEqual(config.flow_next.review_backends, {
-            "claude": "codex:gpt-5.6-sol:medium",
-            "codex": "codex:gpt-5.6-sol:medium",
-        })
+    def test_no_review_backend_is_shipped_as_a_default(self):
+        """A backend spec names a concrete provider, model and effort level.
+
+        Shipping one would point every Flow-Next workspace on every machine
+        at a model the user may not have or may not want reviewing their
+        code, so an unconfigured agent-box states no preference and lets
+        Flow-Next resolve its own.
+        """
+        self.assertEqual(Config().flow_next.review_backends, {})
 
     def test_auto_push_defaults_false(self):
         self.assertFalse(Config().flow_next.auto_push)
@@ -134,11 +136,17 @@ class FlowNextConfigTests(unittest.TestCase):
             }))
             config = load_config(path)
         self.assertEqual(config.flow_next.review_backends["claude"], "claude:opus-9:high")
-        # codex mapping wasn't overridden, so it keeps its default.
-        self.assertEqual(config.flow_next.review_backends["codex"], "codex:gpt-5.6-sol:medium")
+        # codex was not configured, so it gets no variable and Flow-Next
+        # keeps resolving that side itself.
+        self.assertNotIn("codex", config.flow_next.review_backends)
         self.assertTrue(config.flow_next.auto_push)
 
-    def test_malformed_review_backends_fall_back_to_defaults(self):
+    def test_malformed_review_backends_are_dropped(self):
+        """A value that is not a usable spec leaves the agent unrouted.
+
+        Substituting something plausible here would be worse than saying
+        nothing: the launch would quietly review with a backend nobody chose.
+        """
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "config.json"
             path.write_text(json.dumps({
@@ -146,8 +154,7 @@ class FlowNextConfigTests(unittest.TestCase):
                 "flow_next": {"review_backends": {"claude": 12345, "codex": ""}, "auto_push": "yes"},
             }))
             config = load_config(path)
-        self.assertEqual(config.flow_next.review_backends["claude"], "codex:gpt-5.6-sol:medium")
-        self.assertEqual(config.flow_next.review_backends["codex"], "codex:gpt-5.6-sol:medium")
+        self.assertEqual(config.flow_next.review_backends, {})
         self.assertFalse(config.flow_next.auto_push)
 
     def test_flow_next_round_trips(self):

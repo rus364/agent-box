@@ -26,18 +26,18 @@ Schema (version 1)::
       "github": {"gh_token": false, "gh_config": false},
       "git": {"identity": true, "full_config": false},
       "providers": {"api_keys": false, "transport": true},
-      "vikunja": {"enabled": false},
+      "env": {"forward": [], "set": {}},
+      "skills": {"claude_links": true},
+      "vikunja": {"enabled": false, "url": "", "token": ""},
       "browser": {"enabled": false},
-      "flow_next": {
-        "review_backends": {"claude": "codex:gpt-5.6-sol:medium", "codex": "codex:gpt-5.6-sol:medium"},
-        "auto_push": false
-      }
+      "flow_next": {"review_backends": {}, "auto_push": false}
     }
 
-``flow_next``, ``vikunja`` and ``browser`` are newer than ``version`` 1 but do
-not bump it: an old config file without them loads fine and gets the defaults
-above, matching the "partial file" schema tolerance the rest of this module
-already relies on.
+``version`` stays at 1 while the schema keeps changing, because agent-box has
+not been released: there is no installed base to migrate, so a section that
+grows or changes shape is simply the new shape, and a file written by an
+older working copy loads through the same "partial file" tolerance every
+``from_dict`` here already provides.
 """
 from __future__ import annotations
 
@@ -66,7 +66,19 @@ def _bool(data: Any, key: str, default: bool) -> bool:
 
 def _str(data: Any, key: str) -> str:
     value = data.get(key) if isinstance(data, dict) else None
-    return str(value) if isinstance(value, (str, int)) else ""
+    return str(value).strip() if isinstance(value, (str, int)) else ""
+
+
+def _is_env_name(name: str) -> bool:
+    """A POSIX-shaped variable name, so a malformed entry cannot inject argv.
+
+    Everything here ends up as a ``--env`` flag. A name carrying ``=`` or
+    whitespace would either split into something else entirely or silently
+    define a different variable, so a bad entry is dropped on load rather
+    than carried to Podman.
+    """
+    return bool(name) and not name[0].isdigit() and all(
+        c.isalnum() or c == "_" for c in name)
 
 
 @dataclass
@@ -203,31 +215,112 @@ class ProvidersConfig:
 
 @dataclass
 class VikunjaConfig:
-    """Exposure of the host's Vikunja skill credentials to the container.
+    """The whole Vikunja integration: the switch, the server, the token.
 
-    Off by default, like every other host integration here: the skill's
-    ``~/.config/vikunja`` directory holds an API token that can read and
-    rewrite the user's entire task tracker, and having that file on the host
-    is not by itself a decision to hand it to an agent.
+    Off by default, like every other integration that reaches outside the
+    box: the token can read and rewrite the user's entire task tracker.
 
-    One switch rather than several, because agent-box stores no Vikunja
-    settings of its own. Turning this on exposes exactly three things, all
-    derived from what the host already has: the config directory read-only
-    (URL + token), the import state directory read-write (so a partially
-    applied ``vikunja import`` stays resumable across boxes), and the skill's
-    own CLI on the container ``PATH``. The server URL is additionally
-    rewritten for the container's network namespace -- see
-    ``runtime.container_vikunja_url``.
+    agent-box owns these two values rather than reading a configuration file
+    the skill also owns. That is what makes the integration installable
+    instead of merely detectable -- ``agent-box config`` asks for a URL and a
+    token, the skill itself is installed from the copy shipped in this
+    package (see ``runtime.install_managed_skills``), and nothing has to
+    exist on the host beforehand. The container never sees this file: the
+    host renders a two-file credential directory from it
+    (``runtime.sync_vikunja_credentials``) and mounts that read-only, the
+    same way notifications derive their own credential file.
+
+    ``url`` is stored exactly as the *host* reaches the server. The rewrite
+    that makes it reachable from inside a container happens at render time --
+    see ``runtime.container_vikunja_url`` -- so the value here stays the one
+    the user typed and keeps working if they later stop using containers.
     """
 
     enabled: bool = False
+    url: str = ""
+    token: str = ""
+
+    @property
+    def usable(self) -> bool:
+        return bool(self.enabled and self.url and self.token)
 
     def to_dict(self) -> dict[str, Any]:
-        return {"enabled": self.enabled}
+        return {"enabled": self.enabled, "url": self.url, "token": self.token}
 
     @classmethod
     def from_dict(cls, data: Any) -> "VikunjaConfig":
-        return cls(enabled=_bool(data, "enabled", False))
+        return cls(
+            enabled=_bool(data, "enabled", False),
+            url=_str(data, "url"),
+            token=_str(data, "token"),
+        )
+
+
+@dataclass
+class SkillsConfig:
+    """How the shared agent skill tree is wired up.
+
+    ``claude_links`` mirrors ``~/.agents/skills`` into ``~/.claude/skills``
+    with symlinks so Claude sees the same ``SKILL.md`` files Codex reads
+    directly. It defaults on because sharing skills between the two agents is
+    the point of the tree, but it is a switch rather than an assumption: the
+    links land in the user's real Claude configuration, where they also
+    affect Claude sessions started outside agent-box, and someone who manages
+    that directory themselves must be able to say no.
+    """
+
+    claude_links: bool = True
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"claude_links": self.claude_links}
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "SkillsConfig":
+        return cls(claude_links=_bool(data, "claude_links", True))
+
+
+@dataclass
+class EnvConfig:
+    """Arbitrary environment variables the user wants inside the box.
+
+    The fixed ``providers`` lists above cover the variables agent-box knows
+    the *agents* need. This one exists because a project may need anything at
+    all -- a registry endpoint, a database URL, a license key -- and having
+    to patch agent-box to pass one through would be absurd.
+
+    Two mechanisms, split by where the value lives, because the difference is
+    a security one. ``forward`` names variables inherited from the shell that
+    launched the session and is applied as ``--env=NAME``, so the value never
+    enters the Podman argv, which is world-readable through ``/proc``; that
+    is the form to use for anything secret. ``set`` carries literal
+    ``NAME=VALUE`` pairs written into this config file and into the argv,
+    which is right for a timezone or a feature flag and wrong for a token.
+
+    Applied per launch rather than baked into the box, so changing a value in
+    the shell takes effect on the next ``agent-box claude`` without
+    recreating the workspace container.
+    """
+
+    forward: list[str] = field(default_factory=list)
+    set: dict[str, str] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"forward": list(self.forward), "set": dict(self.set)}
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "EnvConfig":
+        raw_forward = data.get("forward") if isinstance(data, dict) else None
+        forward = [
+            name.strip() for name in raw_forward
+            if isinstance(name, str) and _is_env_name(name.strip())
+        ] if isinstance(raw_forward, list) else []
+        raw_set = data.get("set") if isinstance(data, dict) else None
+        assignments = {
+            name.strip(): str(value) for name, value in raw_set.items()
+            if isinstance(name, str) and _is_env_name(name.strip())
+            and isinstance(value, (str, int, float, bool))
+        } if isinstance(raw_set, dict) else {}
+        return cls(forward=forward, set=assignments)
 
 
 @dataclass
@@ -267,15 +360,26 @@ class BrowserConfig:
 
 #: Flow-Next review routing is selected by *primary CLI*, not by any quota or
 #: cost signal -- agent-box never inspects usage to pick a backend, it just
-#: looks up which agent launched. Codex reviewing Codex is intentional for
-#: now: Flow-Next has no native executable Claude review backend yet, so the
-#: "claude" mapping also points at Codex until upstream adds one. Changing
-#: that later is a config edit, not a code change.
-DEFAULT_FLOW_REVIEW_BACKENDS: dict[str, str] = {
-    "claude": "codex:gpt-5.6-sol:medium",
-    "codex": "codex:gpt-5.6-sol:medium",
-}
+#: looks up which agent launched.
+#:
+#: Empty by default, deliberately. A backend spec names a concrete provider,
+#: model and effort level, and shipping one as a default would silently point
+#: every Flow-Next workspace on every machine at a model the user may not
+#: have, may not pay for, or may not want reviewing their code. With no entry
+#: agent-box simply sets no ``FLOW_REVIEW_BACKEND`` and Flow-Next falls back
+#: to its own ``.flow/config.json`` and defaults, which is the correct
+#: behavior for a launcher that was never told what to prefer.
+DEFAULT_FLOW_REVIEW_BACKENDS: dict[str, str] = {}
 FLOW_REVIEW_BACKEND_AGENTS = ("claude", "codex")
+
+#: Offered by ``agent-box config`` when Flow-Next routing is being set up.
+#: A menu rather than free text because a mistyped model name fails only
+#: later, inside a review Flow-Next has already started. Not a default: an
+#: empty answer stays empty.
+FLOW_REVIEW_BACKEND_CHOICES = (
+    "codex:gpt-5.6-sol:medium",
+    "codex:gpt-5.6-sol:high",
+)
 
 
 @dataclass
@@ -285,8 +389,9 @@ class FlowNextConfig:
     ``review_backends`` maps the *primary* agent (``claude``/``codex``) to a
     full Flow-Next backend spec (``provider:model:effort``) forwarded to the
     launch as ``FLOW_REVIEW_BACKEND``. Values are opaque strings agent-box
-    never parses -- changing the routing later (e.g. once Flow-Next gains a
-    native Claude review backend) is a config edit, not a code change.
+    never parses, and an agent with no entry gets no variable at all, so
+    Flow-Next keeps its own resolution. Changing the routing later is a
+    config edit, not a code change.
 
     ``auto_push`` is the opt-in Flow-Next auto-push reconciler (see
     ``agent_box.flow_push``), applied identically to Claude and Codex
@@ -310,6 +415,8 @@ class FlowNextConfig:
                 value = raw.get(agent)
                 if isinstance(value, str) and value.strip():
                     backends[agent] = value.strip()
+                else:
+                    backends.pop(agent, None)
         return cls(review_backends=backends, auto_push=_bool(data, "auto_push", False))
 
 
@@ -320,6 +427,8 @@ class Config:
     github: GitHubConfig = field(default_factory=GitHubConfig)
     git: GitConfig = field(default_factory=GitConfig)
     providers: ProvidersConfig = field(default_factory=ProvidersConfig)
+    env: EnvConfig = field(default_factory=EnvConfig)
+    skills: SkillsConfig = field(default_factory=SkillsConfig)
     vikunja: VikunjaConfig = field(default_factory=VikunjaConfig)
     browser: BrowserConfig = field(default_factory=BrowserConfig)
     flow_next: FlowNextConfig = field(default_factory=FlowNextConfig)
@@ -332,6 +441,8 @@ class Config:
             "github": self.github.to_dict(),
             "git": self.git.to_dict(),
             "providers": self.providers.to_dict(),
+            "env": self.env.to_dict(),
+            "skills": self.skills.to_dict(),
             "vikunja": self.vikunja.to_dict(),
             "browser": self.browser.to_dict(),
             "flow_next": self.flow_next.to_dict(),
@@ -347,6 +458,8 @@ class Config:
             github=GitHubConfig.from_dict(data.get("github")),
             git=GitConfig.from_dict(data.get("git")),
             providers=ProvidersConfig.from_dict(data.get("providers")),
+            env=EnvConfig.from_dict(data.get("env")),
+            skills=SkillsConfig.from_dict(data.get("skills")),
             vikunja=VikunjaConfig.from_dict(data.get("vikunja")),
             browser=BrowserConfig.from_dict(data.get("browser")),
             flow_next=FlowNextConfig.from_dict(data.get("flow_next")),

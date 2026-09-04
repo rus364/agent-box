@@ -222,9 +222,12 @@ Important defaults:
 | GitHub token forwarding | off | Expose host GitHub authentication to agent sessions |
 | Full host Git config | off | Copy host Git config into the box |
 | Provider API keys | off | Forward Anthropic provider credentials |
-| Vikunja skill access | off | Expose the configured Vikunja skill runtime |
+| Vikunja | off | Task tracking for both agents, installed and configured by agent-box |
 | Agent browser | off | Let containerized agents drive a headless browser |
+| Share skills with Claude | on | Link `~/.agents/skills` into `~/.claude/skills` |
+| Extra environment variables | none | Forward or set variables your own projects need |
 | Flow-Next auto-push | off | Push eligible completed Flow-Next work automatically |
+| Flow-Next review backend | unset | Which backend reviews the work, per primary agent |
 
 <details>
 <summary><strong>Environment overrides</strong></summary>
@@ -237,6 +240,8 @@ AGENT_BOX_GH_TOKEN=0|1    Withhold / force GitHub token for one run
 AGENT_BOX_WORKSPACE_ROOT  Override the resolved workspace root
 AGENT_BOX_STATE_DIR       Override ~/.local/share/agent-box
 AGENT_BOX_CONFIG_DIR      Override ~/.config/agent-box
+AGENT_BOX_AGENTS_DIR      Override ~/.agents, the shared agent/skill tree
+AGENT_BOX_STATUSLINE=0    Leave Claude's statusLine untouched for one run
 AGENT_BOX_TMUX=0          Disable tmux wrapping for one launch
 ```
 
@@ -264,18 +269,19 @@ agent-box then provides deterministic runtime policy without requiring every pro
 
 ### Review routing
 
-Each launch gets `FLOW_REVIEW_BACKEND` from the configured backend for the primary agent you selected:
+Nothing is routed until you say so. `agent-box config` offers the backends worth choosing between and stores your answer per primary agent:
 
 ```json
 {
   "flow_next": {
     "review_backends": {
-      "claude": "codex:gpt-5.6-sol:medium",
-      "codex": "codex:gpt-5.6-sol:medium"
+      "claude": "codex:gpt-5.6-sol:medium"
     }
   }
 }
 ```
+
+A configured agent gets `FLOW_REVIEW_BACKEND` on every launch; an agent with no entry gets no variable, so Flow-Next keeps resolving the backend from `.flow/config.json` as it would without agent-box. An explicit `FLOW_REVIEW_BACKEND` in the shell wins for that one launch.
 
 Primary agent selection is always explicit. agent-box never chooses between Claude and Codex based on quota, cost, or heuristics.
 
@@ -365,25 +371,31 @@ When a Claude session already owns the official Telegram channel, duplicate inte
 
 `~/.agents/skills` is the canonical shared skill directory.
 
-Codex discovers it directly. Before starting Claude, agent-box exposes matching skills through `~/.claude/skills` symlinks so both agents consume the same `SKILL.md` files.
+Codex discovers it directly. Before starting Claude, agent-box exposes matching skills through `~/.claude/skills` symlinks so both agents consume the same `SKILL.md` files. Those symlinks live in your real Claude configuration, which Claude sessions started outside agent-box also read, so they are a setting rather than an assumption — turn them off in `agent-box config` and agent-box removes the ones it made, leaving anything else in that directory alone.
+
+agent-box also installs the skills its own integrations need into this tree, marks them as its own, and refreshes them when it ships newer copies. A skill you created yourself under the same name has no such marker and is never overwritten.
 
 If `~/.agents` exists, the whole tree is mounted read-only, with `~/.agents/skills` overlaid read-write so agents can create and update their own skills. External targets linked from `skills/` are read-write too; targets linked only from elsewhere in the tree remain read-only. This keeps every shared symlink resolving at its host path without granting write access to unrelated agent definitions or prompt material.
 
-## Vikunja skill
+## Vikunja
 
-The optional Vikunja integration makes a host-configured Vikunja skill usable inside agent-box without duplicating its configuration.
+Task tracking both agents can read and update. Off by default; there is nothing to install or configure on the host first.
 
-When enabled, agent-box exposes:
+```bash
+agent-box config
+```
 
-- `~/.config/vikunja` read-only for URL/token configuration;
-- `~/.local/state/vikunja` read-write for resumable import journals;
-- the shared Vikunja CLI on container `PATH`.
+Answer yes, then give it a server URL and an API token. agent-box installs its own copy of the Vikunja skill into `~/.agents/skills/vikunja`, keeps the URL and token in its own `config.json` (mode 0600), and hands the container a rendered, read-only copy of just those two values — never its own configuration file. `~/.local/state/vikunja` is mounted read-write so a partially applied `vikunja import` stays resumable across boxes, and the skill's CLI is put on the container `PATH`.
 
-The host config is never edited; agent-box only fixes the address the container receives, because rootless Podman gives the container both its own loopback and the host's own addresses:
+A skill directory agent-box installed carries a marker and is refreshed when agent-box ships a newer copy. A `~/.agents/skills/vikunja` you created yourself has no such marker and is never overwritten.
+
+The address the container receives is corrected, because rootless Podman gives the container both its own loopback and the host's own addresses:
 
 - an address with no name worth keeping — `localhost`, or an IP literal belonging to this machine — is rewritten to `host.containers.internal`, preserving scheme, port and path;
 - a DNS name that resolves to this machine, such as `http://pm.example.org:3456`, keeps its URL and is redirected with `--add-host=pm.example.org:host-gateway`, so TLS certificate validation and reverse-proxy virtual-host routing still see the name the server was configured for;
 - a genuinely remote Vikunja is left alone.
+
+The URL you configured is never rewritten in place; only the container's copy is.
 
 Verify it with:
 
@@ -501,7 +513,9 @@ agent-box statusline
 
 which renders workspace, Git state, context usage, and provider limits in one line.
 
-The managed status line is enabled by default, but agent-box never overwrites a status line you configured yourself.
+The managed status line is enabled by default, but agent-box never overwrites a status line you configured yourself: it fills Claude's `statusLine` slot only when that slot is empty, and removes only its own command when switched off.
+
+That slot lives in `~/.claude/settings.json`, which Claude sessions started outside agent-box read too, so the line follows you there as well. `AGENT_BOX_STATUSLINE=0` leaves the file untouched for one run, and `agent-box uninstall` takes the line back out for good.
 
 ## Workspace and security model
 
@@ -623,26 +637,15 @@ Run `agent-box doctor`. If `~/.claude/skills/<name>` already exists and points s
 - The official Claude Telegram plugin is outside agent-box's control and may require compatibility updates when its internals change.
 - There is no remote equivalent of `--mount`, and Telegram cannot create a new workspace box by itself.
 
-## Migrating from older versions
-
-Older agent-box releases contained a custom Telegram remote-control subsystem. It has been removed completely.
-
-If you used it:
-
-- `agent-box telegram *` no longer exists;
-- `~/.config/agent-box/telegram.json` is no longer read;
-- configuration now lives in `~/.config/agent-box/config.json`;
-- use Anthropic's official Claude Telegram channel instead;
-- GitHub token forwarding is now explicit and off by default;
-- `agent-box usage <provider> --statusline` has been replaced by `agent-box statusline`;
-- the old mandatory `~/code` workspace layout is gone.
-
-Run once after upgrading:
+## Uninstalling
 
 ```bash
-agent-box config
-agent-box build
+agent-box uninstall
 ```
+
+Removes what agent-box wrote in places it does not own: its status line and hooks in Claude's `settings.json`, the skill links in `~/.claude/skills`, the skills it installed in `~/.agents/skills`, its rendered credential files, and every workspace box. Anything you wrote yourself in those places is left exactly where it is.
+
+Your configuration and state survive, so reinstalling picks up where you left off. Add `--purge` to delete those too — that includes any stored tokens, so it asks first unless you pass `--yes`. The container image and this checkout are never removed for you; the command prints how.
 
 ## Project scope
 

@@ -386,7 +386,8 @@ class DoctorLaunchTests(IsolatedRuntimeTest):
                  mock.patch.object(runtime, "resolve_workspace", return_value=Workspace(root, root)), \
                  mock.patch.object(runtime, "load_config", return_value=config), \
                  mock.patch.object(runtime, "image_exists", return_value=True), \
-                 mock.patch.object(runtime, "sync_claude_agent_skills"), \
+                 mock.patch.object(runtime, "sync_managed_skills"), \
+                 mock.patch.object(runtime, "claude_skill_links"), \
                  mock.patch.object(runtime, "workspace_container_spec"), \
                  mock.patch.object(runtime, "launch_in_workspace_container", side_effect=fake_launch), \
                  self.assertRaises(SystemExit):
@@ -440,6 +441,13 @@ class ConfigSurfaceTests(unittest.TestCase):
              mock.patch.object(cli_module, "_prompt_bool", side_effect=answered), \
              mock.patch.object(cli_module, "_prompt_secret", side_effect=lambda _l, current: current), \
              mock.patch.object(cli_module, "_prompt_text", side_effect=lambda _l, current: current), \
+             mock.patch.object(cli_module, "_prompt_env_names", side_effect=lambda _l, current: current), \
+             mock.patch.object(
+                 cli_module, "_prompt_env_assignments", side_effect=lambda _l, current: current), \
+             mock.patch.object(cli_module, "_prompt_choice", side_effect=lambda _l, _c, current: current), \
+             mock.patch.object(runtime, "sync_vikunja_credentials"), \
+             mock.patch.object(runtime, "sync_managed_skills"), \
+             mock.patch.object(runtime, "claude_skill_links"), \
              mock.patch.object(cli_module.channel_module, "missing_requirements", return_value=[]), \
              mock.patch.object(cli_module.notify_module, "sync_credentials"), \
              mock.patch.object(cli_module.claude_settings, "reconcile_claude_settings"), \

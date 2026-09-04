@@ -15,6 +15,7 @@ user -- agent-box is one of several things with an entry in it.
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -157,6 +158,27 @@ def remove_hook_commands(settings_path: Path, owned: dict[str, tuple[str, ...]])
 #: one it will ever remove.
 STATUSLINE_COMMAND = "agent-box statusline"
 
+#: ``AGENT_BOX_STATUSLINE=0`` keeps agent-box out of the status line for one
+#: invocation.
+STATUSLINE_ENV = "AGENT_BOX_STATUSLINE"
+
+
+def statusline_intent(enabled: bool) -> bool | None:
+    """What this launch should do about the status line.
+
+    ``None`` -- leave ``statusLine`` exactly as it is -- rather than ``False``
+    when the environment override is set, and that distinction is the whole
+    point of the variable. ``settings.json`` is the user's own file, shared
+    with Claude sessions that never go through agent-box, so a per-run
+    override must be able to mean "do not touch it" without also meaning
+    "delete the line I have been using", which is what a one-shot ``False``
+    would do and would not undo.
+
+    Turning the setting off in ``agent-box config`` remains the way to remove
+    it: that is a persistent decision, deliberately made.
+    """
+    return None if os.environ.get(STATUSLINE_ENV, "").strip() == "0" else enabled
+
 
 def statusline_is_ours(settings: dict[str, Any]) -> bool:
     status = settings.get("statusLine")
@@ -196,7 +218,7 @@ def reconcile_statusline(settings_path: Path, enabled: bool) -> bool:
 
 
 def reconcile_claude_settings(
-    settings_path: Path, *, notifications: bool, statusline: bool,
+    settings_path: Path, *, notifications: bool, statusline: bool | None,
 ) -> bool:
     """Everything agent-box owns in ``settings.json``, in one read and write.
 

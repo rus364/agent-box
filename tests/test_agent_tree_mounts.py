@@ -30,8 +30,19 @@ class AgentTreeMountTests(unittest.TestCase):
         return home, agents
 
     def _mounts(self, home):
-        with mock.patch.object(runtime, "HOST_HOME", home):
+        # The tree's location is its own setting (AGENT_BOX_AGENTS_DIR), so it
+        # is resolved once in agent_box.paths rather than re-derived from
+        # HOST_HOME on every call; a test home therefore has to redirect both.
+        with self._home(home):
             return runtime.agent_tree_mounts()
+
+    def _home(self, home):
+        return mock.patch.multiple(
+            runtime,
+            HOST_HOME=home,
+            AGENTS_DIR=home / ".agents",
+            AGENT_SKILLS_DIR=home / ".agents" / "skills",
+        )
 
     def test_no_agents_directory_yields_nothing(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -154,7 +165,7 @@ class AgentTreeMountTests(unittest.TestCase):
             project = Path(tmp) / "project"
             project.mkdir()
             state = Path(tmp) / "state"
-            with mock.patch.object(runtime, "HOST_HOME", home), \
+            with self._home(home), \
                  mock.patch.object(runtime, "STATE_ROOT", state), \
                  mock.patch.object(runtime, "BUILD_STATE", state / "build"), \
                  mock.patch.object(runtime, "NOTIFY_STATE_ROOT", state / "notify"), \

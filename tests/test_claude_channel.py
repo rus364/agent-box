@@ -412,7 +412,8 @@ class ClaudeManagementArgvTests(unittest.TestCase):
              mock.patch.object(runtime, "ensure_refresh_token"), \
              mock.patch.object(runtime, "load_config", return_value=self.config), \
              mock.patch.object(runtime, "image_exists", return_value=True), \
-             mock.patch.object(runtime, "sync_claude_agent_skills"), \
+             mock.patch.object(runtime, "sync_managed_skills"), \
+             mock.patch.object(runtime, "claude_skill_links"), \
              mock.patch.object(runtime, "workspace_container_spec", return_value=mock.Mock()), \
              mock.patch.object(runtime, "launch_in_workspace_container", side_effect=fake_launch), \
              mock.patch.object(runtime, "CLAUDE_HOME", home), \
@@ -550,7 +551,8 @@ class RuntimeNotificationSelectionTests(unittest.TestCase):
              mock.patch.object(runtime, "ensure_refresh_token"), \
              mock.patch.object(runtime, "load_config", return_value=config), \
              mock.patch.object(runtime, "image_exists", return_value=True), \
-             mock.patch.object(runtime, "sync_claude_agent_skills"), \
+             mock.patch.object(runtime, "sync_managed_skills"), \
+             mock.patch.object(runtime, "claude_skill_links"), \
              mock.patch.object(runtime, "claude_channel_args", return_value=(channel, [])), \
              mock.patch.object(runtime, "workspace_container_spec", return_value=mock.Mock()), \
              mock.patch.object(runtime, "launch_in_workspace_container", side_effect=fake_launch), \
@@ -593,7 +595,7 @@ class ConfigEnableGatingTests(unittest.TestCase):
              mock.patch.object(cli.notify_module, "sync_credentials"), \
              mock.patch.object(cli.notify_module, "remove_claude_notify_hooks"), \
              mock.patch.object(cli, "config_show"), \
-             mock.patch("builtins.input", side_effect=list(answers) + ["n"] * 20), \
+             mock.patch("builtins.input", side_effect=list(answers) + [""] * 40), \
              redirect_stdout(out):
             cli.config_interactive()
         return saved, out.getvalue()

@@ -50,17 +50,39 @@ class ReviewEnvRoutingTests(unittest.TestCase):
         (root / ".flow" / "config.json").write_text("{}")
         return root
 
-    def test_flow_next_claude_gets_expected_backend(self):
+    def _routed(self, **backends: str) -> Config:
+        config = Config()
+        config.flow_next.review_backends.update(backends)
+        return config
+
+    def test_flow_next_claude_gets_the_configured_backend(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = self._flow_next_root(tmp)
-            env = flow_next_launch_env(root, "claude", Config(), runtime_path="/runtime/bin")
+            env = flow_next_launch_env(
+                root, "claude", self._routed(claude="codex:gpt-5.6-sol:medium"),
+                runtime_path="/runtime/bin")
         self.assertIn(f"{REVIEW_BACKEND_ENV}=codex:gpt-5.6-sol:medium", env)
 
-    def test_flow_next_codex_gets_expected_backend(self):
+    def test_flow_next_codex_gets_the_configured_backend(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = self._flow_next_root(tmp)
-            env = flow_next_launch_env(root, "codex", Config(), runtime_path="/runtime/bin")
-        self.assertIn(f"{REVIEW_BACKEND_ENV}=codex:gpt-5.6-sol:medium", env)
+            env = flow_next_launch_env(
+                root, "codex", self._routed(codex="codex:gpt-5.6-sol:high"),
+                runtime_path="/runtime/bin")
+        self.assertIn(f"{REVIEW_BACKEND_ENV}=codex:gpt-5.6-sol:high", env)
+
+    def test_unrouted_agent_gets_no_review_backend(self):
+        """With nothing configured, Flow-Next must keep resolving its own.
+
+        Setting the variable to anything at all would override the project's
+        ``.flow/config.json``, so silence is the only correct answer.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._flow_next_root(tmp)
+            env = flow_next_launch_env(
+                root, "claude", self._routed(codex="codex:gpt-5.6-sol:medium"),
+                host_env={}, runtime_path="/runtime/bin")
+        self.assertFalse([item for item in env if item.startswith(f"{REVIEW_BACKEND_ENV}=")])
 
     def test_non_flow_next_workspace_gets_no_injected_env(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -131,7 +153,8 @@ class ReviewEnvRoutingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = self._flow_next_root(tmp)
             env = flow_next_launch_env(
-                root, "claude", Config(), host_env={}, runtime_path="/runtime/bin")
+                root, "claude", self._routed(claude="codex:gpt-5.6-sol:medium"),
+                host_env={}, runtime_path="/runtime/bin")
         self.assertIn(f"{REVIEW_BACKEND_ENV}=codex:gpt-5.6-sol:medium", env)
 
     def test_non_flow_next_workspace_ignores_explicit_host_env(self):

@@ -21,7 +21,7 @@ dist/
 *.egg-info/
 
 # Local tooling
-skills/
+/skills/
 
 # Editors / OS
 .idea/
