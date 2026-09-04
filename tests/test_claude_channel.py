@@ -586,6 +586,12 @@ class ConfigEnableGatingTests(unittest.TestCase):
         out = io.StringIO()
         # getpass must be mocked too, or a token prompt reads the real tty and
         # the test hangs instead of failing.
+        # Every artifact config_interactive derives belongs to the real host --
+        # the skills in ~/.agents, the links in ~/.claude, the rendered
+        # credentials. All of them are stubbed: a test that configures a fake
+        # Telegram channel must not install or delete anything in the home
+        # directory of whoever is running the suite.
+        from agent_box import runtime
         with mock.patch.object(cli.getpass, "getpass", return_value=""), \
              mock.patch.object(cli.channel_module, "CLAUDE_HOME", home), \
              mock.patch.object(cli, "CONFIG_FILE", self.config_file), \
@@ -594,6 +600,9 @@ class ConfigEnableGatingTests(unittest.TestCase):
              mock.patch.object(cli, "save_config", lambda c, *a: saved.update(c.to_dict())), \
              mock.patch.object(cli.notify_module, "sync_credentials"), \
              mock.patch.object(cli.notify_module, "remove_claude_notify_hooks"), \
+             mock.patch.object(runtime, "sync_vikunja_credentials"), \
+             mock.patch.object(runtime, "sync_managed_skills"), \
+             mock.patch.object(runtime, "claude_skill_links"), \
              mock.patch.object(cli, "config_show"), \
              mock.patch("builtins.input", side_effect=list(answers) + [""] * 40), \
              redirect_stdout(out):

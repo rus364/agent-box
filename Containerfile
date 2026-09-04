@@ -21,6 +21,31 @@ ARG USER_UID
 ARG USER_GID
 ARG USER_HOME
 
+#
+# ---------------------------------------------------------------------------
+# Optional tool groups
+# ---------------------------------------------------------------------------
+#
+# The image carries one base set everybody needs -- the agents, Python, Node,
+# git, and the ordinary shell tooling -- plus these groups, each of which is a
+# real cost in build time and disk for people who never touch that domain.
+# They are chosen in `agent-box config`, which passes them here and records
+# the resulting set in the image label below, so `agent-box doctor` can say
+# when a running image no longer matches what the configuration asks for.
+#
+# Anything not covered here belongs in the project, through mise: a language
+# runtime or a per-project tool is not the image's business.
+#
+ARG TOOLS_ANALYSIS=1
+ARG TOOLS_KUBERNETES=1
+ARG TOOLS_VIRTUALIZATION=0
+ARG TOOLS_BROWSER=0
+# The canonical, comma-separated set the four flags above add up to. Passed
+# whole rather than derived here, so the label and the configuration cannot
+# disagree about spelling or order. Applied as a label at the very end of the
+# file, where changing it cannot invalidate a single build layer.
+ARG AGENT_BOX_TOOLS=""
+
 ENV LANG=C.UTF-8 \
     LC_ALL=C.UTF-8 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
@@ -80,8 +105,6 @@ RUN set -eux; \
         vim-tiny \
         tree \
         just \
-        shellcheck \
-        sqlite3 \
         \
         patch \
         diffutils \
@@ -99,13 +122,6 @@ RUN set -eux; \
         lsof \
         strace \
         \
-        qemu-system-x86 \
-        qemu-system-arm \
-        qemu-utils \
-        qemu-block-extra \
-        ovmf \
-        qemu-efi-aarch64 \
-        \
         iproute2 \
         iputils-ping \
         dnsutils \
@@ -113,6 +129,43 @@ RUN set -eux; \
         socat; \
     ln -sf /usr/bin/fdfind /usr/local/bin/fd; \
     git lfs install --system; \
+    apt-get clean; \
+    rm -rf /var/lib/apt/lists/*
+
+#
+# Analysis tooling (group: analysis)
+#
+# Small, and what an agent reaches for when reading a codebase rather than
+# writing one. jscpd joins it from npm further down.
+#
+
+RUN set -eux; \
+    if [ "${TOOLS_ANALYSIS}" != "1" ]; then echo "agent-box: analysis tools skipped"; exit 0; fi; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+        shellcheck \
+        sqlite3; \
+    apt-get clean; \
+    rm -rf /var/lib/apt/lists/*
+
+#
+# Virtualization (group: virtualization)
+#
+# The largest optional group by a wide margin, and useless to most projects,
+# so it is off unless asked for. agent-box also passes /dev/kvm through only
+# when this group is present -- see runtime.kvm_args.
+#
+
+RUN set -eux; \
+    if [ "${TOOLS_VIRTUALIZATION}" != "1" ]; then echo "agent-box: virtualization skipped"; exit 0; fi; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+        qemu-system-x86 \
+        qemu-system-arm \
+        qemu-utils \
+        qemu-block-extra \
+        ovmf \
+        qemu-efi-aarch64; \
     apt-get clean; \
     rm -rf /var/lib/apt/lists/*
 
@@ -290,13 +343,15 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
 # entry is read from its manifest by absolute path instead.
 
 RUN set -eux; \
+    if [ "${TOOLS_BROWSER}" != "1" ]; then echo "agent-box: browser skipped"; exit 0; fi; \
     arch="$(dpkg --print-architecture)"; \
     case "${arch}" in \
         amd64|arm64) ;; \
         *) \
             echo "agent-box: Playwright publishes no Chromium build for ${arch};" >&2; \
             echo "agent-box: the browser integration cannot be provided on this" >&2; \
-            echo "agent-box: architecture." >&2; \
+            echo "agent-box: architecture. Turn the browser off in" >&2; \
+            echo "agent-box: 'agent-box config' and rebuild." >&2; \
             exit 1; \
             ;; \
     esac; \
@@ -334,6 +389,7 @@ RUN set -eux; \
 # Kept in its own layer so editing the check does not re-download the browser.
 
 RUN set -eux; \
+    if [ "${TOOLS_BROWSER}" != "1" ]; then echo "agent-box: browser smoke test skipped"; exit 0; fi; \
     playwright_dir="$(cat /usr/local/lib/agent-box-playwright-dir)"; \
     { \
         echo '#!/usr/bin/env node'; \
@@ -379,8 +435,12 @@ RUN set -eux; \
 RUN set -eux; \
     npm install --global \
         @openai/codex@latest \
-        @anthropic-ai/claude-code@latest \
-        jscpd@5.0.16; \
+        @anthropic-ai/claude-code@latest; \
+    npm cache clean --force
+
+RUN set -eux; \
+    if [ "${TOOLS_ANALYSIS}" != "1" ]; then echo "agent-box: jscpd skipped"; exit 0; fi; \
+    npm install --global jscpd@5.0.16; \
     npm cache clean --force
 
 #
@@ -388,6 +448,7 @@ RUN set -eux; \
 #
 
 RUN set -eux; \
+    if [ "${TOOLS_KUBERNETES}" != "1" ]; then echo "agent-box: yq skipped"; exit 0; fi; \
     arch="$(dpkg --print-architecture)"; \
     case "${arch}" in \
         amd64|arm64) ;; \
@@ -411,6 +472,7 @@ RUN set -eux; \
 #
 
 RUN set -eux; \
+    if [ "${TOOLS_KUBERNETES}" != "1" ]; then echo "agent-box: kubectl skipped"; exit 0; fi; \
     arch="$(dpkg --print-architecture)"; \
     case "${arch}" in \
         amd64|arm64) ;; \
@@ -440,6 +502,7 @@ RUN set -eux; \
 #
 
 RUN set -eux; \
+    if [ "${TOOLS_KUBERNETES}" != "1" ]; then echo "agent-box: Helm skipped"; exit 0; fi; \
     arch="$(dpkg --print-architecture)"; \
     case "${arch}" in \
         amd64|arm64) ;; \
@@ -479,32 +542,53 @@ RUN set -eux; \
     bun --version; \
     codex --version; \
     claude --version; \
-    playwright-mcp --version; \
-    test -d /opt/ms-playwright; \
-    agent-box-browser-smoke; \
-    jscpd --version; \
     mise --version; \
     git --version; \
     git-lfs --version; \
     gh --version; \
     jq --version; \
-    yq --version; \
     rg --version; \
     fd --version; \
     just --version; \
+    tmux -V
+
+# Each group verifies only what it actually installed. A check that ran
+# unconditionally would fail the build for everyone who left a group out,
+# which is the whole point of being able to leave it out.
+
+RUN set -eux; \
+    if [ "${TOOLS_ANALYSIS}" != "1" ]; then exit 0; fi; \
     shellcheck --version; \
-    tmux -V; \
+    sqlite3 --version; \
+    jscpd --version
+
+RUN set -eux; \
+    if [ "${TOOLS_KUBERNETES}" != "1" ]; then exit 0; fi; \
+    yq --version; \
     kubectl version --client; \
-    helm version --short; \
+    helm version --short
+
+RUN set -eux; \
+    if [ "${TOOLS_VIRTUALIZATION}" != "1" ]; then exit 0; fi; \
     qemu-system-x86_64 --version; \
     qemu-system-aarch64 --version; \
     qemu-img --version; \
     test -f /usr/share/AAVMF/AAVMF_CODE.fd
 
+RUN set -eux; \
+    if [ "${TOOLS_BROWSER}" != "1" ]; then exit 0; fi; \
+    playwright-mcp --version; \
+    test -d /opt/ms-playwright; \
+    agent-box-browser-smoke
+
 #
 # ---------------------------------------------------------------------------
 # Runtime
 # ---------------------------------------------------------------------------
+
+# What this image actually contains, so agent-box can tell a running image
+# that matches the configuration from one built before a group was turned on.
+LABEL io.agent-box.tools="${AGENT_BOX_TOOLS}"
 
 USER ${USER_NAME}
 

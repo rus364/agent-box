@@ -10,6 +10,7 @@ One project. One shared container. Your agents, shell, tools, state, and detacha
 ![Linux](https://img.shields.io/badge/platform-Linux-informational)
 ![Podman](https://img.shields.io/badge/runtime-Podman-892CA0)
 ![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB)
+![License](https://img.shields.io/badge/license-MIT-blue)
 
 </div>
 
@@ -17,60 +18,48 @@ One project. One shared container. Your agents, shell, tools, state, and detacha
 
 ## Why agent-box?
 
-AI coding agents are useful, but running them directly on your workstation gives them the same filesystem, credentials, tooling, and process access that you have.
+AI coding agents are useful, but running them directly on your workstation gives
+them the same filesystem, credentials, tooling and process access that you have.
 
-`agent-box` puts Claude Code and Codex CLI inside a transient rootless Podman container while keeping the workflow close to local development:
+`agent-box` puts Claude Code and Codex CLI inside a transient rootless Podman
+container while keeping the workflow close to local development:
 
 - **Workspace isolation** — only the resolved project root and explicitly requested mounts are exposed.
-- **Shared workspace box** — Claude, Codex, and `agent-box shell` run in the same container for a project.
-- **Same paths as the host** — `/home/alex/code/project` stays `/home/alex/code/project` inside the container.
-- **Persistent agent state** — authentication, settings, and history remain in host-backed `~/.claude` and `~/.codex`.
-- **Detachable sessions** — interactive sessions run through tmux and can be reattached after a terminal or SSH connection disappears.
-- **Explicit secret exposure** — GitHub credentials, provider keys, and other sensitive integrations are opt-in.
-- **Flow-Next aware** — deterministic review routing, Flowctl resolution, and optional fail-closed auto-push.
+- **Shared workspace box** — Claude, Codex and `agent-box shell` run in the same container for a project.
+- **Same paths as the host** — a project at `/home/you/code/project` is at `/home/you/code/project` inside the box too.
+- **Persistent agent state** — authentication, settings and history stay in host-backed `~/.claude` and `~/.codex`.
+- **Detachable sessions** — interactive sessions run under tmux and survive a closed terminal or a dropped SSH connection.
+- **Nothing exposed by accident** — every credential, every host directory and every optional capability is a switch you turned on.
 
 > [!IMPORTANT]
-> A workspace box is one trust boundary. Claude, Codex, shells, hooks, and daemons inside the same box share the same Unix user and PID namespace.
+> A workspace box is one trust boundary. Claude, Codex, shells, hooks and
+> daemons inside the same box share the same Unix user and PID namespace.
 
 ## Quick start
 
-### Requirements
-
-- Linux
-- Python 3.11+
-- Podman
-
-The launcher itself uses only the Python standard library.
-
-### Install
+Requirements: Linux, Python 3.11+, Podman. The launcher itself uses only the
+Python standard library.
 
 ```bash
 git clone https://github.com/rus364/agent-box.git ~/.local/src/agent-box
-ln -s ~/.local/src/agent-box/agent-box ~/.local/bin/agent-box
+ln -s ~/.local/src/agent-box/agent-box ~/.local/bin/agent-box   # must be on PATH
 ```
-
-Make sure `~/.local/bin` is on `PATH`.
-
-### Start an agent
 
 ```bash
 cd ~/code/my-project
-
-agent-box claude
-# or
-agent-box codex
+agent-box claude          # or: agent-box codex
 ```
 
-The image is built automatically on first use.
-
-Useful commands:
+The image is built automatically on first use. Authenticate `claude` and `codex`
+on the host first — agent-box mounts your existing agent state rather than
+managing a second credential store.
 
 ```bash
-agent-box shell       # shell in this project's shared box
-agent-box attach      # reattach a detached interactive session
-agent-box stop        # stop the box and every session in it
+agent-box shell       # shell in this project's box
+agent-box attach      # reattach a detached session
+agent-box stop        # end the box and every session in it
 agent-box doctor      # verify the environment
-agent-box config      # configure optional integrations
+agent-box config      # configure optional integrations, then apply them
 ```
 
 ## How it works
@@ -92,99 +81,162 @@ flowchart LR
     Project["Project root\nsame absolute path"] -. explicit bind mount .-> Box
 ```
 
-The first local command in a project creates its box lazily. Later Claude, Codex, and shell commands for the same workspace join that box with `podman exec`.
-
-A different workspace gets a different box. When no useful workloads remain, the box exits and Podman's `--rm` removes it automatically.
+The first command in a project creates its box lazily. Later Claude, Codex and
+shell commands for the same workspace join that box with `podman exec`. A
+different workspace gets a different box. When no useful workload remains, the
+box exits and Podman's `--rm` removes it.
 
 ## Daily usage
 
-### Claude Code and Codex
-
 ```bash
 agent-box                  # default agent: Claude
-agent-box claude
 agent-box claude -p "summarize this repository"
-
-agent-box codex
 agent-box codex exec "inspect this repository"
-```
 
-Change the default agent if desired:
-
-```bash
-export AGENT_BOX_AGENT=codex
+export AGENT_BOX_AGENT=codex     # change the default
 ```
 
 ### Detach and reattach
 
-Interactive `claude`, `codex`, and `shell` sessions run under tmux inside the workspace box.
-
-Detach intentionally with:
-
-```text
-Ctrl-\  d
-```
-
-Then return with:
-
-```bash
-agent-box attach
-```
-
-If several sessions exist, `agent-box attach` lists them and you can select one explicitly:
+Interactive `claude`, `codex` and `shell` sessions run under tmux inside the
+box, so closing the terminal detaches instead of orphaning. Detach on purpose
+with `Ctrl-\ d`, come back with `agent-box attach`, and name a session
+explicitly when several exist:
 
 ```bash
 agent-box attach claude-31337
 ```
 
-A detached session keeps the box alive. `agent-box stop` ends the entire workspace box and every session in it.
+A detached session keeps its box alive; `agent-box stop` ends the box and every
+session in it.
 
-Only real terminals are wrapped. Pipes, redirects, CI, `claude -p`, and similar non-interactive runs go directly to stdout. Disable tmux for one launch with:
-
-```bash
-AGENT_BOX_TMUX=0 agent-box claude
-```
-
-### Host mode
-
-Need the same launcher policy without the container?
-
-```bash
-agent-box --host claude
-agent-box --host codex
-```
-
-Host mode runs the installed CLI directly with your normal host environment and credentials. Flow-Next detection, review routing, Flowctl resolution, and auto-push policy are shared with container mode.
-
-The [agent browser](#agent-browser) is **not** shared with host mode. It is a capability of the workspace image, so `--host` sessions never gain it, and agent-box never rewrites your host Claude or Codex MCP configuration to fake one. A host session that needs a browser should configure one itself, in your own agent config.
+Only real terminals are wrapped — pipes, redirects, CI and `claude -p` write
+straight to stdout. `AGENT_BOX_TMUX=0` disables tmux for one launch.
 
 ### Extra mounts
 
-The project root is the only workspace path mounted automatically. Add other host directories explicitly:
+The project root is the only workspace path mounted automatically:
 
 ```bash
 agent-box --mount ~/code claude
-agent-box --mount /mnt/data/specs:ro codex
-agent-box --mount /mnt/data/specs:ro --mount /srv/generated claude
+agent-box --mount /mnt/data/specs:ro --mount /srv/generated codex
 ```
 
-Mounts keep their host absolute paths inside the container. They are read-write by default; append `:ro` for read-only access.
+Mounts keep their host absolute paths inside the container, and are read-write
+unless you append `:ro`.
 
-## What's in the image?
+### Extra environment variables
 
-The development image includes the tools needed for normal agent-driven infrastructure and software work:
+```bash
+agent-box --env DATABASE_URL=postgres://localhost/dev codex
+agent-box --env MY_TOKEN claude
+```
 
-| Area | Included |
+`--env NAME=VALUE` sets a variable. `--env NAME` forwards the value that name
+already has in your shell *without* putting it in the process list, which is the
+form to use for anything secret. Both are repeatable and both win over the lists
+stored in `agent-box config`.
+
+The same request works as a shell prefix:
+
+```bash
+AGENT_BOX_ENV_DATABASE_URL=postgres://localhost/dev agent-box codex
+```
+
+A bare `DATABASE_URL=... agent-box codex` cannot work, and the namespace is why:
+inside the process, a variable set by a shell prefix is indistinguishable from
+the hundreds inherited from your login profile, so honouring bare names would
+mean handing the container your entire host environment.
+
+### Host mode
+
+```bash
+agent-box --host claude
+```
+
+Runs the installed CLI directly, with your normal host environment and
+credentials — no Podman. Flow-Next detection, review routing, Flowctl
+resolution and auto-push policy are shared with container mode. The
+[agent browser](docs/integrations/browser.md) is not: it is a capability of the
+workspace image, and agent-box never rewrites your host agent configuration to
+fake one.
+
+## Configuration
+
+One versioned JSON file:
+
+```text
+~/.config/agent-box/config.json
+```
+
+```bash
+agent-box config        # ask, save, and apply
+agent-box config show   # print current settings, tokens redacted
+agent-box config check  # verify the Claude Telegram channel setup
+agent-box install       # apply the saved file without asking anything
+```
+
+`agent-box config` ends by applying what you answered: installing the skills
+your integrations need, linking them for Claude, rendering credential files, and
+reconciling Claude's `settings.json`. `agent-box install` does the same from the
+saved file — which is what you want after pulling a newer agent-box, whose
+shipped skills may have changed, or after editing `config.json` by hand.
+
+**Starting an agent applies nothing.** `agent-box claude` and `agent-box codex`
+read your configuration but never install a skill, write a symlink or rewrite
+`settings.json` on the way past. A launch is safe to run without wondering what
+it will change in your home directory, and anything that shows up there is there
+because you asked for it.
+
+### Defaults
+
+| Setting | Default | Purpose |
+| --- | --- | --- |
+| Claude status line | on | Workspace, git state, context and provider usage in one line |
+| Git identity | on | `user.name` / `user.email`, for commit attribution |
+| Provider transport settings | on | Base URL, proxies, CA bundle — without these a container behind a proxy cannot reach the network |
+| Share skills with Claude | on | Link `~/.agents/skills` into `~/.claude/skills` |
+| Image tool groups | analysis, kubernetes | What the workspace image is built with |
+| Everything else | **off** | Credentials, task tracking, browser, notifications, auto-push |
+
+Every switch and what it exposes: **[docs/integrations](docs/integrations/)**.
+
+### Environment overrides
+
+```text
+AGENT_BOX_AGENT           Default agent when claude/codex is omitted
+AGENT_BOX_IMAGE           Container image name
+AGENT_BOX_KVM=0           Disable KVM passthrough
+AGENT_BOX_GH_TOKEN=0|1    Withhold / force the GitHub token for one run
+AGENT_BOX_WORKSPACE_ROOT  Override the resolved workspace root
+AGENT_BOX_STATE_DIR       Override ~/.local/share/agent-box
+AGENT_BOX_CONFIG_DIR      Override ~/.config/agent-box
+AGENT_BOX_AGENTS_DIR      Override ~/.agents, the shared agent/skill tree
+AGENT_BOX_STATUSLINE=0    Leave Claude's statusLine untouched when applying
+AGENT_BOX_ENV_<NAME>      Set <NAME> inside the session
+AGENT_BOX_TMUX=0          Disable tmux wrapping for one launch
+```
+
+## The workspace image
+
+A base set everyone gets, plus optional groups you choose in `agent-box config`.
+
+| Always | Included |
 | --- | --- |
 | Agents | Claude Code, Codex CLI |
 | Languages | Python, uv, Node.js 22, Bun, mise |
 | Source control | git, git-lfs, gh |
-| Kubernetes | kubectl, Helm, yq, jq |
-| Virtualization | QEMU x86-64 + aarch64, optional KVM passthrough |
-| Browser automation | Playwright MCP + headless Chromium (opt-in; see [Agent browser](#agent-browser)) |
-| Session/runtime tools | tmux and common build/network utilities |
+| Shell tooling | tmux, jq, ripgrep, fd, fzf, just, build essentials, network utilities |
 
-Build commands:
+| Optional group | Default | Included |
+| --- | --- | --- |
+| `analysis` | on | shellcheck, sqlite3, jscpd |
+| `kubernetes` | on | kubectl, Helm, yq |
+| `virtualization` | off | QEMU x86-64 + aarch64, OVMF; also gates `/dev/kvm` passthrough |
+| `browser` | off | Playwright MCP + headless Chromium (see [agent browser](docs/integrations/browser.md)) |
+
+Anything else your projects need belongs in the project, through `mise` — a
+per-project toolchain is not an image everyone shares.
 
 ```bash
 agent-box build      # normal cached build
@@ -192,304 +244,26 @@ agent-box update     # refresh frequently updated tools
 agent-box rebuild    # rebuild without cache
 ```
 
-Default image: `localhost/agent-box:latest`.
-
-Override it with `AGENT_BOX_IMAGE`.
-
-## Configuration
-
-`agent-box` keeps its settings in one versioned JSON file:
-
-```text
-~/.config/agent-box/config.json
-```
-
-Manage it with:
-
-```bash
-agent-box config
-agent-box config show
-agent-box config check
-```
-
-Important defaults:
-
-| Setting | Default | Purpose |
-| --- | --- | --- |
-| Claude Telegram channel | off | Enable Anthropic's official Telegram channel plugin |
-| Claude status line | on | Show workspace/context/provider usage |
-| Outbound Telegram notifications | off | Turn-complete / waiting / failure notifications |
-| GitHub token forwarding | off | Expose host GitHub authentication to agent sessions |
-| Full host Git config | off | Copy host Git config into the box |
-| Provider API keys | off | Forward Anthropic provider credentials |
-| Vikunja | off | Task tracking for both agents, installed and configured by agent-box |
-| Agent browser | off | Let containerized agents drive a headless browser |
-| Share skills with Claude | on | Link `~/.agents/skills` into `~/.claude/skills` |
-| Extra environment variables | none | Forward or set variables your own projects need |
-| Flow-Next auto-push | off | Push eligible completed Flow-Next work automatically |
-| Flow-Next review backend | unset | Which backend reviews the work, per primary agent |
-
-<details>
-<summary><strong>Environment overrides</strong></summary>
-
-```text
-AGENT_BOX_AGENT           Default agent when omitted
-AGENT_BOX_IMAGE           Container image name
-AGENT_BOX_KVM=0           Disable KVM passthrough
-AGENT_BOX_GH_TOKEN=0|1    Withhold / force GitHub token for one run
-AGENT_BOX_WORKSPACE_ROOT  Override the resolved workspace root
-AGENT_BOX_STATE_DIR       Override ~/.local/share/agent-box
-AGENT_BOX_CONFIG_DIR      Override ~/.config/agent-box
-AGENT_BOX_AGENTS_DIR      Override ~/.agents, the shared agent/skill tree
-AGENT_BOX_STATUSLINE=0    Leave Claude's statusLine untouched for one run
-AGENT_BOX_TMUX=0          Disable tmux wrapping for one launch
-```
-
-</details>
-
-## Git and GitHub credentials
-
-Git and GitHub integration is intentionally conservative.
-
-Being logged in to `gh` on the host does **not** automatically give every workspace container a live GitHub credential. Enable it explicitly through `agent-box config`.
-
-Container Git/gh configuration is copied into a per-workspace writable snapshot rather than bind-mounted directly. The host remains the source of truth, while temporary changes made inside a box disappear with that box.
-
-Only HTTPS GitHub authentication is forwarded. SSH keys and the host SSH agent are not mounted.
-
-## Flow-Next integration
-
-A workspace is treated as Flow-Next when its root contains:
-
-```text
-.flow/config.json
-```
-
-agent-box then provides deterministic runtime policy without requiring every project to duplicate it in `AGENTS.md`.
-
-### Review routing
-
-Nothing is routed until you say so. `agent-box config` offers the backends worth choosing between and stores your answer per primary agent:
-
-```json
-{
-  "flow_next": {
-    "review_backends": {
-      "claude": "codex:gpt-5.6-sol:medium"
-    }
-  }
-}
-```
-
-A configured agent gets `FLOW_REVIEW_BACKEND` on every launch; an agent with no entry gets no variable, so Flow-Next keeps resolving the backend from `.flow/config.json` as it would without agent-box. An explicit `FLOW_REVIEW_BACKEND` in the shell wins for that one launch.
-
-Primary agent selection is always explicit. agent-box never chooses between Claude and Codex based on quota, cost, or heuristics.
-
-### Flowctl
-
-For Flow-Next workspaces, agent-box resolves the actual Flowctl installation separately for each agent and makes bare `flowctl` available for that invocation.
-
-- Claude: from the installed `flow-next` plugin record.
-- Codex: from `${CODEX_HOME:-~/.codex}/scripts/flowctl`.
-
-No global symlink is required.
-
-### Auto-push
-
-`flow_next.auto_push` is opt-in and fail-closed.
-
-At the end of an agent turn, agent-box may run:
-
-```bash
-git push -u origin HEAD
-```
-
-—but only after proving that the current branch, remote destination, remote default branch, worktree state, divergence state, and touched Flow-Next task receipts are safe and that Flow-Next itself reports at least one touched task as authoritatively `done`.
-
-Any ambiguity skips the push. agent-box never force-pushes, rebases, merges, resets, changes branches, or guesses a destination.
-
-<details>
-<summary><strong>Auto-push safety model</strong></summary>
-
-The reconciler checks the actual effective push destination, queries the remote live rather than trusting stale `origin/HEAD`, rejects `main`/`master`, detached HEADs, dirty worktrees, divergent remote branches, ambiguous push URLs, unresolved Flowctl, malformed state, and task completion that exists only in committed snapshots instead of Flow-Next runtime state.
-
-It also disables `push.followTags` and `push.recurseSubmodules` for the push subprocess so a plain branch push cannot silently publish unrelated tags or submodule changes.
-
-There is no persistent auto-push marker. Every completion event recomputes the answer from current Git and Flow-Next state.
-
-</details>
-
-## Claude Telegram channel
-
-Remote control of Claude is provided by Anthropic's official `telegram@claude-plugins-official` plugin.
-
-agent-box does not implement its own Telegram control daemon, pairing protocol, session router, or permission bridge.
-
-Enable the plugin once from Claude Code:
-
-```text
-agent-box claude
-/plugin install telegram@claude-plugins-official
-/telegram:configure <BOT_TOKEN>
-```
-
-Then enable the channel in:
-
-```bash
-agent-box config
-```
-
-Start a fresh Claude session and pair your Telegram account:
-
-```text
-/telegram:access pair <code>
-/telegram:access policy allowlist
-```
-
-Only one Claude session can own Telegram polling for a bot token at a time. agent-box tracks that owner and prevents another local session from accidentally stealing the official plugin's poller.
-
-> [!NOTE]
-> Codex remote control is not implemented by agent-box. Use OpenAI's official ChatGPT/Codex remote-control experience where supported.
-
-## Notifications
-
-Outbound notifications are separate from remote control.
-
-```bash
-agent-box config
-agent-box notify test
-```
-
-Notifications are one-way only:
-
-- Codex: turn completed, including the final assistant message.
-- Claude: waiting for input, permission required, completed, or failed.
-
-When a Claude session already owns the official Telegram channel, duplicate interaction notifications are suppressed while lifecycle completion/error signals remain available.
-
-## Shared skills
-
-`~/.agents/skills` is the canonical shared skill directory.
-
-Codex discovers it directly. Before starting Claude, agent-box exposes matching skills through `~/.claude/skills` symlinks so both agents consume the same `SKILL.md` files. Those symlinks live in your real Claude configuration, which Claude sessions started outside agent-box also read, so they are a setting rather than an assumption — turn them off in `agent-box config` and agent-box removes the ones it made, leaving anything else in that directory alone.
-
-agent-box also installs the skills its own integrations need into this tree, marks them as its own, and refreshes them when it ships newer copies. A skill you created yourself under the same name has no such marker and is never overwritten.
-
-If `~/.agents` exists, the whole tree is mounted read-only, with `~/.agents/skills` overlaid read-write so agents can create and update their own skills. External targets linked from `skills/` are read-write too; targets linked only from elsewhere in the tree remain read-only. This keeps every shared symlink resolving at its host path without granting write access to unrelated agent definitions or prompt material.
-
-## Vikunja
-
-Task tracking both agents can read and update. Off by default; there is nothing to install or configure on the host first.
-
-```bash
-agent-box config
-```
-
-Answer yes, then give it a server URL and an API token. agent-box installs its own copy of the Vikunja skill into `~/.agents/skills/vikunja`, keeps the URL and token in its own `config.json` (mode 0600), and hands the container a rendered, read-only copy of just those two values — never its own configuration file. `~/.local/state/vikunja` is mounted read-write so a partially applied `vikunja import` stays resumable across boxes, and the skill's CLI is put on the container `PATH`.
-
-A skill directory agent-box installed carries a marker and is refreshed when agent-box ships a newer copy. A `~/.agents/skills/vikunja` you created yourself has no such marker and is never overwritten.
-
-The address the container receives is corrected, because rootless Podman gives the container both its own loopback and the host's own addresses:
-
-- an address with no name worth keeping — `localhost`, or an IP literal belonging to this machine — is rewritten to `host.containers.internal`, preserving scheme, port and path;
-- a DNS name that resolves to this machine, such as `http://pm.example.org:3456`, keeps its URL and is redirected with `--add-host=pm.example.org:host-gateway`, so TLS certificate validation and reverse-proxy virtual-host routing still see the name the server was configured for;
-- a genuinely remote Vikunja is left alone.
-
-The URL you configured is never rewritten in place; only the container's copy is.
-
-Verify it with:
-
-```bash
-agent-box doctor
-```
-
-## Agent browser
-
-Off by default. When enabled, containerized Claude and Codex sessions get an MCP server that drives a real headless browser, so an agent can open a page, read it, follow links and fill forms on its own — useful for reading documentation, checking a locally served app, or reproducing something that only shows up in a browser.
-
-```text
-Claude / Codex
-      |
-      | stdio MCP
-      v
-Playwright MCP
-      |
-      v
-headless Chromium
-```
-
-All three run inside the workspace container that is already there. There is no browser sidecar, no Podman pod, no HTTP MCP service, no host browser integration and no X11/Wayland forwarding.
-
-### Enabling it
-
-```bash
-agent-box config
-```
-
-Answer yes to *"Let containerized agents drive a headless browser"*. It applies to the next `agent-box claude` and `agent-box codex`; there is nothing to restart, because the browser is not part of the container's identity — turning it on or off never rebuilds or destroys a running workspace box.
-
-Both agents see the server under the same name:
-
-```text
-agent_box_browser
-```
-
-It is added for that invocation only. Your `~/.codex/config.toml` and your Claude MCP configuration are never rewritten, and the MCP servers you configured yourself keep working alongside it.
-
-### What it does and does not touch
-
-| | |
-| --- | --- |
-| Browser | Chromium, headless, from the image — installed at build time, never downloaded during a session |
-| Profile | Isolated and in-memory, new for every session |
-| Cookies / logins / localStorage | Discarded when the session ends |
-| Your own browser's profile and cookies | Never exposed — nothing from the host is mounted |
-| Screenshots, snapshots, traces | Written under `~/.local/share/agent-box/runtime/workspaces/<id>/browser/<session>/output`, never into your repository |
-| Concurrent sessions | Separate profile and output directory each |
-
-Because every session is isolated, an agent cannot reuse a login from an earlier session, and cannot reach a site that depends on your own browser's authentication. That is deliberate: a page the agent visits must not be able to act as you.
-
-### Trust boundary
-
-> [!IMPORTANT]
-> Browser automation is **not** a separate security boundary. The browser, the Playwright MCP server, Claude/Codex, shell processes, the mounted project, and every other enabled integration all live inside the same workspace box, as the same Unix user. Content the browser loads is on the *inside* of that boundary, and anything a page can persuade the agent to do, the agent can already do to your project.
-
-Treat enabling the browser the way you would treat handing the agent any other network-reading capability: the container still runs with `--cap-drop=all`, `--security-opt=no-new-privileges` and rootless `--userns=keep-id`, and none of that is relaxed for the browser. Chromium's own internal sandbox is unavailable under those flags — Playwright launches its bundled Chromium with `--no-sandbox`, as it does in any container — and agent-box does not weaken the Podman hardening to change that. The container, not Chromium, is the boundary.
-
-### Upgrading an existing install
-
-Browser support ships in the image, so an image built before this feature has neither Playwright MCP nor Chromium:
-
-```bash
-agent-box build     # normal cached build; adds the browser layers
-```
-
-Use `agent-box update` instead if you also want the agent CLIs refreshed. After that, a plain `agent-box build` keeps the browser layers cached; `agent-box update` re-downloads them each time, because it invalidates everything from Node.js down. `agent-box doctor` says plainly when the running image predates browser support.
-
-### Checking it
-
-```bash
-agent-box doctor
-```
-
-Disabled — a normal state, not an error:
-
-```text
-playwright-mcp:      Version 0.0.80
-browser integration: disabled (enable it with 'agent-box config')
-```
-
-Enabled and healthy. The check actually starts a headless Chromium, renders an offline `data:` URL and exits; it needs no network and is bounded by a short timeout:
-
-```text
-playwright-mcp:      Version 0.0.80
-browser chromium:    OK (153.0.8010.12)
-browser integration: enabled
-```
+Changing a group takes effect on the next `agent-box build`. The image records
+what it was built with, so `agent-box config show`, `agent-box doctor` and any
+launch will tell you when the running image no longer matches your
+configuration — and none of them rebuild it behind your back.
+
+Default image: `localhost/agent-box:latest`, overridable with `AGENT_BOX_IMAGE`.
+
+## Integrations
+
+All off by default and independent of each other. See
+**[docs/integrations](docs/integrations/)** for the full set; briefly:
+
+- **[Shared skills](docs/integrations/skills.md)** — one skill tree both agents read, plus three engineering-practice skills agent-box ships.
+- **[Vikunja](docs/integrations/vikunja.md)** — task tracking both agents can read and update, installed and configured by agent-box itself.
+- **[Flow-Next](docs/integrations/flow-next.md)** — review routing, Flowctl resolution, and fail-closed auto-push.
+- **[Agent browser](docs/integrations/browser.md)** — a headless browser inside the box for agents to drive.
+- **[Telegram](docs/integrations/telegram.md)** — Anthropic's official control channel, plus one-way notifications.
+- **[Git and GitHub](docs/integrations/git.md)** — what of your Git and GitHub setup reaches a session.
 
 ## Usage and status line
-
-Check provider subscription usage from the host:
 
 ```bash
 agent-box usage codex
@@ -497,13 +271,14 @@ agent-box usage claude
 agent-box usage all
 ```
 
-Example combined output:
-
 ```text
 97/88 · 4h51m/5d23h │ 83/61 · 3h24m/4d11h
 ```
 
-Segments are unlabeled: Claude comes first, Codex second, each in its own muted hue (terracotta and steel blue; the status line adds violet for context). Single-provider invocations print plain — the colours exist only to separate segments from each other.
+Segments are unlabeled: Claude first, Codex second, each in its own muted hue
+(terracotta and steel blue; the status line adds violet for context).
+Single-provider invocations print plain — the colours exist only to separate
+segments from each other.
 
 Claude Code can also use:
 
@@ -511,21 +286,25 @@ Claude Code can also use:
 agent-box statusline
 ```
 
-which renders workspace, Git state, context usage, and provider limits in one line.
+which renders workspace, git state, context usage and provider limits in one
+line. It is enabled by default, but agent-box fills Claude's `statusLine` slot
+only when that slot is empty, and removes only its own command when switched off
+— a status line you configured yourself is never touched.
 
-The managed status line is enabled by default, but agent-box never overwrites a status line you configured yourself: it fills Claude's `statusLine` slot only when that slot is empty, and removes only its own command when switched off.
-
-That slot lives in `~/.claude/settings.json`, which Claude sessions started outside agent-box read too, so the line follows you there as well. `AGENT_BOX_STATUSLINE=0` leaves the file untouched for one run, and `agent-box uninstall` takes the line back out for good.
+That slot lives in `~/.claude/settings.json`, which Claude sessions started
+outside agent-box read too, so the line follows you there as well.
+`AGENT_BOX_STATUSLINE=0` leaves the file alone while applying, and
+`agent-box uninstall` takes the line back out for good.
 
 ## Workspace and security model
 
 Workspace resolution is intentionally simple:
 
-1. Inside a Git repository/worktree: use its top-level directory.
-2. Outside Git: use the current directory.
-3. `AGENT_BOX_WORKSPACE_ROOT` overrides both when you deliberately want a broader tree.
+1. Inside a Git repository or worktree: its top-level directory.
+2. Outside Git: the current directory.
+3. `AGENT_BOX_WORKSPACE_ROOT` overrides both, when you deliberately want a broader tree.
 
-Every workspace box uses:
+Every workspace box runs with:
 
 ```text
 --userns=keep-id
@@ -533,27 +312,42 @@ Every workspace box uses:
 --security-opt=no-new-privileges
 ```
 
-The container user mirrors the host user's real passwd identity. Files created inside the workspace therefore map back to the host user instead of root.
+The container user mirrors the host user's real passwd identity, so files
+created inside the workspace map back to you rather than to root. Only the
+workspace root, explicit extra mounts, agent state directories and the
+integrations you enabled are exposed.
 
-Only the workspace root, explicit extra mounts, agent state/config locations, and configured integrations are exposed.
+`$HOME` is never consulted for any of this: paths come from the passwd entry, so
+a poisoned environment cannot move a bind mount, a state directory or the
+container's home.
 
-Nothing in the optional [agent browser](#agent-browser) relaxes any of this: it adds no capability, no socket passthrough and no host mount, and no host browser profile or cookie store is ever exposed to the container.
-
-KVM is passed through automatically when `/dev/kvm` is accessible. Disable it with:
+## Uninstalling
 
 ```bash
-AGENT_BOX_KVM=0 agent-box claude
+agent-box uninstall
 ```
+
+Removes what agent-box wrote in places it does not own: its status line and
+hooks in Claude's `settings.json`, the skill links in `~/.claude/skills`, the
+skills it installed in `~/.agents/skills`, its rendered credential files, and
+every workspace box. Anything you wrote yourself in those places stays.
+
+Your configuration and state survive, so reinstalling picks up where you left
+off. Add `--purge` to delete those too — that includes stored tokens, so it asks
+first unless you pass `--yes`. The container image and this checkout are never
+removed for you; the command prints how.
 
 ## Diagnostics and tests
 
 ```bash
-agent-box doctor
-agent-box selftest
+agent-box doctor      # inside a real box: tools, credentials, integrations
+agent-box selftest    # fast, no Podman, no network
 python3 -m unittest discover -s tests
 ```
 
-`selftest` is fast and requires neither Podman nor network access. The full suite exercises workspace resolution, identity handling, configuration gates, mounts, tmux/session lifecycle, notifications, Flow-Next policy, Git safety checks, and container behavior.
+The full suite exercises workspace resolution, identity handling, configuration
+gates, mounts, tmux and session lifecycle, notifications, Flow-Next policy, Git
+safety checks, skill installation and container behaviour.
 
 ## Troubleshooting
 
@@ -567,97 +361,68 @@ Install Podman. agent-box intentionally does not fall back to Docker.
 <details>
 <summary><strong>Claude or Codex is not authenticated</strong></summary>
 
-Authenticate the corresponding CLI on the host first. agent-box mounts the host-backed agent state rather than managing a second credential store.
+Authenticate the corresponding CLI on the host first. agent-box mounts the
+host-backed agent state rather than managing a second credential store.
 
 </details>
 
 <details>
 <summary><strong><code>gh</code> is unauthenticated inside the box</strong></summary>
 
-This is the default. Enable `github.gh_token` in `agent-box config`. Optionally enable `github.gh_config` if the container also needs the host gh configuration snapshot.
+That is the default. See [Git and GitHub](docs/integrations/git.md).
 
 </details>
 
 <details>
 <summary><strong>The configured workspace root rejects my current directory</strong></summary>
 
-`AGENT_BOX_WORKSPACE_ROOT` is set and the current directory is outside it. Change directory or remove/update the override.
+`AGENT_BOX_WORKSPACE_ROOT` is set and the current directory is outside it.
+Change directory, or remove the override.
 
 </details>
 
 <details>
-<summary><strong><code>agent-box doctor</code> says the browser is missing</strong></summary>
+<summary><strong>A tool I expected is missing from the box</strong></summary>
 
-The running image was built before browser support existed. Run `agent-box build` once; the Playwright MCP and Chromium layers are added and then stay cached.
-
-</details>
-
-<details>
-<summary><strong>The agent says it has no browser tools</strong></summary>
-
-Check `agent-box config show` — `Agent browser (containers)` must be `on`. It only applies to containerized sessions: `agent-box --host claude` and `agent-box --host codex` never get it. Note also that the server is added per invocation, so a session started before you enabled it keeps running without the browser; start a new one.
+Check `agent-box config show` — its group may be off — then `agent-box build`.
+Project-specific toolchains belong in the project, declared through `mise`.
 
 </details>
 
 <details>
-<summary><strong>The agent cannot open a site that needs me to be logged in</strong></summary>
+<summary><strong>A shared skill is missing or points somewhere unexpected</strong></summary>
 
-Expected. Each session gets an isolated, in-memory profile and your own browser's cookies are never exposed, so there is no session for the agent to reuse. Have the agent log in within its own session, or point it at something that does not require your credentials.
-
-</details>
-
-<details>
-<summary><strong>Chromium fails to start inside the box</strong></summary>
-
-Run `agent-box doctor`; the browser check prints the launch error. Chromium needs a writable `$HOME/.config` for its crash-reports database, which the image provides — an image built by hand without agent-box's build args, or a stale one, can lack it. Rebuild with `agent-box build`. A `chrome_crashpad_handler: --database is required` message is that failure.
-
-</details>
-
-<details>
-<summary><strong>Screenshots or snapshots are cluttering my repository</strong></summary>
-
-They should not be: agent-box points Playwright MCP at a per-session output directory under `~/.local/share/agent-box/runtime/workspaces/<id>/browser/`. An agent that writes into the project is doing so with its ordinary file tools, not through the browser. `agent-box stop` clears that workspace's browser output.
-
-</details>
-
-<details>
-<summary><strong>A shared skill is missing or mismatched</strong></summary>
-
-Run `agent-box doctor`. If `~/.claude/skills/<name>` already exists and points somewhere else, agent-box preserves it instead of overwriting it.
+Run `agent-box doctor`, then `agent-box install`. agent-box never overwrites a
+skill directory or a link it did not create; it says so and keeps yours.
 
 </details>
 
 ## Known limitations
 
 - Linux + Podman only.
-- Workspace containers are transient. Detached tmux sessions survive terminal loss, but not a host reboot or forced container kill.
-- `~/.agents` is exposed as a whole tree, not only `skills/`; the tree is read-only except for the read-write `skills/` subtree and its external symlink targets.
-- The agent browser is amd64/arm64 only, because those are the architectures Playwright publishes Chromium builds for; the image build fails with an explanation elsewhere.
+- Workspace containers are transient. Detached tmux sessions survive terminal loss, but not a host reboot or a forced container kill.
+- `~/.agents` is exposed as a whole tree, not only `skills/`; it is read-only except for the read-write `skills/` subtree and its external symlink targets.
+- The agent browser is amd64/arm64 only, because those are the architectures Playwright publishes Chromium builds for.
 - `agent-box update` re-downloads the browser layer, because it sits below the tools-refresh marker that Node.js also sits below. A plain `agent-box build` keeps it cached.
-- The official Claude Telegram plugin is outside agent-box's control and may require compatibility updates when its internals change.
+- The official Claude Telegram plugin is outside agent-box's control and may need compatibility updates when its internals change.
 - There is no remote equivalent of `--mount`, and Telegram cannot create a new workspace box by itself.
-
-## Uninstalling
-
-```bash
-agent-box uninstall
-```
-
-Removes what agent-box wrote in places it does not own: its status line and hooks in Claude's `settings.json`, the skill links in `~/.claude/skills`, the skills it installed in `~/.agents/skills`, its rendered credential files, and every workspace box. Anything you wrote yourself in those places is left exactly where it is.
-
-Your configuration and state survive, so reinstalling picks up where you left off. Add `--purge` to delete those too — that includes any stored tokens, so it asks first unless you pass `--yes`. The container image and this checkout are never removed for you; the command prints how.
 
 ## Project scope
 
 agent-box is deliberately a **local workspace runtime**, not an agent platform.
 
-It provides:
+It provides isolated local Claude/Codex execution, workspace lifecycle, mounts
+and identity handling, detachable sessions, controlled credential exposure, and
+the local integrations above.
 
-- isolated local Claude/Codex execution;
-- workspace lifecycle;
-- mounts and identity handling;
-- detachable sessions;
-- controlled credential exposure;
-- local integrations such as Flow-Next, notifications, and shared skills.
+It does **not** implement its own cloud scheduler, multi-user control plane,
+Telegram bot platform, or Codex remote-control protocol.
 
-It does **not** implement its own cloud scheduler, multi-user control plane, Telegram bot platform, or Codex remote-control protocol.
+## License
+
+MIT — see [LICENSE](LICENSE).
+
+The skills under `agent_box/skills/` vendored from
+[obra/superpowers](https://github.com/obra/superpowers) are MIT-licensed by
+their author and carry their own `LICENSE`; `agent_box/skills/VENDORED.json`
+records the exact upstream release each copy came from.

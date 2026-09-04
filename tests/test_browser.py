@@ -32,7 +32,15 @@ from test_runtime import IsolatedRuntimeTest
 
 
 def browser_config(enabled: bool = True) -> Config:
-    return Config(browser=BrowserConfig(enabled=enabled))
+    """A configuration where the switch and the image agree.
+
+    The browser is two decisions -- an image that carries Chromium, and a
+    session wired to drive it -- so a fixture that set only the switch would
+    be testing a state agent-box itself reports as a mistake.
+    """
+    config = Config(browser=BrowserConfig(enabled=enabled))
+    config.image.tools["browser"] = enabled
+    return config
 
 
 class BrowserSessionStateTests(IsolatedRuntimeTest):
@@ -413,12 +421,25 @@ class ConfigSurfaceTests(unittest.TestCase):
             cli_module.config_show()
         return buffer.getvalue()
 
+    def _browser_line(self, config: Config) -> str:
+        """The switch's own line -- not the image group that shares its name."""
+        return next(
+            line for line in self._show(config).splitlines()
+            if "Agent browser" in line)
+
     def test_config_show_reports_the_switch_off(self):
-        line = next(l for l in self._show(browser_config(False)).splitlines() if "browser" in l.lower())
+        line = self._browser_line(browser_config(False))
         self.assertRegex(line, r"Agent browser \(containers\)\s+off")
 
+    def test_config_show_flags_a_switch_the_image_cannot_serve(self):
+        """Enabling the browser without building it is a state worth naming."""
+        config = browser_config(True)
+        config.image.tools["browser"] = False
+        line = self._browser_line(config)
+        self.assertIn("browser tool group is off", line)
+
     def test_config_show_reports_the_switch_on_and_where_it_runs(self):
-        line = next(l for l in self._show(browser_config(True)).splitlines() if "browser" in l.lower())
+        line = self._browser_line(browser_config(True))
         self.assertRegex(line, r"Agent browser \(containers\)\s+on")
         self.assertIn("headless Chromium in the box", line)
         self.assertIn("--host", line)
