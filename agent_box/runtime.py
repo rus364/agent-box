@@ -346,32 +346,30 @@ def prepare_container_lifetime_state(
 
 
 def agent_tree_mounts() -> list[tuple[Path, Path, bool]]:
-    """Read-only mounts for ``~/.agents`` and everything it symlinks out to.
+    """Mount ``~/.agents`` safely while letting agents maintain their skills.
 
     Scope, decided deliberately: the **whole** ``~/.agents`` tree is walked
     recursively, not just ``~/.agents/skills``.
 
-    The reason is that the tree itself is bind-mounted read-only at its own
-    path, so *every* symlink in it -- skills, shared agent definitions,
-    commands, prompt fragments, whatever a user keeps there -- would dangle
-    inside the container unless its target is mounted too. Narrowing the walk
-    to ``skills/`` would not make the container see less of the host in any
-    meaningful sense; it would just make the non-skill half of an already
-    exposed directory silently broken. ``sync_claude_agent_skills`` only cares
-    about ``skills/`` because that is the only part Claude Code consumes by
-    convention -- that is a different question from what has to resolve.
+    The tree itself is bind-mounted read-only at its own path, then ``skills/``
+    is overlaid read-write. This lets skill-authoring agents create and update
+    their own skills without also granting write access to shared agent
+    definitions, commands, or prompt fragments elsewhere in the tree.
 
-    Everything is mounted read-only, including external targets: agent-box
-    exposes shared agent material to the container, it does not let the
-    container edit the user's shared library. Symlinks pointing back inside
-    ``~/.agents`` are skipped (the whole-tree mount already covers them), and a
-    broken symlink is warned about and skipped rather than failing the run.
+    Every symlink in the tree is followed so it resolves in the container.
+    External targets linked from ``skills/`` are read-write; targets linked
+    only from elsewhere stay read-only. Symlinks pointing back inside
+    ``~/.agents`` are skipped (the whole-tree mounts already cover them), and
+    a broken symlink is warned about and skipped rather than failing the run.
     """
     agents = HOST_HOME / ".agents"
     if not agents.is_dir():
         return []
+    skills = agents / "skills"
     mounts: list[tuple[Path, Path, bool]] = [(agents, agents, True)]
-    seen: set[Path] = set()
+    if skills.is_dir() and not skills.is_symlink():
+        mounts.append((skills, skills, False))
+    external_modes: dict[Path, bool] = {}
     for link in sorted(agents.rglob("*")):
         if not link.is_symlink():
             continue
@@ -381,11 +379,16 @@ def agent_tree_mounts() -> list[tuple[Path, Path, bool]]:
             warn(f"broken agent symlink: {link}")
             continue
         if agents in host_target.parents or host_target == agents:
-            continue  # already covered by the whole-tree mount above
-        if host_target in seen:
-            continue
-        seen.add(host_target)
-        mounts.append((host_target, host_target, True))
+            continue  # already covered by the whole-tree mounts above
+        read_only = not link.is_relative_to(skills)
+        # The same target can be shared by skill and non-skill links. One
+        # writable skill reference must keep that target writable regardless
+        # of which link sorts first.
+        external_modes[host_target] = external_modes.get(host_target, True) and read_only
+    for host_target, read_only in sorted(
+        external_modes.items(), key=lambda item: (len(item[0].parts), str(item[0]))
+    ):
+        mounts.append((host_target, host_target, read_only))
     return mounts
 
 
@@ -397,8 +400,8 @@ CONTAINER_HOST_ALIAS = "host.containers.internal"
 #: container" inside one. Compared lower-cased; an IPv6 literal has already
 #: had its brackets stripped by ``urlsplit``.
 LOOPBACK_HOSTNAMES = frozenset({"localhost", "127.0.0.1", "::1"})
-#: The Vikunja skill's canonical CLI. ``~/.agents`` is already bind-mounted
-#: read-only (see :func:`agent_tree_mounts`), so this second, narrow bind adds
+#: The Vikunja skill's canonical CLI. ``~/.agents/skills`` is already
+#: bind-mounted (see :func:`agent_tree_mounts`), so this second, narrow bind adds
 #: no new exposure -- it only gives the script a name on the container PATH,
 #: which is how the skill's own documentation tells an agent to invoke it.
 VIKUNJA_SKILL_ENTRYPOINT = HOST_HOME / ".agents/skills/vikunja/scripts/vikunja.py"
