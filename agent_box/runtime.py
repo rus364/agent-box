@@ -11,10 +11,12 @@ from __future__ import annotations
 
 import fcntl
 import hashlib
+import ipaddress
 import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -407,6 +409,9 @@ def agent_tree_mounts() -> list[tuple[Path, Path, bool]]:
 #: pasta and slirp4netns write it into the container's /etc/hosts, so it does
 #: not depend on which rootless network backend is in use.
 CONTAINER_HOST_ALIAS = "host.containers.internal"
+#: Podman's magic ``--add-host`` target: the host's address as the container
+#: sees it, resolved by Podman at creation time rather than guessed here.
+CONTAINER_HOST_GATEWAY = "host-gateway"
 #: Host names that mean "this machine" to the host but would mean "this
 #: container" inside one. Compared lower-cased; an IPv6 literal has already
 #: had its brackets stripped by ``urlsplit``.
@@ -418,19 +423,63 @@ LOOPBACK_HOSTNAMES = frozenset({"localhost", "127.0.0.1", "::1"})
 VIKUNJA_SKILL_ENTRYPOINT = HOST_HOME / ".agents/skills/vikunja/scripts/vikunja.py"
 
 
+def is_ip_literal(host: str) -> bool:
+    """True when *host* is an address rather than a name to be resolved."""
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return True
+
+
+def is_host_local(host: str) -> bool:
+    """True when *host* names an address this machine itself answers on.
+
+    Binding is the test rather than an inventory of interface addresses: the
+    kernel lets a socket bind only to an address the local stack owns, which
+    is precisely the question being asked, and it needs neither a subprocess
+    nor a dependency. The candidate addresses come from the host's own
+    resolver, so a LAN name that DNS points at this machine is recognised the
+    same way a bare address literal is.
+
+    Any resolution or binding failure answers "not local", which leaves the
+    URL untouched: an address agent-box cannot reason about is better handed
+    to the skill verbatim than redirected on a guess.
+    """
+    try:
+        candidates = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+    except OSError:
+        return False
+    for family, socktype, proto, _canonname, sockaddr in candidates:
+        try:
+            with socket.socket(family, socktype, proto) as probe:
+                probe.bind(sockaddr)
+        except OSError:
+            continue
+        return True
+    return False
+
+
 def container_vikunja_url(raw: str) -> str:
-    """Rewrite a loopback Vikunja URL into one the container can reach.
+    """Rewrite a Vikunja address that has no name worth preserving.
 
     A self-hosted Vikunja is almost always configured on the host as
     ``http://127.0.0.1:3456``. Inside a container that address is the
     *container's* own loopback, so the skill would fail to connect with no
-    hint as to why. Rewriting only the host part -- scheme, port and path are
-    preserved -- turns the host's own setting into a working one without
-    asking the user to maintain a second URL, and without touching the host
-    configuration the skill also uses outside agent-box.
+    hint as to why. The same trap closes on the host's own LAN address:
+    Podman's rootless networking gives the container that address too, so
+    forwarding it verbatim still addresses the container. Rewriting only the
+    host part -- scheme, port and path are preserved -- turns the host's own
+    setting into a working one without asking the user to maintain a second
+    URL, and without touching the host configuration the skill also uses
+    outside agent-box.
 
-    Anything that is not a loopback name is returned unchanged: a Vikunja on
-    a LAN address or a public domain is already reachable from the container.
+    Only an address with no name to preserve is rewritten here: ``localhost``
+    or an IP literal belonging to this machine. A DNS name that resolves to
+    the host keeps its URL and is redirected by :func:`vikunja_host_args`
+    instead, because rewriting it would break TLS certificate validation and
+    reverse-proxy virtual-host routing. A genuinely remote Vikunja -- a LAN
+    box next door or a public domain -- is returned unchanged.
     """
     url = raw.strip()
     if not url:
@@ -442,7 +491,10 @@ def container_vikunja_url(raw: str) -> str:
         # A malformed authority (e.g. a non-numeric port). Not agent-box's to
         # repair: hand it through and let the skill report it.
         return url
-    if host is None or host.lower() not in LOOPBACK_HOSTNAMES:
+    if host is None:
+        return url
+    if host.lower() not in LOOPBACK_HOSTNAMES and not (
+            is_ip_literal(host) and is_host_local(host)):
         return url
     netloc = CONTAINER_HOST_ALIAS if port is None else f"{CONTAINER_HOST_ALIAS}:{port}"
     if parts.username:
@@ -530,6 +582,50 @@ def vikunja_env(config: Config) -> list[str]:
         return []
     url = container_vikunja_url(host_vikunja_url())
     return [f"--env=VIKUNJA_URL={url}"] if url else []
+
+
+def vikunja_host_alias(raw: str) -> str:
+    """The Vikunja hostname that must be pointed back at the host, or ``""``.
+
+    Only a DNS name qualifies. Loopback names and address literals are
+    already handled by :func:`container_vikunja_url`, and a name that
+    resolves anywhere but this machine is reachable from the container as it
+    stands.
+    """
+    url = raw.strip()
+    if not url:
+        return ""
+    try:
+        host = urllib.parse.urlsplit(url).hostname
+    except ValueError:
+        return ""
+    if not host or host.lower() in LOOPBACK_HOSTNAMES or is_ip_literal(host):
+        return ""
+    return host if is_host_local(host) else ""
+
+
+def vikunja_host_args(config: Config) -> list[str]:
+    """``--add-host=NAME:host-gateway`` for a host-local Vikunja hostname.
+
+    A self-hosted Vikunja is often addressed by a LAN name such as
+    ``pm.example.org`` that DNS resolves to the host's own address. Podman's
+    rootless networking hands the container that same address, so the
+    forwarded URL names the container itself and the connection is refused
+    with nothing to suggest why. Mapping the name to the host gateway fixes
+    the destination while leaving the name in the URL intact, so SNI,
+    certificate validation and reverse-proxy virtual-host routing all still
+    see the name the server was configured for -- none of which survives a
+    URL rewrite.
+
+    Structural rather than per-exec, like :func:`vikunja_env`: the mapping
+    belongs to the same container lifetime as the mounts it addresses, and
+    changing it therefore rebuilds the box rather than silently diverging
+    from the running one.
+    """
+    if not config.vikunja.enabled:
+        return []
+    host = vikunja_host_alias(host_vikunja_url())
+    return [f"--add-host={host}:{CONTAINER_HOST_GATEWAY}"] if host else []
 
 
 def vikunja_warnings(config: Config) -> list[str]:
@@ -998,6 +1094,7 @@ def container_lifetime_args(
         # the box is where the Vikunja mounts live, so the URL that addresses
         # them belongs to the same lifetime.
         *vikunja_env(config),
+        *vikunja_host_args(config),
     ]
     # A host that relocates Claude Code's config directory must have the
     # container agree: CLAUDE_HOME is already bind-mounted at its host path,
@@ -1648,8 +1745,11 @@ echo
 # The Vikunja integration is off by default, so "not exposed" is a normal
 # answer here, not a fault. When it is on, the interesting question is not
 # "is the file mounted" but "does a call actually reach the server", because
-# the loopback URL rewrite (runtime.container_vikunja_url) is the part most
-# likely to be wrong.
+# addressing the host from inside a container (runtime.container_vikunja_url
+# for an address, runtime.vikunja_host_args for a name) is the part most
+# likely to be wrong. A failure therefore reports what the name resolved to,
+# which is the difference between "the server is down" and "that address is
+# this container".
 if command -v vikunja >/dev/null 2>&1; then
   printf "%-20s %s\n" "vikunja url:" "${VIKUNJA_URL:-(unset; using ~/.config/vikunja/config.json)}"
   printf "%-20s %s\n" "vikunja token:" "$([[ -r "$HOME/.config/vikunja/token" ]] && echo present || echo MISSING)"
@@ -1658,6 +1758,11 @@ if command -v vikunja >/dev/null 2>&1; then
   else
     printf "%-20s %s\n" "vikunja:" "FAILED"
     printf "  %s\n" "${status}"
+    host="$(printf "%s" "${VIKUNJA_URL:-}" | sed -n 's|^[a-zA-Z0-9+.-]*://||; s|^[^@]*@||; s|[/?#].*$||; s|:[0-9]*$||; p')"
+    if [[ -n "${host}" ]] && command -v getent >/dev/null 2>&1; then
+      printf "  %s\n" "${host} resolves to: $(getent hosts "${host}" | awk '{print $1}' | paste -sd, - || echo "(nothing)")"
+      printf "  %s\n" "this container is: $(hostname -I 2>/dev/null | tr ' ' ',' | sed 's/,$//')"
+    fi
   fi
 else
   echo "vikunja:             not exposed (enable it with 'agent-box config')"

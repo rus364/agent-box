@@ -8,7 +8,13 @@ got wrong by omission rather than by a bad decision:
   functions, because argv is what actually determines exposure.
 * Does the address the container receives point at the *host's* server? A
   loopback URL that is merely forwarded verbatim addresses the container
-  itself, which fails with no useful diagnostic.
+  itself, which fails with no useful diagnostic. So does the host's own LAN
+  address or a DNS name pointing at it, because rootless Podman gives the
+  container the host's addresses.
+
+Locality is stubbed rather than measured: whether a name or address belongs
+to this machine is a property of whoever runs the suite, and the behaviour
+under test is what agent-box does with the answer.
 """
 import os
 import tempfile
@@ -99,6 +105,11 @@ def _enabled():
     return config
 
 
+def _locality(local: bool):
+    """Pin :func:`runtime.is_host_local` so the suite never consults DNS."""
+    return mock.patch.object(runtime, "is_host_local", lambda host: local)
+
+
 class UrlRewritingTests(unittest.TestCase):
     """The host's own setting must keep working, unedited, inside a container."""
 
@@ -127,10 +138,25 @@ class UrlRewritingTests(unittest.TestCase):
             runtime.container_vikunja_url("http://localhost"),
             "http://host.containers.internal")
 
+    def test_the_hosts_own_address_becomes_the_host_alias(self):
+        """Rootless Podman hands the container the host's addresses too."""
+        with _locality(True):
+            self.assertEqual(
+                runtime.container_vikunja_url("http://192.168.1.203:3456"),
+                "http://host.containers.internal:3456")
+
+    def test_a_host_local_name_keeps_its_url(self):
+        """Rewriting it would break TLS and virtual-host routing; --add-host does not."""
+        with _locality(True):
+            self.assertEqual(
+                runtime.container_vikunja_url("https://pm.example.org/api"),
+                "https://pm.example.org/api")
+
     def test_a_routable_host_is_left_exactly_alone(self):
-        for url in ("https://tasks.example.com/api", "http://192.168.1.203:3456"):
-            with self.subTest(url=url):
-                self.assertEqual(runtime.container_vikunja_url(url), url)
+        with _locality(False):
+            for url in ("https://tasks.example.com/api", "http://192.168.1.203:3456"):
+                with self.subTest(url=url):
+                    self.assertEqual(runtime.container_vikunja_url(url), url)
 
     def test_a_malformed_authority_is_handed_through_unrepaired(self):
         """Not agent-box's error to fix; the skill reports it far better."""
@@ -140,6 +166,50 @@ class UrlRewritingTests(unittest.TestCase):
 
     def test_empty_stays_empty(self):
         self.assertEqual(runtime.container_vikunja_url("   "), "")
+
+
+class LocalityTests(unittest.TestCase):
+    """The one place the real network stack is the thing being tested."""
+
+    def test_loopback_is_local(self):
+        self.assertTrue(runtime.is_host_local("127.0.0.1"))
+
+    def test_a_reserved_documentation_address_is_not_local(self):
+        """TEST-NET-1: routable in form, never assigned to an interface."""
+        self.assertFalse(runtime.is_host_local("192.0.2.1"))
+
+    def test_an_unresolvable_name_is_not_local(self):
+        self.assertFalse(runtime.is_host_local("agent-box.invalid"))
+
+    def test_literals_are_told_from_names(self):
+        self.assertTrue(runtime.is_ip_literal("192.168.1.203"))
+        self.assertTrue(runtime.is_ip_literal("::1"))
+        self.assertFalse(runtime.is_ip_literal("pm.example.org"))
+
+
+class HostMappingTests(unittest.TestCase):
+    """Which name, if any, gets pointed back at the host gateway."""
+
+    def test_a_host_local_name_is_mapped(self):
+        with _locality(True):
+            self.assertEqual(
+                runtime.vikunja_host_alias("http://pm.example.org:3456"), "pm.example.org")
+
+    def test_a_remote_name_is_not_mapped(self):
+        with _locality(False):
+            self.assertEqual(runtime.vikunja_host_alias("https://tasks.example.com"), "")
+
+    def test_literals_and_loopback_are_left_to_the_url_rewrite(self):
+        """Two mechanisms for one address would be one too many."""
+        with _locality(True):
+            for url in ("http://127.0.0.1:3456", "http://localhost:3456",
+                        "http://192.168.1.203:3456", "http://[::1]:3456"):
+                with self.subTest(url=url):
+                    self.assertEqual(runtime.vikunja_host_alias(url), "")
+
+    def test_empty_and_malformed_map_nothing(self):
+        self.assertEqual(runtime.vikunja_host_alias("   "), "")
+        self.assertEqual(runtime.vikunja_host_alias("http://pm.example.org:not-a-port"), "")
 
 
 class UrlResolutionTests(unittest.TestCase):
@@ -236,6 +306,27 @@ class ExposureGatingTests(unittest.TestCase):
         self.assertIn(
             "--env=VIKUNJA_URL=http://host.containers.internal:3456",
             _argv(host, _enabled()))
+
+    def test_a_host_local_name_is_forwarded_intact_and_redirected(self):
+        """The URL keeps the name the server was configured for."""
+        host = _Host(self.root, url="http://pm.example.org:3456")
+        with _locality(True):
+            argv = _argv(host, _enabled())
+        self.assertIn("--env=VIKUNJA_URL=http://pm.example.org:3456", argv)
+        self.assertIn(f"--add-host=pm.example.org:{runtime.CONTAINER_HOST_GATEWAY}", argv)
+
+    def test_a_remote_server_is_never_redirected(self):
+        host = _Host(self.root, url="https://tasks.example.com")
+        with _locality(False):
+            argv = _argv(host, _enabled())
+        self.assertIn("--env=VIKUNJA_URL=https://tasks.example.com", argv)
+        self.assertEqual([a for a in argv if a.startswith("--add-host=")], [])
+
+    def test_disabled_maps_no_host_even_when_the_name_is_local(self):
+        host = _Host(self.root, url="http://pm.example.org:3456")
+        with _locality(True):
+            argv = _argv(host, Config())
+        self.assertEqual([a for a in argv if a.startswith("--add-host=")], [])
 
     def test_the_token_value_never_appears_in_argv(self):
         """It travels as a read-only file, never as a process argument."""

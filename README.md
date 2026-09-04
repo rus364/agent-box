@@ -379,7 +379,11 @@ When enabled, agent-box exposes:
 - `~/.local/state/vikunja` read-write for resumable import journals;
 - the shared Vikunja CLI on container `PATH`.
 
-A host URL such as `http://127.0.0.1:3456` is rewritten for the container to use `host.containers.internal` while leaving the host config untouched.
+The host config is never edited; agent-box only fixes the address the container receives, because rootless Podman gives the container both its own loopback and the host's own addresses:
+
+- an address with no name worth keeping — `localhost`, or an IP literal belonging to this machine — is rewritten to `host.containers.internal`, preserving scheme, port and path;
+- a DNS name that resolves to this machine, such as `http://pm.example.org:3456`, keeps its URL and is redirected with `--add-host=pm.example.org:host-gateway`, so TLS certificate validation and reverse-proxy virtual-host routing still see the name the server was configured for;
+- a genuinely remote Vikunja is left alone.
 
 Verify it with:
 
