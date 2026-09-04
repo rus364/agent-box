@@ -16,8 +16,10 @@ from .atomicio import read_json
 from .config import (
     CLAUDE_TELEGRAM_CHANNEL,
     FLOW_REVIEW_BACKEND_AGENTS,
+    IMAGE_TOOL_GROUP_HELP,
     FLOW_REVIEW_BACKEND_CHOICES,
     load_config,
+    parse_env_spec,
     save_config,
 )
 from .errors import AgentBoxError
@@ -29,10 +31,10 @@ def die(message: str) -> NoReturn:
     raise SystemExit(1)
 
 
-def parse_global_args(argv: list[str]) -> tuple[list[str], bool, list[str]]:
+def parse_global_args(argv: list[str]) -> tuple[list[str], bool, list[str], list[str]]:
     """Split agent-box's own leading options from the rest of argv.
 
-    Grammar: ``agent-box [--mount PATH[:ro]]... [--host] [claude|codex|shell|doctor] [provider args...]``.
+    Grammar: ``agent-box [--mount PATH[:ro]]... [--env NAME[=VALUE]]... [--host] [claude|codex|shell|doctor] [provider args...]``.
     Agent-box's own options must come first; once a non-option token is seen
     (or a bare ``--``), everything after it is passed through untouched, so
     ``agent-box claude --model opus`` or a hypothetical Claude/Codex
@@ -43,6 +45,7 @@ def parse_global_args(argv: list[str]) -> tuple[list[str], bool, list[str]]:
     containerized execution.
     """
     mounts: list[str] = []
+    env_specs: list[str] = []
     host = False
     i = 0
     while i < len(argv):
@@ -63,17 +66,30 @@ def parse_global_args(argv: list[str]) -> tuple[list[str], bool, list[str]]:
             mounts.append(value)
             i += 1
             continue
+        if token == "--env":
+            if i + 1 >= len(argv):
+                die("--env requires NAME=VALUE or NAME")
+            env_specs.append(argv[i + 1])
+            i += 2
+            continue
+        if token.startswith("--env="):
+            value = token[len("--env="):]
+            if not value:
+                die("--env requires NAME=VALUE or NAME")
+            env_specs.append(value)
+            i += 1
+            continue
         if token == "--host":
             host = True
             i += 1
             continue
         break
-    return mounts, host, argv[i:]
+    return mounts, host, env_specs, argv[i:]
 
 
 def usage_text() -> None:
     print('''Usage:
-  agent-box [--mount PATH[:ro]]... [--host] [codex|claude|shell|doctor] [arguments...]
+  agent-box [--mount PATH[:ro]]... [--env NAME[=VALUE]]... [--host] [codex|claude|shell|doctor] [arguments...]
   agent-box attach [session]
   agent-box stop
   agent-box config [show|check]
@@ -82,7 +98,9 @@ def usage_text() -> None:
   agent-box notify <test|claude|codex>
   agent-box selftest
   agent-box build | update | rebuild
+  agent-box install
   agent-box uninstall [--purge] [--yes]
+  agent-box skills vendor <upstream>
 
 Sessions:
   An interactive claude/codex/shell session runs inside a tmux server in the
@@ -101,6 +119,13 @@ Configuration:
                             ~/.config/agent-box/config.json
   agent-box config show     Print the current settings (token redacted)
   agent-box config check    Verify the official Claude Telegram channel setup
+  agent-box install         Apply the saved configuration without asking
+                            anything: install the skills it enables, link them
+                            for Claude, and reconcile Claude's settings.json.
+                            'agent-box config' ends by doing this, so it is
+                            only needed after updating the agent-box checkout
+                            or editing config.json by hand. Starting an agent
+                            never applies configuration by itself.
   agent-box uninstall       Undo what agent-box wrote outside its own
                             directories: the status line and hooks in Claude's
                             settings.json, its skill links and installed
@@ -116,8 +141,21 @@ Environment (overrides for a single command):
   AGENT_BOX_TMUX=0          Run the session directly, with no detachable tmux
   AGENT_BOX_GH_TOKEN=0|1    Withhold / force the host GitHub token for this run
   AGENT_BOX_WORKSPACE_ROOT  Override the host directory mounted into the container
-  AGENT_BOX_STATUSLINE=0    Leave Claude's statusLine untouched for this run
+  AGENT_BOX_STATUSLINE=0    Leave Claude's statusLine untouched when applying
   AGENT_BOX_AGENTS_DIR      Override ~/.agents, the shared agent/skill tree
+  AGENT_BOX_ENV_<NAME>      Set <NAME> inside the session (see --env below)
+
+--env NAME=VALUE sets a variable inside the session; --env NAME forwards the
+value that name already has in this shell, without putting it in the process
+list, which is the form to use for anything secret. Repeatable, and both win
+over the lists stored in 'agent-box config'. The same thing can be said as a
+shell prefix, which is why the namespace exists:
+
+  AGENT_BOX_ENV_DATABASE_URL=postgres://... agent-box codex
+
+A bare 'NAME=VALUE agent-box codex' cannot work: inside the process such a
+variable is indistinguishable from the hundreds inherited from your shell, so
+honouring it would mean handing the container your whole environment.
 
 --mount PATH[:ro] additionally bind-mounts PATH (an existing absolute host
 directory) into the container at that same path, read-write by default or
@@ -371,6 +409,20 @@ def _vikunja_note(config) -> str:
     return f" ({runtime.container_vikunja_url(config.vikunja.url)})"
 
 
+def _image_note(config) -> str:
+    """Say when the built image no longer matches what is configured."""
+    from . import runtime
+    try:
+        missing, extra = runtime.image_tool_drift(config)
+    except Exception:
+        return ""
+    if missing:
+        return f" (image lacks {', '.join(missing)}; run 'agent-box build')"
+    if extra:
+        return f" (image still has {', '.join(extra)}; run 'agent-box build')"
+    return ""
+
+
 def _browser_note(config) -> str:
     """Name what the switch actually starts, and where the pages land.
 
@@ -380,6 +432,8 @@ def _browser_note(config) -> str:
     """
     if not config.browser.enabled:
         return ""
+    if not config.image.tools.get("browser"):
+        return " (but the browser tool group is off, so the image has none)"
     return " (headless Chromium in the box; --host sessions unaffected)"
 
 
@@ -399,6 +453,9 @@ def config_show() -> None:
     print(f"  Provider API keys           {'on' if config.providers.api_keys else 'off'}")
     print(f"  Provider transport/proxy    {'on' if config.providers.transport else 'off'}")
     print(f"  Share skills with Claude    {'on' if config.skills.claude_links else 'off'}")
+    print(f"  Superpowers skills          {'on' if config.skills.superpowers else 'off'}")
+    print(f"  Image tool groups           {', '.join(config.image.enabled_groups()) or '(base only)'}"
+          f"{_image_note(config)}")
     print(f"  Vikunja integration         {'on' if config.vikunja.enabled else 'off'}{_vikunja_note(config)}")
     if config.vikunja.enabled:
         print(f"    server                    {config.vikunja.url or '(not set)'}")
@@ -511,6 +568,12 @@ def config_interactive() -> None:
     print("also apply to Claude sessions started outside agent-box.")
     config.skills.claude_links = _prompt_bool(
         "Link shared skills into ~/.claude/skills", config.skills.claude_links)
+    print("agent-box also ships three engineering-practice skills, vendored from")
+    print("obra/superpowers (MIT): systematic debugging, test-driven development,")
+    print("and verification before completion. They change how an agent works, so")
+    print("they are off unless you want them.")
+    config.skills.superpowers = _prompt_bool(
+        "Install the superpowers practice skills", config.skills.superpowers)
 
     print("\n-- Vikunja (opt-in) --")
     print("Task tracking for both agents. agent-box installs the skill itself and")
@@ -535,6 +598,14 @@ def config_interactive() -> None:
     config.env.forward = _prompt_env_names("  Forward from this shell", config.env.forward)
     config.env.set = _prompt_env_assignments("  Set explicitly", config.env.set)
 
+    print("\n-- Image contents --")
+    print("Optional tool groups built into the workspace image. Everything else")
+    print("your projects need belongs in the project, through mise. Changing an")
+    print("answer here takes effect on the next 'agent-box build'.")
+    for group, description in IMAGE_TOOL_GROUP_HELP.items():
+        config.image.tools[group] = _prompt_bool(
+            f"  {description}", config.image.tools.get(group, False))
+
     print("\n-- Agent-controlled browser (opt-in) --")
     print("Gives containerized Claude and Codex a Playwright MCP server driving a")
     print("headless Chromium inside the workspace box, so an agent can open and")
@@ -546,6 +617,9 @@ def config_interactive() -> None:
     print("'agent-box --host claude/codex' does not get this browser.")
     config.browser.enabled = _prompt_bool(
         "Let containerized agents drive a headless browser", config.browser.enabled)
+    if config.browser.enabled and not config.image.tools.get("browser"):
+        print("  note: the browser tool group is off, so the image has no browser to")
+        print("        drive. Turn it on above, or the sessions will find none.")
 
     print("\n-- Flow-Next auto-push (opt-in) --")
     print("At the end of a Claude/Codex turn, pushes the current feature branch")
@@ -569,27 +643,13 @@ def config_interactive() -> None:
             config.flow_next.review_backends.pop(agent, None)
 
     save_config(config)
-    # Keep the derived artifacts in step with what was just saved: the
-    # container-visible credential file, and everything agent-box owns in
-    # Claude's settings.json -- its notification hooks and its status line, in
-    # one write. The flow-next hooks are reconciled separately below; each set
-    # owns only its own commands and never disturbs the other.
-    notify_module.sync_credentials(config)
-    runtime.sync_vikunja_credentials(config)
-    runtime.sync_managed_skills(config)
-    runtime.claude_skill_links(config)
-    settings = CLAUDE_HOME / "settings.json"
-    claude_settings.reconcile_claude_settings(
-        settings,
-        notifications=config.notifications.enabled,
-        statusline=config.claude.statusline)
-    from . import flow_push
-    if config.flow_next.auto_push:
-        flow_push.install_flow_push_hooks(settings)
-    else:
-        flow_push.remove_flow_push_hooks(settings)
-
+    # Applying is not a second feature: `agent-box install` runs exactly this,
+    # so a configuration saved here and one edited by hand end up producing
+    # the same host state.
     print(f"\nSaved {CONFIG_FILE}\n")
+    for line in runtime.apply_config(config):
+        print(f"  {line}")
+    print()
     config_show()
     if missing:
         print()
@@ -619,18 +679,25 @@ def selftest() -> None:
 
 NON_RUNTIME = {
     "usage", "statusline", "notify", "config", "selftest", "help", "-h", "--help",
-    "build", "update", "rebuild", "flow-next", "attach", "stop", "uninstall",
+    "build", "update", "rebuild", "flow-next", "attach", "stop", "install", "uninstall",
+    "skills",
 }
 #: --host only makes sense for a real agent launch, never for these.
 HOST_ONLY_AGENTS = {"claude", "codex"}
 
 
 def main() -> None:
-    mounts, host, args = parse_global_args(sys.argv[1:])
+    mounts, host, env_specs, args = parse_global_args(sys.argv[1:])
     script_dir = Path(__file__).resolve().parent.parent
+    try:
+        parsed_env = [parse_env_spec(spec) for spec in env_specs]
+    except ValueError as exc:
+        die(str(exc))
     try:
         if mounts and args and args[0] in NON_RUNTIME:
             die("--mount is only valid before claude/codex/shell/doctor")
+        if env_specs and args and args[0] in NON_RUNTIME:
+            die("--env is only valid before claude/codex/shell/doctor")
         if host and args and args[0] in NON_RUNTIME:
             die("--host is only valid before claude/codex")
         if host and mounts:
@@ -656,6 +723,12 @@ def main() -> None:
             from . import runtime
             command = args[0]
             raise SystemExit(runtime.build_image(script_dir, command != "build", command == "rebuild"))
+        if args and args[0] == "skills":
+            from . import vendor
+            raise SystemExit(vendor.vendor_main(args[1:]))
+        if args and args[0] == "install":
+            from . import runtime
+            raise SystemExit(runtime.install_main(args[1:]))
         if args and args[0] == "uninstall":
             from . import runtime
             raise SystemExit(runtime.uninstall_main(args[1:]))
@@ -669,9 +742,9 @@ def main() -> None:
             if agent not in HOST_ONLY_AGENTS:
                 die("--host requires 'claude' or 'codex'; shell/doctor are container-only")
             from . import runtime
-            raise SystemExit(runtime.host_main(agent, args[1:]))
+            raise SystemExit(runtime.host_main(agent, args[1:], parsed_env))
         from . import runtime
-        runtime.runtime_main(args, script_dir, mounts)
+        runtime.runtime_main(args, script_dir, mounts, parsed_env)
     except AgentBoxError as exc:
         die(str(exc))
     except (KeyboardInterrupt, EOFError):

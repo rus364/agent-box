@@ -12,7 +12,8 @@ import unittest
 from unittest import mock
 
 from agent_box import runtime
-from agent_box.config import Config, EnvConfig
+from agent_box.cli import parse_global_args
+from agent_box.config import Config, EnvConfig, parse_env_spec
 
 
 def _config(forward=(), assignments=None):
@@ -66,6 +67,105 @@ class UserEnvTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"MY_TOKEN": "s3cret"}):
             pairs, _ = runtime.invocation_env(config, "claude")
         self.assertNotIn("s3cret", " ".join(pairs))
+
+
+class InvocationEnvTests(unittest.TestCase):
+    """Passing a variable for one launch, without editing the config file.
+
+    Two spellings of the same request, because the obvious one is impossible:
+    a variable set by a shell prefix (``FOO=bar agent-box codex``) looks,
+    inside the process, exactly like one exported in a login profile, so
+    honouring bare names would mean forwarding the entire host environment.
+    ``--env`` states the intent in the arguments; ``AGENT_BOX_ENV_FOO`` states
+    it in a namespace that belongs to agent-box, keeping the shell-prefix
+    ergonomics.
+    """
+
+    def test_a_flag_sets_a_variable_for_this_launch(self):
+        merged = Config().env.overlay([parse_env_spec("TZ=Europe/Moscow")], {})
+        self.assertEqual(merged.set, {"TZ": "Europe/Moscow"})
+
+    def test_a_bare_flag_name_forwards_by_name(self):
+        """The secret-safe form: the value never enters the argv."""
+        merged = Config().env.overlay([parse_env_spec("MY_TOKEN")], {})
+        self.assertEqual(merged.forward, ["MY_TOKEN"])
+        self.assertEqual(merged.set, {})
+
+    def test_the_shell_prefix_namespace_is_honoured(self):
+        merged = Config().env.overlay([], {"AGENT_BOX_ENV_DATABASE_URL": "postgres://x"})
+        self.assertEqual(merged.set, {"DATABASE_URL": "postgres://x"})
+
+    def test_an_unrelated_host_variable_is_never_picked_up(self):
+        merged = Config().env.overlay([], {"DATABASE_URL": "postgres://x", "HOME": "/root"})
+        self.assertEqual(merged.set, {})
+        self.assertEqual(merged.forward, [])
+
+    def test_a_flag_beats_the_shell_prefix(self):
+        merged = Config().env.overlay(
+            [parse_env_spec("TZ=UTC")], {"AGENT_BOX_ENV_TZ": "Europe/Moscow"})
+        self.assertEqual(merged.set, {"TZ": "UTC"})
+
+    def test_an_invocation_value_beats_the_stored_lists(self):
+        config = _config(assignments={"TZ": "UTC"})
+        merged = config.env.overlay([parse_env_spec("TZ=Europe/Moscow")], {})
+        self.assertEqual(merged.set, {"TZ": "Europe/Moscow"})
+
+    def test_forwarding_a_name_that_is_stored_as_an_assignment_replaces_it(self):
+        """The two lists must never claim the same name at once."""
+        config = _config(assignments={"TOKEN": "written-down"})
+        merged = config.env.overlay([parse_env_spec("TOKEN")], {})
+        self.assertEqual(merged.forward, ["TOKEN"])
+        self.assertEqual(merged.set, {})
+
+    def test_setting_a_name_that_is_stored_as_a_forward_replaces_it(self):
+        config = _config(forward=["TOKEN"])
+        merged = config.env.overlay([parse_env_spec("TOKEN=literal")], {})
+        self.assertEqual(merged.forward, [])
+        self.assertEqual(merged.set, {"TOKEN": "literal"})
+
+    def test_the_overlay_leaves_the_stored_configuration_alone(self):
+        config = _config(forward=["A"], assignments={"B": "1"})
+        config.env.overlay([parse_env_spec("C=3")], {})
+        self.assertEqual(config.env.forward, ["A"])
+        self.assertEqual(config.env.set, {"B": "1"})
+
+    def test_a_malformed_flag_is_rejected(self):
+        for spec in ("=value", "not a name=1", "2LEADING=1", ""):
+            with self.subTest(spec=spec):
+                with self.assertRaises(ValueError):
+                    parse_env_spec(spec)
+
+    def test_a_malformed_namespace_entry_is_ignored(self):
+        merged = Config().env.overlay([], {"AGENT_BOX_ENV_": "x", "AGENT_BOX_ENV_2BAD": "y"})
+        self.assertEqual(merged.set, {})
+
+    def test_the_request_channel_does_not_leak_into_the_session(self):
+        """AGENT_BOX_ENV_FOO asks for FOO; the container gets FOO, not both."""
+        config = Config()
+        config.env = config.env.overlay([], {"AGENT_BOX_ENV_FOO": "bar"})
+        flags = runtime.user_env(config)
+        self.assertEqual(flags, ["--env=FOO=bar"])
+
+
+class EnvArgumentParsingTests(unittest.TestCase):
+    def test_the_flag_is_collected_before_the_agent(self):
+        mounts, host, env_specs, rest = parse_global_args(
+            ["--env", "TZ=UTC", "--env=MY_TOKEN", "codex"])
+        self.assertEqual(env_specs, ["TZ=UTC", "MY_TOKEN"])
+        self.assertEqual(rest, ["codex"])
+        self.assertEqual(mounts, [])
+        self.assertFalse(host)
+
+    def test_a_flag_after_the_agent_belongs_to_the_agent(self):
+        _mounts, _host, env_specs, rest = parse_global_args(["codex", "--env", "theirs"])
+        self.assertEqual(env_specs, [])
+        self.assertEqual(rest, ["codex", "--env", "theirs"])
+
+    def test_it_combines_with_mounts_and_host_mode(self):
+        mounts, host, env_specs, rest = parse_global_args(
+            ["--mount", "/data", "--env", "TZ=UTC", "--host", "claude"])
+        self.assertEqual((mounts, host, env_specs, rest),
+                         (["/data"], True, ["TZ=UTC"], ["claude"]))
 
 
 class EnvConfigSchemaTests(unittest.TestCase):

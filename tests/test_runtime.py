@@ -462,126 +462,127 @@ class ContainerFlowNextEnvTests(IsolatedRuntimeTest):
 
 
 class ClaudeNotifyHookLifecycleTests(IsolatedRuntimeTest):
-    def test_claude_launch_migrates_legacy_notify_hooks_without_duplicates(self):
-        """A user who already configured agent-box must not need to rerun config.
+    """Notification hooks are applied, never installed on the way past.
 
-        This fails if the normal Claude-launch lifecycle stops reconciling the
-        managed hook entries, if it leaves the old executable path behind, or
-        if a repeat launch appends another current hook.
-        """
+    ``settings.json`` is Claude's file and the user's; agent-box owns a few
+    handlers inside it and nothing else. Applying a configuration installs
+    exactly those, leaves every other entry byte-for-byte, and rewrites the
+    file only when it actually differs. Starting an agent does none of it.
+    """
+
+    def _configured_settings(self, root: Path) -> Path:
+        claude_home = root / "claude"
+        claude_home.mkdir()
+        settings_path = claude_home / "settings.json"
+        settings_path.write_text(json.dumps({
+            "model": "opus",
+            "hooks": {
+                "PreToolUse": [{"matcher": "Bash", "hooks": [
+                    {"type": "command", "command": "my-user-hook"},
+                ]}],
+                "Notification": [
+                    {"matcher": "other", "hooks": [
+                        {"type": "command", "command": "my-other-hook"},
+                    ]},
+                ],
+                "Stop": [{"hooks": [
+                    {"type": "command", "command": "my-stop-hook"},
+                ]}],
+            },
+        }))
+        return settings_path
+
+    def _notifying(self) -> Config:
+        return Config(notifications=NotificationsConfig(
+            enabled=True, telegram_token="token", telegram_chat_id="chat",
+        ))
+
+    def test_apply_installs_the_managed_hooks_and_disturbs_nothing_else(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            claude_home = root / "claude"
-            claude_home.mkdir()
-            settings_path = claude_home / "settings.json"
-            settings_path.write_text(json.dumps({
-                "model": "opus",
-                "hooks": {
-                    "PreToolUse": [{"matcher": "Bash", "hooks": [
-                        {"type": "command", "command": "my-user-hook"},
-                    ]}],
-                    "Notification": [
-                        {"matcher": "permission_prompt", "hooks": [
-                            {"type": "command", "command": notify.STALE_NOTIFY_COMMAND},
-                        ]},
-                        {"matcher": "other", "hooks": [
-                            {"type": "command", "command": "my-other-hook"},
-                        ]},
-                    ],
-                    "Stop": [{"hooks": [
-                        {"type": "command", "command": notify.STALE_NOTIFY_COMMAND},
-                        {"type": "command", "command": "my-stop-hook"},
-                    ]}],
-                    "StopFailure": [{"hooks": [
-                        {"type": "command", "command": notify.STALE_NOTIFY_COMMAND},
-                    ]}],
-                },
-            }))
-            config = Config(notifications=NotificationsConfig(
-                enabled=True, telegram_token="token", telegram_chat_id="chat",
-            ))
-
-            with (
-                mock.patch.object(runtime.shutil, "which", return_value="/usr/bin/podman"),
-                mock.patch.object(runtime, "resolve_workspace", return_value=Workspace(root, root)),
-                mock.patch.object(runtime, "ensure_state_dirs"),
-                mock.patch.object(runtime, "ensure_refresh_token"),
-                mock.patch.object(runtime, "load_config", return_value=config),
-                mock.patch.object(runtime, "image_exists", return_value=True),
-                mock.patch.object(runtime, "sync_managed_skills"),
-                mock.patch.object(runtime, "claude_skill_links"),
-                mock.patch.object(runtime, "claude_channel_args", return_value=([], [])),
-                mock.patch.object(runtime, "launch_in_workspace_container", return_value=0),
-                mock.patch.object(runtime, "CLAUDE_HOME", claude_home),
-            ):
-                with mock.patch.object(
-                    claude_settings, "atomic_write_json", wraps=claude_settings.atomic_write_json,
-                ) as write_json:
-                    with self.assertRaises(SystemExit):
-                        runtime.runtime_main(["claude"], Path(__file__).resolve().parent.parent)
-                    self.assertEqual(write_json.call_count, 1, "migration must write settings once")
-                    write_json.reset_mock()
-                    with self.assertRaises(SystemExit):
-                        runtime.runtime_main(["claude"], Path(__file__).resolve().parent.parent)
-                    write_json.assert_not_called()
+            settings_path = self._configured_settings(root)
+            with mock.patch.object(runtime, "CLAUDE_HOME", root / "claude"), \
+                 mock.patch.object(runtime, "sync_managed_skills"), \
+                 mock.patch.object(runtime, "claude_skill_links"), \
+                 mock.patch.object(runtime, "sync_vikunja_credentials"), \
+                 mock.patch.object(runtime, "ensure_state_dirs"), \
+                 mock.patch.object(runtime.notify_module, "sync_credentials"):
+                runtime.apply_config(self._notifying())
 
             settings = json.loads(settings_path.read_text())
             self.assertEqual(settings["model"], "opus")
             self.assertEqual(
                 settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"], "my-user-hook")
-            other_notification = next(
+            other = next(
                 entry for entry in settings["hooks"]["Notification"]
                 if entry.get("matcher") == "other")
-            self.assertEqual(
-                other_notification["hooks"][0]["command"], "my-other-hook")
-            self.assertEqual(
-                settings["hooks"]["Stop"][0]["hooks"][0]["command"], "my-stop-hook")
+            self.assertEqual(other["hooks"][0]["command"], "my-other-hook")
+            self.assertIn(
+                "my-stop-hook",
+                [h["command"] for e in settings["hooks"]["Stop"] for h in e["hooks"]])
 
-            managed_counts = {event: 0 for event in ("Notification", "Stop", "StopFailure")}
-            stale_count = 0
+            managed = {event: 0 for event in ("Notification", "Stop", "StopFailure")}
             for event, entries in settings["hooks"].items():
-                if not isinstance(entries, list):
-                    continue
                 for entry in entries:
                     for handler in entry.get("hooks", []):
                         if handler.get("command") == notify.NOTIFY_COMMAND:
-                            managed_counts[event] = managed_counts.get(event, 0) + 1
-                        if handler.get("command") == notify.STALE_NOTIFY_COMMAND:
-                            stale_count += 1
-            self.assertEqual(stale_count, 0)
-            self.assertEqual(managed_counts, {"Notification": 2, "Stop": 1, "StopFailure": 1})
+                            managed[event] = managed.get(event, 0) + 1
+            self.assertEqual(managed, {"Notification": 2, "Stop": 1, "StopFailure": 1})
 
-    def test_host_claude_launch_migrates_legacy_notify_hook(self):
+    def test_applying_an_unchanged_configuration_rewrites_nothing(self):
+        """Idempotence, asserted at the write rather than at the content."""
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            claude_home = root / "claude"
-            claude_home.mkdir()
-            settings_path = claude_home / "settings.json"
-            settings_path.write_text(json.dumps({"hooks": {"Stop": [{"hooks": [
-                {"type": "command", "command": notify.STALE_NOTIFY_COMMAND},
-                {"type": "command", "command": "my-stop-hook"},
-            ]}]}}))
-            config = Config(notifications=NotificationsConfig(
-                enabled=True, telegram_token="token", telegram_chat_id="chat",
-            ))
+            self._configured_settings(root)
+            with mock.patch.object(runtime, "CLAUDE_HOME", root / "claude"), \
+                 mock.patch.object(runtime, "sync_managed_skills"), \
+                 mock.patch.object(runtime, "claude_skill_links"), \
+                 mock.patch.object(runtime, "sync_vikunja_credentials"), \
+                 mock.patch.object(runtime, "ensure_state_dirs"), \
+                 mock.patch.object(runtime.notify_module, "sync_credentials"), \
+                 mock.patch.object(
+                     claude_settings, "atomic_write_json",
+                     wraps=claude_settings.atomic_write_json) as write_json:
+                runtime.apply_config(self._notifying())
+                self.assertEqual(write_json.call_count, 1)
+                write_json.reset_mock()
+                runtime.apply_config(self._notifying())
+                write_json.assert_not_called()
+
+    def test_a_container_launch_leaves_the_hooks_alone(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            settings_path = self._configured_settings(root)
+            before = settings_path.read_text()
+            with (
+                mock.patch.object(runtime.shutil, "which", return_value="/usr/bin/podman"),
+                mock.patch.object(runtime, "resolve_workspace", return_value=Workspace(root, root)),
+                mock.patch.object(runtime, "ensure_state_dirs"),
+                mock.patch.object(runtime, "ensure_refresh_token"),
+                mock.patch.object(runtime, "load_config", return_value=self._notifying()),
+                mock.patch.object(runtime, "image_exists", return_value=True),
+                mock.patch.object(runtime, "claude_channel_args", return_value=([], [])),
+                mock.patch.object(runtime, "launch_in_workspace_container", return_value=0),
+                mock.patch.object(runtime, "CLAUDE_HOME", root / "claude"),
+                self.assertRaises(SystemExit),
+            ):
+                runtime.runtime_main(["claude"], Path(__file__).resolve().parent.parent)
+            self.assertEqual(settings_path.read_text(), before)
+
+    def test_a_host_launch_leaves_the_hooks_alone(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            settings_path = self._configured_settings(root)
+            before = settings_path.read_text()
             with (
                 mock.patch.object(runtime.shutil, "which", return_value="/usr/bin/claude"),
                 mock.patch.object(runtime, "resolve_workspace", return_value=Workspace(root, root)),
-                mock.patch.object(runtime, "load_config", return_value=config),
-                mock.patch.object(runtime, "CLAUDE_HOME", claude_home),
+                mock.patch.object(runtime, "load_config", return_value=self._notifying()),
+                mock.patch.object(runtime, "CLAUDE_HOME", root / "claude"),
                 mock.patch.object(runtime.subprocess, "call", return_value=0),
             ):
                 self.assertEqual(runtime.host_main("claude", []), 0)
-
-            settings = json.loads(settings_path.read_text())
-            commands = [
-                handler["command"]
-                for entry in settings["hooks"]["Stop"]
-                for handler in entry["hooks"]
-            ]
-            self.assertNotIn(notify.STALE_NOTIFY_COMMAND, commands)
-            self.assertIn(notify.NOTIFY_COMMAND, commands)
-            self.assertIn("my-stop-hook", commands)
+            self.assertEqual(settings_path.read_text(), before)
 
 
 class HostModeTests(IsolatedRuntimeTest):

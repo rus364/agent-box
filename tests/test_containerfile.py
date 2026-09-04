@@ -62,7 +62,7 @@ class SessionToolingTests(unittest.TestCase):
         """Detachable sessions run under a tmux server inside the box."""
         text = containerfile_text()
         self.assertRegex(text, r"(?m)^\s+tmux \\$")
-        self.assertIn("tmux -V;", text)
+        self.assertRegex(text, r"(?m)^\s+tmux -V$")
 
 
 class BrowserToolingTests(unittest.TestCase):
@@ -105,12 +105,19 @@ class BrowserToolingTests(unittest.TestCase):
         self.assertIn("exit 1", browser_layer)
 
     def test_sanity_checks_cover_the_mcp_server_and_the_browser(self):
+        """Verified, but only when the browser group was actually built.
+
+        The check lives in the group's own conditional step: running it
+        unconditionally would fail the build for everyone who left the group
+        out, which is the whole point of being able to leave it out.
+        """
         text = containerfile_text()
         checks = text[text.index("# Sanity checks"):]
-        self.assertIn("playwright-mcp --version;", checks)
-        self.assertIn("test -d /opt/ms-playwright;", checks)
+        browser_check = checks[checks.index('if [ "${TOOLS_BROWSER}" != "1" ]'):]
+        self.assertIn("playwright-mcp --version;", browser_check)
+        self.assertIn("test -d /opt/ms-playwright;", browser_check)
         # An executable check is not enough: prove a browser really starts.
-        self.assertIn("agent-box-browser-smoke;", checks)
+        self.assertIn("agent-box-browser-smoke", browser_check)
 
     def test_the_smoke_test_is_offline_and_bounded(self):
         text = containerfile_text()

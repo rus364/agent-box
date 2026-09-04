@@ -37,12 +37,6 @@ NOTIFY_STATE_TTL = 1800
 #: container, where `agent-box` is mounted onto PATH rather than living at a
 #: host-specific path.
 NOTIFY_COMMAND = "agent-box notify claude"
-#: The one hook command older agent-box versions wrote, back when the launcher
-#: was referenced by its install path instead of resolved on PATH. Removed
-#: when the current hooks are installed -- not as a compatibility subsystem,
-#: but because leaving it in place means every Claude event fires the hook
-#: twice and posts two identical Telegram messages.
-STALE_NOTIFY_COMMAND = "~/.local/bin/agent-box notify claude"
 #: Set by ``agent_box.runtime`` on containers whose Claude session already
 #: talks to Telegram through the official channel plugin. Those sessions relay
 #: interactive replies, prompts and questions to the paired chat, so only the
@@ -660,16 +654,18 @@ def claude_notify_plan(
 
     Returned rather than applied, so a caller reconciling several unrelated
     parts of ``settings.json`` can write the file once instead of once per
-    concern. When notifications are on, the stale command is listed as owned
-    too: it is removed in the same pass that installs the current entries,
-    because leaving it in place makes every Claude event fire the hook twice.
+    concern.
     """
-    owned_commands = (
-        (NOTIFY_COMMAND, STALE_NOTIFY_COMMAND) if not enabled else (STALE_NOTIFY_COMMAND,)
-    )
-    owned = {event: owned_commands for event in ("Notification", "Stop", "StopFailure")}
+    events = ("Notification", "Stop", "StopFailure")
     if not enabled:
-        return owned, []
+        # Switching notifications off is the only state that removes anything.
+        # While they are on, the managed command must NOT be listed as owned:
+        # reconciliation removes owned commands before installing the current
+        # entries, so claiming it here would strip and re-append the same
+        # handlers on every apply, rewriting the file each time and drifting
+        # their position among the user's own hooks.
+        return {event: (NOTIFY_COMMAND,) for event in events}, []
+    owned: dict[str, tuple[str, ...]] = {}
     return owned, [
         ("Notification", hook_entry("permission_prompt")),
         ("Notification", hook_entry("idle_prompt")),

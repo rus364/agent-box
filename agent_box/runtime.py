@@ -33,7 +33,7 @@ from . import channel as channel_module
 from . import claude_settings
 from . import notify as notify_module
 from .atomicio import atomic_write_json, atomic_write_text, read_json
-from .config import Config, load_config
+from .config import ENV_PREFIX, SUPERPOWERS_SKILLS, Config, load_config
 from .errors import AgentBoxError
 from .flow_next import AUTO_PUSH_ENV, POLICY_ENV_VARS, flow_next_launch_env
 from .identity import HostIdentity, detect_host_identity
@@ -163,10 +163,32 @@ def ensure_refresh_token() -> None:
         atomic_write_text(TOOLS_REFRESH_FILE, "initial\n")
 
 
-def build_image(script_dir: Path, refresh: bool, no_cache: bool, identity: HostIdentity | None = None) -> int:
+#: Label the image carries, naming the optional tool groups it was built with.
+IMAGE_TOOLS_LABEL = "io.agent-box.tools"
+
+
+def tool_build_args(config: Config) -> list[str]:
+    """``--build-arg`` flags selecting the image's optional tool groups.
+
+    Every group is passed explicitly, including the ones that are off, so the
+    build never depends on the Containerfile's own defaults agreeing with the
+    configuration -- and so turning a group off is as much a decision the
+    build layer sees as turning one on.
+    """
+    args: list[str] = []
+    for name, enabled in sorted(config.image.tools.items()):
+        args += ["--build-arg", f"TOOLS_{name.upper()}={'1' if enabled else '0'}"]
+    args += ["--build-arg", f"AGENT_BOX_TOOLS={','.join(config.image.enabled_groups())}"]
+    return args
+
+
+def build_image(script_dir: Path, refresh: bool, no_cache: bool,
+                identity: HostIdentity | None = None,
+                config: Config | None = None) -> int:
     ensure_state_dirs()
     ensure_refresh_token()
     identity = identity or detect_host_identity()
+    config = load_config() if config is None else config
     if refresh:
         now = datetime.now(timezone.utc)
         token = now.strftime("%Y%m%dT%H%M%S.") + f"{time.time_ns() % 1_000_000_000:09d}Z\n"
@@ -178,12 +200,47 @@ def build_image(script_dir: Path, refresh: bool, no_cache: bool, identity: HostI
         "--build-arg", f"USER_GID={identity.gid}",
         "--build-arg", f"USER_HOME={identity.home}",
         "--build-arg", f"TOOLS_REFRESH={TOOLS_REFRESH_FILE.read_text().strip()}",
+        *tool_build_args(config),
         "--tag", IMAGE, "--file", str(script_dir / "Containerfile"),
     ]
     if no_cache:
         args.append("--no-cache")
     args.append(str(script_dir))
     return subprocess.call(args)
+
+
+def image_tool_groups() -> list[str] | None:
+    """The groups the built image carries, or ``None`` when it cannot be read.
+
+    ``None`` is not "no groups": an image that predates the label, or a
+    Podman that cannot be asked, must not be reported as missing everything.
+    """
+    command = ["podman", "image", "inspect", "--format",
+               f"{{{{index .Labels \"{IMAGE_TOOLS_LABEL}\"}}}}", IMAGE]
+    try:
+        result = subprocess.run(command, text=True, capture_output=True)
+    except OSError:
+        return None
+    if result.returncode:
+        return None
+    value = result.stdout.strip()
+    if value in ("", "<no value>"):
+        return None
+    return sorted(part for part in value.split(",") if part)
+
+
+def image_tool_drift(config: Config) -> tuple[list[str], list[str]]:
+    """Groups the configuration wants but the image lacks, and the reverse.
+
+    Read rather than acted on: rebuilding an image is slow and destroys
+    nothing the user asked to keep, so agent-box reports the mismatch and
+    lets them choose the moment.
+    """
+    built = image_tool_groups()
+    if built is None:
+        return ([], [])
+    wanted = config.image.enabled_groups()
+    return ([g for g in wanted if g not in built], [g for g in built if g not in wanted])
 
 
 def image_exists() -> bool:
@@ -291,7 +348,12 @@ def remove_managed_skill(name: str) -> None:
 
 def managed_skills(config: Config) -> set[str]:
     """The shipped skills the current configuration asks for."""
-    return {"vikunja"} if config.vikunja.enabled else set()
+    wanted: set[str] = set()
+    if config.vikunja.enabled:
+        wanted.add("vikunja")
+    if config.skills.superpowers:
+        wanted.update(SUPERPOWERS_SKILLS)
+    return wanted
 
 
 def sync_managed_skills(config: Config) -> None:
@@ -302,7 +364,7 @@ def sync_managed_skills(config: Config) -> None:
     if not MANAGED_SKILLS_SOURCE.is_dir():
         return
     for source in sorted(MANAGED_SKILLS_SOURCE.iterdir()):
-        if source.name not in wanted and (source / "SKILL.md").is_file():
+        if source.is_dir() and source.name not in wanted and (source / "SKILL.md").is_file():
             remove_managed_skill(source.name)
 
 
@@ -814,6 +876,9 @@ BROWSER_ENABLED_ENV = "AGENT_BOX_BROWSER"
 #: config, and without it a deliberately unlinked tree would be reported as
 #: broken.
 CLAUDE_SKILL_LINKS_ENV = "AGENT_BOX_CLAUDE_SKILL_LINKS"
+#: The optional tool groups this configuration asks the image to carry, so
+#: ``agent-box doctor`` checks only what was meant to be there.
+IMAGE_TOOLS_ENV = "AGENT_BOX_TOOLS"
 
 
 def browser_session_id(agent: str) -> str:
@@ -1095,7 +1160,15 @@ def build_mounts(
     return out
 
 
-def kvm_args() -> list[str]:
+def kvm_args(config: Config) -> list[str]:
+    """``/dev/kvm`` passthrough, when there is something in the box to use it.
+
+    Tied to the ``virtualization`` tool group: without QEMU in the image the
+    device is a bind with no consumer, and handing a container a device it has
+    no use for is not a neutral default.
+    """
+    if not config.image.tools.get("virtualization"):
+        return []
     if os.environ.get("AGENT_BOX_KVM", "1") == "0" or not Path("/dev/kvm").exists():
         return []
     if not os.access("/dev/kvm", os.R_OK | os.W_OK):
@@ -1229,7 +1302,7 @@ def container_lifetime_args(
     config = load_config() if config is None else config
     home = HOST_HOME
     args = [
-        "--userns=keep-id", *kvm_args(),
+        "--userns=keep-id", *kvm_args(config),
         "--cap-drop=all", "--security-opt=no-new-privileges", "--hostname=agent-box", "--tz=local",
         f"--env=HOME={home}",
         f"--env=PATH={CONTAINER_RUNTIME_PATH}",
@@ -1858,22 +1931,36 @@ printf "%-20s %s\n" "git:" "$(git --version)"
 printf "%-20s %s\n" "git user:" "$(git config --global user.name) <$(git config --global user.email)>"
 printf "%-20s %s\n" "gh:" "$(gh --version | head -1)"
 printf "%-20s %s\n" "gh account:" "$(gh api user --jq .login 2>/dev/null || echo "not authenticated")"
-printf "%-20s %s\n" "yq:" "$(yq --version)"
-printf "%-20s %s\n" "kubectl:" "$(kubectl version --client 2>/dev/null | head -1)"
-printf "%-20s %s\n" "helm:" "$(helm version --short)"
-printf "%-20s %s\n" "qemu-x86:" "$(qemu-system-x86_64 --version | head -1)"
-printf "%-20s %s\n" "qemu-arm64:" "$(qemu-system-aarch64 --version | head -1)"
-echo
-if [[ -r /dev/kvm && -w /dev/kvm ]]; then
-  echo "KVM device:          usable"
-  rc=0; timeout 2 qemu-system-x86_64 -accel kvm -machine none -nodefaults -display none >/dev/null 2>&1 || rc=$?
-  [[ "${rc}" -eq 124 ]] && echo "amd64 KVM:           OK" || echo "amd64 KVM:           FAILED (rc=${rc})"
-else
-  echo "KVM device:          unavailable"
+# Only the tool groups this configuration asked for are checked. A group left
+# out is a choice, and reporting it as missing would turn every deliberate
+# omission into a fault.
+has_group() { case ",${AGENT_BOX_TOOLS:-}," in *",$1,"*) return 0;; *) return 1;; esac; }
+
+printf "%-20s %s\n" "tool groups:" "${AGENT_BOX_TOOLS:-(none)}"
+if has_group analysis; then
+  printf "%-20s %s\n" "shellcheck:" "$(shellcheck --version | sed -n 's/^version: //p')"
+  printf "%-20s %s\n" "jscpd:" "$(jscpd --version 2>/dev/null || echo MISSING)"
 fi
-rc=0; timeout 2 qemu-system-aarch64 -accel tcg -machine virt -cpu max -S -nodefaults -display none >/dev/null 2>&1 || rc=$?
-[[ "${rc}" -eq 124 ]] && echo "arm64 TCG:           OK" || echo "arm64 TCG:           FAILED (rc=${rc})"
+if has_group kubernetes; then
+  printf "%-20s %s\n" "yq:" "$(yq --version)"
+  printf "%-20s %s\n" "kubectl:" "$(kubectl version --client 2>/dev/null | head -1)"
+  printf "%-20s %s\n" "helm:" "$(helm version --short)"
+fi
 echo
+if has_group virtualization; then
+  printf "%-20s %s\n" "qemu-x86:" "$(qemu-system-x86_64 --version | head -1)"
+  printf "%-20s %s\n" "qemu-arm64:" "$(qemu-system-aarch64 --version | head -1)"
+  if [[ -r /dev/kvm && -w /dev/kvm ]]; then
+    echo "KVM device:          usable"
+    rc=0; timeout 2 qemu-system-x86_64 -accel kvm -machine none -nodefaults -display none >/dev/null 2>&1 || rc=$?
+    [[ "${rc}" -eq 124 ]] && echo "amd64 KVM:           OK" || echo "amd64 KVM:           FAILED (rc=${rc})"
+  else
+    echo "KVM device:          unavailable"
+  fi
+  rc=0; timeout 2 qemu-system-aarch64 -accel tcg -machine virt -cpu max -S -nodefaults -display none >/dev/null 2>&1 || rc=$?
+  [[ "${rc}" -eq 124 ]] && echo "arm64 TCG:           OK" || echo "arm64 TCG:           FAILED (rc=${rc})"
+  echo
+fi
 # Honors CLAUDE_CONFIG_DIR the same way agent_box.paths.CLAUDE_HOME does, so
 # doctor inspects the directory Claude actually uses rather than assuming
 # $HOME/.claude.
@@ -1945,10 +2032,15 @@ echo
 # "is playwright-mcp on PATH" but "can a headless Chromium actually start",
 # which is what the smoke test proves -- bounded by its own 20s timeout and a
 # hard one here, and entirely offline (it renders a data: URL).
-printf "%-20s %s\n" "playwright-mcp:" "$(playwright-mcp --version 2>/dev/null || echo MISSING)"
+if has_group browser; then
+  printf "%-20s %s\n" "playwright-mcp:" "$(playwright-mcp --version 2>/dev/null || echo MISSING)"
+fi
 if [[ "${AGENT_BOX_BROWSER:-0}" == "1" ]]; then
-  if ! command -v agent-box-browser-smoke >/dev/null 2>&1; then
-    echo "browser chromium:    MISSING (image predates browser support; run 'agent-box build')"
+  if ! has_group browser; then
+    echo "browser chromium:    MISSING (the browser tool group is off; turn it on in"
+    echo "                     'agent-box config' and run 'agent-box build')"
+  elif ! command -v agent-box-browser-smoke >/dev/null 2>&1; then
+    echo "browser chromium:    MISSING (image built without it; run 'agent-box build')"
   elif smoke="$(timeout 30 agent-box-browser-smoke 2>&1)"; then
     printf "%-20s %s\n" "browser chromium:" "OK (${smoke})"
   else
@@ -2116,7 +2208,10 @@ def claude_channel_args(
     return channel_module.channel_flag(), [f"{SUPPRESS_NOTIFY_ENV}=1"]
 
 
-def runtime_main(args: list[str], script_dir: Path, extra_mount_specs: list[str] | None = None) -> None:
+def runtime_main(
+    args: list[str], script_dir: Path, extra_mount_specs: list[str] | None = None,
+    env_specs: list[tuple[str, str | None]] | None = None,
+) -> None:
     from .mounts import MountError, parse_mount_arg, plan_mounts
 
     if not shutil.which("podman"):
@@ -2136,15 +2231,26 @@ def runtime_main(args: list[str], script_dir: Path, extra_mount_specs: list[str]
     ensure_state_dirs()
     ensure_refresh_token()
     config = load_config()
+    # Per-invocation environment beats the stored lists, and is resolved once
+    # here so container and host mode cannot disagree about the answer.
+    config.env = config.env.overlay(env_specs)
 
     if not image_exists():
         print("agent-box: image not found; building it...", file=sys.stderr)
-        rc = build_image(script_dir, False, False)
+        rc = build_image(script_dir, False, False, config=config)
         if rc:
             raise SystemExit(rc)
+    else:
+        # Reported, never acted on: a rebuild is slow, and choosing when to
+        # spend that time is the user's call, not a launch's.
+        missing, extra = image_tool_drift(config)
+        if missing:
+            warn(f"image lacks configured tool group(s): {', '.join(missing)}"
+                 f" -- run 'agent-box build'")
+        if extra:
+            warn(f"image still carries tool group(s) you turned off: {', '.join(extra)}"
+                 f" -- run 'agent-box build' to drop them")
 
-    sync_managed_skills(config)
-    claude_skill_links(config)
 
     agent, rest = DEFAULT_AGENT, args
     if args and args[0] in {"claude", "codex", "shell", "doctor"}:
@@ -2152,14 +2258,9 @@ def runtime_main(args: list[str], script_dir: Path, extra_mount_specs: list[str]
     if agent not in {"claude", "codex", "shell", "doctor"}:
         raise AgentBoxError(f"unsupported agent '{agent}'; expected claude or codex")
 
-    if agent == "claude" and is_claude_session_invocation(rest):
-        # Existing users commonly launch Claude repeatedly without reopening
-        # the interactive config UI.  Launch is therefore the lifecycle that
-        # guarantees the legacy absolute-path hook is migrated.
-        claude_settings.reconcile_claude_settings(
-            CLAUDE_HOME / "settings.json",
-            notifications=config.notifications.enabled,
-            statusline=claude_settings.statusline_intent(config.claude.statusline))
+    # Nothing here reconciles Claude's settings, installs a skill or writes a
+    # symlink: those belong to 'agent-box config' and 'agent-box install' (see
+    # apply_config). A launch reads the configuration; it does not apply it.
 
     # Decided before the channel is claimed, because the claim records it.
     runtime_state = workspace_runtime_state(workspace)
@@ -2185,6 +2286,7 @@ def runtime_main(args: list[str], script_dir: Path, extra_mount_specs: list[str]
                 *extra_env,
                 f"{BROWSER_ENABLED_ENV}={'1' if config.browser.enabled else '0'}",
                 f"{CLAUDE_SKILL_LINKS_ENV}={'1' if config.skills.claude_links else '0'}",
+                f"{IMAGE_TOOLS_ENV}={','.join(config.image.enabled_groups())}",
             ]
             command = ["bash", "-c", DOCTOR_SCRIPT]
         elif agent == "claude":
@@ -2315,6 +2417,76 @@ def stop_main(args: list[str]) -> int:
     return 0
 
 
+def apply_config(config: Config) -> list[str]:
+    """Make the host match the configuration, and say what that took.
+
+    The one place anything agent-box owns *outside its own directories* is
+    written: the skills it ships, the links that let Claude read the shared
+    tree, and the status line and hooks in Claude's ``settings.json``. Its own
+    state -- credential renders under ``~/.local/share/agent-box`` -- is
+    refreshed here too, but that part is also safe to redo at launch, because
+    it is agent-box's to manage.
+
+    Launching an agent deliberately calls none of this. A command that starts
+    Claude should be safe to run without wondering what it will rewrite in
+    your home directory, and "when did that skill appear?" should have one
+    answer: when you asked for it. The cost is that pulling a newer agent-box
+    does not refresh its shipped skills until this runs again, which is what
+    ``agent-box install`` is for.
+
+    Returns the human-facing lines describing what happened, so both
+    ``install`` and the end of ``agent-box config`` can render the same
+    report instead of each narrating its own.
+    """
+    from . import flow_push
+    report: list[str] = []
+
+    ensure_state_dirs()
+    notify_module.sync_credentials(config)
+    sync_vikunja_credentials(config)
+
+    wanted = managed_skills(config)
+    sync_managed_skills(config)
+    report.append(
+        f"skills installed in {AGENT_SKILLS_DIR}: {', '.join(sorted(wanted)) or 'none'}")
+
+    claude_skill_links(config)
+    report.append(
+        f"shared skills linked into {CLAUDE_HOME / 'skills'}: "
+        f"{'yes' if config.skills.claude_links else 'no'}")
+
+    settings = CLAUDE_HOME / "settings.json"
+    statusline = claude_settings.statusline_intent(config.claude.statusline)
+    claude_settings.reconcile_claude_settings(
+        settings, notifications=config.notifications.enabled, statusline=statusline)
+    if config.flow_next.auto_push:
+        flow_push.install_flow_push_hooks(settings)
+    else:
+        flow_push.remove_flow_push_hooks(settings)
+    report.append(
+        f"reconciled {settings}"
+        + ("" if statusline is not None else " (status line left untouched)"))
+    return report
+
+
+def install_main(args: list[str]) -> int:
+    """``agent-box install``: apply the saved configuration, without asking.
+
+    ``agent-box config`` ends by doing exactly this, so most people never need
+    the command. It exists for the two cases the interactive UI does not
+    cover: after updating the agent-box checkout, when the skills it ships may
+    have changed, and after editing ``config.json`` by hand.
+    """
+    if args:
+        raise AgentBoxError(f"unexpected argument '{args[0]}'; agent-box install takes none")
+    config = load_config()
+    for line in apply_config(config):
+        print(f"agent-box: {line}")
+    for problem in vikunja_warnings(config):
+        warn(problem)
+    return 0
+
+
 def managed_container_names() -> list[str]:
     """Every workspace box agent-box created, across all projects."""
     command = [
@@ -2416,7 +2588,10 @@ def uninstall_main(args: list[str]) -> int:
     return 0
 
 
-def host_main(agent: str, rest: list[str]) -> int:
+def host_main(
+    agent: str, rest: list[str],
+    env_specs: list[tuple[str, str | None]] | None = None,
+) -> int:
     """``agent-box --host claude|codex``: run the installed host executable
     directly, no Podman.
 
@@ -2438,11 +2613,8 @@ def host_main(agent: str, rest: list[str]) -> int:
         raise AgentBoxError(str(exc)) from exc
 
     config = load_config()
-    if agent == "claude" and is_claude_session_invocation(rest):
-        claude_settings.reconcile_claude_settings(
-            CLAUDE_HOME / "settings.json",
-            notifications=config.notifications.enabled,
-            statusline=claude_settings.statusline_intent(config.claude.statusline))
+    config.env = config.env.overlay(env_specs)
+    # As in container mode: a launch applies nothing to the user's own files.
     env = dict(os.environ)
     # A non-Flow-Next launch must not inherit stale Flow-Next policy values
     # the parent shell happens to have exported -- clear every agent-box-owned
@@ -2459,7 +2631,11 @@ def host_main(agent: str, rest: list[str]) -> int:
         env[name] = value
     # ``env.set`` states what a session should have; a host session is still a
     # session. ``env.forward`` has nothing to do here -- host mode already
-    # runs in the very shell those names would have been forwarded from.
+    # runs in the very shell those names would have been forwarded from, so
+    # the values are present already.
     env.update(config.env.set)
+    # agent-box's own request channel is not part of the session it describes.
+    for key in [k for k in env if k.startswith(ENV_PREFIX)]:
+        del env[key]
 
     return subprocess.call([executable, *rest], cwd=str(workspace.container_cwd), env=env)

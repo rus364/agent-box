@@ -27,7 +27,9 @@ Schema (version 1)::
       "git": {"identity": true, "full_config": false},
       "providers": {"api_keys": false, "transport": true},
       "env": {"forward": [], "set": {}},
-      "skills": {"claude_links": true},
+      "skills": {"claude_links": true, "superpowers": false},
+      "image": {"tools": {"analysis": true, "kubernetes": true,
+                          "virtualization": false, "browser": false}},
       "vikunja": {"enabled": false, "url": "", "token": ""},
       "browser": {"enabled": false},
       "flow_next": {"review_backends": {}, "auto_push": false}
@@ -41,6 +43,7 @@ older working copy loads through the same "partial file" tolerance every
 """
 from __future__ import annotations
 
+import os
 import stat
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -267,16 +270,67 @@ class SkillsConfig:
     links land in the user's real Claude configuration, where they also
     affect Claude sessions started outside agent-box, and someone who manages
     that directory themselves must be able to say no.
+
+    ``superpowers`` installs the three engineering-practice skills agent-box
+    vendors from ``obra/superpowers`` (see ``agent_box.vendor``): systematic
+    debugging, test-driven development, and verification before completion.
+    Off by default because they change how an agent works, which is a choice
+    rather than a default, and because a project may already have its own
+    conventions for the same ground.
     """
 
     claude_links: bool = True
+    superpowers: bool = False
 
     def to_dict(self) -> dict[str, Any]:
-        return {"claude_links": self.claude_links}
+        return {"claude_links": self.claude_links, "superpowers": self.superpowers}
 
     @classmethod
     def from_dict(cls, data: Any) -> "SkillsConfig":
-        return cls(claude_links=_bool(data, "claude_links", True))
+        return cls(
+            claude_links=_bool(data, "claude_links", True),
+            superpowers=_bool(data, "superpowers", False),
+        )
+
+
+#: Namespace for the shell-prefix spelling: ``AGENT_BOX_ENV_FOO=bar agent-box
+#: codex`` puts ``FOO=bar`` in the container.
+#:
+#: A prefix is unavoidable. A variable set by a shell prefix
+#: (``FOO=bar agent-box codex``) is indistinguishable, inside the process,
+#: from one exported in a login profile -- both are simply entries in the
+#: environment -- so forwarding bare ``FOO`` would mean forwarding the entire
+#: host environment, which is exactly what a workspace box exists not to do.
+#: Naming agent-box's own namespace is what makes the intent legible.
+ENV_PREFIX = "AGENT_BOX_ENV_"
+
+
+def environment_overrides(environ: Any = None) -> dict[str, str]:
+    """``AGENT_BOX_ENV_FOO=bar`` in the launching shell, as ``{"FOO": "bar"}``."""
+    environ = os.environ if environ is None else environ
+    overrides = {}
+    for key, value in environ.items():
+        if not key.startswith(ENV_PREFIX):
+            continue
+        name = key[len(ENV_PREFIX):]
+        if _is_env_name(name):
+            overrides[name] = str(value)
+    return overrides
+
+
+def parse_env_spec(spec: str) -> tuple[str, str | None]:
+    """One ``--env`` argument: ``NAME=VALUE`` to set, ``NAME`` to forward.
+
+    Forwarding by bare name is the form for anything secret: the value is
+    inherited from the launching shell by name and never enters the Podman
+    argv, which ``/proc`` exposes to other processes on the host.
+    """
+    name, sep, value = spec.partition("=")
+    name = name.strip()
+    if not _is_env_name(name):
+        raise ValueError(
+            f"'{spec}' is not a variable name; expected NAME=VALUE or NAME")
+    return (name, value if sep else None)
 
 
 @dataclass
@@ -304,6 +358,40 @@ class EnvConfig:
     forward: list[str] = field(default_factory=list)
     set: dict[str, str] = field(default_factory=dict)
 
+    def overlay(
+        self, specs: list[tuple[str, str | None]] | None = None,
+        environ: Any = None,
+    ) -> "EnvConfig":
+        """This launch's effective environment policy.
+
+        Merges the stored lists with the two per-invocation channels, in
+        increasing order of specificity: the config file, then
+        ``AGENT_BOX_ENV_*`` variables in the launching shell, then ``--env``
+        flags. Each later source wins for a name it mentions, because each is
+        a more deliberate statement about *this* run than the one before it.
+
+        Returns a new value rather than mutating, so the stored configuration
+        is never quietly rewritten by a one-off launch.
+        """
+        forward = list(self.forward)
+        assignments = dict(self.set)
+
+        def assign(name: str, value: str) -> None:
+            assignments[name] = value
+            if name in forward:
+                forward.remove(name)
+
+        for name, value in sorted(environment_overrides(environ).items()):
+            assign(name, value)
+        for name, value in specs or []:
+            if value is None:
+                assignments.pop(name, None)
+                if name not in forward:
+                    forward.append(name)
+            else:
+                assign(name, value)
+        return EnvConfig(forward=forward, set=assignments)
+
     def to_dict(self) -> dict[str, Any]:
         return {"forward": list(self.forward), "set": dict(self.set)}
 
@@ -321,6 +409,80 @@ class EnvConfig:
             and isinstance(value, (str, int, float, bool))
         } if isinstance(raw_set, dict) else {}
         return cls(forward=forward, set=assignments)
+
+
+#: The optional tool groups the image can carry, and whether each is built by
+#: default. The base image -- agents, Python, Node, git, shell tooling -- is
+#: not a group: it is what every workspace needs and is never optional.
+#:
+#: On by default where the cost is small and the reach is wide; off where the
+#: group is large and most projects never touch it. Anything not listed here
+#: belongs in the project, installed through mise, rather than in an image
+#: everyone shares.
+IMAGE_TOOL_GROUPS: dict[str, bool] = {
+    # shellcheck, sqlite3, jscpd -- what an agent reaches for when reading code
+    "analysis": True,
+    # kubectl, Helm, yq
+    "kubernetes": True,
+    # QEMU x86-64/aarch64, OVMF; also gates the /dev/kvm passthrough
+    "virtualization": False,
+    # Playwright MCP + headless Chromium; the browser integration needs it
+    "browser": False,
+}
+
+
+#: The vendored skills the ``skills.superpowers`` switch installs. Named here
+#: rather than discovered from the package directory so that turning the
+#: switch off removes exactly what turning it on added, even if the vendored
+#: set changes between agent-box versions.
+SUPERPOWERS_SKILLS = (
+    "systematic-debugging",
+    "test-driven-development",
+    "verification-before-completion",
+)
+
+#: What each group is, in the words `agent-box config` asks the question in.
+IMAGE_TOOL_GROUP_HELP: dict[str, str] = {
+    "analysis": "Code analysis (shellcheck, sqlite3, jscpd)",
+    "kubernetes": "Kubernetes (kubectl, Helm, yq)",
+    "virtualization": "Virtualization (QEMU x86-64/arm64, KVM passthrough; large)",
+    "browser": "Headless browser (Playwright MCP + Chromium; large)",
+}
+
+
+@dataclass
+class ImageConfig:
+    """Which optional tool groups the workspace image is built with.
+
+    Separate from the switches that turn a *capability* on, because these are
+    a property of the image rather than of a launch: changing one means
+    rebuilding. ``browser`` is the pair to watch -- ``browser.enabled`` wires
+    the MCP server into a session, and this group decides whether the image
+    has a browser for it to drive at all.
+
+    Unknown group names are dropped on load rather than carried, so the file
+    can never ask the build for a group that no longer exists.
+    """
+
+    tools: dict[str, bool] = field(
+        default_factory=lambda: dict(IMAGE_TOOL_GROUPS))
+
+    def enabled_groups(self) -> list[str]:
+        """The groups to build, in a stable order for the image label."""
+        return sorted(name for name, on in self.tools.items() if on)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"tools": {name: bool(self.tools.get(name, default))
+                          for name, default in IMAGE_TOOL_GROUPS.items()}}
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "ImageConfig":
+        raw = data.get("tools") if isinstance(data, dict) else None
+        raw = raw if isinstance(raw, dict) else {}
+        return cls(tools={
+            name: _bool(raw, name, default)
+            for name, default in IMAGE_TOOL_GROUPS.items()
+        })
 
 
 @dataclass
@@ -429,6 +591,7 @@ class Config:
     providers: ProvidersConfig = field(default_factory=ProvidersConfig)
     env: EnvConfig = field(default_factory=EnvConfig)
     skills: SkillsConfig = field(default_factory=SkillsConfig)
+    image: ImageConfig = field(default_factory=ImageConfig)
     vikunja: VikunjaConfig = field(default_factory=VikunjaConfig)
     browser: BrowserConfig = field(default_factory=BrowserConfig)
     flow_next: FlowNextConfig = field(default_factory=FlowNextConfig)
@@ -443,6 +606,7 @@ class Config:
             "providers": self.providers.to_dict(),
             "env": self.env.to_dict(),
             "skills": self.skills.to_dict(),
+            "image": self.image.to_dict(),
             "vikunja": self.vikunja.to_dict(),
             "browser": self.browser.to_dict(),
             "flow_next": self.flow_next.to_dict(),
@@ -460,6 +624,7 @@ class Config:
             providers=ProvidersConfig.from_dict(data.get("providers")),
             env=EnvConfig.from_dict(data.get("env")),
             skills=SkillsConfig.from_dict(data.get("skills")),
+            image=ImageConfig.from_dict(data.get("image")),
             vikunja=VikunjaConfig.from_dict(data.get("vikunja")),
             browser=BrowserConfig.from_dict(data.get("browser")),
             flow_next=FlowNextConfig.from_dict(data.get("flow_next")),
