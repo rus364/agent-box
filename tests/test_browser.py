@@ -28,7 +28,7 @@ from agent_box import runtime
 from agent_box.config import BrowserConfig, Config, NotificationsConfig
 from agent_box.workspace import Workspace
 
-from .test_runtime import IsolatedRuntimeTest
+from test_runtime import IsolatedRuntimeTest
 
 
 def browser_config(enabled: bool = True) -> Config:
@@ -291,7 +291,6 @@ class BrowserDoesNotChangeBoxIdentityTests(IsolatedRuntimeTest):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "project"
             root.mkdir()
-            workspace = Workspace(root, root)
             args = runtime.container_lifetime_args(
                 Workspace(root, root), [], Path.cwd(), browser_config(True))
         joined = " ".join(args)
