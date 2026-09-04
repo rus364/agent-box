@@ -113,7 +113,8 @@ option parsing early if a provider argument would otherwise be ambiguous.
 Podman, the installed host executable, your normal host git/gh credentials.
 'agent-box claude'/'agent-box codex' (without --host) keep meaning
 containerized execution. Not valid with --mount, and not valid with
-shell/doctor, which are container-only.
+shell/doctor, which are container-only. The opt-in agent browser lives in the
+workspace image, so --host sessions do not get it.
 
 Flow-Next workspaces (a '.flow/config.json' present) get a deterministic
 FLOW_REVIEW_BACKEND from agent-box config in both modes; see
@@ -301,6 +302,18 @@ def _vikunja_note(config) -> str:
     return f" ({runtime.container_vikunja_url(runtime.host_vikunja_url())})"
 
 
+def _browser_note(config) -> str:
+    """Name what the switch actually starts, and where the pages land.
+
+    "on" alone would understate it: this is a real browser the agent drives,
+    and everything it loads is inside the workspace box with the agent, the
+    project and every other enabled integration.
+    """
+    if not config.browser.enabled:
+        return ""
+    return " (headless Chromium in the box; --host sessions unaffected)"
+
+
 def config_show() -> None:
     config = load_config()
     print(f"Config file: {CONFIG_FILE}{'' if CONFIG_FILE.is_file() else ' (not created yet; showing defaults)'}")
@@ -317,6 +330,7 @@ def config_show() -> None:
     print(f"  Provider API keys           {'on' if config.providers.api_keys else 'off'}")
     print(f"  Provider transport/proxy    {'on' if config.providers.transport else 'off'}")
     print(f"  Vikunja skill access        {'on' if config.vikunja.enabled else 'off'}{_vikunja_note(config)}")
+    print(f"  Agent browser (containers)  {'on' if config.browser.enabled else 'off'}{_browser_note(config)}")
     print(f"  Flow-Next auto-push         {'on' if config.flow_next.auto_push else 'off'}")
     for agent, backend in sorted(config.flow_next.review_backends.items()):
         print(f"    review backend ({agent})    {backend}")
@@ -422,6 +436,18 @@ def config_interactive() -> None:
     from . import runtime
     for problem in runtime.vikunja_warnings(config):
         print(f"  note: {problem}")
+
+    print("\n-- Agent-controlled browser (opt-in) --")
+    print("Gives containerized Claude and Codex a Playwright MCP server driving a")
+    print("headless Chromium inside the workspace box, so an agent can open and")
+    print("read web pages by itself. Each session gets an isolated, in-memory")
+    print("profile: no cookies, logins or browsing state survive it, and none of")
+    print("your own browser's profile, cookies or credentials are exposed.")
+    print("Anything the browser loads is inside the box, on the same side of the")
+    print("trust boundary as the agent and your mounted project.")
+    print("'agent-box --host claude/codex' does not get this browser.")
+    config.browser.enabled = _prompt_bool(
+        "Let containerized agents drive a headless browser", config.browser.enabled)
 
     print("\n-- Flow-Next auto-push (opt-in) --")
     print("At the end of a Claude/Codex turn, pushes the current feature branch")

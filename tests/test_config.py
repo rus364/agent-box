@@ -162,6 +162,63 @@ class FlowNextConfigTests(unittest.TestCase):
         self.assertEqual(loaded.flow_next.review_backends["claude"], "claude:future-model:high")
 
 
+class BrowserConfigTests(unittest.TestCase):
+    """The browser switch starts a real browser the agent drives, inside the
+    same box as the project, so it has to behave like every other opt-in
+    capability here: off until asked for, and never silently on."""
+
+    def test_defaults_disabled(self):
+        self.assertFalse(Config().browser.enabled)
+
+    def test_old_config_without_browser_still_loads(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            path.write_text(json.dumps({
+                "version": 1,
+                "claude": {"telegram_channel": False},
+                "notifications": {"enabled": False, "telegram_token": "", "telegram_chat_id": ""},
+                "github": {"gh_token": False, "gh_config": False},
+                "git": {"identity": True, "full_config": False},
+                "providers": {"api_keys": False, "transport": True},
+                "vikunja": {"enabled": False},
+            }))
+            config = load_config(path)
+        self.assertFalse(config.browser.enabled)
+        # The rest of a pre-browser file must survive untouched.
+        self.assertTrue(config.git.identity)
+        self.assertTrue(config.providers.transport)
+
+    def test_round_trips(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            config = Config()
+            config.browser.enabled = True
+            save_config(config, path)
+            self.assertTrue(json.loads(path.read_text())["browser"]["enabled"])
+            self.assertTrue(load_config(path).browser.enabled)
+
+    def test_serialization_shape(self):
+        self.assertEqual(Config().to_dict()["browser"], {"enabled": False})
+
+    def test_a_non_boolean_is_not_treated_as_enabled(self):
+        self.assertFalse(config_module.BrowserConfig.from_dict({"enabled": "yes"}).enabled)
+        self.assertFalse(config_module.BrowserConfig.from_dict("nonsense").enabled)
+
+    def test_the_section_holds_no_credential(self):
+        """There is nothing to authenticate: each session gets an isolated,
+        in-memory profile and no host browser state is exposed."""
+        self.assertEqual(set(Config().browser.to_dict()), {"enabled"})
+
+    def test_saving_does_not_bump_the_schema_version(self):
+        """browser is newer than version 1 but needs no migration: an older
+        file loads with the default, so bumping would only break older
+        agent-box installs reading the same file."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            save_config(Config(), path)
+            self.assertEqual(json.loads(path.read_text())["version"], 1)
+
+
 class NotificationsUsableTests(unittest.TestCase):
     def test_enabled_alone_is_not_enough(self):
         config = Config()

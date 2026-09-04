@@ -65,6 +65,97 @@ class SessionToolingTests(unittest.TestCase):
         self.assertIn("tmux -V;", text)
 
 
+class BrowserToolingTests(unittest.TestCase):
+    """Playwright MCP and its Chromium must be *in the image*.
+
+    The point of baking them in is that no agent session ever pays for a
+    lazy browser download, and that the MCP server and the browser binaries
+    come from one pinned, mutually compatible pair.
+    """
+
+    def test_playwright_mcp_is_installed_at_a_pinned_version(self):
+        text = containerfile_text()
+        self.assertRegex(text, r"(?m)^ARG PLAYWRIGHT_MCP_VERSION=\d+\.\d+\.\d+$")
+        self.assertIn('npm install --global "@playwright/mcp@${PLAYWRIGHT_MCP_VERSION}"', text)
+
+    def test_chromium_is_downloaded_at_build_time(self):
+        """Not lazily on first use: a `playwright install` inside an agent
+        session would download ~150MB before the first navigation."""
+        self.assertIn("install --with-deps chromium", containerfile_text())
+
+    def test_browser_version_follows_the_playwright_that_mcp_depends_on(self):
+        """Installing a second, independent `playwright` would let the MCP
+        server and the downloaded browser revision drift apart."""
+        text = containerfile_text()
+        self.assertIn('require.resolve("playwright/package.json"', text)
+        self.assertIn('paths: ["/usr/lib/node_modules/@playwright/mcp"]', text)
+
+    def test_browsers_live_outside_the_bind_mounted_cache(self):
+        """agent-box gives the container its own XDG_CACHE_HOME bind mount,
+        which would otherwise hide ~/.cache/ms-playwright."""
+        text = containerfile_text()
+        self.assertIn("ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright", text)
+
+    def test_unsupported_architectures_fail_the_build_with_an_explanation(self):
+        text = containerfile_text()
+        browser_layer = text[text.index("Playwright MCP + headless Chromium"):]
+        browser_layer = browser_layer[:browser_layer.index("# Bun")]
+        self.assertIn("amd64|arm64", browser_layer)
+        self.assertIn("Playwright publishes no Chromium build", browser_layer)
+        self.assertIn("exit 1", browser_layer)
+
+    def test_sanity_checks_cover_the_mcp_server_and_the_browser(self):
+        text = containerfile_text()
+        checks = text[text.index("# Sanity checks"):]
+        self.assertIn("playwright-mcp --version;", checks)
+        self.assertIn("test -d /opt/ms-playwright;", checks)
+        # An executable check is not enough: prove a browser really starts.
+        self.assertIn("agent-box-browser-smoke;", checks)
+
+    def test_the_smoke_test_is_offline_and_bounded(self):
+        text = containerfile_text()
+        smoke = text[text.index("browser smoke test timed out"):]
+        smoke = smoke[:smoke.index("chmod 0755 /usr/local/bin/agent-box-browser-smoke")]
+        self.assertIn("data:text/html", smoke)
+        self.assertNotIn("http://", smoke)
+        self.assertNotIn("https://", smoke)
+        self.assertIn("process.exit(1)", smoke)
+
+    def test_the_container_user_owns_its_own_config_directory(self):
+        """Podman creates missing bind-mount parents root-owned, which leaves
+        $HOME/.config unwritable and kills Chromium at startup with
+        "chrome_crashpad_handler: --database is required"."""
+        text = containerfile_text()
+        self.assertIn(
+            'install -d -o "${USER_UID}" -g "${USER_GID}" -m 0755 "${USER_HOME}/.config"', text)
+
+    def test_no_capability_is_added_for_the_browser(self):
+        text = containerfile_text()
+        self.assertNotIn("--cap-add", text)
+        self.assertNotIn("setcap", text)
+        self.assertNotIn("chrome-sandbox", text)
+
+    def test_no_host_browser_profile_is_copied_or_mounted(self):
+        instructions = containerfile_text()
+        for host_profile in (".config/google-chrome", ".config/chromium", ".mozilla", "Cookies"):
+            self.assertNotIn(host_profile, instructions)
+
+    def test_browser_layer_precedes_the_frequently_changing_agent_packages(self):
+        """Keeping the ~150MB browser download above the agent install means
+        reordering or adding tools below it does not re-fetch Chromium."""
+        text = containerfile_text()
+        self.assertLess(
+            text.index("@playwright/mcp@${PLAYWRIGHT_MCP_VERSION}"),
+            text.index("@anthropic-ai/claude-code@latest"),
+        )
+
+    def test_runtime_agrees_with_the_image_on_names(self):
+        from agent_box import runtime
+        text = containerfile_text()
+        self.assertIn(runtime.BROWSER_MCP_EXECUTABLE, text)
+        self.assertIn("agent-box-browser-smoke", runtime.DOCTOR_SCRIPT)
+
+
 class IdentityValidationShellTests(unittest.TestCase):
     """Run the Containerfile's own validation snippet through /bin/sh.
 

@@ -29,7 +29,7 @@ import urllib.parse
 from . import channel as channel_module
 from . import claude_settings
 from . import notify as notify_module
-from .atomicio import atomic_write_text, read_json
+from .atomicio import atomic_write_json, atomic_write_text, read_json
 from .config import Config, load_config
 from .errors import AgentBoxError
 from .flow_next import AUTO_PUSH_ENV, POLICY_ENV_VARS, flow_next_launch_env
@@ -110,7 +110,10 @@ def codex_runtime_overrides() -> list[str]:
     return overrides
 
 
-def codex_command(rest: list[str], config: Config, flow_next_auto_push_active: bool = False) -> list[str]:
+def codex_command(
+    rest: list[str], config: Config, flow_next_auto_push_active: bool = False,
+    browser_session_dir: Path | None = None,
+) -> list[str]:
     """Build the Codex command, including all container-only config overrides.
 
     Codex supports exactly one `notify` program, so it is registered whenever
@@ -119,10 +122,18 @@ def codex_command(rest: list[str], config: Config, flow_next_auto_push_active: b
     derived by the caller from ``flow_next_launch_env``'s
     ``AGENT_BOX_FLOW_NEXT_AUTO_PUSH`` signal) -- `agent-box notify codex`
     itself dispatches to both independently (see `agent_box.cli`).
+
+    ``browser_session_dir`` adds the container-native Playwright MCP server
+    for this invocation only (see :func:`browser_codex_overrides`). It is
+    additive: the ChatGPT desktop MCP filtering below is unaffected, and both
+    kinds of override reach Codex through the same ephemeral ``-c`` mechanism
+    without ever writing to the user's ``~/.codex/config.toml``.
     """
     command = ["codex"]
     if config.notifications.usable or flow_next_auto_push_active:
         command += ["-c", 'notify=["agent-box","notify","codex"]']
+    for override in browser_codex_overrides(browser_session_dir):
+        command += ["-c", override]
     for override in codex_runtime_overrides():
         command += ["-c", override]
     return [*command, "--dangerously-bypass-approvals-and-sandbox", *rest]
@@ -542,6 +553,220 @@ def vikunja_warnings(config: Config) -> list[str]:
             f"Vikunja integration is on but no server URL is set "
             f"(VIKUNJA_URL, or 'url' in {VIKUNJA_CONFIG_DIR / 'config.json'})")
     return problems
+
+
+# -- container-native browser (Playwright MCP + headless Chromium) ----------
+#
+# Architecture, deliberately the whole of it:
+#
+#     Claude / Codex  --stdio MCP-->  playwright-mcp  -->  headless Chromium
+#
+# All three run inside the workspace container that is already there. There is
+# no sidecar, no Podman pod, no HTTP MCP endpoint, no host browser and no
+# X11/Wayland socket -- and no host browser profile or cookie jar is exposed,
+# because none is mounted.
+#
+# Enablement is *invocation-scoped*, never part of the box's structural
+# identity: `playwright-mcp` and Chromium are baked into the image, the
+# generated MCP configuration lives under the workspace runtime state that is
+# already bind-mounted, and nothing new is added to `container_lifetime_args`.
+# So turning `browser.enabled` on or off never destroys an otherwise
+# compatible running workspace container.
+
+#: The MCP server name both agents see. Stable so a user can name it in
+#: allow/deny lists, and prefixed so it cannot collide with a server the user
+#: configured themselves.
+BROWSER_MCP_SERVER_NAME = "agent_box_browser"
+#: Installed globally by the Containerfile's Playwright MCP layer.
+BROWSER_MCP_EXECUTABLE = "playwright-mcp"
+#: Playwright MCP's default browser is the *branded Chrome channel*
+#: (``/opt/google/chrome/chrome``), which this image does not ship and which
+#: would fail at the first navigation. The bundled Chromium that
+#: ``playwright install chromium`` downloaded has to be selected explicitly.
+BROWSER_MCP_BROWSER = "chromium"
+#: How ``agent-box doctor`` learns whether the integration is switched on: the
+#: script runs inside the box, which never sees the host config file.
+BROWSER_ENABLED_ENV = "AGENT_BOX_BROWSER"
+
+
+def browser_session_id(agent: str) -> str:
+    """A name for this launch's browser state.
+
+    Same shape as :func:`tmux_session`'s name and for the same reason: the
+    launcher's PID is unique among one workspace's live launches. Derived
+    independently of tmux because a piped, non-terminal launch
+    (``claude -p ...``) gets no tmux session but still needs its own browser
+    profile and output directory -- two concurrent sessions in one box must
+    never share a writable Playwright profile.
+    """
+    return f"{agent}-{os.getpid()}"
+
+
+def browser_session_root(runtime_state: WorkspaceRuntimeState) -> Path:
+    """Where every browser session of one workspace keeps its state."""
+    return runtime_state.root / "browser"
+
+
+def browser_mcp_args(session_dir: Path) -> list[str]:
+    """The Playwright MCP argv shared by the Claude and Codex wiring.
+
+    ``--isolated`` is what keeps a session non-persistent: Playwright MCP
+    holds the browser profile in memory and never writes it to disk, so
+    cookies, localStorage and any credential a page hands out are gone when
+    the MCP process exits and cannot leak into an unrelated later session.
+
+    ``--output-dir`` keeps generated artifacts (snapshots, screenshots,
+    traces, downloads) out of the mounted project: without it Playwright MCP
+    writes them relative to the working directory, which is the user's repo.
+
+    Neither ``--sandbox`` nor ``--no-sandbox`` is passed: Playwright already
+    launches its own bundled Chromium with ``--no-sandbox``, and forcing
+    Chromium's internal sandbox back on with Playwright MCP's ``--sandbox``
+    simply fails inside an agent-box container -- it needs a nested user
+    namespace and privileges that ``--cap-drop=all``,
+    ``--security-opt=no-new-privileges`` and rootless ``--userns=keep-id``
+    deliberately do not grant. agent-box does not weaken any of those flags
+    to get it, because Chromium's own sandbox is not the boundary that
+    matters here: the container is (see the trust-boundary note in the
+    README). Nothing in this argv adds a Linux capability.
+
+    The one thing the environment does need is a writable ``$HOME/.config``
+    for Chromium's crash-reports database, which the image provides -- see
+    the Containerfile's browser layer. Without it Chromium dies at startup
+    with ``chrome_crashpad_handler: --database is required``.
+    """
+    return [
+        BROWSER_MCP_EXECUTABLE,
+        "--browser", BROWSER_MCP_BROWSER,
+        "--headless",
+        "--isolated",
+        "--output-dir", str(session_dir / "output"),
+    ]
+
+
+def _toml_string(value: str) -> str:
+    r"""A TOML basic string for a ``codex -c`` override.
+
+    ``json.dumps`` is exactly the right escaper here: every escape a JSON
+    string can produce (``\"``, ``\\``, ``\n``, ``\uXXXX``) is also a valid
+    TOML basic-string escape, and Codex parses the value portion of ``-c`` as
+    TOML.
+    """
+    return json.dumps(value)
+
+
+def browser_codex_overrides(session_dir: Path | None) -> list[str]:
+    """``-c`` overrides registering the browser MCP for one Codex launch.
+
+    An inline TOML table under ``mcp_servers.<name>``, which Codex merges into
+    the servers from ``~/.codex/config.toml`` rather than replacing them --
+    verified against codex-cli 0.152.1 with ``codex ... mcp list``. The user's
+    host-backed ``~/.codex/config.toml`` is never written to; this is the same
+    ephemeral mechanism :func:`codex_runtime_overrides` already uses to
+    disable ChatGPT desktop MCP servers, and the two compose.
+    """
+    if session_dir is None:
+        return []
+    command, *args = browser_mcp_args(session_dir)
+    table = (
+        f"command={_toml_string(command)}, "
+        f"args=[{', '.join(_toml_string(arg) for arg in args)}]"
+    )
+    return [f"mcp_servers.{BROWSER_MCP_SERVER_NAME}={{{table}}}"]
+
+
+def browser_claude_args(session_dir: Path | None) -> list[str]:
+    """``--mcp-config`` for one Claude launch, after writing the file.
+
+    Claude Code has no ``-c``-style inline override, but ``--mcp-config``
+    takes a JSON file that applies to that invocation only; the user's
+    host-backed Claude configuration is not touched. ``--strict-mcp-config``
+    is deliberately *not* passed, so the servers the user already configured
+    stay loaded alongside this one -- verified against Claude Code 2.1.258.
+
+    The file is written under the workspace runtime state, which is already
+    bind-mounted into the box at the same absolute path, so the path is valid
+    on both sides without any new mount.
+    """
+    if session_dir is None:
+        return []
+    command, *args = browser_mcp_args(session_dir)
+    config_path = session_dir / "mcp.json"
+    atomic_write_json(config_path, {
+        "mcpServers": {BROWSER_MCP_SERVER_NAME: {"command": command, "args": args}},
+    })
+    return ["--mcp-config", str(config_path)]
+
+
+#: A just-created session directory can only belong to a launch that is still
+#: starting up -- one that has not created the workspace box yet, so the "no
+#: box is running" test below would wrongly call it stale. Anything genuinely
+#: abandoned is older than this by a wide margin.
+BROWSER_SESSION_GRACE_SECONDS = 60
+
+
+def remove_browser_sessions(runtime_state: WorkspaceRuntimeState) -> None:
+    """Drop every browser session of one workspace. Callers must know the box
+    is gone, which is what makes this unconditional."""
+    shutil.rmtree(browser_session_root(runtime_state), ignore_errors=True)
+
+
+def prune_stale_browser_sessions(runtime_state: WorkspaceRuntimeState, keep: str) -> None:
+    """Drop browser state left behind by launches that are long gone.
+
+    Only ever called while the workspace has no running container, under the
+    workspace transition lock: with no box there is no agent session, so
+    nothing can still be using these directories. That makes the rule exact
+    rather than a timeout guess, and it is why a *detached* tmux session --
+    which keeps its box alive -- can never have its browser state deleted out
+    from under it.
+
+    ``keep`` and the grace period cover the one gap in that argument: a
+    concurrent launch that has created its own directory but has not yet
+    created the box.
+    """
+    root = browser_session_root(runtime_state)
+    if not root.is_dir():
+        return
+    cutoff = time.time() - BROWSER_SESSION_GRACE_SECONDS
+    for entry in root.iterdir():
+        if entry.name == keep:
+            continue
+        try:
+            recent = entry.stat().st_mtime > cutoff
+        except OSError:
+            continue
+        if not recent:
+            shutil.rmtree(entry, ignore_errors=True)
+
+
+def browser_session(
+    config: Config, workspace: Workspace, runtime_state: WorkspaceRuntimeState, agent: str,
+) -> Path | None:
+    """This launch's private browser state directory, or ``None`` when off.
+
+    Per launch, not per workspace: two concurrent Claude/Codex sessions in one
+    box get separate directories, so neither the (in-memory) profile nor the
+    output directory is ever shared by accident.
+
+    A failure to prepare the directory is reported and degrades to "no
+    browser" rather than aborting: a browser is an extra capability, and
+    losing it is not a reason to refuse to start the agent.
+    """
+    if not config.browser.enabled or agent not in {"claude", "codex"}:
+        return None
+    session_id = browser_session_id(agent)
+    try:
+        with workspace_transition_lock(workspace):
+            current = inspect_workspace_container(workspace_container_name(workspace))
+            if current is None or current.get("State", {}).get("Status") != "running":
+                prune_stale_browser_sessions(runtime_state, keep=session_id)
+            session_dir = browser_session_root(runtime_state) / session_id
+            (session_dir / "output").mkdir(parents=True, exist_ok=True)
+    except (AgentBoxError, OSError) as exc:
+        warn(f"browser integration is on but its session state could not be prepared: {exc}")
+        return None
+    return session_dir
 
 
 def build_mounts(
@@ -1437,6 +1662,26 @@ if command -v vikunja >/dev/null 2>&1; then
 else
   echo "vikunja:             not exposed (enable it with 'agent-box config')"
 fi
+echo
+# The browser integration is off by default, so "disabled" is a normal answer
+# here rather than a fault. When it is on, the question worth answering is not
+# "is playwright-mcp on PATH" but "can a headless Chromium actually start",
+# which is what the smoke test proves -- bounded by its own 20s timeout and a
+# hard one here, and entirely offline (it renders a data: URL).
+printf "%-20s %s\n" "playwright-mcp:" "$(playwright-mcp --version 2>/dev/null || echo MISSING)"
+if [[ "${AGENT_BOX_BROWSER:-0}" == "1" ]]; then
+  if ! command -v agent-box-browser-smoke >/dev/null 2>&1; then
+    echo "browser chromium:    MISSING (image predates browser support; run 'agent-box build')"
+  elif smoke="$(timeout 30 agent-box-browser-smoke 2>&1)"; then
+    printf "%-20s %s\n" "browser chromium:" "OK (${smoke})"
+  else
+    echo "browser chromium:    FAILED"
+    printf "  %s\n" "${smoke}"
+  fi
+  echo "browser integration: enabled"
+else
+  echo "browser integration: disabled (enable it with 'agent-box config')"
+fi
 '''
 
 
@@ -1517,19 +1762,26 @@ def is_claude_session_invocation(rest: list[str]) -> bool:
     return True
 
 
-def claude_session_args(rest: list[str], channel: list[str]) -> list[str]:
-    """Add a variadic channel option after all ordinary Claude arguments.
+def claude_session_args(
+    rest: list[str], channel: list[str], browser: list[str] | None = None,
+) -> list[str]:
+    """Add Claude's variadic options after all ordinary Claude arguments.
 
-    Claude's ``--channels`` consumes every following non-option argument.  By
-    appending it after the session argv, a positional prompt cannot become a
-    channel entry.  An explicit ``--`` ends Claude option parsing, so insert
-    the option immediately before that separator when present.
+    Both ``--channels`` and ``--mcp-config`` consume every following
+    non-option argument.  By appending them after the session argv, a
+    positional prompt cannot become a channel entry or be mistaken for an MCP
+    config path -- ``claude --print --mcp-config FILE "hi"`` really does try
+    to load ``hi`` as a second config file.  Each option stops at the next
+    one because that starts with ``-``, and an explicit ``--`` ends Claude
+    option parsing, so both are inserted immediately before that separator
+    when present.
     """
+    appended = [*channel, *(browser or [])]
     try:
         separator = rest.index("--")
     except ValueError:
-        return [*rest, *channel]
-    return [*rest[:separator], *channel, *rest[separator:]]
+        return [*rest, *appended]
+    return [*rest[:separator], *appended, *rest[separator:]]
 
 
 def claude_channel_args(
@@ -1632,7 +1884,12 @@ def runtime_main(args: list[str], script_dir: Path, extra_mount_specs: list[str]
             statusline=config.claude.statusline)
 
     # Decided before the channel is claimed, because the claim records it.
-    session = tmux_session(agent, workspace_runtime_state(workspace)) if tmux_enabled(agent) else None
+    runtime_state = workspace_runtime_state(workspace)
+    session = tmux_session(agent, runtime_state) if tmux_enabled(agent) else None
+    # Invocation-scoped, and deliberately not part of the box's structural
+    # identity: everything it needs is already in the image and already
+    # mounted, so flipping browser.enabled never recreates a compatible box.
+    browser_dir = browser_session(config, workspace, runtime_state, agent)
     channel, extra_env = claude_channel_args(agent, config, workspace, rest, session)
     extra_env = [
         *extra_env,
@@ -1644,17 +1901,23 @@ def runtime_main(args: list[str], script_dir: Path, extra_mount_specs: list[str]
         if agent == "shell":
             command = ["bash", "--login", *rest]
         elif agent == "doctor":
+            # The script runs inside the box and cannot read the host config,
+            # so the one bit it needs is forwarded per-exec.
+            extra_env = [*extra_env, f"{BROWSER_ENABLED_ENV}={'1' if config.browser.enabled else '0'}"]
             command = ["bash", "-c", DOCTOR_SCRIPT]
         elif agent == "claude":
             if is_claude_session_invocation(rest):
-                command = ["claude", "--dangerously-skip-permissions", *claude_session_args(rest, channel)]
+                command = [
+                    "claude", "--dangerously-skip-permissions",
+                    *claude_session_args(rest, channel, browser_claude_args(browser_dir)),
+                ]
             else:
                 command = ["claude", *rest]
         else:
             flow_next_auto_push_active = any(
                 pair.startswith(f"{AUTO_PUSH_ENV}=") for pair in extra_env
             )
-            command = codex_command(rest, config, flow_next_auto_push_active)
+            command = codex_command(rest, config, flow_next_auto_push_active, browser_dir)
         spec = workspace_container_spec(workspace, extra_mounts, script_dir, config)
         invocation, process_env = invocation_env(config, agent)
         # Channel/Flow-Next values are invocation policy, not box identity.
@@ -1761,7 +2024,11 @@ def stop_main(args: list[str]) -> int:
             if sessions:
                 print(f"agent-box: ending {len(sessions)} session(s): {', '.join(sessions)}", file=sys.stderr)
         remove_workspace_container_then_confirm_absent(name)
-        shutil.rmtree(workspace_runtime_state(workspace).root / "sessions", ignore_errors=True)
+        runtime_state = workspace_runtime_state(workspace)
+        shutil.rmtree(runtime_state.root / "sessions", ignore_errors=True)
+        # The box is gone, so no browser session of this workspace can still
+        # be running; its snapshots and screenshots go with it.
+        remove_browser_sessions(runtime_state)
     print(f"agent-box: removed workspace container {name}", file=sys.stderr)
     return 0
 
