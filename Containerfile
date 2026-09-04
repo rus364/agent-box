@@ -72,7 +72,6 @@ RUN set -eux; \
         wget \
         git \
         git-lfs \
-        gh \
         openssh-client \
         gnupg \
         gettext \
@@ -131,6 +130,36 @@ RUN set -eux; \
     git lfs install --system; \
     apt-get clean; \
     rm -rf /var/lib/apt/lists/*
+
+#
+# GitHub CLI
+#
+# From GitHub's own apt repository, not Ubuntu's archive. Ubuntu 24.04 ships
+# gh 2.45.0 and does not move it, which is old enough to break tools that
+# drive `gh` rather than merely run it: Claude Code's /install-github-app
+# probes `gh auth status -a`, a flag added in 2.57.0, and reports a perfectly
+# good login as "GitHub CLI not authenticated" when the flag is missing.
+#
+# A pinned release tarball -- the pattern the optional groups use for yq,
+# kubectl and helm -- was the alternative. It is right for those, which are
+# not in the base image and whose versions a project cares about, but `gh` is
+# base tooling that every agent reaches for, and pinning it would only move
+# this same staleness onto a line someone has to remember to bump.
+#
+
+RUN set -eux; \
+    install -m 0755 -d /etc/apt/keyrings; \
+    curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+        -o /etc/apt/keyrings/githubcli-archive-keyring.gpg; \
+    chmod 0644 /etc/apt/keyrings/githubcli-archive-keyring.gpg; \
+    printf 'deb [arch=%s signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main\n' \
+        "$(dpkg --print-architecture)" \
+        > /etc/apt/sources.list.d/github-cli.list; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends gh; \
+    apt-get clean; \
+    rm -rf /var/lib/apt/lists/*; \
+    gh auth status --help | grep -q -- '--active'
 
 #
 # Analysis tooling (group: analysis)

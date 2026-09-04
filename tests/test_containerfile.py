@@ -65,6 +65,41 @@ class SessionToolingTests(unittest.TestCase):
         self.assertRegex(text, r"(?m)^\s+tmux -V$")
 
 
+class GitHubCliTests(unittest.TestCase):
+    """`gh` comes from GitHub's apt repository, not Ubuntu's archive.
+
+    Ubuntu 24.04 froze gh at 2.45.0. Tools that *drive* `gh` rather than run
+    it break on that: Claude Code's /install-github-app probes
+    `gh auth status -a`, a flag that landed in 2.57.0, and calls a working
+    login "GitHub CLI not authenticated" when the flag is absent. Falling back
+    to the distribution package would silently reintroduce that.
+    """
+
+    def gh_layer(self) -> str:
+        text = containerfile_text()
+        layer = text[text.index("# GitHub CLI"):]
+        return layer[:layer.index("# Analysis tooling")]
+
+    def test_gh_is_not_taken_from_the_ubuntu_archive(self):
+        text = containerfile_text()
+        base = text[text.index("# Base OS / development packages"):text.index("# GitHub CLI")]
+        self.assertNotRegex(base, r"(?m)^\s+gh \\$")
+
+    def test_gh_comes_from_githubs_signed_repository(self):
+        """Signed by GitHub's own keyring: an unsigned or `trusted=yes` entry
+        would let anything on that host's path into the base image."""
+        layer = self.gh_layer()
+        self.assertIn("https://cli.github.com/packages", layer)
+        self.assertIn("signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg", layer)
+        self.assertNotIn("trusted=yes", layer)
+
+    def test_the_build_proves_the_active_flag_exists(self):
+        """A version number in a comment is not a check. Assert the capability
+        the tooling actually needs, so a repository that regresses fails the
+        build instead of the user's first /install-github-app."""
+        self.assertIn("gh auth status --help | grep -q -- '--active'", self.gh_layer())
+
+
 class BrowserToolingTests(unittest.TestCase):
     """Playwright MCP and its Chromium must be *in the image*.
 
