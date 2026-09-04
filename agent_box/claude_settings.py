@@ -159,7 +159,7 @@ def remove_hook_commands(settings_path: Path, owned: dict[str, tuple[str, ...]])
 STATUSLINE_COMMAND = "agent-box statusline"
 
 #: ``AGENT_BOX_STATUSLINE=0`` keeps agent-box out of the status line while it
-#: applies a configuration (``agent-box config`` / ``agent-box install``).
+#: applies a configuration (``agent-box config`` / ``config apply``).
 STATUSLINE_ENV = "AGENT_BOX_STATUSLINE"
 
 

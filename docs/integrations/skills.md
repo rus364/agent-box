@@ -50,7 +50,7 @@ agent-box did **not** create has no marker: it is yours — hand-written, or a
 symlink into a checkout you are editing — and is never overwritten or deleted.
 
 Nothing is installed or refreshed by starting an agent. `agent-box config` and
-`agent-box install` are the only commands that touch this tree.
+`agent-box config apply` are the only commands that touch this tree.
 
 ## The superpowers skills
 

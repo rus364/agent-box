@@ -1,9 +1,10 @@
 """Applying a configuration, and the fact that launching an agent does not.
 
-Two commands change the places agent-box does not own -- ``agent-box config``
-and ``agent-box install`` -- and they change them through the same function,
-so a configuration answered interactively and one edited by hand produce the
-same host state.
+Everything that changes the places agent-box does not own goes through one
+function -- ``agent-box config`` at the end of its questions, ``agent-box
+config apply`` on its own, ``agent-box upgrade`` once it has moved the
+checkout -- so a configuration answered interactively and one edited by hand
+produce the same host state.
 
 The negative half matters just as much. Starting Claude or Codex must not
 install a skill, write a symlink or rewrite ``settings.json`` on the way past:
@@ -11,15 +12,16 @@ a command that runs an agent should be safe to run without wondering what it
 will change in your home directory, and "when did that appear?" should have
 exactly one answer.
 """
+import contextlib
+import io
 import json
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
-from agent_box import claude_settings, runtime
+from agent_box import claude_settings, cli, runtime
 from agent_box.config import Config
-from agent_box.errors import AgentBoxError
 from agent_box.workspace import Workspace
 
 
@@ -105,26 +107,32 @@ class ApplyConfigTests(unittest.TestCase):
         self.assertIn("vikunja", report)
         self.assertIn(str(self.claude / "settings.json"), report)
 
-    def test_install_takes_no_arguments(self):
-        with self.assertRaises(AgentBoxError):
-            runtime.install_main(["--now"])
-
-    def test_install_applies_the_saved_configuration(self):
-        with mock.patch.object(runtime, "load_config", return_value=self._enabled()):
-            self.assertEqual(runtime.install_main([]), 0)
+    def test_config_apply_applies_the_saved_configuration(self):
+        """The one command for a config.json somebody edited by hand."""
+        with mock.patch.object(cli, "load_config", return_value=self._enabled()):
+            cli.config_apply()
         self.assertTrue((self.shared / "vikunja/SKILL.md").is_file())
 
-    def test_install_reports_an_incomplete_integration(self):
+    def test_config_apply_reports_an_incomplete_integration(self):
+        """Turning Vikunja on without a URL must not look like it worked."""
         broken = Config()
         broken.vikunja.enabled = True
-        with mock.patch.object(runtime, "load_config", return_value=broken), \
-             mock.patch.object(runtime, "warn") as warn:
-            runtime.install_main([])
-        self.assertTrue(warn.called)
+        errors = io.StringIO()
+        with mock.patch.object(cli, "load_config", return_value=broken), \
+             contextlib.redirect_stderr(errors):
+            cli.config_apply()
+        self.assertIn("warning", errors.getvalue())
+
+    def test_apply_is_the_only_config_verb_that_writes(self):
+        """`config show` and `config check` are questions, not actions."""
+        with mock.patch.object(cli, "config_apply") as apply_config:
+            with self.assertRaises(SystemExit):
+                cli.config_command(["nonsense"])
+        self.assertFalse(apply_config.called)
 
 
 class LaunchAppliesNothingTests(unittest.TestCase):
-    """The whole point of moving the work into `install`."""
+    """The whole point of keeping applying out of the launch path."""
 
     def _launch(self, config: Config, tmp: Path):
         workspace = Workspace(tmp, tmp)

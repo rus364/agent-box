@@ -92,5 +92,5 @@ notification-capable exec environment rather than a mount, so they never enter
 the box's metadata.
 
 The hooks that deliver Claude's events live in `~/.claude/settings.json` and are
-installed by `agent-box config` / `agent-box install`, alongside anything you
+installed by `agent-box config` / `agent-box config apply`, alongside anything you
 configured yourself there — agent-box only ever removes its own handlers.

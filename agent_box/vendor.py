@@ -4,7 +4,7 @@
 one. It clones an upstream project, takes the few skills agent-box actually
 ships, applies the small adaptation they need to work standalone, checks the
 result, and writes it into ``agent_box/skills/``. Users never run it: they get
-the checked-in copies, installed by ``agent-box install``.
+the checked-in copies, installed by ``agent-box config``.
 
 The alternative shapes were both worse. A git submodule would drag an entire
 plugin repository -- hooks, marketplace manifests, dozens of skills nobody

@@ -2218,6 +2218,12 @@ def runtime_main(
         raise AgentBoxError("podman not found")
     if not (script_dir / "Containerfile").is_file():
         raise AgentBoxError(f"Containerfile not found: {script_dir / 'Containerfile'}")
+    if not shutil.which("git"):
+        # Not fatal, but the failure it causes is invisible: workspace
+        # resolution falls back to the current directory, so the box quietly
+        # gets a subdirectory of the project instead of the repository root.
+        warn("git not found on the host: the workspace root falls back to the "
+             "current directory instead of the repository root")
     try:
         workspace = resolve_workspace()
     except (NotADirectoryError, ValueError) as exc:
@@ -2259,8 +2265,8 @@ def runtime_main(
         raise AgentBoxError(f"unsupported agent '{agent}'; expected claude or codex")
 
     # Nothing here reconciles Claude's settings, installs a skill or writes a
-    # symlink: those belong to 'agent-box config' and 'agent-box install' (see
-    # apply_config). A launch reads the configuration; it does not apply it.
+    # symlink: those belong to 'agent-box config' and 'agent-box config apply'
+    # (see apply_config). A launch reads the configuration; it does not apply it.
 
     # Decided before the channel is claimed, because the claim records it.
     runtime_state = workspace_runtime_state(workspace)
@@ -2430,13 +2436,13 @@ def apply_config(config: Config) -> list[str]:
     Launching an agent deliberately calls none of this. A command that starts
     Claude should be safe to run without wondering what it will rewrite in
     your home directory, and "when did that skill appear?" should have one
-    answer: when you asked for it. The cost is that pulling a newer agent-box
-    does not refresh its shipped skills until this runs again, which is what
-    ``agent-box install`` is for.
+    answer: when you asked for it. The cost is that a newer agent-box does not
+    refresh its shipped skills until this runs again, which is why
+    ``agent-box upgrade`` ends by calling it and ``agent-box config apply``
+    exists for a hand-edited file.
 
-    Returns the human-facing lines describing what happened, so both
-    ``install`` and the end of ``agent-box config`` can render the same
-    report instead of each narrating its own.
+    Returns the human-facing lines describing what happened, so every caller
+    renders the same report instead of each narrating its own.
     """
     from . import flow_push
     report: list[str] = []
@@ -2469,24 +2475,6 @@ def apply_config(config: Config) -> list[str]:
     return report
 
 
-def install_main(args: list[str]) -> int:
-    """``agent-box install``: apply the saved configuration, without asking.
-
-    ``agent-box config`` ends by doing exactly this, so most people never need
-    the command. It exists for the two cases the interactive UI does not
-    cover: after updating the agent-box checkout, when the skills it ships may
-    have changed, and after editing ``config.json`` by hand.
-    """
-    if args:
-        raise AgentBoxError(f"unexpected argument '{args[0]}'; agent-box install takes none")
-    config = load_config()
-    for line in apply_config(config):
-        print(f"agent-box: {line}")
-    for problem in vikunja_warnings(config):
-        warn(problem)
-    return 0
-
-
 def managed_container_names() -> list[str]:
     """Every workspace box agent-box created, across all projects."""
     command = [
@@ -2515,10 +2503,18 @@ def uninstall_main(args: list[str]) -> int:
     Two levels, because they are different decisions. The default removes
     what agent-box put in *other* people's places -- Claude's
     ``settings.json``, ``~/.claude/skills``, the shared agent tree, the
-    rendered credential files -- and stops the boxes holding those mounts
-    open. ``--purge`` additionally deletes agent-box's own configuration and
-    state, which is where the Telegram and Vikunja tokens live; that one is
-    irreversible and is confirmed unless ``--yes`` says not to.
+    rendered credential files, the symlink it put on PATH -- and stops the
+    boxes holding those mounts open. ``--purge`` additionally deletes
+    agent-box's own configuration and state, which is where the Telegram and
+    Vikunja tokens live; that one is irreversible and is confirmed unless
+    ``--yes`` says not to.
+
+    The PATH line in a shell startup file is the exception on both levels: it
+    is removed only under ``--purge``, and even then only when it still
+    matches byte for byte what agent-box wrote. An edited block is somebody's
+    own line by now, and a stray ``export PATH`` costs nothing to leave --
+    deleting the wrong two lines of a login shell's startup file costs a lot.
+    Everything not removed is reported with its location.
 
     Neither level removes the container image or this source checkout: both
     are large, both are trivially re-derived, and neither is something a
@@ -2562,6 +2558,17 @@ def uninstall_main(args: list[str]) -> int:
     shutil.rmtree(VIKUNJA_CREDENTIALS_DIR, ignore_errors=True)
     done.append("removed the rendered notification and Vikunja credentials")
 
+    from . import pathsetup
+    for link in pathsetup.remove_symlinks():
+        done.append(f"removed the symlink {link}")
+    rc = pathsetup.rc_file()
+    rc_note: str | None = None
+    if rc is not None:
+        state = pathsetup.rc_state(rc)
+        if state.kind != "absent":
+            rc_note = (f"{rc} lines {state.span[0]}-{state.span[1]}"
+                       if state.span else str(rc))
+
     if purge:
         if not assume_yes:
             print(f"This deletes {CONFIG_ROOT} and {STATE_ROOT}, including any stored tokens.")
@@ -2576,6 +2583,14 @@ def uninstall_main(args: list[str]) -> int:
             shutil.rmtree(CONFIG_ROOT, ignore_errors=True)
             shutil.rmtree(STATE_ROOT, ignore_errors=True)
             done.append(f"deleted {CONFIG_ROOT} and {STATE_ROOT}")
+            if rc is not None and rc_note:
+                removed, note = pathsetup.remove_rc_block(rc)
+                if removed:
+                    done.append(note)
+                    rc_note = None
+                elif note:
+                    done.append(note)
+                    rc_note = None
 
     for line in done:
         print(f"agent-box: {line}")
@@ -2583,8 +2598,10 @@ def uninstall_main(args: list[str]) -> int:
     print("Remaining, deliberately left for you:")
     if not purge:
         print(f"  configuration and state   {CONFIG_ROOT}, {STATE_ROOT}")
+    if rc_note:
+        print(f"  shell PATH line           {rc_note}")
     print(f"  container image           podman rmi {IMAGE}")
-    print("  the agent-box checkout    remove it and its symlink on PATH")
+    print(f"  the agent-box checkout    rm -rf {pathsetup.checkout_root()}")
     return 0
 
 
