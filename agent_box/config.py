@@ -27,16 +27,17 @@ Schema (version 1)::
       "git": {"identity": true, "full_config": false},
       "providers": {"api_keys": false, "transport": true},
       "vikunja": {"enabled": false},
+      "browser": {"enabled": false},
       "flow_next": {
         "review_backends": {"claude": "codex:gpt-5.6-sol:medium", "codex": "codex:gpt-5.6-sol:medium"},
         "auto_push": false
       }
     }
 
-``flow_next`` and ``vikunja`` are newer than ``version`` 1 but do not bump it:
-an old config file without them loads fine and gets the defaults above,
-matching the "partial file" schema tolerance the rest of this module already
-relies on.
+``flow_next``, ``vikunja`` and ``browser`` are newer than ``version`` 1 but do
+not bump it: an old config file without them loads fine and gets the defaults
+above, matching the "partial file" schema tolerance the rest of this module
+already relies on.
 """
 from __future__ import annotations
 
@@ -229,6 +230,41 @@ class VikunjaConfig:
         return cls(enabled=_bool(data, "enabled", False))
 
 
+@dataclass
+class BrowserConfig:
+    """An agent-controlled headless browser inside the workspace container.
+
+    Off by default, like every other capability that widens what an agent can
+    reach. Turning it on makes a Playwright MCP server available to
+    containerized Claude and Codex sessions, which drives a headless Chromium
+    baked into the image.
+
+    This exposes no host state at all -- there is no host browser profile, no
+    host cookie jar and no credential of any kind involved, and the switch
+    therefore holds nothing secret. What it does mean is that pages the agent
+    opens land *inside the workspace box*: the browser, the MCP server, the
+    agent, the mounted project and every other enabled integration are one
+    trust boundary, so anything the browser fetches is reachable by everything
+    else in that box. That is the decision this switch is asking about.
+
+    Deliberately one boolean and nothing else. Each MCP process gets an
+    isolated, non-persistent profile and a session-private output directory
+    derived from the workspace's runtime state (see
+    ``agent_box.runtime.browser_session``), so there is no profile path,
+    cookie file or credential for a user to configure -- and no place for one
+    to be stored.
+    """
+
+    enabled: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"enabled": self.enabled}
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "BrowserConfig":
+        return cls(enabled=_bool(data, "enabled", False))
+
+
 #: Flow-Next review routing is selected by *primary CLI*, not by any quota or
 #: cost signal -- agent-box never inspects usage to pick a backend, it just
 #: looks up which agent launched. Codex reviewing Codex is intentional for
@@ -285,6 +321,7 @@ class Config:
     git: GitConfig = field(default_factory=GitConfig)
     providers: ProvidersConfig = field(default_factory=ProvidersConfig)
     vikunja: VikunjaConfig = field(default_factory=VikunjaConfig)
+    browser: BrowserConfig = field(default_factory=BrowserConfig)
     flow_next: FlowNextConfig = field(default_factory=FlowNextConfig)
 
     def to_dict(self) -> dict[str, Any]:
@@ -296,6 +333,7 @@ class Config:
             "git": self.git.to_dict(),
             "providers": self.providers.to_dict(),
             "vikunja": self.vikunja.to_dict(),
+            "browser": self.browser.to_dict(),
             "flow_next": self.flow_next.to_dict(),
         }
 
@@ -310,6 +348,7 @@ class Config:
             git=GitConfig.from_dict(data.get("git")),
             providers=ProvidersConfig.from_dict(data.get("providers")),
             vikunja=VikunjaConfig.from_dict(data.get("vikunja")),
+            browser=BrowserConfig.from_dict(data.get("browser")),
             flow_next=FlowNextConfig.from_dict(data.get("flow_next")),
         )
 

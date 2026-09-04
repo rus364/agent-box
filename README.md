@@ -156,6 +156,8 @@ agent-box --host codex
 
 Host mode runs the installed CLI directly with your normal host environment and credentials. Flow-Next detection, review routing, Flowctl resolution, and auto-push policy are shared with container mode.
 
+The [agent browser](#agent-browser) is **not** shared with host mode. It is a capability of the workspace image, so `--host` sessions never gain it, and agent-box never rewrites your host Claude or Codex MCP configuration to fake one. A host session that needs a browser should configure one itself, in your own agent config.
+
 ### Extra mounts
 
 The project root is the only workspace path mounted automatically. Add other host directories explicitly:
@@ -179,6 +181,7 @@ The development image includes the tools needed for normal agent-driven infrastr
 | Source control | git, git-lfs, gh |
 | Kubernetes | kubectl, Helm, yq, jq |
 | Virtualization | QEMU x86-64 + aarch64, optional KVM passthrough |
+| Browser automation | Playwright MCP + headless Chromium (opt-in; see [Agent browser](#agent-browser)) |
 | Session/runtime tools | tmux and common build/network utilities |
 
 Build commands:
@@ -220,6 +223,7 @@ Important defaults:
 | Full host Git config | off | Copy host Git config into the box |
 | Provider API keys | off | Forward Anthropic provider credentials |
 | Vikunja skill access | off | Expose the configured Vikunja skill runtime |
+| Agent browser | off | Let containerized agents drive a headless browser |
 | Flow-Next auto-push | off | Push eligible completed Flow-Next work automatically |
 
 <details>
@@ -383,6 +387,90 @@ Verify it with:
 agent-box doctor
 ```
 
+## Agent browser
+
+Off by default. When enabled, containerized Claude and Codex sessions get an MCP server that drives a real headless browser, so an agent can open a page, read it, follow links and fill forms on its own — useful for reading documentation, checking a locally served app, or reproducing something that only shows up in a browser.
+
+```text
+Claude / Codex
+      |
+      | stdio MCP
+      v
+Playwright MCP
+      |
+      v
+headless Chromium
+```
+
+All three run inside the workspace container that is already there. There is no browser sidecar, no Podman pod, no HTTP MCP service, no host browser integration and no X11/Wayland forwarding.
+
+### Enabling it
+
+```bash
+agent-box config
+```
+
+Answer yes to *"Let containerized agents drive a headless browser"*. It applies to the next `agent-box claude` and `agent-box codex`; there is nothing to restart, because the browser is not part of the container's identity — turning it on or off never rebuilds or destroys a running workspace box.
+
+Both agents see the server under the same name:
+
+```text
+agent_box_browser
+```
+
+It is added for that invocation only. Your `~/.codex/config.toml` and your Claude MCP configuration are never rewritten, and the MCP servers you configured yourself keep working alongside it.
+
+### What it does and does not touch
+
+| | |
+| --- | --- |
+| Browser | Chromium, headless, from the image — installed at build time, never downloaded during a session |
+| Profile | Isolated and in-memory, new for every session |
+| Cookies / logins / localStorage | Discarded when the session ends |
+| Your own browser's profile and cookies | Never exposed — nothing from the host is mounted |
+| Screenshots, snapshots, traces | Written under `~/.local/share/agent-box/runtime/workspaces/<id>/browser/<session>/output`, never into your repository |
+| Concurrent sessions | Separate profile and output directory each |
+
+Because every session is isolated, an agent cannot reuse a login from an earlier session, and cannot reach a site that depends on your own browser's authentication. That is deliberate: a page the agent visits must not be able to act as you.
+
+### Trust boundary
+
+> [!IMPORTANT]
+> Browser automation is **not** a separate security boundary. The browser, the Playwright MCP server, Claude/Codex, shell processes, the mounted project, and every other enabled integration all live inside the same workspace box, as the same Unix user. Content the browser loads is on the *inside* of that boundary, and anything a page can persuade the agent to do, the agent can already do to your project.
+
+Treat enabling the browser the way you would treat handing the agent any other network-reading capability: the container still runs with `--cap-drop=all`, `--security-opt=no-new-privileges` and rootless `--userns=keep-id`, and none of that is relaxed for the browser. Chromium's own internal sandbox is unavailable under those flags — Playwright launches its bundled Chromium with `--no-sandbox`, as it does in any container — and agent-box does not weaken the Podman hardening to change that. The container, not Chromium, is the boundary.
+
+### Upgrading an existing install
+
+Browser support ships in the image, so an image built before this feature has neither Playwright MCP nor Chromium:
+
+```bash
+agent-box build     # normal cached build; adds the browser layers
+```
+
+Use `agent-box update` instead if you also want the agent CLIs refreshed. After that, a plain `agent-box build` keeps the browser layers cached; `agent-box update` re-downloads them each time, because it invalidates everything from Node.js down. `agent-box doctor` says plainly when the running image predates browser support.
+
+### Checking it
+
+```bash
+agent-box doctor
+```
+
+Disabled — a normal state, not an error:
+
+```text
+playwright-mcp:      Version 0.0.80
+browser integration: disabled (enable it with 'agent-box config')
+```
+
+Enabled and healthy. The check actually starts a headless Chromium, renders an offline `data:` URL and exits; it needs no network and is bounded by a short timeout:
+
+```text
+playwright-mcp:      Version 0.0.80
+browser chromium:    OK (153.0.8010.12)
+browser integration: enabled
+```
+
 ## Usage and status line
 
 Check provider subscription usage from the host:
@@ -431,6 +519,8 @@ The container user mirrors the host user's real passwd identity. Files created i
 
 Only the workspace root, explicit extra mounts, agent state/config locations, and configured integrations are exposed.
 
+Nothing in the optional [agent browser](#agent-browser) relaxes any of this: it adds no capability, no socket passthrough and no host mount, and no host browser profile or cookie store is ever exposed to the container.
+
 KVM is passed through automatically when `/dev/kvm` is accessible. Disable it with:
 
 ```bash
@@ -478,6 +568,41 @@ This is the default. Enable `github.gh_token` in `agent-box config`. Optionally 
 </details>
 
 <details>
+<summary><strong><code>agent-box doctor</code> says the browser is missing</strong></summary>
+
+The running image was built before browser support existed. Run `agent-box build` once; the Playwright MCP and Chromium layers are added and then stay cached.
+
+</details>
+
+<details>
+<summary><strong>The agent says it has no browser tools</strong></summary>
+
+Check `agent-box config show` — `Agent browser (containers)` must be `on`. It only applies to containerized sessions: `agent-box --host claude` and `agent-box --host codex` never get it. Note also that the server is added per invocation, so a session started before you enabled it keeps running without the browser; start a new one.
+
+</details>
+
+<details>
+<summary><strong>The agent cannot open a site that needs me to be logged in</strong></summary>
+
+Expected. Each session gets an isolated, in-memory profile and your own browser's cookies are never exposed, so there is no session for the agent to reuse. Have the agent log in within its own session, or point it at something that does not require your credentials.
+
+</details>
+
+<details>
+<summary><strong>Chromium fails to start inside the box</strong></summary>
+
+Run `agent-box doctor`; the browser check prints the launch error. Chromium needs a writable `$HOME/.config` for its crash-reports database, which the image provides — an image built by hand without agent-box's build args, or a stale one, can lack it. Rebuild with `agent-box build`. A `chrome_crashpad_handler: --database is required` message is that failure.
+
+</details>
+
+<details>
+<summary><strong>Screenshots or snapshots are cluttering my repository</strong></summary>
+
+They should not be: agent-box points Playwright MCP at a per-session output directory under `~/.local/share/agent-box/runtime/workspaces/<id>/browser/`. An agent that writes into the project is doing so with its ordinary file tools, not through the browser. `agent-box stop` clears that workspace's browser output.
+
+</details>
+
+<details>
 <summary><strong>A shared skill is missing or mismatched</strong></summary>
 
 Run `agent-box doctor`. If `~/.claude/skills/<name>` already exists and points somewhere else, agent-box preserves it instead of overwriting it.
@@ -489,6 +614,8 @@ Run `agent-box doctor`. If `~/.claude/skills/<name>` already exists and points s
 - Linux + Podman only.
 - Workspace containers are transient. Detached tmux sessions survive terminal loss, but not a host reboot or forced container kill.
 - `~/.agents` is exposed as a whole tree, not only `skills/`; the tree is read-only except for the read-write `skills/` subtree and its external symlink targets.
+- The agent browser is amd64/arm64 only, because those are the architectures Playwright publishes Chromium builds for; the image build fails with an explanation elsewhere.
+- `agent-box update` re-downloads the browser layer, because it sits below the tools-refresh marker that Node.js also sits below. A plain `agent-box build` keeps it cached.
 - The official Claude Telegram plugin is outside agent-box's control and may require compatibility updates when its internals change.
 - There is no remote equivalent of `--mount`, and Telegram cannot create a new workspace box by itself.
 

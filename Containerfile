@@ -258,6 +258,103 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/*
 
 #
+# Playwright MCP + headless Chromium
+#
+# The container-native browser backend behind `agent-box config`'s browser
+# switch: a stdio MCP server (`playwright-mcp`) driving a headless Chromium
+# that lives entirely inside the workspace box. No sidecar, no HTTP service,
+# no host browser and no X11/Wayland socket -- see README.
+#
+# Placed here, immediately after Node.js and before the frequently changing
+# agent packages, so that adding or reordering anything below it does not
+# re-download the browser. It cannot move above `ARG TOOLS_REFRESH` without
+# also moving Node.js there, so `agent-box update` does rebuild this layer;
+# a plain cached `agent-box build` does not.
+#
+# The version is pinned rather than tracking @latest because @playwright/mcp
+# pins an exact `playwright` dependency, and the browser binaries downloaded
+# below must be the ones that `playwright` build expects. Bumping this ARG is
+# what upgrades both halves together.
+ARG PLAYWRIGHT_MCP_VERSION=0.0.80
+
+# A fixed system-wide location rather than the default ~/.cache/ms-playwright:
+# agent-box gives the container its own XDG_CACHE_HOME backed by a bind mount,
+# which would otherwise hide browsers installed at build time behind an empty
+# runtime directory.
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
+
+# The `playwright` package that @playwright/mcp itself depends on is the one
+# whose CLI downloads the matching browser revision, so it is resolved out of
+# the installed MCP package rather than installed a second time.
+# `playwright/cli.js` is not listed in that package's "exports", so the bin
+# entry is read from its manifest by absolute path instead.
+
+RUN set -eux; \
+    arch="$(dpkg --print-architecture)"; \
+    case "${arch}" in \
+        amd64|arm64) ;; \
+        *) \
+            echo "agent-box: Playwright publishes no Chromium build for ${arch};" >&2; \
+            echo "agent-box: the browser integration cannot be provided on this" >&2; \
+            echo "agent-box: architecture." >&2; \
+            exit 1; \
+            ;; \
+    esac; \
+    npm install --global "@playwright/mcp@${PLAYWRIGHT_MCP_VERSION}"; \
+    npm cache clean --force; \
+    playwright_dir="$(node -e 'const p = require("path"); console.log(p.dirname(require.resolve("playwright/package.json", {paths: ["/usr/lib/node_modules/@playwright/mcp"]})))')"; \
+    printf '%s\n' "${playwright_dir}" > /usr/local/lib/agent-box-playwright-dir; \
+    node "${playwright_dir}/$(node -p "require('${playwright_dir}/package.json').bin.playwright")" install --with-deps chromium; \
+    apt-get clean; \
+    rm -rf /var/lib/apt/lists/*; \
+    chmod -R a+rX /opt/ms-playwright
+
+# Chromium needs a writable XDG config home: it creates its crash-reports
+# database under $HOME/.config before any --user-data-dir applies, and dies
+# with "chrome_crashpad_handler: --database is required" when it cannot.
+#
+# At runtime agent-box bind-mounts $HOME/.config/git and $HOME/.config/gh into
+# the box. Podman creates missing bind-mount *parents* itself, root-owned, so
+# without this the container user cannot write to its own $HOME/.config at
+# all. Creating the directory here means Podman finds it already there and
+# only adds the two leaves, leaving the ownership below intact.
+#
+# This is the whole of what Chromium needs in this environment. No Linux
+# capability is added, --cap-drop=all and --security-opt=no-new-privileges are
+# untouched, and nothing from the host is mounted.
+
+RUN set -eux; \
+    install -d -o "${USER_UID}" -g "${USER_GID}" -m 0755 "${USER_HOME}/.config"
+
+# A bounded, entirely offline browser smoke test, with the resolved Playwright
+# baked in: it renders a data: URL and reads the text back, so it proves a
+# headless Chromium can actually start and exit without touching the network.
+# Used by the build sanity check below and by `agent-box doctor`.
+#
+# Kept in its own layer so editing the check does not re-download the browser.
+
+RUN set -eux; \
+    playwright_dir="$(cat /usr/local/lib/agent-box-playwright-dir)"; \
+    { \
+        echo '#!/usr/bin/env node'; \
+        echo "const { chromium } = require('${playwright_dir}');"; \
+        echo 'const timer = setTimeout(() => { console.error("browser smoke test timed out"); process.exit(1); }, 20000);'; \
+        echo '(async () => {'; \
+        echo '  const browser = await chromium.launch({ headless: true });'; \
+        echo '  try {'; \
+        echo '    const page = await browser.newPage();'; \
+        echo '    await page.goto("data:text/html,<h1>agent-box</h1>");'; \
+        echo '    if ((await page.textContent("h1")) !== "agent-box") throw new Error("page did not render");'; \
+        echo '    console.log(browser.version());'; \
+        echo '  } finally {'; \
+        echo '    await browser.close();'; \
+        echo '    clearTimeout(timer);'; \
+        echo '  }'; \
+        echo '})().catch((error) => { console.error(String(error)); process.exit(1); });'; \
+    } > /usr/local/bin/agent-box-browser-smoke; \
+    chmod 0755 /usr/local/bin/agent-box-browser-smoke
+
+#
 # Bun
 #
 # Required by Anthropic's official Telegram channel plugin
@@ -382,6 +479,9 @@ RUN set -eux; \
     bun --version; \
     codex --version; \
     claude --version; \
+    playwright-mcp --version; \
+    test -d /opt/ms-playwright; \
+    agent-box-browser-smoke; \
     jscpd --version; \
     mise --version; \
     git --version; \
