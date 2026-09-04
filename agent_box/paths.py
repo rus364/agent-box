@@ -102,6 +102,7 @@ CHANNEL_LOCK = STATE_ROOT / "runtime/telegram-channel.json"
 
 CLAUDE_HOME = env_path("CLAUDE_CONFIG_DIR", HOST_HOME / ".claude")
 CODEX_HOME = env_path("CODEX_HOME", HOST_HOME / ".codex")
+CODEX_PLUGIN_CACHE = CODEX_HOME / "plugins/cache"
 
 # The shared agent tree. ``skills/`` under it is the canonical location both
 # Claude and Codex read, and the place agent-box installs the skills it ships
