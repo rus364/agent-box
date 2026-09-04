@@ -363,7 +363,7 @@ When a Claude session already owns the official Telegram channel, duplicate inte
 
 Codex discovers it directly. Before starting Claude, agent-box exposes matching skills through `~/.claude/skills` symlinks so both agents consume the same `SKILL.md` files.
 
-If `~/.agents` exists, the whole tree is mounted read-only. External targets of symlinks inside that tree are mounted read-only as well so shared skill libraries continue to resolve correctly inside the container.
+If `~/.agents` exists, the whole tree is mounted read-only, with `~/.agents/skills` overlaid read-write so agents can create and update their own skills. External targets linked from `skills/` are read-write too; targets linked only from elsewhere in the tree remain read-only. This keeps every shared symlink resolving at its host path without granting write access to unrelated agent definitions or prompt material.
 
 ## Vikunja skill
 
@@ -488,7 +488,7 @@ Run `agent-box doctor`. If `~/.claude/skills/<name>` already exists and points s
 
 - Linux + Podman only.
 - Workspace containers are transient. Detached tmux sessions survive terminal loss, but not a host reboot or forced container kill.
-- `~/.agents` is exposed read-only as a whole tree, not only `skills/`.
+- `~/.agents` is exposed as a whole tree, not only `skills/`; the tree is read-only except for the read-write `skills/` subtree and its external symlink targets.
 - The official Claude Telegram plugin is outside agent-box's control and may require compatibility updates when its internals change.
 - There is no remote equivalent of `--mount`, and Telegram cannot create a new workspace box by itself.
 
