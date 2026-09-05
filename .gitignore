@@ -26,4 +26,5 @@ dist/
 # Editors / OS
 .idea/
 .vscode/
+.tmp/
 .DS_Store
