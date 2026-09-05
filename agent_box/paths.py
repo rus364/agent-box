@@ -113,18 +113,8 @@ AGENT_SKILLS_DIR = AGENTS_DIR / "skills"
 # The skills agent-box ships and installs itself, inside the package.
 MANAGED_SKILLS_SOURCE = Path(__file__).resolve().parent / "skills"
 
-# Vikunja. agent-box owns the server URL and API token in its own config file
-# and renders this pair -- ``config.json`` plus ``token`` -- for the container
-# to read, exactly the way notifications derive NOTIFY_CREDENTIALS above. The
-# host is never asked to maintain a second configuration.
-VIKUNJA_CREDENTIALS_DIR = STATE_ROOT / "runtime/vikunja"
-# Resumable ``vikunja import`` journals. This one is genuine host state that
-# outlives a box, so it stays in the host's XDG location and is mounted
-# read-write.
-VIKUNJA_STATE_DIR = XDG_STATE_HOME / "vikunja"
-
-# Where the container looks for both: the skill's CLI resolves them from
-# ``~`` with no XDG variable of its own, so the destinations are the literal
-# ``$HOME`` paths regardless of how the host lays its XDG directories out.
-CONTAINER_VIKUNJA_CONFIG_DIR = HOST_HOME / ".config/vikunja"
-CONTAINER_VIKUNJA_STATE_DIR = HOST_HOME / ".local/state/vikunja"
+# Workflow scratch, routing counters, and import journals; never a task database.
+WORKFLOW_STATE = env_path("AGENT_BOX_WORKFLOW_STATE", STATE_ROOT / "workflow")
+TRACKER_RUNTIME_DIR = STATE_ROOT / "runtime/tracker"
+CONTAINER_TRACKER_RUNTIME_DIR = HOST_HOME / ".local/share/agent-box/runtime/tracker"
+CONTAINER_WORKFLOW_STATE = HOST_HOME / ".local/share/agent-box/workflow"

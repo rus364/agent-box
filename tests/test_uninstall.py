@@ -33,20 +33,21 @@ class UninstallTestCase(unittest.TestCase):
         self.shipped = self.root / "shipped"
         self.state = self.root / "state"
         self.config_root = self.root / "config"
-        self.credentials = self.state / "runtime/vikunja"
+        self.credentials = self.state / "runtime/tracker"
         self.notify_credentials = self.state / "runtime/notify.json"
         self.shared.mkdir(parents=True)
         self.shipped.mkdir()
-        (self.shipped / "vikunja/scripts").mkdir(parents=True)
-        (self.shipped / "vikunja/SKILL.md").write_text("# vikunja\n")
+        (self.shipped / "ab-tracker/scripts").mkdir(parents=True)
+        (self.shipped / "ab-tracker/SKILL.md").write_text("# vikunja\n")
         self.patches = mock.patch.multiple(
             runtime,
             CLAUDE_HOME=self.claude,
+            CODEX_HOME=self.root / "home/.codex",
             AGENT_SKILLS_DIR=self.shared,
             MANAGED_SKILLS_SOURCE=self.shipped,
             STATE_ROOT=self.state,
             CONFIG_ROOT=self.config_root,
-            VIKUNJA_CREDENTIALS_DIR=self.credentials,
+            TRACKER_RUNTIME_DIR=self.credentials,
             NOTIFY_CREDENTIALS=self.notify_credentials,
         )
         self.patches.start()
@@ -72,7 +73,7 @@ class UninstallTestCase(unittest.TestCase):
         settings.parent.mkdir(parents=True, exist_ok=True)
         claude_settings.reconcile_statusline(settings, True)
         enabled = Config()
-        enabled.vikunja.enabled = True
+        enabled.tracker.enabled = True
         runtime.sync_managed_skills(enabled)
         runtime.claude_skill_links(enabled)
         self.credentials.mkdir(parents=True, exist_ok=True)
@@ -111,15 +112,15 @@ class UninstallTests(UninstallTestCase):
 
     def test_the_skill_links_are_removed(self):
         self._installed_state()
-        self.assertTrue((self.claude / "skills/vikunja").is_symlink())
+        self.assertTrue((self.claude / "skills/ab-tracker").is_symlink())
         self._uninstall()
-        self.assertFalse((self.claude / "skills/vikunja").exists())
+        self.assertFalse((self.claude / "skills/ab-tracker").exists())
 
     def test_the_installed_skills_are_removed(self):
         self._installed_state()
-        self.assertTrue((self.shared / "vikunja/SKILL.md").is_file())
+        self.assertTrue((self.shared / "ab-tracker/SKILL.md").is_file())
         self._uninstall()
-        self.assertFalse((self.shared / "vikunja").exists())
+        self.assertFalse((self.shared / "ab-tracker").exists())
 
     def test_a_skill_the_user_owns_is_left_behind(self):
         """Ownership runs the same direction on the way out as on the way in."""

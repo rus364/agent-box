@@ -4,9 +4,7 @@ outer matcher/group object, and agent-box may only ever touch the handler(s)
 it owns, never an entry wholesale merely because one of its handlers happens
 to be agent-box's.
 
-Matcher-scoped mixed-entry coverage below is driven through `notify` (its
-Notification hooks carry a matcher) rather than `flow_push`, since Flow-Next
-auto-push's only managed Claude hook (`Stop`) carries no matcher of its own."""
+Matcher-scoped mixed-entry coverage uses notification hooks with distinct matchers."""
 import json
 import os
 import tempfile
@@ -14,21 +12,31 @@ import unittest
 from unittest import mock
 from pathlib import Path
 
-from agent_box import claude_settings, flow_push, notify
+from agent_box import claude_settings, notify
 from agent_box.errors import AgentBoxError
 
 
 class MixedEntryRemovalTests(unittest.TestCase):
+    def test_apply_retires_only_the_exact_owned_push_handler(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "settings.json"
+            path.write_text(json.dumps({"hooks": {"Stop": [{"hooks": [
+                {"type": "command", "command": "agent-box flow-next stop"},
+                {"type": "command", "command": "my-user-hook"}]}]}}))
+            claude_settings.reconcile_claude_settings(path, notifications=False, statusline=None)
+            handlers = json.loads(path.read_text())["hooks"]["Stop"][0]["hooks"]
+            self.assertEqual(handlers, [{"type": "command", "command": "my-user-hook"}])
+
     def test_shared_stop_entry_removes_only_owned_handler(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "settings.json"
             path.write_text(json.dumps({"hooks": {"Stop": [{
                 "hooks": [
-                    {"type": "command", "command": flow_push.STOP_COMMAND},
+                    {"type": "command", "command": notify.NOTIFY_COMMAND},
                     {"type": "command", "command": "my-important-user-hook"},
                 ],
             }]}}))
-            flow_push.remove_flow_push_hooks(path)
+            notify.remove_claude_notify_hooks(path)
             settings = json.loads(path.read_text())
             stop_entries = settings["hooks"]["Stop"]
             self.assertEqual(len(stop_entries), 1, "the outer entry itself must survive")
@@ -96,9 +104,9 @@ class MixedEntryRemovalTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "settings.json"
             path.write_text(json.dumps({"hooks": {"Stop": [{
-                "hooks": [{"type": "command", "command": flow_push.STOP_COMMAND}],
+                "hooks": [{"type": "command", "command": notify.NOTIFY_COMMAND}],
             }]}}))
-            flow_push.remove_flow_push_hooks(path)
+            notify.remove_claude_notify_hooks(path)
             settings = json.loads(path.read_text())
             self.assertNotIn("Stop", settings.get("hooks", {}))
 
@@ -125,8 +133,8 @@ class InstallIdempotenceWithMixedEntriesTests(unittest.TestCase):
     def test_reinstall_after_normal_install_stays_single_handler(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "settings.json"
-            flow_push.install_flow_push_hooks(path)
-            flow_push.install_flow_push_hooks(path)
+            notify.install_claude_notify_hooks(path)
+            notify.install_claude_notify_hooks(path)
             settings = json.loads(path.read_text())
             self.assertEqual(len(settings["hooks"]["Stop"]), 1)
             self.assertNotIn("PostToolUse", settings["hooks"])
@@ -148,7 +156,7 @@ class InstallIdempotenceWithMixedEntriesTests(unittest.TestCase):
 
 
 class ArbitraryUserHooksSurviveTests(unittest.TestCase):
-    def test_unrelated_event_and_entries_untouched_by_flow_push(self):
+    def test_unrelated_event_and_entries_untouched_by_notify(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "settings.json"
             path.write_text(json.dumps({
@@ -157,8 +165,8 @@ class ArbitraryUserHooksSurviveTests(unittest.TestCase):
                     {"type": "command", "command": "my-custom-linter"},
                 ]}]},
             }))
-            flow_push.install_flow_push_hooks(path)
-            flow_push.remove_flow_push_hooks(path)
+            notify.install_claude_notify_hooks(path)
+            notify.remove_claude_notify_hooks(path)
             settings = json.loads(path.read_text())
             self.assertEqual(settings["model"], "opus")
             self.assertEqual(

@@ -1,0 +1,15 @@
+---
+name: ab-work
+description: Execute a tracked task sequentially with verified ownership, parent/subtask branches, delegation and evidence.
+---
+
+# ab-work
+
+1. Read `tracker get ID`, related history, repository guidance, and `tracker ready`. Resolve ambiguity with ab-interview. Only the primary orchestrator calls `workflow begin ID --primary PROVIDER`; use --resume only after inspecting an interrupted task and its branch.
+2. Work on one implementation task at a time. A tiny task may be implemented directly by the primary. Otherwise `workflow prepare ID --role worker --primary PROVIDER` selects the configured model/effort in the task's tier. Prefer native delegation only when the exact returned settings can be enforced and native_profile_ready is true; otherwise `workflow run ID --role worker --primary PROVIDER --brief FILE`. Never launch nested agent-box sessions. Do not reschedule an active worker based on changing usage.
+3. Handoff in English: task ID, bounded scope, relevant paths, decisions, validation, and expected report. Worker cannot switch/create branches, commit, push, edit requirements/relations/status or start parallel implementation. It may post task-language progress and check evidenced existing items. For native reports use `workflow report ID --role worker --primary PROVIDER --provider ACTUAL --scope SCOPE --file FILE`; CLI reports are recorded automatically.
+4. Investigate failures before fixes: reproduce, trace evidence to the cause, test one hypothesis. When a regression test adds value, show it fails for the intended reason, fix minimally, run relevant validation. Reuse code; avoid speculative frameworks and redundant tests.
+5. New dependencies, contradictions or overlap with future work require the user's decision; update all affected tasks and relations. Provider errors require inspecting side effects before retrying; never silently restart a partially completed worker.
+6. Primary reviews the worker's evidence for completeness, checks acceptance items, commits the implementation, then runs `workflow validate ID -- COMMAND ARGS`. For direct-primary changes record `workflow writer ID --provider ACTUAL` before review, including resumed fixes. This is mechanical validation, not independent code review. Use ab-review according to configured policy.
+7. On review findings, post a task-language summary, uncheck only contradicted items and return to Doing; fix sequentially, commit and validate/review again. Never invent reviewer PASS. Keep loops within max_rounds; stop for ambiguity or no progress.
+8. `workflow finish ID` integrates a completed subtask into the parent and marks it Done; configured GitHub auto-push publishes only the parent. Repeat with the next ready subtask. Validate/review the complete parent diff, then finish the parent to Review and offer ab-pr. Parent Done requires actual merge.

@@ -17,29 +17,9 @@ Design rules this file exists to enforce:
   ``to_dict``/``from_dict``. Unknown keys are dropped on save rather than
   round-tripped, so the file always matches the shipped schema.
 
-Schema (version 1)::
-
-    {
-      "version": 1,
-      "claude": {"telegram_channel": false, "statusline": true},
-      "notifications": {"enabled": false, "telegram_token": "", "telegram_chat_id": ""},
-      "github": {"gh_token": false, "gh_config": false},
-      "git": {"identity": true, "full_config": false},
-      "providers": {"api_keys": false, "transport": true},
-      "env": {"forward": [], "set": {}},
-      "skills": {"claude_links": true, "superpowers": false},
-      "image": {"tools": {"analysis": true, "kubernetes": true,
-                          "virtualization": false, "browser": false}},
-      "vikunja": {"enabled": false, "url": "", "token": ""},
-      "browser": {"enabled": false},
-      "flow_next": {"review_backends": {}, "auto_push": false}
-    }
-
-``version`` stays at 1 while the schema keeps changing, because agent-box has
-not been released: there is no installed base to migrate, so a section that
-grows or changes shape is simply the new shape, and a file written by an
-older working copy loads through the same "partial file" tolerance every
-``from_dict`` here already provides.
+The workflow and tracker sections are opt-in. Provider connections hold
+credentials globally; repository bindings contain only project identity and
+project-specific lifecycle policy. Version remains 1 during pre-release.
 """
 from __future__ import annotations
 
@@ -217,80 +197,16 @@ class ProvidersConfig:
 
 
 @dataclass
-class VikunjaConfig:
-    """The whole Vikunja integration: the switch, the server, the token.
-
-    Off by default, like every other integration that reaches outside the
-    box: the token can read and rewrite the user's entire task tracker.
-
-    agent-box owns these two values rather than reading a configuration file
-    the skill also owns. That is what makes the integration installable
-    instead of merely detectable -- ``agent-box config`` asks for a URL and a
-    token, the skill itself is installed from the copy shipped in this
-    package (see ``runtime.install_managed_skills``), and nothing has to
-    exist on the host beforehand. The container never sees this file: the
-    host renders a two-file credential directory from it
-    (``runtime.sync_vikunja_credentials``) and mounts that read-only, the
-    same way notifications derive their own credential file.
-
-    ``url`` is stored exactly as the *host* reaches the server. The rewrite
-    that makes it reachable from inside a container happens at render time --
-    see ``runtime.container_vikunja_url`` -- so the value here stays the one
-    the user typed and keeps working if they later stop using containers.
-    """
-
-    enabled: bool = False
-    url: str = ""
-    token: str = ""
-
-    @property
-    def usable(self) -> bool:
-        return bool(self.enabled and self.url and self.token)
-
-    def to_dict(self) -> dict[str, Any]:
-        return {"enabled": self.enabled, "url": self.url, "token": self.token}
-
-    @classmethod
-    def from_dict(cls, data: Any) -> "VikunjaConfig":
-        return cls(
-            enabled=_bool(data, "enabled", False),
-            url=_str(data, "url"),
-            token=_str(data, "token"),
-        )
-
-
-@dataclass
 class SkillsConfig:
-    """How the shared agent skill tree is wired up.
-
-    ``claude_links`` mirrors ``~/.agents/skills`` into ``~/.claude/skills``
-    with symlinks so Claude sees the same ``SKILL.md`` files Codex reads
-    directly. It defaults on because sharing skills between the two agents is
-    the point of the tree, but it is a switch rather than an assumption: the
-    links land in the user's real Claude configuration, where they also
-    affect Claude sessions started outside agent-box, and someone who manages
-    that directory themselves must be able to say no.
-
-    ``superpowers`` installs the three engineering-practice skills agent-box
-    vendors from ``obra/superpowers`` (see ``agent_box.vendor``): systematic
-    debugging, test-driven development, and verification before completion.
-    Off by default because they change how an agent works, which is a choice
-    rather than a default, and because a project may already have its own
-    conventions for the same ground.
-    """
-
+    """Claude links expose the shared skills to host Claude sessions as well."""
     claude_links: bool = True
-    superpowers: bool = False
 
-    def to_dict(self) -> dict[str, Any]:
-        return {"claude_links": self.claude_links, "superpowers": self.superpowers}
+    def to_dict(self):
+        return {"claude_links": self.claude_links}
 
     @classmethod
-    def from_dict(cls, data: Any) -> "SkillsConfig":
-        return cls(
-            claude_links=_bool(data, "claude_links", True),
-            superpowers=_bool(data, "superpowers", False),
-        )
+    def from_dict(cls, data):
+        return cls(claude_links=_bool(data, "claude_links", True))
 
 
 #: Namespace for the shell-prefix spelling: ``AGENT_BOX_ENV_FOO=bar agent-box
@@ -431,16 +347,6 @@ IMAGE_TOOL_GROUPS: dict[str, bool] = {
 }
 
 
-#: The vendored skills the ``skills.superpowers`` switch installs. Named here
-#: rather than discovered from the package directory so that turning the
-#: switch off removes exactly what turning it on added, even if the vendored
-#: set changes between agent-box versions.
-SUPERPOWERS_SKILLS = (
-    "systematic-debugging",
-    "test-driven-development",
-    "verification-before-completion",
-)
-
 #: What each group is, in the words `agent-box config` asks the question in.
 IMAGE_TOOL_GROUP_HELP: dict[str, str] = {
     "analysis": "Code analysis (shellcheck, sqlite3, jscpd)",
@@ -520,66 +426,167 @@ class BrowserConfig:
         return cls(enabled=_bool(data, "enabled", False))
 
 
-#: Flow-Next review routing is selected by *primary CLI*, not by any quota or
-#: cost signal -- agent-box never inspects usage to pick a backend, it just
-#: looks up which agent launched.
-#:
-#: Empty by default, deliberately. A backend spec names a concrete provider,
-#: model and effort level, and shipping one as a default would silently point
-#: every Flow-Next workspace on every machine at a model the user may not
-#: have, may not pay for, or may not want reviewing their code. With no entry
-#: agent-box simply sets no ``FLOW_REVIEW_BACKEND`` and Flow-Next falls back
-#: to its own ``.flow/config.json`` and defaults, which is the correct
-#: behavior for a launcher that was never told what to prefer.
-DEFAULT_FLOW_REVIEW_BACKENDS: dict[str, str] = {}
-FLOW_REVIEW_BACKEND_AGENTS = ("claude", "codex")
+TRACKER_PROVIDERS = ("vikunja", "jira", "linear", "github")
+AGENT_PROVIDERS = ("codex", "claude")
+WORKFLOW_SKILLS = ("ab-setup", "ab-interview", "ab-plan", "ab-work", "ab-review", "ab-pr", "ab-land")
+REVIEW_PRESETS = {"thorough": (2, 80), "balanced": (5, 200), "light": (10, 500)}
 
-#: Offered by ``agent-box config`` when Flow-Next routing is being set up.
-#: A menu rather than free text because a mistyped model name fails only
-#: later, inside a review Flow-Next has already started. Not a default: an
-#: empty answer stays empty.
-FLOW_REVIEW_BACKEND_CHOICES = (
-    "codex:gpt-5.6-sol:medium",
-    "codex:gpt-5.6-sol:high",
-)
+
+def _mapping(value):
+    return value if isinstance(value, dict) else {}
+
+
+def _number(data, key, default):
+    value = _mapping(data).get(key, default)
+    return value if isinstance(value, (int, float)) and not isinstance(value, bool) else default
 
 
 @dataclass
-class FlowNextConfig:
-    """Deterministic Flow-Next runtime policy, owned by agent-box.
+class TrackerConnection:
+    url: str = ""
+    token: str = ""
 
-    ``review_backends`` maps the *primary* agent (``claude``/``codex``) to a
-    full Flow-Next backend spec (``provider:model:effort``) forwarded to the
-    launch as ``FLOW_REVIEW_BACKEND``. Values are opaque strings agent-box
-    never parses, and an agent with no entry gets no variable at all, so
-    Flow-Next keeps its own resolution. Changing the routing later is a
-    config edit, not a code change.
+    @property
+    def usable(self):
+        return bool(self.url and self.token)
 
-    ``auto_push`` is the opt-in Flow-Next auto-push reconciler (see
-    ``agent_box.flow_push``), applied identically to Claude and Codex
-    launches; it defaults off because this must never turn every agent turn
-    into a git push.
-    """
-
-    review_backends: dict[str, str] = field(
-        default_factory=lambda: dict(DEFAULT_FLOW_REVIEW_BACKENDS))
-    auto_push: bool = False
-
-    def to_dict(self) -> dict[str, Any]:
-        return {"review_backends": dict(self.review_backends), "auto_push": self.auto_push}
+    def to_dict(self):
+        return {"url": self.url, "token": self.token}
 
     @classmethod
-    def from_dict(cls, data: Any) -> "FlowNextConfig":
-        backends = dict(DEFAULT_FLOW_REVIEW_BACKENDS)
-        raw = data.get("review_backends") if isinstance(data, dict) else None
-        if isinstance(raw, dict):
-            for agent in FLOW_REVIEW_BACKEND_AGENTS:
-                value = raw.get(agent)
-                if isinstance(value, str) and value.strip():
-                    backends[agent] = value.strip()
-                else:
-                    backends.pop(agent, None)
-        return cls(review_backends=backends, auto_push=_bool(data, "auto_push", False))
+    def from_dict(cls, data):
+        return cls(url=_str(data, "url"), token=_str(data, "token"))
+
+
+@dataclass
+class TrackerConfig:
+    """Disabled until the user explicitly exposes configured tracker accounts."""
+    enabled: bool = False
+    provider: str = "vikunja"
+    connections: dict[str, TrackerConnection] = field(default_factory=dict)
+
+    def connection(self, provider=None):
+        return self.connections.get(provider or self.provider, TrackerConnection())
+
+    def to_dict(self):
+        return {"enabled": self.enabled, "provider": self.provider,
+                "connections": {k: v.to_dict() for k, v in self.connections.items()}}
+
+    @classmethod
+    def from_dict(cls, data):
+        data = _mapping(data)
+        return cls(_bool(data, "enabled", False), _str(data, "provider") or "vikunja",
+                   {k: TrackerConnection.from_dict(v) for k, v in
+                    _mapping(data.get("connections")).items() if k in TRACKER_PROVIDERS})
+
+
+@dataclass
+class ReviewConfig:
+    policy: str = "auto"
+    max_files: int = 5
+    max_lines: int = 200
+    max_rounds: int = 3
+    sensitive_paths: list[str] = field(default_factory=lambda: [
+        "**/auth/**", "**/security/**", "**/migrations/**", "**/skills/**",
+        "**/config*", ".github/**", "**/*schema*", "**/api/**"])
+    label: str = "ab:review"
+    github_provider: str = "auto"
+    github_model: str = ""
+    github_effort: str = ""
+    wait_seconds: int = 600
+
+    def to_dict(self):
+        from dataclasses import asdict
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data):
+        data = _mapping(data)
+        result = cls()
+        for key in ("policy", "label", "github_provider", "github_model", "github_effort"):
+            if key in data and isinstance(data[key], str):
+                setattr(result, key, data[key].strip())
+        for key in ("max_files", "max_lines", "max_rounds", "wait_seconds"):
+            setattr(result, key, _number(data, key, getattr(result, key)))
+        if isinstance(data.get("sensitive_paths"), list):
+            result.sensitive_paths = [s for s in data["sensitive_paths"] if isinstance(s, str)]
+        return result
+
+
+@dataclass
+class WorkflowConfig:
+    """Optional workflow policy; only enabled integrations may publish or delegate.
+
+    auto_push defaults on *within this opt-in workflow*, as requested, and
+    still requires an explicitly enabled GitHub integration and a task branch.
+    Routing counters and usage caches contain no authoritative task state.
+    """
+    enabled: bool = False
+    routing: str = "current"
+    weights: dict[str, float] = field(default_factory=lambda: {"codex": 1, "claude": 1})
+    tiers: dict[str, dict] = field(default_factory=lambda: {
+        str(n): {p: {"model": "", "effort": "medium"} for p in AGENT_PROVIDERS}
+        for n in range(4)})
+    fallback: bool = True
+    reserve_percent: float = 5
+    smoothing_hours: float = 24
+    scout_limit: int = 3
+    auto_push: bool = True
+    timeout_seconds: int = 3600
+    review: ReviewConfig = field(default_factory=ReviewConfig)
+
+    def to_dict(self):
+        from dataclasses import asdict
+        return asdict(self)
+
+    def validate(self):
+        import math
+        errors = []
+        if self.routing not in ("current", "weighted", "usage-aware"):
+            errors.append("workflow.routing must be current, weighted, or usage-aware")
+        if any(not isinstance(v, (int, float)) or not math.isfinite(v) or v < 0
+               for v in self.weights.values()) or not any(self.weights.values()):
+            errors.append("workflow.weights must be finite, nonnegative, and not all zero")
+        for name, minimum, maximum in (("reserve_percent", 0, 99), ("smoothing_hours", 1, 168),
+                                        ("scout_limit", 1, 16), ("timeout_seconds", 30, 86400)):
+            value = getattr(self, name)
+            if not isinstance(value, (int, float)) or not math.isfinite(value) or not minimum <= value <= maximum or name in ("scout_limit", "timeout_seconds") and not isinstance(value, int):
+                errors.append(f"workflow.{name} must be between {minimum} and {maximum}")
+        if self.review.policy not in ("off", "auto", "always"):
+            errors.append("workflow.review.policy must be off, auto, or always")
+        if self.review.github_provider not in ("auto", "local", "codex", "claude"):
+            errors.append("workflow.review.github_provider must be auto, local, codex, or claude")
+        for name in ("max_files", "max_lines", "max_rounds", "wait_seconds"):
+            value = getattr(self.review, name)
+            if not isinstance(value, int) or value < 1:
+                errors.append(f"workflow.review.{name} must be a positive integer")
+        for tier, models in self.tiers.items():
+            for provider, spec in models.items():
+                efforts = ("low", "medium", "high", "xhigh", "max") if provider == "claude" else ("low", "medium", "high", "xhigh", "max", "ultra")
+                if spec.get("effort") not in efforts:
+                    errors.append(f"workflow.tiers.{tier}.{provider}: invalid effort")
+        return errors
+
+    @classmethod
+    def from_dict(cls, data):
+        data = _mapping(data)
+        result = cls()
+        result.enabled = _bool(data, "enabled", False)
+        result.routing = _str(data, "routing") or result.routing
+        for key in ("fallback", "auto_push"):
+            setattr(result, key, _bool(data, key, getattr(result, key)))
+        for key in ("reserve_percent", "smoothing_hours", "scout_limit", "timeout_seconds"):
+            setattr(result, key, _number(data, key, getattr(result, key)))
+        weights = _mapping(data.get("weights"))
+        result.weights = {p: _number(weights, p, 1) for p in AGENT_PROVIDERS}
+        tiers = _mapping(data.get("tiers"))
+        for tier in result.tiers:
+            for provider in AGENT_PROVIDERS:
+                spec = _mapping(_mapping(tiers.get(tier)).get(provider))
+                result.tiers[tier][provider] = {
+                    "model": _str(spec, "model"), "effort": _str(spec, "effort") or "medium"}
+        result.review = ReviewConfig.from_dict(data.get("review"))
+        return result
 
 
 @dataclass
@@ -592,9 +599,9 @@ class Config:
     env: EnvConfig = field(default_factory=EnvConfig)
     skills: SkillsConfig = field(default_factory=SkillsConfig)
     image: ImageConfig = field(default_factory=ImageConfig)
-    vikunja: VikunjaConfig = field(default_factory=VikunjaConfig)
+    tracker: TrackerConfig = field(default_factory=TrackerConfig)
     browser: BrowserConfig = field(default_factory=BrowserConfig)
-    flow_next: FlowNextConfig = field(default_factory=FlowNextConfig)
+    workflow: WorkflowConfig = field(default_factory=WorkflowConfig)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -607,9 +614,9 @@ class Config:
             "env": self.env.to_dict(),
             "skills": self.skills.to_dict(),
             "image": self.image.to_dict(),
-            "vikunja": self.vikunja.to_dict(),
+            "tracker": self.tracker.to_dict(),
             "browser": self.browser.to_dict(),
-            "flow_next": self.flow_next.to_dict(),
+            "workflow": self.workflow.to_dict(),
         }
 
     @classmethod
@@ -625,9 +632,9 @@ class Config:
             env=EnvConfig.from_dict(data.get("env")),
             skills=SkillsConfig.from_dict(data.get("skills")),
             image=ImageConfig.from_dict(data.get("image")),
-            vikunja=VikunjaConfig.from_dict(data.get("vikunja")),
+            tracker=TrackerConfig.from_dict(data.get("tracker")),
             browser=BrowserConfig.from_dict(data.get("browser")),
-            flow_next=FlowNextConfig.from_dict(data.get("flow_next")),
+            workflow=WorkflowConfig.from_dict(data.get("workflow")),
         )
 
 
@@ -644,3 +651,16 @@ def load_config(path: Path | None = None) -> Config:
 
 def save_config(config: Config, path: Path | None = None) -> None:
     atomic_write_json(CONFIG_FILE if path is None else path, config.to_dict(), SECRET_MODE)
+
+
+def effective_config() -> Config:
+    """Inside a box, read only the rendered capability subset, never host config."""
+    import os
+    runtime_file = os.environ.get("AGENT_BOX_RUNTIME_CONFIG")
+    if not runtime_file:
+        return load_config()
+    from .errors import AgentBoxError
+    try:
+        return Config.from_dict(read_json(Path(runtime_file)))
+    except (OSError, ValueError, TypeError) as exc:
+        raise AgentBoxError(f"Cannot read rendered workflow configuration: {exc}") from None

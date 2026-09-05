@@ -1,0 +1,169 @@
+"""GitHub PR primitives; ab-land owns the bounded, sequential fix conversation."""
+from __future__ import annotations
+
+import json
+import subprocess
+import tempfile
+from pathlib import Path
+
+from .errors import AgentBoxError
+from .tracker.core import completion_reasons, blocking_reasons
+from . import git_workflow as gw
+
+
+def gh(root, *args, json_output=False):
+    try:
+        result = subprocess.run(["gh", *map(str, args)], cwd=root, capture_output=True, text=True, timeout=90)
+    except (OSError, subprocess.TimeoutExpired):
+        raise AgentBoxError("GitHub CLI unavailable or timed out") from None
+    if result.returncode:
+        raise AgentBoxError("GitHub command failed: " + result.stderr.strip()[:1500])
+    if json_output:
+        try:
+            return json.loads(result.stdout)
+        except ValueError:
+            raise AgentBoxError("GitHub returned malformed JSON") from None
+    return result.stdout.strip()
+
+
+def view(root, repo, reference):
+    return gh(root, "pr", "view", reference, "--repo", repo, "--json",
+              "number,url,state,isDraft,headRefName,headRefOid,baseRefName,mergeStateStatus,mergeable,reviewDecision,latestReviews,statusCheckRollup,mergeCommit,mergedAt", json_output=True)
+
+
+def threads(root, repo, number):
+    owner, name = repo.split("/")
+    query = """query($owner:String!,$name:String!,$number:Int!,$endCursor:String) {
+      repository(owner:$owner,name:$name) { pullRequest(number:$number) {
+        reviewThreads(first:100,after:$endCursor) { nodes { id isResolved isOutdated path line
+          comments(first:100) { nodes { id body url author { login } commit { oid } } pageInfo { hasNextPage } }
+        } pageInfo { hasNextPage endCursor } }
+      } }
+    }"""
+    pages = gh(root, "api", "graphql", "--paginate", "--slurp", "-f", "query=" + query,
+               "-f", "owner=" + owner, "-f", "name=" + name, "-F", f"number={number}", json_output=True)
+    result = []
+    for page in pages:
+        if page.get("errors"):
+            raise AgentBoxError("GitHub could not read complete PR review threads")
+        for thread in page["data"]["repository"]["pullRequest"]["reviewThreads"]["nodes"]:
+            if thread["comments"]["pageInfo"]["hasNextPage"]:
+                raise AgentBoxError("A review thread exceeds 100 comments; inspect it explicitly before landing")
+            result.append(thread)
+    return result
+
+
+def blockers(pr, review_threads, saved):
+    reasons = []
+    if pr["state"] != "OPEN" or pr["isDraft"]:
+        reasons.append("PR must be open and ready for review")
+    if pr["mergeable"] != "MERGEABLE" or pr["mergeStateStatus"] not in ("CLEAN", "HAS_HOOKS"):
+        reasons.append("GitHub merge readiness is not confirmed")
+    if pr.get("reviewDecision") in ("CHANGES_REQUESTED", "REVIEW_REQUIRED"):
+        reasons.append("GitHub review requirements are not satisfied")
+    for check in pr.get("statusCheckRollup") or []:
+        if check.get("__typename") == "StatusContext":
+            passed = check.get("state") == "SUCCESS"
+        else:
+            passed = check.get("status") == "COMPLETED" and check.get("conclusion") in ("SUCCESS", "NEUTRAL", "SKIPPED")
+        if not passed:
+            reasons.append("CI pending or failed: " + (check.get("name") or check.get("context") or "unknown check"))
+    if any(not thread["isResolved"] for thread in review_threads):
+        reasons.append("Unresolved review threads remain")
+    approved = any(review.get("state") == "APPROVED" and (review.get("commit") or {}).get("oid") == pr["headRefOid"]
+                   for review in pr.get("latestReviews") or [])
+    if not approved and saved.get("review", {}).get("verdict") != "PASS":
+        reasons.append("Need a current-head GitHub approval or a fresh local PASS; silence is not approval")
+    if not saved.get("validation"):
+        reasons.append("Local validation for the current scope is missing")
+    return reasons
+
+
+def request_review(root, repo, pr, config):
+    choice = config.github_provider
+    if choice in ("local", "auto"):
+        return {"provider": "local", "next": "Run ab-review in fresh context; configure codex or claude for explicit cloud review"}
+    if choice == "codex" and (config.github_model or config.github_effort):
+        raise AgentBoxError("GitHub @codex review cannot pin model/effort; clear cloud overrides or select local review")
+    if choice == "claude":
+        workflow = root / ".github/workflows/claude.yml"
+        if not workflow.is_file():
+            raise AgentBoxError("Configure a Claude GitHub Action first, or use local review")
+        source = workflow.read_text()
+        if "anthropics/claude-code-action@" not in source:
+            raise AgentBoxError("Cannot identify the Claude Action; use local review or inspect the workflow")
+        for flag, value in (("--model", config.github_model), ("--effort", config.github_effort)):
+            if value and f"{flag} {value}" not in source:
+                raise AgentBoxError(f"Claude Action must configure claude_args with {flag} {value}; comments cannot pin it")
+    body = (f"@{choice} review\n\nReview commit {pr['headRefOid']} against this PR's acceptance criteria. "
+            "Report actionable findings with file, line, evidence and requirement. Do not change code. "
+            "State explicitly when no issues are found.")
+    with tempfile.TemporaryDirectory(prefix="agent-box-pr-") as temporary:
+        file = Path(temporary) / "comment.md"
+        file.write_text(body)
+        gh(root, "pr", "comment", pr["number"], "--repo", repo, "--body-file", file)
+    return {"provider": choice, "requested_head": pr["headRefOid"], "wait_seconds": config.wait_seconds,
+            "next": "Read feedback; absence of a current-head approval requires local review"}
+
+
+def operate(args, root, config, adapter, task, parent, info, saved):
+    from .workflow import record, tree
+    if not (config.github.gh_token or config.github.gh_config):
+        raise AgentBoxError("Enable the GitHub integration in agent-box config before workflow GitHub actions")
+    if task.id != parent.id:
+        raise AgentBoxError("Create and land one PR for the parent task")
+    repo = gw.github_origin(root)
+    if gw.current_branch(root) != info["branch"]:
+        raise AgentBoxError("Use the recorded parent branch for PR operations")
+    if args.command == "pr":
+        if task.state != "Review" or not saved.get("validation"):
+            raise AgentBoxError("Finish parent acceptance and validation before opening a PR")
+        if any(child.state != "Done" for child in tree(adapter, task) if child.id != task.id):
+            raise AgentBoxError("All subtasks must be integrated before opening the parent PR")
+        gw.push_parent(root, info["branch"], info["base"])
+        existing = gh(root, "pr", "list", "--repo", repo, "--head", info["branch"], "--base", info["base"],
+                      "--state", "open", "--json", "number,url", json_output=True)
+        if len(existing) > 1:
+            raise AgentBoxError("Multiple matching PRs; select the intended PR explicitly")
+        if not existing:
+            command = ["pr", "create", "--repo", repo, "--base", info["base"], "--head", info["branch"],
+                       "--title", args.title, "--body-file", str(Path(args.body_file).resolve())]
+            if args.draft:
+                command.append("--draft")
+            gh(root, *command)
+        pr = view(root, repo, info["branch"])
+        record(adapter, task, pr=pr["number"], github_repo=repo)
+        return pr
+    if not info.get("pr") or info.get("github_repo") != repo:
+        raise AgentBoxError("No PR recorded for this parent and GitHub repository")
+    pr = view(root, repo, info["pr"])
+    if pr["headRefName"] != info["branch"] or pr["baseRefName"] != info["base"]:
+        raise AgentBoxError("PR branch identity differs from the tracked parent")
+    if args.action == "reconcile" or pr["state"] == "MERGED":
+        if pr["state"] != "MERGED" or not pr.get("mergedAt") or not pr.get("mergeCommit"):
+            raise AgentBoxError("GitHub has not confirmed an actual merge")
+        if task.state != "Done":
+            adapter.set_state(task, "Done")
+        return {"task": task.id, "state": "Done", "merge": pr["mergeCommit"], "url": pr["url"]}
+    if pr["headRefOid"] != gw.head_sha(root):
+        raise AgentBoxError("Local and remote parent heads differ; reconcile before review or merge")
+    if args.action == "request-review":
+        return request_review(root, repo, pr, config.workflow.review)
+    feedback = threads(root, repo, pr["number"])
+    reasons = blockers(pr, feedback, saved)
+    reasons += completion_reasons(task, tree(adapter, task), str(adapter.identity()["id"]), states=("Review",))
+    reasons += blocking_reasons(task, adapter.get)
+    if args.action == "inspect":
+        comments = gh(root, "api", "--paginate", "--slurp", f"repos/{repo}/issues/{pr['number']}/comments", json_output=True)
+        return {"pr": pr, "threads": feedback, "comments": [c for page in comments for c in page],
+                "blockers": reasons, "max_rounds": config.workflow.review.max_rounds,
+                "wait_seconds": config.workflow.review.wait_seconds}
+    if reasons:
+        raise AgentBoxError("Cannot merge: " + "; ".join(reasons))
+    gh(root, "pr", "merge", pr["number"], "--repo", repo, "--" + args.method,
+       "--match-head-commit", pr["headRefOid"])
+    merged = view(root, repo, pr["number"])
+    if merged["state"] != "MERGED":
+        return {"state": merged["state"], "next": "Wait for GitHub merge queue; do not mark the task Done"}
+    adapter.set_state(task, "Done")
+    return {"task": task.id, "state": "Done", "url": merged["url"], "merge": merged["mergeCommit"]}

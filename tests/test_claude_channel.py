@@ -572,57 +572,20 @@ class RuntimeNotificationSelectionTests(unittest.TestCase):
 
 
 class ConfigEnableGatingTests(unittest.TestCase):
-    """`agent-box config` must not store an enabled channel that cannot work."""
+    def test_missing_channel_prerequisites_prevent_menu_save(self):
+        from agent_box import config_menu
+        config = Config()
+        config.claude.telegram_channel = True
+        with mock.patch.object(cli.channel_module, "missing_requirements", return_value=["Install the Telegram plugin"]):
+            self.assertIn("Install the Telegram plugin", config_menu.validate(config))
 
-    def setUp(self):
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        self.root = Path(tmp.name)
-        self.config_file = self.root / "config.json"
-
-    def _run_config(self, *, ready, answers):
-        home = claude_home(str(self.root / "claude"), plugin=ready, token=ready)
-        saved = {}
-        out = io.StringIO()
-        # getpass must be mocked too, or a token prompt reads the real tty and
-        # the test hangs instead of failing.
-        # Every artifact config_interactive derives belongs to the real host --
-        # the skills in ~/.agents, the links in ~/.claude, the rendered
-        # credentials. All of them are stubbed: a test that configures a fake
-        # Telegram channel must not install or delete anything in the home
-        # directory of whoever is running the suite.
-        from agent_box import runtime
-        with mock.patch.object(cli.getpass, "getpass", return_value=""), \
-             mock.patch.object(cli.channel_module, "CLAUDE_HOME", home), \
-             mock.patch.object(cli, "CONFIG_FILE", self.config_file), \
-             mock.patch.object(cli, "CLAUDE_HOME", self.root / "claude"), \
-             mock.patch.object(cli, "load_config", return_value=Config()), \
-             mock.patch.object(cli, "save_config", lambda c, *a: saved.update(c.to_dict())), \
-             mock.patch.object(cli.notify_module, "sync_credentials"), \
-             mock.patch.object(cli.notify_module, "remove_claude_notify_hooks"), \
-             mock.patch.object(runtime, "sync_vikunja_credentials"), \
-             mock.patch.object(runtime, "sync_managed_skills"), \
-             mock.patch.object(runtime, "claude_skill_links"), \
-             mock.patch.object(cli, "config_show"), \
-             mock.patch.object(cli, "_configure_path"), \
-             mock.patch("builtins.input", side_effect=list(answers) + [""] * 40), \
-             redirect_stdout(out):
-            cli.config_interactive()
-        return saved, out.getvalue()
-
-    def test_cannot_enable_before_the_plugin_exists(self):
-        saved, out = self._run_config(ready=False, answers=["y"])
-        self.assertFalse(saved["claude"]["telegram_channel"])
-        self.assertIn("Not available yet", out)
-        self.assertIn(f"/plugin install {CLAUDE_TELEGRAM_PLUGIN}", out)
-
-    def test_ready_prerequisites_allow_enabling(self):
-        saved, _ = self._run_config(ready=True, answers=["y"])
-        self.assertTrue(saved["claude"]["telegram_channel"])
-
-    def test_ready_prerequisites_still_allow_declining(self):
-        saved, _ = self._run_config(ready=True, answers=["n"])
-        self.assertFalse(saved["claude"]["telegram_channel"])
+    def test_ready_channel_can_be_saved_or_left_disabled(self):
+        from agent_box import config_menu
+        with mock.patch.object(cli.channel_module, "missing_requirements", return_value=[]):
+            for enabled in (True, False):
+                config = Config()
+                config.claude.telegram_channel = enabled
+                self.assertEqual(config_menu.validate(config), [])
 
 
 class ConfigCheckHonestyTests(unittest.TestCase):

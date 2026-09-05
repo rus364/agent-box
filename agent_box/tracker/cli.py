@@ -1,0 +1,201 @@
+"""The public tracker command; provider extensions stay explicitly named."""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+from dataclasses import asdict
+from pathlib import Path
+
+from ..config import effective_config
+from ..errors import AgentBoxError
+from ..repo_binding import Binding, repository_root, write_setup
+from .core import STATES, Task, TrackerError, check_worker_scope, checkboxes, claim, ready_tasks, set_checkbox
+from .registry import make_adapter
+
+
+def text_file(path):
+    return sys.stdin.read() if path == "-" else Path(path).read_text(encoding="utf-8")
+
+
+def emit(value):
+    print(json.dumps(value.to_dict() if isinstance(value, Task) else value, ensure_ascii=False, indent=2))
+
+
+def parser():
+    p = argparse.ArgumentParser(prog="agent-box tracker")
+    p.add_argument("--provider", help="Override the configured provider")
+    sub = p.add_subparsers(dest="command", required=True)
+    sub.add_parser("status")
+    projects = sub.add_parser("projects")
+    projects.add_argument("query", nargs="?", default="")
+    for name in ("search", "ready", "next"):
+        cmd = sub.add_parser(name)
+        if name == "search":
+            cmd.add_argument("query", nargs="?", default="")
+        cmd.add_argument("--project")
+        cmd.add_argument("--recursive", action="store_true")
+    for name in ("get", "comments", "checklist", "claim", "update", "state", "check", "comment", "tier", "relation"):
+        cmd = sub.add_parser(name)
+        cmd.add_argument("task")
+        if name == "claim":
+            cmd.add_argument("--resume", action="store_true")
+        elif name == "state":
+            cmd.add_argument("state", choices=STATES)
+        elif name == "check":
+            cmd.add_argument("index", type=int)
+            cmd.add_argument("--text", required=True, help="Expected current checklist item text")
+            cmd.add_argument("--undo", action="store_true")
+        elif name == "comment":
+            cmd.add_argument("--file", required=True, help="UTF-8 text file, or - for stdin")
+        elif name == "tier":
+            cmd.add_argument("tier", type=int, choices=(1, 2, 3))
+        elif name == "relation":
+            cmd.add_argument("kind", choices=("parent", "child", "blocks", "blocked-by", "related", "duplicate"))
+            cmd.add_argument("other")
+            cmd.add_argument("--remove", action="store_true")
+        elif name == "update":
+            cmd.add_argument("--title")
+            cmd.add_argument("--description-file")
+            cmd.add_argument("--priority", type=int, choices=range(6))
+    cmd = sub.add_parser("create")
+    cmd.add_argument("--project")
+    cmd.add_argument("--title", required=True)
+    cmd.add_argument("--description-file", required=True)
+    cmd.add_argument("--parent")
+    cmd.add_argument("--tier", type=int, choices=(1, 2, 3))
+    cmd = sub.add_parser("setup")
+    cmd.add_argument("--project", required=True)
+    cmd.add_argument("--view")
+    cmd.add_argument("--states-file", help="JSON object mapping required state names to bucket IDs")
+    cmd.add_argument("--base-branch", default="")
+    cmd.add_argument("--recursive", action="store_true")
+    cmd.add_argument("--apply", action="store_true", help="Save binding and managed repository instructions")
+    cmd = sub.add_parser("provider")
+    cmd.add_argument("provider", choices=("vikunja",))
+    cmd.add_argument("arguments", nargs=argparse.REMAINDER)
+    return p
+
+
+def context(provider=None, require_binding=False):
+    binding = None
+    try:
+        root = repository_root()
+    except AgentBoxError:
+        root = None
+    if root and ((root / ".agent-box.json").exists() or (root / ".agent-box.json").is_symlink()):
+        binding = Binding.load(root)
+    if require_binding and binding is None:
+        raise TrackerError("This operation needs a repository binding; run ab-setup")
+    return make_adapter(binding, provider), binding, root
+
+
+def dispatch(args):
+    reads = {"status", "projects", "search", "ready", "next", "get", "comments", "checklist"}
+    if args.command not in reads | {"provider"} and not (args.command == "setup" and not args.apply):
+        check_worker_scope(args.command, getattr(args, "task", None), os.environ)
+    if args.command == "provider":
+        from .extensions import run
+        adapter, _, _ = context(args.provider)
+        return run(adapter, args.arguments)
+    if args.command == "setup":
+        adapter = make_adapter(provider=args.provider)
+        project = adapter.project(args.project)
+        discovery = adapter.lifecycle(str(project["id"]), args.view)
+        states = json.loads(text_file(args.states_file)) if args.states_file else discovery["proposed"]
+        if not isinstance(states, dict):
+            raise TrackerError("States file must contain a JSON object")
+        binding = Binding(args.provider or effective_config().tracker.provider,
+                          effective_config().tracker.connection(args.provider).url,
+                          str(project["id"]), str(discovery["view"]["id"]),
+                          {key: str(value) for key, value in states.items()}, args.recursive, args.base_branch)
+        if not args.apply:
+            return {"binding": asdict(binding), "discovery": discovery, "apply": False}
+        binding.validate()
+        buckets = {str(b["id"]): b for b in discovery["buckets"]}
+        if not set(binding.states.values()) <= buckets.keys():
+            raise TrackerError("Mapping contains a bucket outside the selected view")
+        if discovery["view"].get("bucket_configuration_mode") == "filter":
+            raise TrackerError("Workflow requires a manually managed kanban view")
+        done_bucket = discovery["view"].get("done_bucket_id")
+        if done_bucket and str(done_bucket) != binding.states["Done"]:
+            raise TrackerError("Done must map to the view's configured done bucket")
+        return {"written": write_setup(repository_root(), binding), "binding": asdict(binding)}
+    adapter, binding, root = context(args.provider, args.command in ("ready", "next", "claim", "state"))
+    if args.command == "status":
+        user = adapter.identity()
+        return {"provider": args.provider or (binding.provider if binding else effective_config().tracker.provider),
+                "user": {"id": str(user["id"]), "username": user.get("username")},
+                "capabilities": sorted(adapter.capabilities), "binding": asdict(binding) if binding else None}
+    if args.command == "projects":
+        return [{"id": str(p["id"]), "title": p["title"], "parent": str(p.get("parent_project_id") or "")}
+                for p in adapter.projects() if args.query.casefold() in p["title"].casefold()]
+    if args.command in ("search", "ready", "next", "create"):
+        project = args.project or (binding.project if binding else None)
+        if not project:
+            raise TrackerError("Resolve a project first: pass --project or run ab-setup")
+        if args.command == "create":
+            task = adapter.create(str(adapter.project(project)["id"]), args.title,
+                                  text_file(args.description_file), args.parent)
+            return adapter.set_tier(task.id, args.tier) if args.tier else task
+        tasks = adapter.search(project, getattr(args, "query", ""), args.recursive or bool(binding and binding.recursive))
+        if args.command in ("ready", "next"):
+            tasks = ready_tasks(tasks, adapter.get, str(adapter.identity()["id"]))
+        results = [task.to_dict(full=False) for task in tasks]
+        return (results[0] if results else None) if args.command == "next" else results
+    task = adapter.get(args.task)
+    if args.command == "get":
+        return {**task.to_dict(), "comments": adapter.comments(task.id)}
+    if args.command == "comments":
+        return adapter.comments(task.id)
+    if args.command == "checklist":
+        return [{key: item[key] for key in ("index", "checked", "text")} for item in checkboxes(task.description)]
+    if args.command == "claim":
+        from ..workflow_state import lock
+        with lock(root, "claim"):
+            return claim(adapter, task.id, args.resume)
+    if args.command == "update":
+        fields = {name: value for name in ("title", "priority") if (value := getattr(args, name)) is not None}
+        if args.description_file:
+            fields["description"] = text_file(args.description_file)
+        if not fields:
+            raise TrackerError("No changes requested")
+        return adapter.update(task, fields)
+    if args.command == "state":
+        if args.state == "Done":
+            raise TrackerError("Use agent-box workflow finish to verify integration or merge before Done")
+        if args.state == "Doing":
+            raise TrackerError("Use agent-box tracker claim to assign and start a task")
+        return adapter.set_state(task, args.state)
+    if args.command in ("check", "comment"):
+        if os.environ.get("AGENT_BOX_ROLE") == "worker":
+            user = str(adapter.identity()["id"])
+            if task.state != "Doing" or task.assignees != [user]:
+                raise TrackerError("Progress requires your assigned Doing task", "conflict")
+    if args.command == "check":
+        return adapter.update(task, {"description": set_checkbox(task.description, args.index, not args.undo, args.text)})
+    if args.command == "comment":
+        return adapter.comment(task.id, text_file(args.file))
+    if args.command == "tier":
+        return adapter.set_tier(task.id, args.tier)
+    if args.command == "relation":
+        return adapter.relate(task.id, args.kind, args.other, args.remove)
+    raise TrackerError("Unsupported tracker operation")
+
+
+def main(argv):
+    try:
+        result = dispatch(parser().parse_args(argv))
+        emit(result)
+        if isinstance(result, dict):
+            verification = result.get("verification")
+            if isinstance(verification, dict) and verification.get("ok") is False or result.get("ok") is False and "errors" in result:
+                return 3
+        return 0
+    except (OSError, ValueError) as exc:
+        print(json.dumps({"error": str(exc), "category": "input"}), file=sys.stderr)
+        return 2
+    except TrackerError as exc:
+        print(json.dumps({"error": str(exc), "category": exc.category, "retryable": exc.retryable}), file=sys.stderr)
+        return 2

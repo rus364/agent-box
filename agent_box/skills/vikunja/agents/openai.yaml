@@ -1,4 +1,0 @@
-interface:
-  display_name: "Vikunja"
-  short_description: "Safely inspect and manage Vikunja tasks"
-  default_prompt: "Use $vikunja to inspect or safely update my Vikunja task data."

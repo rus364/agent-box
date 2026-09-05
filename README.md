@@ -180,8 +180,8 @@ agent-box --host claude
 ```
 
 Runs the installed CLI directly, with your normal host environment and
-credentials — no Podman. Flow-Next detection, review routing, Flowctl
-resolution and auto-push policy are shared with container mode. The
+credentials — no Podman. Tracker commands, task workflow, model routing and
+parent-branch push policy are shared with container mode. The
 [agent browser](docs/integrations/browser.md) is not: it is a capability of the
 workspace image, and agent-box never rewrites your host agent configuration to
 fake one.
@@ -195,13 +195,16 @@ One versioned JSON file:
 ```
 
 ```bash
-agent-box config        # ask, save, and apply
+agent-box config        # menu: arrows, Space, Enter; save and apply
 agent-box config show   # print current settings, tokens redacted
 agent-box config check  # verify the Claude Telegram channel setup
 agent-box config apply  # apply the saved file without asking anything
 ```
 
-`agent-box config` ends by applying what you answered: installing the skills
+`agent-box config` uses Python’s standard-library curses menu, with no extra
+packages or installer. Space toggles options; Enter opens sections or edits a
+value; Escape goes back. Cancel writes nothing. Save and apply performs the
+selected changes, including optional PATH setup: installing the skills
 your integrations need, linking them for Claude, rendering credential files, and
 reconciling Claude's `settings.json`. `agent-box config apply` does the same
 from the saved file, without any questions — which is what you want after
@@ -284,8 +287,8 @@ All off by default and independent of each other. See
 **[docs/integrations](docs/integrations/)** for the full set; briefly:
 
 - **[Shared skills](docs/integrations/skills.md)** — one skill tree both agents read, plus three engineering-practice skills agent-box ships.
-- **[Vikunja](docs/integrations/vikunja.md)** — task tracking both agents can read and update, installed and configured by agent-box itself.
-- **[Flow-Next](docs/integrations/flow-next.md)** — review routing, Flowctl resolution, and fail-closed auto-push.
+- **[Tracker](docs/integrations/tracker.md)** — portable task commands, repository setup and a working Vikunja API v2 provider.
+- **[Workflow](docs/integrations/workflow.md)** — sequential tracked work, configurable provider/model routing, fresh review and parent GitHub PRs.
 - **[Agent browser](docs/integrations/browser.md)** — a headless browser inside the box for agents to drive.
 - **[Telegram](docs/integrations/telegram.md)** — Anthropic's official control channel, plus one-way notifications.
 - **[Git and GitHub](docs/integrations/git.md)** — what of your Git and GitHub setup reaches a session.
@@ -399,7 +402,7 @@ python3 -m unittest discover -s tests
 ```
 
 The full suite exercises workspace resolution, identity handling, configuration
-gates, mounts, tmux and session lifecycle, notifications, Flow-Next policy, Git
+gates, mounts, tmux and session lifecycle, notifications, tracker/workflow policy, Git
 safety checks, skill installation and container behaviour.
 
 ## Troubleshooting
@@ -476,7 +479,5 @@ Telegram bot platform, or Codex remote-control protocol.
 
 MIT — see [LICENSE](LICENSE).
 
-The skills under `agent_box/skills/` vendored from
-[obra/superpowers](https://github.com/obra/superpowers) are MIT-licensed by
-their author and carry their own `LICENSE`; `agent_box/skills/VENDORED.json`
-records the exact upstream release each copy came from.
+The owned skills are maintained with this repository. See
+[workflow design references](docs/workflow-references.md) for provenance and reuse decisions.

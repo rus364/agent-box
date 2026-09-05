@@ -169,13 +169,13 @@ class CodexBrowserInjectionTests(IsolatedRuntimeTest):
         self.addCleanup(patch.stop)
 
     def test_disabled_adds_no_mcp_configuration(self):
-        command = runtime.codex_command(["exec", "hi"], browser_config(False), False, None)
+        command = runtime.codex_command(["exec", "hi"], browser_config(False), None)
         self.assertEqual(command, [
             "codex", "--dangerously-bypass-approvals-and-sandbox", "exec", "hi"])
 
     def test_enabled_registers_the_agent_box_browser_server(self):
         command = runtime.codex_command(
-            ["exec", "hi"], browser_config(), False, Path("/state/browser/codex-7"))
+            ["exec", "hi"], browser_config(), Path("/state/browser/codex-7"))
         override = command[command.index("-c") + 1]
         self.assertTrue(override.startswith("mcp_servers.agent_box_browser={"))
         self.assertIn('command="playwright-mcp"', override)
@@ -208,7 +208,7 @@ class CodexBrowserInjectionTests(IsolatedRuntimeTest):
             before = config_path.read_bytes()
             with mock.patch.object(runtime, "CODEX_HOME", codex_home):
                 command = runtime.codex_command(
-                    ["exec", "hi"], browser_config(), False, Path("/state/browser/codex-7"))
+                    ["exec", "hi"], browser_config(), Path("/state/browser/codex-7"))
             self.assertEqual(before, config_path.read_bytes(),
                              "the host Codex config must never be rewritten")
         overrides = [command[i + 1] for i, arg in enumerate(command) if arg == "-c"]
@@ -221,7 +221,7 @@ class CodexBrowserInjectionTests(IsolatedRuntimeTest):
                 enabled=True, telegram_token="t", telegram_chat_id="c"),
             browser=BrowserConfig(enabled=True),
         )
-        command = runtime.codex_command(["exec", "hi"], config, False, Path("/state/b/codex-1"))
+        command = runtime.codex_command(["exec", "hi"], config, Path("/state/b/codex-1"))
         overrides = [command[i + 1] for i, arg in enumerate(command) if arg == "-c"]
         self.assertIn('notify=["agent-box","notify","codex"]', overrides)
         self.assertTrue(any(o.startswith("mcp_servers.agent_box_browser=") for o in overrides))
@@ -453,28 +453,14 @@ class ConfigSurfaceTests(unittest.TestCase):
         PATH step would install -- belongs to the real host, so all of them
         are stubbed; only the Config handed to save_config matters here.
         """
-        from agent_box import flow_push
-
-        answered = (lambda _label, current: current) if answer is None else (
-            lambda _label, _current: answer)
+        from agent_box import config_menu
+        changed = Config.from_dict(config.to_dict())
+        if answer is not None:
+            changed.browser.enabled = answer
         with mock.patch.object(cli_module, "load_config", return_value=config), \
              mock.patch.object(cli_module, "save_config") as save, \
-             mock.patch.object(cli_module, "_configure_path"), \
-             mock.patch.object(cli_module, "_prompt_bool", side_effect=answered), \
-             mock.patch.object(cli_module, "_prompt_secret", side_effect=lambda _l, current: current), \
-             mock.patch.object(cli_module, "_prompt_text", side_effect=lambda _l, current: current), \
-             mock.patch.object(cli_module, "_prompt_env_names", side_effect=lambda _l, current: current), \
-             mock.patch.object(
-                 cli_module, "_prompt_env_assignments", side_effect=lambda _l, current: current), \
-             mock.patch.object(cli_module, "_prompt_choice", side_effect=lambda _l, _c, current: current), \
-             mock.patch.object(runtime, "sync_vikunja_credentials"), \
-             mock.patch.object(runtime, "sync_managed_skills"), \
-             mock.patch.object(runtime, "claude_skill_links"), \
-             mock.patch.object(cli_module.channel_module, "missing_requirements", return_value=[]), \
-             mock.patch.object(cli_module.notify_module, "sync_credentials"), \
-             mock.patch.object(cli_module.claude_settings, "reconcile_claude_settings"), \
-             mock.patch.object(flow_push, "install_flow_push_hooks"), \
-             mock.patch.object(flow_push, "remove_flow_push_hooks"):
+             mock.patch.object(config_menu, "edit", return_value=config_menu.EditResult(changed)), \
+             mock.patch.object(runtime, "apply_config", return_value=[]):
             buffer = io.StringIO()
             with contextlib.redirect_stdout(buffer):
                 cli_module.config_interactive()
@@ -494,12 +480,12 @@ class ConfigSurfaceTests(unittest.TestCase):
         self.assertFalse(self._interactive(browser_config(False), None).browser.enabled)
         self.assertTrue(self._interactive(browser_config(True), None).browser.enabled)
 
-    def test_interactive_prompt_states_the_trust_boundary(self):
-        with self._isolated_config_ui(browser_config(False)) as (_save, text):
-            pass
-        self.assertIn("headless Chromium", text)
-        self.assertIn("isolated, in-memory", text)
-        self.assertIn("same side of the", text)
+    def test_menu_explains_the_browser_trust_boundary(self):
+        from agent_box.config_menu import HELP
+        text = HELP["browser.enabled"]
+        self.assertIn("Chromium", text)
+        self.assertIn("in-memory", text)
+        self.assertIn("trust boundary", text)
         self.assertIn("--host", text)
 
 

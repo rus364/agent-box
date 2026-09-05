@@ -1,7 +1,7 @@
 """Everything agent-box manages inside Claude's ``~/.claude/settings.json``.
 
 Two kinds of setting live here. **Hook entries**: ``agent_box.notify``
-(outbound notifications) and ``agent_box.flow_push`` (Flow-Next auto-push)
+(outbound notifications)
 install and remove their own managed commands independently of each other and
 without disturbing any hook the user configured by hand, using the generic
 "append this entry if missing" / "remove entries using these commands"
@@ -228,5 +228,7 @@ def reconcile_claude_settings(
     """
     from .notify import claude_notify_plan
     owned, entries = claude_notify_plan(notifications)
+    # Applying the current integration also removes its retired owned handler.
+    owned["Stop"] = (*owned.get("Stop", ()), "agent-box flow-next stop")
     return reconcile_hook_entries(
         settings_path, owned, entries, statusline=statusline)
