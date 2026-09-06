@@ -64,15 +64,16 @@ project and nothing else. Nothing machine-readable is written into a tracker
 comment: a comment is a human journal, and lifecycle is read from the tracker's
 own fields.
 
-**The coordinator is the only writer.** A delegated worker, reviewer or scout
-reads the task and the code, changes project files in the working tree, and
-returns a structured report; the coordinator decides from that report what to
-commit and what to record in the tracker and on GitHub. This is a contract, not
-credential isolation: a delegation runs either as a native subagent of the
-coordinator's own session or as a managed `codex exec` / `claude -p`, the first
-of which inherits the coordinator's workspace, `.git` and credentials, so the
-two backends deliberately share one contract and one set of checks rather than
-one of them acquiring private restrictions. What follows a report is therefore
+**The coordinator is the only writer.** A delegated worker reads the task and
+the code, changes project files in the working tree, and returns a structured
+report; a reviewer or scout reads and reports, changing nothing at all. The
+coordinator decides from that report what to commit and what to record in the
+tracker and on GitHub. This is a contract, not credential isolation: a
+delegation runs either as a native subagent of the coordinator's own session or
+as a managed `codex exec` / `claude -p`, the first of which inherits the
+coordinator's workspace, `.git` and credentials, so the two backends
+deliberately share one contract and one set of checks rather than one of them
+acquiring private restrictions. What follows a report is therefore
 detection of an obvious contract violation, not a perimeter: guards that only
 existed because the contract was wide belong deleted, not tightened. A
 delegation is bound to its repository, project, task, scope, role and tier by

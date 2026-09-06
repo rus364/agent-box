@@ -6,6 +6,7 @@ the only writer, and a handoff descriptor ties a report to the exact repository,
 tracker project, task, scope, role and tier it was prepared for.
 """
 import base64
+import inspect
 import json
 import subprocess
 import tempfile
@@ -14,6 +15,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from agent_box import git_workflow as gw
+from agent_box import provider_runner
 from agent_box import workflow
 from agent_box.config import Config
 from agent_box.errors import AgentBoxError
@@ -57,6 +59,23 @@ def clone(directory, name="clone"):
     for args in (["config", "user.name", "Test"], ["config", "user.email", "test@example.invalid"]):
         subprocess.run(["git", *args], cwd=target, check=True, capture_output=True)
     return target
+
+
+def managed_runner(provider):
+    """A fake managed runner that must also fit `provider_runner.run` itself.
+
+    Patching `workflow.run` replaces the only code that would notice a stale
+    keyword argument, so every call is first bound against the real runner's
+    signature. An argument `workflow.execute` still passes but `run` no longer
+    accepts then fails here, rather than only in a real managed delegation.
+    """
+    signature = inspect.signature(provider_runner.run)
+
+    def call(*args, **kwargs):
+        signature.bind(*args, **kwargs)
+        return provider(*args, **kwargs)
+
+    return call
 
 
 class DerivedIdentityTests(unittest.TestCase):
@@ -294,13 +313,13 @@ class WorkerHandoffTests(unittest.TestCase):
         brief = Path(self.directory.name) / "brief.md"
         brief.write_text("Implement the requirement.")
 
-        def provider(route, role, root, prompt, **kwargs):
+        def provider(route, role, root, prompt, *, timeout):
             (Path(root) / "change.py").write_text("value = 1\n")
             gw.git(root, "add", ".")
             gw.git(root, "commit", "-m", "committed under the delegation")
             return {"status": "completed", "summary": "Done", "evidence": ["edited"]}
 
-        with patch.object(workflow, "run", side_effect=provider):
+        with patch.object(workflow, "run", side_effect=managed_runner(provider)):
             with self.assertRaisesRegex(AgentBoxError, "HEAD moved"):
                 self.run_workflow("run", "1", "--role", "worker", "--primary", "codex", "--brief", str(brief))
 
@@ -308,15 +327,28 @@ class WorkerHandoffTests(unittest.TestCase):
         brief = Path(self.directory.name) / "brief.md"
         brief.write_text("Implement the requirement.")
 
-        def provider(route, role, root, prompt, **kwargs):
+        def provider(route, role, root, prompt, *, timeout):
             (Path(root) / "change.py").write_text("value = 1\n")
             return {"status": "completed", "summary": "Done", "evidence": ["edited change.py"]}
 
-        with patch.object(workflow, "run", side_effect=provider):
+        with patch.object(workflow, "run", side_effect=managed_runner(provider)):
             result = self.run_workflow("run", "1", "--role", "worker", "--primary", "codex",
                                        "--brief", str(brief))
         self.assertEqual(result["report"]["status"], "completed")
         self.assertEqual(workflow.read_evidence(self.root, self.task)["writer"], "claude")
+
+    def test_the_cli_reviewer_path_reaches_the_managed_runner_too(self):
+        """`workflow review` calls the same runner, so it breaks on the same mismatch."""
+        self.config.workflow.review.policy = "always"
+
+        def provider(route, role, root, prompt, *, timeout):
+            self.assertEqual(role, "reviewer")
+            return {"verdict": "PASS", "summary": "Reads correctly", "findings": []}
+
+        with patch.object(workflow, "run", side_effect=managed_runner(provider)):
+            result = self.run_workflow("review", "1", "--primary", "codex")
+        self.assertEqual(result["report"]["verdict"], "PASS")
+        self.assertEqual(workflow.read_evidence(self.root, self.task)["review"]["verdict"], "PASS")
 
     def test_a_worker_descriptor_cannot_be_spent_on_a_reviewer_report(self):
         """Otherwise a worker's own verdict on its own code would count as review."""

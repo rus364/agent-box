@@ -71,14 +71,14 @@ last read and the write; they are not atomic compare-and-swap.
 
 Comments are a human journal. Nothing machine-readable lives in one: branch,
 base branch and pull request come from Git and GitHub, lifecycle from the
-tracker's own fields. A worker that may comment therefore cannot reach any
-orchestrator state.
+tracker's own fields.
 
 Task content uses its language. Markdown checkboxes represent evidenced progress;
-only independent review can provide review acceptance. Workers may comment and
-check existing items on their assigned Doing task; reviewers/scouts are read-only.
-The command and skill enforce this cooperative boundary, not credential isolation.
-The orchestrator owns task requirements, lifecycle, relations and GitHub.
+only independent review can provide review acceptance. The coordinator is the
+only writer of the tracker: requirements, lifecycle, assignees, relations,
+progress comments and checkboxes. A worker changes project files and reports
+back; reviewers and scouts only read. That is a contract, not credential
+isolation, and it is the same for a native subagent and a managed CLI run.
 
 ## Product extensions
 

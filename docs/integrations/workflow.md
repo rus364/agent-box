@@ -26,41 +26,53 @@ local branch whose remote has moved ahead all stop instead of choosing.
 The base is origin's default branch, asked of the remote itself, because
 `refs/remotes/origin/HEAD` is only as fresh as the last fetch and a renamed
 default branch would otherwise keep receiving work at its old name. The local ref
-remains the offline answer. The orchestrator creates the parent branch from that
+remains the offline answer. The coordinator creates the parent branch from that
 base, then creates each subtask branch from the parent, executes it sequentially,
 and integrates it before starting the next. No parallel workers or automatic
 branch creation by delegated agents. Read-only scouts may run concurrently within
 `scout_limit`. A finished sibling unblocks after integration; a dependency in
 another parent remains blocked until that parent's merge.
 
-The primary can do tiny work directly. Larger tasks use explicit English
-handoffs; tracker comments and descriptions use the task's language. Requirements,
-relations and GitHub writes belong to the orchestrator. Workers may post progress
-and check existing items. Reviewers return findings to the orchestrator, which
-comments in the task and unchecks contradicted items. A checkbox is not a PASS.
+The coordinator is the only writer. It alone writes tracker requirements,
+lifecycle state, assignees, relations and dependencies, progress comments and
+checkboxes; it alone creates branches, commits and pushes; it alone touches
+GitHub, pull requests and merges. The coordinator may also do tiny work itself.
+Larger tasks use explicit English handoffs; tracker comments and descriptions
+use the task's language.
 
-Tracker comments carry no workflow state. Branch, base and pull request come from
-Git and GitHub; lifecycle comes from the tracker's own fields; the provider that
-actually wrote the code is local evidence. So a worker, which may comment, cannot
-reach any of it by writing one.
+A worker reads its task and the repository, changes project files in the working
+tree, and returns a structured report. It never commits, pushes, switches or
+creates a branch, never writes the tracker, and never writes GitHub. Progress
+and evidence travel back in the report, and the coordinator decides from it what
+to record. Reviewers and scouts are read-only: they change no project file and
+no tracker, Git or GitHub state either, and return findings the coordinator
+comments into the task, unchecking contradicted items. A checkbox is not a PASS.
 
-A worker changes working files and nothing else. Delegation takes a baseline -
-the branch, HEAD, a digest of every local ref, the task requirements and the
-lifecycle of the whole task tree - and the report is refused if the worker
-committed, moved a branch or a tag, or changed requirements, relations, state or
-assignment. This comparison, not the role environment variable the worker could
-unset, is what makes the boundary checkable. Accepting a worker report also drops
-any validation or review acceptance recorded before it, so a later PASS always
-describes code the worker actually left behind.
+A native subagent of the coordinator's session and a managed `codex exec` /
+`claude -p` run share exactly this logical contract. It is a contract boundary,
+not credential isolation - a native delegation inherits the coordinator's
+workspace, `.git` and credentials - so neither backend gets private
+restrictions, and what follows a worker report is detection of an obvious
+contract violation rather than a perimeter. Five cheap facts are compared
+against what the delegation was prepared with: the repository checkout and its
+tracker binding, the branch, HEAD, the tip of the branch a subtask integrates
+into, and that the task is still Doing and assigned to the coordinator's own
+user. There is no digest of the ref store, the requirements or the task tree.
+Accepting a worker report also drops any validation or review acceptance
+recorded before it, so a later PASS always describes code the worker actually
+left behind; acceptance is retired when the delegation starts as well, so a
+worker that fails or never answers leaves no stale PASS standing.
 
-The baseline never touches disk. A delegate runs as the same user, so anything in
-`WORKFLOW_STATE` is writable by it, and a saved baseline could simply be rewritten
-to describe whatever it did. `prepare` therefore returns an opaque `handoff`
-token - the baseline, the scope and the selected route, bound to this repository
-and task - which the orchestrator holds and passes to `report --handoff`. The
-delegate never sees it, so the copy that decides acceptance is out of its reach.
-The same token carries the route, so a delegate cannot widen the providers its
-report may claim either. Keep it out of briefs and prompts.
+Tracker comments carry no workflow state at all. Branch, base and pull request
+come from Git and GitHub, lifecycle comes from the tracker's own fields, and the
+provider that actually wrote the code is local evidence.
+
+`prepare` returns a `handoff` descriptor: plain, readable JSON, deliberately not
+treated as unforgeable and not a security token. It ties a later report to the
+repository, tracker project, task, scope, role, tier and route the delegation
+was prepared for, so the coordinator cannot ingest a report against the wrong
+one of several delegations in flight. The coordinator holds the descriptor and
+passes it back to `report --handoff`; each delegation needs its own `prepare`.
 
 Claude workers and reviewers run with `--safe-mode`, which is what keeps the
 context free of the user's hooks, skills, MCP servers and agents - and which also
@@ -75,7 +87,7 @@ Configure an exact model ID and effort for each provider in four tiers. Model
 fields start empty rather than guessing what the account can access. Tier 0 is
 for facts, scouting and structuring; task difficulty remains 1-3, represented in
 Vikunja by one `ab:tier:1`, `ab:tier:2` or `ab:tier:3` label. A user-set task tier
-wins over an orchestrator suggestion. Each subtask gets its own assessment.
+wins over a coordinator suggestion. Each subtask gets its own assessment.
 
 Workers/scouts choose one of three modes:
 
@@ -134,9 +146,9 @@ agent-box workflow finish TASK
 ```
 
 Native handoffs use `prepare`, then `report --file FILE --scope DIGEST --handoff
-TOKEN --provider PROVIDER` for the returned structured report. Evidence is disposable local cache,
-bound to code, task requirements and scope; another device may need to rerun
-validation/review. Only the actual writer provider survives a scope change,
+DESCRIPTOR --provider PROVIDER` for the returned structured report. Evidence is
+disposable local cache, bound to code, task requirements and scope; another
+device may need to rerun validation/review. Only the actual writer provider survives a scope change,
 because it decides who reviews the result.
 
 Review policy is off/auto/always. Auto considers explicit review labels, sensitive
@@ -149,7 +161,7 @@ are distinct from PASS. Code or requirement changes invalidate acceptance.
 `ab-land` bounds fix/review iterations by `max_rounds` (default 3), stopping on
 ambiguity or no progress. The skill keeps iteration history in the tracker; it
 must not reset the bound by restarting. Validation is a real command with an
-observed exit status; the orchestrator does not self-review.
+observed exit status; the coordinator does not self-review.
 
 ## GitHub
 

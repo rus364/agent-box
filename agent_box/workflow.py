@@ -1,12 +1,13 @@
 """Small deterministic boundaries for skills; the tracker retains authoritative state.
 
-The coordinator is the only writer: of the tracker, of Git, of GitHub. A
-delegate reads its task, changes project files in the working tree and returns a
-report, and the coordinator decides from that report what to record. That
-division is the whole contract, and it is identical whether the delegate is a
-native subagent of the coordinator's session or a managed CLI run, which is why
-nothing here inventories the tracker or the ref store to work out afterwards
-what a delegate did.
+The coordinator is the only writer: of the tracker, of Git, of GitHub. A worker
+reads its task, changes project files in the working tree and returns a report;
+a reviewer or scout reads and reports without changing anything. The coordinator
+decides from that report what to record. That division is the whole contract,
+and it is identical whether the delegate is a native subagent of the
+coordinator's session or a managed CLI run, which is why nothing here
+inventories the tracker or the ref store to work out afterwards what a delegate
+did.
 
 Nothing machine-readable is written into a tracker comment either. The branch
 comes from the task's own Git ref namespace, the base from origin's default
@@ -289,11 +290,11 @@ def route(config, role, tier, primary, writer=None):
     return result
 
 
-def execute(config, selected, role, root, prompt, task=None):
+def execute(config, selected, role, root, prompt):
     failures = []
     for candidate in [selected, *selected["fallbacks"]]:
         try:
-            report = run(candidate, role, root, prompt, timeout=config.timeout_seconds, task=task)
+            report = run(candidate, role, root, prompt, timeout=config.timeout_seconds)
             return {"route": {k: candidate[k] for k in ("provider", "model", "effort", "tier")}, "report": report, "failures": failures}
         except ProviderFailure as exc:
             failures.append({"provider": candidate["provider"], "category": exc.category})
