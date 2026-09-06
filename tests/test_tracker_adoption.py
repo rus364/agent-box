@@ -147,8 +147,12 @@ class BulkMarkerTests(unittest.TestCase):
         self.assertEqual(single.exception.category, "conflict")
 
 
-def snapshot(tasks=(), comments=None, boards=None, projects=("1",)):
-    return {"projects": [{"id": int(project)} for project in projects],
+IDENTITY = {"provider": "vikunja", "server": "https://tracker.example"}
+
+
+def snapshot(tasks=(), comments=None, boards=None, projects=("1",), **identity):
+    return {**IDENTITY, **identity,
+            "projects": [{"id": int(project)} for project in projects],
             "tasks": list(tasks), "comments": comments or {},
             "boards": boards or {}}
 
@@ -171,8 +175,8 @@ class RestoreTests(unittest.TestCase):
         from agent_box.tracker import vikunja_api
 
         return vikunja_api.plan_restore(
-            snapshot(saved, comments, boards, projects), Inventory(current, projects),
-            {project: [] for project in projects}, live_comments or {}, "1")
+            snapshot(saved, comments, boards, projects), IDENTITY, Inventory(current, projects),
+            {project: [] for project in projects}, live_comments or {})
 
     def test_task_content_labels_assignees_and_relations_go_back(self):
         saved = saved_task(5, title="Original", priority=3,
@@ -208,15 +212,61 @@ class RestoreTests(unittest.TestCase):
         self.assertEqual((placement["task"], placement["view"], placement["title"]),
                          ("5", "10", "Backlog"))
 
-    def test_only_the_comments_this_user_added_since_the_snapshot_are_removed(self):
-        """Deleting someone else's comment is not a restore, it is a loss."""
-        saved = [saved_task(5)]
+    def test_every_comment_added_after_the_snapshot_goes_whoever_wrote_it(self):
+        """Restoring a backup is a restoration, not a merge with what came after it.
+
+        Nothing can tell an adoption comment from any other one afterwards, since
+        a comment is a human journal and carries no bookkeeping, so keeping some
+        of them would be a guess rather than a restore.
+        """
         live = {"5": [{"id": 1, "author": {"id": 1}}, {"id": 2, "author": {"id": 1}},
                       {"id": 3, "author": {"id": 7}}]}
-        actions, drift = self.plan(saved, [saved_task(5)], comments={"5": [{"id": 1}]},
-                                   live_comments=live)
-        self.assertEqual([action.key for action in actions if action.entity == "comment"], ["2"])
-        self.assertEqual(drift["comments_kept"], ["3"])
+        actions, drift = self.plan([saved_task(5)], [saved_task(5)],
+                                   comments={"5": [{"id": 1}]}, live_comments=live)
+        self.assertEqual([action.key for action in actions if action.entity == "comment"],
+                         ["2", "3"])
+        self.assertEqual(drift["comments_missing"], [])
+
+    def test_a_task_that_left_the_snapshot_projects_is_reported_and_not_touched(self):
+        """It is no longer the object the snapshot describes, so nothing on it is restored."""
+        saved = saved_task(5, title="Original", labels=[{"id": 9, "title": "topic"}],
+                           related_tasks={"blocked": [{"id": 6}]})
+        moved = saved_task(5, project="9", title="Rewritten")
+        actions, drift = self.plan([saved, saved_task(6)], [moved, saved_task(6)],
+                                   comments={"5": []},
+                                   live_comments={"5": [{"id": 3, "author": {"id": 1}}]},
+                                   projects=("1", "9"))
+        self.assertEqual(drift["tasks_moved"], ["5"])
+        self.assertEqual([action for action in actions if "5" in action.key], [])
+
+    def test_a_snapshot_from_another_tracker_is_refused_before_anything_is_read(self):
+        """Task IDs are small integers that collide across instances."""
+        from agent_box.tracker import vikunja_api
+
+        elsewhere = snapshot([saved_task(5)], server="https://other.example")
+        with self.assertRaises(TrackerError) as caught:
+            vikunja_api.check_snapshot_identity(elsewhere, IDENTITY)
+        self.assertEqual(caught.exception.category, "conflict")
+        with self.assertRaisesRegex(TrackerError, "missing server"):
+            vikunja_api.check_snapshot_identity({"projects": [], "tasks": [], "boards": {},
+                                                 "comments": {}, "provider": "vikunja"}, IDENTITY)
+
+    def test_a_board_that_named_no_done_column_is_restored_to_naming_none(self):
+        """board init sets a done column, so undoing it must be able to unset one."""
+        from agent_box.tracker import vikunja_api
+
+        boards = {"1": [{"view": {"id": 10, "view_kind": "kanban", "done_bucket_id": 0},
+                         "buckets": [{"id": 104, "title": "Done", "position": 500}]}]}
+        instance, client = adapter()
+        live = {"1": [{"view": dict(client.boards[1]["views"][0], done_bucket_id=104),
+                       "buckets": client.boards[1]["buckets"][10]}]}
+        actions, _ = vikunja_api.plan_restore(snapshot([], {}, boards), IDENTITY, Inventory([]),
+                                              live, {})
+        self.assertEqual([action.details["title"] for action in actions], [None])
+        client.boards[1]["views"][0]["done_bucket_id"] = 104
+        vikunja_api.apply_restore(client, actions, [])
+        self.assertEqual([body for path, body in client.writes if path == "/projects/1/views/10"],
+                         [{"done_bucket_id": 0}])
 
     def test_what_appeared_or_vanished_since_the_snapshot_is_reported_and_left_alone(self):
         """A task recreated here would get a new ID and orphan the branch named after the old one."""
@@ -234,8 +284,8 @@ class RestoreTests(unittest.TestCase):
                        "buckets": [{"id": 1, "title": "Backlog", "position": 100},
                                    {"id": 4, "title": "Ready", "position": 150},
                                    {"id": 3, "title": "Done", "position": 300}]}]}
-        actions, drift = vikunja_api.plan_restore(snapshot([], {}, boards), Inventory([]),
-                                                  live, {}, "1")
+        actions, drift = vikunja_api.plan_restore(snapshot([], {}, boards), IDENTITY,
+                                                  Inventory([]), live, {})
         self.assertEqual(actions, [])
         self.assertEqual(drift["columns_created"], ["1:10:Ready"])
 
@@ -243,8 +293,8 @@ class RestoreTests(unittest.TestCase):
         from agent_box.tracker import vikunja_api
 
         with self.assertRaisesRegex(TrackerError, "missing comments"):
-            vikunja_api.plan_restore({"projects": [], "tasks": [], "boards": {}},
-                                     Inventory([]), {}, {}, "1")
+            vikunja_api.plan_restore({**IDENTITY, "projects": [], "tasks": [], "boards": {}},
+                                     IDENTITY, Inventory([]), {}, {})
 
 
 class AuditTests(unittest.TestCase):

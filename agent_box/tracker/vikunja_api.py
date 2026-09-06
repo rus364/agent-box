@@ -1502,20 +1502,29 @@ def _task_placement(task):
             for bucket in task.get("buckets") or [] if bucket.get("title")}
 
 
-def plan_restore(snapshot, inventory, boards, comments, user_id):
-    """What it takes to put the tracker back the way the snapshot found it.
-
-    Restore is deliberately not the inverse of every possible change. A task, a
-    project or a column that exists now and not in the snapshot is reported and
-    left alone, because a backup taken before adoption cannot know what the user
-    created afterwards on purpose, and a task recreated here would get a new ID
-    and orphan the branch named after the old one. What a card carried - text,
-    labels, assignees, column, relations - is put back, which also leaves any
-    column adoption added standing and empty.
-    """
-    for key in ("projects", "tasks", "boards", "comments"):
+def check_snapshot_identity(snapshot, identity):
+    """Refuse a snapshot from another tracker before reading or writing anything."""
+    for key in ("projects", "tasks", "boards", "comments", "provider", "server"):
         if key not in snapshot:
             raise PlanValidationError(f"snapshot is missing {key}; take a new one")
+    for key, value in (identity or {}).items():
+        if snapshot.get(key) != value:
+            raise ImportConflict(
+                f"snapshot was taken from {key} {snapshot.get(key)!r}, not {value!r}", "conflict")
+
+
+def plan_restore(snapshot, identity, inventory, boards, comments):
+    """What it takes to put the tracker back the way the snapshot found it.
+
+    Restore is a restoration, not a merge: what the snapshot recorded wins, and
+    anything added since is undone rather than preserved. The exception is the
+    entity that cannot be restored truthfully at all - a deleted task recreated
+    here would get a new ID and orphan the branch named after the old one - so a
+    task or project that appeared or vanished is reported as drift instead. A
+    task that has left the snapshot's projects is drift too, and nothing on it is
+    touched: it is no longer the object the snapshot describes.
+    """
+    check_snapshot_identity(snapshot, identity)
     saved_tasks = {str(task["id"]): task for task in snapshot["tasks"]}
     saved_projects = {str(project["id"]) for project in snapshot["projects"]}
     current_tasks = {str(task["id"]): task for task in inventory.tasks}
@@ -1524,7 +1533,7 @@ def plan_restore(snapshot, inventory, boards, comments, user_id):
     actions = []
     drift = {"tasks_created": [], "tasks_missing": [], "tasks_moved": [],
              "projects_created": [], "projects_missing": [], "columns_created": [],
-             "views_missing": [], "comments_kept": [], "comments_missing": []}
+             "views_missing": [], "comments_missing": []}
 
     for project in sorted(saved_projects, key=int):
         if project not in current_projects:
@@ -1565,6 +1574,9 @@ def plan_restore(snapshot, inventory, boards, comments, user_id):
         if current is None:
             drift["tasks_missing"].append(task_id)
             continue
+        if str(saved.get("project_id")) != str(current.get("project_id")):
+            drift["tasks_moved"].append(task_id)
+            continue
         changes = {field: saved.get(field) for field in RESTORABLE_TASK_FIELDS
                    if saved.get(field) != current.get(field)}
         if changes:
@@ -1579,23 +1591,19 @@ def plan_restore(snapshot, inventory, boards, comments, user_id):
         saved_users = sorted(str(user["id"]) for user in saved.get("assignees") or [])
         if saved_users != sorted(str(user["id"]) for user in current.get("assignees") or []):
             actions.append(Action("restore", "assignees", task_id, {"assignees": saved_users}))
-        if str(saved.get("project_id")) != str(current.get("project_id")):
-            drift["tasks_moved"].append(task_id)
-        else:
-            placement, live = _task_placement(saved), _task_placement(current)
-            for view_id, title in sorted(placement.items()):
-                if live.get(view_id) != title:
-                    actions.append(Action("restore", "placement", f"{task_id}:{view_id}",
-                                          {"task": task_id, "project": str(saved["project_id"]),
-                                           "view": view_id, "title": title}))
+        placement, live = _task_placement(saved), _task_placement(current)
+        for view_id, title in sorted(placement.items()):
+            if live.get(view_id) != title:
+                actions.append(Action("restore", "placement", f"{task_id}:{view_id}",
+                                      {"task": task_id, "project": str(saved["project_id"]),
+                                       "view": view_id, "title": title}))
+        # Every comment the snapshot did not record goes, whoever wrote it: no
+        # rule can tell an adoption comment from any other one afterwards, and a
+        # restore that keeps some of them is a merge, not a restore.
         saved_ids = {str(comment["id"]) for comment in snapshot["comments"].get(task_id, [])}
         for comment in comments.get(task_id, []):
-            if str(comment["id"]) in saved_ids:
-                continue
-            if str((comment.get("author") or {}).get("id")) == str(user_id):
+            if str(comment["id"]) not in saved_ids:
                 actions.append(Action("delete", "comment", str(comment["id"]), {"task": task_id}))
-            else:
-                drift["comments_kept"].append(str(comment["id"]))
         live_ids = {str(comment["id"]) for comment in comments.get(task_id, [])}
         drift["comments_missing"].extend(sorted(saved_ids - live_ids))
 
@@ -1603,14 +1611,17 @@ def plan_restore(snapshot, inventory, boards, comments, user_id):
         if task_id not in saved_tasks and str(current.get("project_id")) in saved_projects:
             drift["tasks_created"].append(task_id)
 
-    saved_edges = relation_edges([task for task in snapshot["tasks"]])
+    moved = set(drift["tasks_moved"])
+    saved_edges = relation_edges([task for task_id, task in saved_tasks.items() if task_id not in moved])
     live_edges = relation_edges([current_tasks[task_id] for task_id in saved_tasks
-                                 if task_id in current_tasks])
+                                 if task_id in current_tasks and task_id not in moved])
     for base, kind, other in sorted(saved_edges - live_edges):
-        if other in current_tasks and base in current_tasks:
+        if other in current_tasks and base in current_tasks and not {base, other} & moved:
             actions.append(Action("restore", "relation", f"{base}:{kind}:{other}",
                                   {"base": base, "kind": kind, "other": other, "remove": False}))
     for base, kind, other in sorted(live_edges - saved_edges):
+        if {base, other} & moved:
+            continue
         actions.append(Action("restore", "relation", f"{base}:{kind}:{other}",
                               {"base": base, "kind": kind, "other": other, "remove": True}))
     return actions, drift
@@ -1640,9 +1651,14 @@ def apply_restore(client, actions, labels):
                           details["title"], details["position"])
         elif action.entity == "view":
             view = board(details["project"], details["view"])
-            buckets = view_buckets(client, details["project"], view["id"])
-            set_done_bucket(client, details["project"], view,
-                            resolve_bucket(buckets, details["title"])["id"])
+            # A board that named no done column is restored to naming none;
+            # zero is how Vikunja itself records that.
+            if details["title"] is None:
+                set_done_bucket(client, details["project"], view, 0)
+            else:
+                buckets = view_buckets(client, details["project"], view["id"])
+                set_done_bucket(client, details["project"], view,
+                                resolve_bucket(buckets, details["title"])["id"])
         elif action.entity == "task":
             client.patch(f"/tasks/{int(action.key)}", details["changes"],
                          markdown="description" in details["changes"])
@@ -1673,8 +1689,9 @@ def apply_restore(client, actions, labels):
     return len(actions)
 
 
-def restore(client, snapshot, user_id, apply=False):
+def restore(client, snapshot, identity, apply=False):
     """Compare the tracker with a snapshot and, when asked, put it back."""
+    check_snapshot_identity(snapshot, identity)
     inventory = inventory_from_client(client)
     saved_projects = [str(project["id"]) for project in snapshot.get("projects", [])]
     live = {str(project["id"]) for project in inventory.projects}
@@ -1683,7 +1700,7 @@ def restore(client, snapshot, user_id, apply=False):
                                                  {"format": "markdown"})
                 for task in inventory.tasks
                 if str(task.get("project_id")) in set(saved_projects)}
-    actions, drift = plan_restore(snapshot, inventory, boards, comments, user_id)
+    actions, drift = plan_restore(snapshot, identity, inventory, boards, comments)
     applied = apply_restore(client, actions, inventory.labels) if apply else 0
     return {"planned": len(actions), "applied": applied, "dry_run": not apply,
             "actions": [action.as_dict() for action in actions], "drift": drift}
@@ -1767,7 +1784,13 @@ def relation_edges(tasks):
     return edges
 
 
-def make_snapshot(client, project_ref=None, recursive=False):
+def make_snapshot(client, project_ref=None, recursive=False, identity=None):
+    """Everything the tracker holds for a subtree, and which tracker it came from.
+
+    The identity is not decoration: task and project IDs are small integers that
+    collide across instances, so a snapshot from another server would otherwise
+    restore over completely unrelated tasks that happen to share their numbers.
+    """
     inventory = inventory_from_client(client)
     projects = inventory.projects
     tasks = inventory.tasks
@@ -1777,6 +1800,9 @@ def make_snapshot(client, project_ref=None, recursive=False):
         projects = [p for p in projects if int(p["id"]) in ids]
         tasks = [t for t in tasks if int(t.get("project_id") or 0) in ids]
     return {
+        **(identity or {}),
+        "project": str(project_ref) if project_ref is not None else None,
+        "recursive": bool(recursive),
         "comments": {str(task["id"]): client.paginate(f"/tasks/{int(task['id'])}/comments",
                                                       {"format": "markdown"})
                      for task in sorted(tasks, key=lambda item: int(item["id"]))},

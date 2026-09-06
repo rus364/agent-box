@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 
 from ..atomicio import atomic_write_json
+from ..config import effective_config
+from ..repo_binding import server_identity
 from . import vikunja_api as api
 from .core import TrackerError
 
@@ -61,6 +63,17 @@ def parser():
     return p
 
 
+def snapshot_identity(provider="vikunja"):
+    """Which tracker a snapshot belongs to.
+
+    Read from the configuration rather than the client, because a container
+    reaches the same server through a rewritten URL; the binding compares
+    identity the same way.
+    """
+    return {"provider": provider,
+            "server": server_identity(effective_config().tracker.connection(provider).url)}
+
+
 def run(adapter, arguments):
     args = parser().parse_args(arguments)
     operation = getattr(args, "operation", "")
@@ -74,7 +87,7 @@ def run(adapter, arguments):
         importer = api.Importer(client, plan, args.state_dir, allow_create_root=args.create_root)
         return importer.apply() if args.apply else importer.dry_run()
     if args.command == "snapshot":
-        snapshot = api.make_snapshot(client, args.project, args.recursive)
+        snapshot = api.make_snapshot(client, args.project, args.recursive, snapshot_identity())
         if not args.out:
             return snapshot
         # A snapshot is the only way back from adoption, so its path is part of
@@ -84,7 +97,7 @@ def run(adapter, arguments):
                 "tasks": len(snapshot["tasks"])}
     if args.command == "restore":
         return api.restore(client, json.loads(args.file.read_text()),
-                           str(adapter.identity()["id"]), args.apply)
+                           snapshot_identity(), args.apply)
     if args.command == "external":
         task = api.TaskIndex(api.inventory_from_client(client).tasks).resolve(args.reference)
         return {"task_id": task["id"], "external_id": api.external_id_from_description(task.get("description", ""))}
