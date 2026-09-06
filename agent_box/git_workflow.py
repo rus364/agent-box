@@ -110,36 +110,59 @@ def branch_name(task):
     return branch_prefix(task.id) + slug
 
 
+def _branch_refs(root, pattern):
+    return sorted(set(git(root, "for-each-ref", "--format=%(refname:short)", pattern).split()))
+
+
 def task_branch(root, task):
     """The task ID owns a branch namespace, so Git alone can name the branch again.
 
     Recording the branch elsewhere would make a second source of truth that an
     agent with tracker write access could contradict; a title edit must not
     rename a live branch either, so the existing ref wins over the derived name.
+    A fresh clone has the work only under `origin/`, and starting a second branch
+    from the base there would silently abandon it, so the remote counts as the
+    task's branch too. Anything the task could equally mean is refused.
     """
     prefix = branch_prefix(task.id)
-    found = git(root, "for-each-ref", "--format=%(refname:short)",
-                f"refs/heads/{prefix}*").split()
-    if len(found) > 1:
-        raise AgentBoxError(f"Several branches claim task {task.id}: {', '.join(sorted(found))}")
-    return found[0] if found else None
+    local = _branch_refs(root, f"refs/heads/{prefix}*")
+    if len(local) > 1:
+        raise AgentBoxError(f"Several local branches claim task {task.id}: {', '.join(local)}")
+    remote = [name.removeprefix("origin/") for name in
+              _branch_refs(root, f"refs/remotes/origin/{prefix}*")]
+    if len(remote) > 1:
+        raise AgentBoxError(f"Several origin branches claim task {task.id}: {', '.join(remote)}")
+    if local and remote and local[0] != remote[0]:
+        raise AgentBoxError(
+            f"Task {task.id} has local branch {local[0]} and origin/{remote[0]}; reconcile them first")
+    if local:
+        return local[0]
+    return remote[0] if remote else None
+
+
+_DEFAULT_BASE: dict[str, str] = {}
 
 
 def default_base(root):
-    """The base branch is origin's default branch, read live rather than stored.
+    """Origin's current default branch, asked of the remote before the local copy.
 
-    A copy in the repository binding would drift the moment the project renames
-    its default branch, and would let a stale file redirect a push or a PR.
+    `refs/remotes/origin/HEAD` is only as fresh as the last fetch, so a project
+    that renamed its default branch would keep sending branches and pull requests
+    at the old name. The local ref remains the offline answer. Memoized per
+    process so one command does not repeat the round trip.
     """
-    result = _run(["git", "symbolic-ref", "--short", "-q", "refs/remotes/origin/HEAD"], cwd=root)
-    name = result.stdout.strip().removeprefix("origin/") if result.returncode == 0 else ""
-    if not name:
+    key = str(Path(root).resolve())
+    if key not in _DEFAULT_BASE:
         url = _effective_push_url(root)
         state = _query_origin(root, "HEAD", url) if url else None
         name = state.default_branch if state else ""
-    if not name:
-        raise AgentBoxError("Cannot determine origin's default branch; set refs/remotes/origin/HEAD")
-    return name
+        if not name:
+            result = _run(["git", "symbolic-ref", "--short", "-q", "refs/remotes/origin/HEAD"], cwd=root)
+            name = result.stdout.strip().removeprefix("origin/") if result.returncode == 0 else ""
+        if not name:
+            raise AgentBoxError("Cannot determine origin's default branch; set refs/remotes/origin/HEAD")
+        _DEFAULT_BASE[key] = name
+    return _DEFAULT_BASE[key]
 
 
 def base_ref(root, base):
@@ -163,11 +186,18 @@ def ref_state(root):
 def switch_branch(root, branch, base, *, resume=False):
     git(root, "check-ref-format", "--branch", branch)
     git(root, "check-ref-format", "--branch", base)
-    exists = _run(["git", "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"], root).returncode == 0
-    if exists:
+    local = _run(["git", "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"], root).returncode == 0
+    remote = _run(["git", "show-ref", "--verify", "--quiet", f"refs/remotes/origin/{branch}"], root).returncode == 0
+    if local:
         if not resume:
             raise AgentBoxError(f"Branch {branch} already exists; inspect it and use --resume")
+        if remote and not _is_ancestor(root, f"refs/remotes/origin/{branch}", branch):
+            raise AgentBoxError(f"Branch {branch} and origin/{branch} have diverged; reconcile them before continuing")
         git(root, "switch", branch)
+    elif remote:
+        # The work already exists on the remote; forking the base again would
+        # start a second branch for the same task and abandon it.
+        git(root, "switch", "-c", branch, f"origin/{branch}")
     else:
         git(root, "switch", "-c", branch, base)
 

@@ -62,7 +62,9 @@ the base branch from origin's default, the pull request from a head/base lookup,
 the lifecycle from the board's own columns. `.agent-box.json` names the tracker
 project and nothing else. Nothing machine-readable is written into a tracker
 comment: a comment is a human journal, and an agent allowed to write one must not
-thereby reach orchestrator state.
+thereby reach orchestrator state. A delegate runs as the same user, so anything
+in `WORKFLOW_STATE` is writable by it: whatever must not be forgeable travels
+with the orchestrator instead, as `workflow prepare`'s handoff token does.
 
 **Secrets travel by name.** `--env=NAME` (Podman inherits the value) for
 anything secret; `--env=NAME=VALUE` puts the value in an argv that `/proc`

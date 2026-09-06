@@ -59,7 +59,7 @@ class WorkflowGitTests(unittest.TestCase):
                  patch.object(workflow, "route", return_value=route), patch.object(workflow, "WORKFLOW_STATE", Path(temporary) / "state"):
                 prepared = workflow.dispatch(workflow.parser().parse_args(["prepare", "1", "--primary", "codex"]))
                 (root / "change.py").write_text("value = 1\n")
-                result = workflow.dispatch(workflow.parser().parse_args(["report", "1", "--role", "worker", "--primary", "codex", "--provider", "claude", "--file", str(report), "--scope", prepared["scope"]]))
+                result = workflow.dispatch(workflow.parser().parse_args(["report", "1", "--role", "worker", "--primary", "codex", "--provider", "claude", "--file", str(report), "--scope", prepared["scope"], "--handoff", prepared["handoff"]]))
                 self.assertEqual(result["route"]["provider"], "claude")
                 # The writer is local evidence; nothing about it reaches the tracker.
                 self.assertEqual(workflow.read_evidence(root, task)["writer"], "claude")
@@ -76,7 +76,7 @@ class WorkflowGitTests(unittest.TestCase):
                 (root / "change.py").write_text("value = 2\n")
                 from agent_box.errors import AgentBoxError
                 with self.assertRaises(AgentBoxError):
-                    workflow.dispatch(workflow.parser().parse_args(["report", "1", "--role", "reviewer", "--primary", "codex", "--provider", "claude", "--file", str(report), "--scope", prepared["scope"]]))
+                    workflow.dispatch(workflow.parser().parse_args(["report", "1", "--role", "reviewer", "--primary", "codex", "--provider", "claude", "--file", str(report), "--scope", prepared["scope"], "--handoff", prepared["handoff"]]))
 
     def test_parent_push_reuses_live_remote_guards_and_does_not_publish_tags(self):
         from unittest.mock import patch

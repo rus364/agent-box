@@ -17,10 +17,18 @@ task database, bootstrap framework, update patches or agent-turn push hooks.
 A parent task represents a deliverable/spec, and subtasks belong to the bound
 project or, with a recursive binding, to any project under it. Each task owns the
 branch namespace `ab/<task id>-*`, so the branch is found back in Git instead of
-recorded anywhere; the base is origin's default branch, read live. The
-orchestrator creates the parent branch from that base, then creates each subtask
-branch from the parent, executes it sequentially, and integrates it before
-starting the next. No parallel workers or automatic
+recorded anywhere. A local branch wins; failing that a branch already pushed as
+`origin/ab/<task id>-*` is adopted with a tracking branch, so a fresh clone or
+another machine continues the work rather than forking the base a second time.
+Two branches claiming one task, a local and a remote name that disagree, or a
+local branch whose remote has moved ahead all stop instead of choosing.
+
+The base is origin's default branch, asked of the remote itself, because
+`refs/remotes/origin/HEAD` is only as fresh as the last fetch and a renamed
+default branch would otherwise keep receiving work at its old name. The local ref
+remains the offline answer. The orchestrator creates the parent branch from that
+base, then creates each subtask branch from the parent, executes it sequentially,
+and integrates it before starting the next. No parallel workers or automatic
 branch creation by delegated agents. Read-only scouts may run concurrently within
 `scout_limit`. A finished sibling unblocks after integration; a dependency in
 another parent remains blocked until that parent's merge.
@@ -36,14 +44,23 @@ Git and GitHub; lifecycle comes from the tracker's own fields; the provider that
 actually wrote the code is local evidence. So a worker, which may comment, cannot
 reach any of it by writing one.
 
-A worker changes working files and nothing else. Delegation records the branch,
-HEAD, every local ref, the task requirements and the lifecycle of the whole task
-tree; the report is refused if the worker committed, moved a branch or a tag, or
-changed requirements, relations, state or assignment. This comparison, not the
-role environment variable the worker could unset, is what makes the boundary
-checkable. Accepting a worker report also drops any validation or review
-acceptance recorded before it, so a later PASS always describes code the worker
-actually left behind.
+A worker changes working files and nothing else. Delegation takes a baseline -
+the branch, HEAD, a digest of every local ref, the task requirements and the
+lifecycle of the whole task tree - and the report is refused if the worker
+committed, moved a branch or a tag, or changed requirements, relations, state or
+assignment. This comparison, not the role environment variable the worker could
+unset, is what makes the boundary checkable. Accepting a worker report also drops
+any validation or review acceptance recorded before it, so a later PASS always
+describes code the worker actually left behind.
+
+The baseline never touches disk. A delegate runs as the same user, so anything in
+`WORKFLOW_STATE` is writable by it, and a saved baseline could simply be rewritten
+to describe whatever it did. `prepare` therefore returns an opaque `handoff`
+token - the baseline, the scope and the selected route, bound to this repository
+and task - which the orchestrator holds and passes to `report --handoff`. The
+delegate never sees it, so the copy that decides acceptance is out of its reach.
+The same token carries the route, so a delegate cannot widen the providers its
+report may claim either. Keep it out of briefs and prompts.
 
 Claude workers and reviewers run with `--safe-mode`, which is what keeps the
 context free of the user's hooks, skills, MCP servers and agents - and which also
@@ -116,8 +133,8 @@ agent-box workflow review TASK --primary codex
 agent-box workflow finish TASK
 ```
 
-Native handoffs use `prepare`, then `report --file FILE --scope DIGEST --provider
-PROVIDER` for the returned structured report. Evidence is disposable local cache,
+Native handoffs use `prepare`, then `report --file FILE --scope DIGEST --handoff
+TOKEN --provider PROVIDER` for the returned structured report. Evidence is disposable local cache,
 bound to code, task requirements and scope; another device may need to rerun
 validation/review. Only the actual writer provider survives a scope change,
 because it decides who reviews the result.
@@ -143,7 +160,12 @@ no forced repair, tag/submodule side pushes or child-branch auto-push.
 
 After parent acceptance, offer `ab-pr`. On user request it opens one PR, following
 repository templates. Later commands find that PR on GitHub by head branch and
-base rather than from a stored number; several matches stop the command. `ab-land` reads
+base rather than from a stored number: an open one wins, a single merged one
+answers a reconcile, and several of either stop the command. Completion from a
+merged PR additionally requires its merged head to be the branch's current head,
+so commits added after an old merge on a reused branch cannot ride that merge to
+Done - squash and rebase merges rewrite the commit, which leaves head equality as
+the only honest test. `ab-land` reads
 CI, comments and paginated unresolved threads, fixes sequentially, obtains
 current-head acceptance and merges with `--match-head-commit`. Branch protection
 is never bypassed. Merge-queue entry is not completion. If the tracker write

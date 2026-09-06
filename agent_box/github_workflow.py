@@ -161,6 +161,14 @@ def operate(args, root, config, adapter, task, parent, info, saved):
     if args.action == "reconcile" or pr["state"] == "MERGED":
         if pr["state"] != "MERGED" or not pr.get("mergedAt") or not pr.get("mergeCommit"):
             raise AgentBoxError("GitHub has not confirmed an actual merge")
+        # A reused branch keeps matching an old merged PR by head and base, so
+        # completion asks what was merged, not merely that something once was.
+        # Squash and rebase merges rewrite the commit, leaving head equality as
+        # the only honest test that this branch is what landed.
+        if pr["headRefOid"] != gw.head_sha(root):
+            raise AgentBoxError(
+                f"PR #{pr['number']} merged {pr['headRefOid'][:12]}, but {info['branch']} is now at "
+                f"{(gw.head_sha(root) or '')[:12]}; the current work is not merged")
         if task.state != "Done":
             adapter.set_state(task, "Done")
         return {"task": task.id, "state": "Done", "merge": pr["mergeCommit"], "url": pr["url"]}

@@ -8,6 +8,7 @@ allowed to comment cannot reach any of it.
 from __future__ import annotations
 
 import argparse
+import base64
 import fnmatch
 import hashlib
 import json
@@ -89,10 +90,13 @@ def scope(root, base, tasks, *, allow_dirty=False):
     return hashlib.sha256(json.dumps(content, sort_keys=True).encode()).hexdigest()
 
 
+def repository_key(root):
+    return hashlib.sha256(str(Path(root).resolve()).encode()).hexdigest()[:24]
+
+
 def evidence_path(root, task):
-    key = hashlib.sha256(str(root.resolve()).encode()).hexdigest()[:24]
     ident = hashlib.sha256(task.id.encode()).hexdigest()[:24]
-    return WORKFLOW_STATE / "evidence" / key / f"{ident}.json"
+    return WORKFLOW_STATE / "evidence" / repository_key(root) / f"{ident}.json"
 
 
 # Which provider actually wrote the code decides who reviews it, so it survives
@@ -158,17 +162,47 @@ def resolve(root, adapter, task):
     return parent, info, {"branch": child}, branch
 
 
-def workspace_state(root):
-    """Everything a worker is not allowed to move: the branch, HEAD, and refs."""
-    return {"branch": gw.current_branch(root), "head": gw.head_sha(root),
-            "refs": hashlib.sha256(gw.ref_state(root).encode()).hexdigest()}
+def digest(value):
+    return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
 
 def handoff_state(root, adapter, task, tasks):
-    """The orchestrator-owned state a worker must hand back unchanged."""
-    return {**workspace_state(root), "requirements": requirements(tasks),
-            "lifecycle": {item.id: [item.state, sorted(item.assignees)] for item in tasks},
+    """Everything a worker must hand back unchanged, small enough to carry along.
+
+    The bulky parts are digested rather than listed so the whole baseline fits in
+    the token the orchestrator holds between the two commands.
+    """
+    return {"branch": gw.current_branch(root), "head": gw.head_sha(root),
+            "refs": digest(gw.ref_state(root)),
+            "requirements": digest(requirements(tasks)),
+            "lifecycle": digest({item.id: [item.state, sorted(item.assignees)] for item in tasks}),
             "user": str(adapter.identity()["id"])}
+
+
+def handoff_token(root, task, fingerprint, route, state):
+    """The baseline travels through the orchestrator, never through local state.
+
+    `WORKFLOW_STATE` is writable by the worker - it runs as the same user - so a
+    baseline saved there could be rewritten to match whatever the worker did.
+    The orchestrator gets this token from `prepare` and hands it back to
+    `report`; the worker never sees it and cannot reach the copy that matters.
+    """
+    payload = {"repository": repository_key(root), "task": task.id, "scope": fingerprint,
+               "route": route, "state": state}
+    return base64.urlsafe_b64encode(json.dumps(payload, sort_keys=True).encode()).decode()
+
+
+def read_handoff_token(root, task, fingerprint, token):
+    try:
+        payload = json.loads(base64.urlsafe_b64decode(token.encode()))
+    except (ValueError, TypeError):
+        raise AgentBoxError("Handoff token is unreadable; pass the value prepare returned") from None
+    if (not isinstance(payload, dict) or payload.get("repository") != repository_key(root)
+            or payload.get("task") != task.id):
+        raise AgentBoxError("Handoff token belongs to another repository or task")
+    if payload.get("scope") != fingerprint:
+        raise AgentBoxError("Handoff token belongs to a different scope; reconcile before accepting the report")
+    return payload
 
 
 def check_worker_assignment(adapter, task):
@@ -177,7 +211,7 @@ def check_worker_assignment(adapter, task):
 
 
 def start_worker_handoff(root, adapter, task, tasks, saved):
-    """Record what the worker is handed, and retire acceptance before it runs.
+    """Retire acceptance before the worker runs, and return what it was handed.
 
     Dropping validation and review at the handoff rather than at the report means
     a worker that fails, misbehaves or never answers cannot leave a stale PASS
@@ -186,8 +220,8 @@ def start_worker_handoff(root, adapter, task, tasks, saved):
     check_worker_assignment(adapter, task)
     saved.pop("validation", None)
     saved.pop("review", None)
-    saved["handoff"] = handoff_state(root, adapter, task, tasks)
     save_evidence(root, task, saved)
+    return handoff_state(root, adapter, task, tasks)
 
 
 WORKER_CHANGES = {"branch": "switched branch", "head": "committed",
@@ -196,28 +230,24 @@ WORKER_CHANGES = {"branch": "switched branch", "head": "committed",
                   "lifecycle": "changed task state or assignment"}
 
 
-def accept_worker(root, adapter, task, tasks, saved):
-    """Compare the handed-back state with the handoff before believing a report.
+def accept_worker(root, adapter, task, tasks, saved, handoff):
+    """Compare the handed-back state with the baseline before believing a report.
 
     A worker may edit working files and nothing else. The tracker's own role
     check is a cooperative boundary an unset environment variable defeats; this
     comparison is what actually detects the change.
     """
-    handoff = saved.get("handoff")
-    if not handoff:
-        raise AgentBoxError("No worker handoff was prepared for this scope")
     current = handoff_state(root, adapter, task, tasks)
     for key, description in WORKER_CHANGES.items():
-        if current[key] != handoff[key]:
+        if current[key] != handoff.get(key):
             raise AgentBoxError(f"Worker {description}; reconcile the repository and the task before accepting its report")
-    if current["user"] != handoff["user"]:
+    if current["user"] != handoff.get("user"):
         raise AgentBoxError("The tracker user changed during the handoff; reconcile before accepting its report")
     check_worker_assignment(adapter, task)
     # Retired again on the way back, in case anything recorded acceptance while
     # the worker was running.
     saved.pop("validation", None)
     saved.pop("review", None)
-    saved.pop("handoff", None)
     save_evidence(root, task, saved)
 
 
@@ -302,6 +332,7 @@ def parser():
             cmd.add_argument("--file", required=True)
             cmd.add_argument("--scope", required=True)
             cmd.add_argument("--provider", required=True, choices=("codex", "claude"))
+            cmd.add_argument("--handoff", help="Worker handoff token returned by prepare")
         if name == "validate":
             cmd.add_argument("arguments", nargs=argparse.REMAINDER)
         if name == "pr":
@@ -348,11 +379,14 @@ def dispatch(args):
     worker_report = args.command == "report" and args.role == "worker"
     # A worker's own edits are expected to be uncommitted when it hands back.
     fingerprint = scope(root, base, tasks, allow_dirty=scouting or worker_report)
+    token = None
+    if args.command == "report":
+        if not args.handoff:
+            raise AgentBoxError("Pass --handoff with the token prepare returned for this delegation")
+        token = read_handoff_token(root, task, args.scope, args.handoff)
     if worker_report:
         saved = read_evidence(root, task)
-        if saved.get("scope") != args.scope:
-            raise AgentBoxError("This report belongs to a different handoff; reconcile before accepting it")
-        accept_worker(root, adapter, task, tasks, saved)
+        accept_worker(root, adapter, task, tasks, saved, token["state"])
     else:
         saved = evidence(root, task, fingerprint)
     if args.command in ("pr", "land"):
@@ -383,21 +417,18 @@ def dispatch(args):
                 saved["review"] = {"verdict": "SKIPPED", "reason": "Configured review policy"}
                 save_evidence(root, task, saved)
                 return saved
-        selected = saved.get("selections", {}).get(role) if args.command == "report" else None
-        if args.command == "report" and not selected:
-            raise AgentBoxError("Prepare a delegation for this scope before ingesting its native report")
-        if selected is None:
-            selected = route(config.workflow, role, tier, args.primary, saved.get("writer"))
+        # The route the delegation was prepared with rides in the token too, so a
+        # delegate cannot widen it by editing local state.
+        selected = token["route"] if token else route(config.workflow, role, tier, args.primary, saved.get("writer"))
         if args.command == "prepare":
-            if role == "worker":
-                start_worker_handoff(root, adapter, task, tasks, saved)
-            saved.setdefault("selections", {})[role] = selected
-            save_evidence(root, task, saved)
+            baseline = start_worker_handoff(root, adapter, task, tasks, saved) if role == "worker" else {}
             return {"scope": fingerprint, "route": selected, "task": task.to_dict(), "base": base,
                     "report_schema": report_schema(role),
+                    "handoff": handoff_token(root, task, fingerprint, selected, baseline),
                     "repository_instructions": repository_instructions(root),
                     "instructions": "Fresh English context. Only the orchestrator changes branches, lifecycle, requirements, and GitHub. "
-                                    "Pass repository_instructions to the delegate; they apply to its work. Return the role JSON schema."}
+                                    "Keep handoff to yourself and pass it back to report; give the delegate repository_instructions, "
+                                    "which apply to its work. Return the role JSON schema."}
         if args.command == "report":
             if not worker_report and args.scope != fingerprint:
                 raise AgentBoxError("Report scope is stale; review current code and requirements")
@@ -406,8 +437,7 @@ def dispatch(args):
             report = validate_report(json.loads(Path(args.file).read_text()), role)
             output = {"route": {"provider": args.provider, "tier": tier}, "report": report}
         else:
-            if role == "worker":
-                start_worker_handoff(root, adapter, task, tasks, saved)
+            baseline = start_worker_handoff(root, adapter, task, tasks, saved) if role == "worker" else {}
             prompt = ("Use English for this handoff and report, implementation and code. Tracker comments use the task language. "
                       "Do not create/switch branches, commit, push, change requirements, task states, or relations. "
                       "Workers may only comment and check existing items on the assigned task. "
@@ -427,7 +457,7 @@ def dispatch(args):
             with execution_lock:
                 output = execute(config.workflow, selected, role, root, prompt, task.id)
             if role == "worker":
-                accept_worker(root, adapter, task, tree(adapter, adapter.get(task.id)), saved)
+                accept_worker(root, adapter, task, tree(adapter, adapter.get(task.id)), saved, baseline)
         if role == "worker":
             saved["writer"] = output["route"]["provider"]
             save_evidence(root, task, saved)
