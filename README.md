@@ -60,10 +60,14 @@ putting `agent-box` on your PATH:
 ```
 
 It offers the writable directories your PATH already has, or creates
-`~/.local/bin` and adds it. The symlink and the shell startup line are two
-separate questions, both declinable, and declining either prints the exact
-command to run yourself. Everything after that is optional integrations, all
-off by default.
+`~/.local/bin` and adds it. While your shell cannot find `agent-box`, the menu
+opens on that question, says so in the row itself, and asks once more before
+saving without it. The symlink and the shell startup line are two separate
+questions, both declinable, and declining either prints the exact command to
+run yourself. The directory you pick is saved, so if the symlink later
+disappears — a `~/.local/bin` rebuilt by another installer, a restored home —
+`agent-box config apply` puts it back. Everything after that is optional
+integrations, all off by default.
 
 **3. Authenticate the agents on the host.** agent-box mounts your existing
 `~/.claude` and `~/.codex` rather than managing a second credential store, so
@@ -204,8 +208,9 @@ agent-box config apply  # apply the saved file without asking anything
 `agent-box config` uses Python’s standard-library curses menu, with no extra
 packages or installer. Space toggles options; Enter opens sections or edits a
 value; Escape goes back. Cancel writes nothing. Save and apply performs the
-selected changes, including optional PATH setup: installing the skills
-your integrations need, linking them for Claude, rendering credential files, and
+selected changes, including optional PATH setup: restoring the `agent-box`
+symlink in the directory you chose, installing the skills your integrations
+need, linking them for Claude, rendering credential files, and
 reconciling Claude's `settings.json`. `agent-box config apply` does the same
 from the saved file, without any questions — which is what you want after
 editing `config.json` by hand. `agent-box upgrade` applies on its own once it

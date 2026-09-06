@@ -118,8 +118,10 @@ Configuration:
   agent-box config show     Print the current settings (token redacted)
   agent-box config check    Verify the official Claude Telegram channel setup
   agent-box config apply    Apply the saved file without asking anything:
-                            install the skills it enables, link them for
-                            Claude, and reconcile Claude's settings.json.
+                            restore the agent-box symlink in the directory the
+                            PATH question chose, install the skills it enables,
+                            link them for Claude, and reconcile Claude's
+                            settings.json.
                             'agent-box config' and 'agent-box upgrade' both end
                             by doing this, so it is only needed after editing
                             config.json by hand. Starting an agent never
@@ -403,22 +405,40 @@ def config_check() -> None:
     print(f"Ready. The next 'agent-box claude' will pass --channels {CLAUDE_TELEGRAM_CHANNEL}")
 
 
+def path_status(config) -> list[str]:
+    """What is left to do before the shell can run ``agent-box``.
+
+    Printed after applying rather than only inside the menu, because the two
+    ways to finish -- shell rc line, or nothing at all -- are both things the
+    user does next, in a terminal, with the commands in front of them.
+    """
+    from . import pathsetup
+    if pathsetup.link_state().kind == "ours":
+        return []
+    bin_dir = Path(config.install.bin_dir) if config.install.bin_dir else pathsetup.DEFAULT_BIN_DIR
+    if config.install.bin_dir:
+        return [f"{bin_dir} is not on PATH yet in this shell; open a new one, or add it:",
+                *pathsetup.rc_block(bin_dir).splitlines()]
+    return ["agent-box is not on PATH. Run 'agent-box config' and answer PATH "
+            "integration, or do it by hand:", *pathsetup.manual_instructions(bin_dir)]
+
+
 def config_interactive() -> None:
     from . import config_menu, runtime
     result = config_menu.edit(load_config())
     if result is None:
         print("Configuration unchanged.")
         return
+    from . import pathsetup
     config = result.config
     save_config(config)
-    if result.bin_dir is not None:
-        from . import pathsetup
-        print(pathsetup.install_symlink(result.bin_dir))
-        if result.edit_rc:
-            print(pathsetup.append_rc_block(pathsetup.rc_file(), result.bin_dir))
     for line in runtime.apply_config(config):
         print(line)
+    if result.edit_rc:
+        print(pathsetup.append_rc_block(pathsetup.rc_file(), Path(config.install.bin_dir)))
     config_show()
+    for line in path_status(config):
+        print(f"agent-box: {line}")
 
 
 def config_apply() -> None:
@@ -438,6 +458,8 @@ def config_apply() -> None:
         print(f"agent-box: {line}")
     for problem in runtime.tracker_warnings(config):
         print(f"agent-box: warning: {problem}", file=sys.stderr)
+    for line in path_status(config):
+        print(f"agent-box: {line}")
 
 
 def config_command(args: list[str]) -> None:

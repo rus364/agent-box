@@ -37,8 +37,14 @@ def validate(config):
 
 @dataclass
 class EditResult:
+    """What the menu decided: the configuration, and the one-off rc edit.
+
+    The symlink directory is not here -- it is saved in the configuration, so
+    that ``config apply`` can restore a link that went missing. Appending to a
+    shell startup file is the opposite kind of act: it happens once, on the
+    answer given, and is never repeated behind the user's back.
+    """
     config: Config
-    bin_dir: Path | None = None
     edit_rc: bool = False
 
 
@@ -68,11 +74,25 @@ def edit(config):
         raise AgentBoxError("This Python build lacks stdlib curses; edit config.json and run config apply") from None
     from . import pathsetup
     choices = pathsetup.bin_dir_choices()
+    link = pathsetup.link_state()
     draft = copy.deepcopy(config.to_dict())
     draft.pop("version", None)
+    # PATH has a guided section of its own; a free-text "install / bin dir"
+    # row would be a second, unguarded way to answer the same question.
+    draft.pop("install", None)
     for provider in TRACKER_PROVIDERS:
         draft["tracker"]["connections"].setdefault(provider, {"url": "", "token": ""})
-    path_state = {"bin": None, "rc": False}
+    path_state = {
+        "bin": Path(config.install.bin_dir) if config.install.bin_dir else None,
+        "rc": False,
+    }
+
+    def drafted():
+        """The draft as a Config, with the PATH answer merged back in."""
+        return Config.from_dict({
+            **draft,
+            "install": {"bin_dir": str(path_state["bin"]) if path_state["bin"] else ""},
+        })
 
     def paint(screen, rows, selected, title, notice=""):
         screen.erase()
@@ -106,13 +126,33 @@ def edit(config):
             elif isinstance(key, str) and key.isprintable():
                 value += key
 
+    def path_pending():
+        """Would saving now leave the shell unable to find agent-box?"""
+        return path_state["bin"] is None and link.kind != "ours"
+
+    def path_row():
+        """The PATH row says its own state, so the gap is visible unopened.
+
+        Someone who never opens the section still learns whether the first
+        step of setup is done, and by whom: a link agent-box keeps is a link
+        that comes back after ``config apply``, and one it merely found is not.
+        """
+        if path_state["bin"] is not None:
+            return f"PATH integration: agent-box keeps {path_state['bin'] / pathsetup.COMMAND}"
+        if link.kind == "ours":
+            return f"PATH integration: found {link.found}, kept by you, not agent-box"
+        return "PATH integration: agent-box is not on PATH yet"
+
     def menu(screen, data, path=()):
         selected, notice = 0, ""
+        if not path and path_pending():
+            selected = len(data)
+            notice = "Setup starts here: agent-box is not on PATH yet"
         while True:
             keys = list(data)
             extras = ["Review preset"] if path == ("workflow", "review") else []
             if not path:
-                extras = ["PATH integration", "Save and apply", "Cancel"]
+                extras = [path_row(), "Save and apply", "Cancel"]
             rows = []
             for key, value in data.items():
                 full = (*path, key)
@@ -141,20 +181,23 @@ def edit(config):
                     action = extras[selected - len(keys)]
                     if action == "Cancel":
                         return None
-                    if action == "PATH integration":
+                    if action.startswith("PATH integration"):
                         path_menu(screen)
+                        notice = ""
                     elif action == "Review preset":
                         presets = {name: False for name in REVIEW_PRESETS}
                         chosen = choose(screen, list(presets), "Review preset (custom thresholds remain editable)")
                         if chosen is not None:
                             data["max_files"], data["max_lines"] = REVIEW_PRESETS[list(presets)[chosen]]
                     elif action == "Save and apply":
-                        result = Config.from_dict(draft)
+                        result = drafted()
                         errors = validate(result)
                         if errors:
                             notice = errors[0]
+                        elif path_pending() and choices and not path_gate(screen):
+                            notice = "PATH left unchanged; agent-box still resolves only by path"
                         else:
-                            return EditResult(result, path_state["bin"], path_state["rc"])
+                            return EditResult(result, path_state["rc"])
                     continue
                 name = keys[selected]
                 full = (*path, name)
@@ -178,8 +221,7 @@ def edit(config):
                         except ValueError as exc:
                             notice = str(exc)
 
-    def choose(screen, rows, title):
-        index = 0
+    def choose(screen, rows, title, index=0):
         while True:
             paint(screen, rows, index, title)
             key = screen.get_wch()
@@ -193,9 +235,18 @@ def edit(config):
                 return None
 
     def path_menu(screen):
-        rows = ["Leave PATH and shell startup files unchanged"]
-        rows += ["Create agent-box symlink in " + str(c.path) for c in choices]
-        picked = choose(screen, rows, "PATH: applied only when saving")
+        rows = ["Leave PATH alone; agent-box maintains no symlink"]
+        rows += [
+            "Create agent-box symlink in " + str(c.path)
+            + (" (also needs a shell startup line)" if c.needs_rc_line else "")
+            for c in choices]
+        # Leaving PATH alone is the safe answer, not the useful one: the cursor
+        # starts on the directory in play -- the one already recorded, or the
+        # first recommendation while the shell cannot find agent-box -- so the
+        # declining answer stays available without being the one Enter takes.
+        current = [i for i, c in enumerate(choices, 1) if c.path == path_state["bin"]]
+        start = current[0] if current else (1 if path_pending() and choices else 0)
+        picked = choose(screen, rows, "PATH: applied only when saving", start)
         if picked is None:
             return
         path_state.update(bin=None, rc=False)
@@ -203,8 +254,26 @@ def edit(config):
             choice = choices[picked - 1]
             path_state["bin"] = choice.path
             if choice.needs_rc_line and pathsetup.rc_file():
-                rc = choose(screen, ["Leave shell startup file unchanged", "Append PATH block to " + str(pathsetup.rc_file())], "Shell PATH block")
+                rc = choose(screen, ["Leave shell startup file unchanged", "Append PATH block to " + str(pathsetup.rc_file())], "Shell PATH block", 1)
                 path_state["rc"] = rc == 1
+
+    def path_gate(screen):
+        """Ask before saving a configuration for a command the shell cannot run.
+
+        Declining is a real answer -- a user may link agent-box by hand, or
+        from another checkout -- so this asks rather than refuses, and says
+        which of the two outcomes it is returning to.
+        """
+        picked = choose(screen, [
+            "Set up PATH now",
+            "Save without putting agent-box on PATH",
+        ], path_row())
+        if picked is None:
+            return False
+        if picked == 1:
+            return True
+        path_menu(screen)
+        return path_state["bin"] is not None
 
     def start(screen):
         curses.curs_set(0)

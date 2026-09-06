@@ -2356,6 +2356,28 @@ def stop_main(args: list[str]) -> int:
     return 0
 
 
+def apply_path_symlink(config: Config) -> list[str]:
+    """Keep the recorded ``agent-box`` symlink pointing at this checkout.
+
+    Applying re-creates a link that something else removed, which is the whole
+    reason the directory is remembered. It never *chooses* one: an empty
+    ``install.bin_dir`` means the user declined the question or links the shim
+    themselves, and inventing a location here would be agent-box putting a
+    command on PATH that nobody asked for.
+
+    A refusal -- a foreign file already holding the name -- is reported and
+    the rest of the apply continues, because the symlink is independent of
+    the skills and settings that follow it.
+    """
+    from . import pathsetup
+    if not config.install.bin_dir:
+        return []
+    try:
+        return [pathsetup.install_symlink(Path(config.install.bin_dir))]
+    except AgentBoxError as exc:
+        return [f"warning: {exc}"]
+
+
 def apply_config(config: Config) -> list[str]:
     """Make the host match the configuration, and say what that took.
 
@@ -2380,6 +2402,7 @@ def apply_config(config: Config) -> list[str]:
     report: list[str] = []
 
     ensure_state_dirs()
+    report.extend(apply_path_symlink(config))
     notify_module.sync_credentials(config, path=NOTIFY_CREDENTIALS)
     sync_tracker_runtime(config)
 

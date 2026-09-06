@@ -209,6 +209,33 @@ class SkillsConfig:
         return cls(claude_links=_bool(data, "claude_links", True))
 
 
+@dataclass
+class InstallConfig:
+    """Which directory agent-box keeps its own ``agent-box`` symlink in.
+
+    Stored because the symlink is the one part of setup that something else
+    can undo: a directory cleaned by a version manager, a home restored from
+    backup, a ``~/.local/bin`` rebuilt by another installer. Remembering the
+    answer turns "run the menu again and find the PATH question" into
+    ``agent-box config apply``, which relinks whatever went missing.
+
+    Empty means agent-box maintains no symlink -- the honest default, since a
+    user who declined the question, or who links the shim themselves, must not
+    have one appear later. The value is a directory the user picked from
+    :func:`agent_box.pathsetup.bin_dir_choices`; the safety rules about what
+    may be replaced live in ``install_symlink`` and apply every time.
+    """
+    bin_dir: str = ""
+
+    def to_dict(self):
+        return {"bin_dir": self.bin_dir}
+
+    @classmethod
+    def from_dict(cls, data):
+        value = data.get("bin_dir") if isinstance(data, dict) else None
+        return cls(bin_dir=value if isinstance(value, str) else "")
+
+
 #: Namespace for the shell-prefix spelling: ``AGENT_BOX_ENV_FOO=bar agent-box
 #: codex`` puts ``FOO=bar`` in the container.
 #:
@@ -598,6 +625,7 @@ class Config:
     providers: ProvidersConfig = field(default_factory=ProvidersConfig)
     env: EnvConfig = field(default_factory=EnvConfig)
     skills: SkillsConfig = field(default_factory=SkillsConfig)
+    install: InstallConfig = field(default_factory=InstallConfig)
     image: ImageConfig = field(default_factory=ImageConfig)
     tracker: TrackerConfig = field(default_factory=TrackerConfig)
     browser: BrowserConfig = field(default_factory=BrowserConfig)
@@ -613,6 +641,7 @@ class Config:
             "providers": self.providers.to_dict(),
             "env": self.env.to_dict(),
             "skills": self.skills.to_dict(),
+            "install": self.install.to_dict(),
             "image": self.image.to_dict(),
             "tracker": self.tracker.to_dict(),
             "browser": self.browser.to_dict(),
@@ -631,6 +660,7 @@ class Config:
             providers=ProvidersConfig.from_dict(data.get("providers")),
             env=EnvConfig.from_dict(data.get("env")),
             skills=SkillsConfig.from_dict(data.get("skills")),
+            install=InstallConfig.from_dict(data.get("install")),
             image=ImageConfig.from_dict(data.get("image")),
             tracker=TrackerConfig.from_dict(data.get("tracker")),
             browser=BrowserConfig.from_dict(data.get("browser")),
