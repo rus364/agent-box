@@ -13,8 +13,8 @@ to connect a repository to a project.
 ```bash
 agent-box tracker status
 agent-box tracker projects
-agent-box tracker setup --project 12 --view 48
-agent-box tracker setup --project 12 --view 48 --states-file /tmp/states.json --base-branch main --apply
+agent-box tracker setup --project 12 --recursive
+agent-box tracker setup --project 12 --recursive --apply
 agent-box tracker ready
 agent-box tracker get 123
 agent-box tracker claim 123
@@ -23,15 +23,32 @@ agent-box tracker check 123 1 --text 'Expected acceptance item'
 agent-box tracker comment 123 --file /tmp/progress.md
 ```
 
-`setup` previews the selected view, columns and proposed mapping. It requires
-five distinct states: **Backlog, Ready, Doing, Review, Done**. It does not add
-columns automatically. The setup skill explains missing states and asks the
-user to add them, then proposes a mapping from the project's actual columns.
-Use a manually managed kanban view; Done must match its configured done bucket.
+`setup` previews, for every project in scope, the kanban view it resolved and
+the lifecycle columns it recognized. It requires five distinct states:
+**Backlog, Ready, Doing, Review, Done**, and it does not add columns
+automatically. Each project needs exactly one kanban view with manually managed
+buckets; the view's own done bucket is taken as Done when it has one, and the
+remaining columns are matched by title (`Backlog`/`To-Do`, `Ready`,
+`Doing`/`In progress`, `Review`, `Done`). Anything missing, duplicated or
+ambiguous is reported per project and blocks `--apply` rather than being
+guessed. There is no per-repository override table: a board that does not say
+what its columns mean is fixed in the tracker.
+
+Views and column IDs are read live on every run and never stored, so a renamed
+or deleted column surfaces as an error instead of silently moving a card. The
+same holds for the base branch, which is origin's default branch, and for the
+pull request, which is looked up on GitHub by head and base.
+
+With `--recursive` the binding covers the root project **and every project under
+it**: those projects are searched together, each resolves its own board, and
+tasks in them can be claimed and moved. Projects outside the subtree stay
+readable but can never be mutated by this repository's workflow.
 
 Global configuration holds connections, secrets and workflow policy.
-`.agent-box.json` holds provider/server identity, project/view IDs, lifecycle
-mapping, subtree scope and base branch. Commit this portable binding. A fresh
+`.agent-box.json` holds only provider, server, project and whether the binding
+is recursive. `server` stays because a project ID is meaningless without the
+instance it belongs to, and Vikunja publishes no stable instance identity of its
+own. Commit this portable binding. A fresh
 clone on another device requires only the matching global connection, not
 local absolute paths or credentials in Git. Setup also maintains checksum
 blocks in `AGENTS.md` and the `CLAUDE.md` import, preserving text outside them
@@ -51,6 +68,11 @@ return a conflict for reconciliation, never a blind retry. It also sends ETags
 when supplied, but the tested Vikunja version ignores If-Match on PATCH despite
 returning ETags on GET. Optimistic checks cannot close the race between the
 last read and the write; they are not atomic compare-and-swap.
+
+Comments are a human journal. Nothing machine-readable lives in one: branch,
+base branch and pull request come from Git and GitHub, lifecycle from the
+tracker's own fields. A worker that may comment therefore cannot reach any
+orchestrator state.
 
 Task content uses its language. Markdown checkboxes represent evidenced progress;
 only independent review can provide review acceptance. Workers may comment and

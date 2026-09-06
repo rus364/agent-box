@@ -945,7 +945,7 @@ def resolve_kanban_view(client, project_id, reference=None):
     if len(views) > 1:
         available = ", ".join(_view_label(v) for v in views)
         raise AmbiguousMatch(
-            f"project id {project_id} has several kanban views ({available}); pass --view"
+            f"project id {project_id} has several kanban views ({available}); name one explicitly"
         )
     return views[0]
 

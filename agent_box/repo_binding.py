@@ -5,13 +5,12 @@ import hashlib
 import json
 import re
 import subprocess
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
 
 from .atomicio import atomic_write_text
 from .errors import AgentBoxError
-from .tracker.core import STATES
 
 BINDING_FILE = ".agent-box.json"
 
@@ -34,30 +33,30 @@ def server_identity(url):
 
 @dataclass
 class Binding:
+    """Which tracker project this repository belongs to, and nothing else.
+
+    Board view IDs, lifecycle column IDs and the base branch are facts owned by
+    Vikunja and Git; reading them live cannot go stale, while a cached copy can
+    silently move a card to a deleted column or a push to a renamed branch.
+    `server` stays because a project ID means nothing without the instance it
+    belongs to, and Vikunja exposes no stable instance identity of its own.
+    """
     provider: str
     server: str
     project: str
-    view: str = ""
-    states: dict[str, str] = field(default_factory=dict)
     recursive: bool = False
-    base_branch: str = ""
 
     def validate(self):
         from .config import TRACKER_PROVIDERS
-        if any(not isinstance(getattr(self, name), str) for name in ("provider", "server", "project", "view", "base_branch")):
-            raise AgentBoxError("Repository provider, server, project, view and base branch must be strings")
-        if not isinstance(self.recursive, bool) or not isinstance(self.states, dict):
-            raise AgentBoxError("Repository recursive must be boolean and states must be an object")
-        if any(not isinstance(k, str) or not isinstance(v, str) for k, v in self.states.items()):
-            raise AgentBoxError("Lifecycle state names and IDs must be strings")
+        if any(not isinstance(getattr(self, name), str) for name in ("provider", "server", "project")):
+            raise AgentBoxError("Repository provider, server and project must be strings")
+        if not isinstance(self.recursive, bool):
+            raise AgentBoxError("Repository recursive must be boolean")
         if self.provider not in TRACKER_PROVIDERS:
             raise AgentBoxError(f"Unknown tracker provider: {self.provider}")
         server_identity(self.server)
         if not self.project:
             raise AgentBoxError("Repository binding needs a project ID")
-        missing = set(STATES) - self.states.keys()
-        if missing or set(self.states) != set(STATES) or len(set(self.states.values())) != len(STATES) or any(not v for v in self.states.values()):
-            raise AgentBoxError("Lifecycle needs distinct Backlog, Ready, Doing, Review, and Done states")
 
     @classmethod
     def load(cls, root: Path):
@@ -110,6 +109,7 @@ Use agent-box tracker for task state, progress, history, and dependencies; searc
 Use ab-interview, ab-plan, ab-work, ab-review, ab-pr, and ab-land as needed. ab-setup maintains this binding.
 The orchestrator owns branches, lifecycle, dependencies, and GitHub actions. Delegate implementation sequentially; independent read-only scouts may run in parallel.
 Workers may comment and check existing items on their assigned task. Review runs in fresh context and returns findings to the orchestrator.
+Tracker comments are a human journal. Branch, base branch, and pull request come from Git and GitHub; lifecycle comes from the tracker's own fields, never from comment text.
 Communicate with the user in their language, write tracker content in the task's language, and use English for agent handoffs and implementation.
 Complete subtasks only after validation and integration into the parent branch; complete parents only after merge into the base branch.
 """

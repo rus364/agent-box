@@ -4,6 +4,17 @@ from __future__ import annotations
 from .core import Task, TrackerError, STATES, root_task
 from . import vikunja_api as api
 
+# Column titles agent-box accepts for each lifecycle state. A per-repository
+# override table would be a second mapping language to keep correct; a project
+# whose board does not say what it means is refused instead.
+LIFECYCLE_ALIASES = {
+    "Backlog": ("backlog", "todo", "to do", "to-do"),
+    "Ready": ("ready",),
+    "Doing": ("doing", "in progress", "in-progress"),
+    "Review": ("review", "in review", "in-review"),
+    "Done": ("done", "completed"),
+}
+
 
 class VikunjaAdapter:
     capabilities = frozenset({"tasks", "projects", "comments", "checklists", "relations",
@@ -12,6 +23,89 @@ class VikunjaAdapter:
     def __init__(self, url, token, binding=None, client=None):
         self.client = client or api.VikunjaClient(url, token)
         self.binding = binding
+        # Views and buckets are read once per process, never persisted: a cached
+        # ID in the repository would outlive the column it names.
+        self._boards = {}
+        self._scope = None
+
+    def projects_in_scope(self):
+        """A recursive binding governs the root project and every project under it.
+
+        Anything outside stays readable but unwritable, so a subtree binding can
+        never move a card in an unrelated project that happens to be reachable.
+        """
+        if self._scope is None:
+            if not self.binding:
+                self._scope = frozenset()
+            elif self.binding.recursive:
+                self._scope = frozenset(str(ident) for ident in
+                                        api.descendants(self.projects(), int(self.binding.project)))
+            else:
+                self._scope = frozenset({str(self.binding.project)})
+        return self._scope
+
+    def lifecycle(self, project, view=None):
+        """The project's own board, its columns, and what they mean.
+
+        Vikunja already knows which bucket means done, so that one is taken from
+        the view rather than guessed from a title. The remaining states are
+        matched by title; anything ambiguous is reported, never resolved.
+        """
+        project = str(project)
+        key = (project, str(view or ""))
+        if key not in self._boards:
+            selected = api.resolve_kanban_view(self.client, project, view)
+            buckets = api.view_buckets(self.client, project, selected["id"])
+            titles = {}
+            for bucket in buckets:
+                titles.setdefault(str(bucket.get("title") or "").casefold(), []).append(str(bucket["id"]))
+            known = {str(bucket["id"]) for bucket in buckets}
+            states, missing, ambiguous = {}, [], []
+            done = selected.get("done_bucket_id")
+            if done and str(done) in known:
+                states["Done"] = str(done)
+            for state in STATES:
+                if state in states:
+                    continue
+                found = [ident for alias in LIFECYCLE_ALIASES[state] for ident in titles.get(alias, [])]
+                if len(found) == 1:
+                    states[state] = found[0]
+                elif found:
+                    ambiguous.append(state)
+                else:
+                    missing.append(state)
+            problems = []
+            if selected.get("bucket_configuration_mode") == "filter":
+                problems.append("board builds its columns from filters instead of manual buckets")
+            if missing:
+                problems.append("no column for " + ", ".join(missing))
+            if ambiguous:
+                problems.append("several columns match " + ", ".join(ambiguous))
+            if len(set(states.values())) != len(states):
+                problems.append("one column is claimed by more than one state")
+            self._boards[key] = {"view": selected, "buckets": buckets, "states": states,
+                                 "missing": missing, "problems": problems}
+        return self._boards[key]
+
+    def board(self, project):
+        """Reading tolerates a broken board; moving a card across one does not."""
+        resolved = self.lifecycle(project)
+        if resolved["problems"]:
+            raise TrackerError(f"Project {project} board cannot express the workflow lifecycle: "
+                               + "; ".join(resolved["problems"]), "configuration")
+        return resolved
+
+    def lifecycle_report(self):
+        """Per-project diagnostics for the bound subtree, returned for rendering."""
+        report = []
+        for project in sorted(self.projects_in_scope(), key=lambda value: int(value)):
+            try:
+                resolved = self.lifecycle(project)
+                report.append({"project": project, "view": resolved["view"]["id"],
+                               "states": resolved["states"], "problems": resolved["problems"]})
+            except TrackerError as exc:
+                report.append({"project": project, "view": None, "states": {}, "problems": [str(exc)]})
+        return report
 
     def identity(self):
         return self.client.get("/user")
@@ -26,11 +120,14 @@ class VikunjaAdapter:
 
     def normalize(self, raw):
         related = raw.get("related_tasks") or {}
+        # Done is Vikunja's own flag; the other states are where the card sits.
         state = "Done" if raw.get("done") else "Unknown"
-        if self.binding and str(raw.get("project_id")) == self.binding.project and not raw.get("done"):
-            bucket = api.task_bucket_in_view(raw, self.binding.view)
+        project = str(raw.get("project_id"))
+        if state != "Done" and project in self.projects_in_scope():
+            resolved = self.lifecycle(project)
+            bucket = api.task_bucket_in_view(raw, resolved["view"]["id"]) if not resolved["problems"] else None
             if bucket:
-                state = next((name for name, ident in self.binding.states.items()
+                state = next((name for name, ident in resolved["states"].items()
                               if str(bucket["id"]) == ident), "Unknown")
         parent = related.get("parenttask") or []
         if len(parent) > 1:
@@ -82,12 +179,11 @@ class VikunjaAdapter:
     def set_state(self, task, state):
         if state not in STATES:
             raise TrackerError(f"Unknown lifecycle state: {state}")
-        binding = self.binding
-        if not binding or task.project != binding.project:
-            raise TrackerError("Changing state requires the task project's repository binding")
-        view = api.resolve_kanban_view(self.client, task.project, binding.view)
-        bucket = api.resolve_bucket(api.view_buckets(self.client, task.project, binding.view), binding.states[state])
-        api.place_in_bucket(self.client, task.project, view, bucket, task.id)
+        if task.project not in self.projects_in_scope():
+            raise TrackerError("Changing state requires a task inside the bound project subtree")
+        resolved = self.board(task.project)
+        bucket = api.resolve_bucket(resolved["buckets"], resolved["states"][state])
+        api.place_in_bucket(self.client, task.project, resolved["view"], bucket, task.id)
         current = self.get(task.id)
         if (state == "Done") != (current.state == "Done"):
             current = self.update(current, {"done": state == "Done"})
@@ -106,7 +202,7 @@ class VikunjaAdapter:
         task = self.get(str(raw["id"]))
         if parent:
             self.relate(task.id, "parent", parent)
-        return self.set_state(self.get(task.id), "Backlog") if self.binding and task.project == self.binding.project else self.get(task.id)
+        return self.set_state(self.get(task.id), "Backlog") if task.project in self.projects_in_scope() else self.get(task.id)
 
     def comments(self, task_id):
         return self.client.paginate(f"/tasks/{int(task_id)}/comments", {"format": "markdown"})
@@ -162,17 +258,3 @@ class VikunjaAdapter:
         if not any(old["id"] == label["id"] for old in raw.get("labels") or []):
             api.attach_label(self.client, task_id, label["id"])
         return self.get(task_id)
-
-    def lifecycle(self, project, view=None):
-        selected = api.resolve_kanban_view(self.client, project, view)
-        buckets = api.view_buckets(self.client, project, selected["id"])
-        proposed = {}
-        aliases = {"Backlog": ("backlog", "todo", "to do"), "Ready": ("ready",),
-                   "Doing": ("doing", "in progress", "in-progress"), "Review": ("review", "in review"),
-                   "Done": ("done", "completed")}
-        for state, names in aliases.items():
-            matches = [b for b in buckets if b["title"].casefold() in names]
-            if len(matches) == 1:
-                proposed[state] = str(matches[0]["id"])
-        return {"view": selected, "buckets": buckets, "proposed": proposed,
-                "missing": [state for state in STATES if state not in proposed]}

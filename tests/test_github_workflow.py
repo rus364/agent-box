@@ -21,11 +21,12 @@ class MergeAcceptanceTests(unittest.TestCase):
         pr = {"number": 9, "url": "https://github.com/o/r/pull/9", "state": "OPEN", "isDraft": False,
               "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN", "headRefOid": "head",
               "headRefName": "ab/task", "baseRefName": "main", "latestReviews": [], "statusCheckRollup": []}
-        info = {"pr": 9, "github_repo": "o/r", "branch": "ab/task", "base": "main"}
+        info = {"branch": "ab/task", "base": "main"}
         args = SimpleNamespace(command="land", action="merge", method="squash")
         saved = {"validation": {"exit": 0}, "review": {"verdict": "PASS"}}
         with patch.object(github.gw, "github_origin", return_value="o/r"), patch.object(github.gw, "current_branch", return_value="ab/task"), \
              patch.object(github.gw, "head_sha", return_value="head"), patch.object(github, "view", return_value=pr), \
+             patch.object(github, "find_pr", return_value=9), \
              patch.object(github, "threads", return_value=[]), patch.object(github, "gh") as command:
             child.state = "Doing"
             with self.assertRaisesRegex(AgentBoxError, "subtasks"):
@@ -36,6 +37,27 @@ class MergeAcceptanceTests(unittest.TestCase):
                 github.operate(args, Path("/tmp"), config, adapter, parent, parent, info, saved)
             command.assert_not_called()
             adapter.set_state.assert_not_called()
+
+    def test_the_pull_request_is_looked_up_on_github_not_read_from_a_comment(self):
+        """A stored number let tracker text decide which PR the workflow lands."""
+        from unittest.mock import patch
+        from pathlib import Path
+        from agent_box import github_workflow as github
+        from agent_box.errors import AgentBoxError
+        rows = [{"number": 9, "state": "OPEN"}, {"number": 4, "state": "CLOSED"}]
+        with patch.object(github, "gh", return_value=rows) as command:
+            self.assertEqual(github.find_pr(Path("/tmp"), "o/r", "ab/task", "main"), 9)
+        arguments = command.call_args.args
+        self.assertIn("--head", arguments)
+        self.assertEqual(arguments[arguments.index("--head") + 1], "ab/task")
+        with patch.object(github, "gh", return_value=[{"number": 12, "state": "MERGED"}]):
+            self.assertEqual(github.find_pr(Path("/tmp"), "o/r", "ab/task", "main"), 12)
+        with patch.object(github, "gh", return_value=[{"number": 4, "state": "CLOSED"}]):
+            self.assertIsNone(github.find_pr(Path("/tmp"), "o/r", "ab/task", "main"))
+        with patch.object(github, "gh", return_value=[{"number": 9, "state": "OPEN"},
+                                                      {"number": 10, "state": "OPEN"}]):
+            with self.assertRaisesRegex(AgentBoxError, "Several pull requests"):
+                github.find_pr(Path("/tmp"), "o/r", "ab/task", "main")
 
     def test_silence_pending_checks_and_stale_approval_block_merge(self):
         from agent_box.github_workflow import blockers

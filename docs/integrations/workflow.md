@@ -14,10 +14,13 @@ task database, bootstrap framework, update patches or agent-turn push hooks.
 | Review | Parent implementation accepted locally; PR/review/merge pending |
 | Done | Subtask integrated and validated, or parent actually merged into base |
 
-A parent task represents a deliverable/spec, and subtasks belong to the same
-tracker project. The orchestrator creates the parent branch from the configured
-base, then creates each subtask branch from that parent, executes it sequentially,
-and integrates it before starting the next. No parallel workers or automatic
+A parent task represents a deliverable/spec, and subtasks belong to the bound
+project or, with a recursive binding, to any project under it. Each task owns the
+branch namespace `ab/<task id>-*`, so the branch is found back in Git instead of
+recorded anywhere; the base is origin's default branch, read live. The
+orchestrator creates the parent branch from that base, then creates each subtask
+branch from the parent, executes it sequentially, and integrates it before
+starting the next. No parallel workers or automatic
 branch creation by delegated agents. Read-only scouts may run concurrently within
 `scout_limit`. A finished sibling unblocks after integration; a dependency in
 another parent remains blocked until that parent's merge.
@@ -27,6 +30,27 @@ handoffs; tracker comments and descriptions use the task's language. Requirement
 relations and GitHub writes belong to the orchestrator. Workers may post progress
 and check existing items. Reviewers return findings to the orchestrator, which
 comments in the task and unchecks contradicted items. A checkbox is not a PASS.
+
+Tracker comments carry no workflow state. Branch, base and pull request come from
+Git and GitHub; lifecycle comes from the tracker's own fields; the provider that
+actually wrote the code is local evidence. So a worker, which may comment, cannot
+reach any of it by writing one.
+
+A worker changes working files and nothing else. Delegation records the branch,
+HEAD, every local ref, the task requirements and the lifecycle of the whole task
+tree; the report is refused if the worker committed, moved a branch or a tag, or
+changed requirements, relations, state or assignment. This comparison, not the
+role environment variable the worker could unset, is what makes the boundary
+checkable. Accepting a worker report also drops any validation or review
+acceptance recorded before it, so a later PASS always describes code the worker
+actually left behind.
+
+Claude workers and reviewers run with `--safe-mode`, which is what keeps the
+context free of the user's hooks, skills, MCP servers and agents - and which also
+disables CLAUDE.md discovery. The repository's own `AGENTS.md` and `CLAUDE.md`
+therefore travel in the handoff itself, together with an instruction to read the
+nested ones next to the files being changed. `prepare` returns the same text as
+`repository_instructions` for native delegation.
 
 ## Models and routing
 
@@ -95,8 +119,8 @@ agent-box workflow finish TASK
 Native handoffs use `prepare`, then `report --file FILE --scope DIGEST --provider
 PROVIDER` for the returned structured report. Evidence is disposable local cache,
 bound to code, task requirements and scope; another device may need to rerun
-validation/review. Branch/PR identity lives in tracker comments as a visible
-`agent-box-workflow` fenced block because Vikunja strips HTML comments.
+validation/review. Only the actual writer provider survives a scope change,
+because it decides who reviews the result.
 
 Review policy is off/auto/always. Auto considers explicit review labels, sensitive
 paths, changed-file count and added/deleted lines (binary changes require review).
@@ -118,7 +142,8 @@ remote default branch, unique effective destination, clean worktree and ancestry
 no forced repair, tag/submodule side pushes or child-branch auto-push.
 
 After parent acceptance, offer `ab-pr`. On user request it opens one PR, following
-repository templates and recording the link in the parent task. `ab-land` reads
+repository templates. Later commands find that PR on GitHub by head branch and
+base rather than from a stored number; several matches stop the command. `ab-land` reads
 CI, comments and paginated unresolved threads, fixes sequentially, obtains
 current-head acceptance and merges with `--match-head-commit`. Branch protection
 is never bypassed. Merge-queue entry is not completion. If the tracker write

@@ -9,6 +9,6 @@ Read the parent task and subtasks; confirm work is integrated, accepted and in R
 
 Write a concise title and body in English, leading with the concrete problem and resulting behavior. Include the tracked parent link, acceptance evidence, validation and material limitations. Use an existing repository template when present. Put multiline content in a file.
 
-Run `workflow pr PARENT --title TITLE --body-file FILE [--draft]`. It checks the recorded parent/base, safely pushes only the parent and records the PR in the tracker. Existing matching PRs are reused. Do not force-push, retarget, overwrite a user's PR body or bypass repository policy.
+Run `workflow pr PARENT --title TITLE --body-file FILE [--draft]`. It resolves the parent branch from Git and the base from origin's default branch, then safely pushes only the parent. Existing matching PRs are reused; later commands find the PR on GitHub by head and base, so nothing records its number. Do not force-push, retarget, overwrite a user's PR body or bypass repository policy.
 
 Report the PR link and offer ab-land. GitHub review may use configured Codex/Claude cloud integration; fresh local review is available when cloud review is absent or unavailable.

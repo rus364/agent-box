@@ -43,8 +43,7 @@ class TrackerWorkflowTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "AGENTS.md").write_bytes(b"User rules\r\n")
-            binding = b.Binding("vikunja", "https://tasks.example", "12", "7", {
-                "Backlog": "1", "Ready": "2", "Doing": "3", "Review": "4", "Done": "5"})
+            binding = b.Binding("vikunja", "https://tasks.example", "12")
             b.write_setup(root, binding)
             before = (root / "AGENTS.md").read_bytes()
             b.write_setup(root, binding)

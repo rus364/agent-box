@@ -26,6 +26,26 @@ def gh(root, *args, json_output=False):
     return result.stdout.strip()
 
 
+def find_pr(root, repo, branch, base):
+    """The PR is whatever GitHub has for this head and base, not a saved number.
+
+    Storing the number in the tracker made a comment authoritative over GitHub;
+    asking GitHub cannot go stale, and an ambiguous answer stops the operation
+    rather than picking one.
+    """
+    rows = gh(root, "pr", "list", "--repo", repo, "--head", branch, "--base", base,
+              "--state", "all", "--json", "number,state", json_output=True)
+    open_prs = [row for row in rows if row["state"] == "OPEN"]
+    merged = [row for row in rows if row["state"] == "MERGED"]
+    if len(open_prs) == 1:
+        return open_prs[0]["number"]
+    if not open_prs and len(merged) == 1:
+        return merged[0]["number"]
+    if open_prs or merged:
+        raise AgentBoxError(f"Several pull requests match {branch}; select the intended PR explicitly")
+    return None
+
+
 def view(root, repo, reference):
     return gh(root, "pr", "view", reference, "--repo", repo, "--json",
               "number,url,state,isDraft,headRefName,headRefOid,baseRefName,mergeStateStatus,mergeable,reviewDecision,latestReviews,statusCheckRollup,mergeCommit,mergedAt", json_output=True)
@@ -107,14 +127,14 @@ def request_review(root, repo, pr, config):
 
 
 def operate(args, root, config, adapter, task, parent, info, saved):
-    from .workflow import record, tree
+    from .workflow import tree
     if not (config.github.gh_token or config.github.gh_config):
         raise AgentBoxError("Enable the GitHub integration in agent-box config before workflow GitHub actions")
     if task.id != parent.id:
         raise AgentBoxError("Create and land one PR for the parent task")
     repo = gw.github_origin(root)
     if gw.current_branch(root) != info["branch"]:
-        raise AgentBoxError("Use the recorded parent branch for PR operations")
+        raise AgentBoxError(f"Switch to the parent branch {info['branch']} for PR operations")
     if args.command == "pr":
         if task.state != "Review" or not saved.get("validation"):
             raise AgentBoxError("Finish parent acceptance and validation before opening a PR")
@@ -131,12 +151,11 @@ def operate(args, root, config, adapter, task, parent, info, saved):
             if args.draft:
                 command.append("--draft")
             gh(root, *command)
-        pr = view(root, repo, info["branch"])
-        record(adapter, task, pr=pr["number"], github_repo=repo)
-        return pr
-    if not info.get("pr") or info.get("github_repo") != repo:
-        raise AgentBoxError("No PR recorded for this parent and GitHub repository")
-    pr = view(root, repo, info["pr"])
+        return view(root, repo, info["branch"])
+    number = find_pr(root, repo, info["branch"], info["base"])
+    if not number:
+        raise AgentBoxError(f"GitHub has no pull request for {info['branch']} into {info['base']}; run ab-pr")
+    pr = view(root, repo, number)
     if pr["headRefName"] != info["branch"] or pr["baseRefName"] != info["base"]:
         raise AgentBoxError("PR branch identity differs from the tracked parent")
     if args.action == "reconcile" or pr["state"] == "MERGED":

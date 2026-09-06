@@ -615,7 +615,7 @@ class KanbanTests(unittest.TestCase):
             {"id": 8, "title": "Board", "view_kind": "kanban"},
             {"id": 9, "title": "Triage", "view_kind": "kanban"},
         ])
-        with self.assertRaisesRegex(vikunja.AmbiguousMatch, "--view"):
+        with self.assertRaisesRegex(vikunja.AmbiguousMatch, "several kanban views"):
             vikunja.resolve_kanban_view(service, 1)
         self.assertEqual(vikunja.resolve_kanban_view(service, 1, "Triage")["id"], 9)
         self.assertEqual(vikunja.resolve_kanban_view(service, 1, "8")["id"], 8)

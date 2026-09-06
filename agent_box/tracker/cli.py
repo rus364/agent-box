@@ -67,10 +67,8 @@ def parser():
     cmd.add_argument("--tier", type=int, choices=(1, 2, 3))
     cmd = sub.add_parser("setup")
     cmd.add_argument("--project", required=True)
-    cmd.add_argument("--view")
-    cmd.add_argument("--states-file", help="JSON object mapping required state names to bucket IDs")
-    cmd.add_argument("--base-branch", default="")
-    cmd.add_argument("--recursive", action="store_true")
+    cmd.add_argument("--recursive", action="store_true",
+                     help="Include every project under the root project in the workflow")
     cmd.add_argument("--apply", action="store_true", help="Save binding and managed repository instructions")
     cmd = sub.add_parser("provider")
     cmd.add_argument("provider", choices=("vikunja",))
@@ -100,34 +98,30 @@ def dispatch(args):
         adapter, _, _ = context(args.provider)
         return run(adapter, args.arguments)
     if args.command == "setup":
-        adapter = make_adapter(provider=args.provider)
-        project = adapter.project(args.project)
-        discovery = adapter.lifecycle(str(project["id"]), args.view)
-        states = json.loads(text_file(args.states_file)) if args.states_file else discovery["proposed"]
-        if not isinstance(states, dict):
-            raise TrackerError("States file must contain a JSON object")
+        project = make_adapter(provider=args.provider).project(args.project)
         binding = Binding(args.provider or effective_config().tracker.provider,
                           effective_config().tracker.connection(args.provider).url,
-                          str(project["id"]), str(discovery["view"]["id"]),
-                          {key: str(value) for key, value in states.items()}, args.recursive, args.base_branch)
-        if not args.apply:
-            return {"binding": asdict(binding), "discovery": discovery, "apply": False}
+                          str(project["id"]), args.recursive)
         binding.validate()
-        buckets = {str(b["id"]): b for b in discovery["buckets"]}
-        if not set(binding.states.values()) <= buckets.keys():
-            raise TrackerError("Mapping contains a bucket outside the selected view")
-        if discovery["view"].get("bucket_configuration_mode") == "filter":
-            raise TrackerError("Workflow requires a manually managed kanban view")
-        done_bucket = discovery["view"].get("done_bucket_id")
-        if done_bucket and str(done_bucket) != binding.states["Done"]:
-            raise TrackerError("Done must map to the view's configured done bucket")
-        return {"written": write_setup(repository_root(), binding), "binding": asdict(binding)}
+        # Binding stores only the project; the boards are checked here so a
+        # misconfigured column is reported at setup rather than mid-workflow.
+        report = make_adapter(binding, args.provider).lifecycle_report()
+        if not args.apply:
+            return {"binding": asdict(binding), "lifecycle": report, "apply": False}
+        broken = [entry for entry in report if entry["problems"]]
+        if broken:
+            raise TrackerError("Fix the board lifecycle first: " + "; ".join(
+                f"project {entry['project']}: {', '.join(entry['problems'])}" for entry in broken),
+                "configuration")
+        return {"written": write_setup(repository_root(), binding), "binding": asdict(binding),
+                "lifecycle": report}
     adapter, binding, root = context(args.provider, args.command in ("ready", "next", "claim", "state"))
     if args.command == "status":
         user = adapter.identity()
         return {"provider": args.provider or (binding.provider if binding else effective_config().tracker.provider),
                 "user": {"id": str(user["id"]), "username": user.get("username")},
-                "capabilities": sorted(adapter.capabilities), "binding": asdict(binding) if binding else None}
+                "capabilities": sorted(adapter.capabilities), "binding": asdict(binding) if binding else None,
+                "lifecycle": adapter.lifecycle_report() if binding else []}
     if args.command == "projects":
         return [{"id": str(p["id"]), "title": p["title"], "parent": str(p.get("parent_project_id") or "")}
                 for p in adapter.projects() if args.query.casefold() in p["title"].casefold()]

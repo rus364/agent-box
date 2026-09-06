@@ -101,10 +101,63 @@ def require_clean(root):
         raise AgentBoxError("Commit or preserve the current changes before changing workflow branches")
 
 
+def branch_prefix(task_id):
+    return "ab/" + re.sub(r"[^a-zA-Z0-9_-]", "-", str(task_id)) + "-"
+
+
 def branch_name(task):
     slug = re.sub(r"[^a-z0-9]+", "-", task.title.lower()).strip("-")[:55] or "task"
-    ident = re.sub(r"[^a-zA-Z0-9_-]", "-", task.id)
-    return f"ab/{ident}-{slug}"
+    return branch_prefix(task.id) + slug
+
+
+def task_branch(root, task):
+    """The task ID owns a branch namespace, so Git alone can name the branch again.
+
+    Recording the branch elsewhere would make a second source of truth that an
+    agent with tracker write access could contradict; a title edit must not
+    rename a live branch either, so the existing ref wins over the derived name.
+    """
+    prefix = branch_prefix(task.id)
+    found = git(root, "for-each-ref", "--format=%(refname:short)",
+                f"refs/heads/{prefix}*").split()
+    if len(found) > 1:
+        raise AgentBoxError(f"Several branches claim task {task.id}: {', '.join(sorted(found))}")
+    return found[0] if found else None
+
+
+def default_base(root):
+    """The base branch is origin's default branch, read live rather than stored.
+
+    A copy in the repository binding would drift the moment the project renames
+    its default branch, and would let a stale file redirect a push or a PR.
+    """
+    result = _run(["git", "symbolic-ref", "--short", "-q", "refs/remotes/origin/HEAD"], cwd=root)
+    name = result.stdout.strip().removeprefix("origin/") if result.returncode == 0 else ""
+    if not name:
+        url = _effective_push_url(root)
+        state = _query_origin(root, "HEAD", url) if url else None
+        name = state.default_branch if state else ""
+    if not name:
+        raise AgentBoxError("Cannot determine origin's default branch; set refs/remotes/origin/HEAD")
+    return name
+
+
+def base_ref(root, base):
+    """A fresh clone may only have the remote-tracking copy of the base branch."""
+    for candidate in (base, f"refs/remotes/origin/{base}"):
+        if _run(["git", "rev-parse", "--verify", "--quiet", f"{candidate}^{{commit}}"], cwd=root).returncode == 0:
+            return candidate
+    raise AgentBoxError(f"Base {base} does not resolve to a commit in this repository")
+
+
+def base_commit(root, base):
+    """Where this branch left the base; a moving base tip must not restate scope."""
+    return git(root, "merge-base", base_ref(root, base), "HEAD")
+
+
+def ref_state(root):
+    """Every local branch and tag, so an unexpected ref change is detectable."""
+    return git(root, "for-each-ref", "--format=%(refname) %(objectname)", "refs/heads", "refs/tags")
 
 
 def switch_branch(root, branch, base, *, resume=False):

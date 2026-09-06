@@ -61,10 +61,12 @@ class WorkflowGitTests(unittest.TestCase):
                 (root / "change.py").write_text("value = 1\n")
                 result = workflow.dispatch(workflow.parser().parse_args(["report", "1", "--role", "worker", "--primary", "codex", "--provider", "claude", "--file", str(report), "--scope", prepared["scope"]]))
                 self.assertEqual(result["route"]["provider"], "claude")
-                self.assertIn('"writer": "claude"', adapter.comment.call_args.args[1])
+                # The writer is local evidence; nothing about it reaches the tracker.
+                self.assertEqual(workflow.read_evidence(root, task)["writer"], "claude")
+                adapter.comment.assert_not_called()
                 workflow.dispatch(workflow.parser().parse_args(["writer", "1", "--provider", "codex"]))
-                adapter.comments.return_value = [{"comment": adapter.comment.call_args.args[1]}]
-                writer = workflow.metadata(adapter, task)["writer"]
+                self.assertEqual(workflow.read_evidence(root, task)["writer"], "codex")
+                writer = workflow.read_evidence(root, task)["writer"]
                 from agent_box.routing import select
                 config.workflow.tiers["1"] = {provider: {"model": provider + "-model", "effort": "high"} for provider in ("codex", "claude")}
                 self.assertEqual(select(config.workflow, "reviewer", 1, "codex", {}, writer=writer)["provider"], "claude")

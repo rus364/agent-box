@@ -56,6 +56,14 @@ that the user has to assemble first, is not an integration. Settings live in
 agent-box; the container gets a rendered, minimal artifact, never `config.json`
 itself.
 
+**Derived, not stored.** A fact that Git, GitHub or the tracker already owns is
+read back from there. Branch names come from the task's `ab/<id>-` namespace,
+the base branch from origin's default, the pull request from a head/base lookup,
+the lifecycle from the board's own columns. `.agent-box.json` names the tracker
+project and nothing else. Nothing machine-readable is written into a tracker
+comment: a comment is a human journal, and an agent allowed to write one must not
+thereby reach orchestrator state.
+
 **Secrets travel by name.** `--env=NAME` (Podman inherits the value) for
 anything secret; `--env=NAME=VALUE` puts the value in an argv that `/proc`
 exposes to other processes. `notify.sync_credentials` and
