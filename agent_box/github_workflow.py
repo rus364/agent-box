@@ -169,6 +169,14 @@ def operate(args, root, config, adapter, task, parent, info, saved):
             raise AgentBoxError(
                 f"PR #{pr['number']} merged {pr['headRefOid'][:12]}, but {info['branch']} is now at "
                 f"{(gw.head_sha(root) or '')[:12]}; the current work is not merged")
+        # This checkout is not the only one that can push the task branch, and it
+        # may not have fetched since another machine did, so origin is asked live
+        # rather than through a remote-tracking ref that predates the push.
+        remote_head = gw.remote_branch_head(root, info["branch"])
+        if remote_head != pr["headRefOid"]:
+            raise AgentBoxError(
+                f"origin/{info['branch']} is at {(remote_head or 'no branch')[:12]}, not the merged "
+                f"{pr['headRefOid'][:12]}; another checkout advanced the branch, so reconcile first")
         if task.state != "Done":
             adapter.set_state(task, "Done")
         return {"task": task.id, "state": "Done", "merge": pr["mergeCommit"], "url": pr["url"]}

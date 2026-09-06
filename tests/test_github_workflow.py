@@ -90,9 +90,56 @@ class MergeAcceptanceTests(unittest.TestCase):
                 adapter.set_state.assert_not_called()
                 command.assert_not_called()
             # The normal reconcile after a real merge still completes the task.
-            with patch.object(github.gw, "head_sha", return_value="oldhead"):
+            with patch.object(github.gw, "head_sha", return_value="oldhead"), \
+                 patch.object(github.gw, "remote_branch_head", return_value="oldhead"):
                 result = github.operate(args, Path("/tmp"), config, adapter, parent, parent, info, {})
         self.assertEqual((result["state"], result["merge"]), ("Done", {"oid": "mergecommit"}))
+        adapter.set_state.assert_called_once_with(parent, "Done")
+
+    def test_an_old_merged_pr_cannot_complete_work_another_machine_pushed(self):
+        """This checkout may simply not have fetched what someone else published.
+
+        Head equality against the local branch is not enough once a task branch
+        can be continued from a second clone: the branch that origin holds now,
+        asked live, is what decides whether the merged commit is still the work.
+        """
+        from unittest.mock import Mock, patch
+        from types import SimpleNamespace
+        from pathlib import Path
+        from agent_box import github_workflow as github
+        from agent_box.config import Config
+        from agent_box.errors import AgentBoxError
+        parent = Task("1", "1", "Parent", state="Review", assignees=["1"], description="- [x] Accepted")
+        adapter = Mock()
+        adapter.identity.return_value = {"id": 1}
+        adapter.get.side_effect = lambda ident: {"1": parent}[ident]
+        config = Config()
+        config.github.gh_token = True
+        merged = {"number": 9, "url": "https://github.com/o/r/pull/9", "state": "MERGED",
+                  "isDraft": False, "headRefOid": "A", "headRefName": "ab/task",
+                  "baseRefName": "main", "mergedAt": "2026-01-01T00:00:00Z",
+                  "mergeCommit": {"oid": "mergecommit"}, "latestReviews": [], "statusCheckRollup": []}
+        info = {"branch": "ab/task", "base": "main"}
+        args = SimpleNamespace(command="land", action="reconcile", method="squash")
+        with patch.object(github.gw, "github_origin", return_value="o/r"), \
+             patch.object(github.gw, "current_branch", return_value="ab/task"), \
+             patch.object(github.gw, "head_sha", return_value="A"), \
+             patch.object(github, "view", return_value=merged), \
+             patch.object(github, "find_pr", return_value=9), \
+             patch.object(github, "gh") as command:
+            with patch.object(github.gw, "remote_branch_head", return_value="B") as remote:
+                with self.assertRaisesRegex(AgentBoxError, "another checkout advanced the branch"):
+                    github.operate(args, Path("/tmp"), config, adapter, parent, parent, info, {})
+                remote.assert_called_once_with(Path("/tmp"), "ab/task")
+                adapter.set_state.assert_not_called()
+                command.assert_not_called()
+            # A branch origin no longer has cannot complete the task either.
+            with patch.object(github.gw, "remote_branch_head", return_value=None):
+                with self.assertRaisesRegex(AgentBoxError, "no branch"):
+                    github.operate(args, Path("/tmp"), config, adapter, parent, parent, info, {})
+            with patch.object(github.gw, "remote_branch_head", return_value="A"):
+                result = github.operate(args, Path("/tmp"), config, adapter, parent, parent, info, {})
+        self.assertEqual(result["state"], "Done")
         adapter.set_state.assert_called_once_with(parent, "Done")
 
     def test_a_new_open_pr_wins_over_the_branch_history_and_several_do_not(self):

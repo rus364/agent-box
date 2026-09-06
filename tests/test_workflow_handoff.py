@@ -124,6 +124,18 @@ class DerivedIdentityTests(unittest.TestCase):
                 gw.default_base(root)
 
 
+def selected_route(_config, role, tier, _primary, _writer=None):
+    """What `workflow.route` would return: the delegation it was asked for."""
+    return {"provider": "claude", "model": "m", "effort": "high", "tier": tier, "role": role,
+            "fallbacks": []}
+
+
+def forge(token, **changes):
+    payload = json.loads(base64.urlsafe_b64decode(token))
+    payload.update(changes)
+    return base64.urlsafe_b64encode(json.dumps(payload).encode()).decode()
+
+
 class WorkerHandoffTests(unittest.TestCase):
     """A worker may edit working files; every other change invalidates its report."""
 
@@ -141,7 +153,6 @@ class WorkerHandoffTests(unittest.TestCase):
         self.adapter.identity.return_value = {"id": 1}
         self.report = Path(self.directory.name) / "report.json"
         self.report.write_text(json.dumps({"status": "completed", "summary": "Done", "evidence": ["edited"]}))
-        route = {"provider": "claude", "tier": 1, "role": "worker", "model": "m", "effort": "high", "fallbacks": []}
         info = {"branch": "ab/1-task", "base": "main"}
         self.patches = [
             patch.object(workflow, "effective_config", return_value=self.config),
@@ -149,7 +160,7 @@ class WorkerHandoffTests(unittest.TestCase):
             patch.object(Binding, "load"),
             patch.object(workflow, "make_adapter", return_value=self.adapter),
             patch.object(workflow, "resolve", return_value=(self.task, info, {}, "main")),
-            patch.object(workflow, "route", return_value=route),
+            patch.object(workflow, "route", side_effect=selected_route),
             patch.object(workflow, "WORKFLOW_STATE", Path(self.directory.name) / "state"),
         ]
         for item in self.patches:
@@ -299,6 +310,145 @@ class WorkerHandoffTests(unittest.TestCase):
         with patch.object(workflow, "run", side_effect=provider):
             with self.assertRaisesRegex(AgentBoxError, "branch or tag"):
                 self.run_workflow("run", "1", "--role", "worker", "--primary", "codex", "--brief", str(brief))
+
+
+    def test_a_worker_moving_an_origin_task_ref_is_refused(self):
+        """A fresh clone takes its task branch from `origin/`, so those refs count."""
+        handed = self.prepare()
+        gw.git(self.root, "update-ref", "refs/remotes/origin/ab/1-task", gw.head_sha(self.root))
+        with self.assertRaisesRegex(AgentBoxError, "branch or tag"):
+            self.report_back(handed)
+
+    def test_a_worker_repointing_origin_is_refused(self):
+        """Base, branch and GitHub identity are all derived from the remote."""
+        handed = self.prepare()
+        gw.git(self.root, "remote", "set-url", "origin", str(Path(self.directory.name) / "other.git"))
+        with self.assertRaisesRegex(AgentBoxError, "changed origin"):
+            self.report_back(handed)
+
+    def test_a_worker_token_cannot_be_spent_on_a_reviewer_report(self):
+        """Otherwise a worker's own verdict on its own code would count as review."""
+        scope_value, handoff = self.prepare()
+        review = Path(self.directory.name) / "review.json"
+        review.write_text(json.dumps({"verdict": "PASS", "summary": "Fine", "findings": []}))
+        with self.assertRaisesRegex(AgentBoxError, "different role or tier"):
+            self.run_workflow("report", "1", "--role", "reviewer", "--primary", "codex",
+                              "--provider", "claude", "--file", str(review),
+                              "--scope", scope_value, "--handoff", handoff)
+
+    def test_a_reviewer_token_cannot_be_spent_on_a_worker_report(self):
+        prepared = self.run_workflow("prepare", "1", "--role", "reviewer", "--primary", "codex")
+        # A worker report is checked against the scope that admits its own
+        # uncommitted edits, so the forged token carries exactly that scope: only
+        # the role binding is left to refuse it.
+        working = workflow.scope(self.root, "main", [self.task], allow_dirty=True)
+        with self.assertRaisesRegex(AgentBoxError, "different role or tier"):
+            self.report_back((working, forge(prepared["handoff"], scope=working)))
+
+    def test_a_token_prepared_for_another_tier_is_refused(self):
+        scope_value, handoff = self.prepare()
+        widened = forge(handoff, route=selected_route(None, "worker", 3, None))
+        with self.assertRaisesRegex(AgentBoxError, "different role or tier"):
+            self.report_back((scope_value, widened))
+
+    def test_a_reviewer_reports_at_the_role_and_tier_it_was_prepared_for(self):
+        prepared = self.run_workflow("prepare", "1", "--role", "reviewer", "--primary", "codex")
+        self.assertEqual(prepared["route"]["role"], "reviewer")
+        review = Path(self.directory.name) / "review.json"
+        review.write_text(json.dumps({"verdict": "PASS", "summary": "Fine", "findings": []}))
+        result = self.run_workflow("report", "1", "--role", "reviewer", "--primary", "codex",
+                                   "--provider", "claude", "--file", str(review),
+                                   "--scope", prepared["scope"], "--handoff", prepared["handoff"])
+        self.assertEqual(result["report"]["verdict"], "PASS")
+
+
+class SubtaskWorkerHandoffTests(unittest.TestCase):
+    """A subtask's parent chain belongs in the baseline, not only its descendants.
+
+    `tree` covers the task and what hangs below it, which is what completion
+    reasons need. Identity runs the other way: the branch to merge into, the base
+    of the diff and who may finish the work all come from the parent, so a worker
+    that reparented the subtask or moved its parent would change the meaning of
+    the report it hands back without touching anything `tree` can see.
+    """
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = repository(self.directory.name)
+        gw.git(self.root, "switch", "-c", "ab/1-parent")
+        gw.git(self.root, "switch", "-c", "ab/2-subtask")
+        self.parent = Task("1", "1", "Parent", state="Doing", assignees=["1"], children=["2"])
+        self.stranger = Task("3", "1", "Another parent", state="Doing", assignees=["1"])
+        self.task = Task("2", "1", "Subtask", description="- [ ] requirement", parent="1",
+                         state="Doing", assignees=["1"], labels=["ab:tier:1"])
+        self.config = Config()
+        self.config.workflow.enabled = True
+        self.adapter = Mock()
+        self.adapter.get.side_effect = lambda ident: {"1": self.parent, "2": self.task,
+                                                      "3": self.stranger}[ident]
+        self.adapter.identity.return_value = {"id": 1}
+        self.report = Path(self.directory.name) / "report.json"
+        self.report.write_text(json.dumps({"status": "completed", "summary": "Done", "evidence": ["edited"]}))
+        info = {"branch": "ab/1-parent", "base": "main"}
+        resolved = (self.parent, info, {"branch": "ab/2-subtask"}, "ab/1-parent")
+        self.patches = [
+            patch.object(workflow, "effective_config", return_value=self.config),
+            patch.object(workflow, "repository_root", return_value=self.root),
+            patch.object(Binding, "load"),
+            patch.object(workflow, "make_adapter", return_value=self.adapter),
+            patch.object(workflow, "resolve", return_value=resolved),
+            patch.object(workflow, "route", side_effect=selected_route),
+            patch.object(workflow, "WORKFLOW_STATE", Path(self.directory.name) / "state"),
+        ]
+        for item in self.patches:
+            item.start()
+            self.addCleanup(item.stop)
+
+    def prepare(self):
+        prepared = workflow.dispatch(workflow.parser().parse_args(["prepare", "2", "--primary", "codex"]))
+        return prepared["scope"], prepared["handoff"]
+
+    def report_back(self, handed):
+        scope_value, handoff = handed
+        return workflow.dispatch(workflow.parser().parse_args(
+            ["report", "2", "--role", "worker", "--primary", "codex", "--provider", "claude",
+             "--file", str(self.report), "--scope", scope_value, "--handoff", handoff]))
+
+    def test_a_subtask_worker_that_only_edited_files_is_still_accepted(self):
+        handed = self.prepare()
+        (self.root / "change.py").write_text("value = 1\n")
+        self.assertEqual(self.report_back(handed)["report"]["status"], "completed")
+
+    def test_a_worker_detaching_the_subtask_from_its_parent_is_refused(self):
+        handed = self.prepare()
+        self.task.parent = None
+        with self.assertRaisesRegex(AgentBoxError, "requirements or relations"):
+            self.report_back(handed)
+
+    def test_a_worker_reparenting_the_subtask_is_refused(self):
+        handed = self.prepare()
+        self.task.parent = "3"
+        with self.assertRaisesRegex(AgentBoxError, "requirements or relations"):
+            self.report_back(handed)
+
+    def test_a_parent_lifecycle_move_during_the_handoff_is_refused(self):
+        handed = self.prepare()
+        self.parent.state = "Review"
+        with self.assertRaisesRegex(AgentBoxError, "state or assignment"):
+            self.report_back(handed)
+
+    def test_a_parent_reassignment_during_the_handoff_is_refused(self):
+        handed = self.prepare()
+        self.parent.assignees = ["2"]
+        with self.assertRaisesRegex(AgentBoxError, "state or assignment"):
+            self.report_back(handed)
+
+    def test_a_related_relation_the_worker_changed_is_refused(self):
+        handed = self.prepare()
+        self.task.related = ["3"]
+        with self.assertRaisesRegex(AgentBoxError, "requirements or relations"):
+            self.report_back(handed)
 
 
 class ParentSubtaskBranchTests(unittest.TestCase):

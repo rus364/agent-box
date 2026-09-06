@@ -69,6 +69,24 @@ def tree(adapter, task):
     return sorted(tasks, key=lambda task: task.id)
 
 
+def ancestors(adapter, task):
+    """The chain above a task, which delegation must not be able to rewrite.
+
+    `tree` deliberately stops at the task, because completion reasons are about
+    its descendants. Identity and scope run the other way: reparenting the task,
+    or moving the parent's own lifecycle, changes which branch the work belongs
+    to and who may finish it, so the baseline has to reach the root.
+    """
+    chain, seen, current = [], {task.id}, task
+    while current.parent:
+        if current.parent in seen:
+            raise AgentBoxError("Task hierarchy contains a cycle or duplicate child")
+        seen.add(current.parent)
+        current = adapter.get(current.parent)
+        chain.append(current)
+    return chain
+
+
 def requirements(tasks):
     def unchecked(body):
         for item in reversed(checkboxes(body)):
@@ -77,7 +95,8 @@ def requirements(tasks):
             body = body[:offset] + line + body[offset + len(item["line"]):]
         return body
     return [{"id": task.id, "title": task.title, "description": unchecked(task.description),
-             "children": sorted(task.children), "blockers": sorted(task.blockers), "labels": sorted(task.labels)} for task in tasks]
+             "parent": task.parent, "children": sorted(task.children), "related": sorted(task.related),
+             "blockers": sorted(task.blockers), "labels": sorted(task.labels)} for task in tasks]
 
 
 def scope(root, base, tasks, *, allow_dirty=False):
@@ -172,10 +191,12 @@ def handoff_state(root, adapter, task, tasks):
     The bulky parts are digested rather than listed so the whole baseline fits in
     the token the orchestrator holds between the two commands.
     """
+    guarded = sorted({item.id: item for item in [*tasks, *ancestors(adapter, task)]}.values(),
+                     key=lambda item: item.id)
     return {"branch": gw.current_branch(root), "head": gw.head_sha(root),
             "refs": digest(gw.ref_state(root)),
-            "requirements": digest(requirements(tasks)),
-            "lifecycle": digest({item.id: [item.state, sorted(item.assignees)] for item in tasks}),
+            "requirements": digest(requirements(guarded)),
+            "lifecycle": digest({item.id: [item.state, sorted(item.assignees)] for item in guarded}),
             "user": str(adapter.identity()["id"])}
 
 
@@ -205,6 +226,27 @@ def read_handoff_token(root, task, fingerprint, token):
     return payload
 
 
+def delegation_tier(args, task, role):
+    """A scout's tier is the caller's; everyone else works at the task's own."""
+    if role == "scout":
+        return args.tier if args.tier is not None else 0
+    return task.tier if task.tier is not None else args.tier
+
+
+def check_handoff_route(token, role, tier):
+    """One token names one delegation, so another report path cannot spend it.
+
+    The route already rides in the token so that local evidence cannot widen it;
+    that makes the token the record of what was actually delegated. Without this
+    comparison a worker handoff would still authorize a reviewer report - and a
+    worker's own verdict on its own code is exactly what review exists to avoid.
+    """
+    route = token.get("route") or {}
+    if route.get("role") != role or route.get("tier") != tier:
+        raise AgentBoxError("Handoff token was prepared for a different role or tier; "
+                            "prepare this delegation before reporting it")
+
+
 def check_worker_assignment(adapter, task):
     if task.state != "Doing" or task.assignees != [str(adapter.identity()["id"])]:
         raise AgentBoxError("Worker delegation requires the current user's assigned Doing task")
@@ -225,7 +267,7 @@ def start_worker_handoff(root, adapter, task, tasks, saved):
 
 
 WORKER_CHANGES = {"branch": "switched branch", "head": "committed",
-                  "refs": "created, moved or deleted a branch or tag",
+                  "refs": "created, moved or deleted a branch or tag, or changed origin",
                   "requirements": "changed task requirements or relations",
                   "lifecycle": "changed task state or assignment"}
 
@@ -384,6 +426,7 @@ def dispatch(args):
         if not args.handoff:
             raise AgentBoxError("Pass --handoff with the token prepare returned for this delegation")
         token = read_handoff_token(root, task, args.scope, args.handoff)
+        check_handoff_route(token, args.role, delegation_tier(args, task, args.role))
     if worker_report:
         saved = read_evidence(root, task)
         accept_worker(root, adapter, task, tasks, saved, token["state"])
@@ -408,7 +451,7 @@ def dispatch(args):
         return saved
     if args.command in ("prepare", "run", "review", "report"):
         role = "reviewer" if args.command == "review" else args.role
-        tier = (args.tier if args.tier is not None else 0) if role == "scout" else (task.tier if task.tier is not None else args.tier)
+        tier = delegation_tier(args, task, role)
         if tier is None:
             raise AgentBoxError("Assess task complexity and set tracker tier 1-3 before delegation")
         if role == "reviewer":

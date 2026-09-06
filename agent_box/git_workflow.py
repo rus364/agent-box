@@ -178,9 +178,40 @@ def base_commit(root, base):
     return git(root, "merge-base", base_ref(root, base), "HEAD")
 
 
+def origin_state(root):
+    """Origin's own configuration, because the workflow derives its identity from it.
+
+    The base branch, the task branch of a fresh clone and the GitHub repository
+    are all read out of `origin`, so repointing the remote redirects later
+    decisions as effectively as moving a branch does.
+    """
+    result = _run(["git", "config", "--get-regexp", r"^remote\.origin\."], cwd=root)
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
 def ref_state(root):
-    """Every local branch and tag, so an unexpected ref change is detectable."""
-    return git(root, "for-each-ref", "--format=%(refname) %(objectname)", "refs/heads", "refs/tags")
+    """Every branch, tag and origin reference, so an unexpected change is detectable.
+
+    Remote-tracking refs are part of this because `task_branch` adopts
+    `refs/remotes/origin/ab/<id>-*` in a fresh clone: a delegate that wrote one
+    could name the branch the next command works on.
+    """
+    refs = git(root, "for-each-ref", "--format=%(refname) %(objectname)",
+               "refs/heads", "refs/tags", "refs/remotes/origin")
+    return refs + "\n" + origin_state(root)
+
+
+def remote_branch_head(root, branch):
+    """Origin's live copy of a branch; `refs/remotes/*` is only as fresh as a fetch.
+
+    Another checkout can push to the same task branch, so completion has to ask
+    the remote itself rather than believe what this clone last saw.
+    """
+    url = _effective_push_url(root)
+    state = _query_origin(root, branch, url) if url else None
+    if state is None:
+        raise AgentBoxError(f"Cannot read origin's copy of {branch}; reconcile before completing the task")
+    return state.branch_sha if state.branch_exists else None
 
 
 def switch_branch(root, branch, base, *, resume=False):
