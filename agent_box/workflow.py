@@ -447,13 +447,16 @@ def dispatch(args):
         if args.command == "prepare":
             if role == "worker":
                 retire_acceptance(root, adapter, task, saved)
+            delegate_contract = ("The worker changes project files in the working tree and reports; "
+                                 if role == "worker" else
+                                 f"The {role} reads and reports without changing files; ")
             return {"scope": fingerprint, "route": selected, "task": task.to_dict(), "base": base,
                     "report_schema": report_schema(role),
                     "handoff": handoff_descriptor(identity, task, fingerprint, selected),
                     "repository_instructions": repository_instructions(root),
-                    "instructions": "Fresh English context. The delegate changes working files and reports; the coordinator owns "
-                                    "the tracker, commits, branches and GitHub. Keep handoff to yourself and pass it back to "
-                                    "report; give the delegate repository_instructions, which apply to its work. "
+                    "instructions": "Fresh English context. " + delegate_contract +
+                                    "the coordinator owns the tracker, commits, branches and GitHub. Keep handoff to yourself "
+                                    "and pass it back to report; give the delegate repository_instructions, which apply to its work. "
                                     "Return the role JSON schema."}
         if args.command == "report":
             if not worker_report and args.scope != fingerprint:
