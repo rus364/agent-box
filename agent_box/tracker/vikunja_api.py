@@ -315,7 +315,8 @@ def check_external_marker(task_id, current, updated):
     marker = external_id_from_description(current)
     if marker and external_id_from_description(updated) != marker:
         raise ImportConflict(
-            f"Task {task_id} carries import marker {marker}; keep it in the description")
+            f"Task {task_id} carries import marker {marker}; keep it in the description",
+            "conflict")
 
 
 def with_external_marker(description, external_id):
@@ -1484,6 +1485,210 @@ def validation_summary(plan):
     }
 
 
+def _bucket_title(buckets, bucket_id):
+    for bucket in buckets:
+        if bucket_id and str(bucket["id"]) == str(bucket_id):
+            return str(bucket.get("title") or "")
+    return None
+
+
+def _task_labels(task):
+    return {label["title"]: int(label["id"]) for label in task.get("labels") or []}
+
+
+def _task_placement(task):
+    """Which column the task sits in, per kanban view, by title."""
+    return {str(bucket.get("project_view_id")): str(bucket.get("title") or "")
+            for bucket in task.get("buckets") or [] if bucket.get("title")}
+
+
+def plan_restore(snapshot, inventory, boards, comments, user_id):
+    """What it takes to put the tracker back the way the snapshot found it.
+
+    Restore is deliberately not the inverse of every possible change. A task, a
+    project or a column that exists now and not in the snapshot is reported and
+    left alone, because a backup taken before adoption cannot know what the user
+    created afterwards on purpose, and a task recreated here would get a new ID
+    and orphan the branch named after the old one. What a card carried - text,
+    labels, assignees, column, relations - is put back, which also leaves any
+    column adoption added standing and empty.
+    """
+    for key in ("projects", "tasks", "boards", "comments"):
+        if key not in snapshot:
+            raise PlanValidationError(f"snapshot is missing {key}; take a new one")
+    saved_tasks = {str(task["id"]): task for task in snapshot["tasks"]}
+    saved_projects = {str(project["id"]) for project in snapshot["projects"]}
+    current_tasks = {str(task["id"]): task for task in inventory.tasks}
+    current_projects = {str(project["id"]): project for project in inventory.projects
+                        if int(project["id"]) > 0}
+    actions = []
+    drift = {"tasks_created": [], "tasks_missing": [], "tasks_moved": [],
+             "projects_created": [], "projects_missing": [], "columns_created": [],
+             "views_missing": [], "comments_kept": [], "comments_missing": []}
+
+    for project in sorted(saved_projects, key=int):
+        if project not in current_projects:
+            drift["projects_missing"].append(project)
+    for project, current in sorted(current_projects.items(), key=lambda item: int(item[0])):
+        if project not in saved_projects and str(current.get("parent_project_id") or "") in saved_projects:
+            drift["projects_created"].append(project)
+
+    for project in sorted(saved_projects & set(current_projects), key=int):
+        live_views = {str(board["view"]["id"]): board for board in boards.get(project, [])}
+        for board in snapshot["boards"].get(project, []):
+            view = board["view"]
+            if view.get("view_kind") != "kanban":
+                continue
+            live = live_views.get(str(view["id"]))
+            if live is None:
+                drift["views_missing"].append(f"{project}:{view['id']}")
+                continue
+            # Columns are matched by title: a column deleted and recreated has a
+            # new ID, and the title is what a card's placement was recorded under.
+            saved_columns = {str(bucket.get("title")): bucket for bucket in board["buckets"]}
+            live_columns = {str(bucket.get("title")): bucket for bucket in live["buckets"]}
+            for title in sorted(set(saved_columns) - set(live_columns)):
+                actions.append(Action("restore", "column", f"{project}:{view['id']}:{title}",
+                                      {"project": project, "view": str(live["view"]["id"]),
+                                       "title": title,
+                                       "position": saved_columns[title].get("position")}))
+            drift["columns_created"].extend(
+                f"{project}:{view['id']}:{title}" for title in sorted(set(live_columns) - set(saved_columns)))
+            done = _bucket_title(board["buckets"], view.get("done_bucket_id"))
+            if done != _bucket_title(live["buckets"], live["view"].get("done_bucket_id")):
+                actions.append(Action("restore", "view", f"{project}:{view['id']}",
+                                      {"project": project, "view": str(live["view"]["id"]),
+                                       "title": done}))
+
+    for task_id, saved in sorted(saved_tasks.items(), key=lambda item: int(item[0])):
+        current = current_tasks.get(task_id)
+        if current is None:
+            drift["tasks_missing"].append(task_id)
+            continue
+        changes = {field: saved.get(field) for field in RESTORABLE_TASK_FIELDS
+                   if saved.get(field) != current.get(field)}
+        if changes:
+            actions.append(Action("restore", "task", task_id, {"changes": changes}))
+        saved_labels, current_labels = _task_labels(saved), _task_labels(current)
+        add = sorted(set(saved_labels) - set(current_labels))
+        remove = sorted(set(current_labels) - set(saved_labels))
+        if add or remove:
+            actions.append(Action("restore", "labels", task_id,
+                                  {"add": add, "remove": [current_labels[title] for title in remove],
+                                   "remove_titles": remove}))
+        saved_users = sorted(str(user["id"]) for user in saved.get("assignees") or [])
+        if saved_users != sorted(str(user["id"]) for user in current.get("assignees") or []):
+            actions.append(Action("restore", "assignees", task_id, {"assignees": saved_users}))
+        if str(saved.get("project_id")) != str(current.get("project_id")):
+            drift["tasks_moved"].append(task_id)
+        else:
+            placement, live = _task_placement(saved), _task_placement(current)
+            for view_id, title in sorted(placement.items()):
+                if live.get(view_id) != title:
+                    actions.append(Action("restore", "placement", f"{task_id}:{view_id}",
+                                          {"task": task_id, "project": str(saved["project_id"]),
+                                           "view": view_id, "title": title}))
+        saved_ids = {str(comment["id"]) for comment in snapshot["comments"].get(task_id, [])}
+        for comment in comments.get(task_id, []):
+            if str(comment["id"]) in saved_ids:
+                continue
+            if str((comment.get("author") or {}).get("id")) == str(user_id):
+                actions.append(Action("delete", "comment", str(comment["id"]), {"task": task_id}))
+            else:
+                drift["comments_kept"].append(str(comment["id"]))
+        live_ids = {str(comment["id"]) for comment in comments.get(task_id, [])}
+        drift["comments_missing"].extend(sorted(saved_ids - live_ids))
+
+    for task_id, current in sorted(current_tasks.items(), key=lambda item: int(item[0])):
+        if task_id not in saved_tasks and str(current.get("project_id")) in saved_projects:
+            drift["tasks_created"].append(task_id)
+
+    saved_edges = relation_edges([task for task in snapshot["tasks"]])
+    live_edges = relation_edges([current_tasks[task_id] for task_id in saved_tasks
+                                 if task_id in current_tasks])
+    for base, kind, other in sorted(saved_edges - live_edges):
+        if other in current_tasks and base in current_tasks:
+            actions.append(Action("restore", "relation", f"{base}:{kind}:{other}",
+                                  {"base": base, "kind": kind, "other": other, "remove": False}))
+    for base, kind, other in sorted(live_edges - saved_edges):
+        actions.append(Action("restore", "relation", f"{base}:{kind}:{other}",
+                              {"base": base, "kind": kind, "other": other, "remove": True}))
+    return actions, drift
+
+
+def apply_restore(client, actions, labels):
+    """Execute a restore plan in dependency order.
+
+    Columns come back before the cards that belong in them, and the view's done
+    column before anything is placed, so no action depends on one that has not
+    run yet.
+    """
+    order = {"column": 0, "view": 1, "task": 2, "labels": 3, "assignees": 4,
+             "relation": 5, "placement": 6, "comment": 7}
+    known = {label["title"]: int(label["id"]) for label in labels}
+    views = {}
+
+    def board(project, view_id):
+        if (project, view_id) not in views:
+            views[(project, view_id)] = resolve_kanban_view(client, project, view_id)
+        return views[(project, view_id)]
+
+    for action in sorted(actions, key=lambda item: order[item.entity]):
+        details = action.details
+        if action.entity == "column":
+            create_bucket(client, details["project"], board(details["project"], details["view"]),
+                          details["title"], details["position"])
+        elif action.entity == "view":
+            view = board(details["project"], details["view"])
+            buckets = view_buckets(client, details["project"], view["id"])
+            set_done_bucket(client, details["project"], view,
+                            resolve_bucket(buckets, details["title"])["id"])
+        elif action.entity == "task":
+            client.patch(f"/tasks/{int(action.key)}", details["changes"],
+                         markdown="description" in details["changes"])
+        elif action.entity == "labels":
+            for label_id in details["remove"]:
+                client.delete(f"/tasks/{int(action.key)}/labels/{int(label_id)}")
+            for title in details["add"]:
+                if title not in known:
+                    known[title] = int(client.post("/labels", {"title": title})["id"])
+                attach_label(client, action.key, known[title])
+        elif action.entity == "assignees":
+            client.put(f"/tasks/{int(action.key)}/assignees/bulk",
+                       {"assignees": [{"id": int(user)} for user in details["assignees"]]})
+        elif action.entity == "relation":
+            if details["remove"]:
+                client.delete(f"/tasks/{int(details['base'])}/relations/"
+                              f"{details['kind']}/{int(details['other'])}")
+            else:
+                client.post(f"/tasks/{int(details['base'])}/relations",
+                            {"other_task_id": int(details["other"]), "relation_kind": details["kind"]})
+        elif action.entity == "placement":
+            view = board(details["project"], details["view"])
+            buckets = view_buckets(client, details["project"], view["id"])
+            place_in_bucket(client, details["project"], view,
+                            resolve_bucket(buckets, details["title"]), details["task"])
+        else:
+            client.delete(f"/tasks/{int(details['task'])}/comments/{int(action.key)}")
+    return len(actions)
+
+
+def restore(client, snapshot, user_id, apply=False):
+    """Compare the tracker with a snapshot and, when asked, put it back."""
+    inventory = inventory_from_client(client)
+    saved_projects = [str(project["id"]) for project in snapshot.get("projects", [])]
+    live = {str(project["id"]) for project in inventory.projects}
+    boards = {project: board_snapshot(client, project) for project in saved_projects if project in live}
+    comments = {str(task["id"]): client.paginate(f"/tasks/{int(task['id'])}/comments",
+                                                 {"format": "markdown"})
+                for task in inventory.tasks
+                if str(task.get("project_id")) in set(saved_projects)}
+    actions, drift = plan_restore(snapshot, inventory, boards, comments, user_id)
+    applied = apply_restore(client, actions, inventory.labels) if apply else 0
+    return {"planned": len(actions), "applied": applied, "dry_run": not apply,
+            "actions": [action.as_dict() for action in actions], "drift": drift}
+
+
 def project_tree(projects):
     index = ProjectIndex(projects)
     return [{"id": p["id"], "parent_project_id": p.get("parent_project_id", 0),
@@ -1533,6 +1738,35 @@ def board_snapshot(client, project_id):
     return boards
 
 
+RELATION_INVERSE = {
+    "subtask": "parenttask", "parenttask": "subtask", "blocking": "blocked",
+    "blocked": "blocking", "related": "related", "duplicateof": "duplicates",
+    "duplicates": "duplicateof", "precedes": "follows", "follows": "precedes",
+    "copiedfrom": "copiedto", "copiedto": "copiedfrom",
+}
+RESTORABLE_TASK_FIELDS = ("title", "description", "done", "priority")
+
+
+def relation_edges(tasks):
+    """Every relation once, in one orientation.
+
+    Vikunja records both ends of a relation, so a diff over the raw pairs would
+    ask to create or delete the same edge twice and fail on the second call.
+    """
+    edges = set()
+    for task in tasks:
+        base = str(task["id"])
+        for kind, others in (task.get("related_tasks") or {}).items():
+            inverse = RELATION_INVERSE.get(kind)
+            for other in others or []:
+                other_id = str(other["id"])
+                if inverse and base > other_id:
+                    edges.add((other_id, inverse, base))
+                else:
+                    edges.add((base, kind, other_id))
+    return edges
+
+
 def make_snapshot(client, project_ref=None, recursive=False):
     inventory = inventory_from_client(client)
     projects = inventory.projects
@@ -1543,6 +1777,9 @@ def make_snapshot(client, project_ref=None, recursive=False):
         projects = [p for p in projects if int(p["id"]) in ids]
         tasks = [t for t in tasks if int(t.get("project_id") or 0) in ids]
     return {
+        "comments": {str(task["id"]): client.paginate(f"/tasks/{int(task['id'])}/comments",
+                                                      {"format": "markdown"})
+                     for task in sorted(tasks, key=lambda item: int(item["id"]))},
         "boards": {str(project["id"]): board_snapshot(client, project["id"])
                    for project in sorted(projects, key=lambda item: int(item["id"]))
                    if int(project["id"]) > 0},

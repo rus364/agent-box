@@ -133,6 +133,119 @@ class BulkMarkerTests(unittest.TestCase):
         actions = vikunja_api.plan_bulk_updates([{"task": "5", "changes": {"description": kept}}], tasks)
         self.assertEqual(actions[0].details["changes"], {"description": kept})
 
+    def test_both_write_paths_report_the_refusal_as_a_conflict(self):
+        """A caller retries on 'invalid' input and stops on a conflict; the category decides."""
+        from agent_box.tracker import vikunja_api
+
+        with self.assertRaises(TrackerError) as bulk:
+            vikunja_api.check_external_marker("5", "Goal\n\nVikunja external ID: B-01", "Goal")
+        self.assertEqual(bulk.exception.category, "conflict")
+        existing = task(5, 1, 10, 101, description="Goal\n\nVikunja external ID: B-01")
+        instance, _ = adapter(tasks={5: existing})
+        with self.assertRaises(TrackerError) as single:
+            instance.update(instance.get("5"), {"description": "Goal"})
+        self.assertEqual(single.exception.category, "conflict")
+
+
+def snapshot(tasks=(), comments=None, boards=None, projects=("1",)):
+    return {"projects": [{"id": int(project)} for project in projects],
+            "tasks": list(tasks), "comments": comments or {},
+            "boards": boards or {}}
+
+
+def saved_task(ident, project="1", **fields):
+    return {"id": ident, "project_id": int(project), "title": f"Task {ident}", "description": "d",
+            "done": False, "priority": 0, "labels": [], "assignees": [], "buckets": [],
+            "related_tasks": {}, **fields}
+
+
+class Inventory:
+    def __init__(self, tasks, projects=("1",), labels=()):
+        self.tasks = list(tasks)
+        self.projects = [{"id": int(project), "parent_project_id": 0} for project in projects]
+        self.labels = list(labels)
+
+
+class RestoreTests(unittest.TestCase):
+    def plan(self, saved, current, boards=None, comments=None, live_comments=None, projects=("1",)):
+        from agent_box.tracker import vikunja_api
+
+        return vikunja_api.plan_restore(
+            snapshot(saved, comments, boards, projects), Inventory(current, projects),
+            {project: [] for project in projects}, live_comments or {}, "1")
+
+    def test_task_content_labels_assignees_and_relations_go_back(self):
+        saved = saved_task(5, title="Original", priority=3,
+                           labels=[{"id": 9, "title": "topic"}], assignees=[{"id": 4}])
+        current = saved_task(5, title="Rewritten", priority=5,
+                             labels=[{"id": 9, "title": "topic"}, {"id": 8, "title": "ab:tier:2"}],
+                             assignees=[], related_tasks={"blocked": [{"id": 6}]})
+        actions, drift = self.plan([saved, saved_task(6)], [current, saved_task(6)])
+        by_entity = {action.entity: action.details for action in actions}
+        self.assertEqual(by_entity["task"]["changes"], {"title": "Original", "priority": 3})
+        self.assertEqual((by_entity["labels"]["add"], by_entity["labels"]["remove_titles"]),
+                         ([], ["ab:tier:2"]))
+        self.assertEqual(by_entity["assignees"]["assignees"], ["4"])
+        self.assertEqual((by_entity["relation"]["kind"], by_entity["relation"]["remove"]),
+                         ("blocked", True))
+        self.assertEqual(drift["tasks_created"], [])
+
+    def test_a_relation_is_restored_once_although_the_tracker_records_both_ends(self):
+        """Diffing raw pairs would post the same edge twice and fail on the second call."""
+        saved = [saved_task(5, related_tasks={"blocked": [{"id": 6}]}),
+                 saved_task(6, related_tasks={"blocking": [{"id": 5}]})]
+        actions, _ = self.plan(saved, [saved_task(5), saved_task(6)])
+        relations = [action for action in actions if action.entity == "relation"]
+        self.assertEqual([(action.details["base"], action.details["kind"], action.details["other"],
+                           action.details["remove"]) for action in relations],
+                         [("5", "blocked", "6", False)])
+
+    def test_a_card_goes_back_to_the_column_it_sat_in(self):
+        saved = saved_task(5, buckets=[{"id": 1, "project_view_id": 10, "title": "Backlog"}])
+        current = saved_task(5, buckets=[{"id": 2, "project_view_id": 10, "title": "Ready"}])
+        actions, _ = self.plan([saved], [current])
+        placement, = [action.details for action in actions if action.entity == "placement"]
+        self.assertEqual((placement["task"], placement["view"], placement["title"]),
+                         ("5", "10", "Backlog"))
+
+    def test_only_the_comments_this_user_added_since_the_snapshot_are_removed(self):
+        """Deleting someone else's comment is not a restore, it is a loss."""
+        saved = [saved_task(5)]
+        live = {"5": [{"id": 1, "author": {"id": 1}}, {"id": 2, "author": {"id": 1}},
+                      {"id": 3, "author": {"id": 7}}]}
+        actions, drift = self.plan(saved, [saved_task(5)], comments={"5": [{"id": 1}]},
+                                   live_comments=live)
+        self.assertEqual([action.key for action in actions if action.entity == "comment"], ["2"])
+        self.assertEqual(drift["comments_kept"], ["3"])
+
+    def test_what_appeared_or_vanished_since_the_snapshot_is_reported_and_left_alone(self):
+        """A task recreated here would get a new ID and orphan the branch named after the old one."""
+        actions, drift = self.plan([saved_task(5), saved_task(6)], [saved_task(5), saved_task(7)])
+        self.assertEqual((drift["tasks_missing"], drift["tasks_created"]), (["6"], ["7"]))
+        self.assertEqual([action for action in actions if action.entity == "task"], [])
+
+    def test_a_column_adoption_added_is_reported_rather_than_deleted(self):
+        boards = {"1": [{"view": {"id": 10, "view_kind": "kanban", "done_bucket_id": 3},
+                         "buckets": [{"id": 1, "title": "Backlog", "position": 100},
+                                     {"id": 3, "title": "Done", "position": 300}]}]}
+        from agent_box.tracker import vikunja_api
+
+        live = {"1": [{"view": {"id": 10, "view_kind": "kanban", "done_bucket_id": 3},
+                       "buckets": [{"id": 1, "title": "Backlog", "position": 100},
+                                   {"id": 4, "title": "Ready", "position": 150},
+                                   {"id": 3, "title": "Done", "position": 300}]}]}
+        actions, drift = vikunja_api.plan_restore(snapshot([], {}, boards), Inventory([]),
+                                                  live, {}, "1")
+        self.assertEqual(actions, [])
+        self.assertEqual(drift["columns_created"], ["1:10:Ready"])
+
+    def test_a_snapshot_taken_before_comments_were_captured_is_refused(self):
+        from agent_box.tracker import vikunja_api
+
+        with self.assertRaisesRegex(TrackerError, "missing comments"):
+            vikunja_api.plan_restore({"projects": [], "tasks": [], "boards": {}},
+                                     Inventory([]), {}, {}, "1")
+
 
 class AuditTests(unittest.TestCase):
     def problem_codes(self, task_object, get=None):

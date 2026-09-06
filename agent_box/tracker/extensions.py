@@ -47,6 +47,9 @@ def parser():
     cmd.add_argument("--project")
     cmd.add_argument("--recursive", action="store_true")
     cmd.add_argument("--out", type=Path, help="Write the snapshot to this file instead of stdout")
+    cmd = sub.add_parser("restore")
+    cmd.add_argument("file", type=Path)
+    cmd.add_argument("--apply", action="store_true")
     cmd = sub.add_parser("external")
     cmd.add_argument("reference")
     cmd = sub.add_parser("task-fields")
@@ -79,6 +82,9 @@ def run(adapter, arguments):
         atomic_write_json(args.out, snapshot)
         return {"path": str(args.out.resolve()), "projects": len(snapshot["projects"]),
                 "tasks": len(snapshot["tasks"])}
+    if args.command == "restore":
+        return api.restore(client, json.loads(args.file.read_text()),
+                           str(adapter.identity()["id"]), args.apply)
     if args.command == "external":
         task = api.TaskIndex(api.inventory_from_client(client).tasks).resolve(args.reference)
         return {"task_id": task["id"], "external_id": api.external_id_from_description(task.get("description", ""))}

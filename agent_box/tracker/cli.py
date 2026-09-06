@@ -131,6 +131,9 @@ def dispatch(args):
                 raise TrackerError("Pass --project to audit boards, or run ab-setup to bind this repository")
             return audit(None, lambda task_id: None,
                          adapter.lifecycle_report(adapter.subtree(args.project, args.recursive)))
+        if args.project and str(adapter.project(args.project)["id"]) != binding.project:
+            raise TrackerError(f"This repository is bound to project {binding.project}; "
+                               "the audit runs on the bound subtree")
         tasks = adapter.search(binding.project, "", binding.recursive)
         index = {task.id: task for task in tasks}
         return audit(tasks, lambda task_id: index.get(task_id) or adapter.get(task_id),
