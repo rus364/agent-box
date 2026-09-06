@@ -52,6 +52,8 @@ def parser():
     cmd = sub.add_parser("restore")
     cmd.add_argument("file", type=Path)
     cmd.add_argument("--apply", action="store_true")
+    cmd.add_argument("--allow-partial", action="store_true",
+                     help="Restore everything that can be restored, leaving the blockers reported")
     cmd = sub.add_parser("external")
     cmd.add_argument("reference")
     cmd = sub.add_parser("task-fields")
@@ -97,7 +99,7 @@ def run(adapter, arguments):
                 "tasks": len(snapshot["tasks"])}
     if args.command == "restore":
         return api.restore(client, json.loads(args.file.read_text()),
-                           snapshot_identity(), args.apply)
+                           snapshot_identity(), args.apply, args.allow_partial)
     if args.command == "external":
         task = api.TaskIndex(api.inventory_from_client(client).tasks).resolve(args.reference)
         return {"task_id": task["id"], "external_id": api.external_id_from_description(task.get("description", ""))}
