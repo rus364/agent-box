@@ -1,0 +1,193 @@
+"""Workflow semantics live here, never in product adapters or skill copies."""
+from __future__ import annotations
+
+import re
+from dataclasses import asdict, dataclass, field
+from typing import Callable, Protocol
+
+from ..errors import AgentBoxError
+
+STATES = ("Backlog", "Ready", "Doing", "Review", "Done")
+
+
+class TrackerError(AgentBoxError):
+    def __init__(self, message, category="invalid", retryable=False):
+        super().__init__(message)
+        self.category = category
+        self.retryable = retryable
+
+
+@dataclass
+class Task:
+    id: str
+    project: str
+    title: str
+    description: str = ""
+    state: str = "Backlog"
+    assignees: list[str] = field(default_factory=list)
+    parent: str | None = None
+    children: list[str] = field(default_factory=list)
+    blockers: list[str] = field(default_factory=list)
+    related: list[str] = field(default_factory=list)
+    labels: list[str] = field(default_factory=list)
+    priority: int = 0
+    revision: str = ""
+    url: str = ""
+
+    @property
+    def tier(self):
+        values = {label.rsplit(":", 1)[-1] for label in self.labels if label.startswith("ab:tier:")}
+        if not values:
+            return None
+        if len(values) != 1 or not values <= {"1", "2", "3"}:
+            raise TrackerError(f"Task {self.id} has conflicting or invalid tier labels")
+        return int(next(iter(values)))
+
+    def to_dict(self, full=True):
+        data = asdict(self)
+        data["tier"] = self.tier
+        if not full:
+            data.pop("description")
+            data.pop("revision")
+        return data
+
+
+class Adapter(Protocol):
+    capabilities: frozenset[str]
+
+    def get(self, task_id: str) -> Task: ...
+    def search(self, project: str, query: str = "", recursive: bool = False) -> list[Task]: ...
+    def update(self, task: Task, fields: dict) -> Task: ...
+    def set_state(self, task: Task, state: str) -> Task: ...
+    def comment(self, task_id: str, text: str) -> dict: ...
+    def identity(self) -> dict: ...
+
+
+def root_task(task: Task, get: Callable[[str], Task]) -> Task:
+    seen = {task.id}
+    while task.parent:
+        if task.parent in seen:
+            raise TrackerError("Parent relation cycle", "conflict")
+        seen.add(task.parent)
+        task = get(task.parent)
+    return task
+
+
+def blocking_reasons(task: Task, get: Callable[[str], Task]) -> list[str]:
+    reasons = []
+    try:
+        own_root = root_task(task, get)
+        checked, visiting = set(), set()
+
+        def visit(node):
+            if node.id in visiting:
+                raise TrackerError("Dependency relation cycle", "conflict")
+            if node.id in checked:
+                return
+            visiting.add(node.id)
+            for task_id in node.blockers:
+                dependency = get(task_id)
+                visit(dependency)
+                if dependency.state != "Done":
+                    reasons.append(f"Dependency {task_id} is not Done")
+                dependency_root = root_task(dependency, get)
+                if dependency_root.id != own_root.id and dependency_root.state != "Done":
+                    reasons.append(f"Dependency {task_id} awaits parent {dependency_root.id} merge")
+            visiting.remove(node.id)
+            checked.add(node.id)
+
+        current = task
+        while True:
+            visit(current)
+            if not current.parent:
+                break
+            current = get(current.parent)
+    except (KeyError, TrackerError) as exc:
+        reasons.append(f"Dependency cannot be verified: {exc}")
+    return list(dict.fromkeys(reasons))
+
+
+def ready_tasks(tasks: list[Task], get: Callable[[str], Task], user: str | None = None):
+    ready = []
+    for task in tasks:
+        if task.state != "Ready" or (task.assignees and task.assignees != [user]):
+            continue
+        try:
+            parent = root_task(task, get)
+            if parent.assignees and parent.assignees != [user]:
+                continue
+            if not blocking_reasons(task, get):
+                ready.append(task)
+        except (KeyError, TrackerError):
+            continue
+    return sorted(ready, key=lambda t: (-t.priority, t.project, t.id))
+
+
+def checkboxes(body: str):
+    result = []
+    fence = None
+    offset = 0
+    for line in body.splitlines(keepends=True):
+        stripped = line.lstrip()
+        match = re.match(r"(`{3,}|~{3,})", stripped)
+        if match:
+            marker = match.group(1)
+            if fence is None:
+                fence = marker
+            elif marker[0] == fence[0] and len(marker) >= len(fence):
+                fence = None
+        elif fence is None:
+            match = re.match(r"^(\s*(?:[-+*]|\d+[.)])\s+\[)([ xX])(\]\s+)(.*?)(\r?\n)?$", line)
+            if match:
+                result.append({"index": len(result) + 1, "checked": match[2].lower() == "x",
+                               "text": match[4], "offset": offset,
+                               "line": line})
+        offset += len(line)
+    return result
+
+
+def set_checkbox(body: str, index: int, checked: bool, expected: str) -> str:
+    items = checkboxes(body)
+    if not 1 <= index <= len(items) or items[index - 1]["text"] != expected:
+        raise TrackerError("Checklist changed; reread the task before editing", "conflict")
+    target = items[index - 1]
+    offset = target["offset"]
+    line = re.sub(r"\[[ xX]\]", "[x]" if checked else "[ ]", target["line"], count=1)
+    return body[:offset] + line + body[offset + len(target["line"]):]
+
+
+def claim(adapter: Adapter, task_id: str, resume=False) -> Task:
+    task = adapter.get(task_id)
+    user = str(adapter.identity()["id"])
+    if any(assignee != user for assignee in task.assignees):
+        raise TrackerError(f"Task {task_id} is assigned to another user", "conflict")
+    if task.state in ("Doing", "Review"):
+        if not resume or task.assignees != [user]:
+            raise TrackerError("Task is already Doing; use --resume after checking existing work", "conflict")
+        blockers = blocking_reasons(task, adapter.get)
+        if blockers:
+            raise TrackerError("; ".join(blockers), "conflict")
+        return adapter.set_state(task, "Doing") if task.state == "Review" else task
+    if task.state != "Ready":
+        raise TrackerError(f"Task must be Ready, currently {task.state}", "conflict")
+    blockers = blocking_reasons(task, adapter.get)
+    if blockers:
+        raise TrackerError("; ".join(blockers), "conflict")
+    task = adapter.update(task, {"assignees": [user]})
+    task = adapter.set_state(task, "Doing")
+    if task.assignees != [user] or task.state != "Doing":
+        raise TrackerError("Claim was not confirmed; inspect the task before continuing", "conflict")
+    return task
+
+
+def completion_reasons(task, tasks, user, *, states=("Doing", "Review")):
+    reasons = []
+    if task.state not in states:
+        reasons.append("Task must be " + " or ".join(states))
+    if task.assignees != [user]:
+        reasons.append("Task must remain assigned to the current API-key user")
+    if any(child.state != "Done" for child in tasks if child.id != task.id):
+        reasons.append("All subtasks must remain Done")
+    if any(not item["checked"] for child in tasks for item in checkboxes(child.description)):
+        reasons.append("Acceptance or validation checklist remains incomplete")
+    return reasons

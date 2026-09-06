@@ -181,7 +181,7 @@ def upgrade_main(args: list[str]) -> int:
             f"{result.stderr.strip() or result.stdout.strip()}")
     print(f"agent-box: updated to {kind}")
 
-    # The skills agent-box ships are vendored in the checkout that just moved,
+    # The skills agent-box ships are maintained in the checkout that just moved,
     # so the installed copies are now the old ones. This is the case
     # `apply_config` exists for; an upgrade that left them stale would make
     # "agent-box config apply" a thing users had to know to run.

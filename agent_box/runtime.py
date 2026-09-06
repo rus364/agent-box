@@ -17,7 +17,6 @@ import os
 import re
 import shutil
 import socket
-import stat
 import subprocess
 import sys
 import time
@@ -33,9 +32,8 @@ from . import channel as channel_module
 from . import claude_settings
 from . import notify as notify_module
 from .atomicio import atomic_write_json, atomic_write_text, read_json
-from .config import ENV_PREFIX, SUPERPOWERS_SKILLS, Config, load_config
+from .config import ENV_PREFIX, WORKFLOW_SKILLS, Config, load_config
 from .errors import AgentBoxError
-from .flow_next import AUTO_PUSH_ENV, POLICY_ENV_VARS, flow_next_launch_env
 from .identity import HostIdentity, detect_host_identity
 from .mounts import MountSpec, plan_mounts
 from .notify import SUPPRESS_NOTIFY_ENV
@@ -48,16 +46,16 @@ from .paths import (
     CODEX_PLUGIN_CACHE,
     CONFIG_ROOT,
     CONTAINER_NOTIFY_CREDENTIALS,
-    CONTAINER_VIKUNJA_CONFIG_DIR,
-    CONTAINER_VIKUNJA_STATE_DIR,
+    CONTAINER_TRACKER_RUNTIME_DIR,
+    CONTAINER_WORKFLOW_STATE,
     HOST_HOME,
     MANAGED_SKILLS_SOURCE,
     NOTIFY_CREDENTIALS,
     NOTIFY_STATE_ROOT,
     STATE_ROOT,
     TOOLS_REFRESH_FILE,
-    VIKUNJA_CREDENTIALS_DIR,
-    VIKUNJA_STATE_DIR,
+    TRACKER_RUNTIME_DIR,
+    WORKFLOW_STATE,
     XDG_CACHE_HOME,
 )
 from .sessions import tmux_argv, tmux_session_exists, tmux_sessions
@@ -182,17 +180,10 @@ def codex_runtime_overrides() -> list[str]:
 
 
 def codex_command(
-    rest: list[str], config: Config, flow_next_auto_push_active: bool = False,
+    rest: list[str], config: Config,
     browser_session_dir: Path | None = None,
 ) -> list[str]:
     """Build the Codex command, including all container-only config overrides.
-
-    Codex supports exactly one `notify` program, so it is registered whenever
-    *either* outbound Telegram notifications are usable *or* this launch's
-    Flow-Next auto-push policy is active (``flow_next_auto_push_active``,
-    derived by the caller from ``flow_next_launch_env``'s
-    ``AGENT_BOX_FLOW_NEXT_AUTO_PUSH`` signal) -- `agent-box notify codex`
-    itself dispatches to both independently (see `agent_box.cli`).
 
     ``browser_session_dir`` adds the container-native Playwright MCP server
     for this invocation only (see :func:`browser_codex_overrides`). It is
@@ -201,7 +192,7 @@ def codex_command(
     without ever writing to the user's ``~/.codex/config.toml``.
     """
     command = ["codex"]
-    if config.notifications.usable or flow_next_auto_push_active:
+    if config.notifications.usable:
         command += ["-c", 'notify=["agent-box","notify","codex"]']
     for override in browser_codex_overrides(browser_session_dir):
         command += ["-c", override]
@@ -390,7 +381,7 @@ def install_managed_skill(name: str) -> None:
     digest = skill_tree_digest(source)
     if target.exists() or target.is_symlink():
         recorded = managed_skill_digest(target)
-        if recorded is None:
+        if recorded is None or target.is_symlink() or skill_tree_digest(target) != recorded:
             warn(f"skill '{name}' already exists and is not managed by agent-box; keeping {target}")
             return
         if recorded == digest:
@@ -404,17 +395,18 @@ def install_managed_skill(name: str) -> None:
 def remove_managed_skill(name: str) -> None:
     """Remove a skill agent-box installed; never one the user owns."""
     target = AGENT_SKILLS_DIR / name
-    if managed_skill_digest(target) is not None:
-        shutil.rmtree(target, ignore_errors=True)
+    recorded = managed_skill_digest(target)
+    if recorded is not None and not target.is_symlink() and skill_tree_digest(target) == recorded:
+        shutil.rmtree(target)
 
 
 def managed_skills(config: Config) -> set[str]:
     """The shipped skills the current configuration asks for."""
     wanted: set[str] = set()
-    if config.vikunja.enabled:
-        wanted.add("vikunja")
-    if config.skills.superpowers:
-        wanted.update(SUPERPOWERS_SKILLS)
+    if config.tracker.enabled or config.workflow.enabled:
+        wanted.add("ab-tracker")
+    if config.workflow.enabled:
+        wanted.update(WORKFLOW_SKILLS)
     return wanted
 
 
@@ -423,11 +415,10 @@ def sync_managed_skills(config: Config) -> None:
     wanted = managed_skills(config)
     for name in sorted(wanted):
         install_managed_skill(name)
-    if not MANAGED_SKILLS_SOURCE.is_dir():
-        return
-    for source in sorted(MANAGED_SKILLS_SOURCE.iterdir()):
-        if source.is_dir() and source.name not in wanted and (source / "SKILL.md").is_file():
-            remove_managed_skill(source.name)
+    if AGENT_SKILLS_DIR.is_dir():
+        for target in sorted(AGENT_SKILLS_DIR.iterdir()):
+            if target.name not in wanted and managed_skill_digest(target) is not None:
+                remove_managed_skill(target.name)
 
 
 def claude_skill_links(config: Config) -> None:
@@ -603,17 +594,10 @@ def prepare_container_lifetime_state(
     )
     if mount_notifications:
         notify_module.sync_credentials(config, NOTIFY_CREDENTIALS)
-    if config.vikunja.enabled:
-        # Create the import-state source ourselves so Podman does not, which
-        # keeps ownership and mode the user's rather than whatever the bind
-        # would invent.
-        VIKUNJA_STATE_DIR.mkdir(parents=True, exist_ok=True)
-        # The credential directory is rendered rather than created empty: an
-        # empty one would mount fine and look configured while holding no
-        # token, which is exactly the failure this integration used to have.
-        sync_vikunja_credentials(config)
-        VIKUNJA_CREDENTIALS_DIR.mkdir(parents=True, exist_ok=True)
-        for problem in vikunja_warnings(config):
+    if config.tracker.enabled or config.workflow.enabled:
+        WORKFLOW_STATE.mkdir(parents=True, exist_ok=True)
+        sync_tracker_runtime(config)
+        for problem in tracker_warnings(config):
             warn(problem)
 
 
@@ -675,14 +659,6 @@ CONTAINER_HOST_GATEWAY = "host-gateway"
 #: container" inside one. Compared lower-cased; an IPv6 literal has already
 #: had its brackets stripped by ``urlsplit``.
 LOOPBACK_HOSTNAMES = frozenset({"localhost", "127.0.0.1", "::1"})
-#: The Vikunja skill's CLI, inside the shared agent tree agent-box installs it
-#: into. That tree is already bind-mounted (see :func:`agent_tree_mounts`), so
-#: the second, narrow bind below adds no new exposure -- it only gives the
-#: script a name on the container PATH, which is how the skill's own
-#: documentation tells an agent to invoke it.
-VIKUNJA_SKILL_ENTRYPOINT = AGENT_SKILLS_DIR / "vikunja/scripts/vikunja.py"
-#: Where the container's copy of that CLI is named.
-CONTAINER_VIKUNJA_BIN = HOST_HOME / ".local/bin/vikunja"
 
 
 def is_ip_literal(host: str) -> bool:
@@ -722,10 +698,10 @@ def is_host_local(host: str) -> bool:
     return False
 
 
-def container_vikunja_url(raw: str) -> str:
+def container_tracker_url(raw: str) -> str:
     """Rewrite a Vikunja address that has no name worth preserving.
 
-    A self-hosted Vikunja is almost always configured on the host as
+    A self-hosted tracker is almost always configured on the host as
     ``http://127.0.0.1:3456``. Inside a container that address is the
     *container's* own loopback, so the skill would fail to connect with no
     hint as to why. The same trap closes on the host's own LAN address:
@@ -738,7 +714,7 @@ def container_vikunja_url(raw: str) -> str:
 
     Only an address with no name to preserve is rewritten here: ``localhost``
     or an IP literal belonging to this machine. A DNS name that resolves to
-    the host keeps its URL and is redirected by :func:`vikunja_host_args`
+    the host keeps its URL and is redirected by :func:`tracker_host_args`
     instead, because rewriting it would break TLS certificate validation and
     reverse-proxy virtual-host routing. A genuinely remote Vikunja -- a LAN
     box next door or a public domain -- is returned unchanged.
@@ -767,80 +743,40 @@ def container_vikunja_url(raw: str) -> str:
     return urllib.parse.urlunsplit(parts._replace(netloc=netloc))
 
 
-def sync_vikunja_credentials(config: Config, directory: Path | None = None) -> None:
-    """Render, or delete, the credential pair the container's skill reads.
-
-    The same shape as ``notify.sync_credentials`` and for the same reason:
-    agent-box's own ``config.json`` holds switches and secrets the container
-    has no business reading, so what gets mounted is a minimal artifact
-    derived from it -- here the two files the Vikunja CLI actually opens,
-    ``config.json`` (``url``) and ``token``. An incomplete or disabled
-    integration deletes them, so the credential stops being reachable rather
-    than merely being ignored.
-
-    The URL written here is the *container's* view of it
-    (:func:`container_vikunja_url`), which is why this is a render step
-    rather than a copy: the value the user configured stays the host's, and
-    the rewrite that makes it reachable from inside a box never leaks back
-    into their settings.
-    """
-    directory = VIKUNJA_CREDENTIALS_DIR if directory is None else directory
-    if not config.vikunja.usable:
+def sync_tracker_runtime(config: Config, directory: Path | None = None) -> None:
+    """Render only explicitly enabled capabilities; directory mounts see atomic updates."""
+    directory = TRACKER_RUNTIME_DIR if directory is None else directory
+    if not (config.tracker.enabled or config.workflow.enabled):
         shutil.rmtree(directory, ignore_errors=True)
         return
     directory.mkdir(parents=True, exist_ok=True)
     os.chmod(directory, 0o700)
-    atomic_write_json(
-        directory / "config.json",
-        {"url": container_vikunja_url(config.vikunja.url)},
-        stat.S_IRUSR | stat.S_IWUSR,
-    )
-    atomic_write_text(
-        directory / "token", config.vikunja.token + "\n", stat.S_IRUSR | stat.S_IWUSR)
+    tracker = config.tracker.to_dict()
+    if not config.tracker.enabled:
+        tracker["connections"] = {}
+    rendered = {
+        "tracker": tracker,
+        "tracker_urls": {name: container_tracker_url(connection.url)
+                         for name, connection in config.tracker.connections.items()
+                         if config.tracker.enabled},
+        "workflow": config.workflow.to_dict(),
+        "github": config.github.to_dict(),
+    }
+    atomic_write_json(directory / "config.json", rendered, 0o600)
 
 
-def vikunja_installed() -> bool:
-    """Whether the skill's CLI is present in the shared agent tree."""
-    try:
-        return VIKUNJA_SKILL_ENTRYPOINT.resolve(strict=True).is_file()
-    except OSError:
-        return False
-
-
-def vikunja_mounts(config: Config) -> list[tuple[Path, Path, bool]]:
-    """What the container gets for Vikunja, or nothing at all.
-
-    Pure and silent by design: this is part of the box's structural identity
-    (see :func:`workspace_container_spec`), so it must depend on the config
-    switch alone and must not print a warning every time an attach recomputes
-    the identity. Diagnostics live in :func:`vikunja_warnings`, which runs
-    only where a person is actually waiting on the answer.
-
-    Destinations are the literal ``$HOME`` paths the skill's CLI resolves
-    from ``~``, not the host's XDG-derived sources, so a host that relocates
-    ``XDG_CONFIG_HOME`` still lands the configuration where the CLI looks.
-
-    The rendered credential directory is read-only: it carries an API token,
-    and an agent has no reason to rewrite the user's credentials. The import
-    state directory is read-write, because a partially applied
-    ``vikunja import`` is only resumable if its journal survives the box.
-    """
-    if not config.vikunja.enabled:
+def tracker_mounts(config: Config) -> list[tuple[Path, Path, bool]]:
+    if not (config.tracker.enabled or config.workflow.enabled):
         return []
-    mounts = [
-        (VIKUNJA_CREDENTIALS_DIR, CONTAINER_VIKUNJA_CONFIG_DIR, True),
-        (VIKUNJA_STATE_DIR, CONTAINER_VIKUNJA_STATE_DIR, False),
-    ]
-    if vikunja_installed():
-        mounts.append((VIKUNJA_SKILL_ENTRYPOINT.resolve(), CONTAINER_VIKUNJA_BIN, True))
-    return mounts
+    return [(TRACKER_RUNTIME_DIR, CONTAINER_TRACKER_RUNTIME_DIR, True),
+            (WORKFLOW_STATE, CONTAINER_WORKFLOW_STATE, False)]
 
 
-def vikunja_host_alias(raw: str) -> str:
-    """The Vikunja hostname that must be pointed back at the host, or ``""``.
+def tracker_host_alias(raw: str) -> str:
+    """The tracker hostname that must be pointed back at the host, or ``""``.
 
     Only a DNS name qualifies. Loopback names and address literals are
-    already handled by :func:`container_vikunja_url`, and a name that
+    already handled by :func:`container_tracker_url`, and a name that
     resolves anywhere but this machine is reachable from the container as it
     stands.
     """
@@ -848,7 +784,9 @@ def vikunja_host_alias(raw: str) -> str:
     if not url:
         return ""
     try:
-        host = urllib.parse.urlsplit(url).hostname
+        parts = urllib.parse.urlsplit(url)
+        parts.port
+        host = parts.hostname
     except ValueError:
         return ""
     if not host or host.lower() in LOOPBACK_HOSTNAMES or is_ip_literal(host):
@@ -856,10 +794,10 @@ def vikunja_host_alias(raw: str) -> str:
     return host if is_host_local(host) else ""
 
 
-def vikunja_host_args(config: Config) -> list[str]:
-    """``--add-host=NAME:host-gateway`` for a host-local Vikunja hostname.
+def tracker_host_args(config: Config) -> list[str]:
+    """``--add-host=NAME:host-gateway`` for a host-local tracker hostname.
 
-    A self-hosted Vikunja is often addressed by a LAN name such as
+    A self-hosted tracker is often addressed by a LAN name such as
     ``pm.example.org`` that DNS resolves to the host's own address. Podman's
     rootless networking hands the container that same address, so the
     forwarded URL names the container itself and the connection is refused
@@ -873,74 +811,23 @@ def vikunja_host_args(config: Config) -> list[str]:
     container lifetime as the mounts it addresses, and changing it therefore
     rebuilds the box rather than silently diverging from the running one.
     """
-    if not config.vikunja.enabled:
+    if not config.tracker.enabled:
         return []
-    host = vikunja_host_alias(config.vikunja.url)
-    return [f"--add-host={host}:{CONTAINER_HOST_GATEWAY}"] if host else []
+    hosts = {tracker_host_alias(connection.url) for connection in config.tracker.connections.values()}
+    return [f"--add-host={host}:{CONTAINER_HOST_GATEWAY}" for host in sorted(hosts) if host]
 
 
-def vikunja_warnings(config: Config) -> list[str]:
-    """Human-facing problems with an enabled Vikunja integration.
 
-    Returned rather than printed so both the launch path and
-    ``agent-box config`` can render them, and so neither has to guess which
-    of the two halves (skill, credentials) is missing.
-    """
-    if not config.vikunja.enabled:
-        return []
-    problems = []
-    if not config.vikunja.url:
-        problems.append("Vikunja integration is on but no server URL is configured")
-    if not config.vikunja.token:
-        problems.append("Vikunja integration is on but no API token is configured")
-    if not vikunja_installed():
-        problems.append(
-            f"Vikunja integration is on but its skill is not installed at "
-            f"{AGENT_SKILLS_DIR / 'vikunja'}")
+def tracker_warnings(config: Config) -> list[str]:
+    problems = config.workflow.validate() if config.workflow.enabled else []
+    if config.tracker.enabled:
+        if not config.tracker.connection().usable:
+            problems.append("Tracker is enabled but its default connection needs a server URL and token")
+        if config.tracker.provider != "vikunja":
+            problems.append(f"Tracker provider {config.tracker.provider} is not implemented; choose Vikunja")
+    if config.workflow.enabled and not config.tracker.enabled:
+        problems.append("Workflow needs an enabled tracker connection before tracked work")
     return problems
-
-
-# -- container-native browser (Playwright MCP + headless Chromium) ----------
-#
-# Architecture, deliberately the whole of it:
-#
-#     Claude / Codex  --stdio MCP-->  playwright-mcp  -->  headless Chromium
-#
-# All three run inside the workspace container that is already there. There is
-# no sidecar, no Podman pod, no HTTP MCP endpoint, no host browser and no
-# X11/Wayland socket -- and no host browser profile or cookie jar is exposed,
-# because none is mounted.
-#
-# Enablement is *invocation-scoped*, never part of the box's structural
-# identity: `playwright-mcp` and Chromium are baked into the image, the
-# generated MCP configuration lives under the workspace runtime state that is
-# already bind-mounted, and nothing new is added to `container_lifetime_args`.
-# So turning `browser.enabled` on or off never destroys an otherwise
-# compatible running workspace container.
-
-#: The MCP server name both agents see. Stable so a user can name it in
-#: allow/deny lists, and prefixed so it cannot collide with a server the user
-#: configured themselves.
-BROWSER_MCP_SERVER_NAME = "agent_box_browser"
-#: Installed globally by the Containerfile's Playwright MCP layer.
-BROWSER_MCP_EXECUTABLE = "playwright-mcp"
-#: Playwright MCP's default browser is the *branded Chrome channel*
-#: (``/opt/google/chrome/chrome``), which this image does not ship and which
-#: would fail at the first navigation. The bundled Chromium that
-#: ``playwright install chromium`` downloaded has to be selected explicitly.
-BROWSER_MCP_BROWSER = "chromium"
-#: How ``agent-box doctor`` learns whether the integration is switched on: the
-#: script runs inside the box, which never sees the host config file.
-BROWSER_ENABLED_ENV = "AGENT_BOX_BROWSER"
-#: Whether this configuration links shared skills into Claude's own skills
-#: directory. Forwarded to ``agent-box doctor`` for the same reason as the
-#: browser flag: the script runs inside the box and cannot read the host
-#: config, and without it a deliberately unlinked tree would be reported as
-#: broken.
-CLAUDE_SKILL_LINKS_ENV = "AGENT_BOX_CLAUDE_SKILL_LINKS"
-#: The optional tool groups this configuration asks the image to carry, so
-#: ``agent-box doctor`` checks only what was meant to be there.
-IMAGE_TOOLS_ENV = "AGENT_BOX_TOOLS"
 
 
 def browser_session_id(agent: str) -> str:
@@ -960,6 +847,14 @@ def browser_session_root(runtime_state: WorkspaceRuntimeState) -> Path:
     """Where every browser session of one workspace keeps its state."""
     return runtime_state.root / "browser"
 
+
+BROWSER_MCP_SERVER_NAME = "agent_box_browser"
+CLAUDE_SKILL_LINKS_ENV = "AGENT_BOX_CLAUDE_SKILL_LINKS"
+IMAGE_TOOLS_ENV = "AGENT_BOX_TOOLS"
+BROWSER_MCP_EXECUTABLE = "playwright-mcp"
+BROWSER_MCP_BROWSER = "chromium"
+BROWSER_ENABLED_ENV = "AGENT_BOX_BROWSER"
+BROWSER_SESSION_GRACE_SECONDS = 60
 
 def browser_mcp_args(session_dir: Path) -> list[str]:
     """The Playwright MCP argv shared by the Claude and Codex wiring.
@@ -1205,7 +1100,7 @@ def build_mounts(
     ]
 
     pairs += agent_tree_mounts()
-    pairs += vikunja_mounts(config)
+    pairs += tracker_mounts(config)
 
     out = []
     seen_paths: set[Path] = set()
@@ -1389,7 +1284,7 @@ def container_lifetime_args(
         # the address and the token have one source instead of two that can
         # disagree. Only the host mapping is structural, because it is a
         # container-creation flag rather than file content.
-        *vikunja_host_args(config),
+        *tracker_host_args(config),
     ]
     # A host that relocates Claude Code's config directory must have the
     # container agree: CLAUDE_HOME is already bind-mounted at its host path,
@@ -2060,33 +1955,11 @@ echo
 # The Vikunja integration is off by default, so "not exposed" is a normal
 # answer here, not a fault. When it is on, the interesting question is not
 # "is the file mounted" but "does a call actually reach the server", because
-# addressing the host from inside a container (runtime.container_vikunja_url
-# for an address, runtime.vikunja_host_args for a name) is the part most
-# likely to be wrong. A failure therefore reports what the name resolved to,
-# which is the difference between "the server is down" and "that address is
-# this container".
-if command -v vikunja >/dev/null 2>&1; then
-  # The URL is rendered into the mounted credential directory by
-  # runtime.sync_vikunja_credentials rather than passed as an environment
-  # variable, so that the address and the token cannot disagree. Read it back
-  # from the same file the skill's CLI reads.
-  vikunja_url="$(sed -n 's/.*"url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
-      "$HOME/.config/vikunja/config.json" 2>/dev/null)"
-  printf "%-20s %s\n" "vikunja url:" "${vikunja_url:-(not configured)}"
-  printf "%-20s %s\n" "vikunja token:" "$([[ -r "$HOME/.config/vikunja/token" ]] && echo present || echo MISSING)"
-  if status="$(vikunja status 2>&1)"; then
-    printf "%-20s %s\n" "vikunja:" "OK ($(printf "%s" "${status}" | tr -d " \n" | sed -n 's/.*"user":"\([^"]*\)".*/\1/p'))"
-  else
-    printf "%-20s %s\n" "vikunja:" "FAILED"
-    printf "  %s\n" "${status}"
-    host="$(printf "%s" "${vikunja_url}" | sed -n 's|^[a-zA-Z0-9+.-]*://||; s|^[^@]*@||; s|[/?#].*$||; s|:[0-9]*$||; p')"
-    if [[ -n "${host}" ]] && command -v getent >/dev/null 2>&1; then
-      printf "  %s\n" "${host} resolves to: $(getent hosts "${host}" | awk '{print $1}' | paste -sd, - || echo "(nothing)")"
-      printf "  %s\n" "this container is: $(hostname -I 2>/dev/null | tr ' ' ',' | sed 's/,$//')"
-    fi
-  fi
+# The tracker command reads only the rendered, enabled connection subset.
+if [[ -n "${AGENT_BOX_RUNTIME_CONFIG:-}" ]]; then
+  agent-box tracker status || true
 else
-  echo "vikunja:             not exposed (enable it with 'agent-box config')"
+  echo "tracker:             not exposed (enable it with 'agent-box config')"
 fi
 echo
 # The browser integration is off by default, so "disabled" is a normal answer
@@ -2338,11 +2211,12 @@ def runtime_main(
     # mounted, so flipping browser.enabled never recreates a compatible box.
     browser_dir = browser_session(config, workspace, runtime_state, agent)
     channel, extra_env = claude_channel_args(agent, config, workspace, rest, session)
-    extra_env = [
-        *extra_env,
-        *flow_next_launch_env(
-            workspace.host_root, agent, config, runtime_path=CONTAINER_RUNTIME_PATH),
-    ]
+    extra_env += [f"AGENT_BOX_PRIMARY_PROVIDER={agent}"]
+    if config.tracker.enabled or config.workflow.enabled:
+        sync_tracker_runtime(config)
+        extra_env += [f"AGENT_BOX_RUNTIME_CONFIG={CONTAINER_TRACKER_RUNTIME_DIR / 'config.json'}",
+                      f"AGENT_BOX_WORKFLOW_STATE={CONTAINER_WORKFLOW_STATE}"]
+
 
     try:
         if agent == "shell":
@@ -2366,13 +2240,10 @@ def runtime_main(
             else:
                 command = ["claude", *rest]
         else:
-            flow_next_auto_push_active = any(
-                pair.startswith(f"{AUTO_PUSH_ENV}=") for pair in extra_env
-            )
-            command = codex_command(rest, config, flow_next_auto_push_active, browser_dir)
+            command = codex_command(rest, config, browser_dir)
         spec = workspace_container_spec(workspace, extra_mounts, script_dir, config)
         invocation, process_env = invocation_env(config, agent)
-        # Channel/Flow-Next values are invocation policy, not box identity.
+        # Channel/workflow values are invocation policy, not box identity.
         invocation += extra_env
         if session is not None:
             announce_existing_sessions(spec.name)
@@ -2485,6 +2356,28 @@ def stop_main(args: list[str]) -> int:
     return 0
 
 
+def apply_path_symlink(config: Config) -> list[str]:
+    """Keep the recorded ``agent-box`` symlink pointing at this checkout.
+
+    Applying re-creates a link that something else removed, which is the whole
+    reason the directory is remembered. It never *chooses* one: an empty
+    ``install.bin_dir`` means the user declined the question or links the shim
+    themselves, and inventing a location here would be agent-box putting a
+    command on PATH that nobody asked for.
+
+    A refusal -- a foreign file already holding the name -- is reported and
+    the rest of the apply continues, because the symlink is independent of
+    the skills and settings that follow it.
+    """
+    from . import pathsetup
+    if not config.install.bin_dir:
+        return []
+    try:
+        return [pathsetup.install_symlink(Path(config.install.bin_dir))]
+    except AgentBoxError as exc:
+        return [f"warning: {exc}"]
+
+
 def apply_config(config: Config) -> list[str]:
     """Make the host match the configuration, and say what that took.
 
@@ -2506,15 +2399,17 @@ def apply_config(config: Config) -> list[str]:
     Returns the human-facing lines describing what happened, so every caller
     renders the same report instead of each narrating its own.
     """
-    from . import flow_push
     report: list[str] = []
 
     ensure_state_dirs()
-    notify_module.sync_credentials(config)
-    sync_vikunja_credentials(config)
+    report.extend(apply_path_symlink(config))
+    notify_module.sync_credentials(config, path=NOTIFY_CREDENTIALS)
+    sync_tracker_runtime(config)
 
     wanted = managed_skills(config)
     sync_managed_skills(config)
+    from . import agent_profiles
+    report.extend(agent_profiles.sync(config, CODEX_HOME, CLAUDE_HOME))
     report.append(
         f"skills installed in {AGENT_SKILLS_DIR}: {', '.join(sorted(wanted)) or 'none'}")
 
@@ -2527,10 +2422,6 @@ def apply_config(config: Config) -> list[str]:
     statusline = claude_settings.statusline_intent(config.claude.statusline)
     claude_settings.reconcile_claude_settings(
         settings, notifications=config.notifications.enabled, statusline=statusline)
-    if config.flow_next.auto_push:
-        flow_push.install_flow_push_hooks(settings)
-    else:
-        flow_push.remove_flow_push_hooks(settings)
     report.append(
         f"reconciled {settings}"
         + ("" if statusline is not None else " (status line left untouched)"))
@@ -2601,12 +2492,10 @@ def uninstall_main(args: list[str]) -> int:
         done.append(f"removed {len(names)} workspace box(es)")
 
     settings = CLAUDE_HOME / "settings.json"
-    from . import flow_push
     if claude_settings.reconcile_claude_settings(
             settings, notifications=False, statusline=False):
         done.append(f"removed the agent-box status line and notification hooks from {settings}")
-    if flow_push.remove_flow_push_hooks(settings):
-        done.append(f"removed the Flow-Next auto-push hooks from {settings}")
+
 
     disabled = Config()
     disabled.skills.claude_links = False
@@ -2614,11 +2503,13 @@ def uninstall_main(args: list[str]) -> int:
     done.append(f"removed agent-box's skill links from {CLAUDE_HOME / 'skills'}")
 
     sync_managed_skills(disabled)
+    from . import agent_profiles
+    done.extend(agent_profiles.sync(disabled, CODEX_HOME, CLAUDE_HOME))
     done.append(f"removed the skills agent-box installed in {AGENT_SKILLS_DIR}")
 
     NOTIFY_CREDENTIALS.unlink(missing_ok=True)
-    shutil.rmtree(VIKUNJA_CREDENTIALS_DIR, ignore_errors=True)
-    done.append("removed the rendered notification and Vikunja credentials")
+    shutil.rmtree(TRACKER_RUNTIME_DIR, ignore_errors=True)
+    done.append("removed the rendered notification and tracker credentials")
 
     from . import pathsetup
     for link in pathsetup.remove_symlinks():
@@ -2674,14 +2565,7 @@ def host_main(
     """``agent-box --host claude|codex``: run the installed host executable
     directly, no Podman.
 
-    Shares :func:`flow_next.flow_next_launch_env` with the containerized path
-    (``runtime_main`` above) so the two cannot drift on Flow-Next detection or
-    the Flow-Next launch policy -- it is the same function call,
-    just applied to the host environment instead of ``--env`` flags on a
-    ``podman exec``. Everything else about host mode is intentionally plain:
-    the pass-through args are forwarded unmodified, and the host's normal
-    environment (git/gh credentials included) flows through unchanged except
-    for the invocation-scoped Flow-Next overrides.
+    Workflow policy is read from the same global configuration as container mode.
     """
     executable = shutil.which(agent)
     if not executable:
@@ -2695,19 +2579,7 @@ def host_main(
     config.env = config.env.overlay(env_specs)
     # As in container mode: a launch applies nothing to the user's own files.
     env = dict(os.environ)
-    # A non-Flow-Next launch must not inherit stale Flow-Next policy values
-    # the parent shell happens to have exported -- clear every agent-box-owned
-    # policy variable, then let flow_next_launch_env
-    # re-derive the decision (including an explicit FLOW_REVIEW_BACKEND the
-    # shell set for this one launch, which it reads from the real process
-    # environment), so an empty result from the resolver really means
-    # "no policy", not "whatever was already there".
-    for name in POLICY_ENV_VARS:
-        env.pop(name, None)
-    for pair in flow_next_launch_env(
-        workspace.host_root, agent, config, runtime_path=env.get("PATH", "")):
-        name, _, value = pair.partition("=")
-        env[name] = value
+    env["AGENT_BOX_PRIMARY_PROVIDER"] = agent
     # ``env.set`` states what a session should have; a host session is still a
     # session. ``env.forward`` has nothing to do here -- host mode already
     # runs in the very shell those names would have been forwarded from, so

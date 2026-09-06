@@ -5,10 +5,9 @@ import os
 import unittest
 import unittest.mock
 
-from agent_box import flow_push
 from agent_box import notify as notify_module
 from agent_box import usage as usage_module
-from agent_box.cli import flow_next_command, notify_command, parse_global_args, usage_command
+from agent_box.cli import notify_command, parse_global_args, usage_command
 
 
 class ParseGlobalArgsTests(unittest.TestCase):
@@ -79,25 +78,6 @@ class ParseGlobalArgsTests(unittest.TestCase):
         self.assertEqual(rest, ["codex"])
 
 
-class FlowNextDispatchTests(unittest.TestCase):
-    """`flow_next_command` is Claude's Stop hook entry point only now --
-    the PostToolUse/`flowctl done` detector was removed along with the
-    marker mechanism it drove."""
-
-    def test_stop_dispatches_to_run_stop_hook(self):
-        with unittest.mock.patch.object(flow_push, "run_stop_hook") as run_stop_hook, \
-             unittest.mock.patch("sys.stdin") as stdin:
-            stdin.read.return_value = '{"cwd": "/work"}'
-            flow_next_command(["stop"])
-        run_stop_hook.assert_called_once_with('{"cwd": "/work"}')
-
-    def test_post_tool_use_is_no_longer_a_valid_action(self):
-        with self.assertRaises(SystemExit):
-            flow_next_command(["post-tool-use"])
-
-    def test_unknown_action_dies(self):
-        with self.assertRaises(SystemExit):
-            flow_next_command(["bogus"])
 
 
 class NotifyCodexDispatchTests(unittest.TestCase):
@@ -105,23 +85,19 @@ class NotifyCodexDispatchTests(unittest.TestCase):
     codex` must drive both outbound notifications and the Flow-Next
     auto-push turn-complete adapter from the same one payload read."""
 
-    def test_payload_argument_reaches_both_notify_and_flow_push(self):
+    def test_payload_argument_reaches_notify(self):
         payload = json.dumps({"type": "agent-turn-complete", "cwd": "/work/project"})
-        with unittest.mock.patch.object(notify_module, "notify_codex") as notify_codex, \
-             unittest.mock.patch.object(flow_push, "run_codex_turn_complete_hook") as run_hook:
+        with unittest.mock.patch.object(notify_module, "notify_codex") as notify_codex:
             notify_command(["codex", payload])
         notify_codex.assert_called_once_with(payload)
-        run_hook.assert_called_once_with(payload)
 
-    def test_stdin_payload_reaches_both_notify_and_flow_push(self):
+    def test_stdin_payload_reaches_notify(self):
         payload = json.dumps({"type": "agent-turn-complete", "cwd": "/work/project"})
         with unittest.mock.patch.object(notify_module, "notify_codex") as notify_codex, \
-             unittest.mock.patch.object(flow_push, "run_codex_turn_complete_hook") as run_hook, \
              unittest.mock.patch("sys.stdin") as stdin:
             stdin.read.return_value = payload
             notify_command(["codex"])
         notify_codex.assert_called_once_with(payload)
-        run_hook.assert_called_once_with(payload)
 
     def test_too_many_payload_arguments_dies(self):
         with self.assertRaises(SystemExit):
@@ -148,6 +124,16 @@ class UsageCommandColorTests(unittest.TestCase):
         for args in (["claude"], ["codex"]):
             with self.subTest(args=args):
                 self.assertNotIn("\x1b[", self._run(args))
+
+    def test_refresh_flags_allow_default_provider_and_any_order(self):
+        """Fresh machine output must not require an otherwise optional provider."""
+        for args, providers in ((["--json", "--no-cache"], ["codex", "claude"]),
+                                (["--no-cache", "codex", "--json"], ["codex"])):
+            with self.subTest(args=args), contextlib.redirect_stdout(io.StringIO()), \
+                    unittest.mock.patch.object(usage_module, "usage_snapshot", return_value={"fresh": True}) as snapshot:
+                usage_command(args)
+                self.assertEqual(snapshot.call_args_list,
+                                 [unittest.mock.call(p, no_cache=True) for p in providers])
 
     def test_single_provider_prints_only_the_numbers(self):
         self.assertEqual(self._run(["claude"]), "88/59 · 2h29m/4d15h")
@@ -181,3 +167,37 @@ class UsageCommandColorTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PathStatusTests(unittest.TestCase):
+    """Silence would read as success, so an unfinished PATH setup has to speak.
+
+    ``config`` and ``config apply`` both end here. The two unfinished states
+    need different advice: a directory was chosen but the shell has not picked
+    it up yet, or no directory was ever chosen at all.
+    """
+
+    def status(self, bin_dir, kind):
+        from pathlib import Path
+        from agent_box import pathsetup
+        from agent_box.cli import path_status
+        from agent_box.config import Config
+        config = Config()
+        config.install.bin_dir = bin_dir
+        found = Path(bin_dir or "/nowhere") / "agent-box"
+        with unittest.mock.patch.object(
+                pathsetup, "link_state", return_value=pathsetup.LinkState(kind, found)):
+            return path_status(config)
+
+    def test_a_working_link_says_nothing(self):
+        self.assertEqual(self.status("/home/somebody/.local/bin", "ours"), [])
+
+    def test_a_chosen_directory_the_shell_has_not_picked_up_gets_the_path_line(self):
+        lines = self.status("/home/somebody/.local/bin", "missing")
+        self.assertIn("not on PATH yet in this shell", lines[0])
+        self.assertTrue(any("export PATH=" in line for line in lines))
+
+    def test_no_chosen_directory_gets_the_commands_to_finish_by_hand(self):
+        lines = self.status("", "missing")
+        self.assertIn("agent-box is not on PATH", lines[0])
+        self.assertTrue(any(line.strip().startswith("ln -s") for line in lines))

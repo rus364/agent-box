@@ -21,7 +21,7 @@ from pathlib import Path
 from unittest import mock
 
 from agent_box import claude_settings, cli, runtime
-from agent_box.config import Config
+from agent_box.config import Config, TrackerConnection
 from agent_box.workspace import Workspace
 
 
@@ -35,16 +35,17 @@ class ApplyConfigTests(unittest.TestCase):
         self.shipped = self.root / "shipped"
         self.state = self.root / "state"
         self.shared.mkdir(parents=True)
-        (self.shipped / "vikunja/scripts").mkdir(parents=True)
-        (self.shipped / "vikunja/SKILL.md").write_text("# vikunja\n")
+        (self.shipped / "ab-tracker/scripts").mkdir(parents=True)
+        (self.shipped / "ab-tracker/SKILL.md").write_text("# vikunja\n")
         self.patches = mock.patch.multiple(
             runtime,
             CLAUDE_HOME=self.claude,
+            CODEX_HOME=self.root / "home/.codex",
             AGENT_SKILLS_DIR=self.shared,
             MANAGED_SKILLS_SOURCE=self.shipped,
             STATE_ROOT=self.state,
             NOTIFY_CREDENTIALS=self.state / "runtime/notify.json",
-            VIKUNJA_CREDENTIALS_DIR=self.state / "runtime/vikunja",
+            TRACKER_RUNTIME_DIR=self.state / "runtime/tracker",
             NOTIFY_STATE_ROOT=self.state / "notify",
             BUILD_STATE=self.state / "build",
         )
@@ -53,24 +54,23 @@ class ApplyConfigTests(unittest.TestCase):
 
     def _enabled(self):
         config = Config()
-        config.vikunja.enabled = True
-        config.vikunja.url = "https://tasks.example.com"
-        config.vikunja.token = "tk"
+        config.tracker.enabled = True
+        config.tracker.connections["vikunja"] = TrackerConnection("https://tasks.example.com", "tk")
         return config
 
     def test_it_installs_the_skills_the_configuration_enables(self):
         runtime.apply_config(self._enabled())
-        self.assertTrue((self.shared / "vikunja/SKILL.md").is_file())
+        self.assertTrue((self.shared / "ab-tracker/SKILL.md").is_file())
 
     def test_it_links_the_shared_tree_for_claude(self):
         runtime.apply_config(self._enabled())
-        self.assertTrue((self.claude / "skills/vikunja").is_symlink())
+        self.assertTrue((self.claude / "skills/ab-tracker").is_symlink())
 
     def test_the_link_switch_is_honoured(self):
         config = self._enabled()
         config.skills.claude_links = False
         runtime.apply_config(config)
-        self.assertFalse((self.claude / "skills/vikunja").exists())
+        self.assertFalse((self.claude / "skills/ab-tracker").exists())
 
     def test_it_installs_the_status_line(self):
         runtime.apply_config(Config())
@@ -84,39 +84,39 @@ class ApplyConfigTests(unittest.TestCase):
             report = runtime.apply_config(self._enabled())
         self.assertFalse((self.claude / "settings.json").exists())
         self.assertTrue(any("status line left untouched" in line for line in report))
-        self.assertTrue((self.shared / "vikunja/SKILL.md").is_file())
+        self.assertTrue((self.shared / "ab-tracker/SKILL.md").is_file())
 
     def test_it_renders_the_vikunja_credentials(self):
         runtime.apply_config(self._enabled())
-        self.assertTrue((self.state / "runtime/vikunja/token").is_file())
+        self.assertTrue((self.state / "runtime/tracker/config.json").is_file())
 
     def test_it_is_idempotent(self):
         first = runtime.apply_config(self._enabled())
         second = runtime.apply_config(self._enabled())
         self.assertEqual(first, second)
-        self.assertTrue((self.shared / "vikunja/SKILL.md").is_file())
+        self.assertTrue((self.shared / "ab-tracker/SKILL.md").is_file())
 
     def test_turning_an_integration_off_and_applying_again_removes_it(self):
         runtime.apply_config(self._enabled())
         runtime.apply_config(Config())
-        self.assertFalse((self.shared / "vikunja").exists())
-        self.assertFalse((self.state / "runtime/vikunja").exists())
+        self.assertFalse((self.shared / "ab-tracker").exists())
+        self.assertFalse((self.state / "runtime/tracker").exists())
 
     def test_the_report_names_what_was_installed(self):
         report = " ".join(runtime.apply_config(self._enabled()))
-        self.assertIn("vikunja", report)
+        self.assertIn("ab-tracker", report)
         self.assertIn(str(self.claude / "settings.json"), report)
 
     def test_config_apply_applies_the_saved_configuration(self):
         """The one command for a config.json somebody edited by hand."""
         with mock.patch.object(cli, "load_config", return_value=self._enabled()):
             cli.config_apply()
-        self.assertTrue((self.shared / "vikunja/SKILL.md").is_file())
+        self.assertTrue((self.shared / "ab-tracker/SKILL.md").is_file())
 
     def test_config_apply_reports_an_incomplete_integration(self):
         """Turning Vikunja on without a URL must not look like it worked."""
         broken = Config()
-        broken.vikunja.enabled = True
+        broken.tracker.enabled = True
         errors = io.StringIO()
         with mock.patch.object(cli, "load_config", return_value=broken), \
              contextlib.redirect_stderr(errors):
@@ -157,16 +157,17 @@ class LaunchAppliesNothingTests(unittest.TestCase):
             claude, shared = root / "claude", root / "agents/skills"
             shared.mkdir(parents=True)
             shipped = root / "shipped"
-            (shipped / "vikunja").mkdir(parents=True)
-            (shipped / "vikunja/SKILL.md").write_text("# vikunja\n")
+            (shipped / "ab-tracker").mkdir(parents=True)
+            (shipped / "ab-tracker/SKILL.md").write_text("# vikunja\n")
             config = Config()
-            config.vikunja.enabled = True
+            config.tracker.enabled = True
             with mock.patch.multiple(
                 runtime, CLAUDE_HOME=claude, AGENT_SKILLS_DIR=shared,
-                MANAGED_SKILLS_SOURCE=shipped,
+                MANAGED_SKILLS_SOURCE=shipped, TRACKER_RUNTIME_DIR=root / "runtime/tracker",
+                WORKFLOW_STATE=root / "workflow",
             ):
                 self._launch(config, root)
-            self.assertFalse((shared / "vikunja").exists())
+            self.assertFalse((shared / "ab-tracker").exists())
             self.assertFalse((claude / "settings.json").exists())
 
     def test_a_launch_calls_no_apply(self):

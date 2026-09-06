@@ -7,13 +7,16 @@ workspace boxes. Pure Python standard library, no dependencies, no build step.
 
 ```text
 agent-box              launcher shim -> agent_box.cli:main
-agent_box/cli.py       argument parsing and the interactive config UI, nothing else
+agent_box/cli.py       argument parsing and command dispatch
+agent_box/config_menu.py stdlib curses configuration menu
+agent_box/tracker/     portable task contract and product adapters
+agent_box/workflow.py  deterministic workflow boundaries; skills orchestrate
 agent_box/runtime.py   container lifecycle, mounts, launches, doctor
 agent_box/config.py    the whole config schema; flat dataclasses, no framework
 agent_box/paths.py     every host-side path; nothing else may hardcode a home layout
 agent_box/pathsetup.py the PATH symlink and the shell rc block, and their refusals
 agent_box/selfupdate.py `agent-box upgrade`: git operations on this checkout
-agent_box/skills/      skills agent-box ships and installs (vendored, checked in)
+agent_box/skills/      skills agent-box ships and installs (owned, checked in)
 Containerfile          the workspace image, with optional tool groups
 tests/                 unittest, no plugins
 ```
@@ -53,10 +56,34 @@ that the user has to assemble first, is not an integration. Settings live in
 agent-box; the container gets a rendered, minimal artifact, never `config.json`
 itself.
 
+**Derived, not stored.** A fact that Git, GitHub or the tracker already owns is
+read back from there. Branch names come from the task's `ab/<id>-` namespace,
+the base branch from origin's default, the pull request from a head/base lookup,
+the lifecycle from the board's own columns. `.agent-box.json` names the tracker
+project and nothing else. Nothing machine-readable is written into a tracker
+comment: a comment is a human journal, and lifecycle is read from the tracker's
+own fields.
+
+**The coordinator is the only writer.** A delegated worker reads the task and
+the code, changes project files in the working tree, and returns a structured
+report; a reviewer or scout reads and reports, changing nothing at all. The
+coordinator decides from that report what to commit and what to record in the
+tracker and on GitHub. This is a contract, not credential isolation: a
+delegation runs either as a native subagent of the coordinator's own session or
+as a managed `codex exec` / `claude -p`, the first of which inherits the
+coordinator's workspace, `.git` and credentials, so the two backends
+deliberately share one contract and one set of checks rather than one of them
+acquiring private restrictions. What follows a report is therefore
+detection of an obvious contract violation, not a perimeter: guards that only
+existed because the contract was wide belong deleted, not tightened. A
+delegation is bound to its repository, project, task, scope, role and tier by
+`workflow prepare`'s handoff descriptor, which is plain readable JSON and is
+deliberately not treated as unforgeable.
+
 **Secrets travel by name.** `--env=NAME` (Podman inherits the value) for
 anything secret; `--env=NAME=VALUE` puts the value in an argv that `/proc`
 exposes to other processes. `notify.sync_credentials` and
-`runtime.sync_vikunja_credentials` are the pattern for rendered credential files.
+`runtime.sync_tracker_runtime` are the pattern for rendered credential files.
 
 **Never overwrite what a user owns.** Skill directories carry a marker; ones
 without it are the user's. Claude's `statusLine` slot is filled only when empty.
@@ -73,12 +100,12 @@ Hook removal only ever touches agent-box's own commands.
   the box's identity: changing it recreates the box. Per-invocation values go
   through `invocation_env`. Choose deliberately.
 - **Diagnostics are returned, not printed**, so both the launch path and
-  `agent-box config` can render them (`vikunja_warnings` is the pattern).
+  `agent-box config` can render them (`tracker_warnings` is the pattern).
 
 ## Commands
 
 ```bash
-python3 -m unittest discover -s tests    # full suite (~830 tests, no network)
+python3 -m unittest discover -s tests    # full suite (no external network)
 ./agent-box selftest                     # fast, no Podman
 uvx ruff check --select E4,E9,F agent_box/ tests/   # what CI lints
 ./agent-box config show                  # inspect the live config, tokens redacted
@@ -91,20 +118,20 @@ run them through `discover`, not `python3 -m unittest tests.test_browser`.
 
 - `tests/` must never touch the developer's real `~/.claude` or `~/.agents`.
   Anything that calls `config_interactive` or `apply_config` has to patch
-  `runtime.CLAUDE_HOME`, `runtime.AGENT_SKILLS_DIR`, `runtime.MANAGED_SKILLS_SOURCE`
+  `runtime.CLAUDE_HOME`, `runtime.CODEX_HOME`, `runtime.AGENT_SKILLS_DIR`, `runtime.MANAGED_SKILLS_SOURCE`
   and the credential paths. This has bitten before.
-- The same applies to PATH, and more sharply: `config_interactive` starts with
-  `cli._configure_path`, and `uninstall_main` scans the real PATH for symlinks
-  to remove. Tests must stub `cli._configure_path`, and patch
+- The same applies to PATH, and more sharply: `config_interactive` may apply menu-selected PATH changes, and `uninstall_main`
+  scans the real PATH for symlinks to remove. Tests must stub the menu/apply
+  boundary or use a temporary selected bin directory, and patch
   `pathsetup.path_entries`, `pathsetup.DEFAULT_BIN_DIR`, `pathsetup.rc_file`
   and `pathsetup.checkout_root` — otherwise the suite deletes the developer's
   own `agent-box` symlink or edits their `~/.bashrc`.
-- Module-level constants derived from `paths.py` (`AGENTS_DIR`, `VIKUNJA_*`,
-  `CONTAINER_VIKUNJA_*`) are resolved at import; tests patch them on `runtime`,
+- Module-level constants derived from `paths.py` (`AGENTS_DIR`, `TRACKER_RUNTIME_DIR`,
+  `CONTAINER_TRACKER_RUNTIME_DIR`) are resolved at import; tests patch them on `runtime`,
   not on `paths`.
 - The image label `io.agent-box.tools` records the built tool groups. A missing
   label means *unknown*, not *empty* — never report it as drift.
-- `agent_box/skills/` is regenerated by `agent-box skills vendor <upstream>`.
-  Do not hand-edit vendored skills; change `agent_box/vendor.py` and re-run.
+- `agent_box/skills/` contains short owned `ab-*` skills. Maintain them directly
+  and keep their command/role contracts consistent with the Python helpers.
 - `.gitignore` ignores `/skills/` at the repo root only — `agent_box/skills/` is
   checked in on purpose.

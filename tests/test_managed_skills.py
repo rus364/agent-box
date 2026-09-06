@@ -49,61 +49,61 @@ class ManagedSkillInstallTests(unittest.TestCase):
         self.addCleanup(self.patches.stop)
 
     def test_a_shipped_skill_is_installed(self):
-        _skill(self.shipped, "vikunja")
-        runtime.install_managed_skill("vikunja")
-        self.assertTrue((self.installed / "vikunja/SKILL.md").is_file())
-        self.assertTrue((self.installed / "vikunja/scripts/run.py").is_file())
+        _skill(self.shipped, "ab-tracker")
+        runtime.install_managed_skill("ab-tracker")
+        self.assertTrue((self.installed / "ab-tracker/SKILL.md").is_file())
+        self.assertTrue((self.installed / "ab-tracker/scripts/run.py").is_file())
 
     def test_an_installed_skill_is_marked_as_agent_box_owned(self):
-        _skill(self.shipped, "vikunja")
-        runtime.install_managed_skill("vikunja")
+        _skill(self.shipped, "ab-tracker")
+        runtime.install_managed_skill("ab-tracker")
         marker = json.loads(
-            (self.installed / "vikunja" / runtime.MANAGED_SKILL_MARKER).read_text())
-        self.assertEqual(marker["skill"], "vikunja")
+            (self.installed / "ab-tracker" / runtime.MANAGED_SKILL_MARKER).read_text())
+        self.assertEqual(marker["skill"], "ab-tracker")
         self.assertEqual(
-            marker["digest"], runtime.skill_tree_digest(self.shipped / "vikunja"))
+            marker["digest"], runtime.skill_tree_digest(self.shipped / "ab-tracker"))
 
     def test_installing_twice_changes_nothing(self):
-        _skill(self.shipped, "vikunja")
-        runtime.install_managed_skill("vikunja")
-        stamp = (self.installed / "vikunja/SKILL.md").stat().st_mtime_ns
-        runtime.install_managed_skill("vikunja")
-        self.assertEqual((self.installed / "vikunja/SKILL.md").stat().st_mtime_ns, stamp)
+        _skill(self.shipped, "ab-tracker")
+        runtime.install_managed_skill("ab-tracker")
+        stamp = (self.installed / "ab-tracker/SKILL.md").stat().st_mtime_ns
+        runtime.install_managed_skill("ab-tracker")
+        self.assertEqual((self.installed / "ab-tracker/SKILL.md").stat().st_mtime_ns, stamp)
 
     def test_a_changed_shipped_copy_replaces_the_installed_one(self):
         """Upgrading agent-box has to upgrade the skills it ships."""
-        _skill(self.shipped, "vikunja", body="# old\n")
-        runtime.install_managed_skill("vikunja")
-        (self.shipped / "vikunja/SKILL.md").write_text("# new\n")
-        runtime.install_managed_skill("vikunja")
-        self.assertEqual((self.installed / "vikunja/SKILL.md").read_text(), "# new\n")
+        _skill(self.shipped, "ab-tracker", body="# old\n")
+        runtime.install_managed_skill("ab-tracker")
+        (self.shipped / "ab-tracker/SKILL.md").write_text("# new\n")
+        runtime.install_managed_skill("ab-tracker")
+        self.assertEqual((self.installed / "ab-tracker/SKILL.md").read_text(), "# new\n")
 
     def test_a_file_dropped_from_the_shipped_copy_disappears(self):
-        _skill(self.shipped, "vikunja")
-        runtime.install_managed_skill("vikunja")
-        (self.shipped / "vikunja/scripts/run.py").unlink()
-        runtime.install_managed_skill("vikunja")
-        self.assertFalse((self.installed / "vikunja/scripts/run.py").exists())
+        _skill(self.shipped, "ab-tracker")
+        runtime.install_managed_skill("ab-tracker")
+        (self.shipped / "ab-tracker/scripts/run.py").unlink()
+        runtime.install_managed_skill("ab-tracker")
+        self.assertFalse((self.installed / "ab-tracker/scripts/run.py").exists())
 
     def test_an_unmanaged_directory_is_never_overwritten(self):
         """It is the user's -- hand-written, or a checkout they are editing."""
-        _skill(self.shipped, "vikunja", body="# shipped\n")
-        mine = _skill(self.installed, "vikunja", body="# mine\n")
+        _skill(self.shipped, "ab-tracker", body="# shipped\n")
+        mine = _skill(self.installed, "ab-tracker", body="# mine\n")
         with mock.patch.object(runtime, "warn") as warn:
-            runtime.install_managed_skill("vikunja")
+            runtime.install_managed_skill("ab-tracker")
         self.assertEqual((mine / "SKILL.md").read_text(), "# mine\n")
         self.assertTrue(warn.called)
 
     def test_an_unmanaged_directory_survives_removal_too(self):
-        _skill(self.installed, "vikunja", body="# mine\n")
-        runtime.remove_managed_skill("vikunja")
-        self.assertTrue((self.installed / "vikunja/SKILL.md").is_file())
+        _skill(self.installed, "ab-tracker", body="# mine\n")
+        runtime.remove_managed_skill("ab-tracker")
+        self.assertTrue((self.installed / "ab-tracker/SKILL.md").is_file())
 
     def test_a_managed_skill_is_removed_when_asked(self):
-        _skill(self.shipped, "vikunja")
-        runtime.install_managed_skill("vikunja")
-        runtime.remove_managed_skill("vikunja")
-        self.assertFalse((self.installed / "vikunja").exists())
+        _skill(self.shipped, "ab-tracker")
+        runtime.install_managed_skill("ab-tracker")
+        runtime.remove_managed_skill("ab-tracker")
+        self.assertFalse((self.installed / "ab-tracker").exists())
 
     def test_a_skill_that_does_not_ship_warns_instead_of_failing(self):
         with mock.patch.object(runtime, "warn") as warn:
@@ -113,7 +113,7 @@ class ManagedSkillInstallTests(unittest.TestCase):
 
     def test_the_digest_ignores_bytecode_caches(self):
         """Otherwise a skill would look changed after its first run."""
-        skill = _skill(self.shipped, "vikunja")
+        skill = _skill(self.shipped, "ab-tracker")
         before = runtime.skill_tree_digest(skill)
         (skill / "scripts/__pycache__").mkdir()
         (skill / "scripts/__pycache__/run.pyc").write_bytes(b"\x00")
@@ -129,7 +129,7 @@ class ManagedSkillSyncTests(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.shipped = self.root / "shipped"
         self.shipped.mkdir()
-        _skill(self.shipped, "vikunja")
+        _skill(self.shipped, "ab-tracker")
         self.installed = self.root / "home/.agents/skills"
         self.patches = mock.patch.multiple(
             runtime,
@@ -141,26 +141,26 @@ class ManagedSkillSyncTests(unittest.TestCase):
 
     def _enabled(self):
         config = Config()
-        config.vikunja.enabled = True
+        config.tracker.enabled = True
         return config
 
     def test_an_enabled_integration_installs_its_skill(self):
         runtime.sync_managed_skills(self._enabled())
-        self.assertTrue((self.installed / "vikunja/SKILL.md").is_file())
+        self.assertTrue((self.installed / "ab-tracker/SKILL.md").is_file())
 
     def test_a_disabled_integration_installs_nothing(self):
         runtime.sync_managed_skills(Config())
-        self.assertFalse((self.installed / "vikunja").exists())
+        self.assertFalse((self.installed / "ab-tracker").exists())
 
     def test_turning_an_integration_off_removes_its_skill(self):
         runtime.sync_managed_skills(self._enabled())
         runtime.sync_managed_skills(Config())
-        self.assertFalse((self.installed / "vikunja").exists())
+        self.assertFalse((self.installed / "ab-tracker").exists())
 
     def test_turning_it_off_leaves_the_users_own_copy_alone(self):
-        _skill(self.installed, "vikunja", body="# mine\n")
+        _skill(self.installed, "ab-tracker", body="# mine\n")
         runtime.sync_managed_skills(Config())
-        self.assertEqual((self.installed / "vikunja/SKILL.md").read_text(), "# mine\n")
+        self.assertEqual((self.installed / "ab-tracker/SKILL.md").read_text(), "# mine\n")
 
 
 class ClaudeSkillLinkTests(unittest.TestCase):
@@ -189,9 +189,9 @@ class ClaudeSkillLinkTests(unittest.TestCase):
         return config
 
     def test_a_shared_skill_is_linked_for_claude(self):
-        skill = _skill(self.shared, "vikunja")
+        skill = _skill(self.shared, "ab-tracker")
         runtime.claude_skill_links(self._linked())
-        link = self.claude / "skills/vikunja"
+        link = self.claude / "skills/ab-tracker"
         self.assertTrue(link.is_symlink())
         self.assertEqual(link.resolve(), skill.resolve())
 
@@ -201,15 +201,15 @@ class ClaudeSkillLinkTests(unittest.TestCase):
         self.assertFalse((self.claude / "skills/notes").exists())
 
     def test_the_switch_off_creates_nothing(self):
-        _skill(self.shared, "vikunja")
+        _skill(self.shared, "ab-tracker")
         runtime.claude_skill_links(self._unlinked())
-        self.assertFalse((self.claude / "skills/vikunja").exists())
+        self.assertFalse((self.claude / "skills/ab-tracker").exists())
 
     def test_turning_the_switch_off_removes_the_links_it_made(self):
-        _skill(self.shared, "vikunja")
+        _skill(self.shared, "ab-tracker")
         runtime.claude_skill_links(self._linked())
         runtime.claude_skill_links(self._unlinked())
-        self.assertFalse((self.claude / "skills/vikunja").exists())
+        self.assertFalse((self.claude / "skills/ab-tracker").exists())
 
     def test_turning_it_off_leaves_foreign_entries_alone(self):
         """agent-box removes its own links, not whatever else lives there."""
@@ -223,21 +223,21 @@ class ClaudeSkillLinkTests(unittest.TestCase):
         self.assertTrue(real.is_dir())
 
     def test_an_existing_name_is_kept_with_a_warning(self):
-        _skill(self.shared, "vikunja")
+        _skill(self.shared, "ab-tracker")
         (self.claude / "skills").mkdir(parents=True)
-        mine = _skill(self.claude / "skills", "vikunja", body="# mine\n")
+        mine = _skill(self.claude / "skills", "ab-tracker", body="# mine\n")
         with mock.patch.object(runtime, "warn") as warn:
             runtime.claude_skill_links(self._linked())
         self.assertEqual((mine / "SKILL.md").read_text(), "# mine\n")
         self.assertTrue(warn.called)
 
     def test_a_link_left_dangling_by_a_removed_skill_is_cleaned_up(self):
-        skill = _skill(self.shared, "vikunja")
+        skill = _skill(self.shared, "ab-tracker")
         runtime.claude_skill_links(self._linked())
         import shutil
         shutil.rmtree(skill)
         runtime.claude_skill_links(self._linked())
-        self.assertFalse((self.claude / "skills/vikunja").is_symlink())
+        self.assertFalse((self.claude / "skills/ab-tracker").is_symlink())
 
 
 if __name__ == "__main__":

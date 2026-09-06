@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import json
 import os
-import sys
 import time
 import urllib.error
 import urllib.request
@@ -116,7 +115,8 @@ def normalize_claude_usage(data: Any) -> dict[str, Any]:
             return None
         return {"used_percentage": w.get("used_percentage", w.get("utilization")), "resets_at": parse_epoch(w.get("resets_at"))}
 
-    return {"rate_limits": {"five_hour": window(data.get("five_hour")), "seven_day": window(data.get("seven_day"))}}
+    return {"rate_limits": {name: window(value) for name, value in data.items()
+                            if name == "five_hour" or name.startswith("seven_day")}}
 
 
 def format_claude_usage(data: Any, now: float | None = None) -> str:
@@ -184,37 +184,7 @@ def parse_payload(payload: str) -> dict[str, Any]:
 
 
 def codex_usage() -> str:
-    cache = XDG_CACHE_HOME / "codex/usage.json"
-    ttl = int(os.environ.get("CODEX_USAGE_CACHE_TTL", "60"))
-    # CODEX_HOME comes from agent_box.paths, which normalizes it once (with
-    # passwd-anchored "~" expansion). Re-reading the raw variable here would
-    # give a second, subtly different answer than the directory the container
-    # actually mounts and the rest of agent-box uses.
-    auth = env_path("CODEX_AUTH_PATH", CODEX_HOME / "auth.json")
-    url = os.environ.get("CODEX_USAGE_URL", "https://chatgpt.com/backend-api/wham/usage")
-    if cache_fresh(cache, ttl):
-        return format_codex_usage(read_json(cache))
-    if not auth.is_file():
-        print(f"agent-box usage codex: authentication file not found: {auth}", file=sys.stderr)
-        raise AgentBoxError("Codex authentication unavailable")
-    try:
-        tokens = read_json(auth)["tokens"]
-        token = tokens["access_token"]
-        account_id = tokens.get("account_id")
-    except (OSError, ValueError, KeyError, TypeError) as exc:
-        raise AgentBoxError(f"access token not found in {auth}") from exc
-    headers = {"Authorization": f"Bearer {token}"}
-    if account_id:
-        headers["chatgpt-account-id"] = str(account_id)
-    try:
-        response = http_json(url, headers=headers)
-        atomic_write_json(cache, response)
-        return format_codex_usage(response)
-    except Exception:
-        if cache.is_file() and cache.stat().st_size:
-            print("agent-box usage codex: request failed; showing cached usage", file=sys.stderr)
-            return format_codex_usage(read_json(cache))
-        raise AgentBoxError("Codex usage request failed")
+    return format_snapshot(usage_snapshot("codex"))
 
 
 def claude_usage_from_payload(obj: dict[str, Any]) -> str:
@@ -233,31 +203,96 @@ def claude_usage_from_payload(obj: dict[str, Any]) -> str:
 
 
 def claude_usage() -> str:
-    cache = CLAUDE_USAGE_CACHE
-    # Same reasoning as codex_usage: CLAUDE_HOME already honors
-    # CLAUDE_CONFIG_DIR, so a relocated Claude config directory is picked up
-    # here without this function knowing about that variable at all.
-    credentials = env_path("CLAUDE_CREDENTIALS_PATH", CLAUDE_HOME / ".credentials.json")
-    url = os.environ.get("CLAUDE_CODE_CUSTOM_OAUTH_URL", "https://api.anthropic.com").rstrip("/") + "/api/oauth/usage"
-    ttl = int(os.environ.get("CLAUDE_USAGE_CACHE_TTL", "60"))
-    if cache_fresh(cache, ttl):
-        return format_claude_usage(read_json(cache))
-    if credentials.is_file():
-        try:
-            token = read_json(credentials)["claudeAiOauth"]["accessToken"]
-            response = http_json(url, headers={
-                "Authorization": f"Bearer {token}",
-                "anthropic-beta": "oauth-2025-04-20",
-                "Content-Type": "application/json",
-                "User-Agent": "claude-cli (external, cli)",
-            })
-            normalized = normalize_claude_usage(response)
-            atomic_write_json(cache, normalized)
-            return format_claude_usage(normalized)
-        except Exception:
-            pass
+    return format_snapshot(usage_snapshot("claude"))
+
+
+def usage_windows(provider, data, observed_at):
+    """Normalize budget windows without discarding model-specific restrictions."""
+    import math
+    windows = []
+    if not isinstance(data, dict):
+        return windows
+    if provider == "codex":
+        rates = data.get("rate_limit") or {}
+        candidates = [(w, []) for w in (rates.get("primary_window"), rates.get("secondary_window"))]
+        for raw, models in candidates:
+            if not isinstance(raw, dict):
+                continue
+            used = raw.get("used_percent")
+            duration = raw.get("limit_window_seconds")
+            reset = raw.get("reset_at")
+            if reset is None and isinstance(raw.get("reset_after_seconds"), (int, float)):
+                reset = observed_at + raw["reset_after_seconds"]
+            if all(isinstance(n, (int, float)) and math.isfinite(n) for n in (used, duration, reset)):
+                windows.append({"seconds": duration, "remaining": max(0, min(100, 100 - used)),
+                                "reset_at": reset, "models": models})
     else:
-        print(f"agent-box usage claude: OAuth credentials not found: {credentials}", file=sys.stderr)
-    if cache.is_file() and cache.stat().st_size:
-        return format_claude_usage(read_json(cache))
-    return PLACEHOLDER_USAGE
+        rates = data.get("rate_limits", data)
+        if not isinstance(rates, dict):
+            return windows
+        for name, raw in rates.items():
+            if not isinstance(raw, dict) or not (name == "five_hour" or name.startswith("seven_day")):
+                continue
+            used = raw.get("used_percentage", raw.get("utilization"))
+            reset = parse_epoch(raw.get("resets_at"))
+            if not all(isinstance(n, (int, float)) and math.isfinite(n) for n in (used, reset)):
+                continue
+            models = [name[len("seven_day_"):]] if name.startswith("seven_day_") else []
+            windows.append({"seconds": 18000 if name == "five_hour" else 604800,
+                            "remaining": max(0, min(100, 100 - used)), "reset_at": reset, "models": models})
+    return windows
+
+
+def usage_snapshot(provider, no_cache=False):
+    """A failed refresh may retain evidence of exhaustion, never claim freshness."""
+    if provider not in ("codex", "claude"):
+        raise AgentBoxError("Unknown usage provider")
+    cache = XDG_CACHE_HOME / "codex/usage.json" if provider == "codex" else CLAUDE_USAGE_CACHE
+    now = time.time()
+    try:
+        cached = read_json(cache)
+        observed = cache.stat().st_mtime
+    except (OSError, ValueError):
+        cached, observed = {}, 0
+    ttl = int(os.environ.get(f"{provider.upper()}_USAGE_CACHE_TTL", "60"))
+    if not no_cache and cached and now - observed < ttl:
+        return {"provider": provider, "fresh": True, "source": "cache", "observed_at": observed,
+                "windows": usage_windows(provider, cached, observed)}
+    try:
+        if provider == "codex":
+            auth = env_path("CODEX_AUTH_PATH", CODEX_HOME / "auth.json")
+            tokens = read_json(auth)["tokens"]
+            headers = {"Authorization": "Bearer " + tokens["access_token"]}
+            if tokens.get("account_id"):
+                headers["chatgpt-account-id"] = str(tokens["account_id"])
+            url = os.environ.get("CODEX_USAGE_URL", "https://chatgpt.com/backend-api/wham/usage")
+        else:
+            auth = env_path("CLAUDE_CREDENTIALS_PATH", CLAUDE_HOME / ".credentials.json")
+            token = read_json(auth)["claudeAiOauth"]["accessToken"]
+            headers = {"Authorization": "Bearer " + token, "anthropic-beta": "oauth-2025-04-20",
+                       "Content-Type": "application/json", "User-Agent": "claude-cli (external, cli)"}
+            url = os.environ.get("CLAUDE_CODE_CUSTOM_OAUTH_URL", "https://api.anthropic.com").rstrip("/") + "/api/oauth/usage"
+        data = http_json(url, headers=headers)
+        windows = usage_windows(provider, data, now)
+        if not windows:
+            raise AgentBoxError("No recognizable usage windows")
+        try:
+            atomic_write_json(cache, data, 0o600)
+        except OSError:
+            pass  # A read-only cache does not invalidate a successful live observation.
+        return {"provider": provider, "fresh": True, "source": "live", "observed_at": now, "windows": windows}
+    except (OSError, ValueError, KeyError, TypeError, AgentBoxError):
+        return {"provider": provider, "fresh": False, "source": "cache" if cached else "unavailable",
+                "observed_at": observed, "windows": usage_windows(provider, cached, observed),
+                "error": "Fresh usage unavailable; check provider authentication and connectivity"}
+
+
+def format_snapshot(snapshot):
+    now = time.time()
+    windows = [w for w in snapshot["windows"] if not w["models"] and w["reset_at"] > now]
+    def segment(weekly):
+        window = next((w for w in windows if (w["seconds"] > 86400) == weekly), None)
+        return (str(int(window["remaining"])), compact_time(window["reset_at"] - now)) if window else ("—", "—")
+    a, ar = segment(False)
+    b, br = segment(True)
+    return f"{a}/{b} · {ar}/{br}"

@@ -298,5 +298,46 @@ class ShellDetectionTests(unittest.TestCase):
             self.assertIsNone(pathsetup.rc_file())
 
 
+class RecordedSymlinkTests(unittest.TestCase):
+    """The recorded directory is what makes a vanished symlink recoverable.
+
+    A ``~/.local/bin`` rebuilt by another installer, or a home restored from
+    backup, takes the link with it. Without the directory in the
+    configuration the only cure is finding the PATH question in the menu
+    again; with it, ``agent-box config apply`` is the cure.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.bin = Path(self.tmp.name) / "bin"
+        self.bin.mkdir()
+
+    def apply(self, bin_dir):
+        from agent_box import runtime
+        from agent_box.config import Config
+        config = Config()
+        config.install.bin_dir = str(bin_dir)
+        return runtime.apply_path_symlink(config)
+
+    def test_applying_restores_a_link_that_something_else_removed(self):
+        self.apply(self.bin)
+        (self.bin / "agent-box").unlink()
+        self.apply(self.bin)
+        self.assertEqual(
+            (self.bin / "agent-box").resolve(), pathsetup.shim_path().resolve())
+
+    def test_no_recorded_directory_means_no_symlink_is_invented(self):
+        from agent_box import runtime
+        from agent_box.config import Config
+        self.assertEqual(runtime.apply_path_symlink(Config()), [])
+
+    def test_a_refusal_is_reported_and_does_not_abort_the_rest_of_the_apply(self):
+        (self.bin / "agent-box").write_text("someone else's script\n")
+        report = self.apply(self.bin)
+        self.assertIn("warning:", report[0])
+        self.assertEqual((self.bin / "agent-box").read_text(), "someone else's script\n")
+
+
 if __name__ == "__main__":
     unittest.main()

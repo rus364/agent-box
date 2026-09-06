@@ -1,7 +1,6 @@
 """Command-line dispatch. Kept free of business logic beyond argument parsing."""
 from __future__ import annotations
 
-import getpass
 import shutil
 import sys
 from pathlib import Path
@@ -15,9 +14,6 @@ from . import usage as usage_module
 from .atomicio import read_json
 from .config import (
     CLAUDE_TELEGRAM_CHANNEL,
-    FLOW_REVIEW_BACKEND_AGENTS,
-    IMAGE_TOOL_GROUP_HELP,
-    FLOW_REVIEW_BACKEND_CHOICES,
     load_config,
     parse_env_spec,
     save_config,
@@ -100,7 +96,8 @@ def usage_text() -> None:
   agent-box build | update | rebuild
   agent-box upgrade [--check]
   agent-box uninstall [--purge] [--yes]
-  agent-box skills vendor <upstream>
+  agent-box tracker <command> [arguments...]
+  agent-box workflow <command> [arguments...]
 
 Sessions:
   An interactive claude/codex/shell session runs inside a tmux server in the
@@ -121,8 +118,10 @@ Configuration:
   agent-box config show     Print the current settings (token redacted)
   agent-box config check    Verify the official Claude Telegram channel setup
   agent-box config apply    Apply the saved file without asking anything:
-                            install the skills it enables, link them for
-                            Claude, and reconcile Claude's settings.json.
+                            restore the agent-box symlink in the directory the
+                            PATH question chose, install the skills it enables,
+                            link them for Claude, and reconcile Claude's
+                            settings.json.
                             'agent-box config' and 'agent-box upgrade' both end
                             by doing this, so it is only needed after editing
                             config.json by hand. Starting an agent never
@@ -180,12 +179,6 @@ containerized execution. Not valid with --mount, and not valid with
 shell/doctor, which are container-only. The opt-in agent browser lives in the
 workspace image, so --host sessions do not get it.
 
-Flow-Next workspaces (a '.flow/config.json' present) get a deterministic
-FLOW_REVIEW_BACKEND from agent-box config in both modes; see
-'flow_next' in 'agent-box config show'. Set FLOW_REVIEW_BACKEND in the
-shell before invoking agent-box to override it for that one launch, e.g.
-'FLOW_REVIEW_BACKEND=codex:gpt-5.6-terra:high agent-box claude'.
-
 Examples:
   agent-box
   agent-box claude
@@ -213,13 +206,29 @@ def usage_command(args: list[str]) -> None:
     `agent-box statusline`, which is the only caller Claude Code's payload
     reaches; this command answers from the cache or OAuth and takes no input.
     """
-    if not args:
-        die("usage provider required; expected codex, claude, or all")
-    provider, rest = args[0], args[1:]
+    rest = [arg for arg in args if arg.startswith("-")]
+    positional = [arg for arg in args if not arg.startswith("-")]
+    if len(positional) > 1:
+        die("usage accepts one provider: codex, claude, or all")
+    provider = positional[0] if positional else "all"
     if provider not in ("claude", "codex", "all"):
         die(f"unsupported usage provider '{provider}'; expected codex, claude, or all")
+    if set(rest) - {"--no-cache", "--json"}:
+        die("usage accepts --no-cache and --json")
     if rest:
-        die(f"agent-box usage {provider} takes no arguments")
+        import json
+        providers = ("codex", "claude") if provider == "all" else (provider,)
+        snapshots = [usage_module.usage_snapshot(p, no_cache="--no-cache" in rest) for p in providers]
+        if "--json" in rest:
+            print(json.dumps(snapshots if provider == "all" else snapshots[0], indent=2))
+        else:
+            for snapshot in snapshots:
+                print(f"{snapshot['provider']}: {usage_module.format_snapshot(snapshot)}")
+                if snapshot.get("error"):
+                    print(snapshot["error"], file=sys.stderr)
+        if "--no-cache" in rest and any(not snapshot["fresh"] for snapshot in snapshots):
+            raise SystemExit(1)
+        return
     if provider == "claude":
         print(usage_module.claude_usage())
     elif provider == "codex":
@@ -267,34 +276,10 @@ def notify_command(args: list[str]) -> None:
     elif action == "codex":
         if len(rest) > 1:
             die("agent-box notify codex accepts at most one payload argument")
-        # Codex supports exactly one `notify` program, so this single entry
-        # point carries both outbound notifications and the Flow-Next
-        # auto-push turn-complete adapter. The payload is read once here and
-        # handed to each independently, so neither one can starve the other
-        # of stdin.
         payload_text = rest[0] if rest else sys.stdin.read()
         notify_module.notify_codex(payload_text)
-        from . import flow_push
-        flow_push.run_codex_turn_complete_hook(payload_text)
     else:
         die(f"unsupported notify action '{action}'; expected test, claude, or codex")
-
-
-# -- flow-next ---------------------------------------------------------------
-#
-# Internal hook entry point for the managed Claude Stop hook that drives
-# Flow-Next auto-push (see agent_box.flow_push). Not meant to be typed by a
-# user; agent-box config installs this as the literal hook command in
-# ~/.claude/settings.json. Codex's turn-complete adapter is reached through
-# `notify_command` above instead, since Codex has only one notify program.
-
-def flow_next_command(args: list[str]) -> None:
-    from . import flow_push
-
-    if args == ["stop"]:
-        flow_push.run_stop_hook(sys.stdin.read())
-    else:
-        die("unsupported flow-next action; expected stop")
 
 
 # -- config ----------------------------------------------------------------
@@ -303,83 +288,6 @@ def _redact(token: str) -> str:
     if not token:
         return "(not set)"
     return f"{token[:6]}…{token[-4:]}" if len(token) > 12 else "(set)"
-
-
-def _prompt_bool(label: str, current: bool) -> bool:
-    default = "Y/n" if current else "y/N"
-    answer = input(f"{label} [{default}]: ").strip().lower()
-    if not answer:
-        return current
-    return answer in {"y", "yes", "on", "true", "1"}
-
-
-def _prompt_text(label: str, current: str) -> str:
-    answer = input(f"{label} [{current or '(not set)'}]: ").strip()
-    return answer or current
-
-
-def _prompt_secret(label: str, current: str) -> str:
-    """Read a secret without echoing it.
-
-    ``getpass`` also keeps the token out of the terminal scrollback and any
-    screen-sharing or recording of the session, which plain ``input`` would
-    not. An empty answer keeps whatever is already stored.
-    """
-    answer = getpass.getpass(f"{label} [{_redact(current)}]: ").strip()
-    return answer or current
-
-
-def _prompt_choice(label: str, choices: tuple[str, ...], current: str) -> str:
-    """Pick one of a fixed set of values, or none of them.
-
-    A menu rather than free text wherever a wrong answer only fails much
-    later: a mistyped Flow-Next backend spec, for instance, surfaces inside a
-    review Flow-Next has already started, with an error that points at
-    Flow-Next rather than at the typo here.
-    """
-    print(f"  {label}:")
-    for index, choice in enumerate(choices, 1):
-        marker = " (current)" if choice == current else ""
-        print(f"    {index}) {choice}{marker}")
-    none_marker = " (current)" if not current else ""
-    print(f"    0) none -- leave it to the tool's own default{none_marker}")
-    default = str(choices.index(current) + 1) if current in choices else "0"
-    while True:
-        answer = input(f"  Choice [{default}]: ").strip() or default
-        if answer == "0":
-            return ""
-        if answer.isdigit() and 1 <= int(answer) <= len(choices):
-            return choices[int(answer) - 1]
-        print(f"  Enter a number between 0 and {len(choices)}.")
-
-
-def _prompt_env_names(label: str, current: list[str]) -> list[str]:
-    """A whitespace- or comma-separated list of variable names."""
-    shown = " ".join(current) or "(none)"
-    answer = input(f"{label} [{shown}]: ").strip()
-    if not answer:
-        return list(current)
-    if answer == "-":
-        return []
-    return [name for name in answer.replace(",", " ").split() if name]
-
-
-def _prompt_env_assignments(label: str, current: dict[str, str]) -> dict[str, str]:
-    """Whitespace-separated ``NAME=VALUE`` pairs."""
-    shown = " ".join(f"{k}={v}" for k, v in sorted(current.items())) or "(none)"
-    answer = input(f"{label} [{shown}]: ").strip()
-    if not answer:
-        return dict(current)
-    if answer == "-":
-        return {}
-    pairs = {}
-    for token in answer.split():
-        name, sep, value = token.partition("=")
-        if sep and name:
-            pairs[name] = value
-        else:
-            print(f"  ignoring '{token}': expected NAME=VALUE")
-    return pairs
 
 
 def _statusline_note(config) -> str:
@@ -396,27 +304,10 @@ def _statusline_note(config) -> str:
     except (OSError, ValueError):
         return ""
     if not isinstance(settings, dict) or "statusLine" not in settings:
-        return " (installs on the next 'agent-box claude')"
+        return " (installs on the next 'agent-box config apply')"
     if claude_settings.statusline_is_ours(settings):
         return ""
     return " (left alone: another status line is configured)"
-
-
-def _vikunja_note(config) -> str:
-    """Say what the container will actually reach, or why it will not.
-
-    "on" alone is not informative here: the switch exposes host state that
-    may not exist yet, and the URL the container gets is a rewritten form of
-    the host's, which is worth showing rather than leaving to be discovered
-    from a failing call.
-    """
-    if not config.vikunja.enabled:
-        return ""
-    from . import runtime
-    problems = runtime.vikunja_warnings(config)
-    if problems:
-        return f" ({problems[0].split('but ', 1)[-1]})"
-    return f" ({runtime.container_vikunja_url(config.vikunja.url)})"
 
 
 def _image_note(config) -> str:
@@ -463,20 +354,18 @@ def config_show() -> None:
     print(f"  Provider API keys           {'on' if config.providers.api_keys else 'off'}")
     print(f"  Provider transport/proxy    {'on' if config.providers.transport else 'off'}")
     print(f"  Share skills with Claude    {'on' if config.skills.claude_links else 'off'}")
-    print(f"  Superpowers skills          {'on' if config.skills.superpowers else 'off'}")
     print(f"  Image tool groups           {', '.join(config.image.enabled_groups()) or '(base only)'}"
           f"{_image_note(config)}")
-    print(f"  Vikunja integration         {'on' if config.vikunja.enabled else 'off'}{_vikunja_note(config)}")
-    if config.vikunja.enabled:
-        print(f"    server                    {config.vikunja.url or '(not set)'}")
-        print(f"    api token                 {_redact(config.vikunja.token)}")
+    print(f"  Tracker                     {'on' if config.tracker.enabled else 'off'} ({config.tracker.provider})")
+    for name, connection in config.tracker.connections.items():
+        print(f"    {name}: {connection.url or '(not set)'}; token {_redact(connection.token)}")
+    print(f"  Workflow                    {'on' if config.workflow.enabled else 'off'}")
+    print(f"    routing                   {config.workflow.routing}; weights {config.workflow.weights}")
+    print(f"    review                    {config.workflow.review.policy}; files {config.workflow.review.max_files}; lines {config.workflow.review.max_lines}")
+    print(f"    fallback / auto-push      {config.workflow.fallback} / {config.workflow.auto_push}")
+    for tier, models in config.workflow.tiers.items():
+        print(f"    tier {tier}: {models}")
     print(f"  Agent browser (containers)  {'on' if config.browser.enabled else 'off'}{_browser_note(config)}")
-    print(f"  Flow-Next auto-push         {'on' if config.flow_next.auto_push else 'off'}")
-    for agent in FLOW_REVIEW_BACKEND_AGENTS:
-        backend = config.flow_next.review_backends.get(agent)
-        shown = backend or "(Flow-Next's own default)"
-        label = f"review backend ({agent})"
-        print(f"    {label:<26}{shown}")
     forwarded = ", ".join(config.env.forward) or "(none)"
     print(f"  Forwarded env variables     {forwarded}")
     assignments = ", ".join(f"{k}={v}" for k, v in sorted(config.env.set.items())) or "(none)"
@@ -516,270 +405,40 @@ def config_check() -> None:
     print(f"Ready. The next 'agent-box claude' will pass --channels {CLAUDE_TELEGRAM_CHANNEL}")
 
 
-def _prompt_bin_dir(choices: list) -> object | None:
-    """Pick the directory for the symlink, or decline the whole thing.
+def path_status(config) -> list[str]:
+    """What is left to do before the shell can run ``agent-box``.
 
-    A menu rather than a yes/no, because the answer is genuinely the user's:
-    which of their PATH directories agent-box may write a name into is not
-    something a launcher gets to assume.
-    """
-    print("  Where should the symlink go?")
-    for index, choice in enumerate(choices, 1):
-        note = "" if choice.on_path else "  (not on PATH yet)"
-        missing = "" if choice.exists else "  (does not exist yet)"
-        print(f"    {index}) {choice.path}{note}{missing}")
-    print("    0) nowhere -- I will do it myself")
-    while True:
-        answer = input("  Choice [1]: ").strip() or "1"
-        if answer == "0":
-            return None
-        if answer.isdigit() and 1 <= int(answer) <= len(choices):
-            return choices[int(answer) - 1]
-        print(f"  Enter a number between 0 and {len(choices)}.")
-
-
-def _configure_path() -> None:
-    """Make ``agent-box`` resolvable from the shell -- the first question.
-
-    It comes first because it is the only one asked before agent-box works:
-    the command that gets someone here is ``./agent-box config`` from a fresh
-    clone. Two separate consents, never one, because putting a symlink in a
-    directory that is already on PATH and editing a shell startup file are
-    different sizes of favour to ask, and declining either prints the exact
-    thing to run instead.
+    Printed after applying rather than only inside the menu, because the two
+    ways to finish -- shell rc line, or nothing at all -- are both things the
+    user does next, in a terminal, with the commands in front of them.
     """
     from . import pathsetup
-
-    print("-- The agent-box command on PATH --")
-    state = pathsetup.link_state()
-    if state.kind == "ours":
-        print(f"'{pathsetup.COMMAND}' already resolves to this checkout, via {state.found}.\n")
-        return
-    if state.kind == "foreign":
-        print(f"'{pathsetup.COMMAND}' on your PATH is {state.target}, which is not an")
-        print("agent-box checkout. Leaving it alone -- it is not agent-box's to replace.\n")
-        return
-    if state.kind == "other":
-        print(f"'{pathsetup.COMMAND}' resolves to a different agent-box checkout:")
-        print(f"  {state.found} -> {state.target}")
-        print("This checkout is:")
-        print(f"  {pathsetup.shim_path()}")
-    else:
-        print(f"'{pathsetup.COMMAND}' is not on your PATH yet, so it can only be run")
-        print("by its full path. A symlink in a directory your shell already searches")
-        print("fixes that.")
-
-    choices = pathsetup.bin_dir_choices()
-    if not choices:
-        print("No directory on your PATH under your home is writable, and")
-        print(f"{pathsetup.DEFAULT_BIN_DIR} cannot be created either. By hand:")
-        for line in pathsetup.manual_instructions(pathsetup.DEFAULT_BIN_DIR):
-            print(line)
-        print()
-        return
-
-    chosen = _prompt_bin_dir(choices)
-    if chosen is None:
-        print("  Not touching anything. By hand:")
-        for line in pathsetup.manual_instructions(choices[0].path):
-            print(line)
-        print()
-        return
-
-    print("  That means:")
-    for step in chosen.actions():
-        print(f"    - {step}")
-    if not _prompt_bool("  Create the symlink now", True):
-        print("  Skipped. By hand:")
-        for line in pathsetup.manual_instructions(chosen.path):
-            print(line)
-        print()
-        return
-    try:
-        print(f"  {pathsetup.install_symlink(chosen.path)}")
-    except AgentBoxError as exc:
-        print(f"  not linked: {exc}")
-        print()
-        return
-
-    if not chosen.needs_rc_line:
-        print()
-        return
-
-    rc = pathsetup.rc_file()
-    block = pathsetup.rc_block(chosen.path)
-    if rc is None:
-        print(f"  {chosen.path} is not on your PATH, and agent-box does not know how")
-        print(f"  to write a PATH line for your login shell ({pathsetup.login_shell() or 'unknown'}).")
-        print("  Add the equivalent of this yourself:")
-        for line in block.splitlines():
-            print(f"    {line}")
-        print()
-        return
-    print(f"  {chosen.path} is not on your PATH. agent-box can append this to {rc}:")
-    for line in block.splitlines():
-        print(f"    {line}")
-    if _prompt_bool(f"  Let agent-box edit {rc}", False):
-        try:
-            print(f"  {pathsetup.append_rc_block(rc, chosen.path)}")
-            print(f"  Open a new shell, or run: source {rc}")
-        except AgentBoxError as exc:
-            print(f"  not edited: {exc}")
-    else:
-        print(f"  Not edited. Add those lines to {rc} yourself.")
-    print()
+    if pathsetup.link_state().kind == "ours":
+        return []
+    bin_dir = Path(config.install.bin_dir) if config.install.bin_dir else pathsetup.DEFAULT_BIN_DIR
+    if config.install.bin_dir:
+        return [f"{bin_dir} is not on PATH yet in this shell; open a new one, or add it:",
+                *pathsetup.rc_block(bin_dir).splitlines()]
+    return ["agent-box is not on PATH. Run 'agent-box config' and answer PATH "
+            "integration, or do it by hand:", *pathsetup.manual_instructions(bin_dir)]
 
 
 def config_interactive() -> None:
-    config = load_config()
-    print(f"agent-box configuration ({CONFIG_FILE})")
-    print("Press Enter to keep the current value shown in brackets.\n")
-
-    _configure_path()
-
-    print("-- Claude Telegram channel (Anthropic's official plugin) --")
-    print("Controls the live 'agent-box claude' session from Telegram.")
-    missing = channel_module.missing_requirements()
-    if missing:
-        # Refuse to store an enabled channel that cannot work. The plugin is
-        # installed from inside a Claude session, so the bootstrap order is
-        # necessarily: run Claude, install and configure the plugin, then come
-        # back here. Storing true now would only produce a setting that every
-        # later run has to warn about.
-        print(f"Not available yet: {' and '.join(missing)}.")
-        if config.claude.telegram_channel:
-            print("Turning the channel off, because it can no longer work.")
-        config.claude.telegram_channel = False
-    else:
-        config.claude.telegram_channel = _prompt_bool(
-            "Enable Claude Telegram channel", config.claude.telegram_channel)
-
-    print("\n-- Claude status line --")
-    print("Points Claude's statusLine at 'agent-box statusline'.")
-    print("A status line configured by anything else is never overwritten.")
-    config.claude.statusline = _prompt_bool(
-        "Let agent-box manage the Claude status line", config.claude.statusline)
-
-    print("\n-- Outbound Telegram notifications --")
-    print("One-way pings only (Codex turn complete, Claude waiting/finished/failed).")
-    config.notifications.enabled = _prompt_bool("Enable outbound notifications", config.notifications.enabled)
-    if config.notifications.enabled:
-        config.notifications.telegram_token = _prompt_secret(
-            "  Telegram bot token", config.notifications.telegram_token)
-        config.notifications.telegram_chat_id = _prompt_text(
-            "  Telegram chat id", config.notifications.telegram_chat_id)
-        if not config.notifications.usable:
-            print("  note: notifications stay inactive until both a token and a chat id are set")
-
-    print("\n-- Host integration (each exposes host data to the container) --")
-    config.github.gh_token = _prompt_bool(
-        "Pass a host GitHub token in as GH_TOKEN", config.github.gh_token)
-    config.github.gh_config = _prompt_bool(
-        "Copy the host ~/.config/gh (contains that token) in", config.github.gh_config)
-    config.git.identity = _prompt_bool(
-        "Seed git user.name and user.email (for commit attribution)", config.git.identity)
-    config.git.full_config = _prompt_bool(
-        "Copy the ENTIRE host git config (may include credential helpers, tokens)",
-        config.git.full_config)
-    config.providers.api_keys = _prompt_bool(
-        "Forward API keys from this shell (ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN)",
-        config.providers.api_keys)
-    config.providers.transport = _prompt_bool(
-        "Forward endpoint/proxy settings from this shell (base URL, proxies, CA bundle)",
-        config.providers.transport)
-
-    print("\n-- Shared skills --")
-    print("~/.agents/skills is read by Codex directly; these symlinks let Claude")
-    print("read the same files. They live in your real ~/.claude/skills, so they")
-    print("also apply to Claude sessions started outside agent-box.")
-    config.skills.claude_links = _prompt_bool(
-        "Link shared skills into ~/.claude/skills", config.skills.claude_links)
-    print("agent-box also ships three engineering-practice skills, vendored from")
-    print("obra/superpowers (MIT): systematic debugging, test-driven development,")
-    print("and verification before completion. They change how an agent works, so")
-    print("they are off unless you want them.")
-    config.skills.superpowers = _prompt_bool(
-        "Install the superpowers practice skills", config.skills.superpowers)
-
-    print("\n-- Vikunja (opt-in) --")
-    print("Task tracking for both agents. agent-box installs the skill itself and")
-    print("holds the server URL and API token here, so there is nothing to set up")
-    print("on the host first. A loopback or LAN address is redirected so the")
-    print("container reaches your server rather than itself.")
-    print("The token can read and rewrite your entire task tracker.")
-    config.vikunja.enabled = _prompt_bool("Enable the Vikunja integration", config.vikunja.enabled)
-    if config.vikunja.enabled:
-        config.vikunja.url = _prompt_text(
-            "  Server URL (e.g. http://localhost:3456)", config.vikunja.url)
-        config.vikunja.token = _prompt_secret("  API token", config.vikunja.token)
-    from . import runtime
-    for problem in runtime.vikunja_warnings(config):
-        print(f"  note: {problem}")
-
-    print("\n-- Extra environment variables --")
-    print("Anything your projects need that agent-box does not know about.")
-    print("Enter names to forward from this shell (values stay out of the process")
-    print("list, so use this for secrets), or NAME=VALUE pairs stored in the")
-    print("config file. Enter '-' to clear a list.")
-    config.env.forward = _prompt_env_names("  Forward from this shell", config.env.forward)
-    config.env.set = _prompt_env_assignments("  Set explicitly", config.env.set)
-
-    print("\n-- Image contents --")
-    print("Optional tool groups built into the workspace image. Everything else")
-    print("your projects need belongs in the project, through mise. Changing an")
-    print("answer here takes effect on the next 'agent-box build'.")
-    for group, description in IMAGE_TOOL_GROUP_HELP.items():
-        config.image.tools[group] = _prompt_bool(
-            f"  {description}", config.image.tools.get(group, False))
-
-    print("\n-- Agent-controlled browser (opt-in) --")
-    print("Gives containerized Claude and Codex a Playwright MCP server driving a")
-    print("headless Chromium inside the workspace box, so an agent can open and")
-    print("read web pages by itself. Each session gets an isolated, in-memory")
-    print("profile: no cookies, logins or browsing state survive it, and none of")
-    print("your own browser's profile, cookies or credentials are exposed.")
-    print("Anything the browser loads is inside the box, on the same side of the")
-    print("trust boundary as the agent and your mounted project.")
-    print("'agent-box --host claude/codex' does not get this browser.")
-    config.browser.enabled = _prompt_bool(
-        "Let containerized agents drive a headless browser", config.browser.enabled)
-    if config.browser.enabled and not config.image.tools.get("browser"):
-        print("  note: the browser tool group is off, so the image has no browser to")
-        print("        drive. Turn it on above, or the sessions will find none.")
-
-    print("\n-- Flow-Next auto-push (opt-in) --")
-    print("At the end of a Claude/Codex turn, pushes the current feature branch")
-    print("only if Git shows locally unpushed commits, Flow-Next confirms one of")
-    print("their tasks is actually done, and every safety check passes (clean")
-    print("worktree, not main/master/default, no diverged remote, no force).")
-    config.flow_next.auto_push = _prompt_bool(
-        "Enable Flow-Next auto-push", config.flow_next.auto_push)
-
-    print("\n-- Flow-Next review routing (optional) --")
-    print("Which backend reviews the work, chosen by the agent you launched.")
-    print("Leave both at 'none' to let Flow-Next resolve it from .flow/config.json.")
-    for agent in FLOW_REVIEW_BACKEND_AGENTS:
-        chosen = _prompt_choice(
-            f"Review backend when the primary agent is {agent}",
-            FLOW_REVIEW_BACKEND_CHOICES,
-            config.flow_next.review_backends.get(agent, ""))
-        if chosen:
-            config.flow_next.review_backends[agent] = chosen
-        else:
-            config.flow_next.review_backends.pop(agent, None)
-
+    from . import config_menu, runtime
+    result = config_menu.edit(load_config())
+    if result is None:
+        print("Configuration unchanged.")
+        return
+    from . import pathsetup
+    config = result.config
     save_config(config)
-    # Applying is not a second feature: `agent-box config apply` runs exactly
-    # this, so a configuration saved here and one edited by hand end up
-    # producing the same host state.
-    print(f"\nSaved {CONFIG_FILE}\n")
     for line in runtime.apply_config(config):
-        print(f"  {line}")
-    print()
+        print(line)
+    if result.edit_rc:
+        print(pathsetup.append_rc_block(pathsetup.rc_file(), Path(config.install.bin_dir)))
     config_show()
-    if missing:
-        print()
-        print(channel_module.setup_instructions())
+    for line in path_status(config):
+        print(f"agent-box: {line}")
 
 
 def config_apply() -> None:
@@ -797,8 +456,10 @@ def config_apply() -> None:
     config = load_config()
     for line in runtime.apply_config(config):
         print(f"agent-box: {line}")
-    for problem in runtime.vikunja_warnings(config):
+    for problem in runtime.tracker_warnings(config):
         print(f"agent-box: warning: {problem}", file=sys.stderr)
+    for line in path_status(config):
+        print(f"agent-box: {line}")
 
 
 def config_command(args: list[str]) -> None:
@@ -826,7 +487,7 @@ def selftest() -> None:
 
 NON_RUNTIME = {
     "usage", "statusline", "notify", "config", "selftest", "help", "-h", "--help",
-    "build", "update", "rebuild", "flow-next", "attach", "stop", "upgrade", "uninstall",
+    "build", "update", "rebuild", "tracker", "workflow", "attach", "stop", "upgrade", "uninstall",
     "skills",
 }
 #: --host only makes sense for a real agent launch, never for these.
@@ -857,8 +518,6 @@ def main() -> None:
             notify_command(args[1:]); return
         if args and args[0] == "config":
             config_command(args[1:]); return
-        if args and args[0] == "flow-next":
-            flow_next_command(args[1:]); return
         if args and args[0] == "selftest":
             if len(args) != 1: die("agent-box selftest takes no arguments")
             selftest(); return
@@ -870,9 +529,12 @@ def main() -> None:
             from . import runtime
             command = args[0]
             raise SystemExit(runtime.build_image(script_dir, command != "build", command == "rebuild"))
-        if args and args[0] == "skills":
-            from . import vendor
-            raise SystemExit(vendor.vendor_main(args[1:]))
+        if args and args[0] == "tracker":
+            from .tracker import cli as tracker_cli
+            raise SystemExit(tracker_cli.main(args[1:]))
+        if args and args[0] == "workflow":
+            from . import workflow
+            raise SystemExit(workflow.main(args[1:]))
         if args and args[0] == "upgrade":
             from . import selfupdate
             raise SystemExit(selfupdate.upgrade_main(args[1:]))

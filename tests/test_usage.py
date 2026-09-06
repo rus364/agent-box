@@ -7,6 +7,35 @@ from agent_box.errors import AgentBoxError
 
 
 class UsageFormattingTests(unittest.TestCase):
+    def test_structured_usage_preserves_model_limits(self):
+        result = usage.usage_windows("claude", {
+            "seven_day": {"utilization": 40, "resets_at": 2000},
+            "seven_day_sonnet": {"utilization": 90, "resets_at": 3000},
+        }, observed_at=1000)
+        self.assertEqual(result[1]["models"], ["sonnet"])
+        self.assertEqual(result[1]["remaining"], 10)
+
+    def test_no_cache_failure_never_reports_cached_data_as_fresh(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp) / "cache"
+            cache.mkdir()
+            auth = Path(tmp) / "auth.json"
+            auth.write_text(json.dumps({"tokens": {"access_token": "secret"}}))
+            (cache / "codex").mkdir()
+            (cache / "codex/usage.json").write_text(json.dumps({"rate_limit": {
+                "primary_window": {"used_percent": 100, "limit_window_seconds": 18000,
+                                   "reset_at": 2000000000}}}))
+            with mock.patch.object(usage, "XDG_CACHE_HOME", cache), \
+                 mock.patch.dict(os.environ, {"CODEX_AUTH_PATH": str(auth)}), \
+                 mock.patch.object(usage, "http_json", side_effect=OSError("offline")):
+                result = usage.usage_snapshot("codex", no_cache=True)
+            self.assertFalse(result["fresh"])
+            self.assertIn("error", result)
+            self.assertEqual(result["windows"][0]["remaining"], 0)
+
     def test_compact_time(self):
         self.assertEqual(usage.compact_time(3660), "1h1m")
         self.assertEqual(usage.compact_time(176400), "2d1h")

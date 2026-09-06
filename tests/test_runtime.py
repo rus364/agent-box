@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from agent_box import claude_settings, flow_next, notify, runtime
+from agent_box import claude_settings, notify, runtime
 from agent_box.config import Config, NotificationsConfig
 from agent_box.errors import AgentBoxError
 from agent_box.mounts import MountSpec
@@ -289,15 +289,7 @@ class CodexRuntimeOverridesTests(IsolatedRuntimeTest):
             "exec", "hello",
         ])
 
-    def test_flow_next_auto_push_registers_notify_even_without_notifications(self):
-        """Codex has only one `notify` program; Flow-Next auto-push needs it
-        registered even when Telegram notifications are off."""
-        command = runtime.codex_command(["exec", "hello"], Config(), flow_next_auto_push_active=True)
-        self.assertIn('notify=["agent-box","notify","codex"]', command)
 
-    def test_neither_notifications_nor_auto_push_omits_notify(self):
-        command = runtime.codex_command(["exec", "hello"], Config(), flow_next_auto_push_active=False)
-        self.assertNotIn('notify=["agent-box","notify","codex"]', command)
 
     def test_non_codex_launches_do_not_inspect_codex_mcp_configuration(self):
         workspace = Workspace(Path.cwd(), Path.cwd())
@@ -320,196 +312,6 @@ class CodexRuntimeOverridesTests(IsolatedRuntimeTest):
             overrides.assert_not_called()
 
 
-class ContainerFlowNextEnvTests(IsolatedRuntimeTest):
-    def test_resolved_flowctl_prepends_to_controlled_container_path(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            (root / ".flow").mkdir()
-            (root / ".flow" / "config.json").write_text("{}")
-            workspace = Workspace(root, root)
-            flowctl = Path(tmp) / "codex-home" / "scripts" / "flowctl"
-            captured = {}
-
-            def fake_launch(spec, workspace, command, extra_env, process_env):
-                captured["extra_env"] = extra_env
-                return 0
-
-            with (
-                mock.patch.dict(os.environ, {"PATH": "/host-only/bin:/usr/bin"}),
-                mock.patch.object(flow_next, "resolve_flowctl", return_value=flowctl),
-                mock.patch.object(runtime.shutil, "which", return_value="/usr/bin/podman"),
-                mock.patch.object(runtime, "resolve_workspace", return_value=workspace),
-                mock.patch.object(runtime, "ensure_state_dirs"),
-                mock.patch.object(runtime, "ensure_refresh_token"),
-                mock.patch.object(runtime, "load_config", return_value=Config()),
-                mock.patch.object(runtime, "image_exists", return_value=True),
-                mock.patch.object(runtime, "sync_managed_skills"),
-                mock.patch.object(runtime, "claude_skill_links"),
-                mock.patch.object(runtime, "claude_channel_args", return_value=([], [])),
-                mock.patch.object(runtime, "launch_in_workspace_container", side_effect=fake_launch),
-                self.assertRaises(SystemExit),
-            ):
-                runtime.runtime_main(["codex"], Path.cwd())
-
-            path_pair = next(pair for pair in captured["extra_env"] if pair.startswith("PATH="))
-            self.assertEqual(path_pair, f"PATH={flowctl.parent}:{runtime.CONTAINER_RUNTIME_PATH}")
-            self.assertNotIn("/host-only/bin", path_pair)
-            self.assertIn(f"AGENT_BOX_FLOWCTL={flowctl}", captured["extra_env"])
-
-    def test_flow_next_workspace_injects_review_backend_env(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            (root / ".flow").mkdir()
-            (root / ".flow" / "config.json").write_text("{}")
-            workspace = Workspace(root, root)
-
-            captured = {}
-            routed = Config()
-            routed.flow_next.review_backends["claude"] = "codex:gpt-5.6-sol:medium"
-
-            def fake_launch(spec, workspace, command, extra_env, process_env):
-                captured["extra_env"] = extra_env
-                return 0
-
-            with (
-                mock.patch.object(runtime.shutil, "which", return_value="/usr/bin/podman"),
-                mock.patch.object(runtime, "resolve_workspace", return_value=workspace),
-                mock.patch.object(runtime, "ensure_state_dirs"),
-                mock.patch.object(runtime, "ensure_refresh_token"),
-                mock.patch.object(runtime, "load_config", return_value=routed),
-                mock.patch.object(runtime, "image_exists", return_value=True),
-                mock.patch.object(runtime, "sync_managed_skills"),
-                mock.patch.object(runtime, "claude_skill_links"),
-                mock.patch.object(runtime, "claude_channel_args", return_value=([], [])),
-                mock.patch.object(runtime, "launch_in_workspace_container", side_effect=fake_launch),
-                self.assertRaises(SystemExit),
-            ):
-                runtime.runtime_main(["claude"], Path.cwd())
-            self.assertIn("FLOW_REVIEW_BACKEND=codex:gpt-5.6-sol:medium", captured["extra_env"])
-
-    def test_non_flow_next_workspace_injects_nothing(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            workspace = Workspace(Path(tmp), Path(tmp))
-
-            captured = {}
-
-            def fake_launch(spec, workspace, command, extra_env, process_env):
-                captured["extra_env"] = extra_env
-                return 0
-
-            with (
-                mock.patch.object(runtime.shutil, "which", return_value="/usr/bin/podman"),
-                mock.patch.object(runtime, "resolve_workspace", return_value=workspace),
-                mock.patch.object(runtime, "ensure_state_dirs"),
-                mock.patch.object(runtime, "ensure_refresh_token"),
-                mock.patch.object(runtime, "load_config", return_value=Config()),
-                mock.patch.object(runtime, "image_exists", return_value=True),
-                mock.patch.object(runtime, "sync_managed_skills"),
-                mock.patch.object(runtime, "claude_skill_links"),
-                mock.patch.object(runtime, "claude_channel_args", return_value=([], [])),
-                mock.patch.object(runtime, "launch_in_workspace_container", side_effect=fake_launch),
-                self.assertRaises(SystemExit),
-            ):
-                runtime.runtime_main(["claude"], Path.cwd())
-            self.assertFalse(any(pair.startswith("FLOW_") for pair in captured["extra_env"]))
-            self.assertFalse(any(pair.startswith("PATH=") for pair in captured["extra_env"]))
-
-    def test_explicit_host_env_overrides_configured_backend(self):
-        """An explicit FLOW_REVIEW_BACKEND from the launching shell wins over
-        agent-box's configured policy for that one launch (container mode)."""
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            (root / ".flow").mkdir()
-            (root / ".flow" / "config.json").write_text("{}")
-            workspace = Workspace(root, root)
-
-            captured = {}
-
-            def fake_launch(spec, workspace, command, extra_env, process_env):
-                captured["extra_env"] = extra_env
-                return 0
-
-            with (
-                mock.patch.dict(os.environ, {"FLOW_REVIEW_BACKEND": "codex:gpt-5.6-terra:high"}),
-                mock.patch.object(runtime.shutil, "which", return_value="/usr/bin/podman"),
-                mock.patch.object(runtime, "resolve_workspace", return_value=workspace),
-                mock.patch.object(runtime, "ensure_state_dirs"),
-                mock.patch.object(runtime, "ensure_refresh_token"),
-                mock.patch.object(runtime, "load_config", return_value=Config()),
-                mock.patch.object(runtime, "image_exists", return_value=True),
-                mock.patch.object(runtime, "sync_managed_skills"),
-                mock.patch.object(runtime, "claude_skill_links"),
-                mock.patch.object(runtime, "claude_channel_args", return_value=([], [])),
-                mock.patch.object(runtime, "launch_in_workspace_container", side_effect=fake_launch),
-                self.assertRaises(SystemExit),
-            ):
-                runtime.runtime_main(["claude"], Path.cwd())
-            self.assertIn("FLOW_REVIEW_BACKEND=codex:gpt-5.6-terra:high", captured["extra_env"])
-
-    def test_codex_auto_push_wires_notify_end_to_end(self):
-        """A Flow-Next workspace with auto_push enabled must register Codex's
-        `notify` program even with Telegram notifications off, so the shared
-        auto-push reconciler's turn-complete adapter actually gets invoked."""
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            (root / ".flow").mkdir()
-            (root / ".flow" / "config.json").write_text("{}")
-            workspace = Workspace(root, root)
-            config = Config()
-            config.flow_next.auto_push = True
-
-            captured = {}
-
-            def fake_launch(spec, workspace, command, extra_env, process_env):
-                captured["command"] = command
-                captured["extra_env"] = extra_env
-                return 0
-
-            with (
-                mock.patch.object(runtime.shutil, "which", return_value="/usr/bin/podman"),
-                mock.patch.object(runtime, "resolve_workspace", return_value=workspace),
-                mock.patch.object(runtime, "ensure_state_dirs"),
-                mock.patch.object(runtime, "ensure_refresh_token"),
-                mock.patch.object(runtime, "load_config", return_value=config),
-                mock.patch.object(runtime, "image_exists", return_value=True),
-                mock.patch.object(runtime, "sync_managed_skills"),
-                mock.patch.object(runtime, "claude_skill_links"),
-                mock.patch.object(runtime, "claude_channel_args", return_value=([], [])),
-                mock.patch.object(runtime, "launch_in_workspace_container", side_effect=fake_launch),
-                self.assertRaises(SystemExit),
-            ):
-                runtime.runtime_main(["codex"], Path.cwd())
-            self.assertIn('notify=["agent-box","notify","codex"]', captured["command"])
-            self.assertIn("AGENT_BOX_FLOW_NEXT_AUTO_PUSH=1", captured["extra_env"])
-
-    def test_codex_without_auto_push_or_notifications_omits_notify(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            (root / ".flow").mkdir()
-            (root / ".flow" / "config.json").write_text("{}")
-            workspace = Workspace(root, root)
-
-            captured = {}
-
-            def fake_launch(spec, workspace, command, extra_env, process_env):
-                captured["command"] = command
-                return 0
-
-            with (
-                mock.patch.object(runtime.shutil, "which", return_value="/usr/bin/podman"),
-                mock.patch.object(runtime, "resolve_workspace", return_value=workspace),
-                mock.patch.object(runtime, "ensure_state_dirs"),
-                mock.patch.object(runtime, "ensure_refresh_token"),
-                mock.patch.object(runtime, "load_config", return_value=Config()),
-                mock.patch.object(runtime, "image_exists", return_value=True),
-                mock.patch.object(runtime, "sync_managed_skills"),
-                mock.patch.object(runtime, "claude_skill_links"),
-                mock.patch.object(runtime, "claude_channel_args", return_value=([], [])),
-                mock.patch.object(runtime, "launch_in_workspace_container", side_effect=fake_launch),
-                self.assertRaises(SystemExit),
-            ):
-                runtime.runtime_main(["codex"], Path.cwd())
-            self.assertNotIn('notify=["agent-box","notify","codex"]', captured["command"])
 
 
 class ClaudeNotifyHookLifecycleTests(IsolatedRuntimeTest):
@@ -555,7 +357,7 @@ class ClaudeNotifyHookLifecycleTests(IsolatedRuntimeTest):
             with mock.patch.object(runtime, "CLAUDE_HOME", root / "claude"), \
                  mock.patch.object(runtime, "sync_managed_skills"), \
                  mock.patch.object(runtime, "claude_skill_links"), \
-                 mock.patch.object(runtime, "sync_vikunja_credentials"), \
+                 mock.patch.object(runtime, "sync_tracker_runtime"), \
                  mock.patch.object(runtime, "ensure_state_dirs"), \
                  mock.patch.object(runtime.notify_module, "sync_credentials"):
                 runtime.apply_config(self._notifying())
@@ -588,7 +390,7 @@ class ClaudeNotifyHookLifecycleTests(IsolatedRuntimeTest):
             with mock.patch.object(runtime, "CLAUDE_HOME", root / "claude"), \
                  mock.patch.object(runtime, "sync_managed_skills"), \
                  mock.patch.object(runtime, "claude_skill_links"), \
-                 mock.patch.object(runtime, "sync_vikunja_credentials"), \
+                 mock.patch.object(runtime, "sync_tracker_runtime"), \
                  mock.patch.object(runtime, "ensure_state_dirs"), \
                  mock.patch.object(runtime.notify_module, "sync_credentials"), \
                  mock.patch.object(
@@ -637,12 +439,6 @@ class ClaudeNotifyHookLifecycleTests(IsolatedRuntimeTest):
 
 
 class HostModeTests(IsolatedRuntimeTest):
-    def _flow_next_workspace(self, tmp: str) -> Path:
-        root = Path(tmp) / "project"
-        root.mkdir()
-        (root / ".flow").mkdir()
-        (root / ".flow" / "config.json").write_text("{}")
-        return root
 
     def test_host_claude_selects_host_claude_executable(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -706,115 +502,12 @@ class HostModeTests(IsolatedRuntimeTest):
             for arg in call.call_args.args[0]:
                 self.assertNotEqual(arg, "podman")
 
-    def test_flow_next_env_injected_in_host_mode(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = self._flow_next_workspace(tmp)
-            workspace = Workspace(root, root)
-            routed = Config()
-            routed.flow_next.review_backends["claude"] = "codex:gpt-5.6-sol:medium"
-            with mock.patch.object(runtime.shutil, "which", return_value="/usr/local/bin/claude"), \
-                 mock.patch.object(runtime, "resolve_workspace", return_value=workspace), \
-                 mock.patch.object(runtime, "load_config", return_value=routed), \
-                 mock.patch.object(runtime.subprocess, "call", return_value=0) as call:
-                runtime.host_main("claude", [])
-            env = call.call_args.kwargs["env"]
-            self.assertEqual(env.get("FLOW_REVIEW_BACKEND"), "codex:gpt-5.6-sol:medium")
 
-    def test_host_flowctl_prepends_to_inherited_path_with_auto_push_disabled(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = self._flow_next_workspace(tmp)
-            workspace = Workspace(root, root)
-            flowctl = Path(tmp) / "claude-plugin" / "scripts" / "flowctl"
-            with mock.patch.dict(os.environ, {"PATH": "/host/bin:/usr/bin"}), \
-                 mock.patch.object(flow_next, "resolve_flowctl", return_value=flowctl), \
-                 mock.patch.object(runtime.shutil, "which", return_value="/usr/local/bin/claude"), \
-                 mock.patch.object(runtime, "resolve_workspace", return_value=workspace), \
-                 mock.patch.object(runtime, "load_config", return_value=Config()), \
-                 mock.patch.object(runtime.subprocess, "call", return_value=0) as call:
-                runtime.host_main("claude", [])
-            env = call.call_args.kwargs["env"]
-            self.assertEqual(env.get("PATH"), f"{flowctl.parent}:/host/bin:/usr/bin")
-            self.assertEqual(env.get("AGENT_BOX_FLOWCTL"), str(flowctl))
-            self.assertNotIn("AGENT_BOX_FLOW_NEXT_AUTO_PUSH", env)
 
-    def test_no_flow_next_env_for_non_flow_next_host_workspace(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            workspace = Workspace(Path(tmp), Path(tmp))
-            with mock.patch.object(runtime.shutil, "which", return_value="/usr/local/bin/claude"), \
-                 mock.patch.object(runtime, "resolve_workspace", return_value=workspace), \
-                 mock.patch.object(runtime, "load_config", return_value=Config()), \
-                 mock.patch.object(runtime.subprocess, "call", return_value=0) as call:
-                runtime.host_main("claude", [])
-            env = call.call_args.kwargs["env"]
-            self.assertNotIn("FLOW_REVIEW_BACKEND", env)
-            self.assertEqual(env.get("PATH"), os.environ.get("PATH"))
 
-    def test_explicit_host_env_overrides_configured_backend(self):
-        """An explicit FLOW_REVIEW_BACKEND from the launching shell wins over
-        agent-box's configured policy for that one launch (host mode)."""
-        with tempfile.TemporaryDirectory() as tmp:
-            root = self._flow_next_workspace(tmp)
-            workspace = Workspace(root, root)
-            with mock.patch.dict(os.environ, {"FLOW_REVIEW_BACKEND": "codex:gpt-5.6-terra:high"}), \
-                 mock.patch.object(runtime.shutil, "which", return_value="/usr/local/bin/claude"), \
-                 mock.patch.object(runtime, "resolve_workspace", return_value=workspace), \
-                 mock.patch.object(runtime, "load_config", return_value=Config()), \
-                 mock.patch.object(runtime.subprocess, "call", return_value=0) as call:
-                runtime.host_main("claude", [])
-            env = call.call_args.kwargs["env"]
-            self.assertEqual(env.get("FLOW_REVIEW_BACKEND"), "codex:gpt-5.6-terra:high")
 
-    def test_explicit_host_env_overrides_configured_backend_for_codex(self):
-        """Same override precedence applies to 'agent-box codex'."""
-        with tempfile.TemporaryDirectory() as tmp:
-            root = self._flow_next_workspace(tmp)
-            workspace = Workspace(root, root)
-            with mock.patch.dict(os.environ, {"FLOW_REVIEW_BACKEND": "codex:gpt-5.6-terra:high"}), \
-                 mock.patch.object(runtime.shutil, "which", return_value="/usr/local/bin/codex"), \
-                 mock.patch.object(runtime, "resolve_workspace", return_value=workspace), \
-                 mock.patch.object(runtime, "load_config", return_value=Config()), \
-                 mock.patch.object(runtime.subprocess, "call", return_value=0) as call:
-                runtime.host_main("codex", ["exec", "hello"])
-            env = call.call_args.kwargs["env"]
-            self.assertEqual(env.get("FLOW_REVIEW_BACKEND"), "codex:gpt-5.6-terra:high")
 
-    def test_explicit_host_env_does_not_affect_auto_push(self):
-        """Overriding FLOW_REVIEW_BACKEND must not change AGENT_BOX_FLOW_NEXT_AUTO_PUSH."""
-        with tempfile.TemporaryDirectory() as tmp:
-            root = self._flow_next_workspace(tmp)
-            workspace = Workspace(root, root)
-            config = Config()
-            config.flow_next.auto_push = True
-            with mock.patch.dict(os.environ, {"FLOW_REVIEW_BACKEND": "codex:gpt-5.6-terra:high"}), \
-                 mock.patch.object(runtime.shutil, "which", return_value="/usr/local/bin/claude"), \
-                 mock.patch.object(runtime, "resolve_workspace", return_value=workspace), \
-                 mock.patch.object(runtime, "load_config", return_value=config), \
-                 mock.patch.object(runtime.subprocess, "call", return_value=0) as call:
-                runtime.host_main("claude", [])
-            env = call.call_args.kwargs["env"]
-            self.assertEqual(env.get("FLOW_REVIEW_BACKEND"), "codex:gpt-5.6-terra:high")
-            self.assertEqual(env.get("AGENT_BOX_FLOW_NEXT_AUTO_PUSH"), "1")
 
-    def test_non_flow_next_workspace_strips_stale_host_env(self):
-        """A non-Flow-Next launch must not merely fail to *add* the policy
-        env -- it must actively strip whatever the parent shell exported,
-        or a stale value would silently leak through untouched."""
-        with tempfile.TemporaryDirectory() as tmp:
-            workspace = Workspace(Path(tmp), Path(tmp))
-            with mock.patch.dict(os.environ, {
-                "FLOW_REVIEW_BACKEND": "stale-wrong-value",
-                "AGENT_BOX_FLOW_NEXT_AUTO_PUSH": "1",
-                "AGENT_BOX_FLOWCTL": "/stale/flowctl",
-            }), \
-                 mock.patch.object(runtime.shutil, "which", return_value="/usr/local/bin/claude"), \
-                 mock.patch.object(runtime, "resolve_workspace", return_value=workspace), \
-                 mock.patch.object(runtime, "load_config", return_value=Config()), \
-                 mock.patch.object(runtime.subprocess, "call", return_value=0) as call:
-                runtime.host_main("claude", [])
-            env = call.call_args.kwargs["env"]
-            self.assertNotIn("FLOW_REVIEW_BACKEND", env)
-            self.assertNotIn("AGENT_BOX_FLOW_NEXT_AUTO_PUSH", env)
-            self.assertNotIn("AGENT_BOX_FLOWCTL", env)
 
     def test_real_exit_status_propagated(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -839,59 +532,7 @@ class ContainerHostParityTests(IsolatedRuntimeTest):
     """Container and host mode must resolve the same Flow-Next policy through
     the same shared helper, so they cannot drift."""
 
-    def test_container_and_host_inject_same_flow_next_env(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            (root / ".flow").mkdir()
-            (root / ".flow" / "config.json").write_text("{}")
-            config = Config()
-            flowctl = Path(tmp) / "plugin" / "scripts" / "flowctl"
-            from agent_box.flow_next import flow_next_launch_env
-            with mock.patch.dict(os.environ, {"PATH": "/host/bin:/usr/bin"}), \
-                 mock.patch.object(flow_next, "resolve_flowctl", return_value=flowctl), \
-                 mock.patch.object(runtime.shutil, "which", return_value="/usr/local/bin/claude"), \
-                 mock.patch.object(runtime, "resolve_workspace", return_value=Workspace(root, root)), \
-                 mock.patch.object(runtime, "load_config", return_value=config), \
-                 mock.patch.object(runtime.subprocess, "call", return_value=0) as call:
-                container_env = flow_next_launch_env(
-                    root, "claude", config, runtime_path=runtime.CONTAINER_RUNTIME_PATH)
-                runtime.host_main("claude", [])
-            host_env = call.call_args.kwargs["env"]
-            for pair in container_env:
-                name, _, value = pair.partition("=")
-                if name != "PATH":
-                    self.assertEqual(host_env.get(name), value)
-            self.assertIn(f"PATH={flowctl.parent}:{runtime.CONTAINER_RUNTIME_PATH}", container_env)
-            self.assertEqual(host_env.get("PATH"), f"{flowctl.parent}:/host/bin:/usr/bin")
 
-    def test_container_and_host_agree_on_explicit_override(self):
-        """The explicit-override precedence must not diverge between modes."""
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            (root / ".flow").mkdir()
-            (root / ".flow" / "config.json").write_text("{}")
-            config = Config()
-            flowctl = Path(tmp) / "plugin" / "scripts" / "flowctl"
-            from agent_box.flow_next import flow_next_launch_env
-            with mock.patch.dict(os.environ, {
-                "FLOW_REVIEW_BACKEND": "codex:gpt-5.6-terra:high",
-                "PATH": "/host/bin:/usr/bin",
-            }), mock.patch.object(flow_next, "resolve_flowctl", return_value=flowctl):
-                container_env = flow_next_launch_env(
-                    root, "claude", config, runtime_path=runtime.CONTAINER_RUNTIME_PATH)
-                with mock.patch.object(runtime.shutil, "which", return_value="/usr/local/bin/claude"), \
-                     mock.patch.object(runtime, "resolve_workspace", return_value=Workspace(root, root)), \
-                     mock.patch.object(runtime, "load_config", return_value=config), \
-                     mock.patch.object(runtime.subprocess, "call", return_value=0) as call:
-                    runtime.host_main("claude", [])
-            host_env = call.call_args.kwargs["env"]
-            self.assertIn("FLOW_REVIEW_BACKEND=codex:gpt-5.6-terra:high", container_env)
-            for pair in container_env:
-                name, _, value = pair.partition("=")
-                if name != "PATH":
-                    self.assertEqual(host_env.get(name), value)
-            self.assertIn(f"PATH={flowctl.parent}:{runtime.CONTAINER_RUNTIME_PATH}", container_env)
-            self.assertEqual(host_env.get("PATH"), f"{flowctl.parent}:/host/bin:/usr/bin")
 
 
 if __name__ == "__main__":

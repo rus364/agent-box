@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
-for _candidate in (_HERE, _HERE.parent / "lib/agent-box", Path.home() / ".local/lib/agent-box"):
+for _candidate in (_HERE, _HERE.parent / "lib/agent-box"):
     if (_candidate / "agent_box" / "__init__.py").is_file():
         if str(_candidate) not in sys.path:
             sys.path.insert(0, str(_candidate))
