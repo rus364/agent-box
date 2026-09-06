@@ -96,8 +96,7 @@ def run(adapter, arguments):
         return {**api.summarize_actions(actions), "dry_run": not args.apply, "applied": len(actions) if args.apply else 0}
     if args.command == "board":
         if operation == "init":
-            return [adapter.initialize_board(project, args.apply)
-                    for project in adapter.subtree(args.project, args.recursive)]
+            return adapter.initialize_boards(adapter.subtree(args.project, args.recursive), args.apply)
         project = adapter.project(args.project)
         view = api.resolve_kanban_view(client, project["id"], args.view)
         if operation == "show":

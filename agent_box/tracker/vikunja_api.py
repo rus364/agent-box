@@ -304,6 +304,20 @@ def external_id_from_description(description):
     return None
 
 
+def check_external_marker(task_id, current, updated):
+    """Refuse a rewrite that drops the marker the importer identifies a task by.
+
+    The rule lives here rather than in the adapter because bulk updates write
+    descriptions straight through the client; an invariant that only one of two
+    write paths enforces is not an invariant. Rewriting the text around the
+    marker stays allowed.
+    """
+    marker = external_id_from_description(current)
+    if marker and external_id_from_description(updated) != marker:
+        raise ImportConflict(
+            f"Task {task_id} carries import marker {marker}; keep it in the description")
+
+
 def with_external_marker(description, external_id):
     description = description or ""
     for pattern in MARKER_RES:
@@ -1027,6 +1041,10 @@ def plan_board_init(resolved, states):
     """
     blocked = [problem for problem in resolved["problems"]
                if not problem.startswith("no column for")]
+    if not resolved["view"]:
+        # A board that cannot be identified has nothing to plan against; the
+        # reason is already the blocking problem.
+        return {"create": [], "done_bucket": False, "blocked": blocked}
     positions = {}
     for bucket in resolved["buckets"]:
         positions[str(bucket["id"])] = bucket.get("position") or 0
@@ -1105,6 +1123,8 @@ def plan_bulk_updates(specification, tasks):
         forbidden = sorted(set(changes) - BULK_WRITABLE_TASK_FIELDS)
         if forbidden:
             raise ImportConflict(f"bulk fields are not writable: {', '.join(forbidden)}")
+        if "description" in changes:
+            check_external_marker(task_id, task.get("description", ""), changes["description"])
         actions.append(Action("update", "task", task_id, {"changes": changes, "title": task.get("title", "")}))
     return actions
 
@@ -1499,6 +1519,20 @@ def project_children(projects, parent_ref, recursive=False):
             for project in sorted(children, key=index.path_for)]
 
 
+def board_snapshot(client, project_id):
+    """A project's views and the buckets of each kanban one.
+
+    Tasks and projects alone are not a way back: board repair changes views and
+    buckets, and a backup that omits exactly what a command writes is not a
+    backup of it.
+    """
+    boards = []
+    for view in _items(client.get(f"/projects/{int(project_id)}/views")):
+        buckets = view_buckets(client, project_id, view["id"]) if view.get("view_kind") == "kanban" else []
+        boards.append({"view": view, "buckets": buckets})
+    return boards
+
+
 def make_snapshot(client, project_ref=None, recursive=False):
     inventory = inventory_from_client(client)
     projects = inventory.projects
@@ -1509,6 +1543,9 @@ def make_snapshot(client, project_ref=None, recursive=False):
         projects = [p for p in projects if int(p["id"]) in ids]
         tasks = [t for t in tasks if int(t.get("project_id") or 0) in ids]
     return {
+        "boards": {str(project["id"]): board_snapshot(client, project["id"])
+                   for project in sorted(projects, key=lambda item: int(item["id"]))
+                   if int(project["id"]) > 0},
         "projects": project_tree(projects),
         "tasks": sorted(tasks, key=lambda task: int(task["id"])),
     }

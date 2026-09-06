@@ -61,22 +61,36 @@ def task_problems(task, get):
         report("unowned", "is in Doing with nobody assigned")
     if task.state == "Done" and any(not item["checked"] for item in items):
         report("done-unfinished", "is Done with unfinished checklist items")
+    broken_parent = False
     if task.parent:
         try:
             if get(task.parent).project != task.project:
                 report("split-parent", f"has parent {task.parent} in another project")
         except (KeyError, TrackerError) as exc:
+            broken_parent = True
             report("broken-parent", f"has an unreadable parent {task.parent}: {exc}")
     for reason in blocking_reasons(task, get):
         # A dependency that is merely unfinished is the workflow working; only a
         # relation that cannot hold at all is a defect to fix during adoption.
+        # An unreadable parent already stops that walk, and it is one broken
+        # relation, so it is not counted a second time as a broken dependency.
+        if "cannot be verified" in reason and broken_parent:
+            continue
         if "cycle" in reason or "cannot be verified" in reason:
             report("broken-dependency", reason)
     return problems
 
 
 def audit(tasks, get, lifecycle=()):
-    """The whole adoptable scope: board problems, task problems, and their counts."""
+    """The whole adoptable scope: board problems, task problems, and their counts.
+
+    `tasks` is None before a repository binding exists. Boards are readable
+    without one, and they are what has to be repaired first, but a task outside
+    the bound subtree has no lifecycle state to audit - reporting every card as
+    stray would be worse than saying the tasks were not audited yet.
+    """
+    audited = tasks is not None
+    tasks = tasks or []
     duplicates = {}
     for task in tasks:
         duplicates.setdefault(task.title.strip().casefold(), []).append(task.id)
@@ -91,7 +105,8 @@ def audit(tasks, get, lifecycle=()):
             counts[problem["code"]] = counts.get(problem["code"], 0) + 1
         results.append({"id": task.id, "project": task.project, "title": task.title,
                         "state": task.state, "problems": problems})
-    return {"notes": list(NOTES), "lifecycle": list(lifecycle),
+    return {"notes": list(NOTES), "scope": "binding" if audited else "boards",
+            "lifecycle": list(lifecycle),
             "boards": [entry for entry in lifecycle if entry["problems"]],
             "tasks": results, "counts": counts,
-            "clean": not counts and not any(entry["problems"] for entry in lifecycle)}
+            "clean": audited and not counts and not any(entry["problems"] for entry in lifecycle)}

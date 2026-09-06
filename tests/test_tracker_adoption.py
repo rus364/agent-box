@@ -23,11 +23,11 @@ class BoardRepairTests(unittest.TestCase):
         """A lifecycle appended to the end of the board would not read as one."""
         boards = {1: board(10, 100, titles=("Backlog", "Doing", "Done"))}
         instance, client = adapter(boards=boards)
-        planned = instance.initialize_board("1")
+        planned, = instance.initialize_boards(["1"])
         self.assertEqual([(column["title"], column["position"]) for column in planned["create"]],
                          [("Ready", 150.0), ("Review", 250.0)])
         self.assertEqual(client.writes, [])
-        applied = instance.initialize_board("1", apply=True)
+        applied, = instance.initialize_boards(["1"], apply=True)
         self.assertEqual(applied["problems"], [])
         self.assertEqual(sorted(applied["states"]), ["Backlog", "Doing", "Done", "Ready", "Review"])
         self.assertEqual([bucket["title"] for bucket in instance.lifecycle("1")["buckets"]],
@@ -35,7 +35,7 @@ class BoardRepairTests(unittest.TestCase):
 
     def test_a_complete_board_is_left_alone(self):
         instance, client = adapter(boards={1: board(10, 100, done_bucket=104)})
-        planned = instance.initialize_board("1", apply=True)
+        planned, = instance.initialize_boards(["1"], apply=True)
         self.assertEqual((planned["create"], planned["applied"]), ([], False))
         self.assertEqual(client.writes, [])
 
@@ -44,7 +44,7 @@ class BoardRepairTests(unittest.TestCase):
         boards = {1: board(10, 100, titles=("Backlog", "Ready", "Doing", "Review", "Done"))}
         boards[1]["buckets"][10].append({"id": 106, "title": "In progress", "position": 600})
         instance, client = adapter(boards=boards)
-        planned = instance.initialize_board("1", apply=True)
+        planned, = instance.initialize_boards(["1"], apply=True)
         self.assertEqual(planned["blocked"], ["several columns match Doing"])
         self.assertFalse(planned["applied"])
         self.assertEqual(client.writes, [])
@@ -53,7 +53,7 @@ class BoardRepairTests(unittest.TestCase):
         boards = {1: board(10, 100, titles=("Backlog", "Doing", "Done"))}
         boards[1]["views"][0]["bucket_configuration_mode"] = "filter"
         instance, client = adapter(boards=boards)
-        planned = instance.initialize_board("1", apply=True)
+        planned, = instance.initialize_boards(["1"], apply=True)
         self.assertIn("board builds its columns from filters instead of manual buckets",
                       planned["blocked"])
         self.assertEqual(client.writes, [])
@@ -62,12 +62,27 @@ class BoardRepairTests(unittest.TestCase):
         """Vikunja's own done bucket is what marks a card finished, so it must exist."""
         boards = {1: board(10, 100, titles=("Backlog", "Ready", "Doing", "Review", "Done"))}
         instance, client = adapter(boards=boards)
-        instance.initialize_board("1", apply=True)
+        instance.initialize_boards(["1"], apply=True)
         self.assertEqual([body for path, body in client.writes if path == "/projects/1/views/10"],
                          [{"done_bucket_id": 104}])
         instance, client = adapter(boards={1: board(10, 100, done_bucket=104)})
-        instance.initialize_board("1", apply=True)
+        instance.initialize_boards(["1"], apply=True)
         self.assertEqual(client.writes, [])
+
+    def test_a_project_whose_board_cannot_be_read_stops_only_itself(self):
+        """Planning the whole subtree first is what keeps a repair from ending halfway."""
+        second = {"id": 21, "title": "Other", "view_kind": "kanban",
+                  "bucket_configuration_mode": "manual"}
+        boards = {1: board(10, 100, done_bucket=104, titles=("Backlog", "Doing", "Done")),
+                  2: board(20, 200, extra_views=(second,))}
+        instance, client = adapter(boards=boards)
+        first, other = instance.initialize_boards(["1", "2"], apply=True)
+        self.assertTrue(first["applied"])
+        self.assertEqual([column["title"] for column in first["create"]], ["Ready", "Review"])
+        self.assertFalse(other["applied"])
+        self.assertEqual((other["view"], other["create"]), (None, []))
+        self.assertIn("several kanban views", other["blocked"][0])
+        self.assertEqual({path for path, _ in client.writes}, {"/projects/1/views/10/buckets"})
 
 
 class ImportMarkerTests(unittest.TestCase):
@@ -79,6 +94,44 @@ class ImportMarkerTests(unittest.TestCase):
         with self.assertRaisesRegex(TrackerError, "import marker B-01"):
             instance.update(current, {"description": "Goal\n\n- [ ] Acceptance"})
         self.assertEqual(client.writes, [])
+
+
+class UnreadableBoardTests(unittest.TestCase):
+    def test_a_project_with_several_kanban_views_stays_readable(self):
+        """The audit exists to describe boards like this one, so reading one cannot raise."""
+        second = {"id": 11, "title": "Other", "view_kind": "kanban",
+                  "bucket_configuration_mode": "manual"}
+        boards = {1: board(10, 100, extra_views=(second,))}
+        instance, _ = adapter(boards=boards, tasks={5: task(5, 1, 10, 101)})
+        self.assertEqual(instance.get("5").state, "Unknown")
+        entry, = [row for row in instance.lifecycle_report() if row["project"] == "1"]
+        self.assertIsNone(entry["view"])
+        self.assertIn("several kanban views", entry["problems"][0])
+        with self.assertRaisesRegex(TrackerError, "several kanban views"):
+            instance.set_state(instance.get("5"), "Doing")
+
+    def test_a_snapshot_carries_the_board_configuration_board_repair_changes(self):
+        """Projects and tasks alone cannot restore a column that repair added."""
+        from agent_box.tracker import vikunja_api
+
+        _, client = adapter()
+        captured, = vikunja_api.board_snapshot(client, 1)
+        self.assertEqual(captured["view"]["id"], 10)
+        self.assertEqual([bucket["title"] for bucket in captured["buckets"]],
+                         ["Backlog", "Ready", "Doing", "Review", "Done"])
+
+
+class BulkMarkerTests(unittest.TestCase):
+    def test_a_bulk_rewrite_is_refused_at_planning_time_like_a_single_one(self):
+        """An invariant only one of two write paths enforces is not an invariant."""
+        from agent_box.tracker import vikunja_api
+
+        tasks = [{"id": 5, "title": "Task", "description": "Goal\n\nVikunja external ID: B-01"}]
+        with self.assertRaisesRegex(TrackerError, "import marker B-01"):
+            vikunja_api.plan_bulk_updates([{"task": "5", "changes": {"description": "Goal"}}], tasks)
+        kept = "Goal rewritten\n\nVikunja external ID: B-01"
+        actions = vikunja_api.plan_bulk_updates([{"task": "5", "changes": {"description": kept}}], tasks)
+        self.assertEqual(actions[0].details["changes"], {"description": kept})
 
 
 class AuditTests(unittest.TestCase):
@@ -115,6 +168,15 @@ class AuditTests(unittest.TestCase):
         second.blockers = ["1"]
         self.assertEqual(self.problem_codes(first, get), ["broken-dependency"])
 
+    def test_an_unreadable_parent_is_one_broken_relation_and_is_counted_once(self):
+        orphan = Task("1", "1", "Child", description="- [ ] a", state="Ready",
+                      labels=["ab:tier:1"], parent="404")
+
+        def get(task_id):
+            raise KeyError(task_id)
+
+        self.assertEqual(self.problem_codes(orphan, get), ["broken-parent"])
+
     def test_a_parent_in_another_project_is_reported(self):
         child = Task("1", "1", "Child", description="- [ ] a", state="Ready",
                      labels=["ab:tier:1"], parent="2")
@@ -143,6 +205,13 @@ class AuditTests(unittest.TestCase):
         self.assertTrue(report["clean"])
         self.assertEqual((report["counts"], report["boards"]), ({}, []))
         self.assertTrue(report["notes"])
+
+    def test_an_audit_without_a_binding_reports_boards_and_says_so(self):
+        """Boards are repaired before the binding exists, tasks only after it does."""
+        report = audit(None, lambda _: None, [{"project": "1", "problems": ["no column for Ready"]}])
+        self.assertEqual((report["scope"], report["tasks"], report["clean"]), ("boards", [], False))
+        self.assertTrue(report["notes"])
+        self.assertEqual(report["boards"], [{"project": "1", "problems": ["no column for Ready"]}])
 
     def test_a_broken_board_keeps_the_project_from_auditing_clean(self):
         items, get = tasks(Task("1", "1", "Fix", description="- [ ] a", state="Ready",

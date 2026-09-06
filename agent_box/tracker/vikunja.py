@@ -50,11 +50,20 @@ class VikunjaAdapter:
         Vikunja already knows which bucket means done, so that one is taken from
         the view rather than guessed from a title. The remaining states are
         matched by title; anything ambiguous is reported, never resolved.
+
+        A project with no kanban view, or several, is reported the same way. It
+        used to raise, which made every read of every task in that project fail,
+        including the audit whose whole job is to describe boards like this one.
         """
         project = str(project)
         key = (project, str(view or ""))
         if key not in self._boards:
-            selected = api.resolve_kanban_view(self.client, project, view)
+            try:
+                selected = api.resolve_kanban_view(self.client, project, view)
+            except (api.NotFound, api.AmbiguousMatch) as exc:
+                self._boards[key] = {"view": None, "buckets": [], "states": {},
+                                     "missing": list(STATES), "problems": [str(exc)]}
+                return self._boards[key]
             buckets = api.view_buckets(self.client, project, selected["id"])
             titles = {}
             for bucket in buckets:
@@ -87,29 +96,46 @@ class VikunjaAdapter:
                                  "missing": missing, "problems": problems}
         return self._boards[key]
 
-    def initialize_board(self, project, apply=False):
-        """Add the lifecycle columns a board lacks; never rename or remove one.
+    def board_plan(self, project):
+        """What repairing one board would add, without touching it."""
+        project = str(project)
+        resolved = self.lifecycle(project)
+        plan = api.plan_board_init(resolved, STATES)
+        return {"project": project, "view": resolved["view"]["id"] if resolved["view"] else None,
+                "create": plan["create"], "done_bucket": plan["done_bucket"],
+                "blocked": plan["blocked"], "applied": False,
+                "states": resolved["states"], "problems": resolved["problems"]}
+
+    def initialize_boards(self, projects, apply=False):
+        """Add the lifecycle columns each board lacks; never rename or remove one.
 
         Setup can only refuse a board it does not understand, which leaves the
         user adding the same two columns by hand to every project in a subtree.
         Creating the missing ones is mechanical; everything that needs a decision
         stays reported and untouched.
+
+        The whole subtree is planned before anything is written, so a project the
+        repair cannot describe is reported next to the others instead of aborting
+        the run halfway through and leaving the subtree half repaired.
         """
-        project = str(project)
+        plans = [self.board_plan(project) for project in projects]
+        if not apply:
+            return plans
+        return [self.apply_board_plan(plan) for plan in plans]
+
+    def apply_board_plan(self, plan):
+        """Create one board's planned columns and point the view at its done column."""
+        if plan["blocked"] or not (plan["create"] or plan["done_bucket"]):
+            return plan
+        project = plan["project"]
         resolved = self.lifecycle(project)
-        plan = api.plan_board_init(resolved, STATES)
-        result = {"project": project, "view": resolved["view"]["id"], "create": plan["create"],
-                  "done_bucket": plan["done_bucket"], "blocked": plan["blocked"]}
-        if not apply or plan["blocked"] or not (plan["create"] or plan["done_bucket"]):
-            return {**result, "applied": False, "states": resolved["states"],
-                    "problems": resolved["problems"]}
         for column in plan["create"]:
             api.create_bucket(self.client, project, resolved["view"], column["title"], column["position"])
         resolved = self.refresh_lifecycle(project)
         if plan["done_bucket"] and "Done" in resolved["states"]:
             api.set_done_bucket(self.client, project, resolved["view"], resolved["states"]["Done"])
             resolved = self.refresh_lifecycle(project)
-        return {**result, "applied": True, "states": resolved["states"],
+        return {**plan, "applied": True, "states": resolved["states"],
                 "problems": resolved["problems"]}
 
     def refresh_lifecycle(self, project):
@@ -142,7 +168,8 @@ class VikunjaAdapter:
         for project in sorted(projects or self.projects_in_scope(), key=lambda value: int(value)):
             try:
                 resolved = self.lifecycle(project)
-                report.append({"project": project, "view": resolved["view"]["id"],
+                report.append({"project": project,
+                               "view": resolved["view"]["id"] if resolved["view"] else None,
                                "states": resolved["states"], "problems": resolved["problems"]})
             except TrackerError as exc:
                 report.append({"project": project, "view": None, "states": {}, "problems": [str(exc)]})
@@ -206,14 +233,7 @@ class VikunjaAdapter:
         if fields.keys() - allowed:
             raise TrackerError(f"Unsupported task fields: {sorted(fields.keys() - allowed)}")
         if "description" in fields:
-            # The importer identifies a task by a marker inside its own
-            # description, so a rewrite that drops one turns the next import into
-            # a duplicate. Rewriting the text around it stays allowed.
-            marker = api.external_id_from_description(task.description)
-            if marker and api.external_id_from_description(fields["description"]) != marker:
-                raise TrackerError(
-                    f"Task {task.id} carries import marker {marker}; keep it in the description",
-                    "conflict")
+            api.check_external_marker(task.id, task.description, fields["description"])
         if fields:
             self.client.revisions[f"/tasks/{task.id}"] = task.revision
             self.client.patch(f"/tasks/{task.id}", fields, markdown="description" in fields)

@@ -28,7 +28,9 @@ def parser():
     p.add_argument("--provider", help="Override the configured provider")
     sub = p.add_subparsers(dest="command", required=True)
     sub.add_parser("status")
-    sub.add_parser("audit")
+    cmd = sub.add_parser("audit")
+    cmd.add_argument("--project", help="Audit boards before a binding exists")
+    cmd.add_argument("--recursive", action="store_true")
     projects = sub.add_parser("projects")
     projects.add_argument("query", nargs="?", default="")
     for name in ("search", "ready", "next"):
@@ -113,7 +115,7 @@ def dispatch(args):
                 "configuration")
         return {"written": write_setup(repository_root(), binding), "binding": asdict(binding),
                 "lifecycle": report}
-    adapter, binding, root = context(args.provider, args.command in ("ready", "next", "claim", "state", "audit"))
+    adapter, binding, root = context(args.provider, args.command in ("ready", "next", "claim", "state"))
     if args.command == "status":
         user = adapter.identity()
         return {"provider": args.provider or (binding.provider if binding else effective_config().tracker.provider),
@@ -123,6 +125,12 @@ def dispatch(args):
     if args.command == "audit":
         # The bound subtree is the scope: a task outside it has no lifecycle
         # state to audit, so auditing one would report every card as stray.
+        # Boards are audited without a binding because they are repaired first.
+        if binding is None:
+            if not args.project:
+                raise TrackerError("Pass --project to audit boards, or run ab-setup to bind this repository")
+            return audit(None, lambda task_id: None,
+                         adapter.lifecycle_report(adapter.subtree(args.project, args.recursive)))
         tasks = adapter.search(binding.project, "", binding.recursive)
         index = {task.id: task for task in tasks}
         return audit(tasks, lambda task_id: index.get(task_id) or adapter.get(task_id),
