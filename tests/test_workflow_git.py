@@ -54,7 +54,8 @@ class WorkflowGitTests(unittest.TestCase):
             report = Path(temporary) / "report.json"
             report.write_text(json.dumps({"status": "completed", "summary": "Implemented", "evidence": ["Changed code"]}))
             with patch.object(workflow, "effective_config", return_value=config), patch.object(workflow, "repository_root", return_value=root), \
-                 patch.object(Binding, "load"), patch.object(workflow, "make_adapter", return_value=adapter), \
+                 patch.object(Binding, "load", return_value=Binding("vikunja", "https://tasks.example", "1")), \
+                 patch.object(workflow, "make_adapter", return_value=adapter), \
                  patch.object(workflow, "resolve", return_value=(task, info, info, "main")), \
                  patch.object(workflow, "route", return_value=route), patch.object(workflow, "WORKFLOW_STATE", Path(temporary) / "state"):
                 prepared = workflow.dispatch(workflow.parser().parse_args(["prepare", "1", "--primary", "codex"]))
@@ -77,6 +78,26 @@ class WorkflowGitTests(unittest.TestCase):
                 from agent_box.errors import AgentBoxError
                 with self.assertRaises(AgentBoxError):
                     workflow.dispatch(workflow.parser().parse_args(["report", "1", "--role", "reviewer", "--primary", "codex", "--provider", "claude", "--file", str(report), "--scope", prepared["scope"], "--handoff", prepared["handoff"]]))
+
+    def test_origin_identity_follows_the_url_rewrite_a_push_would_follow(self):
+        """`insteadOf` makes `remote.origin.url` and the real destination differ.
+
+        The base branch, a task branch's live state and the GitHub repository are
+        all read out of origin, so they have to resolve the same rewrite that the
+        push itself resolves; reading the configuration key would not.
+        """
+        from agent_box import git_workflow as git
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for args in (["init", "-b", "main"],
+                         ["remote", "add", "origin", "insteadof:owner/repository.git"],
+                         ["config", "url.git@github.com:.insteadOf", "insteadof:"]):
+                subprocess.run(["git", *args], cwd=root, check=True, capture_output=True)
+            self.assertEqual(git.effective_push_url(root), "git@github.com:owner/repository.git")
+            self.assertEqual(git.github_origin(root), "owner/repository")
+            subprocess.run(["git", "config", "url.git@example.invalid:.pushInsteadOf", "insteadof:"],
+                           cwd=root, check=True, capture_output=True)
+            self.assertEqual(git.effective_push_url(root), "git@example.invalid:owner/repository.git")
 
     def test_parent_push_reuses_live_remote_guards_and_does_not_publish_tags(self):
         from unittest.mock import patch

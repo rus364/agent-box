@@ -57,5 +57,57 @@ class TrackerWorkflowTests(unittest.TestCase):
             self.assertEqual((root / ".agent-box.json").read_bytes(), previous)
 
 
+class DelegateWriteTests(unittest.TestCase):
+    """The coordinator is the only writer; every delegated role only reads.
+
+    Workers were once allowed a comment and a checkbox on their own task, which
+    forced every command to be classified and every write re-checked against an
+    assignment. One rule for all three roles replaces that, and progress reaches
+    the tracker only through the report the coordinator accepts.
+    """
+
+    def core(self):
+        return importlib.import_module("agent_box.tracker.core")
+
+    def test_no_delegated_role_may_write_the_tracker(self):
+        c = self.core()
+        for role in ("worker", "reviewer", "scout"):
+            with self.assertRaises(c.TrackerError) as raised:
+                c.check_delegate_role({"AGENT_BOX_ROLE": role})
+            self.assertEqual(raised.exception.category, "forbidden")
+
+    def test_the_coordinator_itself_is_not_a_delegate(self):
+        c = self.core()
+        c.check_delegate_role({})
+        c.check_delegate_role({"AGENT_BOX_ROLE": ""})
+
+    def test_every_tracker_write_command_refuses_before_reaching_the_adapter(self):
+        """Including the two a worker used to be allowed: comment and check."""
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        cli = importlib.import_module("agent_box.tracker.cli")
+        with patch.dict("os.environ", {"AGENT_BOX_ROLE": "worker"}), \
+             patch.object(cli, "context") as context:
+            for command in ("comment", "check", "state", "update", "relation", "create",
+                            "claim", "tier"):
+                with self.assertRaises(self.core().TrackerError):
+                    cli.dispatch(SimpleNamespace(command=command, task="1"))
+            context.assert_not_called()
+
+    def test_reading_the_tracker_stays_open_to_a_delegate(self):
+        cli = importlib.import_module("agent_box.tracker.cli")
+        source = Path(cli.__file__).read_text()
+        self.assertIn('reads = {"status", "projects", "search", "ready", "next", "get", "comments", "checklist"}',
+                      source)
+
+    def test_the_workflow_command_refuses_a_delegated_role_too(self):
+        from unittest.mock import patch
+        workflow = importlib.import_module("agent_box.workflow")
+        with patch.dict("os.environ", {"AGENT_BOX_ROLE": "worker"}):
+            with self.assertRaises(Exception) as raised:
+                workflow.dispatch(workflow.parser().parse_args(["finish", "1"]))
+        self.assertIn("may only read the tracker", str(raised.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

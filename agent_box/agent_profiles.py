@@ -11,10 +11,11 @@ ROLES = {"scout": (0, 1, 2), "worker": (1, 2, 3), "reviewer": (1, 2, 3)}
 def body(provider, role, tier, spec):
     name = f"ab-{role}-{tier}"
     instructions = (f"Act only as the assigned {role}. Use English for handoffs and implementation. "
-                    "The orchestrator owns branches, commits, task lifecycle, requirements, dependencies and GitHub. "
+                    "The coordinator owns branches, commits, task lifecycle, requirements, dependencies, "
+                    "the tracker and GitHub; never write to any of them. "
                     "Return a structured report with evidence; report uncertainty explicitly. ")
     if role == "worker":
-        instructions += "Work only on the assigned task, sequentially. Tracker progress comments and existing checkboxes use the task language."
+        instructions += "Work only on the assigned task, sequentially, changing project files in the working tree. Progress belongs in your report, not in the tracker."
     else:
         instructions += "Read-only: do not edit code or tracker data. Review findings require location, evidence and violated requirement."
     if provider == "codex":

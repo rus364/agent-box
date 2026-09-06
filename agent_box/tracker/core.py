@@ -156,13 +156,21 @@ def set_checkbox(body: str, index: int, checked: bool, expected: str) -> str:
     return body[:offset] + line + body[offset + len(target["line"]):]
 
 
-def check_worker_scope(operation: str, task_id: str | None, environ: dict):
-    assigned = environ.get("AGENT_BOX_ASSIGNED_TASK")
+DELEGATE_ROLES = ("worker", "reviewer", "scout")
+
+
+def check_delegate_role(environ: dict):
+    """Every delegated role reads the tracker; the coordinator is the only writer.
+
+    Workers used to be allowed a comment and a checkbox on their own task, which
+    is why every command had to be classified and every write re-checked against
+    an assignment. One rule for all three roles removes that: progress belongs in
+    the report, and the coordinator writes what it decides to keep.
+    """
     role = environ.get("AGENT_BOX_ROLE")
-    if role in ("reviewer", "scout"):
-        raise TrackerError(f"{role} may only read the tracker", "forbidden")
-    if role == "worker" and (operation not in ("comment", "check") or task_id != assigned):
-        raise TrackerError("Workers may only comment and check items on their assigned task", "forbidden")
+    if role in DELEGATE_ROLES:
+        raise TrackerError(f"A delegated {role} may only read the tracker; "
+                           "return progress in your report instead", "forbidden")
 
 
 def claim(adapter: Adapter, task_id: str, resume=False) -> Task:

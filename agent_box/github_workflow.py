@@ -171,11 +171,16 @@ def operate(args, root, config, adapter, task, parent, info, saved):
                 f"{(gw.head_sha(root) or '')[:12]}; the current work is not merged")
         # This checkout is not the only one that can push the task branch, and it
         # may not have fetched since another machine did, so origin is asked live
-        # rather than through a remote-tracking ref that predates the push.
+        # rather than through a remote-tracking ref that predates the push. A
+        # branch origin no longer has is the normal case, not a problem: GitHub
+        # deletes the head branch on merge when the repository asks it to, and
+        # reconcile exists precisely for the run that failed after that merge.
+        # Being unable to read origin at all still refuses, because then nothing
+        # rules out a branch that moved on.
         remote_head = gw.remote_branch_head(root, info["branch"])
-        if remote_head != pr["headRefOid"]:
+        if remote_head is not None and remote_head != pr["headRefOid"]:
             raise AgentBoxError(
-                f"origin/{info['branch']} is at {(remote_head or 'no branch')[:12]}, not the merged "
+                f"origin/{info['branch']} is at {remote_head[:12]}, not the merged "
                 f"{pr['headRefOid'][:12]}; another checkout advanced the branch, so reconcile first")
         if task.state != "Done":
             adapter.set_state(task, "Done")

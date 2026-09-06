@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 
 from . import vikunja_api as api
-from .core import TrackerError, check_worker_scope
+from .core import TrackerError, check_delegate_role
 
 
 def parser():
@@ -64,7 +64,7 @@ def run(adapter, arguments):
                 or args.command == "projects" and operation in ("tree", "children")
                 or args.command == "labels" and operation == "list")
     if not readonly:
-        check_worker_scope("provider", None, os.environ)
+        check_delegate_role(os.environ)
     client = adapter.client
     if args.command == "import":
         plan = api.parse_plan(args.file)

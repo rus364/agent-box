@@ -61,10 +61,19 @@ read back from there. Branch names come from the task's `ab/<id>-` namespace,
 the base branch from origin's default, the pull request from a head/base lookup,
 the lifecycle from the board's own columns. `.agent-box.json` names the tracker
 project and nothing else. Nothing machine-readable is written into a tracker
-comment: a comment is a human journal, and an agent allowed to write one must not
-thereby reach orchestrator state. A delegate runs as the same user, so anything
-in `WORKFLOW_STATE` is writable by it: whatever must not be forgeable travels
-with the orchestrator instead, as `workflow prepare`'s handoff token does.
+comment: a comment is a human journal, and lifecycle is read from the tracker's
+own fields.
+
+**The coordinator is the only writer.** A delegated worker, reviewer or scout
+reads the task and the code, changes project files in the working tree, and
+returns a structured report; the coordinator decides from that report what to
+commit and what to record in the tracker and on GitHub. This is a command and
+instruction boundary, not credential isolation - a delegate runs as the same
+user - so the code does not try to reconstruct afterwards what a delegate did.
+Guards that only existed because the contract was wide belong deleted, not
+tightened; a delegation is bound to its repository, project, task, scope, role
+and tier by `workflow prepare`'s handoff descriptor, which is a plain readable
+descriptor and is deliberately not treated as unforgeable.
 
 **Secrets travel by name.** `--env=NAME` (Podman inherits the value) for
 anything secret; `--env=NAME=VALUE` puts the value in an argv that `/proc`

@@ -11,7 +11,7 @@ from pathlib import Path
 from ..config import effective_config
 from ..errors import AgentBoxError
 from ..repo_binding import Binding, repository_root, write_setup
-from .core import STATES, Task, TrackerError, check_worker_scope, checkboxes, claim, ready_tasks, set_checkbox
+from .core import STATES, Task, TrackerError, check_delegate_role, checkboxes, claim, ready_tasks, set_checkbox
 from .registry import make_adapter
 
 
@@ -92,7 +92,7 @@ def context(provider=None, require_binding=False):
 def dispatch(args):
     reads = {"status", "projects", "search", "ready", "next", "get", "comments", "checklist"}
     if args.command not in reads | {"provider"} and not (args.command == "setup" and not args.apply):
-        check_worker_scope(args.command, getattr(args, "task", None), os.environ)
+        check_delegate_role(os.environ)
     if args.command == "provider":
         from .extensions import run
         adapter, _, _ = context(args.provider)
@@ -162,11 +162,6 @@ def dispatch(args):
         if args.state == "Doing":
             raise TrackerError("Use agent-box tracker claim to assign and start a task")
         return adapter.set_state(task, args.state)
-    if args.command in ("check", "comment"):
-        if os.environ.get("AGENT_BOX_ROLE") == "worker":
-            user = str(adapter.identity()["id"])
-            if task.state != "Doing" or task.assignees != [user]:
-                raise TrackerError("Progress requires your assigned Doing task", "conflict")
     if args.command == "check":
         return adapter.update(task, {"description": set_checkbox(task.description, args.index, not args.undo, args.text)})
     if args.command == "comment":

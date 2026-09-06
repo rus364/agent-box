@@ -102,13 +102,15 @@ def build_command(route, role, root, schema_path, result_path):
     return command
 
 
-def run(route, role, root, prompt, *, timeout=3600, task=None):
+def run(route, role, root, prompt, *, timeout=3600):
     env = os.environ.copy()
     for key in ("CLAUDE_CODE_SUBAGENT_MODEL", "CLAUDE_CODE_EFFORT_LEVEL", "CLAUDECODE"):
         env.pop(key, None)
     from .notify import SUPPRESS_NOTIFY_ENV
     env[SUPPRESS_NOTIFY_ENV] = "1"
-    env.update(AGENT_BOX_ROLE=role, AGENT_BOX_ASSIGNED_TASK=str(task or ""))
+    # Names the delegated role for agent-box's own commands, which refuse every
+    # tracker write for one. A cooperative boundary, not credential isolation.
+    env["AGENT_BOX_ROLE"] = role
     with tempfile.TemporaryDirectory(prefix="agent-box-run-") as directory:
         directory = Path(directory)
         schema, result = directory / "schema.json", directory / "result.json"
