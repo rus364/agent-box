@@ -67,13 +67,17 @@ own fields.
 **The coordinator is the only writer.** A delegated worker, reviewer or scout
 reads the task and the code, changes project files in the working tree, and
 returns a structured report; the coordinator decides from that report what to
-commit and what to record in the tracker and on GitHub. This is a command and
-instruction boundary, not credential isolation - a delegate runs as the same
-user - so the code does not try to reconstruct afterwards what a delegate did.
-Guards that only existed because the contract was wide belong deleted, not
-tightened; a delegation is bound to its repository, project, task, scope, role
-and tier by `workflow prepare`'s handoff descriptor, which is a plain readable
-descriptor and is deliberately not treated as unforgeable.
+commit and what to record in the tracker and on GitHub. This is a contract, not
+credential isolation: a delegation runs either as a native subagent of the
+coordinator's own session or as a managed `codex exec` / `claude -p`, the first
+of which inherits the coordinator's workspace, `.git` and credentials, so the
+two backends deliberately share one contract and one set of checks rather than
+one of them acquiring private restrictions. What follows a report is therefore
+detection of an obvious contract violation, not a perimeter: guards that only
+existed because the contract was wide belong deleted, not tightened. A
+delegation is bound to its repository, project, task, scope, role and tier by
+`workflow prepare`'s handoff descriptor, which is plain readable JSON and is
+deliberately not treated as unforgeable.
 
 **Secrets travel by name.** `--env=NAME` (Podman inherits the value) for
 anything secret; `--env=NAME=VALUE` puts the value in an argv that `/proc`

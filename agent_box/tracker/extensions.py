@@ -1,11 +1,10 @@
 """Explicit product operations that do not belong to the portable task contract."""
 import argparse
 import json
-import os
 from pathlib import Path
 
 from . import vikunja_api as api
-from .core import TrackerError, check_delegate_role
+from .core import TrackerError
 
 
 def parser():
@@ -57,14 +56,6 @@ def parser():
 def run(adapter, arguments):
     args = parser().parse_args(arguments)
     operation = getattr(args, "operation", "")
-    readonly = (args.command in ("snapshot", "external")
-                or args.command == "import" and (operation != "plan" or not args.apply)
-                or args.command == "bulk-update" and not args.apply
-                or args.command == "board" and operation != "move"
-                or args.command == "projects" and operation in ("tree", "children")
-                or args.command == "labels" and operation == "list")
-    if not readonly:
-        check_delegate_role(os.environ)
     client = adapter.client
     if args.command == "import":
         plan = api.parse_plan(args.file)

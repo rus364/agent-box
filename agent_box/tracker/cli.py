@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 from dataclasses import asdict
 from pathlib import Path
@@ -11,7 +10,7 @@ from pathlib import Path
 from ..config import effective_config
 from ..errors import AgentBoxError
 from ..repo_binding import Binding, repository_root, write_setup
-from .core import STATES, Task, TrackerError, check_delegate_role, checkboxes, claim, ready_tasks, set_checkbox
+from .core import STATES, Task, TrackerError, checkboxes, claim, ready_tasks, set_checkbox
 from .registry import make_adapter
 
 
@@ -90,9 +89,6 @@ def context(provider=None, require_binding=False):
 
 
 def dispatch(args):
-    reads = {"status", "projects", "search", "ready", "next", "get", "comments", "checklist"}
-    if args.command not in reads | {"provider"} and not (args.command == "setup" and not args.apply):
-        check_delegate_role(os.environ)
     if args.command == "provider":
         from .extensions import run
         adapter, _, _ = context(args.provider)

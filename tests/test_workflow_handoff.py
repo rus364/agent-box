@@ -593,6 +593,34 @@ class SubtaskIntegrationTests(unittest.TestCase):
             self.assertEqual(child.state, "Done")
 
 
+class DelegationContractTests(unittest.TestCase):
+    """One worker contract, whichever backend runs the delegation.
+
+    A delegation runs either as a native subagent of the coordinator's own
+    session or as an agent-box-managed `codex exec` / `claude -p`. The native one
+    inherits the coordinator's workspace, `.git` and credentials, so no
+    per-delegate isolation is available to it; deliberately, none is imposed on
+    the managed one either. The contract, and the checks that follow a report,
+    are what both paths share, so neither backend gets private semantics.
+    """
+
+    def contract(self, text):
+        lowered = text.lower()
+        return all(word in lowered for word in ("tracker", "commit", "coordinator"))
+
+    def test_the_native_profile_states_the_same_contract_as_the_cli_prompt(self):
+        from agent_box.agent_profiles import body
+        profile = body("claude", "worker", 1, {"model": "m", "effort": "high"})
+        self.assertTrue(self.contract(profile))
+        self.assertIn("never write to any of them", profile)
+
+    def test_no_execution_backend_carries_a_private_tracker_restriction(self):
+        """Symmetry is the point: an env-gated guard would apply to one path only."""
+        for module in ("provider_runner", "workflow", "tracker/core", "tracker/cli"):
+            source = (Path(workflow.__file__).parent / (module + ".py")).read_text()
+            self.assertNotIn("AGENT_BOX_ROLE", source)
+
+
 class DelegationContextTests(unittest.TestCase):
     def test_the_handoff_carries_the_repository_instructions_safe_mode_hides(self):
         with tempfile.TemporaryDirectory() as directory:

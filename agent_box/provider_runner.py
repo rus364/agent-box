@@ -108,9 +108,6 @@ def run(route, role, root, prompt, *, timeout=3600):
         env.pop(key, None)
     from .notify import SUPPRESS_NOTIFY_ENV
     env[SUPPRESS_NOTIFY_ENV] = "1"
-    # Names the delegated role for agent-box's own commands, which refuse every
-    # tracker write for one. A cooperative boundary, not credential isolation.
-    env["AGENT_BOX_ROLE"] = role
     with tempfile.TemporaryDirectory(prefix="agent-box-run-") as directory:
         directory = Path(directory)
         schema, result = directory / "schema.json", directory / "result.json"

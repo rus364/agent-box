@@ -3,8 +3,10 @@
 The coordinator is the only writer: of the tracker, of Git, of GitHub. A
 delegate reads its task, changes project files in the working tree and returns a
 report, and the coordinator decides from that report what to record. That
-division is the whole contract, which is why nothing here inventories the
-tracker or the ref store to work out afterwards what a delegate did.
+division is the whole contract, and it is identical whether the delegate is a
+native subagent of the coordinator's session or a managed CLI run, which is why
+nothing here inventories the tracker or the ref store to work out afterwards
+what a delegate did.
 
 Nothing machine-readable is written into a tracker comment either. The branch
 comes from the task's own Git ref namespace, the base from origin's default
@@ -32,7 +34,7 @@ from .paths import WORKFLOW_STATE
 from .provider_runner import ProviderFailure, run, validate_report, report_schema
 from .repo_binding import Binding, repository_root, server_identity
 from .routing import select
-from .tracker.core import claim, check_delegate_role, checkboxes, root_task, completion_reasons, blocking_reasons
+from .tracker.core import claim, checkboxes, root_task, completion_reasons, blocking_reasons
 from .tracker.registry import make_adapter
 from .usage import usage_snapshot
 from .workflow_state import lock, scout_slot
@@ -364,7 +366,6 @@ def parser():
 
 
 def dispatch(args):
-    check_delegate_role(os.environ)
     config = effective_config()
     if not config.workflow.enabled:
         raise AgentBoxError("Enable workflow in agent-box config first")
