@@ -59,11 +59,22 @@ class UninstallTestCase(unittest.TestCase):
         self.bin = self.root / "bin"
         self.bin.mkdir()
         self.rc = self.root / ".bashrc"
+        # Sandboxed here rather than around each call: uninstall scans PATH and
+        # unlinks what it finds, so a test that reaches uninstall_main without
+        # these patches deletes the symlink the developer runs the suite with.
+        self.path_patches = mock.patch.multiple(
+            pathsetup,
+            path_entries=lambda raw=None: [self.bin],
+            DEFAULT_BIN_DIR=self.bin,
+            rc_file=lambda: self.rc,
+            checkout_root=lambda: self.checkout,
+        )
+        self.path_patches.start()
+        self.addCleanup(self.path_patches.stop)
 
     def _on_path(self):
         """The symlink and the rc line a full install would have left."""
-        with mock.patch.object(pathsetup, "checkout_root", return_value=self.checkout), \
-             mock.patch.object(pathsetup, "HOST_HOME", self.root):
+        with mock.patch.object(pathsetup, "HOST_HOME", self.root):
             pathsetup.install_symlink(self.bin)
             pathsetup.append_rc_block(self.rc, self.bin)
 
@@ -84,17 +95,13 @@ class UninstallTestCase(unittest.TestCase):
         (self.config_root / "config.json").write_text("{}")
         return settings
 
-    def _uninstall(self, *args):
+    def _uninstall(self, *args, podman: str | None = None):
         """Run the command with every path it touches pointed at the sandbox.
 
-        Without the pathsetup patches this would scan the developer's real
-        PATH and delete the agent-box symlink they are running the suite with.
+        ``podman`` is what ``shutil.which`` reports, since finding it is what
+        decides whether the workspace boxes are removed at all.
         """
-        with mock.patch.object(runtime.shutil, "which", return_value=None), \
-             mock.patch.object(pathsetup, "path_entries", return_value=[self.bin]), \
-             mock.patch.object(pathsetup, "DEFAULT_BIN_DIR", self.bin), \
-             mock.patch.object(pathsetup, "rc_file", return_value=self.rc), \
-             mock.patch.object(pathsetup, "checkout_root", return_value=self.checkout):
+        with mock.patch.object(runtime.shutil, "which", return_value=podman):
             return runtime.uninstall_main(list(args))
 
 class UninstallTests(UninstallTestCase):
@@ -175,11 +182,10 @@ class UninstallTests(UninstallTestCase):
             self._uninstall("--everything")
 
     def test_every_workspace_box_is_removed(self):
-        with mock.patch.object(runtime.shutil, "which", return_value="/usr/bin/podman"), \
-             mock.patch.object(runtime, "managed_container_names", return_value=["a", "b"]), \
+        with mock.patch.object(runtime, "managed_container_names", return_value=["a", "b"]), \
              mock.patch.object(
                  runtime, "remove_workspace_container_then_confirm_absent") as remove:
-            runtime.uninstall_main([])
+            self._uninstall(podman="/usr/bin/podman")
         self.assertEqual([call.args[0] for call in remove.call_args_list], ["a", "b"])
 
     def test_the_image_is_never_deleted(self):
