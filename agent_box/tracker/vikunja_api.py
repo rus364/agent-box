@@ -988,6 +988,62 @@ def place_in_bucket(client, project_id, view, bucket, task_id):
     )
 
 
+def create_bucket(client, project_id, view, title, position=None):
+    """Add one column to a manually configured board.
+
+    A filter board's columns are a query rather than a place, so a column added
+    there would hold whatever the filter says and nothing a workflow moved into
+    it; the refusal is the same one `place_in_bucket` already makes.
+    """
+    if view.get("bucket_configuration_mode") == "filter":
+        raise VikunjaError(
+            f"kanban view {_view_label(view)} builds its buckets from filters; "
+            f"a lifecycle column cannot be added to it"
+        )
+    body = {"title": title}
+    if position is not None:
+        body["position"] = position
+    return client.post(
+        f"/projects/{int(project_id)}/views/{int(view['id'])}/buckets", body
+    )
+
+
+def set_done_bucket(client, project_id, view, bucket_id):
+    """Point the view's own done bucket at a column, leaving its other fields alone."""
+    return client.patch(
+        f"/projects/{int(project_id)}/views/{int(view['id'])}",
+        {"done_bucket_id": int(bucket_id)},
+    )
+
+
+def plan_board_init(resolved, states):
+    """The lifecycle columns a board still lacks, and where each one belongs.
+
+    Only additive: a column that exists keeps its title and its cards, and a
+    board whose columns are ambiguous is left to the user, because choosing
+    which of two candidates means Doing is a decision and not a repair. New
+    columns are positioned between the neighbours they belong between, so the
+    board reads in lifecycle order instead of growing a tail.
+    """
+    blocked = [problem for problem in resolved["problems"]
+               if not problem.startswith("no column for")]
+    positions = {}
+    for bucket in resolved["buckets"]:
+        positions[str(bucket["id"])] = bucket.get("position") or 0
+    known = {state: positions.get(ident, 0) for state, ident in resolved["states"].items()}
+    create, previous = [], 0
+    for index, state in enumerate(states):
+        if state in known:
+            previous = known[state]
+            continue
+        following = [known[later] for later in states[index + 1:] if later in known]
+        position = (previous + following[0]) / 2 if following else previous + 100
+        create.append({"state": state, "title": state, "position": position})
+        known[state] = previous = position
+    return {"create": create, "done_bucket": not resolved["view"].get("done_bucket_id"),
+            "blocked": blocked}
+
+
 def task_bucket_in_view(task, view_id):
     """The task's bucket in one specific view, or None.
 

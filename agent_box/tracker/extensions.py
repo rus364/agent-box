@@ -3,6 +3,7 @@ import argparse
 import json
 from pathlib import Path
 
+from ..atomicio import atomic_write_json
 from . import vikunja_api as api
 from .core import TrackerError
 
@@ -20,9 +21,12 @@ def parser():
     cmd.add_argument("file", type=Path)
     cmd.add_argument("--apply", action="store_true")
     cmd = sub.add_parser("board")
-    cmd.add_argument("operation", choices=("show", "buckets", "move"))
+    cmd.add_argument("operation", choices=("show", "buckets", "move", "init"))
     cmd.add_argument("project")
     cmd.add_argument("--view")
+    cmd.add_argument("--recursive", action="store_true",
+                     help="Include every project under this one")
+    cmd.add_argument("--apply", action="store_true", help="Create the missing lifecycle columns")
     cmd.add_argument("--task")
     cmd.add_argument("--bucket")
     cmd = sub.add_parser("projects")
@@ -42,6 +46,7 @@ def parser():
     cmd = sub.add_parser("snapshot")
     cmd.add_argument("--project")
     cmd.add_argument("--recursive", action="store_true")
+    cmd.add_argument("--out", type=Path, help="Write the snapshot to this file instead of stdout")
     cmd = sub.add_parser("external")
     cmd.add_argument("reference")
     cmd = sub.add_parser("task-fields")
@@ -66,7 +71,14 @@ def run(adapter, arguments):
         importer = api.Importer(client, plan, args.state_dir, allow_create_root=args.create_root)
         return importer.apply() if args.apply else importer.dry_run()
     if args.command == "snapshot":
-        return api.make_snapshot(client, args.project, args.recursive)
+        snapshot = api.make_snapshot(client, args.project, args.recursive)
+        if not args.out:
+            return snapshot
+        # A snapshot is the only way back from adoption, so its path is part of
+        # the result rather than something the caller has to remember.
+        atomic_write_json(args.out, snapshot)
+        return {"path": str(args.out.resolve()), "projects": len(snapshot["projects"]),
+                "tasks": len(snapshot["tasks"])}
     if args.command == "external":
         task = api.TaskIndex(api.inventory_from_client(client).tasks).resolve(args.reference)
         return {"task_id": task["id"], "external_id": api.external_id_from_description(task.get("description", ""))}
@@ -83,6 +95,9 @@ def run(adapter, arguments):
                 client.patch(f"/tasks/{action.key}", changes, markdown="description" in changes)
         return {**api.summarize_actions(actions), "dry_run": not args.apply, "applied": len(actions) if args.apply else 0}
     if args.command == "board":
+        if operation == "init":
+            return [adapter.initialize_board(project, args.apply)
+                    for project in adapter.subtree(args.project, args.recursive)]
         project = adapter.project(args.project)
         view = api.resolve_kanban_view(client, project["id"], args.view)
         if operation == "show":

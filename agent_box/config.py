@@ -455,7 +455,7 @@ class BrowserConfig:
 
 TRACKER_PROVIDERS = ("vikunja", "jira", "linear", "github")
 AGENT_PROVIDERS = ("codex", "claude")
-WORKFLOW_SKILLS = ("ab-setup", "ab-interview", "ab-plan", "ab-work", "ab-review", "ab-pr", "ab-land")
+WORKFLOW_SKILLS = ("ab-setup", "ab-adopt", "ab-interview", "ab-plan", "ab-work", "ab-review", "ab-pr", "ab-land")
 REVIEW_PRESETS = {"thorough": (2, 80), "balanced": (5, 200), "light": (10, 500)}
 
 

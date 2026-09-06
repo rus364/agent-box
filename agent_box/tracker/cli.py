@@ -10,6 +10,7 @@ from pathlib import Path
 from ..config import effective_config
 from ..errors import AgentBoxError
 from ..repo_binding import Binding, repository_root, write_setup
+from .audit import audit
 from .core import STATES, Task, TrackerError, checkboxes, claim, ready_tasks, set_checkbox
 from .registry import make_adapter
 
@@ -27,6 +28,7 @@ def parser():
     p.add_argument("--provider", help="Override the configured provider")
     sub = p.add_subparsers(dest="command", required=True)
     sub.add_parser("status")
+    sub.add_parser("audit")
     projects = sub.add_parser("projects")
     projects.add_argument("query", nargs="?", default="")
     for name in ("search", "ready", "next"):
@@ -111,13 +113,20 @@ def dispatch(args):
                 "configuration")
         return {"written": write_setup(repository_root(), binding), "binding": asdict(binding),
                 "lifecycle": report}
-    adapter, binding, root = context(args.provider, args.command in ("ready", "next", "claim", "state"))
+    adapter, binding, root = context(args.provider, args.command in ("ready", "next", "claim", "state", "audit"))
     if args.command == "status":
         user = adapter.identity()
         return {"provider": args.provider or (binding.provider if binding else effective_config().tracker.provider),
                 "user": {"id": str(user["id"]), "username": user.get("username")},
                 "capabilities": sorted(adapter.capabilities), "binding": asdict(binding) if binding else None,
                 "lifecycle": adapter.lifecycle_report() if binding else []}
+    if args.command == "audit":
+        # The bound subtree is the scope: a task outside it has no lifecycle
+        # state to audit, so auditing one would report every card as stray.
+        tasks = adapter.search(binding.project, "", binding.recursive)
+        index = {task.id: task for task in tasks}
+        return audit(tasks, lambda task_id: index.get(task_id) or adapter.get(task_id),
+                     adapter.lifecycle_report())
     if args.command == "projects":
         return [{"id": str(p["id"]), "title": p["title"], "parent": str(p.get("parent_project_id") or "")}
                 for p in adapter.projects() if args.query.casefold() in p["title"].casefold()]

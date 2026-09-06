@@ -87,6 +87,36 @@ class VikunjaAdapter:
                                  "missing": missing, "problems": problems}
         return self._boards[key]
 
+    def initialize_board(self, project, apply=False):
+        """Add the lifecycle columns a board lacks; never rename or remove one.
+
+        Setup can only refuse a board it does not understand, which leaves the
+        user adding the same two columns by hand to every project in a subtree.
+        Creating the missing ones is mechanical; everything that needs a decision
+        stays reported and untouched.
+        """
+        project = str(project)
+        resolved = self.lifecycle(project)
+        plan = api.plan_board_init(resolved, STATES)
+        result = {"project": project, "view": resolved["view"]["id"], "create": plan["create"],
+                  "done_bucket": plan["done_bucket"], "blocked": plan["blocked"]}
+        if not apply or plan["blocked"] or not (plan["create"] or plan["done_bucket"]):
+            return {**result, "applied": False, "states": resolved["states"],
+                    "problems": resolved["problems"]}
+        for column in plan["create"]:
+            api.create_bucket(self.client, project, resolved["view"], column["title"], column["position"])
+        resolved = self.refresh_lifecycle(project)
+        if plan["done_bucket"] and "Done" in resolved["states"]:
+            api.set_done_bucket(self.client, project, resolved["view"], resolved["states"]["Done"])
+            resolved = self.refresh_lifecycle(project)
+        return {**result, "applied": True, "states": resolved["states"],
+                "problems": resolved["problems"]}
+
+    def refresh_lifecycle(self, project):
+        """Re-read a board after changing it; a cached view would report the old one."""
+        self._boards.pop((str(project), ""), None)
+        return self.lifecycle(project)
+
     def board(self, project):
         """Reading tolerates a broken board; moving a card across one does not."""
         resolved = self.lifecycle(project)
@@ -95,10 +125,21 @@ class VikunjaAdapter:
                                + "; ".join(resolved["problems"]), "configuration")
         return resolved
 
-    def lifecycle_report(self):
-        """Per-project diagnostics for the bound subtree, returned for rendering."""
+    def subtree(self, project, recursive=False):
+        """The project and, when asked, everything under it, as string IDs."""
+        projects = self.projects()
+        root = self.project(project)
+        found = api.descendants(projects, root["id"]) if recursive else {int(root["id"])}
+        return [str(ident) for ident in sorted(found)]
+
+    def lifecycle_report(self, projects=None):
+        """Per-project diagnostics, returned for rendering.
+
+        Defaults to the bound subtree; an explicit list is what setup and board
+        repair need, because both run before a binding exists.
+        """
         report = []
-        for project in sorted(self.projects_in_scope(), key=lambda value: int(value)):
+        for project in sorted(projects or self.projects_in_scope(), key=lambda value: int(value)):
             try:
                 resolved = self.lifecycle(project)
                 report.append({"project": project, "view": resolved["view"]["id"],
@@ -164,6 +205,15 @@ class VikunjaAdapter:
         allowed = {"title", "description", "priority", "done", "due_date", "start_date", "end_date", "percent_done"}
         if fields.keys() - allowed:
             raise TrackerError(f"Unsupported task fields: {sorted(fields.keys() - allowed)}")
+        if "description" in fields:
+            # The importer identifies a task by a marker inside its own
+            # description, so a rewrite that drops one turns the next import into
+            # a duplicate. Rewriting the text around it stays allowed.
+            marker = api.external_id_from_description(task.description)
+            if marker and api.external_id_from_description(fields["description"]) != marker:
+                raise TrackerError(
+                    f"Task {task.id} carries import marker {marker}; keep it in the description",
+                    "conflict")
         if fields:
             self.client.revisions[f"/tasks/{task.id}"] = task.revision
             self.client.patch(f"/tasks/{task.id}", fields, markdown="description" in fields)

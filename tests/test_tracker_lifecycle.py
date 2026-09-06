@@ -18,7 +18,8 @@ def board(view_id, first, *, done_bucket=None, titles=("Backlog", "Ready", "Doin
     view = {"id": view_id, "title": "Board", "view_kind": "kanban", "bucket_configuration_mode": "manual"}
     if done_bucket is not None:
         view["done_bucket_id"] = done_bucket
-    buckets = [{"id": first + index, "title": title} for index, title in enumerate(titles)]
+    buckets = [{"id": first + index, "title": title, "position": (index + 1) * 100}
+               for index, title in enumerate(titles)]
     return {"views": [view, *extra_views], "buckets": {view_id: buckets}}
 
 
@@ -55,6 +56,27 @@ class FakeClient:
             return {"items": self.boards[int(parts[1])]["buckets"][int(parts[3])]}
         if parts[0] == "tasks":
             return dict(self.tasks[int(parts[1])])
+        raise AssertionError(path)
+
+    def post(self, path, body):
+        self.writes.append((path, body))
+        parts = path.split("?")[0].strip("/").split("/")
+        if parts[0] == "projects" and parts[-1] == "buckets":
+            buckets = self.boards[int(parts[1])]["buckets"][int(parts[3])]
+            created = {"id": max(bucket["id"] for bucket in buckets) + 1,
+                       "title": body["title"], "position": body.get("position")}
+            buckets.append(created)
+            buckets.sort(key=lambda bucket: bucket["position"])
+            return dict(created)
+        raise AssertionError(path)
+
+    def patch(self, path, body, markdown=False):
+        self.writes.append((path, body))
+        parts = path.split("?")[0].strip("/").split("/")
+        if parts[0] == "projects" and parts[2] == "views":
+            view = next(v for v in self.boards[int(parts[1])]["views"] if v["id"] == int(parts[3]))
+            view.update(body)
+            return dict(view)
         raise AssertionError(path)
 
     def put(self, path, body):
