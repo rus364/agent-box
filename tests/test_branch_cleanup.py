@@ -26,6 +26,9 @@ class CleanupTests(unittest.TestCase):
         state = patch.object(workflow_state, 'WORKFLOW_STATE', self.directory / 'state')
         state.start()
         self.addCleanup(state.stop)
+        evidence = patch.object(workflow, 'WORKFLOW_STATE', self.directory / 'state')
+        evidence.start()
+        self.addCleanup(evidence.stop)
         self.branch = 'ab/7-original-title'
         self.ref = 'refs/heads/' + self.branch
         gw.git(self.root, 'switch', '-c', self.branch)
@@ -424,13 +427,14 @@ class CleanupTests(unittest.TestCase):
         self.assertTrue(self.exists())
         adapter.set_state.side_effect = None
         args.action = 'reconcile'
+        accepted = workflow.read_evidence(self.root, self.task)
         with patch.object(cleanup, '_local_refs', side_effect=RuntimeError('unexpected failure')):
-            result = local_workflow.operate(args, self.root, self.config, adapter, self.task, self.task, info, {})
+            result = local_workflow.operate(args, self.root, self.config, adapter, self.task, self.task, info, accepted)
         self.assertEqual(result['state'], 'Done')
         self.assertEqual(result['merge']['head'], self.head)
         self.assertEqual(result['cleanup']['local']['status'], 'error')
         self.assertIn('unexpected failure', result['cleanup']['local']['reason'])
-        result = local_workflow.operate(args, self.root, self.config, adapter, self.task, self.task, info, {})
+        result = local_workflow.operate(args, self.root, self.config, adapter, self.task, self.task, info, accepted)
         self.assertEqual(result['cleanup']['local']['status'], 'deleted')
 
 

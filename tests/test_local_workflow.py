@@ -24,6 +24,10 @@ class LocalLandTests(unittest.TestCase):
                                    Path(self.temporary.name) / "state")
         state_patch.start()
         self.addCleanup(state_patch.stop)
+        evidence_patch = patch.object(workflow, "WORKFLOW_STATE",
+                                      Path(self.temporary.name) / "state")
+        evidence_patch.start()
+        self.addCleanup(evidence_patch.stop)
         gw.git(self.root, "switch", "-c", "ab/7-parent")
         (self.root / "change.py").write_text("value = 1\n")
         gw.git(self.root, "add", "change.py")
@@ -47,6 +51,13 @@ class LocalLandTests(unittest.TestCase):
         return local_workflow.operate(args, self.root, self.config, self.adapter,
                                       self.parent, self.parent, self.info,
                                       self.saved if saved is None else saved)
+
+    def dispatch(self, arguments):
+        with patch.object(workflow, "effective_config", return_value=self.config), \
+             patch.object(workflow, "repository_root", return_value=self.root), \
+             patch.object(Binding, "load", return_value=BINDING), \
+             patch.object(workflow, "make_adapter", return_value=self.adapter):
+            return workflow.dispatch(workflow.parser().parse_args(arguments))
 
     def test_merge_fast_forwards_exact_task_head_without_push_or_github(self):
         task_head = gw.git(self.root, "rev-parse", "ab/7-parent")
@@ -98,22 +109,164 @@ class LocalLandTests(unittest.TestCase):
         with self.assertRaisesRegex(AgentBoxError, "Local branch main"):
             self.operate("merge")
 
-    def test_reconcile_from_base_uses_current_task_tip_and_rechecks_constraints(self):
+    def test_reconcile_refuses_ancestry_without_acceptance_even_for_unchanged_branch(self):
+        """Integration alone must never manufacture validation or a PASS review."""
+        gw.git(self.root, "switch", "main")
+        gw.git(self.root, "branch", "-f", "ab/7-parent", "main")
+        self.config.workflow.review.policy = "always"
+        with self.assertRaisesRegex(AgentBoxError, "fresh validation.*review"):
+            self.operate("reconcile", saved={})
+        self.adapter.set_state.assert_not_called()
+        self.assertEqual(self.parent.state, "Review")
+
+    def test_reconcile_refuses_raw_manual_merge_without_acceptance(self):
+        """Manual Git inclusion is not evidence of workflow acceptance."""
         task_head = gw.git(self.root, "rev-parse", "ab/7-parent")
         gw.git(self.root, "switch", "main")
         gw.git(self.root, "merge", "--ff-only", task_head)
-        result = self.operate("reconcile", saved={})
-        self.assertEqual(result["merge"]["head"], task_head)
-        self.adapter.set_state.assert_called_once_with(self.parent, "Done")
+        with self.assertRaisesRegex(AgentBoxError, "fresh validation.*review"):
+            self.operate("reconcile", saved={})
+        self.adapter.set_state.assert_not_called()
 
+    def failed_tracker_merge(self):
+        self.adapter.set_state.side_effect = AgentBoxError("tracker unavailable")
+        with self.assertRaisesRegex(AgentBoxError, "tracker unavailable"):
+            self.operate("merge")
+        self.adapter.set_state.side_effect = None
         self.adapter.set_state.reset_mock()
-        self.parent.state = "Review"
+        return workflow.read_evidence(self.root, self.parent)
+
+    def test_reconcile_rejects_changed_head_even_after_new_work_is_integrated(self):
+        """A second merge cannot reuse acceptance of the previous task tip."""
+        accepted = self.failed_tracker_merge()
         gw.git(self.root, "switch", "ab/7-parent")
         gw.git(self.root, "commit", "--allow-empty", "-m", "new work")
         gw.git(self.root, "switch", "main")
         with self.assertRaisesRegex(AgentBoxError, "not integrated"):
+            self.operate("reconcile", saved=accepted)
+        gw.git(self.root, "merge", "--ff-only", "ab/7-parent")
+        with self.assertRaisesRegex(AgentBoxError, "head.*changed"):
+            self.operate("reconcile", saved=accepted)
+        self.adapter.set_state.assert_not_called()
+        self.assertEqual(self.parent.state, "Review")
+
+    def test_reconcile_rejects_changed_requirements_and_missing_cache(self):
+        """Checked acceptance boxes cannot substitute for acceptance of new requirements."""
+        accepted = self.failed_tracker_merge()
+        self.parent.description += "\n- [x] newly added requirement"
+        with self.assertRaisesRegex(AgentBoxError, "requirements.*changed"):
+            self.operate("reconcile", saved=accepted)
+        with self.assertRaisesRegex(AgentBoxError, "fresh validation.*review"):
             self.operate("reconcile", saved={})
         self.adapter.set_state.assert_not_called()
+        self.assertEqual(self.parent.state, "Review")
+
+    def test_reconcile_applies_current_review_policy_to_original_diff(self):
+        """After merge the base diff is empty, but auto review still covers original work."""
+        self.saved["review"] = {"verdict": "SKIPPED"}
+        accepted = self.failed_tracker_merge()
+        for policy in ("always", "auto"):
+            self.config.workflow.review.policy = policy
+            self.config.workflow.review.max_files = 1
+            with self.assertRaisesRegex(AgentBoxError, "PASS review"):
+                self.operate("reconcile", saved=accepted)
+        self.adapter.set_state.assert_not_called()
+
+    def test_reconcile_accepts_real_review_under_always_and_auto_policies(self):
+        """A saved PASS retains its scope across the base fast-forward."""
+        self.config.workflow.review.policy = "always"
+        self.saved["review"] = {"verdict": "PASS", "summary": "Independent review"}
+        accepted = self.failed_tracker_merge()
+        for policy in ("always", "auto", "off"):
+            self.config.workflow.review.policy = policy
+            result = self.operate("reconcile", saved=accepted)
+            self.assertEqual(result["state"], "Done")
+
+    def test_dispatch_preserves_premerge_acceptance_after_base_advances_further(self):
+        """Recovery loads original acceptance but proves inclusion from the live base."""
+        self.config.workflow.review.policy = "auto"
+        self.saved["review"] = {"verdict": "SKIPPED"}
+        workflow.save_evidence(self.root, self.parent, self.saved)
+        self.adapter.set_state.side_effect = AgentBoxError("tracker unavailable")
+        with self.assertRaisesRegex(AgentBoxError, "tracker unavailable"):
+            self.dispatch(["land", "7", "merge"])
+        gw.git(self.root, "commit", "--allow-empty", "-m", "later base work")
+        self.adapter.set_state.side_effect = None
+        result = self.dispatch(["land", "7", "reconcile"])
+        self.assertEqual(result["state"], "Done")
+
+    def test_snapshot_write_failure_stops_before_git_mutation(self):
+        """A tracker failure must never strand a merge without its acceptance snapshot."""
+        with patch.object(workflow, "save_evidence", side_effect=OSError("disk full")):
+            with self.assertRaisesRegex(OSError, "disk full"):
+                self.operate("merge")
+        self.assertEqual(gw.current_branch(self.root), "ab/7-parent")
+        self.adapter.set_state.assert_not_called()
+
+    def test_saved_base_identity_cannot_select_another_ref(self):
+        """Snapshot names constrain acceptance; only live Git resolution selects refs."""
+        accepted = self.failed_tracker_merge()
+        accepted["local_acceptance"]["base"] = "ab/7-parent"
+        with self.assertRaisesRegex(AgentBoxError, "base identity has changed"):
+            self.operate("reconcile", saved=accepted)
+        self.adapter.set_state.assert_not_called()
+
+    def test_acceptance_snapshot_does_not_replace_live_git_inclusion(self):
+        """Acceptance survives a failed tracker write, but is never a merge registry."""
+        original_base = gw.local_branch_head(self.root, "main")
+        accepted = self.failed_tracker_merge()
+        gw.git(self.root, "reset", "--hard", original_base)
+        with self.assertRaisesRegex(AgentBoxError, "not integrated"):
+            self.operate("reconcile", saved=accepted)
+        self.adapter.set_state.assert_not_called()
+
+    def test_reconcile_rechecks_head_after_acceptance_checks(self):
+        """Concurrent task work cannot be completed using the earlier accepted head."""
+        from agent_box import local_workflow
+        accepted = self.failed_tracker_merge()
+        check = local_workflow._recovery_reasons
+
+        def move_head(*args):
+            reasons = check(*args)
+            gw.git(self.root, "commit", "--allow-empty", "-m", "concurrent work")
+            gw.git(self.root, "branch", "-f", "ab/7-parent", "main")
+            return reasons
+
+        with patch.object(local_workflow, "_recovery_reasons", side_effect=move_head):
+            with self.assertRaisesRegex(AgentBoxError, "head has changed during reconciliation"):
+                self.operate("reconcile", saved=accepted)
+        self.adapter.set_state.assert_not_called()
+
+    def test_off_policy_missing_cache_recovery_still_requires_new_validation(self):
+        """Turning off review never turns off validation of the integrated task head."""
+        self.failed_tracker_merge()
+        workflow.evidence_path(self.root, self.parent).unlink()
+        gw.git(self.root, "switch", "ab/7-parent")
+        with self.assertRaisesRegex(AgentBoxError, "validation"):
+            self.dispatch(["land", "7", "merge"])
+        self.dispatch(["validate", "7", "--", "true"])
+        self.assertEqual(self.dispatch(["land", "7", "merge"])["state"], "Done")
+
+    def test_missing_cache_can_recover_with_fresh_validation_and_independent_review(self):
+        """Auto must request an actual review when the original diff has been lost."""
+        self.failed_tracker_merge()
+        workflow.evidence_path(self.root, self.parent).unlink()
+        with self.assertRaisesRegex(AgentBoxError, "fresh validation.*review"):
+            self.dispatch(["land", "7", "reconcile"])
+        self.parent.labels = ["ab:tier:1"]
+        self.config.workflow.review.policy = "auto"
+        gw.git(self.root, "switch", "ab/7-parent")
+        self.dispatch(["validate", "7", "--", "true"])
+        with self.assertRaisesRegex(AgentBoxError, "PASS review"):
+            self.dispatch(["land", "7", "merge"])
+        report = {"verdict": "PASS", "summary": "Reviewed complete implementation", "findings": []}
+        with patch.object(workflow, "route", return_value={}), \
+             patch.object(workflow, "execute", return_value={"report": report}) as reviewer:
+            self.dispatch(["review", "7", "--primary", "codex"])
+        reviewer.assert_called_once()
+        self.assertIn("review the complete implementation", reviewer.call_args.args[-1])
+        result = self.dispatch(["land", "7", "merge"])
+        self.assertEqual(result["state"], "Done")
 
     def test_tracker_failure_after_merge_is_recovered_without_merging_again(self):
         task_head = gw.git(self.root, "rev-parse", "ab/7-parent")
@@ -123,7 +276,7 @@ class LocalLandTests(unittest.TestCase):
         self.assertEqual((gw.current_branch(self.root), gw.head_sha(self.root)),
                          ("main", task_head))
         self.adapter.set_state.side_effect = None
-        result = self.operate("reconcile", saved={})
+        result = self.operate("reconcile", saved=workflow.read_evidence(self.root, self.parent))
         self.assertEqual(result["merge"]["head"], task_head)
 
     def test_local_mode_rejects_pr_cloud_review_and_merge_methods_without_github(self):

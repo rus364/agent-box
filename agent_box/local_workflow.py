@@ -8,21 +8,48 @@ from .tracker.core import blocking_reasons, completion_reasons
 from .workflow_state import lock
 
 
-def _constraints(root, base, workflow_config, adapter, task, saved, *, require_acceptance,
-                 states=("Review",)):
-    from .workflow import diff_stats, review_required, scope, tree
+def _constraints(adapter, task, *, states=("Review",)):
+    from .workflow import tree
 
     tasks = tree(adapter, task)
     reasons = completion_reasons(task, tasks, str(adapter.identity()["id"]), states=states)
     reasons += blocking_reasons(task, adapter.get)
-    if require_acceptance:
-        accepted = saved if saved.get("scope") == scope(root, base, tasks) else {}
-        if not accepted.get("validation"):
-            reasons.append("Local validation for the current scope is missing")
-        files, lines = diff_stats(root, base)
-        if (review_required(workflow_config.review, tasks, files, lines)
-                and accepted.get("review", {}).get("verdict") != "PASS"):
-            reasons.append("This scope requires a fresh independent PASS review")
+    return reasons, tasks
+
+
+def _acceptance_reasons(config, tasks, accepted):
+    from .workflow import review_required
+
+    reasons = []
+    if not accepted.get("validation") or accepted["validation"].get("exit") != 0:
+        reasons.append("Local validation for the current scope is missing")
+    # An already-integrated scope has lost its original diff. Auto cannot infer
+    # that the work was small from an empty diff against the advanced base.
+    required = (config.review.policy != "off" and accepted.get("integrated_scope"))
+    required = required or review_required(
+        config.review, tasks, accepted.get("files", []), accepted.get("lines", 0))
+    if required and accepted.get("review", {}).get("verdict") != "PASS":
+        reasons.append("This scope requires a fresh independent PASS review")
+    return reasons
+
+
+def _recovery_reasons(config, tasks, saved, base, task_head):
+    from .workflow import requirements
+
+    accepted = saved.get("local_acceptance", {})
+    recovery = ("Switch to the task branch, run fresh validation with workflow validate "
+                "and independent review with ab-review as required, then run workflow land "
+                "PARENT merge; it rechecks acceptance before returning to the base")
+    if not accepted:
+        return ["Pre-merge acceptance cache is missing; " + recovery]
+    reasons = []
+    if accepted.get("head") != task_head:
+        reasons.append("Accepted task head has changed; " + recovery)
+    if accepted.get("base") != base:
+        reasons.append("Accepted base identity has changed; " + recovery)
+    if accepted.get("requirements") != requirements(tasks):
+        reasons.append("Accepted task requirements have changed; " + recovery)
+    reasons += _acceptance_reasons(config, tasks, accepted)
     return reasons
 
 
@@ -54,9 +81,11 @@ def operate(args, root, config, adapter, task, parent, info, saved):
         if args.action == "reconcile":
             if current != base:
                 raise AgentBoxError(f"Switch to local base branch {base} before reconciling")
-            reasons = _constraints(root, base, config.workflow, adapter, task, saved,
-                                   require_acceptance=False, states=("Review", "Done"))
-            if not gw._is_ancestor(root, task_head, base_head):
+            reasons, tasks = _constraints(adapter, task, states=("Review", "Done"))
+            reasons += _recovery_reasons(config.workflow, tasks, saved, base, task_head)
+            if gw.local_branch_head(root, branch) != task_head:
+                reasons.append("Task head has changed during reconciliation; inspect it again")
+            if not gw._is_ancestor(root, task_head, gw.local_branch_head(root, base)):
                 reasons.append(
                     f"Current task branch {branch} is not integrated into local base {base}")
             if reasons:
@@ -69,9 +98,18 @@ def operate(args, root, config, adapter, task, parent, info, saved):
 
         if current != branch:
             raise AgentBoxError(f"Switch to the parent branch {branch} before local landing")
-        reasons = _constraints(root, base, config.workflow, adapter, task, saved,
-                               require_acceptance=True)
+        from .workflow import diff_stats, requirements, save_evidence, scope
+
+        reasons, tasks = _constraints(adapter, task)
         integrated = gw._is_ancestor(root, task_head, base_head)
+        accepted = saved if saved.get("scope") == scope(root, base, tasks) else {}
+        files, lines = diff_stats(root, base)
+        snapshot = {"head": task_head, "base": base, "base_head": base_head,
+                    "requirements": requirements(tasks), "scope": accepted.get("scope"),
+                    "files": files, "lines": lines, "integrated_scope": integrated,
+                    "validation": accepted.get("validation", {}),
+                    "review": accepted.get("review", {})}
+        reasons += _acceptance_reasons(config.workflow, tasks, snapshot)
         if not integrated and not gw._is_ancestor(root, base_head, task_head):
             reasons.append(f"Local base {base} and task branch {branch} have diverged")
         if args.action == "inspect":
@@ -83,6 +121,10 @@ def operate(args, root, config, adapter, task, parent, info, saved):
             raise AgentBoxError("Cannot merge locally: " + "; ".join(reasons))
         if gw.local_branch_head(root, branch) != task_head:
             raise AgentBoxError("Task branch moved after acceptance was checked; inspect it again")
+        # This single disposable snapshot carries acceptance across the base
+        # fast-forward. It never establishes integration or selects a Git ref.
+        saved["local_acceptance"] = snapshot
+        save_evidence(root, task, saved)
         if not integrated:
             gw.git(root, "switch", base)
             gw.git(root, "merge", "--ff-only", task_head)

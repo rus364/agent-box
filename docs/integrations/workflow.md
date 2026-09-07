@@ -213,9 +213,26 @@ fast-forward semantics. The base is not pushed automatically.
 If the tracker update fails after the fast-forward, remain on the base and run
 `workflow land PARENT reconcile`. It rereads completion constraints and marks
 Done only when the current local task-branch tip is contained in the current
-local base. A later commit on the task branch therefore prevents an old merge
-from completing new work. Reconciliation does not reuse the pre-merge scope
-fingerprint because moving the base necessarily changed it.
+local base **and** the pre-merge acceptance still covers that exact head, base
+identity and task requirements. Before changing Git, landing saves one disposable
+acceptance snapshot with the validated scope, original diff size/paths and review
+result. Recovery applies the current off/auto/always review policy to that original
+diff, so advancing the base cannot turn a required review into a skipped one.
+Changed requirements or task heads invalidate acceptance even if the new head is
+also integrated. Git remains the authority for integration; the snapshot neither
+records lifecycle nor selects branch refs. A refusal leaves the parent in Review.
+
+Manual merge or ancestry alone cannot complete an unaccepted parent. If the
+acceptance cache is lost or stale, switch to the current task branch, run
+`workflow validate PARENT -- COMMAND ARGS`, obtain fresh independent review with
+`ab-review` as required, then run `workflow land PARENT merge` again. It rechecks
+acceptance and returns to the base without repeating an already-completed merge.
+For this fresh acceptance of already-integrated work, auto and always require an
+independent PASS: the reviewer must examine the complete implementation against
+requirements using code and Git history, since the now-empty base diff cannot
+describe the original work. If the scope cannot be established, review must be
+INCONCLUSIVE. Policy off still requires fresh validation. Do not reset the base,
+invent a PASS, or edit tracker state to bypass recovery.
 
 Local mode rejects `workflow pr` before any GitHub call. `workflow land
 request-review` points `auto` and `local` review selection to `ab-review`, and
