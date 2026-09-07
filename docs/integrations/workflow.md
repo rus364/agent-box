@@ -11,8 +11,8 @@ task database, bootstrap framework, update patches or agent-turn push hooks.
 | Backlog | Requirements or scheduling are not ready |
 | Ready | Specified; dependencies and ownership are checked before starting |
 | Doing | Assigned to the API-key user; implementation or review fixes underway |
-| Review | Parent implementation accepted locally; PR/review/merge pending |
-| Done | Subtask integrated and validated, or parent actually merged into base |
+| Review | Parent implementation accepted locally; configured landing pending |
+| Done | Subtask integrated and validated, or parent proven merged into base |
 
 A parent task represents a deliverable/spec, and subtasks belong to the bound
 project or, with a recursive binding, to any project under it. Each task owns the
@@ -194,10 +194,39 @@ ambiguity or no progress. The skill keeps iteration history in the tracker; it
 must not reset the bound by restarting. Validation is a real command with an
 observed exit status; the coordinator does not self-review.
 
-## GitHub
+## Landing mode
 
-The enabled GitHub integration and workflow `auto_push` (on within this opt-in
-workflow) push only the parent after a completed subtask. Push checks the live
+`workflow.merge_mode` selects `github` (the default) or `local`. Both routes
+derive the base from origin's default branch and retain scoped validation,
+configured local review policy, ownership, dependency, subtask and checklist
+checks. `workflow finish PARENT` moves accepted parent work to Review and points
+the coordinator at the configured route.
+
+Local mode keeps task publication and GitHub out of the workflow. It requires
+local task and base refs, a clean worktree and the exact parent branch before
+landing. `workflow land PARENT inspect` reports the derived refs and blockers;
+`workflow land PARENT merge` verifies that the local base is an ancestor of the
+validated task head before switching branches, then fast-forwards the base to
+that exact commit. `--method` is incompatible because local landing has only
+fast-forward semantics. The base is not pushed automatically.
+
+If the tracker update fails after the fast-forward, remain on the base and run
+`workflow land PARENT reconcile`. It rereads completion constraints and marks
+Done only when the current local task-branch tip is contained in the current
+local base. A later commit on the task branch therefore prevents an old merge
+from completing new work. Reconciliation does not reuse the pre-merge scope
+fingerprint because moving the base necessarily changed it. Branch cleanup is a
+separate, opt-in operation.
+
+Local mode rejects `workflow pr` before any GitHub call. `workflow land
+request-review` points `auto` and `local` review selection to `ab-review`, and
+rejects explicit cloud Codex or Claude review without contacting GitHub.
+
+## GitHub landing
+
+In the default GitHub mode, the enabled GitHub integration and workflow
+`auto_push` (on within this opt-in workflow) push only the parent after a
+completed subtask. Push checks the live
 remote default branch, unique effective destination, clean worktree and ancestry;
 no forced repair, tag/submodule side pushes or child-branch auto-push.
 

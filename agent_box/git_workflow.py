@@ -182,6 +182,15 @@ def base_ref(root, base):
     raise AgentBoxError(f"Base {base} does not resolve to a commit in this repository")
 
 
+def local_branch_head(root, branch):
+    """Resolve a local branch exactly; landing must not substitute a remote ref."""
+    result = _run(["git", "rev-parse", "--verify", "--quiet",
+                   f"refs/heads/{branch}^{{commit}}"], cwd=root)
+    if result.returncode:
+        raise AgentBoxError(f"Local branch {branch} is required for local merge")
+    return result.stdout.strip()
+
+
 def base_commit(root, base):
     """Where this branch left the base; a moving base tip must not restate scope."""
     return git(root, "merge-base", base_ref(root, base), "HEAD")

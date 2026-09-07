@@ -10,6 +10,7 @@ class WorkflowConfigTests(unittest.TestCase):
         self.assertIn("tracker", data)
         self.assertFalse(data["tracker"]["enabled"])
         self.assertFalse(data["workflow"]["enabled"])
+        self.assertEqual(data["workflow"]["merge_mode"], "github")
         self.assertTrue(all(
             spec["effort"] == "medium"
             for tier in data["workflow"]["tiers"].values()
@@ -38,6 +39,12 @@ class WorkflowConfigTests(unittest.TestCase):
         config = Config.from_dict({"workflow": {"routing": "magic", "weights": {
             "codex": -1, "claude": 0}}})
         self.assertTrue(any("routing" in e for e in config.workflow.validate()))
+
+    def test_merge_mode_round_trips_and_rejects_unknown_values(self):
+        config = Config.from_dict({"workflow": {"merge_mode": "local"}})
+        self.assertEqual(Config.from_dict(config.to_dict()).workflow.merge_mode, "local")
+        config.workflow.merge_mode = "magic"
+        self.assertTrue(any("merge_mode" in error for error in config.workflow.validate()))
 
     def test_default_effort_round_trips_for_both_providers(self):
         loaded = Config.from_dict({"workflow": {"tiers": {"0": {

@@ -12,6 +12,18 @@ import test_workflow_handoff as handoff_tests
 
 
 class ReviewerMatrixTests(unittest.TestCase):
+    def test_config_show_reports_merge_mode(self):
+        from agent_box import cli
+        config = Config()
+        config.workflow.merge_mode = "local"
+        output = io.StringIO()
+        with patch.object(cli, "load_config", return_value=config), \
+             patch.object(cli, "_statusline_note", return_value=""), \
+             patch.object(cli, "_image_note", return_value=""), \
+             patch.object(cli, "_browser_note", return_value=""), contextlib.redirect_stdout(output):
+            cli.config_show()
+        self.assertIn("merge mode                local", output.getvalue())
+
     def test_config_show_distinguishes_reviewer_models_from_worker_models(self):
         from agent_box import cli
         config = Config()

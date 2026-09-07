@@ -603,7 +603,8 @@ class SubtaskIntegrationTests(unittest.TestCase):
             adapter.set_state.side_effect = lambda task, state: setattr(task, "state", state) or task
             config = Config()
             config.workflow.enabled = True
-            config.workflow.auto_push = False
+            config.workflow.merge_mode = "local"
+            config.workflow.auto_push = True
 
             def claimed(_adapter, task_id, resume=False):
                 task = {"7": parent, "8": child}[task_id]
@@ -622,7 +623,9 @@ class SubtaskIntegrationTests(unittest.TestCase):
                 gw.git(root, "add", ".")
                 gw.git(root, "commit", "-m", "subtask work")
                 workflow.dispatch(workflow.parser().parse_args(["validate", "8", "--", "true"]))
-                result = workflow.dispatch(workflow.parser().parse_args(["finish", "8"]))
+                with patch.object(gw, "push_parent") as push:
+                    result = workflow.dispatch(workflow.parser().parse_args(["finish", "8"]))
+                push.assert_not_called()
             self.assertEqual((result["state"], result["parent_branch"]), ("Done", "ab/7-parent-deliverable"))
             self.assertEqual(gw.current_branch(root), "ab/7-parent-deliverable")
             self.assertTrue(gw._is_ancestor(root, "ab/8-first-subtask", "ab/7-parent-deliverable"))

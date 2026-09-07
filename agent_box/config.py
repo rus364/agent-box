@@ -568,6 +568,7 @@ class WorkflowConfig:
     Routing counters and usage caches contain no authoritative task state.
     """
     enabled: bool = False
+    merge_mode: str = "github"
     routing: str = "current"
     weights: dict[str, float] = field(default_factory=lambda: {"codex": 1, "claude": 1})
     tiers: dict[str, dict] = field(default_factory=lambda: model_tiers(range(4)))
@@ -586,6 +587,8 @@ class WorkflowConfig:
     def validate(self):
         import math
         errors = []
+        if self.merge_mode not in ("github", "local"):
+            errors.append("workflow.merge_mode must be github or local")
         if self.routing not in ("current", "weighted", "usage-aware"):
             errors.append("workflow.routing must be current, weighted, or usage-aware")
         if any(not isinstance(v, (int, float)) or not math.isfinite(v) or v < 0
@@ -619,6 +622,7 @@ class WorkflowConfig:
         data = _mapping(data)
         result = cls()
         result.enabled = _bool(data, "enabled", False)
+        result.merge_mode = _str(data, "merge_mode") or result.merge_mode
         result.routing = _str(data, "routing") or result.routing
         for key in ("fallback", "auto_push"):
             setattr(result, key, _bool(data, key, getattr(result, key)))

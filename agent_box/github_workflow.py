@@ -200,7 +200,7 @@ def operate(args, root, config, adapter, task, parent, info, saved):
                 "wait_seconds": config.workflow.review.wait_seconds}
     if reasons:
         raise AgentBoxError("Cannot merge: " + "; ".join(reasons))
-    gh(root, "pr", "merge", pr["number"], "--repo", repo, "--" + args.method,
+    gh(root, "pr", "merge", pr["number"], "--repo", repo, "--" + (args.method or "squash"),
        "--match-head-commit", pr["headRefOid"])
     merged = view(root, repo, pr["number"])
     if merged["state"] != "MERGED":

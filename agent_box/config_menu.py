@@ -12,6 +12,7 @@ from .errors import AgentBoxError
 
 CHOICES = {
     "tracker.provider": TRACKER_PROVIDERS,
+    "workflow.merge_mode": ("github", "local"),
     "workflow.routing": ("current", "weighted", "usage-aware"),
     "workflow.review.routing": ("cross-provider", "same-provider"),
     "workflow.review.policy": ("off", "auto", "always"),
@@ -22,6 +23,7 @@ CHOICES = {
 HELP = {
     "browser.enabled": "Headless Chromium in the box; isolated in-memory profile, same trust boundary as agents. Unavailable in --host mode.",
     "tracker.enabled": "Expose configured tracker connections to agents. Keep credentials out of repository files.",
+    "workflow.merge_mode": "Finish parent work through a GitHub pull request or a local fast-forward into origin's default branch.",
     "workflow.routing": "Workers/scouts: current provider, static weights, or weekly usage-aware weights. Reviewer provider selection is set in review.routing.",
     "workflow.weights": "Relative subscription capacity; set a provider to zero to exclude it from worker/scout routing.",
     "workflow.tiers": "Worker/scout models. Tier 0: scouts only. Tiers 1-3: task complexity. Set exact supported model IDs and effort for both providers; default omits agent-box's effort override.",

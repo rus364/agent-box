@@ -388,7 +388,7 @@ def parser():
             cmd.add_argument("--draft", action="store_true")
         if name == "land":
             cmd.add_argument("action", choices=("inspect", "request-review", "merge", "reconcile"))
-            cmd.add_argument("--method", choices=("merge", "squash", "rebase"), default="squash")
+            cmd.add_argument("--method", choices=("merge", "squash", "rebase"))
     return p
 
 
@@ -419,7 +419,10 @@ def dispatch(args):
     else:
         parent, info, current, base = resolve(root, adapter, task)
     if args.command == "land" and args.action == "reconcile":
-        from .github_workflow import operate
+        if config.workflow.merge_mode == "local":
+            from .local_workflow import operate
+        else:
+            from .github_workflow import operate
         return operate(args, root, config, adapter, task, parent, info, {})
     tasks = tree(adapter, task)
     worker_report = args.command == "report" and args.role == "worker"
@@ -441,7 +444,10 @@ def dispatch(args):
     else:
         saved = evidence(root, task, fingerprint)
     if args.command in ("pr", "land"):
-        from .github_workflow import operate
+        if config.workflow.merge_mode == "local":
+            from .local_workflow import operate
+        else:
+            from .github_workflow import operate
         return operate(args, root, config, adapter, task, parent, info, saved)
     if args.command == "validate":
         command = args.arguments
@@ -542,7 +548,10 @@ def dispatch(args):
                 if gw.current_branch(root) != info["branch"]:
                     raise AgentBoxError("Switch to the parent branch before finishing parent work")
                 adapter.set_state(task, "Review")
-                return {"task": task.id, "state": "Review", "next": "Offer ab-pr; Done follows the actual GitHub merge"}
+                next_step = ("Run ab-land for a local fast-forward into the base"
+                             if config.workflow.merge_mode == "local" else
+                             "Offer ab-pr; Done follows the actual GitHub merge")
+                return {"task": task.id, "state": "Review", "next": next_step}
             branch = current.get("branch")
             if gw.current_branch(root) not in (branch, info["branch"]):
                 raise AgentBoxError("Current branch is not this task or its parent")
@@ -559,7 +568,8 @@ def dispatch(args):
                 save_evidence(root, parent, parent_state)
             adapter.set_state(task, "Done")
             result = {"task": task.id, "state": "Done", "parent_branch": info["branch"]}
-            if config.workflow.auto_push and (config.github.gh_token or config.github.gh_config):
+            if (config.workflow.merge_mode == "github" and config.workflow.auto_push
+                    and (config.github.gh_token or config.github.gh_config)):
                 result["push"] = gw.push_parent(root, info["branch"], info["base"])
             return result
     raise AgentBoxError("Unknown workflow command")

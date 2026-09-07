@@ -25,6 +25,9 @@ class Screen:
 
 
 class ConfigMenuTests(unittest.TestCase):
+    def test_merge_mode_is_an_explicit_menu_choice(self):
+        self.assertEqual(config_menu.CHOICES["workflow.merge_mode"], ("github", "local"))
+
     def edit(self, config, keys, choices=(), link=None):
         import curses
         from agent_box import pathsetup
@@ -59,7 +62,7 @@ class ConfigMenuTests(unittest.TestCase):
     def test_tier_effort_default_can_be_selected_and_saved_for_both_providers(self):
         import curses
         # Open workflow / tiers / tier 0 / provider, then cycle medium to default.
-        prefix = [*[curses.KEY_DOWN] * 10, "\n", *[curses.KEY_DOWN] * 3, "\n", "\n"]
+        prefix = [*[curses.KEY_DOWN] * 10, "\n", *[curses.KEY_DOWN] * 4, "\n", "\n"]
         suffix = ["\x1b", "\x1b", "\x1b", "\x1b", curses.KEY_DOWN, curses.KEY_DOWN, "\n"]
         codex, _ = self.edit(Config(), [*prefix, "\n", curses.KEY_DOWN, *[" "] * 5, *suffix])
         claude, _ = self.edit(Config(), [*prefix, curses.KEY_DOWN, "\n", curses.KEY_DOWN, *[" "] * 4, *suffix])
@@ -69,7 +72,7 @@ class ConfigMenuTests(unittest.TestCase):
     def test_review_routing_can_be_saved_without_changing_policy_or_worker_routing(self):
         """The review submenu must persist strict routing independently of review triggers."""
         import curses
-        prefix = [*[curses.KEY_DOWN] * 10, "\n", *[curses.KEY_DOWN] * 10, "\n"]
+        prefix = [*[curses.KEY_DOWN] * 10, "\n", *[curses.KEY_DOWN] * 11, "\n"]
         suffix = ["\x1b", "\x1b", curses.KEY_DOWN, curses.KEY_DOWN, "\n"]
         config = Config()
         cancelled, _ = self.edit(config, [*prefix, curses.KEY_DOWN, curses.KEY_DOWN, " ", *["\x1b"] * 3])
@@ -85,7 +88,7 @@ class ConfigMenuTests(unittest.TestCase):
     def test_reviewer_effort_menu_uses_provider_choices_without_changing_workers(self):
         import curses
         # workflow / review / tiers / tier 1 / provider
-        prefix = [*[curses.KEY_DOWN] * 10, "\n", *[curses.KEY_DOWN] * 10, "\n", "\n", "\n"]
+        prefix = [*[curses.KEY_DOWN] * 10, "\n", *[curses.KEY_DOWN] * 11, "\n", "\n", "\n"]
         suffix = [*["\x1b"] * 5, curses.KEY_DOWN, curses.KEY_DOWN, "\n"]
         for provider, selection, cycles in (("codex", [], 5), ("claude", [curses.KEY_DOWN], 4)):
             with self.subTest(provider=provider):
