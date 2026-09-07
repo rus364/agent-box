@@ -217,6 +217,20 @@ class AuditTests(unittest.TestCase):
         self.assertTrue(report["counts"])
         self.assertEqual(report["errors"], [])
 
+    def test_an_unreadable_child_is_a_structural_error_even_in_backlog(self):
+        """An unreadable child cannot safely become part of the parent's workflow tree."""
+        parent = Task("1", "1", "Parent", state="Backlog", children=["404"])
+        _, get = tasks(parent)
+        report = audit([parent], get)
+        self.assertFalse(report['clean'])
+        self.assertEqual([item['code'] for item in report['errors']], ['broken-child'])
+
+    def test_a_child_in_the_same_project_remains_valid(self):
+        parent = Task("1", "1", "Parent", state="Backlog", children=["2"])
+        child = Task("2", "1", "Child", state="Backlog", parent="1")
+        items, get = tasks(parent, child)
+        self.assertTrue(audit(items, get)['clean'])
+
     def test_ready_work_without_description_or_tier_still_blocks_cutover(self):
         items, get = tasks(Task("1", "1", "Unspecified", state="Ready"))
         report = audit(items, get)

@@ -165,13 +165,19 @@ from staging. Vikunja adds the inverse on the external task; it requires read
 access there and write access on staging. Ordering is preserved as metadata;
 agent-box enforces only blockers, with its usual dependency checks. Outgoing
 `blocking`, external parent/subtask, historical `copiedfrom`/`copiedto` and
-unknown kinds are skipped for a human decision. Source/backup relations stay intact.
+unknown kinds are skipped for a human decision. If already present on staging,
+they are reported as `manual` with the same policy warning, never as an approved
+automatic transfer. Source/backup relations stay intact.
 
 Skipped or failed external edges are warnings, not cutover blockers. The report
 names source, staging, relation kind, external task and the reason. A short
-staging comment suggests checking access, adding a relation manually, agreeing
-on another type or leaving the original relation alone. Failure to post that
-comment is reported too. Comments never determine resolution; identical journal
+staging comment gives options specific to the relation type. Eligible relations
+may need access or manual addition; unsafe types require agreement on workflow,
+hierarchy or provenance, another suitable type, or keeping the original alone.
+Failure to post that comment is reported as `comment_warning` for the current
+apply attempt. Read-only reports, including repeated completed cutover, do not
+check journal delivery or reconstruct previous comment failures; retain the apply
+output if that diagnostic is needed. Comments never determine resolution; identical journal
 entries are reused only to avoid repeated explanations. Keep work requiring
 clarification in Backlog; a missing `related` alone does not reset its status.
 Ordinary staging CLI writes remain restricted to staging endpoints and relations.
@@ -183,7 +189,7 @@ switches, rerunning cutover only reads the current report. No relation progress
 or resolution flags are stored in the receipt. The ordinary workflow does not
 track omitted adoption relations after cutover; the report and comments explain
 those omissions to people. Ambiguous boards and invalid staging hierarchy remain
-structural errors.
+structural errors, including external or unreadable children of staging parents.
 
 Structured imports remain independent. To re-import into a copied project, use
 `tracker provider vikunja import plan FILE --project NEW_ROOT_ID` (and `--apply`

@@ -72,6 +72,14 @@ def task_problems(task, get):
         except (KeyError, TrackerError) as exc:
             broken_parent = True
             report("broken-parent", f"has an unreadable parent {task.parent}: {exc}")
+    # A parent in scope can pull an external child into workflow.tree even when
+    # the child itself is outside the set of tasks being audited.
+    for child in task.children:
+        try:
+            if get(child).project != task.project:
+                report("split-child", f"has subtask {child} in another project")
+        except (KeyError, TrackerError) as exc:
+            report("broken-child", f"has an unreadable subtask {child}: {exc}")
     for reason in blocking_reasons(task, get):
         # A dependency that is merely unfinished is the workflow working; only a
         # relation that cannot hold at all is a defect to fix during adoption.

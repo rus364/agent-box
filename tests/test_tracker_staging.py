@@ -238,6 +238,57 @@ class StagingTests(unittest.TestCase):
         self.assertFalse(any(path.startswith('/tasks/3/') for path, _ in self.client.writes))
         self.assertIn({'id': int(row['staging'])}, self.client.tasks[3]['related_tasks']['blocking'])
 
+    def test_existing_unsafe_relations_keep_their_policy_and_type_specific_explanation(self):
+        """Presence proves an edge exists, never that its external impact was approved."""
+        kinds = {'parenttask', 'subtask', 'blocking', 'copiedfrom', 'copiedto', 'future-kind'}
+        for kind in kinds:
+            self.client.tasks[5]['related_tasks'][kind] = [{'id': 7}]
+        rows = self.clone()['external_relations']
+        for kind in kinds:
+            self.client.tasks[8]['related_tasks'][kind] = [{'id': 7}]
+        before = copy.deepcopy(self.client.tasks)
+        adapter = self.make()
+        for apply in (False, True):
+            for row in adapter.preserve_external_relations(rows, apply):
+                with self.subTest(kind=row['kind'], apply=apply):
+                    self.assertEqual(row['status'], 'manual')
+                    self.assertTrue(row['warning'])
+        self.assertEqual(self.client.tasks, before)
+        comments = [item['comment'] for item in self.client.journal[8]]
+        self.assertTrue(any('non-hierarchical relation' in text for text in comments))
+        self.assertTrue(any('impact on the external workflow' in text for text in comments))
+        self.assertTrue(any('historical provenance' in text for text in comments))
+        self.assertFalse(any('add the relation manually' in text for text in comments))
+        self.assertTrue(any('already present on staging' in text for text in comments))
+
+    def test_manual_outgoing_blocker_remains_visible_after_cutover(self):
+        self.client.tasks[5]['related_tasks']['blocking'].append({'id': 7})
+        self.clone()
+        self.client.post('/tasks/8/relations', {'other_task_id': 7, 'relation_kind': 'blocking'})
+        before = copy.deepcopy(self.client.tasks)
+        result = adoption.cutover(self.root, self.receipt, True)
+        row, = result['clone']['external_relations']
+        self.assertTrue(result['complete'])
+        self.assertEqual(row['status'], 'manual')
+        self.assertIn("external task's workflow", row['warning'])
+        self.assertEqual(self.client.tasks, before)
+        self.assertEqual(adoption.cutover(self.root, self.receipt)['clone']['external_relations'], [row])
+
+    def test_manual_external_subtask_blocks_cutover_even_when_only_parent_is_in_scope(self):
+        self.client.tasks[5]['related_tasks']['subtask'] = [{'id': 7}]
+        self.clone()
+        self.client.post('/tasks/8/relations', {'other_task_id': 7, 'relation_kind': 'subtask'})
+        before = copy.deepcopy(self.client.tasks)
+        result = adoption.cutover(self.root, self.receipt)
+        self.assertFalse(result['ok'])
+        self.assertEqual(result['clone']['external_relations'][0]['status'], 'manual')
+        self.assertIn('split-child', {error['code'] for error in result['audit']['errors']})
+        with self.assertRaisesRegex(TrackerError, 'structural errors'):
+            adoption.cutover(self.root, self.receipt, True)
+        self.assertEqual(self.client.tasks, before)
+        self.assertEqual(self.client.get('/projects/1')['title'], 'Root')
+        self.assertFalse((self.root / BINDING_FILE).exists())
+
     def test_denied_external_access_is_a_journal_warning_and_cutover_can_retry(self):
         self.client.tasks[5]['related_tasks']['related'] = [{'id': 7}]
         get = self.client.get
@@ -268,6 +319,13 @@ class StagingTests(unittest.TestCase):
             result = adoption.cutover(self.root, self.receipt, True)
             self.assertTrue(result['complete'])
             self.assertIn('comment_warning', result['clone']['external_relations'][0])
+        before = len(self.client.writes)
+        repeated = adoption.cutover(self.root, self.receipt)
+        row, = repeated['clone']['external_relations']
+        self.assertTrue(row['warning'])
+        # A current graph report cannot reconstruct the previous POST failure.
+        self.assertNotIn('comment_warning', row)
+        self.assertEqual(len(self.client.writes), before)
 
     def test_a_lost_external_relation_response_is_confirmed_without_another_post(self):
         self.client.tasks[5]['related_tasks']['related'] = [{'id': 7}]

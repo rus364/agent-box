@@ -2,6 +2,7 @@
 
 Only the live graph determines preservation. Journal comparison below avoids
 reposting an identical explanation; it never decides whether a relation exists.
+Comment failures describe the current apply attempt, not persisted history.
 """
 from dataclasses import replace
 
@@ -23,6 +24,20 @@ def contains(task, kind, other):
     return str(other) in {str(t["id"]) for t in (task.get("related_tasks") or {}).get(kind, [])}
 
 
+def resolution_options(kind):
+    if kind in {"parenttask", "subtask"}:
+        return ("Agree on the task/project structure, choose a non-hierarchical relation, "
+                "or keep the hierarchy only on the original task.")
+    if kind == "blocking":
+        return ("Agree with the project owners on the impact on the external workflow, "
+                "choose another relation type, or keep the blocker only on the original task.")
+    if kind in {"copiedfrom", "copiedto"}:
+        return "Review the historical provenance with the project owners or keep it only on the original task."
+    if kind not in AUTOMATIC:
+        return "Review this unsupported relation with the project owners or keep it only on the original task."
+    return "Check access and add the relation manually, agree on a suitable relation type, or leave it on the original task."
+
+
 def preserve(adapter, relations, apply=False):
     client, results = adapter.client, []
     for relation in relations:
@@ -31,7 +46,7 @@ def preserve(adapter, relations, apply=False):
         reason = REASONS.get(kind, "Unsupported relation type.") if kind not in AUTOMATIC else ""
         current = client.get(f"/tasks/{target}") if target else None
         if current and contains(current, kind, other):
-            row["status"] = "preserved"
+            row["status"] = "manual" if reason else "preserved"
         elif not target:
             row["status"] = "skipped" if reason else "planned"
         else:
@@ -63,18 +78,18 @@ def preserve(adapter, relations, apply=False):
                         row["status"], reason = "preserved", ""
                     elif not reason:
                         reason = "The provider did not confirm the relation."
-            if row["status"] != "preserved" and apply:
-                explanation = reason or "This external relation could not be preserved automatically."
-                message = (f"Adoption: source task #{source} has a {kind} relation to task #{other}. "
-                           f"{explanation} The original relation is unchanged. "
-                           "Check access and add the relation manually, agree on a suitable relation type, "
-                           "or leave it on the original task. Resolve hierarchy or workflow changes with the project owners.")
-                try:
-                    if not any((comment.get("comment") or "").strip() == message for comment in adapter.comments(target)):
-                        adapter.comment(target, message)
-                except TrackerError as exc:
-                    row["comment_warning"] = str(exc)
-                    client.get(f"/tasks/{target}")
+        if target and row["status"] != "preserved" and apply:
+            explanation = reason or "This external relation could not be preserved automatically."
+            presence = "The relation is already present on staging and still needs review. " if row["status"] == "manual" else ""
+            message = (f"Adoption: source task #{source} has a {kind} relation to task #{other}. "
+                       f"{explanation} {presence}The original relation is unchanged. "
+                       f"{resolution_options(kind)}")
+            try:
+                if not any((comment.get("comment") or "").strip() == message for comment in adapter.comments(target)):
+                    adapter.comment(target, message)
+            except TrackerError as exc:
+                row["comment_warning"] = str(exc)
+                client.get(f"/tasks/{target}")
         if row["status"] != "preserved":
             row["warning"] = reason or "External relation is not yet present on staging."
         elif kind in {"blocking", "blocked"}:
