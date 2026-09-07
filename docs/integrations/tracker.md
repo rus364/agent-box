@@ -71,7 +71,10 @@ last read and the write; they are not atomic compare-and-swap.
 
 Comments are a human journal. Nothing machine-readable lives in one: branch,
 base branch and pull request come from Git and GitHub, lifecycle from the
-tracker's own fields.
+tracker's own fields. Tracker content authored by the coordinator follows the
+task's language. Fixed diagnostic comments generated automatically by agent-box
+may be English; they are stable system explanations rather than user-authored
+task content.
 
 Task content uses its language. Markdown checkboxes represent evidenced progress;
 only independent review can provide review acceptance. The coordinator is the
@@ -171,16 +174,19 @@ automatic transfer. Source/backup relations stay intact.
 
 Skipped or failed external edges are warnings, not cutover blockers. The report
 names source, staging, relation kind, external task and the reason. A short
-staging comment gives options specific to the relation type. Eligible relations
-may need access or manual addition; unsafe types require agreement on workflow,
-hierarchy or provenance, another suitable type, or keeping the original alone.
-Failure to post that comment is reported as `comment_warning` for the current
-apply attempt. Read-only reports, including repeated completed cutover, do not
-check journal delivery or reconstruct previous comment failures; retain the apply
-output if that diagnostic is needed. Comments never determine resolution; identical journal
-entries are reused only to avoid repeated explanations. Keep work requiring
-clarification in Backlog; a missing `related` alone does not reset its status.
-Ordinary staging CLI writes remain restricted to staging endpoints and relations.
+staging comment gives options specific to the relation type. These comments are
+fixed agent-box diagnostics and may be English regardless of the task language;
+the coordinator still explains the warnings to the user in the user's language.
+Eligible relations may need access or manual addition; unsafe types require
+agreement on workflow, hierarchy or provenance, another suitable type, or
+keeping the original alone. Failure to post that comment is reported as
+`comment_warning` for the current apply attempt. Read-only reports, including
+repeated completed cutover, do not check journal delivery or reconstruct
+previous comment failures; retain the apply output if that diagnostic is needed.
+Comments never determine resolution; identical journal entries are reused only
+to avoid repeated explanations. Keep work requiring clarification in Backlog; a
+missing `related` alone does not reset its status. Ordinary staging CLI writes
+remain restricted to staging endpoints and relations.
 
 Before switching binding, cutover retries eligible missing external edges and
 rechecks the staging audit. Lost write responses are checked against live tasks.
