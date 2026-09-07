@@ -357,6 +357,27 @@ class WorkerHandoffTests(unittest.TestCase):
         self.assertEqual(workflow.read_evidence(self.root, self.task)["review"]["verdict"], "PASS")
         self.assertNotIn("human_acceptance", workflow.read_evidence(self.root, self.task))
 
+    def test_starting_review_retires_human_acceptance_before_a_report_exists(self):
+        """A pending native review or failed provider must not leave human approval usable."""
+        self.config.workflow.merge_mode = "local"
+        self.config.workflow.review.policy = "always"
+        self.task.description = "- [x] accepted"
+        fingerprint = workflow.scope(self.root, "main", [self.task])
+        for command in ("prepare", "review"):
+            with self.subTest(command=command):
+                workflow.save_evidence(self.root, self.task, {
+                    "scope": fingerprint, "validation": {"exit": 0},
+                    "human_acceptance": {"scope": fingerprint, "actor": "1", "reason": "User accepted"}})
+                if command == "prepare":
+                    self.run_workflow("prepare", "1", "--role", "reviewer", "--primary", "codex")
+                else:
+                    with patch.object(workflow, "run", side_effect=AgentBoxError("provider unavailable")), \
+                         self.assertRaisesRegex(AgentBoxError, "provider unavailable"):
+                        self.run_workflow("review", "1", "--primary", "codex")
+                self.assertNotIn("human_acceptance", workflow.read_evidence(self.root, self.task))
+                with self.assertRaisesRegex(AgentBoxError, "PASS review"):
+                    self.run_workflow("finish", "1")
+
     def test_a_worker_descriptor_cannot_be_spent_on_a_reviewer_report(self):
         """Otherwise a worker's own verdict on its own code would count as review."""
         scope_value, handoff = self.prepare()

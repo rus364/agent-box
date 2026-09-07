@@ -583,6 +583,12 @@ def dispatch(args):
         # The route the delegation was prepared with rides in the descriptor, so
         # the report is ingested at the role and tier it was actually run at.
         selected = descriptor["route"] if descriptor else route(config.workflow, role, tier, args.primary, saved.get("writer"))
+        if role == "reviewer" and args.command != "report":
+            # Even a provider failure or a native reviewer that never returns
+            # must leave no earlier human decision standing in for that review.
+            saved.pop("human_acceptance", None)
+            saved.pop("local_acceptance", None)
+            save_evidence(root, task, saved)
         if args.command == "prepare":
             if role == "worker":
                 retire_acceptance(root, adapter, task, saved)
