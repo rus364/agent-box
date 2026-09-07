@@ -66,6 +66,18 @@ class ConfigMenuTests(unittest.TestCase):
         self.assertEqual(codex.config.workflow.tiers["0"]["codex"]["effort"], "default")
         self.assertEqual(claude.config.workflow.tiers["0"]["claude"]["effort"], "default")
 
+    def test_reviewer_effort_menu_uses_provider_choices_without_changing_workers(self):
+        import curses
+        # workflow / review / tiers / tier 1 / provider
+        prefix = [*[curses.KEY_DOWN] * 10, "\n", *[curses.KEY_DOWN] * 10, "\n", "\n", "\n"]
+        suffix = [*["\x1b"] * 5, curses.KEY_DOWN, curses.KEY_DOWN, "\n"]
+        for provider, selection, cycles in (("codex", [], 5), ("claude", [curses.KEY_DOWN], 4)):
+            with self.subTest(provider=provider):
+                result, _ = self.edit(Config(), [*prefix, *selection, "\n", curses.KEY_DOWN,
+                                                 *[" "] * cycles, *suffix])
+                self.assertEqual(result.config.workflow.review.tiers["1"][provider]["effort"], "default")
+                self.assertEqual(result.config.workflow.tiers["1"][provider]["effort"], "medium")
+
 
 class PathIntegrationTests(unittest.TestCase):
     """Setup begins with PATH, so the menu must not let it be missed silently.

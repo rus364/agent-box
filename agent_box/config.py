@@ -511,8 +511,21 @@ class TrackerConfig:
                     _mapping(data.get("connections")).items() if k in TRACKER_PROVIDERS})
 
 
+def model_tiers(numbers, data=None):
+    """Keep role matrices independent while sharing model/effort defaults."""
+    data = _mapping(data)
+    result = {}
+    for number in numbers:
+        tier = result[str(number)] = {}
+        for provider in AGENT_PROVIDERS:
+            spec = _mapping(_mapping(data.get(str(number))).get(provider))
+            tier[provider] = {"model": _str(spec, "model"), "effort": _str(spec, "effort") or "medium"}
+    return result
+
+
 @dataclass
 class ReviewConfig:
+    tiers: dict[str, dict] = field(default_factory=lambda: model_tiers(range(1, 4)))
     policy: str = "auto"
     max_files: int = 5
     max_lines: int = 200
@@ -534,6 +547,7 @@ class ReviewConfig:
     def from_dict(cls, data):
         data = _mapping(data)
         result = cls()
+        result.tiers = model_tiers(range(1, 4), data.get("tiers"))
         for key in ("policy", "label", "github_provider", "github_model", "github_effort"):
             if key in data and isinstance(data[key], str):
                 setattr(result, key, data[key].strip())
@@ -555,9 +569,7 @@ class WorkflowConfig:
     enabled: bool = False
     routing: str = "current"
     weights: dict[str, float] = field(default_factory=lambda: {"codex": 1, "claude": 1})
-    tiers: dict[str, dict] = field(default_factory=lambda: {
-        str(n): {p: {"model": "", "effort": "medium"} for p in AGENT_PROVIDERS}
-        for n in range(4)})
+    tiers: dict[str, dict] = field(default_factory=lambda: model_tiers(range(4)))
     fallback: bool = True
     reserve_percent: float = 5
     smoothing_hours: float = 24
@@ -591,10 +603,12 @@ class WorkflowConfig:
             value = getattr(self.review, name)
             if not isinstance(value, int) or value < 1:
                 errors.append(f"workflow.review.{name} must be a positive integer")
-        for tier, models in self.tiers.items():
-            for provider, spec in models.items():
-                if spec.get("effort") not in AGENT_EFFORTS.get(provider, ()):
-                    errors.append(f"workflow.tiers.{tier}.{provider}: invalid effort")
+        for path, tiers in (("workflow.tiers", self.tiers),
+                            ("workflow.review.tiers", self.review.tiers)):
+            for tier, models in tiers.items():
+                for provider, spec in models.items():
+                    if spec.get("effort") not in AGENT_EFFORTS.get(provider, ()):
+                        errors.append(f"{path}.{tier}.{provider}: invalid effort")
         return errors
 
     @classmethod
@@ -609,12 +623,7 @@ class WorkflowConfig:
             setattr(result, key, _number(data, key, getattr(result, key)))
         weights = _mapping(data.get("weights"))
         result.weights = {p: _number(weights, p, 1) for p in AGENT_PROVIDERS}
-        tiers = _mapping(data.get("tiers"))
-        for tier in result.tiers:
-            for provider in AGENT_PROVIDERS:
-                spec = _mapping(_mapping(tiers.get(tier)).get(provider))
-                result.tiers[tier][provider] = {
-                    "model": _str(spec, "model"), "effort": _str(spec, "effort") or "medium"}
+        result.tiers = model_tiers(range(4), data.get("tiers"))
         result.review = ReviewConfig.from_dict(data.get("review"))
         return result
 

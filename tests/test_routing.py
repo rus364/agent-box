@@ -13,6 +13,9 @@ class RoutingTests(unittest.TestCase):
         for tier in c.tiers.values():
             for name in tier:
                 tier[name]["model"] = name + "-model"
+        for tier in c.review.tiers.values():
+            for name in tier:
+                tier[name]["model"] = name + "-reviewer"
         return c
 
     def test_weighted_counts_are_independent_per_tier(self):
@@ -45,8 +48,8 @@ class RoutingTests(unittest.TestCase):
         result = r.select(c, "reviewer", 2, "codex", {}, writer="codex")
         self.assertEqual(result["provider"], "claude")
         self.assertEqual(result["fallbacks"][0]["provider"], "codex")
-        c.tiers["2"]["claude"]["model"] = ""
-        c.tiers["2"]["codex"]["model"] = ""
+        c.review.tiers["2"]["claude"]["model"] = ""
+        c.review.tiers["2"]["codex"]["model"] = ""
         with self.assertRaises(Exception):
             r.select(c, "reviewer", 2, "codex", {})
 

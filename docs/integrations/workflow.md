@@ -83,7 +83,12 @@ nested ones next to the files being changed. `prepare` returns the same text as
 
 ## Models and routing
 
-Configure an exact model ID and effort for each provider in four tiers. The
+Configure worker/scout model IDs and effort in `workflow.tiers` (tiers 0-3),
+and independent reviewer settings in `workflow.review.tiers` (tiers 1-3), each
+with `codex` and `claude` entries containing `model` and `effort`. Both matrices
+are available in the configuration menu and `config show`, and travel in the
+container's minimal workflow configuration. Empty reviewer models disable those
+candidates; they never inherit worker models. The
 effort value `default` omits agent-box's effort override; it does not disable
 thinking or pass a literal `none` value to the provider. The existing default
 for newly created configuration remains `medium`. Model fields start empty
@@ -124,7 +129,7 @@ reset remain excluded even if the refresh fails. Active workers are not preempte
 The provider APIs may themselves delay updates; bypassing the local cache cannot
 remove server-side lag.
 
-Review routing is independent: prefer the other **actual writer** provider, then
+Review routing uses only `workflow.review.tiers`: prefer the other **actual writer** provider, then
 a fresh context from the same provider. Worker weights and usage do not select
 reviewers. Fallback defaults on; strict mode stops instead. All attempts preserve
 the selected tier and configured model/effort. An unsupported model is an error,
@@ -135,7 +140,11 @@ profile configured with effort `default` omits the effort field, but a native
 subagent may still inherit effort from its parent session. Such a route reports
 `native_profile_ready=false` and uses managed `codex exec` or `claude -p`, which
 can omit the CLI override and clear inherited Claude effort. Use native
-delegation only when its tool can enforce the configured settings; otherwise
+delegation only after checking the available role's provider, model and effort
+against the exact selected candidate and verifying the tool can enforce them.
+The role name and `native_profile_ready` alone do not establish the runtime
+settings. Each fallback candidate also reports its native profile readiness;
+check that candidate's settings before choosing it. Otherwise
 the managed CLI creates the context inside the existing host/container.
 Provider errors, including Claude exit-zero error envelopes, are not review
 findings. A worker failure after possible side effects requires reconciliation.
@@ -153,7 +162,14 @@ agent-box workflow finish TASK
 ```
 
 Native handoffs use `prepare`, then `report --file FILE --scope DIGEST --handoff
-DESCRIPTOR --provider PROVIDER` for the returned structured report. Evidence is
+DESCRIPTOR --provider ACTUAL_PROVIDER --model ACTUAL_MODEL --effort ACTUAL_EFFORT`
+for the returned structured report. Supply `--fallback-reason REASON` when using
+a fallback candidate; unknown model or effort is a reason to use managed CLI,
+never to guess report fields. Report ingestion checks role/tier and exact
+provider/model/effort against the prepared candidates before changing acceptance.
+Accepted worker/reviewer evidence records the full route and any native fallback
+reason or managed provider failures. These are coordinator-supplied execution
+facts, not provider attestation. Evidence is
 disposable local cache, bound to code, task requirements and scope; another
 device may need to rerun validation/review. Only the actual writer provider survives a scope change,
 because it decides who reviews the result.

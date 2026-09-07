@@ -23,7 +23,8 @@ HELP = {
     "tracker.enabled": "Expose configured tracker connections to agents. Keep credentials out of repository files.",
     "workflow.routing": "Workers/scouts: current provider, static weights, or weekly usage-aware weights. Reviewers prefer the other writer provider.",
     "workflow.weights": "Relative subscription capacity; set a provider to zero to exclude it from worker/scout routing.",
-    "workflow.tiers": "Tier 0: scouts only. Tiers 1-3: task complexity. Set exact supported model IDs and effort for both providers; default omits agent-box's effort override.",
+    "workflow.tiers": "Worker/scout models. Tier 0: scouts only. Tiers 1-3: task complexity. Set exact supported model IDs and effort for both providers; default omits agent-box's effort override.",
+    "workflow.review.tiers": "Independent reviewer models for tiers 1-3 and both providers. Empty models disable that candidate; worker settings are never inherited. Default omits the effort override.",
 }
 
 
@@ -203,7 +204,8 @@ def edit(config):
                 full = (*path, name)
                 value = data[name]
                 options = CHOICES.get(".".join(full))
-                if name == "effort" and path[:2] == ("workflow", "tiers"):
+                if name == "effort" and (path[:2] == ("workflow", "tiers") or
+                                          path[:3] == ("workflow", "review", "tiers")):
                     options = AGENT_EFFORTS[path[-1]]
                 if isinstance(value, bool):
                     data[name] = not value

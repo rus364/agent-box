@@ -95,11 +95,17 @@ class TrackerExposureTests(unittest.TestCase):
             target = Path(directory) / "runtime"
             config = Config()
             config.workflow.enabled = True
+            config.workflow.tiers["2"]["codex"]["model"] = "worker"
+            config.workflow.review.tiers["2"]["codex"] = {"model": "reviewer", "effort": "default"}
             config.tracker.connections["vikunja"] = TrackerConnection("http://localhost:3456", "secret")
             runtime.sync_tracker_runtime(config, target)
             rendered = json.loads((target / "config.json").read_text())
             self.assertEqual(rendered["tracker"]["connections"], {})
             self.assertNotIn("secret", (target / "config.json").read_text())
+            restored = Config.from_dict(rendered)
+            self.assertEqual(restored.workflow.review.tiers["2"]["codex"],
+                             {"model": "reviewer", "effort": "default"})
+            self.assertEqual(restored.workflow.tiers["2"]["codex"]["model"], "worker")
             config.tracker.enabled = True
             runtime.sync_tracker_runtime(config, target)
             rendered = json.loads((target / "config.json").read_text())

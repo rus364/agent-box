@@ -46,7 +46,8 @@ def sync(config, codex_home, claude_home):
             continue
         for role, tiers in ROLES.items():
             for tier in tiers:
-                spec = config.workflow.tiers[str(tier)][provider]
+                matrix = config.workflow.review.tiers if role == "reviewer" else config.workflow.tiers
+                spec = matrix[str(tier)][provider]
                 path = directory / (f"ab-{role}-{tier}" + (".toml" if provider == "codex" else ".md"))
                 marker = directory / (path.name + ".agent-box")
                 intact = False

@@ -37,7 +37,7 @@ def select(config, role, tier, primary, state, usage=None, *, now=None, writer=N
     now = time.time() if now is None else now
     usage = usage or {}
     available = set(AGENT_PROVIDERS if available is None else available)
-    models = config.tiers[str(tier)]
+    models = (config.review.tiers if role == "reviewer" else config.tiers)[str(tier)]
     allowed = [p for p in AGENT_PROVIDERS if p in available and models[p]["model"]]
     writer = writer or primary
     if role == "reviewer":

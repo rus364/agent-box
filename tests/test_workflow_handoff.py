@@ -200,7 +200,7 @@ class WorkerHandoffTests(unittest.TestCase):
     def report_back(self, handed, scope=None):
         scope, handoff = (scope, handed) if scope else handed
         return self.run_workflow("report", "1", "--role", "worker", "--primary", "codex",
-                                 "--provider", "claude", "--file", str(self.report),
+                                 "--provider", "claude", "--model", "m", "--effort", "high", "--file", str(self.report),
                                  "--scope", scope, "--handoff", handoff)
 
     def test_an_edited_working_file_is_the_one_change_a_worker_may_make(self):
@@ -277,14 +277,14 @@ class WorkerHandoffTests(unittest.TestCase):
         workflow.save_evidence(self.root, self.task, forged)
         with self.assertRaisesRegex(AgentBoxError, "outside the configured route"):
             self.run_workflow("report", "1", "--role", "worker", "--primary", "codex",
-                              "--provider", "codex", "--file", str(self.report),
+                              "--provider", "codex", "--model", "m", "--effort", "high", "--file", str(self.report),
                               "--scope", handed[0], "--handoff", handed[1])
 
     def test_a_report_without_the_handoff_descriptor_is_refused(self):
         scope, _ = self.prepare()
         with self.assertRaisesRegex(AgentBoxError, "Pass --handoff"):
             self.run_workflow("report", "1", "--role", "worker", "--primary", "codex",
-                              "--provider", "claude", "--file", str(self.report), "--scope", scope)
+                              "--provider", "claude", "--model", "m", "--effort", "high", "--file", str(self.report), "--scope", scope)
 
     def test_delegating_to_a_worker_retires_earlier_validation_and_review(self):
         """Acceptance recorded before a worker ran cannot describe what it leaves."""
@@ -359,7 +359,7 @@ class WorkerHandoffTests(unittest.TestCase):
         review.write_text(json.dumps({"verdict": "PASS", "summary": "Fine", "findings": []}))
         with self.assertRaisesRegex(AgentBoxError, "different role or tier"):
             self.run_workflow("report", "1", "--role", "reviewer", "--primary", "codex",
-                              "--provider", "claude", "--file", str(review),
+                              "--provider", "claude", "--model", "m", "--effort", "high", "--file", str(review),
                               "--scope", scope_value, "--handoff", handoff)
 
     def test_a_reviewer_descriptor_cannot_be_spent_on_a_worker_report(self):
@@ -383,7 +383,7 @@ class WorkerHandoffTests(unittest.TestCase):
         review = Path(self.directory.name) / "review.json"
         review.write_text(json.dumps({"verdict": "PASS", "summary": "Fine", "findings": []}))
         result = self.run_workflow("report", "1", "--role", "reviewer", "--primary", "codex",
-                                   "--provider", "claude", "--file", str(review),
+                                   "--provider", "claude", "--model", "m", "--effort", "high", "--file", str(review),
                                    "--scope", prepared["scope"], "--handoff", prepared["handoff"])
         self.assertEqual(result["report"]["verdict"], "PASS")
 
@@ -430,6 +430,7 @@ class SubtaskWorkerHandoffTests(unittest.TestCase):
         scope_value, handoff = handed
         return workflow.dispatch(workflow.parser().parse_args(
             ["report", "2", "--role", "worker", "--primary", "codex", "--provider", "claude",
+             "--model", "m", "--effort", "high",
              "--file", str(self.report), "--scope", scope_value, "--handoff", handoff]))
 
     def test_a_subtask_worker_that_only_edited_files_is_still_accepted(self):

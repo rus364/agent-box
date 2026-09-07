@@ -242,6 +242,28 @@ def check_worker_assignment(adapter, task):
         raise AgentBoxError("Worker delegation requires the current user's assigned Doing task")
 
 
+def native_output(args, selected, tier):
+    """Check coordinator-supplied execution facts before changing acceptance.
+
+    A profile name cannot tell us which model actually ran. This is contract
+    evidence from the coordinator, not an attestation from the provider.
+    """
+    actual = {"provider": args.provider, "model": args.model, "effort": args.effort, "tier": tier}
+    candidates = [selected, *selected["fallbacks"]]
+    match = next((i for i, candidate in enumerate(candidates)
+                  if all(candidate.get(key) == value for key, value in actual.items())), None)
+    if match is None:
+        raise AgentBoxError("Reported provider/model/effort is outside the configured route")
+    reason = (args.fallback_reason or "").strip()
+    if match and not reason:
+        raise AgentBoxError("A native fallback reason is required; explain why the preferred route could not run")
+    report = validate_report(json.loads(Path(args.file).read_text()), args.role)
+    output = {"route": actual, "report": report}
+    if reason:
+        output["fallback_reason"] = reason
+    return output
+
+
 def retire_acceptance(root, adapter, task, saved):
     """Drop validation and review around a worker, not only after it reports.
 
@@ -285,8 +307,9 @@ def route(config, role, tier, primary, writer=None):
                         available=[p for p in ("codex", "claude") if shutil.which(p)])
         atomic_write_text(path, json.dumps(counters) + "\n", 0o600)
     from .agent_profiles import available as native_available
-    result["native_profile"] = f"ab-{role}-{tier}"
-    result["native_profile_ready"] = native_available(result["provider"], role, tier, result)
+    for candidate in [result, *result["fallbacks"]]:
+        candidate["native_profile"] = f"ab-{role}-{tier}"
+        candidate["native_profile_ready"] = native_available(candidate["provider"], role, tier, candidate)
     return result
 
 
@@ -353,6 +376,9 @@ def parser():
             cmd.add_argument("--file", required=True)
             cmd.add_argument("--scope", required=True)
             cmd.add_argument("--provider", required=True, choices=("codex", "claude"))
+            cmd.add_argument("--model", required=True, help="Actual model used by the native delegate")
+            cmd.add_argument("--effort", required=True, help="Actual effort used by the native delegate")
+            cmd.add_argument("--fallback-reason", help="Why a native fallback candidate was used")
             cmd.add_argument("--handoff", help="Handoff descriptor returned by prepare")
         if name == "validate":
             cmd.add_argument("arguments", nargs=argparse.REMAINDER)
@@ -408,6 +434,7 @@ def dispatch(args):
             raise AgentBoxError("Pass --handoff with the descriptor prepare returned for this delegation")
         descriptor = read_handoff_descriptor(identity, task, args.scope, args.handoff)
         check_handoff_route(descriptor, args.role, delegation_tier(args, task, args.role))
+        output = native_output(args, descriptor["route"], delegation_tier(args, task, args.role))
     if worker_report:
         saved = read_evidence(root, task)
         accept_worker(root, adapter, task, saved, identity, descriptor)
@@ -457,14 +484,14 @@ def dispatch(args):
                     "instructions": "Fresh English context. " + delegate_contract +
                                     "the coordinator owns the tracker, commits, branches and GitHub. Keep handoff to yourself "
                                     "and pass it back to report; give the delegate repository_instructions, which apply to its work. "
+                                    "Verify the available native role, provider, model and effort match an allowed route candidate; "
+                                    "a role name or native_profile_ready alone is insufficient. Use managed CLI if exact settings "
+                                    "cannot be enforced. Report actual --provider, --model and --effort, and --fallback-reason "
+                                    "when using a fallback candidate. "
                                     "Return the role JSON schema."}
         if args.command == "report":
             if not worker_report and args.scope != fingerprint:
                 raise AgentBoxError("Report scope is stale; review current code and requirements")
-            if args.provider not in [selected["provider"], *[p["provider"] for p in selected["fallbacks"]]]:
-                raise AgentBoxError("Reported provider is outside the configured route")
-            report = validate_report(json.loads(Path(args.file).read_text()), role)
-            output = {"route": {"provider": args.provider, "tier": tier}, "report": report}
         else:
             if role == "worker":
                 retire_acceptance(root, adapter, task, saved)
@@ -492,11 +519,13 @@ def dispatch(args):
                               identity)
         if role == "worker":
             saved["writer"] = output["route"]["provider"]
+            saved["worker"] = {key: output[key] for key in ("route", "fallback_reason", "failures") if key in output}
             save_evidence(root, task, saved)
         if role == "reviewer":
             if scope(root, base, tree(adapter, adapter.get(task.id))) != fingerprint:
                 raise AgentBoxError("Code or requirements changed during review; report is stale")
-            saved["review"] = {**output["report"], "route": output["route"]}
+            saved["review"] = {**output["report"], **{
+                key: output[key] for key in ("route", "fallback_reason", "failures") if key in output}}
             save_evidence(root, task, saved)
         return {**output, "scope": fingerprint}
     if args.command == "finish":

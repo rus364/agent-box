@@ -364,7 +364,9 @@ def config_show() -> None:
     print(f"    review                    {config.workflow.review.policy}; files {config.workflow.review.max_files}; lines {config.workflow.review.max_lines}")
     print(f"    fallback / auto-push      {config.workflow.fallback} / {config.workflow.auto_push}")
     for tier, models in config.workflow.tiers.items():
-        print(f"    tier {tier}: {models}")
+        print(f"    worker/scout tier {tier}: {models}")
+    for tier, models in config.workflow.review.tiers.items():
+        print(f"    reviewer tier {tier}: {models}")
     print(f"  Agent browser (containers)  {'on' if config.browser.enabled else 'off'}{_browser_note(config)}")
     forwarded = ", ".join(config.env.forward) or "(none)"
     print(f"  Forwarded env variables     {forwarded}")
