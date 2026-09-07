@@ -5,8 +5,8 @@ is, whether acceptance is the right acceptance - belongs to the coordinator that
 reads this report, because a rule that guesses at meaning would quietly rewrite
 work nobody asked it to touch.
 
-Re-running the audit is also how adoption resumes: whatever still appears in the
-report is still undone, so no adoption state is stored anywhere.
+Backlog can contain unresolved work. An audit must not pressure an adoption into
+inventing requirements merely to make a report green.
 """
 from __future__ import annotations
 
@@ -15,21 +15,20 @@ from .core import TrackerError, blocking_reasons, checkboxes
 # Warnings and recommendations for the user. They are returned rather than
 # printed so the coordinator can render them in the user's own language.
 NOTES = (
-    "Adoption rewrites tracker data only: task titles, descriptions, lifecycle "
-    "columns, relations and agent-box tier labels. It never writes repository "
-    "files and never implements anything a task asks for.",
-    "Take a snapshot first; it is the only way back. Every change is applied "
-    "task by task and the tracker keeps no undo of its own.",
+    "Adoption normalizes a staging copy. The source stays intact; only after "
+    "audit are the roots renamed and the repository binding switched. It never "
+    "implements, decomposes or designs the work described by tasks.",
     "Name the project exactly as your tracker names it - a numeric ID or a full "
     "project path. Nothing is guessed from a partial title.",
     "A project with subprojects is adopted with the whole subtree, because every "
     "project under the root takes part in the workflow.",
-    "Labels the project already uses belong to the user. Only labels starting "
-    "with 'ab:' are agent-box's to add, change or remove.",
+    "Labels are shared objects. Change only staging task label attachments; "
+    "never rename or delete global labels, including ab: labels.",
     "A description may carry an import marker that identifies the task for a "
     "later re-import. Rewriting the text around it is fine; dropping it is not.",
-    "Existing meaning is preserved. A rewrite makes a task's goal, acceptance "
-    "and validation explicit; it does not decide the work differently.",
+    "Preserve meaning and language. Extract only evidenced acceptance and "
+    "checklists. Unanswered decisions stay in Backlog for ab-interview; planning "
+    "and decomposition belong to ab-plan.",
 )
 
 
@@ -38,7 +37,11 @@ def task_problems(task, get):
     problems = []
 
     def report(code, message):
-        problems.append({"code": code, "message": message})
+        advisory = code in {"no-checklist", "early-progress", "early-assignee", "done-unfinished"}
+        if code in {"no-tier", "no-description"} and task.state in {"Backlog", "Done"}:
+            advisory = True
+        problems.append({"code": code, "message": message,
+                         "severity": "warning" if advisory else "error"})
 
     if task.state == "Unknown":
         report("no-state", "sits in no lifecycle column of its project board")
@@ -82,15 +85,7 @@ def task_problems(task, get):
 
 
 def audit(tasks, get, lifecycle=()):
-    """The whole adoptable scope: board problems, task problems, and their counts.
-
-    `tasks` is None before a repository binding exists. Boards are readable
-    without one, and they are what has to be repaired first, but a task outside
-    the bound subtree has no lifecycle state to audit - reporting every card as
-    stray would be worse than saying the tasks were not audited yet.
-    """
-    audited = tasks is not None
-    tasks = tasks or []
+    """Structural errors block cutover; preparation warnings remain visible."""
     duplicates = {}
     for task in tasks:
         duplicates.setdefault(task.title.strip().casefold(), []).append(task.id)
@@ -100,13 +95,23 @@ def audit(tasks, get, lifecycle=()):
         same = duplicates[task.title.strip().casefold()]
         if len(same) > 1:
             problems.append({"code": "duplicate-title",
+                             "severity": "warning",
                              "message": "shares its title with " + ", ".join(i for i in same if i != task.id)})
         for problem in problems:
             counts[problem["code"]] = counts.get(problem["code"], 0) + 1
         results.append({"id": task.id, "project": task.project, "title": task.title,
                         "state": task.state, "problems": problems})
-    return {"notes": list(NOTES), "scope": "binding" if audited else "boards",
+    errors = [dict(task=row["id"], **problem) for row in results for problem in row["problems"]
+              if problem["severity"] == "error"]
+    return {"notes": list(NOTES), "scope": "project-tree",
             "lifecycle": list(lifecycle),
             "boards": [entry for entry in lifecycle if entry["problems"]],
-            "tasks": results, "counts": counts,
-            "clean": audited and not counts and not any(entry["problems"] for entry in lifecycle)}
+            "tasks": results, "counts": counts, "errors": errors,
+            "clean": not errors and not any(entry["problems"] for entry in lifecycle)}
+
+
+def audit_project(adapter, project, recursive=True):
+    tasks = adapter.search(project, "", recursive)
+    index = {task.id: task for task in tasks}
+    return audit(tasks, lambda ident: index.get(ident) or adapter.get(ident),
+                 adapter.lifecycle_report(adapter.subtree(project, recursive)))

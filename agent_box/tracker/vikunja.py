@@ -18,7 +18,8 @@ LIFECYCLE_ALIASES = {
 
 class VikunjaAdapter:
     capabilities = frozenset({"tasks", "projects", "comments", "checklists", "relations",
-                              "assignees", "boards", "optimistic_checks", "import", "bulk"})
+                              "assignees", "boards", "optimistic_checks", "import", "bulk",
+                              "clone_project_tree", "rename_project"})
 
     def __init__(self, url, token, binding=None, client=None):
         self.client = client or api.VikunjaClient(url, token)
@@ -179,12 +180,29 @@ class VikunjaAdapter:
         return self.client.get("/user")
 
     def projects(self):
-        return api.projects_from_client(self.client)
+        return [{**p, "parent": str(p.get("parent_project_id") or "")}
+                for p in api.projects_from_client(self.client)]
 
     def project(self, reference):
         if str(reference).isdigit():
-            return self.client.get(f"/projects/{int(reference)}")
+            project = self.client.get(f"/projects/{int(reference)}")
+            return {**project, "parent": str(project.get("parent_project_id") or "")}
         return api.ProjectIndex(self.projects()).resolve(str(reference))
+
+    def rename_project(self, project_id, title):
+        if not title.strip() or len(title) > 250:
+            raise TrackerError("Project title must contain 1-250 characters")
+        current = self.project(project_id)
+        if current["title"] != title:
+            self.client.patch(f"/projects/{int(project_id)}", {"title": title})
+        current = self.project(project_id)
+        if current["title"] != title:
+            raise TrackerError(f"Project {project_id} rename was not confirmed", "conflict")
+        return current
+
+    def clone_project_tree(self, source, title, progress, checkpoint, apply=False):
+        from .vikunja_clone import clone
+        return clone(self, source, title, progress, checkpoint, apply)
 
     def normalize(self, raw):
         related = raw.get("related_tasks") or {}

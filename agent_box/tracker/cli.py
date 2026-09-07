@@ -10,7 +10,7 @@ from pathlib import Path
 from ..config import effective_config
 from ..errors import AgentBoxError
 from ..repo_binding import Binding, repository_root, write_setup
-from .audit import audit
+from .audit import audit_project
 from .core import STATES, Task, TrackerError, checkboxes, claim, ready_tasks, set_checkbox
 from .registry import make_adapter
 
@@ -26,10 +26,11 @@ def emit(value):
 def parser():
     p = argparse.ArgumentParser(prog="agent-box tracker")
     p.add_argument("--provider", help="Override the configured provider")
+    p.add_argument("--adoption", type=Path, help="Use a receipt's staging scope without changing the repository binding")
     sub = p.add_subparsers(dest="command", required=True)
     sub.add_parser("status")
     cmd = sub.add_parser("audit")
-    cmd.add_argument("--project", help="Audit boards before a binding exists")
+    cmd.add_argument("--project", help="Audit this project without saving a binding")
     cmd.add_argument("--recursive", action="store_true")
     projects = sub.add_parser("projects")
     projects.add_argument("query", nargs="?", default="")
@@ -73,18 +74,31 @@ def parser():
     cmd.add_argument("--recursive", action="store_true",
                      help="Include every project under the root project in the workflow")
     cmd.add_argument("--apply", action="store_true", help="Save binding and managed repository instructions")
+    cmd = sub.add_parser("adopt")
+    cmd.add_argument("operation", choices=("clone", "boards", "cutover"))
+    cmd.add_argument("--project", help="Exact source project for clone")
+    cmd.add_argument("--receipt", type=Path, required=True)
+    cmd.add_argument("--apply", action="store_true")
     cmd = sub.add_parser("provider")
     cmd.add_argument("provider", choices=("vikunja",))
     cmd.add_argument("arguments", nargs=argparse.REMAINDER)
     return p
 
 
-def context(provider=None, require_binding=False):
+def context(provider=None, require_binding=False, adoption=None):
     binding = None
     try:
         root = repository_root()
     except AgentBoxError:
         root = None
+    if adoption:
+        from .adoption import staging_context
+        if root is None:
+            raise TrackerError("Adoption needs a repository")
+        adapter, binding, root = staging_context(adoption, root)
+        if provider and provider != binding.provider:
+            raise TrackerError("Provider differs from the adoption receipt", "conflict")
+        return adapter, binding, root
     if root and ((root / ".agent-box.json").exists() or (root / ".agent-box.json").is_symlink()):
         binding = Binding.load(root)
     if require_binding and binding is None:
@@ -93,6 +107,24 @@ def context(provider=None, require_binding=False):
 
 
 def dispatch(args):
+    if args.adoption and args.command not in {"audit", "status", "search", "get", "comments", "checklist",
+                                             "update", "tier", "relation", "comment", "check", "state"}:
+        raise TrackerError("Staging adoption only reads and normalizes existing tasks")
+    if args.command == "adopt":
+        from . import adoption
+        root = repository_root()
+        if args.operation == "clone":
+            if not args.project:
+                raise TrackerError("Clone needs --project with an exact source ID or path")
+            return adoption.start(root, args.project, args.receipt, args.provider, args.apply)
+        if args.provider:
+            _, source, _ = adoption.load(args.receipt, root)
+            if args.provider != source.provider:
+                raise TrackerError("Provider differs from the adoption receipt", "conflict")
+        if args.operation == "cutover":
+            return adoption.cutover(root, args.receipt, args.apply)
+        adapter, binding, _ = adoption.staging_context(args.receipt, root)
+        return adapter.initialize_boards(adapter.subtree(binding.project, True), args.apply)
     if args.command == "provider":
         from .extensions import run
         adapter, _, _ = context(args.provider)
@@ -115,7 +147,7 @@ def dispatch(args):
                 "configuration")
         return {"written": write_setup(repository_root(), binding), "binding": asdict(binding),
                 "lifecycle": report}
-    adapter, binding, root = context(args.provider, args.command in ("ready", "next", "claim", "state"))
+    adapter, binding, root = context(args.provider, args.command in ("ready", "next", "claim", "state"), args.adoption)
     if args.command == "status":
         user = adapter.identity()
         return {"provider": args.provider or (binding.provider if binding else effective_config().tracker.provider),
@@ -123,21 +155,15 @@ def dispatch(args):
                 "capabilities": sorted(adapter.capabilities), "binding": asdict(binding) if binding else None,
                 "lifecycle": adapter.lifecycle_report() if binding else []}
     if args.command == "audit":
-        # The bound subtree is the scope: a task outside it has no lifecycle
-        # state to audit, so auditing one would report every card as stray.
-        # Boards are audited without a binding because they are repaired first.
+        if args.project:
+            config = effective_config()
+            provider = args.provider or (binding.provider if binding else config.tracker.provider)
+            selected = Binding(provider, config.tracker.connection(provider).url,
+                               str(adapter.project(args.project)["id"]), args.recursive)
+            adapter, binding = make_adapter(selected, provider), selected
         if binding is None:
-            if not args.project:
-                raise TrackerError("Pass --project to audit boards, or run ab-setup to bind this repository")
-            return audit(None, lambda task_id: None,
-                         adapter.lifecycle_report(adapter.subtree(args.project, args.recursive)))
-        if args.project and str(adapter.project(args.project)["id"]) != binding.project:
-            raise TrackerError(f"This repository is bound to project {binding.project}; "
-                               "the audit runs on the bound subtree")
-        tasks = adapter.search(binding.project, "", binding.recursive)
-        index = {task.id: task for task in tasks}
-        return audit(tasks, lambda task_id: index.get(task_id) or adapter.get(task_id),
-                     adapter.lifecycle_report())
+            raise TrackerError("Pass --project to audit a project, or run ab-setup")
+        return audit_project(adapter, binding.project, binding.recursive)
     if args.command == "projects":
         return [{"id": str(p["id"]), "title": p["title"], "parent": str(p.get("parent_project_id") or "")}
                 for p in adapter.projects() if args.query.casefold() in p["title"].casefold()]
@@ -155,6 +181,12 @@ def dispatch(args):
         results = [task.to_dict(full=False) for task in tasks]
         return (results[0] if results else None) if args.command == "next" else results
     task = adapter.get(args.task)
+    if args.adoption and args.command in {"update", "tier", "relation", "comment", "check", "state"}:
+        scope = set(adapter.subtree(binding.project, True))
+        if task.project not in scope:
+            raise TrackerError("Adoption can only change staging tasks", "conflict")
+        if args.command == "relation" and adapter.get(args.other).project not in scope:
+            raise TrackerError("Adoption relations must stay inside staging", "conflict")
     if args.command == "get":
         return {**task.to_dict(), "comments": adapter.comments(task.id)}
     if args.command == "comments":
@@ -173,9 +205,9 @@ def dispatch(args):
             raise TrackerError("No changes requested")
         return adapter.update(task, fields)
     if args.command == "state":
-        if args.state == "Done":
+        if args.state == "Done" and (not args.adoption or task.state != "Done"):
             raise TrackerError("Use agent-box workflow finish to verify integration or merge before Done")
-        if args.state == "Doing":
+        if args.state == "Doing" and not args.adoption:
             raise TrackerError("Use agent-box tracker claim to assign and start a task")
         return adapter.set_state(task, args.state)
     if args.command == "check":

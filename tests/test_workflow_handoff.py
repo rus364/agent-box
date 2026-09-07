@@ -17,6 +17,7 @@ from unittest.mock import Mock, patch
 from agent_box import git_workflow as gw
 from agent_box import provider_runner
 from agent_box import workflow
+from agent_box import workflow_state
 from agent_box.config import Config
 from agent_box.errors import AgentBoxError
 from agent_box.repo_binding import Binding
@@ -183,6 +184,7 @@ class WorkerHandoffTests(unittest.TestCase):
             patch.object(workflow, "resolve", return_value=(self.task, info, {}, "main")),
             patch.object(workflow, "route", side_effect=selected_route),
             patch.object(workflow, "WORKFLOW_STATE", Path(self.directory.name) / "state"),
+            patch.object(workflow_state, "WORKFLOW_STATE", Path(self.directory.name) / "state"),
         ]
         for item in self.patches:
             item.start()
@@ -611,6 +613,7 @@ class SubtaskIntegrationTests(unittest.TestCase):
             with patch.object(workflow, "effective_config", return_value=config), \
                  patch.object(workflow, "repository_root", return_value=root), \
                  patch.object(Binding, "load", return_value=BINDING), patch.object(workflow, "make_adapter", return_value=adapter), \
+                 patch.object(workflow_state, "WORKFLOW_STATE", state), \
                  patch.object(workflow, "WORKFLOW_STATE", state), patch.object(workflow, "claim", side_effect=claimed):
                 workflow.dispatch(workflow.parser().parse_args(["begin", "8"]))
                 self.assertEqual(gw.current_branch(root), "ab/8-first-subtask")

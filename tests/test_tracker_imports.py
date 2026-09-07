@@ -868,3 +868,41 @@ class BucketInViewTests(unittest.TestCase):
         self.assertEqual(vikunja.task_bucket_in_view(self.TASK, 9)["id"], 90)
         self.assertIsNone(vikunja.task_bucket_in_view(self.TASK, 11))
         self.assertIsNone(vikunja.task_bucket_in_view({}, 8))
+
+
+class ScopedImportTests(unittest.TestCase):
+    def test_a_backup_with_the_same_external_ids_cannot_redirect_a_targeted_import(self):
+        """Project IDs scope markers and checkpoints, including renamed staging roots."""
+        import re
+        class ScopedService(_MemoryVikunja):
+            url = 'https://tracker.example'
+            def paginate(self, path, _params=None):
+                rows = super().paginate(path, _params)
+                if path == '/tasks' and (_params or {}).get('filter'):
+                    ids = {int(n) for n in re.findall(r'\d+', _params['filter'])}
+                    rows = [t for t in rows if t['project_id'] in ids]
+                return rows
+        service = ScopedService()
+        service.projects += [{'id': 2, 'title': 'Root — staging', 'parent_project_id': 0}]
+        for project, task_id in [(1, 10), (2, 20)]:
+            service.tasks.append({'id': task_id, 'project_id': project, 'title': 'Old',
+                                  'description': 'Vikunja external ID: M01-01', 'priority': 4,
+                                  'done': False, 'labels': [], 'related_tasks': {}})
+        plan = vikunja.Plan((vikunja.PlanTask.from_row(row(project='Root')),), Path('plan.csv'), 'scoped')
+        with tempfile.TemporaryDirectory() as tmp:
+            original = json.loads(json.dumps(service.tasks[0]))
+            importer = vikunja.Importer(service, plan, Path(tmp), project='2')
+            before = importer.dry_run()
+            self.assertEqual([a['details']['id'] for a in before['actions'] if a['entity'] == 'task'], [20])
+            result = importer.apply()
+            self.assertTrue(result['verification']['ok'])
+            self.assertEqual(service.tasks[0], original)
+            self.assertEqual(service.projects[1]['title'], 'Root — staging')
+            self.assertTrue(vikunja.verify_plan(service, plan, '2')['ok'])
+            other = vikunja.Importer(service, plan, Path(tmp), project='1')
+            self.assertNotEqual(other.state.path, importer.state.path)
+            self.assertEqual(other.state.data['tasks'], {})
+            importer.state.data['tasks']['M01-01']['id'] = 10
+            importer.state._save()
+            with self.assertRaisesRegex(vikunja.ImportConflict, 'missing Vikunja task'):
+                vikunja.Importer(service, plan, Path(tmp), project='2').apply()

@@ -115,12 +115,11 @@ Complete subtasks only after validation and integration into the parent branch; 
 """
 
 
-def write_setup(root: Path, binding: Binding):
+def setup_content(root: Path, binding: Binding):
     binding.validate()
     content = {
         root / BINDING_FILE: json.dumps(asdict(binding), indent=2, ensure_ascii=False) + "\n",
     }
-    originals = {}
     for name, body, tag in (("AGENTS.md", AGENT_RULES, "workflow"),
                             ("CLAUDE.md", "@AGENTS.md\n", "instructions")):
         path = root / name
@@ -133,6 +132,25 @@ def write_setup(root: Path, binding: Binding):
     for path in content:
         if path.is_symlink() or (path.exists() and not path.is_file()):
             raise AgentBoxError(f"Refusing to replace {path}")
+    return content
+
+
+def write_binding(root: Path, binding: Binding):
+    """Cutover writes one file, after repository instruction checks have passed."""
+    binding.validate()
+    path = root / BINDING_FILE
+    if path.is_symlink() or (path.exists() and not path.is_file()):
+        raise AgentBoxError(f"Refusing to replace {path}")
+    atomic_write_text(path, json.dumps(asdict(binding), indent=2, ensure_ascii=False) + "\n",
+                      path.stat().st_mode & 0o777 if path.exists() else 0o644)
+
+
+def write_setup(root: Path, binding: Binding, *, instructions_only=False):
+    content = setup_content(root, binding)
+    if instructions_only:
+        content.pop(root / BINDING_FILE)
+    originals = {}
+    for path in content:
         originals[path] = (path.read_bytes(), path.stat().st_mode & 0o777) if path.exists() else None
     written = []
     try:

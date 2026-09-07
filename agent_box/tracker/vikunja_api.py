@@ -7,7 +7,6 @@ Extracted from agent-box's original native integration; no installed skill owns 
 from __future__ import annotations
 
 import csv
-import datetime
 import hashlib
 import io
 import json
@@ -1203,6 +1202,28 @@ def inventory_from_client(client):
     return Inventory(projects, tasks, labels)
 
 
+def import_inventory(client, plan, project=None):
+    """An explicit target root owns external IDs even when its backup keeps them.
+
+The plan's root is a local name for that target, so importing into a renamed or
+nested staging root neither renames it nor creates an extra root above it.
+"""
+    if project is None:
+        return inventory_from_client(client)
+    projects = projects_from_client(client)
+    root = ProjectIndex(projects).resolve(project)
+    ids = descendants(projects, root["id"])
+    names = {_normalize_path(task.project_path)[0] for task in plan.tasks}
+    if len(names) != 1:
+        raise ImportConflict("plan must have exactly one root project")
+    projects = [dict(p) for p in projects if int(p["id"]) in ids]
+    for p in projects:
+        if int(p["id"]) == int(root["id"]):
+            p.update(title=next(iter(names)), parent_project_id=0)
+    tasks = collect_tasks(client, project=str(root["id"]), recursive=True)
+    return Inventory(projects, tasks, client.paginate("/labels"))
+
+
 def collect_tasks(client, query=None, project=None, recursive=False, filter_expr=None):
     """List or search tasks server-side.
 
@@ -1250,9 +1271,15 @@ def _state_path(plan, state_dir):
 
 
 class Importer:
-    def __init__(self, client, plan, state_dir=DEFAULT_STATE_DIR, allow_create_root=False):
+    def __init__(self, client, plan, state_dir=DEFAULT_STATE_DIR, allow_create_root=False, project=None):
         self.client = client
         self.plan = plan
+        self.project = str(ProjectIndex(projects_from_client(client)).resolve(project)["id"]) if project is not None else None
+        if self.project is not None:
+            if allow_create_root:
+                raise ImportConflict("--project selects an existing root; do not combine it with --create-root")
+            scope = hashlib.sha256((client.url + "|" + self.project).encode()).hexdigest()
+            state_dir = Path(state_dir) / scope
         self.state = ImportState(_state_path(plan, state_dir), plan.digest)
         self.allow_create_root = allow_create_root
         self._kanban_cache = {}
@@ -1264,7 +1291,7 @@ class Importer:
         }
 
     def dry_run(self):
-        inventory = inventory_from_client(self.client)
+        inventory = import_inventory(self.client, self.plan, self.project)
         state_task_ids = self._state_task_ids()
         result = summarize_actions(build_import_actions(
             self.plan, inventory, not self.allow_create_root, state_task_ids=state_task_ids,
@@ -1273,7 +1300,7 @@ class Importer:
         return result
 
     def apply(self):
-        inventory = inventory_from_client(self.client)
+        inventory = import_inventory(self.client, self.plan, self.project)
         state_task_ids = self._state_task_ids()
         actions = build_import_actions(
             self.plan, inventory, not self.allow_create_root, state_task_ids=state_task_ids,
@@ -1370,7 +1397,7 @@ class Importer:
             )
             report["buckets_set"] += 1
 
-        refreshed = inventory_from_client(self.client)
+        refreshed = import_inventory(self.client, self.plan, self.project)
         resolved = dict(task_ids)
         for external_id, existing in _tasks_by_external(refreshed).items():
             resolved.setdefault(external_id, int(existing["id"]))
@@ -1388,7 +1415,7 @@ class Importer:
             report["relations_created"] += 1
             self.state.record_relation(key, "create")
         report["stale"] = stale
-        report["verification"] = verify_plan(self.client, self.plan)
+        report["verification"] = verify_plan(self.client, self.plan, self.project)
         return report
 
     def _resolve_user(self, username):
@@ -1428,8 +1455,8 @@ def existing_relation_keys(tasks):
     return keys
 
 
-def verify_plan(client, plan):
-    inventory = inventory_from_client(client)
+def verify_plan(client, plan, project=None):
+    inventory = import_inventory(client, plan, project)
     project_index = ProjectIndex(inventory.projects)
     paths = {project_index.path_for(p): p for p in inventory.projects}
     errors = []
@@ -1486,345 +1513,6 @@ def validation_summary(plan):
     }
 
 
-def _bucket_title(buckets, bucket_id):
-    for bucket in buckets:
-        if bucket_id and str(bucket["id"]) == str(bucket_id):
-            return str(bucket.get("title") or "")
-    return None
-
-
-def _task_labels(task):
-    return {label["title"]: int(label["id"]) for label in task.get("labels") or []}
-
-
-def _task_placement(task):
-    """Which column the task sits in, per kanban view, by title."""
-    return {str(bucket.get("project_view_id")): str(bucket.get("title") or "")
-            for bucket in task.get("buckets") or [] if bucket.get("title")}
-
-
-def parse_time(value):
-    try:
-        return datetime.datetime.fromisoformat(
-            re.sub(r"(\.\d{6})\d+", r"\1", str(value)).replace("Z", "+00:00"))
-    except (TypeError, ValueError):
-        return None
-
-
-def existed_before(record, taken):
-    """Whether the tracker already held this when the snapshot was taken.
-
-    An object inside the snapshot's projects that the snapshot does not list is
-    either something created since - which an exact restore deletes - or
-    something moved in from outside it, which the snapshot cannot describe and
-    must not delete. The creation time is what tells the two apart.
-    """
-    created, moment = parse_time(record.get("created")), parse_time(taken)
-    return bool(created and moment and created < moment)
-
-
-def check_snapshot_identity(snapshot, identity):
-    """Refuse a snapshot from another tracker before reading or writing anything.
-
-    Task and project IDs are small integers that collide across instances, so a
-    snapshot from elsewhere would restore over unrelated tasks that happen to
-    share their numbers.
-    """
-    for key in ("projects", "tasks", "boards", "comments", "labels", "taken",
-                "provider", "server"):
-        if key not in snapshot:
-            raise PlanValidationError(f"snapshot is missing {key}; take a new one")
-    for key, value in (identity or {}).items():
-        if snapshot.get(key) != value:
-            raise ImportConflict(
-                f"snapshot was taken from {key} {snapshot.get(key)!r}, not {value!r}", "conflict")
-
-
-def plan_restore(snapshot, identity, inventory, boards, comments):
-    """What it takes to make the tracker the state the snapshot recorded.
-
-    An exact restore: the snapshot wins. Anything created since inside its
-    projects is deleted, anything changed is put back, and a task that was moved
-    away comes back to the project it was in - its ID never changes, so nothing
-    that names the task is broken by moving it.
-
-    What cannot be made true again is refused rather than approximated. A task,
-    project or comment that was deleted since cannot be recreated with its own
-    ID, author and time, and an object that predates the snapshot but is not in
-    it was moved in from somewhere this snapshot cannot describe. Those are
-    blockers: `restore` reports them and, unless the caller allows a partial
-    restore, writes nothing.
-    """
-    check_snapshot_identity(snapshot, identity)
-    taken = snapshot["taken"]
-    saved_tasks = {str(task["id"]): task for task in snapshot["tasks"]}
-    saved_projects = {str(project["id"]): project for project in snapshot["projects"]}
-    saved_labels = {str(label["title"]) for label in snapshot["labels"]}
-    current_tasks = {str(task["id"]): task for task in inventory.tasks}
-    current_projects = {str(project["id"]): project for project in inventory.projects
-                        if int(project["id"]) > 0}
-    actions = []
-    blockers = {"tasks_deleted": [], "projects_deleted": [], "comments_deleted": [],
-                "tasks_moved_in": [], "projects_moved_in": []}
-    outside = {"labels_created": []}
-
-    for project, saved in sorted(saved_projects.items(), key=lambda item: int(item[0])):
-        current = current_projects.get(project)
-        if current is None:
-            blockers["projects_deleted"].append(project)
-            continue
-        changes = {}
-        if str(current.get("parent_project_id") or 0) != str(saved.get("parent_project_id") or 0):
-            changes["parent_project_id"] = int(saved.get("parent_project_id") or 0)
-        if current.get("title") != saved.get("title"):
-            changes["title"] = saved.get("title")
-        if changes:
-            actions.append(Action("restore", "project", project, {"changes": changes}))
-    for project, current in sorted(current_projects.items(), key=lambda item: int(item[0])):
-        if project in saved_projects or str(current.get("parent_project_id") or "") not in saved_projects:
-            continue
-        if existed_before(current, taken):
-            blockers["projects_moved_in"].append(project)
-        else:
-            actions.append(Action("delete", "project", project,
-                                  {"title": current.get("title"),
-                                   "tasks": sorted(task_id for task_id, task in current_tasks.items()
-                                                   if str(task.get("project_id")) == project)}))
-    doomed = {action.key for action in actions if action.entity == "project" and action.kind == "delete"}
-    for action in [item for item in actions if item.key in doomed and item.kind == "delete"]:
-        for task_id in action.details["tasks"]:
-            if existed_before(current_tasks[task_id], taken):
-                blockers["tasks_moved_in"].append(task_id)
-
-    for project in sorted(set(saved_projects) & set(current_projects), key=int):
-        live_views = {str(board["view"]["id"]): board for board in boards.get(project, [])}
-        for board in snapshot["boards"].get(project, []):
-            view = board["view"]
-            if view.get("view_kind") != "kanban":
-                continue
-            live = live_views.get(str(view["id"]))
-            if live is None:
-                blockers.setdefault("views_deleted", []).append(f"{project}:{view['id']}")
-                continue
-            # Columns are matched by title: a column deleted and recreated has a
-            # new ID, and the title is what a card's placement was recorded under.
-            saved_columns = {str(bucket.get("title")): bucket for bucket in board["buckets"]}
-            live_columns = {str(bucket.get("title")): bucket for bucket in live["buckets"]}
-            for title in sorted(set(saved_columns) - set(live_columns)):
-                actions.append(Action("restore", "column", f"{project}:{view['id']}:{title}",
-                                      {"project": project, "view": str(live["view"]["id"]),
-                                       "title": title,
-                                       "position": saved_columns[title].get("position")}))
-            for title in sorted(set(live_columns) - set(saved_columns)):
-                actions.append(Action("delete", "column", f"{project}:{view['id']}:{title}",
-                                      {"project": project, "view": str(live["view"]["id"]),
-                                       "bucket": str(live_columns[title]["id"]), "title": title}))
-            done = _bucket_title(board["buckets"], view.get("done_bucket_id"))
-            if done != _bucket_title(live["buckets"], live["view"].get("done_bucket_id")):
-                actions.append(Action("restore", "view", f"{project}:{view['id']}",
-                                      {"project": project, "view": str(live["view"]["id"]),
-                                       "title": done}))
-
-    for task_id, saved in sorted(saved_tasks.items(), key=lambda item: int(item[0])):
-        current = current_tasks.get(task_id)
-        if current is None:
-            blockers["tasks_deleted"].append(task_id)
-            continue
-        if str(saved.get("project_id")) != str(current.get("project_id")):
-            actions.append(Action("restore", "move", task_id,
-                                  {"changes": {"project_id": int(saved["project_id"])}}))
-        changes = {field: saved.get(field) for field in RESTORABLE_TASK_FIELDS
-                   if saved.get(field) != current.get(field)}
-        if changes:
-            actions.append(Action("restore", "task", task_id, {"changes": changes}))
-        current_labels = _task_labels(current)
-        wanted = _task_labels(saved)
-        add = sorted(set(wanted) - set(current_labels))
-        remove = sorted(set(current_labels) - set(wanted))
-        if add or remove:
-            actions.append(Action("restore", "labels", task_id,
-                                  {"add": add, "remove": [current_labels[title] for title in remove],
-                                   "remove_titles": remove}))
-        users = sorted(str(user["id"]) for user in saved.get("assignees") or [])
-        if users != sorted(str(user["id"]) for user in current.get("assignees") or []):
-            actions.append(Action("restore", "assignees", task_id, {"assignees": users}))
-        placement, live = _task_placement(saved), _task_placement(current)
-        for view_id, title in sorted(placement.items()):
-            if live.get(view_id) != title:
-                actions.append(Action("restore", "placement", f"{task_id}:{view_id}",
-                                      {"task": task_id, "project": str(saved["project_id"]),
-                                       "view": view_id, "title": title}))
-        saved_comments = {str(comment["id"]): comment
-                          for comment in snapshot["comments"].get(task_id, [])}
-        live_comments = {str(comment["id"]): comment for comment in comments.get(task_id, [])}
-        for comment_id, comment in sorted(live_comments.items(), key=lambda item: int(item[0])):
-            # Every comment the snapshot did not record goes, whoever wrote it: a
-            # comment is a human journal and carries no bookkeeping, so nothing
-            # can mark one as the tool's afterwards, and keeping some of them
-            # would make this a merge instead of a restore.
-            if comment_id not in saved_comments:
-                actions.append(Action("delete", "comment", comment_id, {"task": task_id}))
-            elif saved_comments[comment_id].get("comment") != comment.get("comment"):
-                actions.append(Action("restore", "comment", comment_id,
-                                      {"task": task_id, "text": saved_comments[comment_id]["comment"]}))
-        blockers["comments_deleted"].extend(sorted(set(saved_comments) - set(live_comments)))
-
-    for task_id, current in sorted(current_tasks.items(), key=lambda item: int(item[0])):
-        if task_id in saved_tasks or str(current.get("project_id")) not in saved_projects:
-            continue
-        if existed_before(current, taken):
-            blockers["tasks_moved_in"].append(task_id)
-        else:
-            actions.append(Action("delete", "task", task_id, {"title": current.get("title")}))
-
-    # Both sides of the diff are read from the same tasks - the ones the snapshot
-    # describes and that still exist. Widening either side to the whole tracker
-    # would make every relation in every other project look like one this
-    # snapshot wants removed.
-    described = [task_id for task_id in sorted(saved_tasks, key=int) if task_id in current_tasks]
-    saved_edges = relation_edges([saved_tasks[task_id] for task_id in described])
-    live_edges = relation_edges([current_tasks[task_id] for task_id in described])
-    for base, kind, other in sorted(saved_edges - live_edges):
-        if base in current_tasks and other in current_tasks:
-            actions.append(Action("restore", "relation", f"{base}:{kind}:{other}",
-                                  {"base": base, "kind": kind, "other": other, "remove": False}))
-    for base, kind, other in sorted(live_edges - saved_edges):
-        actions.append(Action("restore", "relation", f"{base}:{kind}:{other}",
-                              {"base": base, "kind": kind, "other": other, "remove": True}))
-
-    # Labels are global while a snapshot is one subtree, so only agent-box's own
-    # namespace is restored: a label the user made for another project since is
-    # reported, never deleted by a restore that knows nothing about it.
-    for label in sorted(inventory.labels, key=lambda item: int(item["id"])):
-        if str(label["title"]) in saved_labels:
-            continue
-        if str(label["title"]).startswith("ab:"):
-            actions.append(Action("delete", "label", str(label["id"]), {"title": label["title"]}))
-        else:
-            outside["labels_created"].append(str(label["title"]))
-    return actions, {key: value for key, value in blockers.items() if value}, outside
-
-
-APPLY_ORDER = {("restore", "column"): 0, ("restore", "view"): 1, ("restore", "project"): 2,
-               ("restore", "move"): 3, ("restore", "task"): 4, ("restore", "labels"): 5,
-               ("restore", "assignees"): 6, ("restore", "relation"): 7,
-               ("restore", "placement"): 8, ("restore", "comment"): 9,
-               ("delete", "comment"): 10, ("delete", "task"): 11, ("delete", "project"): 12,
-               ("delete", "column"): 13, ("delete", "label"): 14}
-
-
-def apply_restore(client, actions, labels):
-    """Execute a restore plan in dependency order.
-
-    Columns come back before the cards that belong in them and a task returns to
-    its project before it is placed on that project's board; deletions run last,
-    so a column is only removed once the cards that were in it have gone or moved.
-    """
-    known = {label["title"]: int(label["id"]) for label in labels}
-    views = {}
-
-    def board(project, view_id):
-        if (project, view_id) not in views:
-            views[(project, view_id)] = resolve_kanban_view(client, project, view_id)
-        return views[(project, view_id)]
-
-    for action in sorted(actions, key=lambda item: APPLY_ORDER[(item.kind, item.entity)]):
-        details = action.details
-        step = (action.kind, action.entity)
-        if step == ("restore", "column"):
-            create_bucket(client, details["project"], board(details["project"], details["view"]),
-                          details["title"], details["position"])
-        elif step == ("restore", "view"):
-            view = board(details["project"], details["view"])
-            # A board that named no done column is restored to naming none;
-            # zero is how Vikunja itself records that.
-            if details["title"] is None:
-                set_done_bucket(client, details["project"], view, 0)
-            else:
-                buckets = view_buckets(client, details["project"], view["id"])
-                set_done_bucket(client, details["project"], view,
-                                resolve_bucket(buckets, details["title"])["id"])
-        elif step == ("restore", "project"):
-            client.patch(f"/projects/{int(action.key)}", details["changes"])
-        elif step in (("restore", "move"), ("restore", "task")):
-            client.patch(f"/tasks/{int(action.key)}", details["changes"],
-                         markdown="description" in details["changes"])
-        elif step == ("restore", "labels"):
-            for label_id in details["remove"]:
-                client.delete(f"/tasks/{int(action.key)}/labels/{int(label_id)}")
-            for title in details["add"]:
-                if title not in known:
-                    known[title] = int(client.post("/labels", {"title": title})["id"])
-                attach_label(client, action.key, known[title])
-        elif step == ("restore", "assignees"):
-            client.put(f"/tasks/{int(action.key)}/assignees/bulk",
-                       {"assignees": [{"id": int(user)} for user in details["assignees"]]})
-        elif step == ("restore", "relation"):
-            if details["remove"]:
-                client.delete(f"/tasks/{int(details['base'])}/relations/"
-                              f"{details['kind']}/{int(details['other'])}")
-            else:
-                client.post(f"/tasks/{int(details['base'])}/relations",
-                            {"other_task_id": int(details["other"]), "relation_kind": details["kind"]})
-        elif step == ("restore", "placement"):
-            view = board(details["project"], details["view"])
-            buckets = view_buckets(client, details["project"], view["id"])
-            place_in_bucket(client, details["project"], view,
-                            resolve_bucket(buckets, details["title"]), details["task"])
-        elif step == ("restore", "comment"):
-            client.patch(f"/tasks/{int(details['task'])}/comments/{int(action.key)}?format=markdown",
-                         {"comment": details["text"]}, markdown=True)
-        elif step == ("delete", "comment"):
-            client.delete(f"/tasks/{int(details['task'])}/comments/{int(action.key)}")
-        elif step == ("delete", "task"):
-            client.delete(f"/tasks/{int(action.key)}")
-        elif step == ("delete", "project"):
-            client.delete(f"/projects/{int(action.key)}")
-        elif step == ("delete", "column"):
-            client.delete(f"/projects/{int(details['project'])}/views/"
-                          f"{int(details['view'])}/buckets/{int(details['bucket'])}")
-        else:
-            client.delete(f"/labels/{int(action.key)}")
-    return len(actions)
-
-
-def check_restorable(blockers, allow_partial=False):
-    """An exact restore that cannot be exact writes nothing unless asked to.
-
-    Silently doing most of it would leave a tracker that matches neither the
-    snapshot nor what it was a moment ago, which is the one outcome a restore
-    must not produce by default.
-    """
-    if blockers and not allow_partial:
-        raise ImportConflict(
-            "snapshot cannot be restored exactly: " + "; ".join(
-                f"{name.replace('_', ' ')} {', '.join(values)}"
-                for name, values in sorted(blockers.items()))
-            + ". Pass --allow-partial to restore everything else.", "conflict")
-
-
-def restore(client, snapshot, identity, apply=False, allow_partial=False):
-    """Compare the tracker with a snapshot and, when asked, make it that again."""
-    check_snapshot_identity(snapshot, identity)
-    inventory = inventory_from_client(client)
-    saved_projects = {str(project["id"]) for project in snapshot.get("projects", [])}
-    live = {str(project["id"]) for project in inventory.projects}
-    boards = {project: board_snapshot(client, project)
-              for project in sorted(saved_projects & live, key=int)}
-    comments = {str(task["id"]): client.paginate(f"/tasks/{int(task['id'])}/comments",
-                                                 {"format": "markdown"})
-                for task in inventory.tasks
-                if str(task.get("project_id")) in saved_projects or str(task["id"]) in
-                {str(item["id"]) for item in snapshot.get("tasks", [])}}
-    actions, blockers, outside = plan_restore(snapshot, identity, inventory, boards, comments)
-    if apply:
-        check_restorable(blockers, allow_partial)
-    applied = apply_restore(client, actions, inventory.labels) if apply else 0
-    return {"planned": len(actions), "applied": applied, "dry_run": not apply,
-            "partial": bool(blockers), "actions": [action.as_dict() for action in actions],
-            "blockers": blockers, "outside_scope": outside}
-
-
 def project_tree(projects):
     index = ProjectIndex(projects)
     return [{"id": p["id"], "parent_project_id": p.get("parent_project_id", 0),
@@ -1860,27 +1548,12 @@ def project_children(projects, parent_ref, recursive=False):
             for project in sorted(children, key=index.path_for)]
 
 
-def board_snapshot(client, project_id):
-    """A project's views and the buckets of each kanban one.
-
-    Tasks and projects alone are not a way back: board repair changes views and
-    buckets, and a backup that omits exactly what a command writes is not a
-    backup of it.
-    """
-    boards = []
-    for view in _items(client.get(f"/projects/{int(project_id)}/views")):
-        buckets = view_buckets(client, project_id, view["id"]) if view.get("view_kind") == "kanban" else []
-        boards.append({"view": view, "buckets": buckets})
-    return boards
-
-
 RELATION_INVERSE = {
     "subtask": "parenttask", "parenttask": "subtask", "blocking": "blocked",
     "blocked": "blocking", "related": "related", "duplicateof": "duplicates",
     "duplicates": "duplicateof", "precedes": "follows", "follows": "precedes",
     "copiedfrom": "copiedto", "copiedto": "copiedfrom",
 }
-RESTORABLE_TASK_FIELDS = ("title", "description", "done", "priority")
 
 
 def relation_edges(tasks):
@@ -1901,88 +1574,3 @@ def relation_edges(tasks):
                 else:
                     edges.add((base, kind, other_id))
     return edges
-
-
-def make_snapshot(client, project_ref=None, recursive=False, identity=None):
-    """Everything the tracker holds for a subtree, and which tracker it came from.
-
-    The identity is not decoration: task and project IDs are small integers that
-    collide across instances, so a snapshot from another server would otherwise
-    restore over completely unrelated tasks that happen to share their numbers.
-    """
-    inventory = inventory_from_client(client)
-    projects = inventory.projects
-    tasks = inventory.tasks
-    if project_ref is not None:
-        project = ProjectIndex(projects).resolve(project_ref)
-        ids = descendants(projects, project["id"]) if recursive else {int(project["id"])}
-        projects = [p for p in projects if int(p["id"]) in ids]
-        tasks = [t for t in tasks if int(t.get("project_id") or 0) in ids]
-    return {
-        **(identity or {}),
-        "taken": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "project": str(project_ref) if project_ref is not None else None,
-        "recursive": bool(recursive),
-        "labels": sorted(inventory.labels, key=lambda label: int(label["id"])),
-        "comments": {str(task["id"]): client.paginate(f"/tasks/{int(task['id'])}/comments",
-                                                      {"format": "markdown"})
-                     for task in sorted(tasks, key=lambda item: int(item["id"]))},
-        "boards": {str(project["id"]): board_snapshot(client, project["id"])
-                   for project in sorted(projects, key=lambda item: int(item["id"]))
-                   if int(project["id"]) > 0},
-        "projects": project_tree(projects),
-        "tasks": sorted(tasks, key=lambda task: int(task["id"])),
-    }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-EMPTY_TIMESTAMP = "0001-01-01T00:00:00Z"
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

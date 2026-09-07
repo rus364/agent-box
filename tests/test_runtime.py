@@ -22,6 +22,9 @@ class IsolatedRuntimeTest(unittest.TestCase):
             mock.patch.object(runtime, "BUILD_STATE", state / "build"),
             mock.patch.object(runtime, "NOTIFY_STATE_ROOT", state / "notify"),
             mock.patch.object(runtime, "NOTIFY_CREDENTIALS", state / "runtime/notify.json"),
+            mock.patch.object(runtime, "TRACKER_RUNTIME_DIR", state / "runtime/tracker"),
+            mock.patch.object(runtime, "WORKFLOW_STATE", state / "workflow"),
+            mock.patch.object(runtime, "load_config", return_value=Config()),
             mock.patch.object(runtime, "CLAUDE_HOME", state / "claude"),
         ]
         for patch in self._patches:

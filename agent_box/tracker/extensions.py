@@ -3,9 +3,6 @@ import argparse
 import json
 from pathlib import Path
 
-from ..atomicio import atomic_write_json
-from ..config import effective_config
-from ..repo_binding import server_identity
 from . import vikunja_api as api
 from .core import TrackerError
 
@@ -19,6 +16,7 @@ def parser():
     cmd.add_argument("--state-dir", type=Path, default=api.DEFAULT_STATE_DIR)
     cmd.add_argument("--apply", action="store_true")
     cmd.add_argument("--create-root", action="store_true")
+    cmd.add_argument("--project", help="Resolve external IDs only inside this existing target tree")
     cmd = sub.add_parser("bulk-update")
     cmd.add_argument("file", type=Path)
     cmd.add_argument("--apply", action="store_true")
@@ -45,15 +43,6 @@ def parser():
     cmd.add_argument("label", nargs="?")
     cmd.add_argument("--task")
     cmd.add_argument("--force", action="store_true")
-    cmd = sub.add_parser("snapshot")
-    cmd.add_argument("--project")
-    cmd.add_argument("--recursive", action="store_true")
-    cmd.add_argument("--out", type=Path, help="Write the snapshot to this file instead of stdout")
-    cmd = sub.add_parser("restore")
-    cmd.add_argument("file", type=Path)
-    cmd.add_argument("--apply", action="store_true")
-    cmd.add_argument("--allow-partial", action="store_true",
-                     help="Restore everything that can be restored, leaving the blockers reported")
     cmd = sub.add_parser("external")
     cmd.add_argument("reference")
     cmd = sub.add_parser("task-fields")
@@ -65,17 +54,6 @@ def parser():
     return p
 
 
-def snapshot_identity(provider="vikunja"):
-    """Which tracker a snapshot belongs to.
-
-    Read from the configuration rather than the client, because a container
-    reaches the same server through a rewritten URL; the binding compares
-    identity the same way.
-    """
-    return {"provider": provider,
-            "server": server_identity(effective_config().tracker.connection(provider).url)}
-
-
 def run(adapter, arguments):
     args = parser().parse_args(arguments)
     operation = getattr(args, "operation", "")
@@ -85,21 +63,9 @@ def run(adapter, arguments):
         if operation == "validate":
             return api.validation_summary(plan)
         if operation == "verify":
-            return api.verify_plan(client, plan)
-        importer = api.Importer(client, plan, args.state_dir, allow_create_root=args.create_root)
+            return api.verify_plan(client, plan, args.project)
+        importer = api.Importer(client, plan, args.state_dir, allow_create_root=args.create_root, project=args.project)
         return importer.apply() if args.apply else importer.dry_run()
-    if args.command == "snapshot":
-        snapshot = api.make_snapshot(client, args.project, args.recursive, snapshot_identity())
-        if not args.out:
-            return snapshot
-        # A snapshot is the only way back from adoption, so its path is part of
-        # the result rather than something the caller has to remember.
-        atomic_write_json(args.out, snapshot)
-        return {"path": str(args.out.resolve()), "projects": len(snapshot["projects"]),
-                "tasks": len(snapshot["tasks"])}
-    if args.command == "restore":
-        return api.restore(client, json.loads(args.file.read_text()),
-                           snapshot_identity(), args.apply, args.allow_partial)
     if args.command == "external":
         task = api.TaskIndex(api.inventory_from_client(client).tasks).resolve(args.reference)
         return {"task_id": task["id"], "external_id": api.external_id_from_description(task.get("description", ""))}
@@ -151,7 +117,7 @@ def run(adapter, arguments):
         project = api.ProjectIndex(projects).resolve(args.project or "")
         if operation == "delete":
             if not args.force:
-                raise TrackerError("Project deletion includes its tasks and children; inspect a snapshot and pass --force")
+                raise TrackerError("Project deletion includes its tasks and children; inspect the project tree and pass --force")
             client.delete(f"/projects/{project['id']}")
             return {"deleted": project["id"]}
         fields = {}

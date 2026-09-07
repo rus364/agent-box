@@ -169,6 +169,7 @@ class AgentTreeMountTests(unittest.TestCase):
                  mock.patch.object(runtime, "STATE_ROOT", state), \
                  mock.patch.object(runtime, "BUILD_STATE", state / "build"), \
                  mock.patch.object(runtime, "NOTIFY_STATE_ROOT", state / "notify"), \
+                 mock.patch.object(runtime, "load_config", return_value=runtime.Config()), \
                  mock.patch.object(runtime, "NOTIFY_CREDENTIALS", state / "runtime/notify.json"):
                 argv = runtime.container_argv(
                     Workspace(project, project), [], project, ["claude"])

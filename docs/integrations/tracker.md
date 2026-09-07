@@ -87,7 +87,7 @@ in the provider-neutral commands. Extensions cover:
 
 - `projects tree|children|create|update|delete` and `labels list|create|add|remove|delete`;
 - `board show|buckets|move` with an explicit project and optional view;
-- `snapshot`, `external`, `task-fields`, and `delete-task --force`;
+- `external`, `task-fields`, and `delete-task --force`;
 - `bulk-update FILE` (preview by default, `--apply` to write);
 - `import validate|plan|verify FILE`, accepting CSV or JSON. `plan` is a dry run
   unless `--apply` is supplied; `--create-root` explicitly permits a missing root.
@@ -97,6 +97,81 @@ labels, assignees, scheduling fields, bucket placement, conflict detection,
 resumable state and post-apply verification. They do not become a second task
 source of truth. Use normal task creation for workflow planning; there is no
 requirement to make a subproject per parent task.
+
+## Adoption of existing projects
+
+`ab-adopt` normalizes a native copy of an existing tree. Source tasks, comments,
+attachments, relations and project IDs remain available. It does not plan,
+decompose or implement tasks; unresolved requirements stay in Backlog for
+`ab-interview`, and future planning belongs to `ab-plan`.
+
+```bash
+agent-box tracker audit --project 12 --recursive
+agent-box tracker adopt clone --project 12 --receipt /tmp/adoption.json
+agent-box tracker adopt clone --project 12 --receipt /tmp/adoption.json --apply
+agent-box tracker adopt boards --receipt /tmp/adoption.json --apply
+agent-box tracker --adoption /tmp/adoption.json audit
+agent-box tracker --adoption /tmp/adoption.json update 456 --description-file /tmp/task.md
+agent-box tracker adopt cutover --receipt /tmp/adoption.json
+agent-box tracker adopt cutover --receipt /tmp/adoption.json --apply
+```
+
+The receipt records the repository/server, source and new project IDs, intended
+names and previous binding; it contains no tracker snapshot or task lifecycle.
+Keep it until adoption finishes. The staging scope is temporary and does not
+change `.agent-box.json`. Ordinary staging commands refuse source/external task
+mutations and task creation. Audit reports structural errors separately from
+preparation warnings: a Backlog task without enough evidence for acceptance or a
+tier does not need fabricated requirements to pass adoption.
+
+Cutover checks the copy and audit, prepares managed repository instructions,
+renames the original root to `TITLE — backup ID`, renames staging to `TITLE`, then
+atomically writes the new recursive binding. If interrupted, rerun cutover with
+the same receipt: actual names and binding determine which steps remain. No
+tracker objects are deleted, and no tracker restoration is attempted. Concurrent
+source/staging editing must be paused for adoption; there is no incremental sync.
+A changing source remains usable but the copy can become stale.
+
+A clone interrupted before normalization can be resumed with the same command.
+A `clone.pending` project marks an uncertain duplicate POST result. Inspect the
+provider, enter the verified new ID into `clone.projects` under that source ID,
+and clear `clone.pending` only once verified. If no copy exists, clear the pending
+entry only after confirming the request did not commit. Never infer a successful
+copy from a similar title or automatically retry an uncertain POST. Do not rerun
+clone after normalization: audit staging instead. Incomplete staging projects
+remain for inspection; removal is an explicit separate operation.
+
+Vikunja v2.5.0 uses `POST /api/v2/projects/{id}/duplicate` once per project,
+with `duplicate_shares: true` and the corresponding new parent. The adapter
+matches tasks by their preserved, unique per-project index, adds missing
+assignments after native shares exist, and connects relations between copied
+projects. Internal relations, comments, attachments/files, views/buckets and
+positions use native copying. No custom task/file deep-copy engine is involved.
+
+Labels are still global shared objects: adoption only edits staging task label
+attachments. Shares are copied immediately, without a separate permissions
+lifecycle. Link hashes, project/task IDs and task UIDs change. Ownership follows
+the provider's creating-user rules. Complete history, webhooks, reactions and
+all subscriptions are not migrated. Inspect view filters and embedded links for
+old IDs. Native copying can skip missing attachment files; attachment/comment
+counts and assignment preservation are checked before normalization and again
+before cutover, along with preservation of internal source relations. Added
+journal comments are allowed; cutover cannot conceal an interrupted copy. Relations
+outside the source tree are reported and block automatic cutover; adoption does
+not silently mutate that external graph. Ambiguous boards and incompatible
+parent relations also require separate decisions.
+
+Structured imports remain independent. To re-import into a copied project, use
+`tracker provider vikunja import plan FILE --project NEW_ROOT_ID` (and `--apply`
+after review); `verify` accepts the same scope. The plan's root name denotes that
+explicit target even if staging has a different title or an external parent.
+External IDs resolve only within its subtree, and checkpoints are separated by
+server/target ID. Without `--project`, global marker ambiguity is still refused.
+
+Run `PYTHONPATH=. python3 tests/live_vikunja_adoption.py --run` from the checkout
+for the opt-in live contract check. It creates and removes its own test projects,
+label and attachments; it never accepts an existing project as a target. The
+offline suite does not run it.
 
 ## Container access
 
