@@ -17,7 +17,7 @@ class ReviewerMatrixTests(unittest.TestCase):
         config = Config()
         config.workflow.merge_mode = "local"
         output = io.StringIO()
-        with patch.object(cli, "load_config", return_value=config), \
+        with patch.object(cli, "effective_config", return_value=config), \
              patch.object(cli, "_statusline_note", return_value=""), \
              patch.object(cli, "_image_note", return_value=""), \
              patch.object(cli, "_browser_note", return_value=""), contextlib.redirect_stdout(output):
@@ -30,7 +30,7 @@ class ReviewerMatrixTests(unittest.TestCase):
         config.workflow.tiers["1"]["codex"]["model"] = "worker-model"
         config.workflow.review.tiers["1"]["codex"] = {"model": "review-model", "effort": "default"}
         output = io.StringIO()
-        with patch.object(cli, "load_config", return_value=config), \
+        with patch.object(cli, "effective_config", return_value=config), \
              patch.object(cli, "_statusline_note", return_value=""), \
              patch.object(cli, "_image_note", return_value=""), \
              patch.object(cli, "_browser_note", return_value=""), contextlib.redirect_stdout(output):
@@ -48,7 +48,7 @@ class ReviewerMatrixTests(unittest.TestCase):
                 config.workflow.routing = "weighted"
                 config.workflow.review.routing = mode
                 output = io.StringIO()
-                with patch.object(cli, "load_config", return_value=config), \
+                with patch.object(cli, "effective_config", return_value=config), \
                      patch.object(cli, "_statusline_note", return_value=""), \
                      patch.object(cli, "_image_note", return_value=""), \
                      patch.object(cli, "_browser_note", return_value=""), contextlib.redirect_stdout(output):

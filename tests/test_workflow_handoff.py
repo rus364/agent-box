@@ -342,6 +342,10 @@ class WorkerHandoffTests(unittest.TestCase):
     def test_the_cli_reviewer_path_reaches_the_managed_runner_too(self):
         """`workflow review` calls the same runner, so it breaks on the same mismatch."""
         self.config.workflow.review.policy = "always"
+        fingerprint = workflow.scope(self.root, "main", [self.task])
+        workflow.save_evidence(self.root, self.task, {
+            "scope": fingerprint, "human_acceptance": {
+                "scope": fingerprint, "actor": "1", "reason": "Earlier human decision"}})
 
         def provider(route, role, root, prompt, *, timeout):
             self.assertEqual(role, "reviewer")
@@ -351,6 +355,7 @@ class WorkerHandoffTests(unittest.TestCase):
             result = self.run_workflow("review", "1", "--primary", "codex")
         self.assertEqual(result["report"]["verdict"], "PASS")
         self.assertEqual(workflow.read_evidence(self.root, self.task)["review"]["verdict"], "PASS")
+        self.assertNotIn("human_acceptance", workflow.read_evidence(self.root, self.task))
 
     def test_a_worker_descriptor_cannot_be_spent_on_a_reviewer_report(self):
         """Otherwise a worker's own verdict on its own code would count as review."""

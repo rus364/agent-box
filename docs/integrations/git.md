@@ -42,7 +42,18 @@ only — so the helper is asked for GitHub and for nothing else, and the token
 value is never written into a config file.
 
 Only HTTPS GitHub authentication is forwarded. SSH keys and the host SSH agent
-are never mounted.
+are never mounted. With GitHub token passthrough enabled, the container snapshot
+rewrites `git@github.com:owner/repo.git` and `ssh://git@github.com/owner/repo.git`
+to HTTPS so existing SSH remotes can use that helper. The repository's `origin`
+and the host Git configuration remain unchanged. Other hosts and custom SSH
+addresses are unaffected. These snapshot settings load when a workspace box is
+created; an already running box retains its existing snapshot.
+
+Remote cleanup still needs working Git transport. `Host key verification failed`
+means SSH was attempted without a trusted host key; forwarding a GitHub token
+alone does not authenticate SSH. Use the supported HTTPS route rather than
+disabling host-key verification or mounting private keys. A local merge never
+publishes the base automatically, even when remote cleanup is enabled.
 
 ## One-off overrides
 

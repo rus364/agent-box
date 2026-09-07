@@ -27,6 +27,36 @@ def _git_config_get_all(config_file: Path, key: str) -> list[str]:
 
 
 class SeedGitConfigCredentialHelperTests(unittest.TestCase):
+    def test_enabled_github_transport_uses_https_without_changing_repository_urls(self):
+        """The token can authenticate HTTPS; copied SSH URLs cannot use it."""
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "git"
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            config = Config()
+            config.git.identity = False
+            cases = {
+                "git@github.com:owner/repo.git": "https://github.com/owner/repo.git",
+                "ssh://git@github.com/owner/repo.git": "https://github.com/owner/repo.git",
+                "git@elsewhere.example:owner/repo.git": "git@elsewhere.example:owner/repo.git",
+                "git@github.com.evil:owner/repo.git": "git@github.com.evil:owner/repo.git",
+            }
+            for enabled in (False, True):
+                config.github.gh_token = enabled
+                with mock.patch.dict(os.environ, {"AGENT_BOX_GH_TOKEN": ""}):
+                    runtime.seed_git_config(target, config)
+                env = dict(os.environ, GIT_CONFIG_GLOBAL=str(target / "config"), GIT_CONFIG_NOSYSTEM="1")
+                for original, rewritten in cases.items():
+                    with self.subTest(enabled=enabled, original=original):
+                        subprocess.run(["git", "config", "remote.origin.url", original], cwd=repo, check=True)
+                        result = subprocess.check_output(["git", "remote", "get-url", "--push", "origin"],
+                                                         cwd=repo, env=env, text=True).strip()
+                        self.assertEqual(result, rewritten if enabled else original)
+                        stored = subprocess.check_output(["git", "config", "--local", "remote.origin.url"],
+                                                         cwd=repo, text=True).strip()
+                        self.assertEqual(stored, original)
+
     def test_gh_token_enabled_configures_credential_helper(self):
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "git"

@@ -416,7 +416,7 @@ class ConfigSurfaceTests(unittest.TestCase):
 
     def _show(self, config: Config) -> str:
         buffer = io.StringIO()
-        with mock.patch.object(cli_module, "load_config", return_value=config), \
+        with mock.patch.object(cli_module, "effective_config", return_value=config), \
              contextlib.redirect_stdout(buffer):
             cli_module.config_show()
         return buffer.getvalue()

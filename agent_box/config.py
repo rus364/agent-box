@@ -715,3 +715,11 @@ def effective_config() -> Config:
         return Config.from_dict(read_json(Path(runtime_file)))
     except (OSError, ValueError, TypeError) as exc:
         raise AgentBoxError(f"Cannot read rendered workflow configuration: {exc}") from None
+
+
+def effective_config_source() -> dict[str, str]:
+    """Identify the source without dumping the credentials it may contain."""
+    runtime_file = os.environ.get("AGENT_BOX_RUNTIME_CONFIG")
+    if runtime_file:
+        return {"kind": "runtime", "path": str(Path(runtime_file))}
+    return {"kind": "host" if CONFIG_FILE.is_file() else "defaults", "path": str(CONFIG_FILE)}

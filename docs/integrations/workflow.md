@@ -184,6 +184,11 @@ because it decides who reviews the result.
 
 Review policy is off/auto/always. Auto considers explicit review labels, sensitive
 paths, changed-file count and added/deleted lines (binary changes require review).
+`workflow inspect TASK` on the task branch reports the effective configuration
+source, merge mode, exact scope, validation and every review trigger. Thresholds
+are inclusive: two files trigger review when `max_files=2`. `config show` reads
+the same rendered configuration inside a container; host-only settings are not
+part of that artifact.
 Priority is unrelated. Presets are thorough (2 files/80 lines), balanced (5/200)
 and light (10/500); all values and paths are editable. Apply the policy both to
 subtasks and the complete parent diff. SKIPPED, INCONCLUSIVE and provider errors
@@ -210,14 +215,35 @@ validated task head before switching branches, then fast-forwards the base to
 that exact commit. `--method` is incompatible because local landing has only
 fast-forward semantics. The base is not pushed automatically.
 
+For a local parent, the coordinator can record the user's explicit acceptance
+of the inspected, validated result as an alternative to independent review:
+
+```bash
+agent-box workflow inspect PARENT
+agent-box workflow approve PARENT --scope DIGEST --reason 'User accepted the inspected result'
+agent-box workflow finish PARENT
+agent-box workflow land PARENT merge
+```
+
+Use the exact scope returned by inspect, after successful validation and completed
+acceptance checks. `approve` records the actor and reason separately as human
+acceptance; it does not write a reviewer PASS, change policy or mark the task Done.
+As with delegated reports, this is a coordinator contract, not authentication of
+the human's identity. A request to avoid delegation alone is not approval. Code
+or requirement changes, a worker, or a later independent review retire the
+decision. GitHub mode and subtasks do not accept this exception. Ownership,
+checklists, dependencies, validation and merge proof remain mandatory, and the
+normal post-merge cleanup still runs.
+
 If the tracker update fails after the fast-forward, remain on the base and run
 `workflow land PARENT reconcile`. It rereads completion constraints and marks
 Done only when the current local task-branch tip is contained in the current
 local base **and** the pre-merge acceptance still covers that exact head, base
 identity and task requirements. Before changing Git, landing saves one disposable
 acceptance snapshot with the validated scope, original diff size/paths and review
-result. Recovery applies the current off/auto/always review policy to that original
-diff, so advancing the base cannot turn a required review into a skipped one.
+result, including any explicit human acceptance. Recovery applies the current
+off/auto/always review policy to that original diff, accepting the original scoped
+human decision when present, so advancing the base cannot manufacture acceptance.
 Changed requirements or task heads invalidate acceptance even if the new head is
 also integrated. Git remains the authority for integration; the snapshot neither
 records lifecycle nor selects branch refs. A refusal leaves the parent in Review.
@@ -228,9 +254,10 @@ acceptance cache is lost or stale, switch to the current task branch, run
 `ab-review` as required, then run `workflow land PARENT merge` again. It rechecks
 acceptance and returns to the base without repeating an already-completed merge.
 For this fresh acceptance of already-integrated work, auto and always require an
-independent PASS: the reviewer must examine the complete implementation against
-requirements using code and Git history, since the now-empty base diff cannot
-describe the original work. If the scope cannot be established, review must be
+independent PASS or new explicit human acceptance. The reviewer or user must
+examine the complete implementation against requirements using code and Git
+history, since the now-empty base diff cannot describe the original work.
+If the scope cannot be established, review must be
 INCONCLUSIVE. Policy off still requires fresh validation. Do not reset the base,
 invent a PASS, or edit tracker state to bypass recovery.
 

@@ -28,7 +28,7 @@ import sys
 from pathlib import Path
 
 from .atomicio import atomic_write_text
-from .config import effective_config
+from .config import effective_config, effective_config_source
 from .errors import AgentBoxError
 from . import git_workflow as gw
 from .paths import WORKFLOW_STATE
@@ -146,12 +146,54 @@ def diff_stats(root, base):
 
 
 def review_required(config, tasks, files, lines):
+    return bool(review_reasons(config, tasks, files, lines))
+
+
+def review_reasons(config, tasks, files, lines):
+    """Share the decision with diagnostics so thresholds cannot be misreported."""
     if config.policy == "off":
-        return False
-    return (config.policy == "always" or len(files) >= config.max_files or lines >= config.max_lines
-            or any(config.label in task.labels for task in tasks)
-            or any(fnmatch.fnmatch(path, pattern) or fnmatch.fnmatch("/" + path, pattern)
-                   for path in files for pattern in config.sensitive_paths))
+        return []
+    reasons = []
+    if config.policy == "always":
+        reasons.append("review policy is always")
+    if len(files) >= config.max_files:
+        reasons.append(f"changed files {len(files)} >= max_files {config.max_files}")
+    if lines >= config.max_lines:
+        reasons.append(f"changed lines {lines} >= max_lines {config.max_lines}")
+    for task in tasks:
+        if config.label in task.labels:
+            reasons.append(f"task {task.id} has review label {config.label}")
+    for path in files:
+        for pattern in config.sensitive_paths:
+            if fnmatch.fnmatch(path, pattern) or fnmatch.fnmatch("/" + path, pattern):
+                reasons.append(f"sensitive path {path} matches {pattern}")
+    return reasons
+
+
+def human_accepted(saved):
+    accepted = saved.get("human_acceptance", {})
+    return bool(saved.get("scope") and accepted.get("scope") == saved["scope"]
+                and accepted.get("actor") and accepted.get("reason"))
+
+
+def review_blockers(config, tasks, files, lines, saved, *, allow_human=False, integrated=False):
+    reasons = review_reasons(config, tasks, files, lines)
+    if integrated and config.policy != "off":
+        reasons.append("already integrated scope requires acceptance of the original work")
+    if not reasons or saved.get("review", {}).get("verdict") == "PASS":
+        return []
+    if allow_human and human_accepted(saved):
+        return []
+    message = "This scope requires a fresh independent PASS review: " + "; ".join(reasons)
+    if allow_human:
+        message += ". Explicit user acceptance can instead be recorded with workflow approve; inspect the current scope first"
+    return [message]
+
+
+def configuration_summary(config):
+    return {"source": effective_config_source(), "merge_mode": config.workflow.merge_mode,
+            "cleanup_local_branches": config.workflow.cleanup_local_branches,
+            "cleanup_remote_branches": config.workflow.cleanup_remote_branches}
 
 
 def resolve(root, adapter, task):
@@ -274,6 +316,7 @@ def retire_acceptance(root, adapter, task, saved):
     check_worker_assignment(adapter, task)
     saved.pop("validation", None)
     saved.pop("review", None)
+    saved.pop("human_acceptance", None)
     saved.pop("local_acceptance", None)
     save_evidence(root, task, saved)
 
@@ -359,7 +402,7 @@ def begin(root, adapter, task, resume):
 def parser():
     p = argparse.ArgumentParser(prog="agent-box workflow")
     sub = p.add_subparsers(dest="command", required=True)
-    for name in ("begin", "prepare", "run", "review", "validate", "report", "finish", "pr", "land", "writer"):
+    for name in ("begin", "inspect", "approve", "prepare", "run", "review", "validate", "report", "finish", "pr", "land", "writer"):
         cmd = sub.add_parser(name)
         cmd.add_argument("task")
         cmd.add_argument("--primary", choices=("codex", "claude"), default=os.environ.get("AGENT_BOX_PRIMARY_PROVIDER"))
@@ -367,6 +410,9 @@ def parser():
             cmd.add_argument("--provider", choices=("codex", "claude"), required=True)
         if name == "begin":
             cmd.add_argument("--resume", action="store_true")
+        if name == "approve":
+            cmd.add_argument("--scope", required=True, help="Exact scope returned by workflow inspect")
+            cmd.add_argument("--reason", required=True, help="The user's explicit acceptance, recorded by the coordinator")
         if name in ("prepare", "run", "report"):
             cmd.add_argument("--role", choices=("worker", "reviewer", "scout"), default="worker")
         if name in ("prepare", "run", "review", "report"):
@@ -419,7 +465,7 @@ def dispatch(args):
         return {"task": task.id, "writer": args.provider}
     if args.command == "begin":
         with lock(root, "work"):
-            return begin(root, adapter, task, args.resume)
+            return {**begin(root, adapter, task, args.resume), "configuration": configuration_summary(config)}
     scouting = getattr(args, "role", None) == "scout"
     if scouting:
         parent, info, current, base = task, {}, {}, "HEAD"
@@ -452,6 +498,47 @@ def dispatch(args):
         accept_worker(root, adapter, task, saved, identity, descriptor)
     else:
         saved = evidence(root, task, fingerprint)
+    if args.command == "inspect":
+        expected_branch = current.get("branch") or info["branch"]
+        if gw.current_branch(root) != expected_branch:
+            raise AgentBoxError(f"Switch to {expected_branch} before inspecting its acceptance scope")
+        files, lines = diff_stats(root, base)
+        reasons = review_reasons(config.workflow.review, tasks, files, lines)
+        integrated = (config.workflow.merge_mode == "local" and task.id == parent.id
+                      and gw._is_ancestor(root, gw.head_sha(root), gw.local_branch_head(root, base)))
+        if integrated and config.workflow.review.policy != "off":
+            reasons.append("already integrated scope requires acceptance of the original work")
+        return {"task": task.id, **info, "head": gw.head_sha(root), "scope": fingerprint,
+                "configuration": configuration_summary(config),
+                "review": {"policy": config.workflow.review.policy, "files": len(files), "lines": lines,
+                           "max_files": config.workflow.review.max_files, "max_lines": config.workflow.review.max_lines,
+                           "required": bool(reasons), "reasons": reasons,
+                           "independent_verdict": saved.get("review", {}).get("verdict"),
+                           "human_accepted": human_accepted(saved)},
+                "validation": saved.get("validation")}
+    if args.command == "approve":
+        if config.workflow.merge_mode != "local" or task.id != parent.id:
+            raise AgentBoxError("Human acceptance is available only for a local parent task")
+        if not args.reason.strip():
+            raise AgentBoxError("Human acceptance requires a non-empty reason from the user")
+        with lock(root, "work"):
+            task = adapter.get(task.id)
+            tasks = tree(adapter, task)
+            if gw.current_branch(root) != info["branch"]:
+                raise AgentBoxError("Switch to the parent branch before recording human acceptance")
+            if args.scope != fingerprint or scope(root, base, tasks) != fingerprint:
+                raise AgentBoxError("Approval scope is stale; inspect the current result and ask the user again")
+            reasons = completion_reasons(task, tasks, str(adapter.identity()["id"]), states=("Doing", "Review"))
+            reasons += blocking_reasons(task, adapter.get)
+            if reasons:
+                raise AgentBoxError("Cannot accept: " + "; ".join(reasons))
+            saved = evidence(root, task, fingerprint)
+            if saved.get("validation", {}).get("exit") != 0:
+                raise AgentBoxError("Successful validation for this exact scope is required before human acceptance")
+            saved["human_acceptance"] = {"scope": fingerprint, "actor": str(adapter.identity()["id"]),
+                                        "reason": args.reason.strip()}
+            save_evidence(root, task, saved)
+        return {"task": task.id, "head": gw.head_sha(root), "human_acceptance": saved["human_acceptance"]}
     if args.command in ("pr", "land"):
         if config.workflow.merge_mode == "local":
             from .local_workflow import operate
@@ -550,6 +637,7 @@ def dispatch(args):
         if role == "reviewer":
             if scope(root, base, tree(adapter, adapter.get(task.id))) != fingerprint:
                 raise AgentBoxError("Code or requirements changed during review; report is stale")
+            saved.pop("human_acceptance", None)
             saved["review"] = {**output["report"], **{
                 key: output[key] for key in ("route", "fallback_reason", "failures") if key in output}}
             save_evidence(root, task, saved)
@@ -561,8 +649,10 @@ def dispatch(args):
         if reasons:
             raise AgentBoxError("Cannot finish: " + "; ".join(reasons))
         files, lines = diff_stats(root, base)
-        if review_required(config.workflow.review, tasks, files, lines) and saved.get("review", {}).get("verdict") != "PASS":
-            raise AgentBoxError("This scope requires a fresh independent PASS review")
+        review_errors = review_blockers(config.workflow.review, tasks, files, lines, saved,
+                                       allow_human=config.workflow.merge_mode == "local" and task.id == parent.id)
+        if review_errors:
+            raise AgentBoxError("; ".join(review_errors))
         with lock(root, "work"):
             if task.id == parent.id:
                 if gw.current_branch(root) != info["branch"]:

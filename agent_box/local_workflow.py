@@ -18,18 +18,15 @@ def _constraints(adapter, task, *, states=("Review",)):
 
 
 def _acceptance_reasons(config, tasks, accepted):
-    from .workflow import review_required
+    from .workflow import review_blockers
 
     reasons = []
     if not accepted.get("validation") or accepted["validation"].get("exit") != 0:
         reasons.append("Local validation for the current scope is missing")
     # An already-integrated scope has lost its original diff. Auto cannot infer
     # that the work was small from an empty diff against the advanced base.
-    required = (config.review.policy != "off" and accepted.get("integrated_scope"))
-    required = required or review_required(
-        config.review, tasks, accepted.get("files", []), accepted.get("lines", 0))
-    if required and accepted.get("review", {}).get("verdict") != "PASS":
-        reasons.append("This scope requires a fresh independent PASS review")
+    reasons += review_blockers(config.review, tasks, accepted.get("files", []), accepted.get("lines", 0),
+                               accepted, allow_human=True, integrated=accepted.get("integrated_scope", False))
     return reasons
 
 
@@ -98,7 +95,7 @@ def operate(args, root, config, adapter, task, parent, info, saved):
 
         if current != branch:
             raise AgentBoxError(f"Switch to the parent branch {branch} before local landing")
-        from .workflow import diff_stats, requirements, save_evidence, scope
+        from .workflow import configuration_summary, diff_stats, requirements, review_reasons, save_evidence, scope
 
         reasons, tasks = _constraints(adapter, task)
         integrated = gw._is_ancestor(root, task_head, base_head)
@@ -108,7 +105,8 @@ def operate(args, root, config, adapter, task, parent, info, saved):
                     "requirements": requirements(tasks), "scope": accepted.get("scope"),
                     "files": files, "lines": lines, "integrated_scope": integrated,
                     "validation": accepted.get("validation", {}),
-                    "review": accepted.get("review", {})}
+                    "review": accepted.get("review", {}),
+                    "human_acceptance": accepted.get("human_acceptance", {})}
         reasons += _acceptance_reasons(config.workflow, tasks, snapshot)
         if not integrated and not gw._is_ancestor(root, base_head, task_head):
             reasons.append(f"Local base {base} and task branch {branch} have diverged")
@@ -116,6 +114,9 @@ def operate(args, root, config, adapter, task, parent, info, saved):
             return {"task": task.id, "branch": branch, "base": base,
                     "head": task_head, "base_head": base_head,
                     "integrated": integrated, "blockers": reasons,
+                    "configuration": configuration_summary(config), "scope": accepted.get("scope"),
+                    "review": {"files": len(files), "lines": lines,
+                               "reasons": review_reasons(config.workflow.review, tasks, files, lines)},
                     "max_rounds": config.workflow.review.max_rounds}
         if reasons:
             raise AgentBoxError("Cannot merge locally: " + "; ".join(reasons))

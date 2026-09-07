@@ -3,6 +3,7 @@ import unittest
 import contextlib
 import io
 import json
+import os
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
@@ -11,6 +12,21 @@ from agent_box.config import Config
 
 
 class WorkflowConfigTests(unittest.TestCase):
+    def test_show_reads_the_runtime_artifact_instead_of_host_defaults(self):
+        """A container must show the same merge route that workflow dispatch uses."""
+        from agent_box import cli
+        with tempfile.TemporaryDirectory() as directory:
+            artifact = Path(directory) / "runtime.json"
+            artifact.write_text(json.dumps({"workflow": {"enabled": True, "merge_mode": "local"}}))
+            output = io.StringIO()
+            with patch.dict(os.environ, {"AGENT_BOX_RUNTIME_CONFIG": str(artifact)}), \
+                 patch.object(cli, "load_config", return_value=Config()), \
+                 patch.object(cli, "_statusline_note", return_value=""), \
+                 patch.object(cli, "_image_note", return_value=""), contextlib.redirect_stdout(output):
+                cli.config_show()
+            self.assertIn("merge mode                local", output.getvalue())
+            self.assertIn(str(artifact), output.getvalue())
+
     def test_cleanup_opt_ins_round_trip_through_config_runtime_and_show(self):
         from agent_box import cli, config_menu, runtime
         for local, remote in ((False, False), (True, False), (False, True), (True, True)):
@@ -23,7 +39,7 @@ class WorkflowConfigTests(unittest.TestCase):
             self.assertEqual(rendered.workflow.cleanup_local_branches, local)
             self.assertEqual(rendered.workflow.cleanup_remote_branches, remote)
             output = io.StringIO()
-            with contextlib.redirect_stdout(output), patch.object(cli, 'load_config', return_value=config), \
+            with contextlib.redirect_stdout(output), patch.object(cli, 'effective_config', return_value=config), \
                  patch.object(cli, '_statusline_note', return_value=''), \
                  patch.object(cli, '_image_note', return_value=''), \
                  patch.object(cli, '_browser_note', return_value=''):

@@ -14,12 +14,14 @@ from . import usage as usage_module
 from .atomicio import read_json
 from .config import (
     CLAUDE_TELEGRAM_CHANNEL,
+    effective_config,
+    effective_config_source,
     load_config,
     parse_env_spec,
     save_config,
 )
 from .errors import AgentBoxError
-from .paths import CLAUDE_HOME, CONFIG_FILE
+from .paths import CLAUDE_HOME
 
 
 def die(message: str) -> NoReturn:
@@ -339,8 +341,11 @@ def _browser_note(config) -> str:
 
 
 def config_show() -> None:
-    config = load_config()
-    print(f"Config file: {CONFIG_FILE}{'' if CONFIG_FILE.is_file() else ' (not created yet; showing defaults)'}")
+    config = effective_config()
+    source = effective_config_source()
+    print(f"Config source: {source['kind']} ({source['path']})")
+    if source["kind"] == "runtime":
+        print("Rendered container configuration; host-only settings are not included.")
     print()
     print(f"  Claude Telegram channel     {'on' if config.claude.telegram_channel else 'off'}")
     print(f"  Claude status line          {'on' if config.claude.statusline else 'off'}{_statusline_note(config)}")

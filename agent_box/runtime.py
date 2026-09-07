@@ -548,6 +548,13 @@ def seed_git_config(target: Path, config: Config) -> None:
                 atomic_write_text(target / "config", "[user]\n" + "\n".join(lines) + "\n")
     if github_enabled(config):
         _set_git_config(target / "config", f"credential.{GH_CREDENTIAL_URL}.helper", GH_CREDENTIAL_HELPER)
+        # SSH credentials never enter the box. Route the standard GitHub SSH
+        # forms through the HTTPS helper in this disposable snapshot only.
+        for prefix in ("git@github.com:", "ssh://git@github.com/"):
+            subprocess.run(
+                ["git", "config", "--file", str(target / "config"), "--add",
+                 "url.https://github.com/.insteadOf", prefix], check=True,
+            )
 
 
 @dataclass(frozen=True)

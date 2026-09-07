@@ -71,6 +71,135 @@ class LocalLandTests(unittest.TestCase):
         github.assert_not_called()
         push.assert_not_called()
 
+    def test_inspect_explains_runtime_route_and_exact_auto_boundary_without_mutation(self):
+        """A two-file change must expose the real review trigger before landing."""
+        (self.root / "second.py").write_text("value = 2\n")
+        gw.git(self.root, "add", "second.py")
+        gw.git(self.root, "commit", "-m", "second file")
+        self.config.workflow.review.policy = "auto"
+        self.config.workflow.review.max_files = 2
+        result = self.dispatch(["inspect", "7"])
+        self.assertEqual(result["configuration"]["merge_mode"], "local")
+        self.assertEqual(result["review"]["files"], 2)
+        self.assertIn("changed files 2 >= max_files 2", result["review"]["reasons"])
+        self.assertTrue(result["review"]["required"])
+        self.assertEqual(gw.current_branch(self.root), "ab/7-parent")
+        self.adapter.set_state.assert_not_called()
+
+    def approve(self, reason="User explicitly accepted this result"):
+        workflow.save_evidence(self.root, self.parent, self.saved)
+        return self.dispatch(["approve", "7", "--scope", self.saved["scope"], "--reason", reason])
+
+    def test_explicit_human_acceptance_lands_and_cleans_up_without_fabricating_review(self):
+        """Human approval is separate evidence and retains the normal completion path."""
+        self.parent.state = "Doing"
+        self.config.workflow.review.policy = "always"
+        self.config.workflow.cleanup_local_branches = True
+        self.config.workflow.cleanup_remote_branches = True
+        approval = self.approve()
+        self.assertEqual(approval["human_acceptance"]["actor"], "1")
+        saved = workflow.read_evidence(self.root, self.parent)
+        self.assertNotIn("review", saved)
+        self.dispatch(["finish", "7"])
+        self.adapter.set_state.assert_called_with(self.parent, "Review")
+        self.parent.state = "Review"
+        with patch("agent_box.branch_cleanup._remote_refs", side_effect=AgentBoxError("SSH host key unavailable")):
+            result = self.dispatch(["land", "7", "merge"])
+        self.assertEqual(result["state"], "Done")
+        self.assertEqual(result["cleanup"]["local"]["status"], "deleted")
+        self.assertEqual(result["cleanup"]["remote"]["status"], "error")
+        self.assertIn("SSH host key unavailable", result["cleanup"]["remote"]["reason"])
+        self.assertEqual(gw.current_branch(self.root), "main")
+        self.assertEqual(gw.git(self.root, "branch", "--list", "ab/7-parent"), "")
+
+    def test_human_approval_requires_explicit_scope_validation_and_local_parent(self):
+        """A vague acceptance or Github task cannot acquire a local review exception."""
+        workflow.save_evidence(self.root, self.parent, self.saved)
+        with self.assertRaisesRegex(AgentBoxError, "scope"):
+            self.dispatch(["approve", "7", "--scope", "stale", "--reason", "Accepted"])
+        with self.assertRaisesRegex(AgentBoxError, "reason"):
+            self.approve("   ")
+        self.config.workflow.merge_mode = "github"
+        with self.assertRaisesRegex(AgentBoxError, "local parent"):
+            self.approve()
+        self.config.workflow.merge_mode = "local"
+        self.saved.pop("validation")
+        with self.assertRaisesRegex(AgentBoxError, "validation"):
+            self.approve()
+        self.adapter.set_state.assert_not_called()
+
+    def test_human_acceptance_expires_on_new_work_and_does_not_approve_another_scope(self):
+        """An accepted commit does not authorize later edits, even after validation."""
+        self.config.workflow.review.policy = "always"
+        self.approve()
+        gw.git(self.root, "commit", "--allow-empty", "-m", "new work")
+        saved = workflow.evidence(self.root, self.parent, workflow.scope(self.root, "main", [self.parent]))
+        saved["validation"] = {"exit": 0}
+        workflow.save_evidence(self.root, self.parent, saved)
+        with self.assertRaisesRegex(AgentBoxError, "PASS review"):
+            self.dispatch(["land", "7", "merge"])
+        self.adapter.set_state.assert_not_called()
+
+    def test_human_acceptance_recovery_preserves_original_scope_after_tracker_failure(self):
+        """The same approval must survive base advancement, but not new requirements."""
+        self.config.workflow.review.policy = "always"
+        self.approve()
+        self.adapter.set_state.side_effect = AgentBoxError("tracker unavailable")
+        with self.assertRaisesRegex(AgentBoxError, "tracker unavailable"):
+            self.dispatch(["land", "7", "merge"])
+        self.adapter.set_state.side_effect = None
+        self.adapter.set_state.reset_mock()
+        result = self.dispatch(["land", "7", "reconcile"])
+        self.assertEqual(result["state"], "Done")
+        self.parent.description += "\n- [x] changed requirement"
+        with self.assertRaisesRegex(AgentBoxError, "requirements.*changed"):
+            self.dispatch(["land", "7", "reconcile"])
+
+    def test_human_acceptance_cannot_waive_ownership_or_checklist_constraints(self):
+        """Only a ready result owned by the coordinator can be presented for acceptance."""
+        self.parent.assignees = ["someone-else"]
+        with self.assertRaisesRegex(AgentBoxError, "assigned"):
+            self.approve()
+        self.parent.assignees = ["1"]
+        self.parent.description = "- [ ] accepted"
+        with self.assertRaisesRegex(AgentBoxError, "checklist"):
+            self.approve()
+        self.assertNotIn("human_acceptance", workflow.read_evidence(self.root, self.parent))
+
+    def test_human_acceptance_expires_when_requirements_change(self):
+        """Checking a new requirement must not silently accept a broader task."""
+        self.config.workflow.review.policy = "always"
+        self.approve()
+        self.parent.description += "\n- [x] newly required behavior"
+        saved = workflow.evidence(self.root, self.parent, workflow.scope(self.root, "main", [self.parent]))
+        saved["validation"] = {"exit": 0}
+        workflow.save_evidence(self.root, self.parent, saved)
+        with self.assertRaisesRegex(AgentBoxError, "PASS review"):
+            self.dispatch(["land", "7", "merge"])
+        self.adapter.set_state.assert_not_called()
+
+    def test_human_acceptance_does_not_relax_github_completion(self):
+        """Switching modes cannot turn local human acceptance into GitHub review."""
+        self.config.workflow.review.policy = "always"
+        self.parent.state = "Doing"
+        self.approve()
+        self.config.workflow.merge_mode = "github"
+        with self.assertRaisesRegex(AgentBoxError, "PASS review"):
+            self.dispatch(["finish", "7"])
+        self.adapter.set_state.assert_not_called()
+
+    def test_worker_start_retires_human_acceptance_even_before_new_commits(self):
+        """A failed worker must not leave earlier approval standing over its work."""
+        self.parent.state = "Doing"
+        self.config.workflow.review.policy = "always"
+        self.approve()
+        saved = workflow.read_evidence(self.root, self.parent)
+        workflow.retire_acceptance(self.root, self.adapter, self.parent, saved)
+        saved["validation"] = {"exit": 0}
+        workflow.save_evidence(self.root, self.parent, saved)
+        with self.assertRaisesRegex(AgentBoxError, "PASS review"):
+            self.dispatch(["finish", "7"])
+
     def test_merge_refuses_dirty_or_diverged_work_before_switching(self):
         (self.root / "dirty").write_text("dirty")
         with self.assertRaisesRegex(AgentBoxError, "Commit or preserve"):
