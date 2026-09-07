@@ -404,10 +404,12 @@ def dispatch(args):
     binding = Binding.load(root)
     adapter = make_adapter(binding)
     task = adapter.get(args.task)
-    if args.command == "land" and (args.action == "cleanup" or
-                                   args.action == "reconcile" and task.state == "Done"):
+    if args.command == "land" and args.action == "cleanup":
         from .branch_cleanup import retry
         return retry(root, config, task)
+    if args.command == "land" and args.action == "reconcile" and task.state == "Done":
+        from .branch_cleanup import reconcile
+        return reconcile(root, config, task)
     if args.command == "writer":
         if task.state != "Doing" or task.assignees != [str(adapter.identity()["id"])]:
             raise AgentBoxError("Writer recording requires the current user’s Doing task")

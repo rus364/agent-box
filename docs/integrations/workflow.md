@@ -302,9 +302,13 @@ expected-head comparison protects against refs moving during the operation.
 parent without merging or writing tracker state. Each surviving branch must
 prove integration again; Done alone is never merge evidence. Missing branches
 are safe no-ops, including after a partial cleanup or a title change.
-Reconciliation of an already Done parent also takes this retry route, so it
-continues to work after branch deletion. Keep cleanup failures separate from
-the successful completion when reporting results.
+Reconciliation of an already Done parent checks surviving local and live origin
+refs independently of cleanup settings, without rewriting tracker state. Each
+head must match the exact merged PR in GitHub mode or be integrated into the
+local base in local mode. Ambiguous or unmerged refs refuse reconciliation;
+current-branch and worktree protections apply only to deletion. If all task
+refs are absent, reconciliation is a safe no-op and reports no merge identity.
+Keep cleanup failures separate from successful completion when reporting results.
 
 ## GitHub review
 

@@ -79,6 +79,148 @@ class CleanupTests(unittest.TestCase):
         git.assert_not_called()
         gh.assert_not_called()
 
+    def dispatch_land(self, action='reconcile'):
+        adapter = Mock()
+        adapter.get.return_value = self.task
+        with patch.object(workflow, 'effective_config', return_value=self.config), \
+             patch.object(workflow, 'repository_root', return_value=self.root), \
+             patch.object(Binding, 'load', return_value=BINDING), \
+             patch.object(workflow, 'make_adapter', return_value=adapter):
+            try:
+                return workflow.dispatch(workflow.parser().parse_args(['land', '7', action]))
+            finally:
+                adapter.set_state.assert_not_called()
+
+    def test_dispatch_done_reconcile_rejects_later_unmerged_work_with_any_cleanup_policy(self):
+        """Done cannot conceal new work even when automatic deletion is disabled."""
+        self.integrated()
+        self.github_proof()
+        gw.git(self.root, 'switch', self.branch)
+        gw.git(self.root, 'commit', '--allow-empty', '-m', 'later unmerged task work')
+        moved = gw.head_sha(self.root)
+        for mode in ('local', 'github'):
+            for enabled in (False, True):
+                with self.subTest(mode=mode, cleanup=enabled):
+                    self.config.workflow.merge_mode = mode
+                    self.config.workflow.cleanup_local_branches = enabled
+                    self.config.workflow.cleanup_remote_branches = enabled
+                    with self.assertRaises(AgentBoxError):
+                        self.dispatch_land()
+                    self.assertEqual(gw.local_branch_head(self.root, self.branch), moved)
+                    self.assertTrue(self.exists(remote=True))
+
+    def test_dispatch_done_surviving_refs_prove_integration_even_while_occupied(self):
+        """Current/worktree protection prevents deletion, not read-only reconciliation."""
+        self.integrated()
+        self.github_proof()
+        gw.git(self.root, 'switch', self.branch)
+        for mode in ('local', 'github'):
+            for enabled in (False, True):
+                with self.subTest(mode=mode, cleanup=enabled):
+                    self.config.workflow.merge_mode = mode
+                    self.config.workflow.cleanup_local_branches = enabled
+                    self.config.workflow.cleanup_remote_branches = enabled
+                    with patch.object(cleanup, '_merged_head', wraps=cleanup._merged_head) as proof, \
+                         patch.object(gw, '_is_ancestor', wraps=gw._is_ancestor) as ancestry:
+                        self.assertEqual(self.dispatch_land()['state'], 'Done')
+                    (proof if mode == 'github' else ancestry).assert_called()
+                    self.assertTrue(self.exists())
+                    self.assertTrue(self.exists(remote=True))
+
+    def test_dispatch_done_remote_only_moved_head_refuses_without_deleting(self):
+        """Live origin must expose new work even after the local task ref is gone."""
+        self.integrated()
+        self.github_proof()
+        gw.git(self.root, 'switch', self.branch)
+        gw.git(self.root, 'commit', '--allow-empty', '-m', 'new remote work')
+        moved = gw.head_sha(self.root)
+        gw.git(self.root, 'push', 'origin', self.ref)
+        gw.git(self.root, 'switch', 'main')
+        gw.git(self.root, 'update-ref', '-d', self.ref)
+        gw.git(self.root, 'update-ref', '-d', 'refs/remotes/origin/' + self.branch)
+        for mode in ('local', 'github'):
+            for enabled in (False, True):
+                with self.subTest(mode=mode, cleanup=enabled):
+                    self.config.workflow.merge_mode = mode
+                    self.config.workflow.cleanup_local_branches = enabled
+                    self.config.workflow.cleanup_remote_branches = enabled
+                    with self.assertRaises(AgentBoxError):
+                        self.dispatch_land()
+                    self.assertEqual(gw.local_branch_head(self.origin, self.branch), moved)
+
+    def test_dispatch_done_checks_remote_before_deleting_a_proven_local_branch(self):
+        """A valid local head must not allow deletion before remote proof succeeds."""
+        self.integrated()
+        self.github_proof()
+        gw.git(self.root, 'switch', self.branch)
+        gw.git(self.root, 'commit', '--allow-empty', '-m', 'remote work')
+        gw.git(self.root, 'push', 'origin', self.ref)
+        gw.git(self.root, 'switch', 'main')
+        gw.git(self.root, 'update-ref', self.ref, self.head)
+        for mode in ('local', 'github'):
+            with self.subTest(mode=mode):
+                self.config.workflow.merge_mode = mode
+                with self.assertRaises(AgentBoxError):
+                    self.dispatch_land()
+                self.assertEqual(gw.local_branch_head(self.root, self.branch), self.head)
+                self.assertTrue(self.exists(remote=True))
+
+    def test_dispatch_done_github_squash_proof_allows_cleanup_and_absent_retry(self):
+        """Exact PR proof permits rewritten merges and later retries from base."""
+        self.github_proof()
+        self.assertFalse(gw._is_ancestor(self.root, self.head, gw.head_sha(self.root)))
+        result = self.dispatch_land()
+        self.assertEqual([result['cleanup'][k]['status'] for k in ('local', 'remote')],
+                         ['deleted', 'deleted'])
+        result = self.dispatch_land()
+        self.assertEqual([result['cleanup'][k]['status'] for k in ('local', 'remote')],
+                         ['absent', 'absent'])
+        self.assertNotIn('merge', result)
+
+    def test_dispatch_done_ambiguous_live_refs_refuse_with_any_cleanup_policy(self):
+        """A second live candidate cannot be ignored because deletion is disabled."""
+        self.integrated()
+        self.github_proof()
+        gw.git(self.origin, 'update-ref', 'refs/heads/ab/7-second', self.head)
+        for mode in ('local', 'github'):
+            for enabled in (False, True):
+                with self.subTest(mode=mode, cleanup=enabled):
+                    self.config.workflow.merge_mode = mode
+                    self.config.workflow.cleanup_local_branches = enabled
+                    self.config.workflow.cleanup_remote_branches = enabled
+                    with self.assertRaisesRegex(AgentBoxError, 'Ambiguous'):
+                        self.dispatch_land()
+                    self.assertTrue(self.exists())
+                    self.assertTrue(self.exists(remote=True))
+
+    def test_dispatch_done_absent_refs_retry_from_base_never_invents_merge_identity(self):
+        """Absence allows an idempotent no-op in either mode without querying a PR."""
+        gw.git(self.root, 'update-ref', '-d', self.ref)
+        gw.git(self.origin, 'update-ref', '-d', self.ref)
+        # A stale tracking ref supplies no surviving head or merge identity.
+        for mode in ('local', 'github'):
+            for enabled in (False, True):
+                with self.subTest(mode=mode, cleanup=enabled):
+                    self.config.workflow.merge_mode = mode
+                    self.config.github.gh_token = True
+                    self.config.workflow.cleanup_local_branches = enabled
+                    self.config.workflow.cleanup_remote_branches = enabled
+                    with patch.object(github, 'gh') as gh:
+                        result = self.dispatch_land()
+                    self.assertEqual(result['state'], 'Done')
+                    self.assertNotIn('merge', result)
+                    gh.assert_not_called()
+
+    def test_dispatch_explicit_disabled_cleanup_does_not_inspect_merge_proof(self):
+        """Only reconcile requires proof when the deletion policy is disabled."""
+        self.config.workflow.cleanup_local_branches = False
+        self.config.workflow.cleanup_remote_branches = False
+        with patch.object(cleanup, '_local_refs') as refs, patch.object(github, 'gh') as gh:
+            result = self.dispatch_land('cleanup')
+        self.assertEqual(result['cleanup']['local']['status'], 'disabled')
+        refs.assert_not_called()
+        gh.assert_not_called()
+
     def test_local_merge_deletes_only_parent_and_retry_handles_absence(self):
         self.integrated()
         gw.git(self.root, 'branch', 'ab/8-child', self.head)

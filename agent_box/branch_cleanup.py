@@ -100,6 +100,51 @@ def _merged_head(root, url, branch, base):
     return merged_identity(github.view(root, repo, relevant[0]["number"]), branch, base)
 
 
+def _integrated_head(root, head, base, merged_head=None):
+    if merged_head is not None:
+        if head != merged_head:
+            raise AgentBoxError("Branch head differs from exact merged PR head")
+    elif not gw._is_ancestor(root, head, gw.local_branch_head(root, base)):
+        raise AgentBoxError("Task head is not integrated into the local base; fetch missing objects if needed")
+
+
+def reconcile(root, config, task):
+    """Done avoids another lifecycle write, never proof of surviving work.
+
+    Unlike optional deletion, reconciliation must inspect live origin even when
+    cleanup is disabled. Tracking refs can disambiguate names but cannot prove
+    that a deleted branch survives, or supply a missing merge identity.
+    """
+    from .workflow_state import lock
+    if task.parent or task.state != "Done":
+        raise AgentBoxError("Reconciliation retry requires a Done parent task")
+    with lock(root, "work"):
+        prefix = gw.branch_prefix(task.id)
+        local, names = _local_refs(root, prefix)
+        url = _destination(root)
+        remote, symbols, base, _ = _remote_refs(root, url, prefix)
+        names.update(remote)
+        if len(names) > 1:
+            raise AgentBoxError("Ambiguous task namespace; preserving all candidates: " + ", ".join(sorted(names)))
+        branch = next(iter(names), None)
+        result = {"task": task.id, "state": "Done"}
+        if not local and not remote:
+            return after_done(result, root, config, task)
+        merged_head = None
+        if config.workflow.merge_mode == "github":
+            if not (config.github.gh_token or config.github.gh_config):
+                raise AgentBoxError("Enable GitHub integration before GitHub-mode reconciliation")
+            merged_head = _merged_head(root, url, branch, base)
+        candidates = list(local.values())
+        candidates.extend((head, f"refs/heads/{name}" in symbols)
+                          for name, head in remote.items())
+        for head, symbolic in candidates:
+            if symbolic:
+                raise AgentBoxError("Preserving symbolic ref")
+            _integrated_head(root, head, base, merged_head)
+        return after_done(result, root, config, task, branch=branch, base=base)
+
+
 def cleanup(root, config, task, *, branch=None, base=None, expected_head=None):
     """Return independent outcomes, including failures, after a successful Done write.
 
@@ -161,13 +206,8 @@ def cleanup(root, config, task, *, branch=None, base=None, expected_head=None):
                     raise AgentBoxError("Preserving symbolic ref")
                 if expected_head is not None and head != expected_head:
                     raise AgentBoxError("Branch head moved since merge; preserving new work")
-                if config.workflow.merge_mode == "github":
-                    if head != merged_head:
-                        raise AgentBoxError("Branch head differs from exact merged PR head")
-                else:
-                    local_base = gw.local_branch_head(root, base)
-                    if not gw._is_ancestor(root, head, local_base):
-                        raise AgentBoxError("Task head is not integrated into the local base; fetch missing objects if needed")
+                _integrated_head(root, head, base, merged_head)
+                if config.workflow.merge_mode == "local":
                     if kind == "remote" and (remote_base != base or not gw._is_ancestor(root, head, published)):
                         raise AgentBoxError("Task head is not proven in the live published origin base; publish the base or fetch missing objects, then retry")
                 _unoccupied(root, branch, base)
