@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from . import git_workflow as gw
+from .branch_cleanup import after_done
 from .errors import AgentBoxError
 from .tracker.core import blocking_reasons, completion_reasons
 from .workflow_state import lock
@@ -62,8 +63,9 @@ def operate(args, root, config, adapter, task, parent, info, saved):
                 raise AgentBoxError("Cannot reconcile local merge: " + "; ".join(reasons))
             if task.state != "Done":
                 adapter.set_state(task, "Done")
-            return {"task": task.id, "state": "Done",
-                    "merge": {"base": base, "head": task_head}}
+            return after_done({"task": task.id, "state": "Done",
+                               "merge": {"base": base, "head": task_head}},
+                              root, config, task, branch=branch, base=base, expected_head=task_head)
 
         if current != branch:
             raise AgentBoxError(f"Switch to the parent branch {branch} before local landing")
@@ -93,5 +95,6 @@ def operate(args, root, config, adapter, task, parent, info, saved):
             raise AgentBoxError("Task branch moved during local merge; reconcile before completion")
         if task.state != "Done":
             adapter.set_state(task, "Done")
-        return {"task": task.id, "state": "Done",
-                "merge": {"base": base, "head": task_head}}
+        return after_done({"task": task.id, "state": "Done",
+                           "merge": {"base": base, "head": task_head}},
+                          root, config, task, branch=branch, base=base, expected_head=task_head)

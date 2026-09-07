@@ -387,7 +387,7 @@ def parser():
             cmd.add_argument("--body-file", required=True)
             cmd.add_argument("--draft", action="store_true")
         if name == "land":
-            cmd.add_argument("action", choices=("inspect", "request-review", "merge", "reconcile"))
+            cmd.add_argument("action", choices=("inspect", "request-review", "merge", "reconcile", "cleanup"))
             cmd.add_argument("--method", choices=("merge", "squash", "rebase"))
     return p
 
@@ -403,6 +403,10 @@ def dispatch(args):
     binding = Binding.load(root)
     adapter = make_adapter(binding)
     task = adapter.get(args.task)
+    if args.command == "land" and (args.action == "cleanup" or
+                                   args.action == "reconcile" and task.state == "Done"):
+        from .branch_cleanup import retry
+        return retry(root, config, task)
     if args.command == "writer":
         if task.state != "Doing" or task.assignees != [str(adapter.identity()["id"])]:
             raise AgentBoxError("Writer recording requires the current user’s Doing task")

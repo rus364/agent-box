@@ -25,6 +25,17 @@ class Screen:
 
 
 class ConfigMenuTests(unittest.TestCase):
+    def test_cleanup_toggles_save_independently_without_enabling_the_other(self):
+        import curses
+        fields = list(Config().workflow.to_dict())
+        for field in ('cleanup_local_branches', 'cleanup_remote_branches'):
+            keys = [*[curses.KEY_DOWN] * 10, '\n', *[curses.KEY_DOWN] * fields.index(field),
+                    ' ', '\x1b', curses.KEY_DOWN, curses.KEY_DOWN, '\n']
+            result, _ = self.edit(Config(), keys)
+            self.assertTrue(getattr(result.config.workflow, field))
+            other = 'cleanup_remote_branches' if field == 'cleanup_local_branches' else 'cleanup_local_branches'
+            self.assertFalse(getattr(result.config.workflow, other))
+
     def test_merge_mode_is_an_explicit_menu_choice(self):
         self.assertEqual(config_menu.CHOICES["workflow.merge_mode"], ("github", "local"))
 

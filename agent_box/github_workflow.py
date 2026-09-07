@@ -9,6 +9,7 @@ from pathlib import Path
 from .errors import AgentBoxError
 from .tracker.core import completion_reasons, blocking_reasons
 from . import git_workflow as gw
+from .branch_cleanup import after_done, merged_identity
 
 
 def gh(root, *args, json_output=False):
@@ -184,7 +185,9 @@ def operate(args, root, config, adapter, task, parent, info, saved):
                 f"{pr['headRefOid'][:12]}; another checkout advanced the branch, so reconcile first")
         if task.state != "Done":
             adapter.set_state(task, "Done")
-        return {"task": task.id, "state": "Done", "merge": pr["mergeCommit"], "url": pr["url"]}
+        return after_done({"task": task.id, "state": "Done", "merge": pr["mergeCommit"], "url": pr["url"]},
+                          root, config, task, branch=info["branch"], base=info["base"],
+                          expected_head=pr["headRefOid"])
     if pr["headRefOid"] != gw.head_sha(root):
         raise AgentBoxError("Local and remote parent heads differ; reconcile before review or merge")
     if args.action == "request-review":
@@ -205,5 +208,8 @@ def operate(args, root, config, adapter, task, parent, info, saved):
     merged = view(root, repo, pr["number"])
     if merged["state"] != "MERGED":
         return {"state": merged["state"], "next": "Wait for GitHub merge queue; do not mark the task Done"}
+    merged_identity(merged, info["branch"], info["base"], pr["headRefOid"])
     adapter.set_state(task, "Done")
-    return {"task": task.id, "state": "Done", "url": merged["url"], "merge": merged["mergeCommit"]}
+    return after_done({"task": task.id, "state": "Done", "url": merged["url"], "merge": merged["mergeCommit"]},
+                      root, config, task, branch=info["branch"], base=info["base"],
+                      expected_head=merged["headRefOid"])

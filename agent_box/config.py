@@ -579,6 +579,8 @@ class WorkflowConfig:
     auto_push: bool = True
     timeout_seconds: int = 3600
     review: ReviewConfig = field(default_factory=ReviewConfig)
+    cleanup_local_branches: bool = False
+    cleanup_remote_branches: bool = False
 
     def to_dict(self):
         from dataclasses import asdict
@@ -624,7 +626,7 @@ class WorkflowConfig:
         result.enabled = _bool(data, "enabled", False)
         result.merge_mode = _str(data, "merge_mode") or result.merge_mode
         result.routing = _str(data, "routing") or result.routing
-        for key in ("fallback", "auto_push"):
+        for key in ("fallback", "auto_push", "cleanup_local_branches", "cleanup_remote_branches"):
             setattr(result, key, _bool(data, key, getattr(result, key)))
         for key in ("reserve_percent", "smoothing_hours", "scout_limit", "timeout_seconds"):
             setattr(result, key, _number(data, key, getattr(result, key)))

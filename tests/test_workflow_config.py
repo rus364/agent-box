@@ -1,10 +1,40 @@
 """Workflow configuration must preserve intent without exposing disabled credentials."""
 import unittest
+import contextlib
+import io
+import json
+import tempfile
+from pathlib import Path
+from unittest.mock import patch
 
 from agent_box.config import Config
 
 
 class WorkflowConfigTests(unittest.TestCase):
+    def test_cleanup_opt_ins_round_trip_through_config_runtime_and_show(self):
+        from agent_box import cli, config_menu, runtime
+        for local, remote in ((False, False), (True, False), (False, True), (True, True)):
+            config = Config.from_dict({'workflow': {
+                'enabled': True, 'cleanup_local_branches': local, 'cleanup_remote_branches': remote}})
+            config = Config.from_dict(config.to_dict())
+            with tempfile.TemporaryDirectory() as directory:
+                runtime.sync_tracker_runtime(config, Path(directory))
+                rendered = Config.from_dict(json.loads((Path(directory) / 'config.json').read_text()))
+            self.assertEqual(rendered.workflow.cleanup_local_branches, local)
+            self.assertEqual(rendered.workflow.cleanup_remote_branches, remote)
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output), patch.object(cli, 'load_config', return_value=config), \
+                 patch.object(cli, '_statusline_note', return_value=''), \
+                 patch.object(cli, '_image_note', return_value=''), \
+                 patch.object(cli, '_browser_note', return_value=''):
+                cli.config_show()
+            self.assertIn('cleanup local branches    ' + str(local), output.getvalue())
+            self.assertIn('cleanup remote branches   ' + str(remote), output.getvalue())
+        self.assertFalse(Config().workflow.cleanup_local_branches)
+        self.assertFalse(Config().workflow.cleanup_remote_branches)
+        for field in ('cleanup_local_branches', 'cleanup_remote_branches'):
+            self.assertIn('workflow.' + field, config_menu.HELP)
+
     def test_tracker_and_workflow_start_disabled(self):
         data = Config().to_dict()
         self.assertIn("tracker", data)

@@ -230,6 +230,11 @@ def switch_branch(root, branch, base, *, resume=False):
 
 def github_origin(root):
     url = effective_push_url(root)
+    return github_repository(url)
+
+
+def github_repository(url):
+    """Resolve GitHub identity from the same destination used for transport."""
     if not url:
         raise AgentBoxError("origin must have exactly one effective push URL")
     if url.startswith("git@github.com:"):

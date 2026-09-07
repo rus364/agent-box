@@ -215,8 +215,7 @@ If the tracker update fails after the fast-forward, remain on the base and run
 Done only when the current local task-branch tip is contained in the current
 local base. A later commit on the task branch therefore prevents an old merge
 from completing new work. Reconciliation does not reuse the pre-merge scope
-fingerprint because moving the base necessarily changed it. Branch cleanup is a
-separate, opt-in operation.
+fingerprint because moving the base necessarily changed it.
 
 Local mode rejects `workflow pr` before any GitHub call. `workflow land
 request-review` points `auto` and `local` review selection to `ab-review`, and
@@ -242,6 +241,55 @@ CI, comments and paginated unresolved threads, fixes sequentially, obtains
 current-head acceptance and merges with `--match-head-commit`. Branch protection
 is never bypassed. Merge-queue entry is not completion. If the tracker write
 fails after merge, `workflow land PARENT reconcile` retries only reconciliation.
+
+## Branch cleanup
+
+`workflow.cleanup_local_branches` and `workflow.cleanup_remote_branches` are
+independent booleans, both off by default. They are editable in the workflow
+config menu and visible in `config show`. With either enabled, landing and
+reconciliation attempt cleanup only after proving the merge and successfully
+marking the parent Done. Cleanup outcomes appear separately under `cleanup` in
+the result; a cleanup failure never reverses merge or Done. With both disabled,
+cleanup performs no additional Git or GitHub operations.
+
+Cleanup covers only the completed parent's local branch and its copy on origin.
+It leaves child branches alone. Candidates come from the parent's task namespace
+in Git, including live origin refs when remote cleanup is enabled. It never
+guesses a missing branch from the task's title. Ambiguous names, symbolic refs,
+the base/default branch, the current branch and branches used by any worktree
+are preserved with a diagnostic. This also protects the remote copy of a branch
+that is checked out locally. Cleanup never switches branches.
+
+In GitHub mode, cleanup requires the enabled GitHub integration and one exact
+merged PR head/base with a merge timestamp and merge commit. The candidate tip
+must equal the merged head, so squash and rebase merges work without treating
+local ancestry as proof. After GitHub landing, the parent may still be checked
+out: switch to the base yourself and run `workflow land PARENT cleanup`.
+In local mode, the candidate head must be an ancestor of the local base.
+Remote deletion additionally requires that head in the live published base on
+the same effective origin destination. An unpublished local merge, or a missing
+commit object, preserves the remote branch with publish/fetch guidance; cleanup
+never publishes the base or fetches objects implicitly.
+
+Deletion compares the expected head: local cleanup uses
+`git update-ref --no-deref -d REF EXPECTED`, and remote cleanup uses an exact
+`--force-with-lease=REF:EXPECTED` with one deletion refspec. The lease authorizes
+only deletion, never history repair. The effective push URL must be unique and
+usable unchanged for both read and delete; chained URL rewrites are refused.
+Tag following, submodule pushes and mirror pushing are disabled for that one
+command, without editing user config. Worktree occupancy is checked again near
+deletion. As with other workflow operations, concurrent agents cooperate;
+expected-head comparison protects against refs moving during the operation.
+
+`workflow land PARENT cleanup` retries the same configured policy for a Done
+parent without merging or writing tracker state. Each surviving branch must
+prove integration again; Done alone is never merge evidence. Missing branches
+are safe no-ops, including after a partial cleanup or a title change.
+Reconciliation of an already Done parent also takes this retry route, so it
+continues to work after branch deletion. Keep cleanup failures separate from
+the successful completion when reporting results.
+
+## GitHub review
 
 `workflow.review.github_provider` selects auto/local/codex/claude. Auto uses local
 fresh review without assuming a cloud reviewer is installed. Explicit cloud Codex

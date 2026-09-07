@@ -24,6 +24,8 @@ HELP = {
     "browser.enabled": "Headless Chromium in the box; isolated in-memory profile, same trust boundary as agents. Unavailable in --host mode.",
     "tracker.enabled": "Expose configured tracker connections to agents. Keep credentials out of repository files.",
     "workflow.merge_mode": "Finish parent work through a GitHub pull request or a local fast-forward into origin's default branch.",
+    "workflow.cleanup_local_branches": "Delete the completed parent's proven merged local branch after Done. Preserve checked-out branches; retry land PARENT cleanup from the base.",
+    "workflow.cleanup_remote_branches": "Delete the completed parent's proven merged branch on origin with an exact head lease. Local merges must also be published in origin's base. Off by default.",
     "workflow.routing": "Workers/scouts: current provider, static weights, or weekly usage-aware weights. Reviewer provider selection is set in review.routing.",
     "workflow.weights": "Relative subscription capacity; set a provider to zero to exclude it from worker/scout routing.",
     "workflow.tiers": "Worker/scout models. Tier 0: scouts only. Tiers 1-3: task complexity. Set exact supported model IDs and effort for both providers; default omits agent-box's effort override.",

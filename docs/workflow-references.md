@@ -33,6 +33,14 @@ reused rather than introducing overlapping implementations.
 
 ## Workflow sources
 
+Branch cleanup was checked against Git 2.43.0 in temporary repositories on
+2026-09-08. [git-update-ref](https://git-scm.com/docs/git-update-ref) documents
+expected-old-OID deletion; [git-push](https://git-scm.com/docs/git-push) documents
+the explicit ref/OID lease used only for remote deletion. These comparisons do
+not check branch occupancy: [git-branch](https://git-scm.com/docs/git-branch) and
+`git worktree list --porcelain` inform the separate worktree guard. Cleanup uses
+no merge registry and is limited to the completed parent's branch.
+
 These local reference checkouts informed the design. The shipped skill prose is
 maintained here, not periodically patched or fetched from upstream.
 
