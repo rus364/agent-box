@@ -1,0 +1,6 @@
+{
+  "provider": "vikunja",
+  "server": "http://pm.infrado.org:3456",
+  "project": "84",
+  "recursive": true
+}
