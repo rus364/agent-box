@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from agent_box.repo_binding import Binding, BINDING_FILE
 from agent_box.tracker import adoption, cli
+from agent_box.tracker import vikunja_api as api
 from agent_box.tracker.core import TrackerError
 from agent_box.tracker.vikunja import VikunjaAdapter
 from test_tracker_lifecycle import FakeClient, board, task
@@ -27,12 +28,15 @@ class NativeClient(FakeClient):
                                    2: board(20, 200, done_bucket=204), 9: board(90, 900)}, tasks)
         self.lose_response = False
         self.duplicates = 0
+        self.journal = {}
 
     def paginate(self, path, params=None):
         if path == "/tasks":
             ids = {int(n) for n in re.findall(r'\d+', (params or {}).get('filter', ''))}
             return copy.deepcopy([t for t in self.tasks.values() if not ids or t['project_id'] in ids])
-        if path.endswith(("/comments", "/attachments")):
+        if path.endswith('/comments'):
+            return copy.deepcopy(self.journal.get(int(path.split('/')[2]), []))
+        if path.endswith('/attachments'):
             return []
         return super().paginate(path, params)
 
@@ -43,7 +47,7 @@ class NativeClient(FakeClient):
         return copy.deepcopy(super().get(path))
 
     def post(self, path, body):
-        parts = path.strip('/').split('/')
+        parts = path.split('?')[0].strip('/').split('/')
         if parts[-1] == 'duplicate':
             self.writes.append((path, body))
             source = int(parts[1]); target = max(p['id'] for p in self.projects) + 1
@@ -68,7 +72,16 @@ class NativeClient(FakeClient):
             return body
         if parts[-1] == 'relations':
             self.writes.append((path, body))
-            self.tasks[int(parts[1])]['related_tasks'].setdefault(body['relation_kind'], []).append({'id': body['other_task_id']})
+            base, other, kind = int(parts[1]), body['other_task_id'], body['relation_kind']
+            existing = self.tasks[base]['related_tasks'].setdefault(kind, [])
+            if {'id': other} in existing:
+                raise api.APIError(409, 'Relation already exists')
+            existing.append({'id': other})
+            self.tasks[other]['related_tasks'].setdefault(api.RELATION_INVERSE[kind], []).append({'id': base})
+            return body
+        if parts[-1] == 'comments':
+            self.writes.append((path, body))
+            self.journal.setdefault(int(parts[1]), []).append(dict(body))
             return body
         return super().post(path, body)
 
@@ -177,16 +190,159 @@ class StagingTests(unittest.TestCase):
                 self.assertTrue(adoption.cutover(self.root, self.receipt, True)['complete'])
                 self.assertEqual(len(self.client.writes), before)
 
-    def test_external_edges_block_cutover_without_touching_the_outside_task(self):
+    def test_external_related_is_copied_with_its_inverse_and_does_not_block_cutover(self):
         self.client.tasks[5]['related_tasks']['related'] = [{'id': 7}]
-        self.clone(); before = copy.deepcopy(self.client.tasks[7])
+        original = copy.deepcopy(self.client.tasks[5])
+        self.clone()
         result = adoption.cutover(self.root, self.receipt)
-        self.assertFalse(result['ok'])
-        self.assertTrue(result['clone']['external_relations'])
-        with self.assertRaisesRegex(TrackerError, 'External source relations'):
-            adoption.cutover(self.root, self.receipt, True)
-        self.assertEqual(self.client.tasks[7], before)
+        self.assertTrue(result['ok'])
+        self.assertEqual(result['clone']['external_relations'][0]['status'], 'preserved')
+        self.assertIn({'id': 8}, self.client.tasks[7]['related_tasks']['related'])
+        self.assertEqual(self.client.tasks[5], original)
+        self.assertTrue(adoption.cutover(self.root, self.receipt, True)['complete'])
+        before = len(self.client.writes)
+        repeated = adoption.cutover(self.root, self.receipt, True)
+        self.assertEqual(repeated['clone']['external_relations'][0]['status'], 'preserved')
+        self.assertEqual(len(self.client.writes), before)
+
+    def test_all_external_kinds_have_an_explicit_policy_without_changing_source(self):
+        """Metadata and incoming blockers copy; external ownership and provenance need people."""
+        kinds = api.RELATION_KINDS | {'future-kind'}
+        for kind in kinds:
+            self.client.tasks[5]['related_tasks'][kind] = [{'id': 7}]
+        original = copy.deepcopy(self.client.tasks[5])
+        preview = adoption.start(self.root, '1', self.receipt)
+        self.assertEqual(self.client.writes, [])
+        self.assertFalse(self.receipt.exists())
+        self.assertEqual(len(preview['external_relations']), len(kinds))
+        report = self.clone()
+        rows = {row['kind']: row for row in report['external_relations']}
+        safe = {'related', 'duplicateof', 'duplicates', 'precedes', 'follows', 'blocked'}
+        for kind in kinds:
+            self.assertEqual(rows[kind]['status'], 'preserved' if kind in safe else 'skipped')
+        self.assertIn('warning', rows['blocked'])
+        self.assertEqual(self.client.tasks[5], original)
+        self.assertEqual(len(self.client.journal[8]), len(kinds - safe))
+        self.assertTrue(adoption.cutover(self.root, self.receipt, True)['complete'])
+        self.assertEqual(len(self.client.journal[8]), len(kinds - safe))
+
+    def test_external_lower_id_is_written_from_staging_with_the_correct_inverse(self):
+        """Canonical edge order must never select the external task as the write endpoint."""
+        self.client.tasks[3] = self.client.tasks.pop(7)
+        self.client.tasks[3]['id'] = 3
+        self.client.tasks[5]['related_tasks']['blocked'] = [{'id': 3}]
+        report = self.clone()
+        row, = report['external_relations']
+        self.assertEqual((row['task'], row['other'], row['kind'], row['status']),
+                         ('5', '3', 'blocked', 'preserved'))
+        self.assertFalse(any(path.startswith('/tasks/3/') for path, _ in self.client.writes))
+        self.assertIn({'id': int(row['staging'])}, self.client.tasks[3]['related_tasks']['blocking'])
+
+    def test_denied_external_access_is_a_journal_warning_and_cutover_can_retry(self):
+        self.client.tasks[5]['related_tasks']['related'] = [{'id': 7}]
+        get = self.client.get
+        def deny(path):
+            if path == '/tasks/7':
+                raise api.APIError(403, 'No access to external project')
+            return get(path)
+        with patch.object(self.client, 'get', side_effect=deny):
+            row, = self.clone()['external_relations']
+            self.assertIn('403', row['warning'])
+            self.assertIn('Check access', self.client.journal[8][0]['comment'])
+            self.assertTrue(adoption.cutover(self.root, self.receipt)['ok'])
+        result = adoption.cutover(self.root, self.receipt, True)
+        self.assertEqual(result['clone']['external_relations'][0]['status'], 'preserved')
+        self.assertEqual(len(self.client.journal[8]), 1)
+
+    def test_denied_relation_and_comment_are_reported_without_requiring_external_write_access(self):
+        self.client.tasks[5]['related_tasks']['related'] = [{'id': 7}]
+        post = self.client.post
+        def deny(path, body):
+            if path.startswith('/tasks/8/comments') or path.endswith('/relations') and body['other_task_id'] == 7:
+                raise api.APIError(403, 'Operation denied')
+            return post(path, body)
+        with patch.object(self.client, 'post', side_effect=deny):
+            row, = self.clone()['external_relations']
+            self.assertIn('403', row['warning'])
+            self.assertIn('403', row['comment_warning'])
+            result = adoption.cutover(self.root, self.receipt, True)
+            self.assertTrue(result['complete'])
+            self.assertIn('comment_warning', result['clone']['external_relations'][0])
+
+    def test_a_lost_external_relation_response_is_confirmed_without_another_post(self):
+        self.client.tasks[5]['related_tasks']['related'] = [{'id': 7}]
+        post = self.client.post
+        def lose(path, body):
+            result = post(path, body)
+            if path.endswith('/relations') and body['other_task_id'] == 7:
+                raise api.APIError(0, 'Response lost')
+            return result
+        with patch.object(self.client, 'post', side_effect=lose):
+            self.assertEqual(self.clone()['external_relations'][0]['status'], 'preserved')
+        self.assertEqual(self.client.journal, {})
+        adoption.cutover(self.root, self.receipt, True)
+        writes = [path for path, body in self.client.writes
+                  if path.endswith('/relations') and body['other_task_id'] == 7]
+        self.assertEqual(len(writes), 1)
+
+    def test_an_external_dependency_cycle_is_skipped_and_comment_text_cannot_resolve_it(self):
+        self.clone()
+        self.client.tasks[5]['related_tasks']['blocked'] = [{'id': 7}]
+        self.client.tasks[7]['related_tasks']['blocked'] = [{'id': 8}]
+        result = adoption.cutover(self.root, self.receipt, True)
+        row, = result['clone']['external_relations']
+        self.assertIn('cycle', row['warning'])
+        self.assertTrue(result['complete'])
+        self.client.journal[8][0]['comment'] = 'Resolved, everything is fine.'
+        row, = adoption.cutover(self.root, self.receipt)['clone']['external_relations']
+        self.assertIn('cycle', row['warning'])
+
+    def test_global_api_failure_still_prevents_cutover(self):
+        self.clone()
+        with patch.object(self.client, 'get', side_effect=api.APIError(503, 'Unavailable')):
+            with self.assertRaises(api.APIError):
+                adoption.cutover(self.root, self.receipt, True)
+        self.assertFalse((self.root / BINDING_FILE).exists())
+
+    def test_an_outage_after_relation_write_is_not_reported_as_successful_cutover(self):
+        """Uncertain writes require a readable staging task before any root rename."""
+        self.clone()
+        self.client.tasks[5]['related_tasks']['related'] = [{'id': 7}]
+        get, post, unavailable = self.client.get, self.client.post, False
+        def fail_get(path):
+            if unavailable:
+                raise api.APIError(503, 'Provider unavailable')
+            return get(path)
+        def fail_post(path, body):
+            nonlocal unavailable
+            result = post(path, body)
+            if path.endswith('/relations'):
+                unavailable = True
+                raise api.APIError(0, 'Response lost')
+            return result
+        with patch.object(self.client, 'get', side_effect=fail_get), patch.object(self.client, 'post', side_effect=fail_post):
+            with self.assertRaises(api.APIError):
+                adoption.cutover(self.root, self.receipt, True)
         self.assertEqual(self.client.get('/projects/1')['title'], 'Root')
+        self.assertFalse((self.root / BINDING_FILE).exists())
+        self.assertTrue(adoption.cutover(self.root, self.receipt, True)['complete'])
+
+    def test_a_lost_journal_response_does_not_duplicate_the_explanation_on_resume(self):
+        self.client.tasks[5]['related_tasks']['parenttask'] = [{'id': 7}]
+        post = self.client.post
+        def lose(path, body):
+            result = post(path, body)
+            if '/comments' in path:
+                raise api.APIError(0, 'Response lost')
+            return result
+        with patch.object(self.client, 'post', side_effect=lose):
+            self.assertIn('comment_warning', self.clone()['external_relations'][0])
+        # Markdown rendering may append a newline; this is still the same journal entry.
+        self.client.journal[8][0]['comment'] += '\n'
+        result = adoption.cutover(self.root, self.receipt, True)
+        self.assertTrue(result['complete'])
+        self.assertEqual(len(self.client.journal[8]), 1)
+        self.assertEqual(result['clone']['external_relations'][0]['status'], 'skipped')
 
     def test_staging_cli_refuses_source_mutations_and_external_relations(self):
         result = self.clone()

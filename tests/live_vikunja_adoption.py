@@ -84,16 +84,16 @@ def run():
                 'title': 'Existing task, clarified',
                 'description': 'Goal\n\nOriginal meaning.\n\nAcceptance\n\nRequires ab-interview.\n\nVikunja external ID: TEST-1'})
             assert audit_project(instance, target)['clean']
-            # A later external edge is diagnosed without editing its other end.
+            # Cutover also repairs eligible edges added after the original clone.
             client.post(f'/tasks/{first}/relations', {'other_task_id': external, 'relation_kind': 'related'})
             outside_before = client.get(f'/tasks/{external}')
-            assert not adoption.cutover(repository, receipt)['ok']
-            assert client.get(f'/tasks/{external}') == outside_before
-            # This is our own fixture edge, not user data or adoption rollback.
-            client.delete(f'/tasks/{first}/relations/related/{external}')
             assert adoption.cutover(repository, receipt)['ok']
+            assert client.get(f'/tasks/{external}') == outside_before
             result = adoption.cutover(repository, receipt, apply=True)
             assert result['complete'] and Binding.load(repository).project == target
+            assert result['clone']['external_relations'][0]['status'] == 'preserved'
+            related = {t['id'] for t in client.get(f'/tasks/{external}')['related_tasks']['related']}
+            assert {first, copied_first} <= related
             assert client.get(f'/projects/{source}')['title'] == name + f' — backup {source}'
             assert client.get(f'/projects/{target}')['title'] == name
             assert adoption.cutover(repository, receipt, apply=True)['complete']

@@ -204,6 +204,10 @@ class VikunjaAdapter:
         from .vikunja_clone import clone
         return clone(self, source, title, progress, checkpoint, apply)
 
+    def preserve_external_relations(self, relations, apply=False):
+        from .vikunja_relations import preserve
+        return preserve(self, relations, apply)
+
     def normalize(self, raw):
         related = raw.get("related_tasks") or {}
         # Done is Vikunja's own flag; the other states are where the card sits.

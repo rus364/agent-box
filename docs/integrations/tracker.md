@@ -148,18 +148,42 @@ assignments after native shares exist, and connects relations between copied
 projects. Internal relations, comments, attachments/files, views/buckets and
 positions use native copying. No custom task/file deep-copy engine is involved.
 
-Labels are still global shared objects: adoption only edits staging task label
-attachments. Shares are copied immediately, without a separate permissions
+Labels are still global shared objects: adoption may create missing `ab:tier:*`
+labels and edit staging attachments, but never rename/delete global labels.
+Shares are copied immediately, without a separate permissions
 lifecycle. Link hashes, project/task IDs and task UIDs change. Ownership follows
 the provider's creating-user rules. Complete history, webhooks, reactions and
 all subscriptions are not migrated. Inspect view filters and embedded links for
 old IDs. Native copying can skip missing attachment files; attachment/comment
 counts and assignment preservation are checked before normalization and again
 before cutover, along with preservation of internal source relations. Added
-journal comments are allowed; cutover cannot conceal an interrupted copy. Relations
-outside the source tree are reported and block automatic cutover; adoption does
-not silently mutate that external graph. Ambiguous boards and incompatible
-parent relations also require separate decisions.
+journal comments are allowed; cutover cannot conceal an interrupted internal copy.
+
+External relations are best effort. Clone and cutover add missing `related`,
+`duplicateof`/`duplicates`, `precedes`/`follows` and incoming `blocked` relations
+from staging. Vikunja adds the inverse on the external task; it requires read
+access there and write access on staging. Ordering is preserved as metadata;
+agent-box enforces only blockers, with its usual dependency checks. Outgoing
+`blocking`, external parent/subtask, historical `copiedfrom`/`copiedto` and
+unknown kinds are skipped for a human decision. Source/backup relations stay intact.
+
+Skipped or failed external edges are warnings, not cutover blockers. The report
+names source, staging, relation kind, external task and the reason. A short
+staging comment suggests checking access, adding a relation manually, agreeing
+on another type or leaving the original relation alone. Failure to post that
+comment is reported too. Comments never determine resolution; identical journal
+entries are reused only to avoid repeated explanations. Keep work requiring
+clarification in Backlog; a missing `related` alone does not reset its status.
+Ordinary staging CLI writes remain restricted to staging endpoints and relations.
+
+Before switching binding, cutover retries eligible missing external edges and
+rechecks the staging audit. Lost write responses are checked against live tasks.
+An API outage or inability to read staging still stops cutover. After binding
+switches, rerunning cutover only reads the current report. No relation progress
+or resolution flags are stored in the receipt. The ordinary workflow does not
+track omitted adoption relations after cutover; the report and comments explain
+those omissions to people. Ambiguous boards and invalid staging hierarchy remain
+structural errors.
 
 Structured imports remain independent. To re-import into a copied project, use
 `tracker provider vikunja import plan FILE --project NEW_ROOT_ID` (and `--apply`

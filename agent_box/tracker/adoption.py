@@ -134,7 +134,9 @@ def cutover(root, path, apply=False):
     expected = (receipt["backup_title"], receipt["original_title"])
     actual = (old["title"], new["title"])
     if current == binding and actual == expected:
-        return {"complete": True, "source": source.project, "project": target, "binding": asdict(binding)}
+        copied = adapter.clone_project_tree(source.project, receipt["staging_title"], receipt["clone"], lambda _: None)
+        return {"complete": True, "source": source.project, "project": target, "binding": asdict(binding),
+                "clone": copied}
     if current != previous:
         raise TrackerError("Repository binding differs from the expected pre-cutover binding", "conflict")
     allowed = {(receipt["original_title"], receipt["staging_title"]),
@@ -149,8 +151,6 @@ def cutover(root, path, apply=False):
     errors = [*copied["errors"], *copied["incomplete"]]
     if copied["missing_projects"]:
         errors.append("Clone is missing source projects")
-    if copied["external_relations"]:
-        errors.append("External source relations need a separate migration decision; adoption cannot rewrite the external graph")
     report = audit_project(make_adapter(binding), target)
     if not report["clean"]:
         errors.append("Staging audit has structural errors; resolve them before cutover")
@@ -162,6 +162,11 @@ def cutover(root, path, apply=False):
         return result
     if errors:
         raise TrackerError("; ".join(errors), "conflict")
+    copied["external_relations"] = adapter.preserve_external_relations(copied["external_relations"], True)
+    report = audit_project(make_adapter(binding), target)
+    result["audit"] = report
+    if not report["clean"]:
+        raise TrackerError("Staging audit has structural errors; resolve them before cutover", "conflict")
     write_setup(root, binding, instructions_only=True)
     adapter.rename_project(source.project, expected[0])
     adapter.rename_project(target, expected[1])

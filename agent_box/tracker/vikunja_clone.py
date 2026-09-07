@@ -1,8 +1,8 @@
 """Native project duplication, with only the gaps needed to copy a tree.
 
 Vikunja copies task contents and files itself. We connect the resulting projects
-and cross-project edges; neither source objects nor global labels are writable
-through this operation. A lost POST response requires inspection, never retry.
+and preserve external edges where possible, including their provider-managed
+inverses. Source objects stay intact. A lost duplicate POST needs inspection.
 """
 from . import vikunja_api as api
 from .core import TrackerError
@@ -59,8 +59,13 @@ def inspect(adapter, source, title, progress):
         if actual != set(copies.values()):
             errors.append("Staging contains projects outside the recorded clone mapping")
     edges = api.relation_edges(tasks.values())
-    external = [{"task": base, "kind": kind, "other": other}
-                for base, kind, other in sorted(edges) if base not in tasks or other not in tasks]
+    external = []
+    for base, kind, other in sorted(edges):
+        if base in tasks and other in tasks:
+            continue
+        if base not in tasks:
+            base, kind, other = other, api.RELATION_INVERSE.get(kind, kind), base
+        external.append({"task": base, "staging": task_map.get(base), "kind": kind, "other": other})
     return {"root": root, "source_projects": projects, "source_tasks": tasks,
             "task_map": task_map, "edges": edges, "errors": errors,
             "external_relations": external,
@@ -132,7 +137,9 @@ def clone(adapter, source, title, progress, checkpoint, apply=False):
         raise TrackerError("; ".join(incomplete), "conflict")
     return {"project": copies.get(source), "projects": dict(copies), "incomplete": incomplete,
             "missing_projects": report["missing_projects"], "errors": report["errors"],
-            "external_relations": report["external_relations"], "dry_run": not apply,
+            "external_relations": adapter.preserve_external_relations(report["external_relations"],
+                                                                      apply and not report["errors"]),
+            "dry_run": not apply,
             "notes": ["Native shares are copied immediately; link share URLs change. Labels remain shared.",
                       "Webhooks and complete history/subscriptions are not migrated. Inspect filters and embedded links.",
                       "Do not rerun clone after normalization; resume normalization by auditing the staging scope."]}
