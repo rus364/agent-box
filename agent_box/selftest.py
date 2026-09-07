@@ -22,7 +22,9 @@ def run_selftest() -> int:
         nonlocal n
         n += 1
         if actual != expected:
-            raise AssertionError(f"{label}: expected {expected!r}, got {actual!r}")
+            # A smoke test must remain safe to run in a credential-bearing shell.
+            # Showing values would turn a failed assertion into a secret disclosure.
+            raise AssertionError(f"{label}: check failed")
 
     check(usage.compact_time(3660), "1h1m", "duration")
     check(usage.compact_time(176400), "2d1h", "duration days")
@@ -143,7 +145,16 @@ def run_selftest() -> int:
         config.notifications.telegram_token = "t"
         config.notifications.telegram_chat_id = "1"
         notify.sync_credentials(config, creds)
-        check(notify.load_credentials(creds), ("t", "1"), "credential file round trip")
+        credential_env = (notify.NOTIFY_TOKEN_ENV, notify.NOTIFY_CHAT_ID_ENV)
+        saved_credentials = {name: os.environ.pop(name, None) for name in credential_env}
+        try:
+            check(notify.load_credentials(creds), ("t", "1"), "credential file round trip")
+        finally:
+            for name, value in saved_credentials.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
         config.notifications.enabled = False
         notify.sync_credentials(config, creds)
         check(creds.exists(), False, "disabling removes the credential file")
