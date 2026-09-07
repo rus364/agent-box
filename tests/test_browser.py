@@ -408,6 +408,14 @@ class DoctorLaunchTests(IsolatedRuntimeTest):
     def test_doctor_is_told_the_browser_is_on(self):
         self.assertIn("AGENT_BOX_BROWSER=1", self._doctor_env(browser_config(True)))
 
+    def test_doctor_refreshes_only_the_isolated_build_state(self):
+        """Doctor must mint its refresh marker in the fixture, never host state."""
+        isolated_refresh = runtime.STATE_ROOT / "build/tools-refresh"
+        self.assertEqual(runtime.TOOLS_REFRESH_FILE, isolated_refresh)
+        self.assertFalse(isolated_refresh.exists())
+        self._doctor_env(browser_config(False))
+        self.assertEqual(isolated_refresh.read_text(), "initial\n")
+
 
 class ConfigSurfaceTests(unittest.TestCase):
     """`agent-box config` has to show the switch and say what it means: this

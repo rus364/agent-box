@@ -20,6 +20,7 @@ class IsolatedRuntimeTest(unittest.TestCase):
         self._patches = [
             mock.patch.object(runtime, "STATE_ROOT", state),
             mock.patch.object(runtime, "BUILD_STATE", state / "build"),
+            mock.patch.object(runtime, "TOOLS_REFRESH_FILE", state / "build/tools-refresh"),
             mock.patch.object(runtime, "NOTIFY_STATE_ROOT", state / "notify"),
             mock.patch.object(runtime, "NOTIFY_CREDENTIALS", state / "runtime/notify.json"),
             mock.patch.object(runtime, "TRACKER_RUNTIME_DIR", state / "runtime/tracker"),
@@ -27,12 +28,52 @@ class IsolatedRuntimeTest(unittest.TestCase):
             mock.patch.object(runtime, "load_config", return_value=Config()),
             mock.patch.object(runtime, "CLAUDE_HOME", state / "claude"),
             mock.patch.object(runtime, "CODEX_HOME", state / "codex"),
+            mock.patch.object(runtime, "XDG_CACHE_HOME", state / "cache"),
             mock.patch.object(runtime, "AGENT_SKILLS_DIR", state / "agents/skills"),
             mock.patch.object(runtime, "MANAGED_SKILLS_SOURCE", state / "shipped-skills"),
         ]
         for patch in self._patches:
             patch.start()
             self.addCleanup(patch.stop)
+
+
+class IsolatedRuntimeFixtureTests(unittest.TestCase):
+    def test_refresh_token_stays_in_fixture_state_and_cleanup_restores_paths(self):
+        """A doctor-style refresh must not create or change a host build marker."""
+        with tempfile.TemporaryDirectory() as tmp:
+            for has_refresh in (False, True):
+                with self.subTest(has_refresh=has_refresh):
+                    fake_host_state = Path(tmp) / f"host-state-{has_refresh}"
+                    fake_host_build = fake_host_state / "build"
+                    fake_host_refresh = fake_host_build / "tools-refresh"
+                    fake_host_cache = Path(tmp) / f"host-cache-{has_refresh}"
+                    if has_refresh:
+                        fake_host_build.mkdir(parents=True)
+                        fake_host_refresh.write_text("host marker\n")
+
+                    with mock.patch.object(runtime, "STATE_ROOT", fake_host_state), \
+                         mock.patch.object(runtime, "BUILD_STATE", fake_host_build), \
+                         mock.patch.object(runtime, "TOOLS_REFRESH_FILE", fake_host_refresh), \
+                         mock.patch.object(runtime, "XDG_CACHE_HOME", fake_host_cache):
+                        case = IsolatedRuntimeTest()
+                        case.setUp()
+                        try:
+                            isolated_refresh = runtime.TOOLS_REFRESH_FILE
+                            runtime.ensure_state_dirs()
+                            runtime.ensure_refresh_token()
+                            self.assertTrue(isolated_refresh.is_file())
+                            self.assertFalse(fake_host_cache.exists())
+                            if has_refresh:
+                                self.assertEqual(fake_host_refresh.read_text(), "host marker\n")
+                            else:
+                                self.assertFalse(fake_host_state.exists())
+                        finally:
+                            case.doCleanups()
+
+                        self.assertIs(runtime.STATE_ROOT, fake_host_state)
+                        self.assertIs(runtime.BUILD_STATE, fake_host_build)
+                        self.assertIs(runtime.TOOLS_REFRESH_FILE, fake_host_refresh)
+                        self.assertIs(runtime.XDG_CACHE_HOME, fake_host_cache)
 
 
 class ContainerStatePreparationTests(IsolatedRuntimeTest):
