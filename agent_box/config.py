@@ -527,6 +527,7 @@ def model_tiers(numbers, data=None):
 class ReviewConfig:
     tiers: dict[str, dict] = field(default_factory=lambda: model_tiers(range(1, 4)))
     policy: str = "auto"
+    routing: str = "cross-provider"
     max_files: int = 5
     max_lines: int = 200
     max_rounds: int = 3
@@ -548,7 +549,7 @@ class ReviewConfig:
         data = _mapping(data)
         result = cls()
         result.tiers = model_tiers(range(1, 4), data.get("tiers"))
-        for key in ("policy", "label", "github_provider", "github_model", "github_effort"):
+        for key in ("policy", "routing", "label", "github_provider", "github_model", "github_effort"):
             if key in data and isinstance(data[key], str):
                 setattr(result, key, data[key].strip())
         for key in ("max_files", "max_lines", "max_rounds", "wait_seconds"):
@@ -595,6 +596,8 @@ class WorkflowConfig:
             value = getattr(self, name)
             if not isinstance(value, (int, float)) or not math.isfinite(value) or not minimum <= value <= maximum or name in ("scout_limit", "timeout_seconds") and not isinstance(value, int):
                 errors.append(f"workflow.{name} must be between {minimum} and {maximum}")
+        if self.review.routing not in ("cross-provider", "same-provider"):
+            errors.append("workflow.review.routing must be cross-provider or same-provider")
         if self.review.policy not in ("off", "auto", "always"):
             errors.append("workflow.review.policy must be off, auto, or always")
         if self.review.github_provider not in ("auto", "local", "codex", "claude"):
