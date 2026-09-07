@@ -110,7 +110,7 @@ Use ab-interview, ab-plan, ab-work, ab-review, ab-pr, and ab-land as needed. ab-
 The coordinator owns branches, commits, lifecycle, dependencies, and GitHub actions. Delegate implementation sequentially; independent read-only scouts may run in parallel.
 A worker changes project files in the working tree and returns a report; the coordinator records what it accepts. Review runs in fresh context and returns findings to the coordinator.
 Tracker comments are a human journal. Branch, base branch, and pull request come from Git and GitHub; lifecycle comes from the tracker's own fields, never from comment text.
-Communicate with the user in their language, write tracker content in the task's language, and use English for agent handoffs and implementation.
+Communicate with the user in their language and write tracker content in the task's language. Fixed diagnostic comments generated automatically by agent-box may be English. Use English for agent handoffs and implementation.
 Complete subtasks only after validation and integration into the parent branch; complete parents only after merge into the base branch.
 """
 
