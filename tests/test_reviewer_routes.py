@@ -27,6 +27,25 @@ class ReviewerMatrixTests(unittest.TestCase):
         self.assertTrue(any("reviewer tier 1:" in row and "review-model" in row and "default" in row for row in rows))
         self.assertTrue(any("worker/scout tier 1:" in row and "worker-model" in row for row in rows))
 
+    def test_config_show_reports_review_routing_separately_from_worker_routing(self):
+        """Inspection must reveal strict reviewer routing even when workers use another mode."""
+        from agent_box import cli
+        for mode in ("cross-provider", "same-provider"):
+            with self.subTest(routing=mode):
+                config = Config()
+                config.workflow.routing = "weighted"
+                config.workflow.review.routing = mode
+                output = io.StringIO()
+                with patch.object(cli, "load_config", return_value=config), \
+                     patch.object(cli, "_statusline_note", return_value=""), \
+                     patch.object(cli, "_image_note", return_value=""), \
+                     patch.object(cli, "_browser_note", return_value=""), contextlib.redirect_stdout(output):
+                    cli.config_show()
+                rows = [" ".join(row.split()) for row in output.getvalue().splitlines()]
+                self.assertIn(f"review routing {mode}", rows)
+                self.assertTrue(any(row.startswith("routing weighted;") for row in rows))
+                self.assertIn("review auto; files 5; lines 200", rows)
+
     def test_reviewer_defaults_are_empty_and_have_only_task_tiers(self):
         config = Config()
         self.assertEqual(set(config.workflow.review.tiers), {"1", "2", "3"})
