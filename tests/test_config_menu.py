@@ -66,6 +66,22 @@ class ConfigMenuTests(unittest.TestCase):
         self.assertEqual(codex.config.workflow.tiers["0"]["codex"]["effort"], "default")
         self.assertEqual(claude.config.workflow.tiers["0"]["claude"]["effort"], "default")
 
+    def test_review_routing_can_be_saved_without_changing_policy_or_worker_routing(self):
+        """The review submenu must persist strict routing independently of review triggers."""
+        import curses
+        prefix = [*[curses.KEY_DOWN] * 10, "\n", *[curses.KEY_DOWN] * 10, "\n"]
+        suffix = ["\x1b", "\x1b", curses.KEY_DOWN, curses.KEY_DOWN, "\n"]
+        config = Config()
+        cancelled, _ = self.edit(config, [*prefix, curses.KEY_DOWN, curses.KEY_DOWN, " ", *["\x1b"] * 3])
+        self.assertIsNone(cancelled)
+        self.assertEqual(config.workflow.review.routing, "cross-provider")
+        result, _ = self.edit(config, [*prefix, curses.KEY_DOWN, curses.KEY_DOWN, " ", *suffix])
+        self.assertEqual(result.config.workflow.review.routing, "same-provider")
+        self.assertEqual(result.config.workflow.review.policy, "auto")
+        self.assertEqual(result.config.workflow.routing, "current")
+        result, _ = self.edit(result.config, [*prefix, curses.KEY_DOWN, curses.KEY_DOWN, " ", *suffix])
+        self.assertEqual(result.config.workflow.review.routing, "cross-provider")
+
     def test_reviewer_effort_menu_uses_provider_choices_without_changing_workers(self):
         import curses
         # workflow / review / tiers / tier 1 / provider

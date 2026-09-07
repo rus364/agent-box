@@ -129,11 +129,19 @@ reset remain excluded even if the refresh fails. Active workers are not preempte
 The provider APIs may themselves delay updates; bypassing the local cache cannot
 remove server-side lag.
 
-Review routing uses only `workflow.review.tiers`: prefer the other **actual writer** provider, then
-a fresh context from the same provider. Worker weights and usage do not select
-reviewers. Fallback defaults on; strict mode stops instead. All attempts preserve
-the selected tier and configured model/effort. An unsupported model is an error,
-not permission to guess a cheaper model.
+Set `workflow.review.routing` in `agent-box config` under workflow / review:
+
+- **cross-provider** (default): prefer the other **actual writer** provider, then
+  a fresh context from the writer provider when `workflow.fallback` is enabled
+  (the default). With fallback disabled, only the other provider is allowed.
+- **same-provider**: use only the actual writer provider in fresh context.
+  An unavailable writer executable, empty reviewer model or provider failure
+  stops review without calling the other provider, even with fallback enabled.
+
+Both modes use only `workflow.review.tiers`. Worker weights and usage do not
+select reviewers. Routing changes neither review policy nor worker/scout routing.
+All attempts preserve the selected tier and configured reviewer model/effort.
+An unsupported model is an error, not permission to guess a cheaper model.
 
 `config apply` installs owned native agent profiles with exact model/effort. A
 profile configured with effort `default` omits the effort field, but a native

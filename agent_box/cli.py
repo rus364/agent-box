@@ -362,6 +362,7 @@ def config_show() -> None:
     print(f"  Workflow                    {'on' if config.workflow.enabled else 'off'}")
     print(f"    routing                   {config.workflow.routing}; weights {config.workflow.weights}")
     print(f"    review                    {config.workflow.review.policy}; files {config.workflow.review.max_files}; lines {config.workflow.review.max_lines}")
+    print(f"    review routing            {config.workflow.review.routing}")
     print(f"    fallback / auto-push      {config.workflow.fallback} / {config.workflow.auto_push}")
     for tier, models in config.workflow.tiers.items():
         print(f"    worker/scout tier {tier}: {models}")

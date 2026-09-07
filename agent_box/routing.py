@@ -43,9 +43,13 @@ def select(config, role, tier, primary, state, usage=None, *, now=None, writer=N
     if role == "reviewer":
         if writer not in AGENT_PROVIDERS:
             raise AgentBoxError("Reviewer routing requires the actual writer provider")
-        other = "claude" if writer == "codex" else "codex"
-        order = [p for p in ([other, writer] if config.fallback else [other]) if p in allowed]
-        reason = "Prefer a fresh reviewer from the other writer provider"
+        if config.review.routing == "same-provider":
+            order = [writer] if writer in allowed else []
+            reason = "Fresh reviewer from the actual writer provider only"
+        else:
+            other = "claude" if writer == "codex" else "codex"
+            order = [p for p in ([other, writer] if config.fallback else [other]) if p in allowed]
+            reason = "Prefer a fresh reviewer from the other writer provider"
     else:
         allowed = [p for p in allowed if config.weights[p] > 0]
         if config.routing == "current":
