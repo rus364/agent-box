@@ -26,6 +26,9 @@ class IsolatedRuntimeTest(unittest.TestCase):
             mock.patch.object(runtime, "WORKFLOW_STATE", state / "workflow"),
             mock.patch.object(runtime, "load_config", return_value=Config()),
             mock.patch.object(runtime, "CLAUDE_HOME", state / "claude"),
+            mock.patch.object(runtime, "CODEX_HOME", state / "codex"),
+            mock.patch.object(runtime, "AGENT_SKILLS_DIR", state / "agents/skills"),
+            mock.patch.object(runtime, "MANAGED_SKILLS_SOURCE", state / "shipped-skills"),
         ]
         for patch in self._patches:
             patch.start()
