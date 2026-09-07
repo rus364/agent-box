@@ -7,7 +7,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from .config import Config, REVIEW_PRESETS, TRACKER_PROVIDERS
+from .config import AGENT_EFFORTS, Config, REVIEW_PRESETS, TRACKER_PROVIDERS
 from .errors import AgentBoxError
 
 CHOICES = {
@@ -23,7 +23,7 @@ HELP = {
     "tracker.enabled": "Expose configured tracker connections to agents. Keep credentials out of repository files.",
     "workflow.routing": "Workers/scouts: current provider, static weights, or weekly usage-aware weights. Reviewers prefer the other writer provider.",
     "workflow.weights": "Relative subscription capacity; set a provider to zero to exclude it from worker/scout routing.",
-    "workflow.tiers": "Tier 0: scouts only. Tiers 1-3: task complexity. Set exact supported model IDs and effort for both providers.",
+    "workflow.tiers": "Tier 0: scouts only. Tiers 1-3: task complexity. Set exact supported model IDs and effort for both providers; default omits agent-box's effort override.",
 }
 
 
@@ -204,7 +204,7 @@ def edit(config):
                 value = data[name]
                 options = CHOICES.get(".".join(full))
                 if name == "effort" and path[:2] == ("workflow", "tiers"):
-                    options = ("low", "medium", "high", "xhigh", "max") if path[-1] == "claude" else ("low", "medium", "high", "xhigh", "max", "ultra")
+                    options = AGENT_EFFORTS[path[-1]]
                 if isinstance(value, bool):
                     data[name] = not value
                 elif options:

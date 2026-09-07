@@ -56,6 +56,16 @@ class ConfigMenuTests(unittest.TestCase):
         self.assertNotIn("secret-token", "\n".join(screen.drawn))
         self.assertIn("token: <configured>", screen.drawn)
 
+    def test_tier_effort_default_can_be_selected_and_saved_for_both_providers(self):
+        import curses
+        # Open workflow / tiers / tier 0 / provider, then cycle medium to default.
+        prefix = [*[curses.KEY_DOWN] * 10, "\n", *[curses.KEY_DOWN] * 3, "\n", "\n"]
+        suffix = ["\x1b", "\x1b", "\x1b", "\x1b", curses.KEY_DOWN, curses.KEY_DOWN, "\n"]
+        codex, _ = self.edit(Config(), [*prefix, "\n", curses.KEY_DOWN, *[" "] * 5, *suffix])
+        claude, _ = self.edit(Config(), [*prefix, curses.KEY_DOWN, "\n", curses.KEY_DOWN, *[" "] * 4, *suffix])
+        self.assertEqual(codex.config.workflow.tiers["0"]["codex"]["effort"], "default")
+        self.assertEqual(claude.config.workflow.tiers["0"]["claude"]["effort"], "default")
+
 
 class PathIntegrationTests(unittest.TestCase):
     """Setup begins with PATH, so the menu must not let it be missed silently.

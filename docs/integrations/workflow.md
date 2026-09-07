@@ -83,8 +83,11 @@ nested ones next to the files being changed. `prepare` returns the same text as
 
 ## Models and routing
 
-Configure an exact model ID and effort for each provider in four tiers. Model
-fields start empty rather than guessing what the account can access. Tier 0 is
+Configure an exact model ID and effort for each provider in four tiers. The
+effort value `default` omits agent-box's effort override; it does not disable
+thinking or pass a literal `none` value to the provider. The existing default
+for newly created configuration remains `medium`. Model fields start empty
+rather than guessing what the account can access. Tier 0 is
 for facts, scouting and structuring; task difficulty remains 1-3, represented in
 Vikunja by one `ab:tier:1`, `ab:tier:2` or `ab:tier:3` label. A user-set task tier
 wins over a coordinator suggestion. Each subtask gets its own assessment.
@@ -127,9 +130,13 @@ reviewers. Fallback defaults on; strict mode stops instead. All attempts preserv
 the selected tier and configured model/effort. An unsupported model is an error,
 not permission to guess a cheaper model.
 
-`config apply` installs owned native agent profiles with exact model/effort.
-Use native delegation only when its tool can enforce those settings; otherwise
-`codex exec` or `claude -p` creates the context inside the existing host/container.
+`config apply` installs owned native agent profiles with exact model/effort. A
+profile configured with effort `default` omits the effort field, but a native
+subagent may still inherit effort from its parent session. Such a route reports
+`native_profile_ready=false` and uses managed `codex exec` or `claude -p`, which
+can omit the CLI override and clear inherited Claude effort. Use native
+delegation only when its tool can enforce the configured settings; otherwise
+the managed CLI creates the context inside the existing host/container.
 Provider errors, including Claude exit-zero error envelopes, are not review
 findings. A worker failure after possible side effects requires reconciliation.
 

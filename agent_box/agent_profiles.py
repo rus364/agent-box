@@ -22,10 +22,13 @@ def body(provider, role, tier, spec):
         fields = {"name": name, "description": f"Configured agent-box {role}, tier {tier}", "model": spec["model"],
                   "model_reasoning_effort": spec["effort"], "sandbox_mode": "workspace-write" if role == "worker" else "read-only",
                   "developer_instructions": instructions}
+        if spec["effort"] == "default":
+            fields.pop("model_reasoning_effort")
         return "\n".join(f"{key} = {json.dumps(value)}" for key, value in fields.items()) + "\n"
     tools = "Read, Grep, Glob, Bash, Edit, Write" if role == "worker" else "Read, Grep, Glob"
+    effort = "" if spec["effort"] == "default" else f"effort: {json.dumps(spec['effort'])}\n"
     return (f"---\nname: {name}\ndescription: Configured agent-box {role}, tier {tier}\n"
-            f"model: {json.dumps(spec['model'])}\neffort: {json.dumps(spec['effort'])}\ntools: {tools}\n---\n{instructions}\n")
+            f"model: {json.dumps(spec['model'])}\n{effort}tools: {tools}\n---\n{instructions}\n")
 
 
 def content_for(provider, role, tier, spec):
@@ -68,6 +71,10 @@ def sync(config, codex_home, claude_home):
 def available(provider, role, tier, spec):
     import os
     from .paths import CODEX_HOME, CLAUDE_HOME
+    # A native subagent may inherit the coordinator's effort when its profile
+    # omits the field, so only the managed CLI can promise the configured default.
+    if spec["effort"] == "default":
+        return False
     if provider == "claude" and (os.environ.get("CLAUDE_CODE_SAFE_MODE") or
             os.environ.get("CLAUDE_CODE_SUBAGENT_MODEL", spec["model"]) != spec["model"] or
             os.environ.get("CLAUDE_CODE_EFFORT_LEVEL", spec["effort"]) != spec["effort"]):

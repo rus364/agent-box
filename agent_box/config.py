@@ -455,6 +455,10 @@ class BrowserConfig:
 
 TRACKER_PROVIDERS = ("vikunja", "jira", "linear", "github")
 AGENT_PROVIDERS = ("codex", "claude")
+AGENT_EFFORTS = {
+    "codex": ("default", "low", "medium", "high", "xhigh", "max", "ultra"),
+    "claude": ("default", "low", "medium", "high", "xhigh", "max"),
+}
 WORKFLOW_SKILLS = ("ab-setup", "ab-adopt", "ab-interview", "ab-plan", "ab-work", "ab-review", "ab-pr", "ab-land")
 REVIEW_PRESETS = {"thorough": (2, 80), "balanced": (5, 200), "light": (10, 500)}
 
@@ -589,8 +593,7 @@ class WorkflowConfig:
                 errors.append(f"workflow.review.{name} must be a positive integer")
         for tier, models in self.tiers.items():
             for provider, spec in models.items():
-                efforts = ("low", "medium", "high", "xhigh", "max") if provider == "claude" else ("low", "medium", "high", "xhigh", "max", "ultra")
-                if spec.get("effort") not in efforts:
+                if spec.get("effort") not in AGENT_EFFORTS.get(provider, ()):
                     errors.append(f"workflow.tiers.{tier}.{provider}: invalid effort")
         return errors
 

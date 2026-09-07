@@ -10,6 +10,10 @@ class WorkflowConfigTests(unittest.TestCase):
         self.assertIn("tracker", data)
         self.assertFalse(data["tracker"]["enabled"])
         self.assertFalse(data["workflow"]["enabled"])
+        self.assertTrue(all(
+            spec["effort"] == "medium"
+            for tier in data["workflow"]["tiers"].values()
+            for spec in tier.values()))
 
     def test_routing_and_connections_round_trip_without_legacy_sections(self):
         data = {
@@ -34,6 +38,25 @@ class WorkflowConfigTests(unittest.TestCase):
         config = Config.from_dict({"workflow": {"routing": "magic", "weights": {
             "codex": -1, "claude": 0}}})
         self.assertTrue(any("routing" in e for e in config.workflow.validate()))
+
+    def test_default_effort_round_trips_for_both_providers(self):
+        loaded = Config.from_dict({"workflow": {"tiers": {"0": {
+            "codex": {"model": "small", "effort": "default"},
+            "claude": {"model": "haiku", "effort": "default"},
+        }}}})
+        config = Config.from_dict(loaded.to_dict())
+        self.assertEqual(config.workflow.tiers["0"]["codex"]["effort"], "default")
+        self.assertEqual(config.workflow.tiers["0"]["claude"]["effort"], "default")
+        self.assertEqual(config.workflow.validate(), [])
+
+    def test_unknown_effort_is_rejected_without_changing_existing_levels(self):
+        config = Config.from_dict({"workflow": {"tiers": {"1": {
+            "codex": {"model": "codex", "effort": "ultra"},
+            "claude": {"model": "claude", "effort": "unsupported"},
+        }}}})
+        errors = config.workflow.validate()
+        self.assertFalse(any("codex" in error for error in errors))
+        self.assertTrue(any("claude" in error and "effort" in error for error in errors))
 
 
 if __name__ == "__main__":

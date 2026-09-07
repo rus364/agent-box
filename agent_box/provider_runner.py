@@ -86,14 +86,18 @@ def parse_result(provider, returncode, output, stderr):
 def build_command(route, role, root, schema_path, result_path):
     readonly = role != "worker"
     if route["provider"] == "codex":
-        return ["codex", "exec", "--ephemeral", "--ignore-user-config", "--json", "-C", str(root),
-                "--sandbox", "read-only" if readonly else "workspace-write", "--model", route["model"],
-                "-c", 'model_reasoning_effort=' + json.dumps(route["effort"]),
-                *([] if readonly else ["-c", "sandbox_workspace_write.network_access=true"]),
-                "--output-schema", str(schema_path), "-o", str(result_path), "-"]
+        command = ["codex", "exec", "--ephemeral", "--ignore-user-config", "--json", "-C", str(root),
+                   "--sandbox", "read-only" if readonly else "workspace-write", "--model", route["model"]]
+        if route["effort"] != "default":
+            command += ["-c", 'model_reasoning_effort=' + json.dumps(route["effort"])]
+        command += [*([] if readonly else ["-c", "sandbox_workspace_write.network_access=true"]),
+                    "--output-schema", str(schema_path), "-o", str(result_path), "-"]
+        return command
     # Excluding Bash prevents a read-only reviewer from gaining shell write access.
-    command = ["claude", "-p", "--model", route["model"], "--effort", route["effort"],
-               "--output-format", "json", "--no-session-persistence", "--safe-mode", "--strict-mcp-config",
+    command = ["claude", "-p", "--model", route["model"]]
+    if route["effort"] != "default":
+        command += ["--effort", route["effort"]]
+    command += ["--output-format", "json", "--no-session-persistence", "--safe-mode", "--strict-mcp-config",
                "--mcp-config", '{"mcpServers":{}}', "--permission-mode", "dontAsk",
                "--tools", "Read,Grep,Glob" if readonly else "Read,Grep,Glob,Bash,Edit,Write",
                "--allowedTools", "Read,Grep,Glob" if readonly else "Read,Grep,Glob,Bash,Edit,Write"]
