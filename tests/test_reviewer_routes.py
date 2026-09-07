@@ -47,7 +47,7 @@ class ReviewerMatrixTests(unittest.TestCase):
         self.assertEqual(config.workflow.tiers["2"]["claude"]["model"], "worker")
         config.workflow.review.tiers["2"]["claude"]["model"] = ""
         config.workflow.review.tiers["2"]["codex"]["model"] = ""
-        with self.assertRaises(AgentBoxError):
+        with self.assertRaisesRegex(AgentBoxError, r"reviewer model configured in workflow\.review\.tiers\.2"):
             routing.select(config.workflow, "reviewer", 2, "codex", {})
 
     def test_reviewer_effort_is_validated_by_provider(self):

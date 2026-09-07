@@ -78,7 +78,8 @@ def select(config, role, tier, primary, state, usage=None, *, now=None, writer=N
                 reason += "; fresh comparable usage unavailable"
         order = [winner] + ([p for p in allowed if p != winner] if config.fallback else [])
     if not order:
-        raise AgentBoxError(f"No allowed model configured in tier {tier}; no automatic tier downgrade")
+        matrix = "workflow.review.tiers" if role == "reviewer" else "workflow.tiers"
+        raise AgentBoxError(f"No allowed {role} model configured in {matrix}.{tier}; no automatic tier downgrade")
     def entry(provider):
         return {"provider": provider, "model": models[provider]["model"], "effort": models[provider]["effort"], "tier": tier}
     return {**entry(order[0]), "role": role, "reason": reason, "fallbacks": [entry(p) for p in order[1:]]}
