@@ -139,6 +139,12 @@ agent-box attach claude-31337
 A detached session keeps its box alive; `agent-box stop` ends the box and every
 session in it.
 
+The mouse wheel scrolls tmux history when the agent does not handle mouse
+events itself; mouse-aware TUIs receive the events directly. Press `q` to leave
+tmux's scroll mode. This uses agent-box's private tmux configuration.
+For an already running server, apply the setting from `agent-box shell` with
+`tmux -L agent-box set -g mouse on`; new servers load it automatically.
+
 Only real terminals are wrapped — pipes, redirects, CI and `claude -p` write
 straight to stdout. `AGENT_BOX_TMUX=0` disables tmux for one launch.
 
