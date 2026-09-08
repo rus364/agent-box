@@ -273,8 +273,10 @@ survives scope changes and coordinator restarts, and never resets automatically.
 command results expose `review_budget` for the coordinator, outside the neutral
 reviewer prompt. At exhaustion, only the user's explicit decision permits
 `--review-override-reason TEXT` for one additional attempt, with its reason saved.
-Every new review retires previous PASS and human acceptance, including explicit
-tiers and provider failures. Remote GitHub review requests remain coordinated
+Every new review retires previous PASS and human acceptance under the reservation
+lock, including explicit tiers and provider failures. Result ingestion uses the
+same lock and accepts only the latest pending round; late or replayed results
+cannot restore acceptance. Remote GitHub review requests remain coordinated
 separately. Skills stop on ambiguity or no progress and retain human iteration
 history in the tracker. Validation is a real command with an observed exit
 status; the coordinator does not self-review.

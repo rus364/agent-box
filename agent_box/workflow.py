@@ -245,12 +245,14 @@ def review_budget_path(root, binding, task):
     return WORKFLOW_STATE / "review-budgets" / repository_key(root) / f"{key}.json"
 
 
-def read_review_budget(root, binding, task, limit):
+def read_review_state(root, binding, task):
     path = review_budget_path(root, binding, task)
     try:
         value = json.loads(path.read_text())
         if (not isinstance(value, dict) or type(value.get("used")) is not int
                 or value["used"] < 0 or not isinstance(value.get("overrides"), list)
+                or (value.get("pending") is not None
+                    and (not isinstance(value["pending"], str) or not value["pending"]))
                 or any(not isinstance(item, dict) or type(item.get("attempt")) is not int
                        or not 0 < item["attempt"] <= value["used"]
                        or not isinstance(item.get("reason"), str) or not item["reason"].strip()
@@ -260,10 +262,22 @@ def read_review_budget(root, binding, task, limit):
         value = {"used": 0, "overrides": []}
     except (OSError, ValueError) as exc:
         raise AgentBoxError(f"Cannot read review budget {path}: {exc}") from exc
-    return {**value, "limit": limit, "remaining": max(0, limit - value["used"])}
+    return value
 
 
-def reserve_review(root, binding, task, limit, reason):
+def read_review_budget(root, binding, task, limit):
+    value = read_review_state(root, binding, task)
+    return {"used": value["used"], "overrides": value["overrides"],
+            "limit": limit, "remaining": max(0, limit - value["used"])}
+
+
+def save_review_state(root, binding, task, value):
+    path = review_budget_path(root, binding, task)
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    atomic_write_text(path, json.dumps(value) + "\n", 0o600)
+
+
+def reserve_review(root, binding, task, limit, reason, round_id, fingerprint):
     """Attempts outlive scope evidence; stale reports cannot restore the budget."""
     with lock(root, "review-budget"):
         budget = read_review_budget(root, binding, task, limit)
@@ -277,9 +291,14 @@ def reserve_review(root, binding, task, limit, reason):
         budget["remaining"] = max(0, limit - budget["used"])
         if reason is not None:
             budget["overrides"].append({"attempt": budget["used"], "reason": reason.strip()})
-        path = review_budget_path(root, binding, task)
-        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        atomic_write_text(path, json.dumps({key: budget[key] for key in ("used", "overrides")}) + "\n", 0o600)
+        saved = evidence(root, task, fingerprint)
+        for key in ("human_acceptance", "local_acceptance", "review"):
+            saved.pop(key, None)
+        # Retire acceptance before publishing a new round; report ingestion uses
+        # this same lock so a late verdict cannot slip between these writes.
+        save_evidence(root, task, saved)
+        save_review_state(root, binding, task,
+                          {"used": budget["used"], "overrides": budget["overrides"], "pending": round_id})
         return budget
 
 
@@ -666,7 +685,8 @@ def reviewer_handoff(root, base, tasks, brief, saved, review_context, task_id, f
     }
     prompt = (
         "Act only as an independent read-only reviewer. Do not change files, branches, commits, "
-        "tracker data, or GitHub data. This is a new verdict round: use only this initial handoff "
+        "tracker data, or GitHub data. Use English for all commentary and the final report; preserve source quotations. "
+        "This is a new verdict round: use only this initial handoff "
         "and do not rely on coordinator conversation, tracker comments, or any previous verdict or findings. "
         "Do not query the tracker or read the task separately: the current normative requirements are included "
         "below, satisfying any general repository instruction to read the tracked task.\n"
@@ -923,18 +943,14 @@ def dispatch(args):
         # the report is ingested at the role and tier it was actually run at.
         selected = (descriptor["route"] if descriptor else session_route(args, role) if tier is None
                     else route(config.workflow, role, tier, args.primary, saved.get("writer")))
-        if role == "reviewer" and args.command != "report":
-            budget = reserve_review(root, binding, task, config.workflow.review.max_rounds, override_reason)
-            # Even a provider failure or a native reviewer that never returns
-            # must leave no earlier human decision standing in for that review.
-            saved.pop("human_acceptance", None)
-            saved.pop("local_acceptance", None)
-            saved.pop("review", None)
-            save_evidence(root, task, saved)
-        session_action = (selected.get("mode") == "current-session" and args.command != "report"
-                          and (role == "worker" or selected["model"] is None))
         review_round = (descriptor["delegation"] if role == "reviewer" and descriptor else
                         secrets.token_urlsafe(18) if role == "reviewer" else None)
+        if role == "reviewer" and args.command != "report":
+            budget = reserve_review(root, binding, task, config.workflow.review.max_rounds,
+                                    override_reason, review_round, fingerprint)
+            saved = evidence(root, task, fingerprint)
+        session_action = (selected.get("mode") == "current-session" and args.command != "report"
+                          and (role == "worker" or selected["model"] is None))
         if args.command == "prepare" or session_action:
             if role == "worker":
                 retire_acceptance(root, adapter, task, saved)
@@ -1006,15 +1022,15 @@ def dispatch(args):
         else:
             if role == "worker":
                 retire_acceptance(root, adapter, task, saved)
-            prompt = ("Use English for this handoff and report, implementation and code. "
-                      "A worker changes project files in the working tree and reports what it changed; "
-                      "a reviewer or scout changes nothing at all. Never commit, push, switch or create branches, "
-                      "and never write tracker or GitHub data: the coordinator does that after reading your report.\n")
             if role == "reviewer":
                 prompt = reviewer_handoff(
                     root, base, tasks, brief, saved, review_context, task.id, fingerprint,
                     review_round)
             else:
+                prompt = ("Use English for this handoff and report, implementation and code. "
+                          "A worker changes project files in the working tree and reports what it changed; "
+                          "a scout changes nothing at all. Never commit, push, switch or create branches, "
+                          "and never write tracker or GitHub data: the coordinator does that after reading your report.\n")
                 guidance = repository_instructions(root)
                 if guidance:
                     prompt += ("The repository's own instructions follow and apply to your work; also read AGENTS.md or "
@@ -1043,12 +1059,19 @@ def dispatch(args):
             saved["worker"] = {key: output[key] for key in ("route", "fallback_reason", "failures") if key in output}
             save_evidence(root, task, saved)
         if role == "reviewer":
-            if scope(root, base, tree(adapter, adapter.get(task.id))) != fingerprint:
-                raise AgentBoxError("Code or requirements changed during review; report is stale")
-            saved.pop("human_acceptance", None)
-            saved["review"] = {**output["report"], **{
-                key: output[key] for key in ("route", "fallback_reason", "failures", "fresh_context") if key in output}}
-            save_evidence(root, task, saved)
+            with lock(root, "review-budget"):
+                state = read_review_state(root, binding, task)
+                if state.get("pending") != review_round:
+                    raise AgentBoxError("Review round is stale or already reported; only the latest pending round can report")
+                if scope(root, base, tree(adapter, adapter.get(task.id))) != fingerprint:
+                    raise AgentBoxError("Code or requirements changed during review; report is stale")
+                saved = evidence(root, task, fingerprint)
+                saved.pop("human_acceptance", None)
+                saved["review"] = {**output["report"], **{
+                    key: output[key] for key in ("route", "fallback_reason", "failures", "fresh_context") if key in output}}
+                save_evidence(root, task, saved)
+                state.pop("pending", None)
+                save_review_state(root, binding, task, state)
         result = {**output, "scope": fingerprint}
         if role == "reviewer":
             result["review_budget"] = read_review_budget(root, binding, task, config.workflow.review.max_rounds)

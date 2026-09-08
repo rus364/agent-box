@@ -554,6 +554,7 @@ class WorkerHandoffTests(unittest.TestCase):
         self.assertNotIn("+value = 2", prompt)
         self.assertNotIn("+stable = True", prompt)
         self.assertIn("Untrusted author claims", prompt)
+        self.assertIn("Use English for all commentary and the final report; preserve source quotations.", prompt)
         self.assertIn("counterexamples", prompt)
         self.assertIn("Successful tests", prompt)
         self.assertIn("actual consumers and requirements", prompt)
@@ -622,16 +623,58 @@ class WorkerHandoffTests(unittest.TestCase):
         report = Path(self.directory.name) / "same-scope-review.json"
         report.write_text(json.dumps({
             "verdict": "PASS", "summary": "Reviewed independently", "findings": []}))
-        for cleaned, remaining in ((first, second_paths), (second, ())):
-            self.run_workflow(
+        def report_round(prepared):
+            return self.run_workflow(
                 "report", "1", "--role", "reviewer", "--primary", "codex",
                 "--provider", "claude", "--model", "m", "--effort", "high",
-                "--scope", cleaned["scope"], "--handoff", cleaned["handoff"],
+                "--scope", prepared["scope"], "--handoff", prepared["handoff"],
                 "--file", str(report), "--fresh-context")
+
+        with self.assertRaisesRegex(AgentBoxError, "Review round is stale"):
+            report_round(first)
+        self.assertNotIn("review", workflow.read_evidence(self.root, self.task))
+        self.assertTrue(workflow.review_blockers(
+            self.config.workflow.review, [self.task], [], 0,
+            workflow.read_evidence(self.root, self.task)))
+        self.assertFalse(first_dir.exists())
+        self.assertTrue(all(path.is_file() for path in second_paths))
+        accepted = report_round(second)
+        self.assertEqual(accepted["review_budget"]["used"], 2)
+        self.assertNotIn("pending", accepted["review_budget"])
+        for cleaned in (first, second):
             cleaned_dir, cleaned_paths = package(cleaned)
             self.assertFalse(cleaned_dir.exists())
             self.assertTrue(all(not path.exists() for path in cleaned_paths))
-            self.assertTrue(all(path.is_file() for path in remaining))
+        report.write_text(json.dumps({"verdict": "INCONCLUSIVE", "summary": "Replay", "findings": []}))
+        for old in (first, second):
+            with self.assertRaisesRegex(AgentBoxError, "Review round is stale"):
+                report_round(old)
+        self.assertEqual(workflow.read_evidence(self.root, self.task)["review"]["verdict"], "PASS")
+
+    def test_managed_result_cannot_overwrite_newer_native_round(self):
+        """A managed provider returning after native prepare cannot restore acceptance."""
+        self.config.workflow.review.policy = "always"
+        pending = []
+
+        def provider(route, role, root, prompt, *, timeout, read_paths):
+            pending.append(self.run_workflow(
+                "prepare", "1", "--role", "reviewer", "--primary", "codex",
+                "--brief", str(self.review_brief)))
+            return {"verdict": "PASS", "summary": "Older managed round", "findings": []}
+
+        with patch.object(workflow, "run", side_effect=managed_runner(provider)), \
+             self.assertRaisesRegex(AgentBoxError, "Review round is stale"):
+            self.run_workflow("review", "1", "--primary", "codex", "--brief", str(self.review_brief))
+        self.assertNotIn("review", workflow.read_evidence(self.root, self.task))
+        prepared = pending[0]
+        self.report.write_text(json.dumps({"verdict": "PASS", "summary": "Latest native", "findings": []}))
+        result = self.run_workflow(
+            "report", "1", "--role", "reviewer", "--primary", "codex",
+            "--provider", "claude", "--model", "m", "--effort", "high",
+            "--scope", prepared["scope"], "--handoff", prepared["handoff"],
+            "--file", str(self.report), "--fresh-context")
+        self.assertEqual(result["review_budget"]["used"], 2)
+        self.assertEqual(workflow.read_evidence(self.root, self.task)["review"]["summary"], "Latest native")
 
     def test_managed_reviewer_reads_ephemeral_evidence_before_cleanup(self):
         self.config.workflow.review.policy = "always"
@@ -669,7 +712,16 @@ class WorkerHandoffTests(unittest.TestCase):
         self.assertEqual(result["report"]["verdict"], "PASS")
         self.assertTrue(all(not path.exists() for path in artifact_paths))
         self.assertTrue((pending_path / "manifest.json").is_file())
-        workflow.cleanup_review_evidence(pending_path)
+        self.report.write_text(json.dumps({"verdict": "INCONCLUSIVE", "summary": "Older native", "findings": []}))
+        with self.assertRaisesRegex(AgentBoxError, "Review round is stale"):
+            self.run_workflow(
+                "report", "1", "--role", "reviewer", "--primary", "codex",
+                "--provider", "claude", "--model", "m", "--effort", "high",
+                "--scope", pending["scope"], "--handoff", pending["handoff"],
+                "--file", str(self.report), "--fresh-context")
+        self.assertFalse(pending_path.exists())
+        self.assertEqual(workflow.read_evidence(self.root, self.task)["review"]["verdict"], "PASS")
+        self.assertEqual(workflow.read_review_budget(self.root, BINDING, self.task, 3)["used"], 2)
 
     def test_review_requirements_keep_nested_sections_and_refuse_unknown_structure(self):
         description = (
@@ -744,18 +796,18 @@ class WorkerHandoffTests(unittest.TestCase):
         """Concurrent reservation and unreadable counters fail closed; other projects are distinct."""
         with workflow_state.lock(self.root, "review-budget"), \
              self.assertRaisesRegex(AgentBoxError, "Another local review-budget"):
-            workflow.reserve_review(self.root, BINDING, self.task, 1, None)
+            workflow.reserve_review(self.root, BINDING, self.task, 1, None, "round", "scope")
         self.assertEqual(workflow.read_review_budget(self.root, BINDING, self.task, 1)["used"], 0)
         with self.assertRaisesRegex(AgentBoxError, "non-empty reason"):
-            workflow.reserve_review(self.root, BINDING, self.task, 1, " ")
-        workflow.reserve_review(self.root, BINDING, self.task, 1, None)
+            workflow.reserve_review(self.root, BINDING, self.task, 1, " ", "round", "scope")
+        workflow.reserve_review(self.root, BINDING, self.task, 1, None, "round", "scope")
         other = Binding("vikunja", "https://tasks.example", "other")
         self.assertEqual(workflow.read_review_budget(self.root, other, self.task, 1)["used"], 0)
         path = workflow.review_budget_path(self.root, BINDING, self.task)
         for malformed in ("broken", "{}", '{"used":true,"overrides":[]}', '{"used":-1,"overrides":[]}'):
             path.write_text(malformed)
             with self.subTest(malformed=malformed), self.assertRaisesRegex(AgentBoxError, "Cannot read review budget"):
-                workflow.reserve_review(self.root, BINDING, self.task, 1, "Must not bypass corruption")
+                workflow.reserve_review(self.root, BINDING, self.task, 1, "Must not bypass corruption", "round", "scope")
 
     def test_policy_skipped_review_does_not_reserve_an_attempt(self):
         """A policy decision is not an independent review attempt."""
