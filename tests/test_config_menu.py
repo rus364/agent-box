@@ -573,3 +573,48 @@ class ProjectMenuTests(unittest.TestCase):
                 with patch.object(config_menu, 'edit', return_value=None):
                     cli.config_interactive(project=True)
                 self.assertEqual(json.loads(path.read_text()), result.project)
+
+    def test_project_cli_copy_uses_available_global_source_without_process_account(self):
+        """G must not pin a temporary account, and a session snapshot outranks the host file."""
+        import curses
+        import io
+        import os
+        from contextlib import redirect_stdout
+        from agent_box import cli, config as config_module, project_config
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / '.agent-box.json'
+            global_path = root / 'global.json'
+            runtime_path = root / 'runtime.json'
+            config = Config()
+            config.tracker.connections['vikunja'] = TrackerConnection('https://global.example', 'GLOBAL_SECRET')
+            config_module.save_config(config, global_path)
+            config.tracker.connections['vikunja'] = TrackerConnection('https://runtime.example', 'RUNTIME_SECRET')
+            runtime_path.write_text(json.dumps(config.to_dict()))
+            original_global = global_path.read_bytes()
+            original_runtime = runtime_path.read_bytes()
+            for source, expected in (('host', 'https://global.example'), ('runtime', 'https://runtime.example')):
+                environment = {'VIKUNJA_URL': 'https://temporary.example', 'VIKUNJA_TOKEN': 'TEMPORARY_SECRET'}
+                if source == 'runtime':
+                    environment['AGENT_BOX_RUNTIME_CONFIG'] = str(runtime_path)
+                screen = Screen([*[curses.KEY_DOWN] * 8, 'g', curses.KEY_END, curses.KEY_UP, '\n'])
+                with self.subTest(source=source), redirect_stdout(io.StringIO()), \
+                     patch.dict(os.environ, environment, clear=True), \
+                     patch.object(config_module, 'CONFIG_FILE', global_path), \
+                     patch.object(project_config, 'project_path', return_value=path), \
+                     patch.object(config_menu.sys.stdin, 'isatty', return_value=True), \
+                     patch.object(config_menu.sys.stdout, 'isatty', return_value=True), \
+                     patch.object(curses, 'wrapper', side_effect=lambda callback: callback(screen)), \
+                     patch.object(curses, 'curs_set'), \
+                     patch.object(config_menu, 'load_codex_models', return_value=config_menu.BUNDLED_MODELS['codex']), \
+                     patch.object(cli, 'save_config', side_effect=AssertionError('global write')), \
+                     patch('agent_box.runtime.apply_config', side_effect=AssertionError('global apply')), \
+                     patch('agent_box.pathsetup.append_rc_block', side_effect=AssertionError('PATH write')):
+                    cli.config_interactive(project=True)
+                    self.assertEqual(json.loads(path.read_text()), {
+                        'tracker': {'provider': 'vikunja', 'connections': {'vikunja': {'url': expected}}}})
+                    for private in ('https://temporary.example', 'GLOBAL_SECRET', 'RUNTIME_SECRET', 'TEMPORARY_SECRET'):
+                        self.assertNotIn(private, path.read_text())
+                        self.assertNotIn(private, '\n'.join(screen.drawn))
+                    self.assertEqual(global_path.read_bytes(), original_global)
+                    self.assertEqual(runtime_path.read_bytes(), original_runtime)

@@ -320,7 +320,9 @@ default** removes the selected field or section's override, so it inherits the
 effective global value and follows subsequent global changes. **G: Copy current global**
 copies the current effective global value into an explicit project override,
 pinning it against subsequent global changes. Both actions work on fields and
-sections; section copying includes only project-allowed settings. Tracker
+sections. The available global baseline comes from the session runtime snapshot
+when present, otherwise the host configuration; additional process account
+overrides are excluded from copying. Section copying includes only project-allowed settings. Tracker
 sections copy configured accounts, excluding empty menu placeholders. Choosing a
 value equal to the global or program default still saves an explicit project
 override. Project identity fields have no global value to copy; the menu explains

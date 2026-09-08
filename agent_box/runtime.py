@@ -812,10 +812,10 @@ def launch_config(env_specs=None):
     tracker = load().get("tracker", {})
     selected = session_tracker(config, environment)
     if config.tracker.enabled:
-        for provider, connection in tracker.get("connections", {}).items():
-            account = selected.connection(provider)
-            if account.url and "url" in connection and server_identity(account.url) != server_identity(connection["url"]):
-                raise AgentBoxError("Repository binding targets a different tracker server; update the project binding")
+        connection = tracker.get("connections", {}).get(config.tracker.provider, {})
+        account = selected.connection(config.tracker.provider)
+        if account.url and "url" in connection and server_identity(account.url) != server_identity(connection["url"]):
+            raise AgentBoxError("Repository binding targets a different tracker server; update the project binding")
     return config
 
 

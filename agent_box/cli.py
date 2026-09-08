@@ -443,7 +443,7 @@ def config_interactive(project=False) -> None:
     from . import config_menu, runtime
     from . import project_config
     path = project_config.project_path() if project else None
-    result = (config_menu.edit(effective_config(include_project=False), project=project_config.load(path))
+    result = (config_menu.edit(effective_config(environ={}, include_project=False), project=project_config.load(path))
               if project else config_menu.edit(load_config()))
     if result is None:
         print("Configuration unchanged.")

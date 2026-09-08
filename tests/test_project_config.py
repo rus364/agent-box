@@ -159,6 +159,42 @@ class ProjectConfigTests(unittest.TestCase):
         with self.assertRaises(AgentBoxError):
             make_adapter(Binding('vikunja', 'https://other.example', '12'), config=config)
 
+    def test_launch_checks_selected_project_provider_without_requiring_unused_accounts_to_match(self):
+        """An unused Jira override must not prevent launch with the matching Vikunja account."""
+        self.config.tracker.provider = 'jira'
+        self.config.tracker.connections['jira'] = TrackerConnection('https://global-jira.example', 'jira-secret')
+        project_config.save(self.path, {'tracker': {'provider': 'vikunja', 'project': '12', 'connections': {
+            'vikunja': {'url': self.binding.server}, 'jira': {'url': 'https://project-jira.example'}}}})
+        original = self.config.to_dict()
+        for environment, token in (({}, 'global-secret'), ({'VIKUNJA_URL': self.binding.server,
+                                                          'VIKUNJA_TOKEN': 'session-secret'}, 'session-secret')):
+            with self.subTest(session=bool(environment)), patch.dict(os.environ, environment), \
+                 patch.object(runtime, 'load_config', return_value=self.config), \
+                 patch.object(project_config, 'project_path', return_value=self.path):
+                result = runtime.launch_config()
+                self.assertEqual(result.tracker.provider, 'vikunja')
+                self.assertEqual(make_adapter(self.binding, config=result).client.token, token)
+                self.assertEqual(result.tracker.connection('jira').url, 'https://project-jira.example')
+        self.assertEqual(self.config.to_dict(), original)
+
+    def test_launch_rejects_selected_account_mismatch_and_incomplete_session_pair(self):
+        """The launcher must reject invalid account selection before any consumer can connect."""
+        write_binding(self.root, self.binding)
+        cases = [({}, 'https://wrong-global.example'),
+                 ({'VIKUNJA_URL': 'https://wrong-session.example', 'VIKUNJA_TOKEN': 'session-secret'}, self.binding.server),
+                 ({'VIKUNJA_URL': self.binding.server}, self.binding.server),
+                 ({'VIKUNJA_TOKEN': 'session-secret'}, self.binding.server),
+                 ({'VIKUNJA_URL': '', 'VIKUNJA_TOKEN': 'session-secret'}, self.binding.server),
+                 ({'VIKUNJA_URL': self.binding.server, 'VIKUNJA_TOKEN': ''}, self.binding.server)]
+        for environment, global_url in cases:
+            self.config.tracker.connections['vikunja'].url = global_url
+            with self.subTest(environment=environment, global_url=global_url), \
+                 patch.dict(os.environ, environment), \
+                 patch.object(runtime, 'load_config', return_value=self.config), \
+                 patch.object(project_config, 'project_path', return_value=self.path), \
+                 self.assertRaises(AgentBoxError):
+                runtime.launch_config()
+
     def test_session_snapshots_survive_other_sessions_and_global_disable(self):
         with patch.object(runtime, 'TRACKER_RUNTIME_DIR', self.root / 'runtime'), \
              patch.object(runtime, 'container_tracker_url', side_effect=lambda url: url):
