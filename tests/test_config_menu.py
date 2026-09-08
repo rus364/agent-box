@@ -81,7 +81,7 @@ class ConfigMenuTests(unittest.TestCase):
     def test_merge_mode_is_an_explicit_menu_choice(self):
         self.assertEqual(config_menu.CHOICES["workflow.merge_mode"], ("github", "local"))
 
-    def edit(self, config, keys, choices=(), link=None, screen=None):
+    def edit(self, config, keys, choices=(), link=None, screen=None, project=None):
         import curses
         from agent_box import pathsetup
         screen = screen or Screen(keys)
@@ -91,7 +91,7 @@ class ConfigMenuTests(unittest.TestCase):
              patch.object(config_menu, "load_codex_models", return_value=config_menu.BUNDLED_MODELS["codex"]), \
              patch.object(pathsetup, "link_state", return_value=state), \
              patch.object(pathsetup, "bin_dir_choices", return_value=list(choices)):
-            return config_menu.edit(config), screen
+            return config_menu.edit(config, project=project), screen
 
     def test_cancel_discards_draft_while_save_returns_the_selected_values(self):
         import curses
@@ -381,3 +381,59 @@ class PathIntegrationTests(unittest.TestCase):
         self.assertIn(
             "PATH integration: found /usr/local/bin/agent-box, kept by you, not agent-box",
             screen.drawn)
+
+
+class ProjectMenuTests(unittest.TestCase):
+    edit = ConfigMenuTests.edit
+
+    def test_project_can_keep_equal_override_reset_and_block_global_fields(self):
+        """Explicit equality is a choice; reset removes the choice from the file."""
+        import curses
+        config = Config()
+        browser = [*[curses.KEY_DOWN] * 9, '\n']
+        save = ['\x1b', curses.KEY_END, curses.KEY_UP, '\n']
+        result, screen = self.edit(config, [*browser, ' ', ' ', *save], project={})
+        self.assertEqual(result.project, {'browser': {'enabled': False}})
+        self.assertIn('Inherited', '\n'.join(screen.drawn))
+        self.assertIn('Overridden', '\n'.join(screen.drawn))
+        reset, _ = self.edit(config, [*browser, 'r', *save], project=result.project)
+        self.assertEqual(reset.project, {})
+        blocked, screen = self.edit(config, [' ', curses.KEY_END, curses.KEY_UP, '\n'], project={})
+        self.assertEqual(blocked.project, {})
+        self.assertIn('Global only', '\n'.join(screen.drawn))
+
+    def test_project_reviewer_picker_retains_manual_disable_and_default_effort(self):
+        import curses
+        config = Config()
+        prefix = [*[curses.KEY_DOWN] * 10, '\n',
+                  *[curses.KEY_DOWN] * list(config.workflow.to_dict()).index('review'), '\n',
+                  *[curses.KEY_DOWN] * list(config.workflow.review.to_dict()).index('override'), '\n',
+                  curses.KEY_DOWN, curses.KEY_DOWN, '\n', '\n', '\n']
+        for pick, expected in (([curses.KEY_HOME, '\n', *'custom-model', '\n'], 'custom-model'),
+                               ([curses.KEY_HOME, curses.KEY_DOWN, '\n'], '')):
+            keys = [*prefix, *pick, curses.KEY_DOWN, *[' '] * 5,
+                    *['\x1b'] * 5, curses.KEY_END, curses.KEY_UP, '\n']
+            result, _ = self.edit(config, keys, project={})
+            self.assertEqual(result.project['workflow']['review']['override']['models']['codex'],
+                             {'model': expected, 'effort': 'default'})
+            self.assertFalse(result.config.workflow.review.override.enabled)
+
+    def test_project_save_and_cancel_do_not_apply_or_configure_path(self):
+        from agent_box import cli, project_config
+        from contextlib import redirect_stdout
+        import io
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / '.agent-box.json'
+            result = config_menu.EditResult(Config(), project={'browser': {'enabled': False}})
+            with patch.object(project_config, 'project_path', return_value=path), \
+                 patch.object(cli, 'effective_config', return_value=Config()), \
+                 patch.object(config_menu, 'edit', return_value=result), \
+                 patch.object(cli, 'save_config', side_effect=AssertionError('global write')), \
+                 patch('agent_box.runtime.apply_config', side_effect=AssertionError('global apply')), \
+                 patch('agent_box.pathsetup.append_rc_block', side_effect=AssertionError('PATH write')), \
+                 redirect_stdout(io.StringIO()):
+                cli.config_interactive(project=True)
+                self.assertEqual(json.loads(path.read_text()), result.project)
+                with patch.object(config_menu, 'edit', return_value=None):
+                    cli.config_interactive(project=True)
+                self.assertEqual(json.loads(path.read_text()), result.project)

@@ -176,6 +176,7 @@ class EditResult:
     """
     config: Config
     edit_rc: bool = False
+    project: dict | None = None
 
 
 def secret(path):
@@ -205,7 +206,7 @@ def _model_path(path):
     return path[-1:] == ("model",) and _candidate_field(path)
 
 
-def edit(config):
+def edit(config, *, project=None):
     if not sys.stdin.isatty() or not sys.stdout.isatty():
         raise AgentBoxError("agent-box config needs a terminal; edit config.json and run config apply for noninteractive use")
     try:
@@ -213,17 +214,57 @@ def edit(config):
     except ImportError:
         raise AgentBoxError("This Python build lacks stdlib curses; edit config.json and run config apply") from None
     from . import pathsetup
-    choices, link = pathsetup.bin_dir_choices(), pathsetup.link_state()
+    from .project_config import project_field, merge, validate as validate_project
+    project_mode = project is not None
+    overrides = copy.deepcopy(project) if project_mode else None
+    choices, link = ([], None) if project_mode else (pathsetup.bin_dir_choices(), pathsetup.link_state())
     model_suggestions = {"codex": load_codex_models(), "claude": BUNDLED_MODELS["claude"]}
-    draft = copy.deepcopy(config.to_dict())
+    inherited = copy.deepcopy(config.to_dict())
+    draft = merge(inherited, overrides) if project_mode else copy.deepcopy(inherited)
     draft.pop("version", None)
     draft.pop("install", None)
     for provider in TRACKER_PROVIDERS:
+        inherited["tracker"]["connections"].setdefault(provider, {"url": "", "token": ""})
         draft["tracker"]["connections"].setdefault(provider, {"url": "", "token": ""})
+    if project_mode:
+        for target in (inherited, draft):
+            target["tracker"].setdefault("project", "")
+            target["tracker"].setdefault("recursive", False)
     path_state = {"bin": Path(config.install.bin_dir) if config.install.bin_dir else None, "rc": False}
+
+    def explicit(path):
+        value = overrides
+        for part in path:
+            if not isinstance(value, dict) or part not in value:
+                return False
+            value = value[part]
+        return True
+
+    def record(path, value):
+        target = overrides
+        for part in path[:-1]:
+            target = target.setdefault(part, {})
+        target[path[-1]] = copy.deepcopy(value)
+
+    def reset(path):
+        def remove(target, parts):
+            if parts[0] in target:
+                if len(parts) == 1:
+                    del target[parts[0]]
+                else:
+                    remove(target[parts[0]], parts[1:])
+                    if not target[parts[0]]:
+                        del target[parts[0]]
+        remove(overrides, path)
+        value = inherited
+        for part in path:
+            value = value.get(part, {})
+        return copy.deepcopy(value)
 
     def drafted():
         return Config.from_dict({**draft, "install": {"bin_dir": str(path_state["bin"]) if path_state["bin"] else ""}})
+
+    global_only_color = 0
 
     def add_line(screen, y, value, width, attr=0, x=0):
         try:
@@ -257,8 +298,10 @@ def edit(config):
         add_line(screen, 1, navigation, width)
         offset = min(max(0, selected - list_height + 1), max(0, len(rows) - list_height))
         for index, row in enumerate(rows[offset:offset + list_height], offset):
-            add_line(screen, index - offset + 3, row, list_width,
-                     curses.A_REVERSE | curses.A_BOLD if index == selected else 0)
+            attr = curses.A_REVERSE | curses.A_BOLD if index == selected else 0
+            if "Global only" in row:
+                attr |= global_only_color
+            add_line(screen, index - offset + 3, row, list_width, attr)
         message = help_text
         if notice:
             message = notice + "\n\n" + help_text
@@ -440,10 +483,12 @@ def edit(config):
 
     def path_pending():
         """Would saving now leave the shell unable to find agent-box?"""
-        return path_state["bin"] is None and link.kind != "ours"
+        return not project_mode and path_state["bin"] is None and link.kind != "ours"
 
     def path_row():
         """Describe PATH ownership even when the guided section stays closed."""
+        if project_mode:
+            return "PATH integration: Global only"
         if path_state["bin"] is not None:
             return f"PATH integration: agent-box keeps {path_state['bin'] / pathsetup.COMMAND}"
         if link.kind == "ours":
@@ -457,6 +502,8 @@ def edit(config):
             extras = [("Review preset", "preset", ACTION_HELP["preset"])] if path == ("workflow", "review") else []
             if not path:
                 extras = [(path_row(), "path", path_row() + ". " + ACTION_HELP["path"]), ("Save and apply", "save", ACTION_HELP["save"]), ("Cancel", "cancel", ACTION_HELP["cancel"])]
+                if project_mode:
+                    extras = [("PATH integration: Global only", "global", "Global only: configure host integration in agent-box config."), ("Save project", "save", "Save explicit project overrides without applying host integrations."), ("Cancel", "cancel", ACTION_HELP["cancel"])]
             labels = [label_for(key) for key in keys]
             label_width = min(24, max(map(len, labels), default=0))
             rows = []
@@ -472,15 +519,22 @@ def edit(config):
                     shown = value or "(not set)"
                 else:
                     shown = json.dumps(value, ensure_ascii=False)
+                if project_mode:
+                    status = "Global only" if project_field(full) is None else "Overridden" if explicit(full) else "Inherited"
+                    if project_field(full) is None:
+                        shown = ">" if isinstance(value, dict) else "<global>"
+                    shown += "  [" + status + "]"
                 rows.append(f"{label:<{label_width}}: {shown}")
             rows += [entry[0] for entry in extras]
             selected = min(selected, len(rows) - 1)
             if selected < len(keys):
                 selected_path = (*path, keys[selected])
-                hint, help_title = help_for(selected_path), ".".join(selected_path)
+                hint, help_title = ("Project tracker identity." if selected_path in (("tracker", "project"), ("tracker", "recursive")) else help_for(selected_path)), ".".join(selected_path)
+                if project_mode:
+                    hint = ("Global only. Edit in agent-box config. " if project_field(selected_path) is None else "R: Reset to inherited. ") + hint
             else:
                 hint, help_title = extras[selected - len(keys)][2], extras[selected - len(keys)][0]
-            title = "agent-box config" + (" / " + " / ".join(label_for(part) for part in path) if path else "")
+            title = ("agent-box config --project" if project_mode else "agent-box config") + (" / " + " / ".join(label_for(part) for part in path) if path else "")
             usable = paint(screen, rows, selected, title, hint, notice)
             key = screen.get_wch()
             if key in ("\x1b", curses.KEY_LEFT):
@@ -494,9 +548,18 @@ def edit(config):
                 full_help(screen, "Help: " + help_title, notice + "\n\n" + hint if notice else hint)
             elif key in ("\x1b", curses.KEY_LEFT):
                 return None
+            elif project_mode and key in ("r", "R") and selected < len(keys):
+                full = (*path, keys[selected])
+                if project_field(full) is not None:
+                    data[keys[selected]] = reset(full)
+                    notice = "Reset to inherited"
+                else:
+                    notice = "Global only"
             elif key in (" ", "\n", "\r", curses.KEY_RIGHT):
                 if selected >= len(keys):
                     _, action, _ = extras[selected - len(keys)]
+                    if action == "global":
+                        notice = "Global only"
                     if action == "cancel":
                         return None
                     if action == "path":
@@ -513,34 +576,52 @@ def edit(config):
                         chosen = choose(screen, names, "Review preset", 0, details=descriptions)
                         if chosen is not None:
                             data["max_files"], data["max_lines"] = REVIEW_PRESETS[names[chosen]]
+                            if project_mode:
+                                record((*path, "max_files"), data["max_files"])
+                                record((*path, "max_lines"), data["max_lines"])
                             notice = "Review thresholds updated in the draft"
                     elif action == "save":
                         result = drafted()
-                        errors = validate(result)
+                        if project_mode:
+                            try:
+                                validate_project(overrides, Path(".agent-box.json"))
+                                errors = result.workflow.validate()
+                            except AgentBoxError as exc:
+                                errors = [str(exc)]
+                        else:
+                            errors = validate(result)
                         if errors:
                             notice = errors[0]
                         elif path_pending() and choices and not path_gate(screen):
                             notice = "PATH left unchanged; agent-box still resolves only by path"
                         else:
-                            return EditResult(result, path_state["rc"])
+                            return EditResult(result, path_state["rc"], overrides)
                     continue
                 name, full, value = keys[selected], (*path, keys[selected]), data[keys[selected]]
+                if project_mode and project_field(full) is None:
+                    notice = "Global only: edit in agent-box config"
+                    continue
+                accepted = False
                 options = CHOICES.get(".".join(full))
                 if name == "effort" and _candidate_field(full):
                     options = AGENT_EFFORTS[path[-1]]
                 if isinstance(value, bool):
                     data[name] = not value
+                    accepted = True
                 elif _model_path(full):
                     changed = model_value(screen, full, value)
                     if changed is not None:
-                        data[name], notice = changed, "Draft updated; Save and apply commits changes"
+                        data[name], notice = changed, "Draft updated; save to keep changes"
+                        accepted = True
                 elif options:
                     if key == " ":
                         data[name] = options[(options.index(value) + 1) % len(options)] if value in options else options[0]
+                        accepted = True
                     else:
                         picked = choose(screen, list(options), ".".join(full), options.index(value) if value in options else 0, help_for(full))
                         if picked is not None:
                             data[name] = options[picked]
+                            accepted = True
                 elif isinstance(value, dict) and full != ("env", "set"):
                     menu(screen, value, full)
                 else:
@@ -548,9 +629,12 @@ def edit(config):
                     changed = input_value(screen, ".".join(full), initial, secret(full))
                     if changed is not None:
                         try:
-                            data[name], notice = parse_value(changed, value), "Draft updated; Save and apply commits changes"
+                            data[name], notice = parse_value(changed, value), "Draft updated; save to keep changes"
+                            accepted = True
                         except (ValueError, json.JSONDecodeError) as exc:
                             notice = str(exc)
+                if project_mode and accepted:
+                    record(full, data[name])
 
     def path_menu(screen):
         """Prefer the relevant safe directory while retaining an explicit decline."""
@@ -579,8 +663,12 @@ def edit(config):
         return path_state["bin"] is not None
 
     def start(screen):
+        nonlocal global_only_color
         try:
             curses.use_default_colors()
+            if project_mode and curses.has_colors():
+                curses.init_pair(1, curses.COLOR_RED, -1)
+                global_only_color = curses.color_pair(1)
         except curses.error:
             pass
         try:

@@ -116,6 +116,10 @@ MANAGED_SKILLS_SOURCE = Path(__file__).resolve().parent / "skills"
 
 # Workflow scratch, routing counters, and import journals; never a task database.
 WORKFLOW_STATE = env_path("AGENT_BOX_WORKFLOW_STATE", STATE_ROOT / "workflow")
+# Nonsecret policy is exposed by default so config consumers agree even when
+# tracker/workflow are disabled; their credential directory remains opt-in.
+POLICY_RUNTIME_DIR = STATE_ROOT / "runtime/policy"
+CONTAINER_POLICY_RUNTIME_DIR = HOST_HOME / ".local/share/agent-box/runtime/policy"
 TRACKER_RUNTIME_DIR = STATE_ROOT / "runtime/tracker"
 CONTAINER_TRACKER_RUNTIME_DIR = HOST_HOME / ".local/share/agent-box/runtime/tracker"
 CONTAINER_WORKFLOW_STATE = HOST_HOME / ".local/share/agent-box/workflow"

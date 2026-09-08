@@ -417,6 +417,7 @@ class ClaudeManagementArgvTests(unittest.TestCase):
              mock.patch.object(runtime, "workspace_container_spec", return_value=mock.Mock()), \
              mock.patch.object(runtime, "launch_in_workspace_container", side_effect=fake_launch), \
              mock.patch.object(runtime, "CLAUDE_HOME", home), \
+             mock.patch.object(runtime, "POLICY_RUNTIME_DIR", home / "runtime/policy"), \
              mock.patch.object(channel, "CLAUDE_HOME", home), \
              mock.patch.object(channel, "CHANNEL_LOCK", self.lock):
             with self.assertRaises(SystemExit):
@@ -556,7 +557,8 @@ class RuntimeNotificationSelectionTests(unittest.TestCase):
              mock.patch.object(runtime, "claude_channel_args", return_value=(channel, [])), \
              mock.patch.object(runtime, "workspace_container_spec", return_value=mock.Mock()), \
              mock.patch.object(runtime, "launch_in_workspace_container", side_effect=fake_launch), \
-             mock.patch.object(runtime, "CLAUDE_HOME", Path(tmp) / "claude"):
+             mock.patch.object(runtime, "CLAUDE_HOME", Path(tmp) / "claude"), \
+             mock.patch.object(runtime, "POLICY_RUNTIME_DIR", Path(tmp) / "runtime/policy"):
             with self.assertRaises(SystemExit):
                 runtime.runtime_main([agent], Path(__file__).parents[1])
         return captured

@@ -32,7 +32,7 @@ from . import channel as channel_module
 from . import claude_settings
 from . import notify as notify_module
 from .atomicio import atomic_write_json, atomic_write_text, read_json
-from .config import ENV_PREFIX, WORKFLOW_SKILLS, Config, load_config
+from .config import ENV_PREFIX, WORKFLOW_SKILLS, Config, load_config, effective_config, session_tracker
 from .errors import AgentBoxError
 from .identity import HostIdentity, detect_host_identity
 from .mounts import MountSpec, plan_mounts
@@ -47,6 +47,7 @@ from .paths import (
     CONFIG_ROOT,
     CONTAINER_NOTIFY_CREDENTIALS,
     CONTAINER_TRACKER_RUNTIME_DIR,
+    CONTAINER_POLICY_RUNTIME_DIR,
     CONTAINER_WORKFLOW_STATE,
     HOST_HOME,
     MANAGED_SKILLS_SOURCE,
@@ -55,6 +56,7 @@ from .paths import (
     STATE_ROOT,
     TOOLS_REFRESH_FILE,
     TRACKER_RUNTIME_DIR,
+    POLICY_RUNTIME_DIR,
     WORKFLOW_STATE,
     XDG_CACHE_HOME,
 )
@@ -241,7 +243,7 @@ def build_image(script_dir: Path, refresh: bool, no_cache: bool,
     ensure_state_dirs()
     ensure_refresh_token()
     identity = identity or detect_host_identity()
-    config = load_config() if config is None else config
+    config = effective_config(load_config()) if config is None else config
     if refresh:
         now = datetime.now(timezone.utc)
         token = now.strftime("%Y%m%dT%H%M%S.") + f"{time.time_ns() % 1_000_000_000:09d}Z\n"
@@ -603,7 +605,7 @@ def prepare_container_lifetime_state(
         notify_module.sync_credentials(config, NOTIFY_CREDENTIALS)
     if config.tracker.enabled or config.workflow.enabled:
         WORKFLOW_STATE.mkdir(parents=True, exist_ok=True)
-        sync_tracker_runtime(config)
+        TRACKER_RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
         for problem in tracker_warnings(config):
             warn(problem)
 
@@ -750,11 +752,16 @@ def container_tracker_url(raw: str) -> str:
     return urllib.parse.urlunsplit(parts._replace(netloc=netloc))
 
 
-def sync_tracker_runtime(config: Config, directory: Path | None = None) -> None:
+def sync_tracker_runtime(config: Config, directory: Path | None = None, *, policy=False) -> None:
     """Render only explicitly enabled capabilities; directory mounts see atomic updates."""
+    config = getattr(config, "_project_base", config)
     directory = TRACKER_RUNTIME_DIR if directory is None else directory
-    if not (config.tracker.enabled or config.workflow.enabled):
-        shutil.rmtree(directory, ignore_errors=True)
+    if not policy and not (config.tracker.enabled or config.workflow.enabled):
+        (directory / "config.json").unlink(missing_ok=True)
+        try:
+            directory.rmdir()
+        except OSError:
+            pass
         return
     directory.mkdir(parents=True, exist_ok=True)
     os.chmod(directory, 0o700)
@@ -768,13 +775,48 @@ def sync_tracker_runtime(config: Config, directory: Path | None = None) -> None:
                          if config.tracker.enabled},
         "workflow": config.workflow.to_dict(),
         "github": config.github.to_dict(),
+        "browser": config.browser.to_dict(),
+        "image": config.image.to_dict(),
+        "container": True,
     }
     atomic_write_json(directory / "config.json", rendered, 0o600)
 
 
+def session_runtime(config, *, container=True):
+    """Snapshots survive detached sessions; later launches never replace their file."""
+    import uuid
+    root = TRACKER_RUNTIME_DIR if config.tracker.enabled or config.workflow.enabled else POLICY_RUNTIME_DIR
+    directory = root / "sessions" / uuid.uuid4().hex
+    sync_tracker_runtime(config, directory, policy=True)
+    path = directory / "config.json"
+    if not container:
+        data = json.loads(path.read_text())
+        data["container"] = False
+        atomic_write_json(path, data, 0o600)
+    return path
+
+
+def launch_config(env_specs=None):
+    base = load_config()
+    base.env = base.env.overlay(env_specs)
+    environment = dict(os.environ)
+    environment.update(base.env.set)
+    config = effective_config(base, environ=environment)
+    from .project_config import load
+    from .repo_binding import server_identity
+    tracker = load().get("tracker", {})
+    selected = session_tracker(config, environment)
+    if config.tracker.enabled:
+        for provider, connection in tracker.get("connections", {}).items():
+            account = selected.connection(provider)
+            if account.url and "url" in connection and server_identity(account.url) != server_identity(connection["url"]):
+                raise AgentBoxError("Repository binding targets a different tracker server; update the project binding")
+    return config
+
+
 def tracker_mounts(config: Config) -> list[tuple[Path, Path, bool]]:
     if not (config.tracker.enabled or config.workflow.enabled):
-        return []
+        return [(POLICY_RUNTIME_DIR, CONTAINER_POLICY_RUNTIME_DIR, True)]
     return [(TRACKER_RUNTIME_DIR, CONTAINER_TRACKER_RUNTIME_DIR, True),
             (WORKFLOW_STATE, CONTAINER_WORKFLOW_STATE, False)]
 
@@ -1263,7 +1305,7 @@ def container_lifetime_args(
     consulted, so a poisoned ``$HOME`` cannot move the container's home,
     PATH, or any bind mount.
     """
-    config = load_config() if config is None else config
+    config = effective_config(load_config()) if config is None else config
     home = HOST_HOME
     args = [
         "--userns=keep-id", *kvm_args(config),
@@ -1313,7 +1355,7 @@ def base_podman_args(
     Keeping this helper preserves a single source for visibility/hardening and
     avoids changing callers that only inspect the old command construction.
     """
-    config = load_config() if config is None else config
+    config = effective_config(load_config()) if config is None else config
     runtime_state = legacy_runtime_state()
     prepare_container_lifetime_state(
         config, mount_notifications=mount_notifications, runtime_state=runtime_state,
@@ -2178,10 +2220,7 @@ def runtime_main(
 
     ensure_state_dirs()
     ensure_refresh_token()
-    config = load_config()
-    # Per-invocation environment beats the stored lists, and is resolved once
-    # here so container and host mode cannot disagree about the answer.
-    config.env = config.env.overlay(env_specs)
+    config = launch_config(env_specs)
 
     if not image_exists():
         print("agent-box: image not found; building it...", file=sys.stderr)
@@ -2219,10 +2258,13 @@ def runtime_main(
     browser_dir = browser_session(config, workspace, runtime_state, agent)
     channel, extra_env = claude_channel_args(agent, config, workspace, rest, session)
     extra_env += [f"AGENT_BOX_PRIMARY_PROVIDER={agent}"]
+    snapshot = session_runtime(config)
     if config.tracker.enabled or config.workflow.enabled:
-        sync_tracker_runtime(config)
-        extra_env += [f"AGENT_BOX_RUNTIME_CONFIG={CONTAINER_TRACKER_RUNTIME_DIR / 'config.json'}",
-                      f"AGENT_BOX_WORKFLOW_STATE={CONTAINER_WORKFLOW_STATE}"]
+        snapshot_target = CONTAINER_TRACKER_RUNTIME_DIR / snapshot.relative_to(TRACKER_RUNTIME_DIR)
+        extra_env += [f"AGENT_BOX_WORKFLOW_STATE={CONTAINER_WORKFLOW_STATE}"]
+    else:
+        snapshot_target = CONTAINER_POLICY_RUNTIME_DIR / snapshot.relative_to(POLICY_RUNTIME_DIR)
+    extra_env += [f"AGENT_BOX_RUNTIME_CONFIG={snapshot_target}"]
 
 
     try:
@@ -2516,6 +2558,7 @@ def uninstall_main(args: list[str]) -> int:
 
     NOTIFY_CREDENTIALS.unlink(missing_ok=True)
     shutil.rmtree(TRACKER_RUNTIME_DIR, ignore_errors=True)
+    shutil.rmtree(POLICY_RUNTIME_DIR, ignore_errors=True)
     done.append("removed the rendered notification and tracker credentials")
 
     from . import pathsetup
@@ -2582,11 +2625,11 @@ def host_main(
     except (NotADirectoryError, ValueError) as exc:
         raise AgentBoxError(str(exc)) from exc
 
-    config = load_config()
-    config.env = config.env.overlay(env_specs)
+    config = launch_config(env_specs)
     # As in container mode: a launch applies nothing to the user's own files.
     env = dict(os.environ)
     env["AGENT_BOX_PRIMARY_PROVIDER"] = agent
+    env["AGENT_BOX_RUNTIME_CONFIG"] = str(session_runtime(config, container=False))
     # ``env.set`` states what a session should have; a host session is still a
     # session. ``env.forward`` has nothing to do here -- host mode already
     # runs in the very shell those names would have been forwarded from, so

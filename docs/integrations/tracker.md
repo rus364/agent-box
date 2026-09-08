@@ -44,15 +44,18 @@ it**: those projects are searched together, each resolves its own board, and
 tasks in them can be claimed and moved. Projects outside the subtree stay
 readable but can never be mutated by this repository's workflow.
 
-Global configuration holds connections, secrets and workflow policy.
-`.agent-box.json` holds only provider, server, project and whether the binding
-is recursive. `server` stays because a project ID is meaningless without the
-instance it belongs to, and Vikunja publishes no stable instance identity of its
-own. Commit this portable binding. A fresh
-clone on another device requires only the matching global connection, not
-local absolute paths or credentials in Git. Setup also maintains checksum
-blocks in `AGENTS.md` and the `CLAUDE.md` import, preserving text outside them
-and refusing edited blocks, symlinks and ambiguous ownership.
+Global configuration holds accounts, credentials and integration permissions.
+`.agent-box.json` stores `tracker.provider`, `tracker.project`,
+`tracker.recursive` and `tracker.connections.<provider>.url`, alongside optional
+[project configuration overrides](../../README.md#project-configuration).
+A project ID identifies a project on that server; the selected connection URL
+must match it. Commit this portable configuration. A fresh clone on another
+device needs a matching global connection or a complete temporary
+`VIKUNJA_URL`/`VIKUNJA_TOKEN` pair. The pair must also match the project URL;
+changing servers requires updating the project binding. Setup and adoption
+preserve other project overrides. Setup maintains checksum blocks in
+`AGENTS.md` and the `CLAUDE.md` import, preserving outside text and refusing
+edited blocks, symlinks and ambiguous ownership.
 
 Search results are compact JSON; `get` includes the description, relationships
 and comments. Search titles/descriptions first, then read relevant history.

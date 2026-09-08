@@ -1,6 +1,12 @@
 {
-  "provider": "vikunja",
-  "server": "http://pm.infrado.org:3456",
-  "project": "84",
-  "recursive": true
+  "tracker": {
+    "provider": "vikunja",
+    "project": "84",
+    "recursive": true,
+    "connections": {
+      "vikunja": {
+        "url": "http://pm.infrado.org:3456"
+      }
+    }
+  }
 }

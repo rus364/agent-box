@@ -5,7 +5,7 @@ import hashlib
 import json
 import re
 import subprocess
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -60,19 +60,25 @@ class Binding:
 
     @classmethod
     def load(cls, root: Path):
-        path = root / BINDING_FILE
-        if path.is_symlink():
-            raise AgentBoxError(f"Refusing symlink: {path}")
+        from .project_config import load
+        data = load(root / BINDING_FILE).get("tracker", {})
         try:
-            data = json.loads(path.read_text())
-            allowed = cls.__dataclass_fields__.keys()
-            if set(data) - set(allowed):
-                raise ValueError("Unknown repository binding fields")
-            result = cls(**data)
+            provider = data["provider"]
+            result = cls(provider, data["connections"][provider]["url"],
+                         data["project"], data.get("recursive", False))
             result.validate()
             return result
-        except (OSError, ValueError, TypeError) as exc:
-            raise AgentBoxError(f"Cannot read {path}: {exc}; run ab-setup") from None
+        except (KeyError, TypeError):
+            raise AgentBoxError(f"Incomplete repository binding: {root / BINDING_FILE}; run ab-setup") from None
+
+
+def binding_document(root, binding):
+    from .project_config import load
+    data = load(root / BINDING_FILE)
+    tracker = data.setdefault("tracker", {})
+    tracker.update(provider=binding.provider, project=binding.project, recursive=binding.recursive)
+    tracker.setdefault("connections", {}).setdefault(binding.provider, {})["url"] = binding.server
+    return data
 
 
 def repository_root(cwd: Path | None = None):
@@ -118,7 +124,7 @@ Complete subtasks only after validation and integration into the parent branch; 
 def setup_content(root: Path, binding: Binding):
     binding.validate()
     content = {
-        root / BINDING_FILE: json.dumps(asdict(binding), indent=2, ensure_ascii=False) + "\n",
+        root / BINDING_FILE: json.dumps(binding_document(root, binding), indent=2, ensure_ascii=False) + "\n",
     }
     for name, body, tag in (("AGENTS.md", AGENT_RULES, "workflow"),
                             ("CLAUDE.md", "@AGENTS.md\n", "instructions")):
@@ -141,7 +147,7 @@ def write_binding(root: Path, binding: Binding):
     path = root / BINDING_FILE
     if path.is_symlink() or (path.exists() and not path.is_file()):
         raise AgentBoxError(f"Refusing to replace {path}")
-    atomic_write_text(path, json.dumps(asdict(binding), indent=2, ensure_ascii=False) + "\n",
+    atomic_write_text(path, json.dumps(binding_document(root, binding), indent=2, ensure_ascii=False) + "\n",
                       path.stat().st_mode & 0o777 if path.exists() else 0o644)
 
 

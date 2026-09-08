@@ -48,6 +48,7 @@ class UninstallTestCase(unittest.TestCase):
             STATE_ROOT=self.state,
             CONFIG_ROOT=self.config_root,
             TRACKER_RUNTIME_DIR=self.credentials,
+            POLICY_RUNTIME_DIR=self.state / "runtime/policy",
             NOTIFY_CREDENTIALS=self.notify_credentials,
         )
         self.patches.start()

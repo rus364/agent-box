@@ -143,6 +143,7 @@ class LaunchAppliesNothingTests(unittest.TestCase):
         with mock.patch.object(runtime.shutil, "which", return_value="/usr/bin/podman"), \
              mock.patch.object(runtime, "resolve_workspace", return_value=workspace), \
              mock.patch.object(runtime, "ensure_state_dirs"), \
+             mock.patch.object(runtime, "POLICY_RUNTIME_DIR", tmp / "runtime/policy"), \
              mock.patch.object(runtime, "ensure_refresh_token"), \
              mock.patch.object(runtime, "load_config", return_value=config), \
              mock.patch.object(runtime, "image_exists", return_value=True), \

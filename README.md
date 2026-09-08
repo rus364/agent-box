@@ -274,6 +274,85 @@ AGENT_BOX_ENV_<NAME>      Set <NAME> inside the session
 AGENT_BOX_TMUX=0          Disable tmux wrapping for one launch
 ```
 
+
+## Project configuration
+
+`agent-box config` edits global settings. `agent-box config --project` uses the
+same menu to edit `.agent-box.json` at the Git repository or worktree root.
+Commands from subdirectories use that root too. Outside Git, the current
+directory is used for launch settings. Tracker/workflow operations that need a
+bound project still require a complete tracker binding.
+
+```json
+{
+  "tracker": {
+    "provider": "vikunja",
+    "project": "12",
+    "recursive": true,
+    "connections": {"vikunja": {"url": "https://tasks.example.org"}}
+  },
+  "workflow": {"auto_push": false},
+  "browser": {"enabled": true},
+  "image": {"tools": {"browser": true}}
+}
+```
+
+The allowed shared paths are `workflow` except its top-level `enabled`,
+`browser.enabled`, `image.tools`, `tracker.provider`, and
+`tracker.connections.<provider>.url`. Workflow includes reviewer overrides,
+models, efforts and tier policy. `tracker.project` and `tracker.recursive` are
+project identity fields. Missing fields inherit global settings; nested objects
+merge by key and lists replace the whole inherited list. Explicit `false`,
+empty lists, and allowed empty strings (such as disabled model candidates)
+remain choices. Unknown fields, wrong types and invalid JSON are errors.
+
+The menu labels values **Inherited** or **Overridden**. Press **R** for
+**Reset to inherited**. Choosing a value equal to the global value still saves
+an explicit override. Credentials, environment configuration, integration
+enablement and host installation settings remain **Global only** and cannot
+be edited here; the label is red when the terminal supports color and keeps
+the terminal's default background. **Save project** writes only explicit
+project values; **Cancel** discards the draft. Neither applies host integrations
+nor configures PATH. Image tool changes still require an explicit image rebuild.
+
+Credentials and environment policy belong outside the repository. Every
+agent-box command validates the project file before its command actions.
+Recognized credential fields are forbidden even when empty or null; the error
+includes `PROJECT_CREDENTIALS_FORBIDDEN`, the file and field path, without its
+value. URL credentials, queries and fragments are rejected. This checks the
+allowed schema and credential fields, not arbitrary strings for possible
+secrets, and does not inspect Git history or control commands outside agent-box.
+
+A complete, nonempty `VIKUNJA_URL` and `VIKUNJA_TOKEN` pair selects the account
+for a process/session. One missing or empty variable is an error with no
+fallback to the global token. The selected URL must match the project URL,
+including for a temporary pair; moving a server requires updating the binding.
+A project URL never redirects a global token. `tracker.enabled` remains a
+global permission.
+
+Direct tracker/workflow commands read the process environment. Launches also
+support the existing global `env.forward`/`env.set`, `--env`, and
+`AGENT_BOX_ENV_*` channels. Prefer forwarding secrets by name:
+
+```bash
+# Export VIKUNJA_URL and VIKUNJA_TOKEN securely in your shell first.
+agent-box --env VIKUNJA_URL --env VIKUNJA_TOKEN codex
+```
+
+`--env NAME=VALUE` can expose a literal in process arguments and shell history;
+`env.set` stores its literal in global configuration. These remain user choices.
+Temporary account values are never saved in global or project configuration,
+and configuration display masks credentials and environment assignments.
+Launches use private, immutable session snapshots in agent-box runtime state
+through runtime mounts. With tracker and workflow disabled, only a separate
+credential-free policy directory is mounted; no account or environment values
+are rendered there. Each consumer applies its current project's
+overrides to the snapshot's global baseline, so another project/session or a
+global apply cannot replace an active session's settings or credentials.
+Snapshots remain available for detached sessions and are removed with runtime
+state during uninstall.
+
+
 ## The workspace image
 
 A base set everyone gets, plus optional groups you choose in `agent-box config`.

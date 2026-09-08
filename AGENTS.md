@@ -71,7 +71,7 @@ itself.
 read back from there. Branch names come from the task's `ab/<id>-` namespace,
 the base branch from origin's default, the pull request from a head/base lookup,
 the lifecycle from the board's own columns. `.agent-box.json` names the tracker
-project and nothing else. Nothing machine-readable is written into a tracker
+project and holds the allowed project configuration overrides. Nothing machine-readable is written into a tracker
 comment: a comment is a human journal, and lifecycle is read from the tracker's
 own fields.
 

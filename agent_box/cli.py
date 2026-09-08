@@ -90,7 +90,7 @@ def usage_text() -> None:
   agent-box [--mount PATH[:ro]]... [--env NAME[=VALUE]]... [--host] [codex|claude|shell|doctor] [arguments...]
   agent-box attach [session]
   agent-box stop
-  agent-box config [show|check|apply]
+  agent-box config [--project|show|check|apply]
   agent-box usage <codex|claude|all>
   agent-box statusline
   agent-box notify <test|claude|codex>
@@ -289,7 +289,7 @@ def notify_command(args: list[str]) -> None:
 def _redact(token: str) -> str:
     if not token:
         return "(not set)"
-    return f"{token[:6]}…{token[-4:]}" if len(token) > 12 else "(set)"
+    return "(set)"
 
 
 def _statusline_note(config) -> str:
@@ -384,7 +384,7 @@ def config_show() -> None:
     print(f"  Agent browser (containers)  {'on' if config.browser.enabled else 'off'}{_browser_note(config)}")
     forwarded = ", ".join(config.env.forward) or "(none)"
     print(f"  Forwarded env variables     {forwarded}")
-    assignments = ", ".join(f"{k}={v}" for k, v in sorted(config.env.set.items())) or "(none)"
+    assignments = ", ".join(f"{k}=<configured>" for k in sorted(config.env.set)) or "(none)"
     print(f"  Set env variables           {assignments}")
 
 
@@ -439,11 +439,18 @@ def path_status(config) -> list[str]:
             "integration, or do it by hand:", *pathsetup.manual_instructions(bin_dir)]
 
 
-def config_interactive() -> None:
+def config_interactive(project=False) -> None:
     from . import config_menu, runtime
-    result = config_menu.edit(load_config())
+    from . import project_config
+    path = project_config.project_path() if project else None
+    result = (config_menu.edit(effective_config(include_project=False), project=project_config.load(path))
+              if project else config_menu.edit(load_config()))
     if result is None:
         print("Configuration unchanged.")
+        return
+    if project:
+        project_config.save(path, result.project)
+        print(f"Saved project configuration: {path}")
         return
     from . import pathsetup
     config = result.config
@@ -481,6 +488,8 @@ def config_apply() -> None:
 def config_command(args: list[str]) -> None:
     if not args:
         config_interactive()
+    elif args == ["--project"]:
+        config_interactive(project=True)
     elif args == ["show"]:
         config_show()
     elif args == ["check"]:
@@ -488,7 +497,7 @@ def config_command(args: list[str]) -> None:
     elif args == ["apply"]:
         config_apply()
     else:
-        die("expected: agent-box config [show|check|apply]")
+        die("expected: agent-box config [--project|show|check|apply]")
 
 
 # -- selftest ----------------------------------------------------------
@@ -511,6 +520,11 @@ HOST_ONLY_AGENTS = {"claude", "codex"}
 
 
 def main() -> None:
+    from . import project_config
+    try:
+        project_config.load()
+    except AgentBoxError as exc:
+        die(str(exc))
     mounts, host, env_specs, args = parse_global_args(sys.argv[1:])
     script_dir = Path(__file__).resolve().parent.parent
     try:

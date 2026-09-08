@@ -104,6 +104,7 @@ class HostGitDependencyTests(unittest.TestCase):
             with mock.patch.object(runtime.shutil, "which", side_effect=found), \
                  mock.patch.object(runtime, "resolve_workspace", return_value=Workspace(root, root)), \
                  mock.patch.object(runtime, "ensure_state_dirs"), \
+                 mock.patch.object(runtime, "POLICY_RUNTIME_DIR", root / "runtime/policy"), \
                  mock.patch.object(runtime, "ensure_refresh_token"), \
                  mock.patch.object(runtime, "load_config", return_value=Config()), \
                  mock.patch.object(runtime, "image_exists", return_value=True), \

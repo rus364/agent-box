@@ -18,8 +18,8 @@ Design rules this file exists to enforce:
   round-tripped, so the file always matches the shipped schema.
 
 The workflow and tracker sections are opt-in. Provider connections hold
-credentials globally; repository bindings contain only project identity and
-project-specific lifecycle policy. Version remains 1 during pre-release.
+credentials globally; project_config validates the explicit repository subset
+for launch and workflow policy alongside tracker identity. Version remains 1 during pre-release.
 """
 from __future__ import annotations
 
@@ -731,17 +731,40 @@ def save_config(config: Config, path: Path | None = None) -> None:
     atomic_write_json(CONFIG_FILE if path is None else path, config.to_dict(), SECRET_MODE)
 
 
-def effective_config() -> Config:
-    """Inside a box, read only the rendered capability subset, never host config."""
-    import os
-    runtime_file = os.environ.get("AGENT_BOX_RUNTIME_CONFIG")
-    if not runtime_file:
-        return load_config()
+def session_tracker(config, environ=None):
+    """Select an explicit complete session account without falling back on a token."""
     from .errors import AgentBoxError
-    try:
-        return Config.from_dict(read_json(Path(runtime_file)))
-    except (OSError, ValueError, TypeError) as exc:
-        raise AgentBoxError(f"Cannot read rendered workflow configuration: {exc}") from None
+    from .repo_binding import server_identity
+    environ = os.environ if environ is None else environ
+    source = getattr(config, "_project_base", config).tracker
+    present = [name in environ for name in ("VIKUNJA_URL", "VIKUNJA_TOKEN")]
+    if not any(present):
+        return source
+    if not all(present) or not all(environ[name].strip() for name in ("VIKUNJA_URL", "VIKUNJA_TOKEN")):
+        raise AgentBoxError("VIKUNJA_URL and VIKUNJA_TOKEN must both be nonempty; no global connection fallback")
+    url = server_identity(environ["VIKUNJA_URL"])
+    result = TrackerConfig.from_dict(source.to_dict())
+    result.connections["vikunja"] = TrackerConnection(url, environ["VIKUNJA_TOKEN"])
+    return result
+
+
+def effective_config(base=None, environ=None, *, include_project=True) -> Config:
+    """Apply project policy to the host or session snapshot using one precedence."""
+    from . import project_config
+    runtime_file = os.environ.get("AGENT_BOX_RUNTIME_CONFIG")
+    if base is None:
+        if not runtime_file:
+            base = load_config()
+        else:
+            from .errors import AgentBoxError
+            try:
+                base = Config.from_dict(read_json(Path(runtime_file)))
+            except (OSError, ValueError, TypeError):
+                raise AgentBoxError("Cannot read rendered workflow configuration") from None
+    import copy
+    base = copy.deepcopy(base)
+    base.tracker = session_tracker(base, environ)
+    return project_config.apply(base, project_config.load()) if include_project else base
 
 
 def effective_config_source() -> dict[str, str]:
