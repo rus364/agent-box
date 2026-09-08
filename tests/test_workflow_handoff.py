@@ -674,13 +674,46 @@ class WorkerHandoffTests(unittest.TestCase):
         self.assertNotIn("Old review history", selected)
         for unsupported in (
                 "Unstructured task body with old history.",
-                "## Goals\nVariant heading.\n## Context\nOld history.",
                 "## Ziel\nUnsupported language.\n## Context\nOld history."):
             with self.subTest(description=unsupported):
                 self.task.description = unsupported
-                with self.assertRaisesRegex(AgentBoxError, "exact Goal, Acceptance, or Validation"):
+                with self.assertRaisesRegex(AgentBoxError, "recognized Goal, Acceptance, or Validation"):
                     self.run_workflow("prepare", "1", "--role", "reviewer", "--primary", "codex",
                                       "--brief", str(self.review_brief))
+
+    def test_review_requirements_accept_explicit_aliases_without_context(self):
+        description = (
+            "## Goals\nShip the complete change.\n"
+            "## Context\nOld discussion must stay out.\n"
+            "## Acceptance Criteria\n- [ ] Preserve every requirement.\n"
+            "### Edge cases\n- [ ] Keep nested acceptance.\n"
+            "## Verification\nRun the focused unittest.\n")
+        selected = workflow.review_description(description)
+        self.assertIn("Ship the complete change", selected)
+        self.assertIn("Preserve every requirement", selected)
+        self.assertIn("### Edge cases", selected)
+        self.assertIn("focused unittest", selected)
+        self.assertNotIn("Old discussion", selected)
+        russian = workflow.review_description(
+            "## Цели\nВыпустить изменение.\n"
+            "## Контекст\nСтарая история.\n"
+            "## Критерии приёмки\n- [ ] Сохранить требования.\n"
+            "## Проверки\nЗапустить тест.\n")
+        self.assertIn("Сохранить требования", russian)
+        self.assertIn("Запустить тест", russian)
+        self.assertNotIn("Старая история", russian)
+
+    def test_review_requirements_fail_closed_on_partial_unknown_structure(self):
+        description = (
+            "## Goal\nShip it.\n"
+            "## Context\nOld discussion must stay out.\n"
+            "## Release Conditions\nDo not lose this hidden requirement.\n"
+            "## Validation\nRun the focused unittest.\n")
+        self.task.description = description
+        with self.assertRaisesRegex(
+                AgentBoxError, "Ambiguous level-2 review requirements headings: Release Conditions"):
+            self.run_workflow("prepare", "1", "--role", "reviewer", "--primary", "codex",
+                              "--brief", str(self.review_brief))
 
     def test_required_review_refuses_a_missing_or_empty_author_brief(self):
         self.config.workflow.review.policy = "always"

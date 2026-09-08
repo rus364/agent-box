@@ -119,22 +119,34 @@ def requirements(tasks):
 
 
 REVIEW_REQUIREMENT_SECTIONS = {
-    "goal", "acceptance", "validation", "цель", "приёмка", "приемка", "проверка",
+    "goal", "goals", "objective", "objectives",
+    "acceptance", "acceptance criterion", "acceptance criteria",
+    "validation", "verification", "testing",
+    "цель", "цели",
+    "приёмка", "приемка", "критерий приёмки", "критерий приемки",
+    "критерии приёмки", "критерии приемки",
+    "проверка", "проверки", "валидация", "тестирование",
+}
+REVIEW_CONTEXT_SECTIONS = {
+    "context", "background", "history", "контекст", "предыстория", "история",
 }
 
 
 def review_description(value):
     """Keep the current normative brief without importing a task's discussion history."""
-    headings = list(re.finditer(r"(?m)^(##+)\s+(.+?)\s*$", value))
+    headings = list(re.finditer(r"(?m)^##\s+(.+?)\s*$", value))
+    names = [match.group(1).strip().rstrip(":").casefold() for match in headings]
+    if any(name in REVIEW_REQUIREMENT_SECTIONS for name in names):
+        unknown = [match.group(1).strip() for match, name in zip(headings, names)
+                   if name not in REVIEW_REQUIREMENT_SECTIONS | REVIEW_CONTEXT_SECTIONS]
+        if unknown:
+            raise AgentBoxError(
+                "Ambiguous level-2 review requirements headings: " + ", ".join(unknown))
     selected = []
     for index, match in enumerate(headings):
-        if match.group(2).strip().casefold() not in REVIEW_REQUIREMENT_SECTIONS:
+        if names[index] not in REVIEW_REQUIREMENT_SECTIONS:
             continue
-        level = len(match.group(1))
-        end = next((later.start() for later in headings[index + 1:]
-                    if len(later.group(1)) <= level), len(value))
-        if selected and match.start() < selected[-1][0]:
-            continue
+        end = headings[index + 1].start() if index + 1 < len(headings) else len(value)
         selected.append((end, value[match.start():end].strip()))
     return "\n\n".join(section for _, section in selected)
 
@@ -146,7 +158,8 @@ def review_requirements(tasks):
         description = review_description(task["description"])
         if not description:
             raise AgentBoxError(
-                f"Task {task['id']} review requirements need exact Goal, Acceptance, or Validation headings")
+                f"Task {task['id']} review requirements need a recognized Goal, Acceptance, "
+                "or Validation heading")
         result.append({"id": task["id"], "title": task["title"],
                        "goal_acceptance_validation": description,
                        "parent": task["parent"], "children": task["children"]})
