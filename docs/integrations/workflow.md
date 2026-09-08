@@ -106,7 +106,7 @@ it is not evidence that work ran or completed. Pass the active provider with
 `--primary` (or `AGENT_BOX_PRIMARY_PROVIDER`). No usage counters, tier matrices
 or installed tier profiles participate.
 
-Untiered review uses that active session provider/model/effort in an independent
+Without an applicable global reviewer override, untiered review uses the active session provider/model/effort in an independent
 fresh read-only context, even when explicit-tier review routing prefers another
 provider. Without exact session facts, `review` returns
 `action: review-in-fresh-context`; use native inheritance without a named tier
@@ -168,9 +168,42 @@ Set `workflow.review.routing` in `agent-box config` under workflow / review:
   An unavailable writer executable, empty reviewer model or provider failure
   stops review without calling the other provider, even with fallback enabled.
 
-For explicit tiers, both modes use only `workflow.review.tiers`. Worker weights and usage do not
+For explicit tiers, both modes use `workflow.review.tiers` unless the global override applies. Worker weights and usage do not
 select reviewers. Routing changes neither review policy nor worker/scout routing.
 All attempts preserve the selected tier and configured reviewer model/effort.
+
+### Global reviewer override
+
+In `agent-box config`, open workflow / review / Global reviewer override.
+Enable it to select reviewer model and effort independently for Codex and Claude
+under Models. The same/cross-provider policy still chooses the provider relative
+to the actual writer, including for untiered tasks. Empty models disable candidates;
+there is no implicit fallback to session settings or tier models.
+
+`workflow.review.override` contains `enabled` (default false), `apply_to_tiered`
+(default false), and `models.codex` / `models.claude`, each with `model` and `effort`.
+The model picker supports offline suggestions, manual IDs and disabling a candidate.
+
+| Override | Effective tier | Reviewer settings |
+| --- | --- | --- |
+| Disabled | None | Active session |
+| Disabled | 1-3 | Reviewer tier matrix |
+| Enabled, also tiered off | None | Global reviewer candidates |
+| Enabled, also tiered off | 1-3 | Reviewer tier matrix |
+| Enabled, also tiered on | Any | Global reviewer candidates |
+
+The effective tier is the task's tier, otherwise an explicit `--tier`, otherwise
+none. The override never changes it or adds a tracker label. It also leaves
+worker/scout routing, review triggers, budgets and external GitHub review settings
+unchanged. Cross-provider fallback uses only global candidates when the override
+applies; same-provider never calls the other provider.
+
+`prepare`, `run` and `review` resolve concrete global candidates without needing
+session model/effort facts. `report` checks the route saved by `prepare`, even if
+configuration changes afterwards. Untiered overrides have no native tier profile:
+use supported explicit spawn settings or managed CLI. Tiered overrides can use an
+installed profile only if its settings match exactly. `effort=default` requires
+managed CLI, and every reviewer still needs a fresh independent context.
 An unsupported model is an error, not permission to guess a cheaper model.
 
 `config apply` installs owned native agent profiles with exact model/effort.

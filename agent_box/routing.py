@@ -30,14 +30,19 @@ def select(config, role, tier, primary, state, usage=None, *, now=None, writer=N
     errors = config.validate()
     if errors:
         raise AgentBoxError("; ".join(errors))
-    if tier not in (0, 1, 2, 3) or role not in ("worker", "scout", "reviewer") or (tier == 0 and role != "scout"):
+    override = role == "reviewer" and config.review.override.applies(tier)
+    if (tier not in (0, 1, 2, 3) and not (tier is None and override)
+            or role not in ("worker", "scout", "reviewer") or (tier == 0 and role != "scout")):
         raise AgentBoxError("Tier 0 is reserved for scouts; workers and reviewers require tier 1-3")
     if primary not in AGENT_PROVIDERS:
         raise AgentBoxError("Specify the primary provider: codex or claude")
     now = time.time() if now is None else now
     usage = usage or {}
     available = set(AGENT_PROVIDERS if available is None else available)
-    models = (config.review.tiers if role == "reviewer" else config.tiers)[str(tier)]
+    matrix = ("workflow.review.override.models" if override else
+              f"workflow.review.tiers.{tier}" if role == "reviewer" else f"workflow.tiers.{tier}")
+    models = (config.review.override.models if override else
+              (config.review.tiers if role == "reviewer" else config.tiers)[str(tier)])
     allowed = [p for p in AGENT_PROVIDERS if p in available and models[p]["model"]]
     writer = writer or primary
     if role == "reviewer":
@@ -82,8 +87,8 @@ def select(config, role, tier, primary, state, usage=None, *, now=None, writer=N
                 reason += "; fresh comparable usage unavailable"
         order = [winner] + ([p for p in allowed if p != winner] if config.fallback else [])
     if not order:
-        matrix = "workflow.review.tiers" if role == "reviewer" else "workflow.tiers"
-        raise AgentBoxError(f"No allowed {role} model configured in {matrix}.{tier}; no automatic tier downgrade")
+        raise AgentBoxError(f"No allowed {role} model configured in {matrix}; no automatic tier downgrade")
     def entry(provider):
         return {"provider": provider, "model": models[provider]["model"], "effort": models[provider]["effort"], "tier": tier}
-    return {**entry(order[0]), "role": role, "reason": reason, "fallbacks": [entry(p) for p in order[1:]]}
+    return {**entry(order[0]), "role": role, "reason": reason + (f"; models from {matrix}" if override else ""),
+            "fallbacks": [entry(p) for p in order[1:]]}

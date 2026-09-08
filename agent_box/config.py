@@ -511,16 +511,36 @@ class TrackerConfig:
                     _mapping(data.get("connections")).items() if k in TRACKER_PROVIDERS})
 
 
-def model_tiers(numbers, data=None):
-    """Keep role matrices independent while sharing model/effort defaults."""
+def model_candidates(data=None):
+    """Each role owns its candidates; only parsing and defaults are shared."""
     data = _mapping(data)
     result = {}
-    for number in numbers:
-        tier = result[str(number)] = {}
-        for provider in AGENT_PROVIDERS:
-            spec = _mapping(_mapping(data.get(str(number))).get(provider))
-            tier[provider] = {"model": _str(spec, "model"), "effort": _str(spec, "effort") or "medium"}
+    for provider in AGENT_PROVIDERS:
+        spec = _mapping(data.get(provider))
+        result[provider] = {"model": _str(spec, "model"), "effort": _str(spec, "effort") or "medium"}
     return result
+
+
+def model_tiers(numbers, data=None):
+    data = _mapping(data)
+    return {str(number): model_candidates(data.get(str(number))) for number in numbers}
+
+
+@dataclass
+class ReviewOverride:
+    """Opt in before replacing session inheritance or explicit reviewer tiers."""
+    enabled: bool = False
+    apply_to_tiered: bool = False
+    models: dict[str, dict] = field(default_factory=model_candidates)
+
+    def applies(self, tier):
+        return self.enabled and (tier is None or self.apply_to_tiered)
+
+    @classmethod
+    def from_dict(cls, data):
+        data = _mapping(data)
+        return cls(_bool(data, "enabled", False), _bool(data, "apply_to_tiered", False),
+                   model_candidates(data.get("models")))
 
 
 @dataclass
@@ -539,6 +559,7 @@ class ReviewConfig:
     github_model: str = ""
     github_effort: str = ""
     wait_seconds: int = 600
+    override: ReviewOverride = field(default_factory=ReviewOverride)
 
     def to_dict(self):
         from dataclasses import asdict
@@ -549,6 +570,7 @@ class ReviewConfig:
         data = _mapping(data)
         result = cls()
         result.tiers = model_tiers(range(1, 4), data.get("tiers"))
+        result.override = ReviewOverride.from_dict(data.get("override"))
         for key in ("policy", "routing", "label", "github_provider", "github_model", "github_effort"):
             if key in data and isinstance(data[key], str):
                 setattr(result, key, data[key].strip())
@@ -613,12 +635,15 @@ class WorkflowConfig:
             value = getattr(self.review, name)
             if not isinstance(value, int) or value < 1:
                 errors.append(f"workflow.review.{name} must be a positive integer")
-        for path, tiers in (("workflow.tiers", self.tiers),
-                            ("workflow.review.tiers", self.review.tiers)):
-            for tier, models in tiers.items():
-                for provider, spec in models.items():
-                    if spec.get("effort") not in AGENT_EFFORTS.get(provider, ()):
-                        errors.append(f"{path}.{tier}.{provider}: invalid effort")
+        candidates = [(f"{path}.{tier}", models)
+                      for path, tiers in (("workflow.tiers", self.tiers),
+                                          ("workflow.review.tiers", self.review.tiers))
+                      for tier, models in tiers.items()]
+        candidates.append(("workflow.review.override.models", self.review.override.models))
+        for path, models in candidates:
+            for provider, spec in models.items():
+                if spec.get("effort") not in AGENT_EFFORTS.get(provider, ()):
+                    errors.append(f"{path}.{provider}: invalid effort")
         return errors
 
     @classmethod

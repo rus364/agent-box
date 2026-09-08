@@ -72,6 +72,10 @@ HELP = {
     "workflow.timeout_seconds": "Maximum delegated agent runtime in seconds, from 30 through 86400.",
     "workflow.review": "Independent review routing, thresholds, provider selection, and reviewer candidates. Worker tier settings are never inherited.",
     "workflow.review.tiers": "Independent reviewer candidates for tiers 1-3. An empty model explicitly disables that provider candidate.",
+    "workflow.review.override": "Optional global reviewer models for Codex and Claude. Same/cross-provider still selects the provider; worker and scout settings stay independent.",
+    "workflow.review.override.enabled": "Replace session inheritance for untiered review with the global reviewer candidates. Off preserves session inheritance and reviewer tiers.",
+    "workflow.review.override.apply_to_tiered": "When override is enabled, also replace reviewer tier models, including an explicit --tier. Off applies the override only without a tier.",
+    "workflow.review.override.models": "Independent global reviewer candidates. Empty models disable candidates; fallback uses only these candidates and the existing same/cross-provider policy.",
     "workflow.review.policy": "Off skips workflow review. Auto triggers on file/line thresholds, sensitive paths, or the review label. Always requires review for every task and the complete parent diff. GitHub merge may still require independent approval.",
     "workflow.review.routing": "Cross-provider prefers a provider different from the writer; same-provider requires the writer's provider.",
     "workflow.review.max_files": "Automatic-review threshold for changed file count. The Review preset action can set this together with max lines.",
@@ -97,6 +101,7 @@ LABELS = {
     "env": "Environment", "providers": "Provider environment", "image": "Workspace image",
     "url": "URL", "token": "Access token", "effort": "Reasoning effort",
     "github_model": "GitHub review model", "github_effort": "GitHub review effort",
+    "override": "Global reviewer override", "apply_to_tiered": "Also override tiered tasks",
 }
 
 
@@ -145,7 +150,9 @@ def help_for(path):
         return f"Independent reviewer tier {path[-1]} candidates for Codex and Claude. Empty models disable candidates."
     if len(path) == 5 and path[:3] == ("workflow", "review", "tiers"):
         return f"{path[-1].title()} reviewer candidate for tier {path[-2]}. It does not inherit worker settings."
-    if len(path) == 6 and path[:3] == ("workflow", "review", "tiers"):
+    if len(path) == 5 and path[:4] == ("workflow", "review", "override", "models"):
+        return f"Global {path[-1].title()} reviewer candidate. It does not inherit session or tier settings."
+    if len(path) == 6 and (path[:3] == ("workflow", "review", "tiers") or path[:4] == ("workflow", "review", "override", "models")):
         subject = f"{path[-2].title()} reviewer candidate"
         return (f"Model for the {subject}. Choose a suggestion, enter any supported ID, or disable this candidate." if path[-1] == "model" else f"Reasoning effort for the {subject}. Default omits agent-box's effort override.")
     raise KeyError(f"No menu help for {dotted}")
@@ -188,8 +195,14 @@ def parse_value(text, current):
     return text
 
 
+def _candidate_field(path):
+    return (len(path) == 5 and path[:2] == ("workflow", "tiers") or
+            len(path) == 6 and (path[:3] == ("workflow", "review", "tiers") or
+                               path[:4] == ("workflow", "review", "override", "models")))
+
+
 def _model_path(path):
-    return path[-1:] == ("model",) and (path[:2] == ("workflow", "tiers") or path[:3] == ("workflow", "review", "tiers"))
+    return path[-1:] == ("model",) and _candidate_field(path)
 
 
 def edit(config):
@@ -513,7 +526,7 @@ def edit(config):
                     continue
                 name, full, value = keys[selected], (*path, keys[selected]), data[keys[selected]]
                 options = CHOICES.get(".".join(full))
-                if name == "effort" and (path[:2] == ("workflow", "tiers") or path[:3] == ("workflow", "review", "tiers")):
+                if name == "effort" and _candidate_field(full):
                     options = AGENT_EFFORTS[path[-1]]
                 if isinstance(value, bool):
                     data[name] = not value

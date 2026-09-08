@@ -543,8 +543,9 @@ def route(config, role, tier, primary, writer=None):
         atomic_write_text(path, json.dumps(counters) + "\n", 0o600)
     from .agent_profiles import available as native_available
     for candidate in [result, *result["fallbacks"]]:
-        candidate["native_profile"] = f"ab-{role}-{tier}"
-        candidate["native_profile_ready"] = native_available(candidate["provider"], role, tier, candidate)
+        candidate["native_profile"] = f"ab-{role}-{tier}" if tier is not None else None
+        candidate["native_profile_ready"] = (tier is not None and
+                                             native_available(candidate["provider"], role, tier, candidate))
         # These are requirements for the coordinator's live tool, not discovered
         # capabilities. A missing installed profile says nothing about that tool.
         candidate["native_explicit_settings"] = (
@@ -959,7 +960,8 @@ def dispatch(args):
             brief = read_brief(args.brief) if args.command != "report" else None
         # The route the delegation was prepared with rides in the descriptor, so
         # the report is ingested at the role and tier it was actually run at.
-        selected = (descriptor["route"] if descriptor else session_route(args, role) if tier is None
+        inherit_session = tier is None and not (role == "reviewer" and config.workflow.review.override.applies(tier))
+        selected = (descriptor["route"] if descriptor else session_route(args, role) if inherit_session
                     else route(config.workflow, role, tier, args.primary, saved.get("writer")))
         review_round = (descriptor["delegation"] if role == "reviewer" and descriptor else
                         secrets.token_urlsafe(18) if role == "reviewer" else None)

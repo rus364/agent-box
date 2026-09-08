@@ -13,6 +13,67 @@ import test_routing
 
 
 class ReviewRoutingTests(unittest.TestCase):
+    def test_global_candidates_preserve_writer_policy_tier_and_fallback(self):
+        """An override replaces model settings, never writer identity or fallback policy."""
+        config = test_routing.RoutingTests().config()
+        override = config.review.override
+        override.enabled = True
+        override.models = {p: {"model": p + "-global", "effort": "default"} for p in ("codex", "claude")}
+        for tier in (None, 1, 2, 3):
+            for apply in (False, True):
+                override.apply_to_tiered = apply
+                for writer, other in (("codex", "claude"), ("claude", "codex")):
+                    for mode in ("same-provider", "cross-provider"):
+                        config.review.routing = mode
+                        for fallback in (False, True):
+                            config.fallback = fallback
+                            with self.subTest(tier=tier, apply=apply, writer=writer, mode=mode, fallback=fallback):
+                                route = select(config, "reviewer", tier, other, {}, writer=writer)
+                                expected = [writer] if mode == "same-provider" else [other] + ([writer] if fallback else [])
+                                candidates = [route, *route["fallbacks"]]
+                                self.assertEqual([r["provider"] for r in candidates], expected)
+                                for candidate in candidates:
+                                    global_model = tier is None or apply
+                                    self.assertEqual(candidate["model"], candidate["provider"] + ("-global" if global_model else "-reviewer"))
+                                    self.assertEqual(candidate["effort"], "default" if global_model else "medium")
+                                    self.assertEqual(candidate["tier"], tier)
+
+    def test_empty_or_unavailable_global_candidates_cannot_inherit_session_or_tiers(self):
+        """A disabled override candidate cannot silently launch an unrelated configured model."""
+        config = test_routing.RoutingTests().config()
+        config.review.override.enabled = True
+        for writer, other in (("codex", "claude"), ("claude", "codex")):
+            for mode in ("same-provider", "cross-provider"):
+                config.review.routing = mode
+                preferred = writer if mode == "same-provider" else other
+                for missing in ("model", "executable"):
+                    config.review.override.models = {p: {"model": p + "-global", "effort": "medium"} for p in (writer, other)}
+                    available = [writer, other]
+                    if missing == "model":
+                        config.review.override.models[preferred]["model"] = ""
+                    else:
+                        available.remove(preferred)
+                    for fallback in (False, True):
+                        config.fallback = fallback
+                        with self.subTest(writer=writer, mode=mode, missing=missing, fallback=fallback):
+                            if mode == "cross-provider" and fallback:
+                                route = select(config, "reviewer", None, other, {}, writer=writer, available=available)
+                                self.assertEqual((route["provider"], route["model"]), (writer, writer + "-global"))
+                            else:
+                                with self.assertRaisesRegex(AgentBoxError, "workflow.review.override.models"):
+                                    select(config, "reviewer", None, other, {}, writer=writer, available=available)
+
+    def test_global_review_override_leaves_worker_and_scout_routes_unchanged(self):
+        """Reviewer choices cannot reschedule implementation or introduce a fake tier."""
+        config = test_routing.RoutingTests().config()
+        for role, tier in (("worker", 2), ("scout", 0)):
+            config.review.override.enabled = False
+            expected = select(config, role, tier, "codex", {})
+            config.review.override.enabled = config.review.override.apply_to_tiered = True
+            self.assertEqual(select(config, role, tier, "codex", {}), expected)
+        with self.assertRaisesRegex(AgentBoxError, "Tier 0"):
+            select(config, "reviewer", 0, "codex", {})
+
     def test_default_cross_provider_keeps_optional_writer_fallback(self):
         """Disabling fallback must not change the default preference for another provider."""
         config = test_routing.RoutingTests().config()

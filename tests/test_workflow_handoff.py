@@ -212,6 +212,78 @@ class WorkerHandoffTests(unittest.TestCase):
                                  "--provider", "claude", "--model", "m", "--effort", "high", "--file", str(self.report),
                                  "--scope", scope, "--handoff", handoff)
 
+    def test_override_prepare_and_report_bind_real_candidates_without_fabricating_a_tier(self):
+        """Config changes cannot rewrite a prepared review's parameters or admit stale reports."""
+        self.patches[5].stop()  # Exercise the real route, not the generic handoff fixture.
+        self.task.labels = []
+        self.config.workflow.review.override.enabled = True
+        self.config.workflow.review.override.models = {
+            "codex": {"model": "codex-global", "effort": "medium"},
+            "claude": {"model": "claude-global", "effort": "high"}}
+        with patch.object(workflow.shutil, "which", side_effect=lambda name: name), \
+             patch("agent_box.agent_profiles.available") as profile:
+            prepared = self.run_workflow("prepare", "1", "--role", "reviewer", "--primary", "codex",
+                                         "--brief", str(self.review_brief))
+        profile.assert_not_called()
+        route = prepared["route"]
+        self.assertEqual((route["provider"], route["model"], route["tier"]), ("claude", "claude-global", None))
+        self.assertIsNone(route["native_profile"])
+        self.assertFalse(route["native_profile_ready"])
+        self.assertEqual(route["native_explicit_settings"], {"provider": "claude", "model": "claude-global", "effort": "high"})
+        self.config.workflow.review.override.models["claude"]["model"] = "changed-after-prepare"
+        self.report.write_text(json.dumps({"verdict": "PASS", "summary": "Reviewed", "findings": []}))
+        argv = ["report", "1", "--role", "reviewer", "--scope", prepared["scope"],
+                "--handoff", prepared["handoff"], "--file", str(self.report)]
+        with self.assertRaisesRegex(AgentBoxError, "outside the configured route"):
+            self.run_workflow(*argv, "--provider", "claude", "--model", "changed-after-prepare", "--effort", "high", "--fresh-context")
+        with self.assertRaisesRegex(AgentBoxError, "fallback reason"):
+            self.run_workflow(*argv, "--provider", "codex", "--model", "codex-global", "--effort", "medium", "--fresh-context")
+        with self.assertRaisesRegex(AgentBoxError, "fresh-context"):
+            self.run_workflow(*argv, "--provider", "claude", "--model", "claude-global", "--effort", "high")
+        result = self.run_workflow(*argv, "--provider", "claude", "--model", "claude-global", "--effort", "high", "--fresh-context")
+        self.assertEqual(result["report"]["verdict"], "PASS")
+        self.assertIsNone(result["route"]["tier"])
+        self.assertEqual(self.task.labels, [])
+
+    def test_override_respects_effective_tier_and_managed_default_effort(self):
+        """Reviewer run/review use the override only when applicable, even with explicit --tier."""
+        self.patches[5].stop()
+        self.task.labels = []
+        self.config.workflow.review.max_rounds = 20
+        self.config.workflow.review.policy = "always"
+        self.config.workflow.review.routing = "same-provider"
+        override = self.config.workflow.review.override
+        for provider in ("codex", "claude"):
+            override.models[provider] = {"model": provider + "-global", "effort": "default"}
+            self.config.workflow.review.tiers["2"][provider] = {"model": provider + "-tier", "effort": "high"}
+        for command in ("run", "review"):
+            for provider in ("codex", "claude"):
+                for enabled, apply, explicit, expected in ((False, True, False, "session"),
+                        (False, True, True, "tier"), (True, False, False, "global"),
+                        (True, False, True, "tier"), (True, True, True, "global")):
+                    override.enabled, override.apply_to_tiered = enabled, apply
+                    argv = [command, "1", "--primary", provider, "--brief", str(self.review_brief),
+                            "--session-model", provider + "-session", "--session-effort", "medium"]
+                    if command == "run":
+                        argv += ["--role", "reviewer"]
+                    if explicit:
+                        argv += ["--tier", "2"]
+                    with self.subTest(command=command, provider=provider, expected=expected, explicit=explicit), \
+                         patch.object(workflow.shutil, "which", side_effect=lambda name: name), \
+                         patch("agent_box.agent_profiles.available", return_value=False), \
+                         patch.object(workflow, "run", return_value={"verdict": "PASS", "summary": "Reviewed", "findings": []}) as run:
+                        result = self.run_workflow(*argv)
+                    route = run.call_args.args[0]
+                    self.assertEqual(route["model"], provider + "-" + expected)
+                    self.assertEqual(route["tier"], 2 if explicit else None)
+                    if expected == "global":
+                        self.assertEqual(route["effort"], "default")
+                        self.assertIsNone(route["native_explicit_settings"])
+                        cmd = provider_runner.build_command(route, "reviewer", self.root, self.report, self.report)
+                        self.assertNotIn("--effort", cmd)
+                        self.assertFalse(any("model_reasoning_effort=" in arg for arg in cmd))
+                    self.assertEqual(result["report"]["verdict"], "PASS")
+
     def test_untiered_worker_preserves_session_without_launch_or_fabricated_receipt(self):
         """No tier means keep the active model, even when matrices cannot select it."""
         self.task.labels = ["product"]

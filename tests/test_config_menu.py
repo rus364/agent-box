@@ -39,6 +39,34 @@ class Screen:
 
 
 class ConfigMenuTests(unittest.TestCase):
+    def test_global_reviewer_candidates_use_picker_effort_and_draft_controls(self):
+        """Both override candidates share the model editor without altering tier settings."""
+        import curses
+        config = Config()
+        prefix = [*[curses.KEY_DOWN] * 10, "\n",
+                  *[curses.KEY_DOWN] * list(config.workflow.to_dict()).index("review"), "\n",
+                  *[curses.KEY_DOWN] * list(config.workflow.review.to_dict()).index("override"), "\n",
+                  " ", curses.KEY_DOWN, " ", curses.KEY_DOWN, "\n"]
+        for index, provider in enumerate(("codex", "claude")):
+            cases = [([curses.KEY_HOME, "\n", *"manual-reviewer", "\n"], "manual-reviewer"),
+                     ([curses.KEY_END, "\n"], config_menu.BUNDLED_MODELS[provider][-1]),
+                     ([curses.KEY_HOME, curses.KEY_DOWN, "\n"], "")]
+            for pick, expected in cases:
+                with self.subTest(provider=provider, expected=expected):
+                    edit_keys = [*prefix, *[curses.KEY_DOWN] * index, "\n", "\n", *pick,
+                                 curses.KEY_DOWN, *[" "] * (5 if provider == "codex" else 4)]
+                    cancelled, _ = self.edit(config, [*edit_keys, *["\x1b"] * 6])
+                    self.assertIsNone(cancelled)
+                    result, _ = self.edit(config, [*edit_keys, *["\x1b"] * 5,
+                                                   curses.KEY_DOWN, curses.KEY_DOWN, "\n"])
+                    override = result.config.workflow.review.override
+                    self.assertTrue(override.enabled)
+                    self.assertTrue(override.apply_to_tiered)
+                    self.assertEqual(override.models[provider], {"model": expected, "effort": "default"})
+                    self.assertEqual(result.config.workflow.review.tiers, config.workflow.review.tiers)
+                    self.assertEqual(result.config.workflow.tiers, config.workflow.tiers)
+        self.assertFalse(config.workflow.review.override.enabled)
+
     def test_cleanup_toggles_save_independently_without_enabling_the_other(self):
         import curses
         fields = list(Config().workflow.to_dict())

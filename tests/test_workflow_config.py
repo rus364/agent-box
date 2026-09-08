@@ -12,6 +12,30 @@ from agent_box.config import Config
 
 
 class WorkflowConfigTests(unittest.TestCase):
+    def test_reviewer_override_roundtrips_into_runtime_without_sharing_candidates(self):
+        """The container must receive the same opt-in and independent settings as the menu."""
+        from agent_box import runtime
+        original = Config()
+        self.assertFalse(original.workflow.review.override.enabled)
+        self.assertFalse(original.workflow.review.override.apply_to_tiered)
+        self.assertTrue(all(not spec["model"] for spec in original.workflow.review.override.models.values()))
+        for apply in (False, True):
+            config = Config.from_dict({"workflow": {"enabled": True, "review": {"override": {
+                "enabled": True, "apply_to_tiered": apply, "models": {
+                    "codex": {"model": "custom-codex", "effort": "default"},
+                    "claude": {"model": "custom-claude", "effort": "high"}}}}}})
+            with tempfile.TemporaryDirectory() as directory:
+                runtime.sync_tracker_runtime(config, Path(directory))
+                rendered = Config.from_dict(json.loads((Path(directory) / "config.json").read_text()))
+            self.assertEqual(rendered.workflow.review.override, config.workflow.review.override)
+            self.assertEqual(rendered.workflow.validate(), [])
+            rendered.workflow.review.override.models["codex"]["model"] = "changed"
+            self.assertEqual(rendered.workflow.review.tiers["1"]["codex"]["model"], "")
+            self.assertEqual(rendered.workflow.tiers["1"]["codex"]["model"], "")
+            self.assertEqual(original.workflow.review.override.models["codex"]["model"], "")
+        config.workflow.review.override.models["claude"]["effort"] = "invalid"
+        self.assertIn("workflow.review.override.models.claude: invalid effort", config.workflow.validate())
+
     def test_show_reads_the_runtime_artifact_instead_of_host_defaults(self):
         """A container must show the same merge route that workflow dispatch uses."""
         from agent_box import cli
