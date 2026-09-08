@@ -255,10 +255,21 @@ and light (10/500); all values and paths are editable. Apply the policy both to
 subtasks and the complete parent diff. SKIPPED, INCONCLUSIVE and provider errors
 are distinct from PASS. Code or requirement changes invalidate acceptance.
 
-`ab-land` bounds fix/review iterations by `max_rounds` (default 3), stopping on
-ambiguity or no progress. The skill keeps iteration history in the tracker; it
-must not reset the bound by restarting. Validation is a real command with an
-observed exit status; the coordinator does not self-review.
+`max_rounds` (default 3) is enforced for local reviewer `prepare`, `run` and
+`review`: each reserves one attempt under a local lock before handoff or provider
+execution. Provider fallback belongs to that same attempt. Failed/abandoned
+attempts consume budget; report ingestion and policy SKIPPED do not. Separate
+budget state is keyed by checkout, tracker provider/server/project and task,
+survives scope changes and coordinator restarts, and never resets automatically.
+`workflow inspect` exposes `review.budget` with used/limit/remaining; reviewer
+command results expose `review_budget` for the coordinator, outside the neutral
+reviewer prompt. At exhaustion, only the user's explicit decision permits
+`--review-override-reason TEXT` for one additional attempt, with its reason saved.
+Every new review retires previous PASS and human acceptance, including explicit
+tiers and provider failures. Remote GitHub review requests remain coordinated
+separately. Skills stop on ambiguity or no progress and retain human iteration
+history in the tracker. Validation is a real command with an observed exit
+status; the coordinator does not self-review.
 
 ## Landing mode
 

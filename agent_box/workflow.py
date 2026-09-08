@@ -134,20 +134,37 @@ REVIEW_CONTEXT_SECTIONS = {
 
 def review_description(value):
     """Keep the current normative brief without importing a task's discussion history."""
-    headings = list(re.finditer(r"(?m)^##\s+(.+?)\s*$", value))
-    names = [match.group(1).strip().rstrip(":").casefold() for match in headings]
+    headings, fence = [], None
+    for line in re.finditer(r"(?m)^.*$", value):
+        text = line.group()
+        marker = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", text)
+        if fence:
+            if (marker and marker[1][0] == fence[0] and len(marker[1]) >= len(fence)
+                    and not marker[2].strip()):
+                fence = None
+            continue
+        if marker and (marker[1][0] == "~" or "`" not in marker[2]):
+            fence = marker[1]
+            continue
+        heading = re.match(r"^ {0,3}##[ \t]+(.+?)[ \t]*$", text)
+        if heading:
+            headings.append((line.start(), heading[1]))
+    if fence:
+        raise AgentBoxError("Unclosed Markdown fence in review requirements")
+    names = [re.sub(r"[ \t]+#+$", "", title).strip().rstrip(":").casefold()
+             for _, title in headings]
     if any(name in REVIEW_REQUIREMENT_SECTIONS for name in names):
-        unknown = [match.group(1).strip() for match, name in zip(headings, names)
+        unknown = [title.strip() for (_, title), name in zip(headings, names)
                    if name not in REVIEW_REQUIREMENT_SECTIONS | REVIEW_CONTEXT_SECTIONS]
         if unknown:
             raise AgentBoxError(
                 "Ambiguous level-2 review requirements headings: " + ", ".join(unknown))
     selected = []
-    for index, match in enumerate(headings):
+    for index, (start, _) in enumerate(headings):
         if names[index] not in REVIEW_REQUIREMENT_SECTIONS:
             continue
-        end = headings[index + 1].start() if index + 1 < len(headings) else len(value)
-        selected.append((end, value[match.start():end].strip()))
+        end = headings[index + 1][0] if index + 1 < len(headings) else len(value)
+        selected.append((end, value[start:end].strip()))
     return "\n\n".join(section for _, section in selected)
 
 
@@ -220,6 +237,50 @@ def save_evidence(root, task, value):
     path = evidence_path(root, task)
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     atomic_write_text(path, json.dumps(value, indent=2) + "\n", 0o600)
+
+
+def review_budget_path(root, binding, task):
+    identity = [binding.provider, server_identity(binding.server), binding.project, task.id]
+    key = hashlib.sha256(json.dumps(identity).encode()).hexdigest()[:24]
+    return WORKFLOW_STATE / "review-budgets" / repository_key(root) / f"{key}.json"
+
+
+def read_review_budget(root, binding, task, limit):
+    path = review_budget_path(root, binding, task)
+    try:
+        value = json.loads(path.read_text())
+        if (not isinstance(value, dict) or type(value.get("used")) is not int
+                or value["used"] < 0 or not isinstance(value.get("overrides"), list)
+                or any(not isinstance(item, dict) or type(item.get("attempt")) is not int
+                       or not 0 < item["attempt"] <= value["used"]
+                       or not isinstance(item.get("reason"), str) or not item["reason"].strip()
+                       for item in value["overrides"])):
+            raise ValueError("invalid budget structure")
+    except FileNotFoundError:
+        value = {"used": 0, "overrides": []}
+    except (OSError, ValueError) as exc:
+        raise AgentBoxError(f"Cannot read review budget {path}: {exc}") from exc
+    return {**value, "limit": limit, "remaining": max(0, limit - value["used"])}
+
+
+def reserve_review(root, binding, task, limit, reason):
+    """Attempts outlive scope evidence; stale reports cannot restore the budget."""
+    with lock(root, "review-budget"):
+        budget = read_review_budget(root, binding, task, limit)
+        if reason is not None and not reason.strip():
+            raise AgentBoxError("Review override requires a non-empty reason from the user")
+        if budget["remaining"] == 0 and reason is None:
+            raise AgentBoxError(
+                f"Review attempt budget exhausted: used={budget['used']}, limit={limit}, remaining=0. "
+                "Only after the user's decision, pass --review-override-reason for one extra attempt")
+        budget["used"] += 1
+        budget["remaining"] = max(0, limit - budget["used"])
+        if reason is not None:
+            budget["overrides"].append({"attempt": budget["used"], "reason": reason.strip()})
+        path = review_budget_path(root, binding, task)
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        atomic_write_text(path, json.dumps({key: budget[key] for key in ("used", "overrides")}) + "\n", 0o600)
+        return budget
 
 
 def diff_stats(root, base):
@@ -680,6 +741,7 @@ def parser():
             cmd.add_argument("--session-effort", help="Verified active session effort for untiered execution")
         if name in ("prepare", "run", "review"):
             cmd.add_argument("--brief", required=name == "run")
+            cmd.add_argument("--review-override-reason", help="User-authorized reason for one review attempt beyond the limit")
         if name == "report":
             cmd.add_argument("--file", required=True)
             cmd.add_argument("--scope", required=True)
@@ -779,6 +841,7 @@ def dispatch(args):
         return {"task": task.id, **info, "head": gw.head_sha(root), "scope": fingerprint,
                 "configuration": configuration_summary(config),
                 "review": {"policy": config.workflow.review.policy, "files": len(files), "lines": lines,
+                           "budget": read_review_budget(root, binding, task, config.workflow.review.max_rounds),
                            "max_files": config.workflow.review.max_files, "max_lines": config.workflow.review.max_lines,
                            "required": bool(reasons), "reasons": reasons,
                            "independent_verdict": saved.get("review", {}).get("verdict"),
@@ -829,6 +892,9 @@ def dispatch(args):
         return saved
     if args.command in ("prepare", "run", "review", "report"):
         role = "reviewer" if args.command == "review" else args.role
+        override_reason = getattr(args, "review_override_reason", None)
+        if role != "reviewer" and override_reason is not None:
+            raise AgentBoxError("--review-override-reason is only valid for a reviewer")
         tier = delegation_tier(args, task, role)
         review_context = ""
         if role == "reviewer":
@@ -845,19 +911,20 @@ def dispatch(args):
             if args.command == "review" and not required:
                 saved["review"] = {"verdict": "SKIPPED", "reason": "Configured review policy"}
                 save_evidence(root, task, saved)
-                return saved
+                return {**saved, "review_budget": read_review_budget(
+                    root, binding, task, config.workflow.review.max_rounds)}
             brief = read_brief(args.brief) if args.command != "report" else None
         # The route the delegation was prepared with rides in the descriptor, so
         # the report is ingested at the role and tier it was actually run at.
         selected = (descriptor["route"] if descriptor else session_route(args, role) if tier is None
                     else route(config.workflow, role, tier, args.primary, saved.get("writer")))
         if role == "reviewer" and args.command != "report":
+            budget = reserve_review(root, binding, task, config.workflow.review.max_rounds, override_reason)
             # Even a provider failure or a native reviewer that never returns
             # must leave no earlier human decision standing in for that review.
             saved.pop("human_acceptance", None)
             saved.pop("local_acceptance", None)
-            if selected.get("mode") == "current-session":
-                saved.pop("review", None)
+            saved.pop("review", None)
             save_evidence(root, task, saved)
         session_action = (selected.get("mode") == "current-session" and args.command != "report"
                           and (role == "worker" or selected["model"] is None))
@@ -897,6 +964,7 @@ def dispatch(args):
                                     "when using a fallback candidate. "
                                     "Return the role JSON schema."}
             if role == "reviewer":
+                result["review_budget"] = budget
                 result["review_handoff"] = reviewer_handoff(
                     root, base, tasks, brief, saved, review_context, task.id, fingerprint,
                     review_round)
@@ -976,7 +1044,10 @@ def dispatch(args):
             saved["review"] = {**output["report"], **{
                 key: output[key] for key in ("route", "fallback_reason", "failures", "fresh_context") if key in output}}
             save_evidence(root, task, saved)
-        return {**output, "scope": fingerprint}
+        result = {**output, "scope": fingerprint}
+        if role == "reviewer":
+            result["review_budget"] = read_review_budget(root, binding, task, config.workflow.review.max_rounds)
+        return result
     if args.command == "finish":
         if not saved.get("validation"):
             raise AgentBoxError("Run workflow validate against this exact scope before completion")

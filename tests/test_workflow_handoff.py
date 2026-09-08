@@ -681,6 +681,81 @@ class WorkerHandoffTests(unittest.TestCase):
                     self.run_workflow("prepare", "1", "--role", "reviewer", "--primary", "codex",
                                       "--brief", str(self.review_brief))
 
+    def test_fenced_examples_neither_remove_requirements_nor_import_history(self):
+        """Only real H2 sections delimit acceptance, including after misleading fence closers."""
+        for marker in ("````", "~~~~"):
+            with self.subTest(marker=marker):
+                description = (f"## Acceptance\n{marker}markdown\n## Context\n"
+                               f"{marker[:3]}\n## Unknown example\n{marker} text\n"
+                               f"## More example\n{marker}\nRequired after example.\n"
+                               f"## Context\n{marker}\n## Acceptance\n{marker}\nOld history.\n"
+                               "  ## Validation ##\nRun checks.\n")
+                selected = workflow.review_description(description)
+                self.assertIn("Required after example.", selected)
+                self.assertIn("Run checks.", selected)
+                self.assertNotIn("Old history.", selected)
+        with self.assertRaisesRegex(AgentBoxError, "Unclosed Markdown fence"):
+            workflow.review_description("## Acceptance\n```\n## Context\nOld history.")
+
+    def test_review_budget_spans_native_managed_scope_changes_and_reports(self):
+        """Retries cannot replenish the task budget by changing scope or ingesting a report."""
+        self.config.workflow.review.max_rounds = 1
+        self.config.workflow.review.policy = "always"
+        first = self.run_workflow("prepare", "1", "--role", "reviewer", "--primary", "codex",
+                                  "--brief", str(self.review_brief))
+        self.assertEqual(first["review_budget"]["used"], 1)
+        self.assertNotIn("review_budget", first["review_handoff"])
+        self.report.write_text(json.dumps({"verdict": "PASS", "summary": "Checked", "findings": []}))
+        report = self.run_workflow("report", "1", "--role", "reviewer", "--primary", "codex",
+                                  "--provider", "claude", "--model", "m", "--effort", "high",
+                                  "--fresh-context", "--scope", first["scope"], "--handoff", first["handoff"],
+                                  "--file", str(self.report))
+        self.assertEqual(report["review_budget"]["used"], 1)
+        self.assertEqual(report["review_budget"]["remaining"], 0)
+        self.task.description += "\nNew requirement."
+        with patch.object(workflow, "run", side_effect=AgentBoxError("provider unavailable")), \
+             self.assertRaisesRegex(AgentBoxError, "provider unavailable"):
+            self.run_workflow("run", "1", "--role", "reviewer", "--primary", "codex",
+                              "--brief", str(self.review_brief), "--review-override-reason", "User authorizes retry")
+        budget = self.run_workflow("inspect", "1")["review"]["budget"]
+        self.assertEqual((budget["used"], budget["limit"], budget["remaining"]), (2, 1, 0))
+        for command, flags in (("prepare", ("--role", "reviewer")), ("review", ())):
+            with self.subTest(command=command), patch.object(workflow, "run") as provider, \
+                 self.assertRaisesRegex(AgentBoxError, "budget exhausted"):
+                self.run_workflow(command, "1", *flags, "--primary", "codex", "--brief", str(self.review_brief))
+            provider.assert_not_called()
+        extra = self.run_workflow("prepare", "1", "--role", "reviewer", "--primary", "codex",
+                                  "--brief", str(self.review_brief), "--review-override-reason", "User requests one more")
+        self.assertEqual(extra["review_budget"]["used"], 3)
+        self.assertNotIn("User requests one more", extra["review_handoff"])
+        with self.assertRaisesRegex(AgentBoxError, "budget exhausted"):
+            self.run_workflow("prepare", "1", "--role", "reviewer", "--primary", "codex",
+                              "--brief", str(self.review_brief))
+
+    def test_review_budget_lock_corruption_and_binding_isolation(self):
+        """Concurrent reservation and unreadable counters fail closed; other projects are distinct."""
+        with workflow_state.lock(self.root, "review-budget"), \
+             self.assertRaisesRegex(AgentBoxError, "Another local review-budget"):
+            workflow.reserve_review(self.root, BINDING, self.task, 1, None)
+        self.assertEqual(workflow.read_review_budget(self.root, BINDING, self.task, 1)["used"], 0)
+        with self.assertRaisesRegex(AgentBoxError, "non-empty reason"):
+            workflow.reserve_review(self.root, BINDING, self.task, 1, " ")
+        workflow.reserve_review(self.root, BINDING, self.task, 1, None)
+        other = Binding("vikunja", "https://tasks.example", "other")
+        self.assertEqual(workflow.read_review_budget(self.root, other, self.task, 1)["used"], 0)
+        path = workflow.review_budget_path(self.root, BINDING, self.task)
+        for malformed in ("broken", "{}", '{"used":true,"overrides":[]}', '{"used":-1,"overrides":[]}'):
+            path.write_text(malformed)
+            with self.subTest(malformed=malformed), self.assertRaisesRegex(AgentBoxError, "Cannot read review budget"):
+                workflow.reserve_review(self.root, BINDING, self.task, 1, "Must not bypass corruption")
+
+    def test_policy_skipped_review_does_not_reserve_an_attempt(self):
+        """A policy decision is not an independent review attempt."""
+        self.config.workflow.review.policy = "off"
+        result = self.run_workflow("review", "1", "--primary", "codex")
+        self.assertEqual(result["review"]["verdict"], "SKIPPED")
+        self.assertEqual(result["review_budget"]["used"], 0)
+
     def test_review_requirements_accept_explicit_aliases_without_context(self):
         description = (
             "## Goals\nShip the complete change.\n"
@@ -734,6 +809,7 @@ class WorkerHandoffTests(unittest.TestCase):
             with self.subTest(command=command):
                 workflow.save_evidence(self.root, self.task, {
                     "scope": fingerprint, "validation": {"exit": 0},
+                    "review": {"verdict": "PASS"},
                     "human_acceptance": {"scope": fingerprint, "actor": "1", "reason": "User accepted"}})
                 if command == "prepare":
                     self.run_workflow("prepare", "1", "--role", "reviewer", "--primary", "codex",
@@ -744,6 +820,9 @@ class WorkerHandoffTests(unittest.TestCase):
                         self.run_workflow("review", "1", "--primary", "codex",
                                           "--brief", str(self.review_brief))
                 self.assertNotIn("human_acceptance", workflow.read_evidence(self.root, self.task))
+                self.assertNotIn("review", workflow.read_evidence(self.root, self.task))
+                self.assertEqual(self.run_workflow("inspect", "1")["review"]["budget"]["used"],
+                                 1 if command == "prepare" else 2)
                 with self.assertRaisesRegex(AgentBoxError, "PASS review"):
                     self.run_workflow("finish", "1")
 
