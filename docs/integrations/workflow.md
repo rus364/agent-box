@@ -95,9 +95,39 @@ for newly created configuration remains `medium`. Model fields start empty
 rather than guessing what the account can access. Tier 0 is
 for facts, scouting and structuring; task difficulty remains 1-3, represented in
 Vikunja by one `ab:tier:1`, `ab:tier:2` or `ab:tier:3` label. A user-set task tier
-wins over a coordinator suggestion. Each subtask gets its own assessment.
+wins over a coordinator suggestion. Each subtask may have its own explicit tier. Without a task tier, no assessment or label is required for readiness, audit, claim, validation, review or completion; malformed/conflicting explicit labels remain invalid. An explicit `--tier` invocation override selects configured routing when the card has no tier and never changes its labels.
 
-Workers/scouts choose one of three modes:
+Untiered workers stay in the active session's provider, model and effort.
+`prepare` and `run` return `action: work-in-current-session`, with the task,
+handoff and instructions, instead of launching another CLI. The coordinator
+implements directly, preserving settings. The action checks assigned Doing
+ownership, retires previous acceptance and records the actual primary writer;
+it is not evidence that work ran or completed. Pass the active provider with
+`--primary` (or `AGENT_BOX_PRIMARY_PROVIDER`). No usage counters, tier matrices
+or installed tier profiles participate.
+
+Untiered review uses that active session provider/model/effort in an independent
+fresh read-only context, even when explicit-tier review routing prefers another
+provider. Without exact session facts, `review` returns
+`action: review-in-fresh-context`; use native inheritance without a named tier
+profile. The returned route keeps unknown model/effort as JSON null. To ingest
+an actual inherited report, use `report --provider PROVIDER --session-inherited
+--fresh-context --role reviewer --file FILE --scope SCOPE --handoff DESCRIPTOR`.
+The flags affirm preserved settings and independent context; they do not turn
+an action, silence or provider error into PASS. If inheritance cannot be
+ensured, obtain verified session facts before running a reviewer.
+
+When both actual settings are known, `prepare`, `run` and `review` accept
+`--session-model MODEL --session-effort EFFORT`. Values must come from the active
+session, not configured profiles; models outside every tier matrix are valid.
+With those facts, managed untiered review launches a fresh CLI with that exact
+provider/model/effort and no fallback. Native reports must match the prepared
+concrete settings and affirm `--fresh-context` for review. For inherited worker
+reports, use `--session-inherited` and omit unknown model/effort. Independent
+review and validation/finish gates remain required by policy; SKIPPED is
+resolved before asking for session settings.
+
+Explicit-tier workers/scouts choose one of three modes:
 
 - **current**: only the session's provider;
 - **weighted**: smooth weighted round robin, independently per tier;
@@ -138,7 +168,7 @@ Set `workflow.review.routing` in `agent-box config` under workflow / review:
   An unavailable writer executable, empty reviewer model or provider failure
   stops review without calling the other provider, even with fallback enabled.
 
-Both modes use only `workflow.review.tiers`. Worker weights and usage do not
+For explicit tiers, both modes use only `workflow.review.tiers`. Worker weights and usage do not
 select reviewers. Routing changes neither review policy nor worker/scout routing.
 All attempts preserve the selected tier and configured reviewer model/effort.
 An unsupported model is an error, not permission to guess a cheaper model.
@@ -169,7 +199,7 @@ agent-box workflow review TASK --primary codex
 agent-box workflow finish TASK
 ```
 
-Native handoffs use `prepare`, then `report --file FILE --scope DIGEST --handoff
+Explicit-tier native handoffs use `prepare`, then `report --file FILE --scope DIGEST --handoff
 DESCRIPTOR --provider ACTUAL_PROVIDER --model ACTUAL_MODEL --effort ACTUAL_EFFORT`
 for the returned structured report. Supply `--fallback-reason REASON` when using
 a fallback candidate; unknown model or effort is a reason to use managed CLI,

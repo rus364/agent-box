@@ -141,10 +141,38 @@ class AuditTests(unittest.TestCase):
     def problem_codes(self, task_object, get=None):
         return [problem["code"] for problem in task_problems(task_object, get or (lambda _: None))]
 
+    def test_optional_tier_is_valid_in_every_lifecycle_state(self):
+        """Auditing must not require fabricated routing labels at any stage."""
+        for state in ("Backlog", "Ready", "Doing", "Review", "Done"):
+            for tier in (None, 1, 2, 3):
+                with self.subTest(state=state, tier=tier):
+                    labels = ["product"] + ([f"ab:tier:{tier}"] if tier else [])
+                    task = Task("1", "1", "Fix", state=state, labels=list(labels),
+                                description="- [x] acceptance" if state == "Done" else "- [ ] acceptance",
+                                assignees=["7"] if state in ("Doing", "Review", "Done") else [])
+                    report = audit([task], lambda _: task)
+                    self.assertEqual(report["counts"], {})
+                    self.assertTrue(report["clean"])
+                    self.assertEqual(task.labels, labels)
+
+    def test_invalid_tier_remains_an_error_in_every_lifecycle_state(self):
+        """Optional labels do not make malformed or conflicting explicit tiers valid."""
+        for state in ("Backlog", "Ready", "Doing", "Review", "Done"):
+            for labels in (["ab:tier:0"], ["ab:tier:four"], ["ab:tier:"],
+                           ["ab:tier:1", "ab:tier:3"]):
+                with self.subTest(state=state, labels=labels):
+                    task = Task("1", "1", "Fix", state=state, labels=list(labels),
+                                description="- [x] acceptance" if state == "Done" else "- [ ] acceptance",
+                                assignees=["7"] if state in ("Doing", "Review", "Done") else [])
+                    report = audit([task], lambda _: task)
+                    self.assertFalse(report["clean"])
+                    self.assertEqual([item["code"] for item in report["errors"]], ["bad-tier"])
+                    self.assertEqual(task.labels, labels)
+
     def test_a_task_the_workflow_cannot_run_reports_each_reason_separately(self):
         stray = Task("1", "1", "Fix the build", description="", state="Unknown")
         self.assertEqual(self.problem_codes(stray),
-                         ["no-state", "no-tier", "no-description", "no-checklist"])
+                         ["no-state", "no-description", "no-checklist"])
 
     def test_progress_and_ownership_recorded_before_the_work_started_are_reported(self):
         early = Task("1", "1", "Fix", description="- [x] done", state="Backlog",
@@ -194,7 +222,7 @@ class AuditTests(unittest.TestCase):
         third = Task("3", "1", "Other", description="", state="Ready")
         items, get = tasks(first, second, third)
         report = audit(items, get, [{"project": "1", "problems": []}])
-        self.assertEqual(report["counts"], {"duplicate-title": 2, "no-tier": 1,
+        self.assertEqual(report["counts"], {"duplicate-title": 2,
                                             "no-description": 1, "no-checklist": 1})
         self.assertEqual([problem["message"] for problem in report["tasks"][0]["problems"]],
                          ["shares its title with 2"])
@@ -231,11 +259,11 @@ class AuditTests(unittest.TestCase):
         items, get = tasks(parent, child)
         self.assertTrue(audit(items, get)['clean'])
 
-    def test_ready_work_without_description_or_tier_still_blocks_cutover(self):
+    def test_ready_work_without_description_still_blocks_cutover(self):
         items, get = tasks(Task("1", "1", "Unspecified", state="Ready"))
         report = audit(items, get)
         self.assertFalse(report["clean"])
-        self.assertEqual({item["code"] for item in report["errors"]}, {"no-tier", "no-description"})
+        self.assertEqual({item["code"] for item in report["errors"]}, {"no-description"})
 
     def test_a_broken_board_keeps_the_project_from_auditing_clean(self):
         items, get = tasks(Task("1", "1", "Fix", description="- [ ] a", state="Ready",

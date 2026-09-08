@@ -292,6 +292,22 @@ def native_output(args, selected, tier):
     evidence from the coordinator, not an attestation from the provider.
     """
     actual = {"provider": args.provider, "model": args.model, "effort": args.effort, "tier": tier}
+    if selected.get("mode") == "current-session":
+        if args.provider != selected["provider"]:
+            raise AgentBoxError("Reported provider differs from the prepared current session")
+        if selected["model"] is None:
+            if not args.session_inherited or args.model is not None or args.effort is not None:
+                raise AgentBoxError("Confirm --session-inherited and omit unknown --model/--effort")
+        elif args.model != selected["model"] or args.effort != selected["effort"]:
+            raise AgentBoxError("Reported model/effort differs from the prepared current session")
+        if args.role == "reviewer" and not args.fresh_context:
+            raise AgentBoxError("Confirm --fresh-context for independent current-session review")
+        if args.fallback_reason:
+            raise AgentBoxError("Current-session execution has no fallback route")
+        actual.update(mode="current-session", session_inherited=args.session_inherited)
+        if args.role == "reviewer":
+            actual["fresh_context"] = True
+        return {"route": actual, "report": validate_report(json.loads(Path(args.file).read_text()), args.role)}
     candidates = [selected, *selected["fallbacks"]]
     match = next((i for i, candidate in enumerate(candidates)
                   if all(candidate.get(key) == value for key, value in actual.items())), None)
@@ -358,6 +374,17 @@ def route(config, role, tier, primary, writer=None):
     return result
 
 
+def session_route(args, role):
+    """Session settings are supplied facts or inherited, never tier defaults."""
+    if not args.primary:
+        raise AgentBoxError("Pass --primary with the active session provider for untiered work")
+    model, effort = args.session_model, args.session_effort
+    if bool(model) != bool(effort) or model == "" or effort == "":
+        raise AgentBoxError("Supply both --session-model and --session-effort from the active session, or omit both")
+    return {"mode": "current-session", "provider": args.primary, "model": model,
+            "effort": effort, "tier": None, "role": role, "fallbacks": []}
+
+
 def execute(config, selected, role, root, prompt):
     failures = []
     for candidate in [selected, *selected["fallbacks"]]:
@@ -418,14 +445,19 @@ def parser():
             cmd.add_argument("--role", choices=("worker", "reviewer", "scout"), default="worker")
         if name in ("prepare", "run", "review", "report"):
             cmd.add_argument("--tier", type=int, choices=range(4))
+        if name in ("prepare", "run", "review"):
+            cmd.add_argument("--session-model", help="Verified active session model for untiered execution")
+            cmd.add_argument("--session-effort", help="Verified active session effort for untiered execution")
         if name == "run":
             cmd.add_argument("--brief", required=True)
         if name == "report":
             cmd.add_argument("--file", required=True)
             cmd.add_argument("--scope", required=True)
             cmd.add_argument("--provider", required=True, choices=("codex", "claude"))
-            cmd.add_argument("--model", required=True, help="Actual model used by the native delegate")
-            cmd.add_argument("--effort", required=True, help="Actual effort used by the native delegate")
+            cmd.add_argument("--model", help="Actual model used by the native delegate; required for explicit tiers")
+            cmd.add_argument("--effort", help="Actual effort used by the native delegate; required for explicit tiers")
+            cmd.add_argument("--session-inherited", action="store_true", help="Affirm unchanged inherited session settings")
+            cmd.add_argument("--fresh-context", action="store_true", help="Affirm independent fresh reviewer context")
             cmd.add_argument("--fallback-reason", help="Why a native fallback candidate was used")
             cmd.add_argument("--handoff", help="Handoff descriptor returned by prepare")
         if name == "validate":
@@ -563,8 +595,6 @@ def dispatch(args):
     if args.command in ("prepare", "run", "review", "report"):
         role = "reviewer" if args.command == "review" else args.role
         tier = delegation_tier(args, task, role)
-        if tier is None:
-            raise AgentBoxError("Assess task complexity and set tracker tier 1-3 before delegation")
         review_context = ""
         if role == "reviewer":
             files, lines = diff_stats(root, base)
@@ -583,20 +613,28 @@ def dispatch(args):
                 return saved
         # The route the delegation was prepared with rides in the descriptor, so
         # the report is ingested at the role and tier it was actually run at.
-        selected = descriptor["route"] if descriptor else route(config.workflow, role, tier, args.primary, saved.get("writer"))
+        selected = (descriptor["route"] if descriptor else session_route(args, role) if tier is None
+                    else route(config.workflow, role, tier, args.primary, saved.get("writer")))
         if role == "reviewer" and args.command != "report":
             # Even a provider failure or a native reviewer that never returns
             # must leave no earlier human decision standing in for that review.
             saved.pop("human_acceptance", None)
             saved.pop("local_acceptance", None)
+            if selected.get("mode") == "current-session":
+                saved.pop("review", None)
             save_evidence(root, task, saved)
-        if args.command == "prepare":
+        session_action = (selected.get("mode") == "current-session" and args.command != "report"
+                          and (role == "worker" or selected["model"] is None))
+        if args.command == "prepare" or session_action:
             if role == "worker":
                 retire_acceptance(root, adapter, task, saved)
+                if selected.get("mode") == "current-session":
+                    saved["writer"] = selected["provider"]
+                    save_evidence(root, task, saved)
             delegate_contract = ("The worker changes project files in the working tree and reports; "
                                  if role == "worker" else
                                  f"The {role} reads and reports without changing files; ")
-            return {"scope": fingerprint, "route": selected, "task": task.to_dict(), "base": base,
+            result = {"scope": fingerprint, "route": selected, "task": task.to_dict(), "base": base,
                     "report_schema": report_schema(role),
                     "handoff": handoff_descriptor(identity, task, fingerprint, selected),
                     "repository_instructions": repository_instructions(root),
@@ -608,6 +646,21 @@ def dispatch(args):
                                     "cannot be enforced. Report actual --provider, --model and --effort, and --fallback-reason "
                                     "when using a fallback candidate. "
                                     "Return the role JSON schema."}
+            if selected.get("mode") == "current-session":
+                result["action"] = "work-in-current-session" if role == "worker" else "review-in-fresh-context"
+                result["instructions"] = (
+                    "Implement in the active session without changing provider, model or effort. " if role == "worker" else
+                    "Launch an independent read-only reviewer in fresh context inheriting the active session's "
+                    "provider, model and effort. Do not use a named tier profile. ")
+                result["instructions"] += (
+                    review_context + "Follow repository_instructions and task acceptance. This action has not executed work "
+                    "or produced a verdict. Keep the handoff descriptor with the coordinator. After actual work, report "
+                    "with the prepared provider and exact model/effort when known; otherwise omit model/effort and affirm "
+                    "--session-inherited only when settings were preserved. Reviewer reports also require --fresh-context. "
+                    "Return the role JSON schema; never invent execution facts or PASS.")
+                if args.command == "run":
+                    result["brief"] = Path(args.brief).read_text()
+            return result
         if args.command == "report":
             if not worker_report and args.scope != fingerprint:
                 raise AgentBoxError("Report scope is stale; review current code and requirements")

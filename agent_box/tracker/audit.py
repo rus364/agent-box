@@ -38,7 +38,7 @@ def task_problems(task, get):
 
     def report(code, message):
         advisory = code in {"no-checklist", "early-progress", "early-assignee", "done-unfinished"}
-        if code in {"no-tier", "no-description"} and task.state in {"Backlog", "Done"}:
+        if code == "no-description" and task.state in {"Backlog", "Done"}:
             advisory = True
         problems.append({"code": code, "message": message,
                          "severity": "warning" if advisory else "error"})
@@ -46,8 +46,8 @@ def task_problems(task, get):
     if task.state == "Unknown":
         report("no-state", "sits in no lifecycle column of its project board")
     try:
-        if task.tier is None:
-            report("no-tier", "carries no ab:tier label, so it cannot be delegated")
+        # Missing tiers use the active session; explicit labels must still be valid.
+        task.tier
     except TrackerError as exc:
         report("bad-tier", str(exc))
     if not task.description.strip():

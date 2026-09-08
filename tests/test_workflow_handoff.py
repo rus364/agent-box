@@ -203,6 +203,121 @@ class WorkerHandoffTests(unittest.TestCase):
                                  "--provider", "claude", "--model", "m", "--effort", "high", "--file", str(self.report),
                                  "--scope", scope, "--handoff", handoff)
 
+    def test_untiered_worker_preserves_session_without_launch_or_fabricated_receipt(self):
+        """No tier means keep the active model, even when matrices cannot select it."""
+        self.task.labels = ["product"]
+        fingerprint = workflow.scope(self.root, "main", [self.task])
+        workflow.save_evidence(self.root, self.task, {
+            "scope": fingerprint, "validation": {"exit": 0}, "review": {"verdict": "PASS"}})
+        brief = Path(self.directory.name) / "brief.md"
+        brief.write_text("Implement acceptance")
+        with patch.object(workflow, "route", side_effect=AssertionError("matrix consulted")), \
+             patch.object(workflow, "run", side_effect=AssertionError("provider launched")):
+            for command in ("prepare", "run"):
+                extra = ["--brief", str(brief)] if command == "run" else []
+                result = self.run_workflow(command, "1", "--primary", "codex", *extra)
+                self.assertEqual(result["action"], "work-in-current-session")
+                self.assertEqual((result["route"]["model"], result["route"]["effort"]), (None, None))
+                self.assertNotIn("report", result)
+                self.assertNotIn("native_profile", result["route"])
+        saved = workflow.read_evidence(self.root, self.task)
+        self.assertEqual(saved["writer"], "codex")
+        self.assertNotIn("validation", saved)
+        self.assertNotIn("review", saved)
+        self.assertNotIn("worker", saved)
+        self.assertEqual(self.task.labels, ["product"])
+        self.adapter.update.assert_not_called()
+        self.adapter.set_state.assert_not_called()
+
+    def test_untiered_worker_still_requires_owned_doing_task(self):
+        """Session inheritance cannot bypass ownership before editing code."""
+        self.task.labels = []
+        self.task.assignees = ["9"]
+        with self.assertRaisesRegex(AgentBoxError, "assigned Doing"):
+            self.run_workflow("prepare", "1", "--primary", "codex")
+
+    def test_untiered_native_review_requires_inheritance_and_fresh_context(self):
+        """Unknown session settings stay unknown, with explicit coordinator evidence."""
+        self.task.labels = []
+        self.task.description = "- [x] requirement"
+        self.config.workflow.review.policy = "always"
+        fingerprint = workflow.scope(self.root, "main", [self.task])
+        workflow.save_evidence(self.root, self.task, {
+            "scope": fingerprint, "review": {"verdict": "PASS"}, "validation": {"exit": 0}})
+        with patch.object(workflow, "route", side_effect=AssertionError("matrix consulted")), \
+             patch.object(workflow, "run", side_effect=AssertionError("provider launched")):
+            prepared = self.run_workflow("review", "1", "--primary", "codex")
+        self.assertEqual(prepared["action"], "review-in-fresh-context")
+        self.assertNotIn("review", workflow.read_evidence(self.root, self.task))
+        self.report.write_text(json.dumps({"verdict": "PASS", "summary": "Reviewed", "findings": []}))
+        argv = ["report", "1", "--role", "reviewer", "--provider", "codex",
+                "--scope", prepared["scope"], "--handoff", prepared["handoff"], "--file", str(self.report)]
+        with self.assertRaisesRegex(AgentBoxError, "session-inherited"):
+            self.run_workflow(*argv)
+        with self.assertRaisesRegex(AgentBoxError, "fresh-context"):
+            self.run_workflow(*argv, "--session-inherited")
+        with self.assertRaisesRegex(AgentBoxError, "provider differs"):
+            self.run_workflow(*argv, "--provider", "claude", "--session-inherited", "--fresh-context")
+        with self.assertRaisesRegex(AgentBoxError, "PASS review"):
+            self.run_workflow("finish", "1")
+        result = self.run_workflow(*argv, "--session-inherited", "--fresh-context")
+        self.assertEqual(result["report"]["verdict"], "PASS")
+        self.assertIsNone(result["route"]["model"])
+        self.assertIsNone(result["route"]["effort"])
+        self.assertTrue(result["route"]["fresh_context"])
+
+    def test_untiered_explicit_session_facts_bind_report_outside_tier_matrix(self):
+        """A real session model must not be replaced with a configured tier model."""
+        self.task.labels = []
+        prepared = self.run_workflow("prepare", "1", "--primary", "codex",
+                                     "--session-model", "session-only", "--session-effort", "high")
+        argv = ["report", "1", "--provider", "codex", "--scope", prepared["scope"],
+                "--handoff", prepared["handoff"], "--file", str(self.report)]
+        for extra in (["--session-inherited"], ["--model", "m", "--effort", "high"],
+                      ["--model", "session-only", "--effort", "low"]):
+            with self.subTest(extra=extra), self.assertRaisesRegex(AgentBoxError, "model/effort differs"):
+                self.run_workflow(*argv, *extra)
+        result = self.run_workflow(*argv, "--model", "session-only", "--effort", "high")
+        self.assertEqual(result["route"]["model"], "session-only")
+
+    def test_untiered_review_with_verified_settings_uses_fresh_managed_runner(self):
+        """Concrete settings permit a CLI review without consulting reviewer tiers."""
+        self.task.labels = []
+        self.config.workflow.review.policy = "always"
+        with patch.object(workflow, "route", side_effect=AssertionError("matrix consulted")), \
+             patch.object(workflow, "run", return_value={"verdict": "PASS", "summary": "Reviewed", "findings": []}) as run:
+            result = self.run_workflow("review", "1", "--primary", "codex",
+                                       "--session-model", "session-only", "--session-effort", "high")
+        self.assertEqual(run.call_args.args[0]["model"], "session-only")
+        self.assertEqual(run.call_args.args[0]["provider"], "codex")
+        self.assertEqual(result["report"]["verdict"], "PASS")
+        self.assertIsNone(result["route"]["tier"])
+
+    def test_untiered_review_policy_skip_needs_no_session_settings(self):
+        """Disabled review remains SKIPPED instead of requesting execution facts."""
+        self.task.labels = []
+        self.config.workflow.review.policy = "off"
+        self.assertEqual(self.run_workflow("review", "1")["review"]["verdict"], "SKIPPED")
+
+    def test_untiered_session_facts_must_be_complete(self):
+        """Partial facts cannot imply the missing session setting."""
+        self.task.labels = []
+        for flags in (["--session-model", "session-only"], ["--session-effort", "high"]):
+            with self.subTest(flags=flags), self.assertRaisesRegex(AgentBoxError, "Supply both"):
+                self.run_workflow("prepare", "1", "--primary", "codex", *flags)
+        args = workflow.parser().parse_args(["prepare", "1"])
+        args.primary = None
+        with self.assertRaisesRegex(AgentBoxError, "active session provider"):
+            workflow.dispatch(args)
+
+    def test_explicit_cli_tier_retains_matrix_routing_without_label_mutation(self):
+        """An explicit invocation override remains possible without changing the card."""
+        self.task.labels = []
+        prepared = self.run_workflow("prepare", "1", "--primary", "codex", "--tier", "2")
+        self.assertEqual((prepared["route"]["tier"], prepared["route"]["model"]), (2, "m"))
+        self.assertNotIn("action", prepared)
+        self.assertEqual(self.task.labels, [])
+
     def test_an_edited_working_file_is_the_one_change_a_worker_may_make(self):
         handed = self.prepare()
         (self.root / "change.py").write_text("value = 1\n")

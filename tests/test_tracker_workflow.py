@@ -2,12 +2,52 @@
 import importlib
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
+from unittest.mock import Mock
 
 
 class TrackerWorkflowTests(unittest.TestCase):
     def core(self):
         return importlib.import_module("agent_box.tracker.core")
+
+    def test_untiered_readiness_claim_resume_and_completion_preserve_labels(self):
+        """Ordinary tracker lifecycle operations must never invent a routing tier."""
+        c = self.core()
+        task = c.Task("1", "p", "Work", state="Ready", labels=["product"],
+                      description="- [ ] acceptance")
+        adapter = Mock()
+        adapter.get.side_effect = lambda _: task
+        adapter.identity.return_value = {"id": 7}
+
+        def update(current, fields):
+            nonlocal task
+            task = replace(current, **fields)
+            return task
+
+        adapter.update.side_effect = update
+        adapter.set_state.side_effect = lambda current, state: update(current, {"state": state})
+        self.assertEqual(c.ready_tasks([task], adapter.get, "7"), [task])
+        claimed = c.claim(adapter, "1")
+        self.assertEqual((claimed.state, claimed.assignees), ("Doing", ["7"]))
+        self.assertIsNone(claimed.tier)
+        self.assertEqual(claimed.labels, ["product"])
+        self.assertIn("Acceptance or validation checklist remains incomplete",
+                      c.completion_reasons(task, [task], "7"))
+        adapter.update(task, {"description": c.set_checkbox(task.description, 1, True, "acceptance")})
+        for state in ("Doing", "Review"):
+            current = adapter.set_state(task, state)
+            self.assertEqual(c.completion_reasons(current, [current], "7"), [])
+            resumed = c.claim(adapter, "1", resume=True)
+            self.assertEqual(resumed.state, "Doing")
+            self.assertIsNone(resumed.tier)
+            self.assertEqual(resumed.labels, ["product"])
+        finished = adapter.set_state(task, "Done")
+        self.assertEqual(c.completion_reasons(finished, [finished], "7", states=("Done",)), [])
+        self.assertIsNone(finished.tier)
+        self.assertEqual(finished.labels, ["product"])
+        self.assertEqual([entry.args[1] for entry in adapter.update.call_args_list],
+                         [{"assignees": ["7"]}, {"description": "- [x] acceptance"}])
 
     def test_cross_parent_blocker_waits_for_its_parent_merge(self):
         c = self.core()
