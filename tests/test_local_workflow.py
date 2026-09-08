@@ -33,7 +33,7 @@ class LocalLandTests(unittest.TestCase):
         gw.git(self.root, "add", "change.py")
         gw.git(self.root, "commit", "-m", "task work")
         self.parent = Task("7", "1", "Parent", state="Review", assignees=["1"],
-                           description="- [x] accepted")
+                           description="## Acceptance\n- [x] accepted")
         self.adapter = Mock()
         self.adapter.identity.return_value = {"id": 1}
         self.adapter.get.side_effect = lambda ident: {"7": self.parent}[ident]
@@ -163,7 +163,7 @@ class LocalLandTests(unittest.TestCase):
         with self.assertRaisesRegex(AgentBoxError, "assigned"):
             self.approve()
         self.parent.assignees = ["1"]
-        self.parent.description = "- [ ] accepted"
+        self.parent.description = "## Acceptance\n- [ ] accepted"
         with self.assertRaisesRegex(AgentBoxError, "checklist"):
             self.approve()
         self.assertNotIn("human_acceptance", workflow.read_evidence(self.root, self.parent))

@@ -166,7 +166,7 @@ class WorkerHandoffTests(unittest.TestCase):
         self.addCleanup(self.directory.cleanup)
         self.root = repository(self.directory.name)
         gw.git(self.root, "switch", "-c", "ab/1-task")
-        self.task = Task("1", "1", "Task", description="- [ ] requirement",
+        self.task = Task("1", "1", "Task", description="## Acceptance\n- [ ] requirement",
                          state="Doing", assignees=["1"], labels=["ab:tier:1"])
         self.config = Config()
         self.config.workflow.enabled = True
@@ -244,7 +244,7 @@ class WorkerHandoffTests(unittest.TestCase):
     def test_untiered_native_review_requires_inheritance_and_fresh_context(self):
         """Unknown session settings stay unknown, with explicit coordinator evidence."""
         self.task.labels = []
-        self.task.description = "- [x] requirement"
+        self.task.description = "## Acceptance\n- [x] requirement"
         self.config.workflow.review.policy = "always"
         fingerprint = workflow.scope(self.root, "main", [self.task])
         workflow.save_evidence(self.root, self.task, {
@@ -482,31 +482,56 @@ class WorkerHandoffTests(unittest.TestCase):
         self.assertNotIn("human_acceptance", workflow.read_evidence(self.root, self.task))
 
     def test_native_and_managed_rounds_share_one_neutral_complete_handoff(self):
-        """A second verdict gets the whole current change, not the first review's story."""
+        """A post-fix verdict gets the updated diff, not the first review's story."""
         self.config.workflow.review.policy = "always"
         self.task.description = (
             "## Goal\nCurrent goal.\n\n"
+            "### Compatibility\nKeep the supporting behavior.\n\n"
             "## Context\nPrevious verdict found an obsolete problem.\n\n"
             "## Acceptance\n- [ ] Current behavior works.\n\n"
+            "### Edge cases\n- [ ] Fixed values remain bounded.\n\n"
             "## Validation\nRun the focused unittest.\n")
         (self.root / "change.py").write_text("value = 1\n")
+        (self.root / "support.py").write_text("stable = True\n")
         gw.git(self.root, "add", ".")
         gw.git(self.root, "commit", "-m", "current implementation")
         first = self.run_workflow("prepare", "1", "--role", "reviewer", "--primary", "codex",
                                   "--brief", str(self.review_brief))
+        finding = "value must be bounded before release"
+        review = Path(self.directory.name) / "first-review.json"
+        review.write_text(json.dumps({
+            "verdict": "NEEDS_WORK", "summary": "Fix the boundary", "findings": [{
+                "severity": "high", "path": "change.py", "line": 1,
+                "message": finding, "evidence": "value is still 1",
+                "requirement": "Fixed values remain bounded"}]}))
+        result = self.run_workflow(
+            "report", "1", "--role", "reviewer", "--primary", "codex",
+            "--provider", "claude", "--model", "m", "--effort", "high",
+            "--scope", first["scope"], "--handoff", first["handoff"],
+            "--file", str(review), "--fresh-context")
+        self.assertEqual(result["report"]["verdict"], "NEEDS_WORK")
+
+        (self.root / "change.py").write_text("value = 2\n")
+        gw.git(self.root, "add", ".")
+        gw.git(self.root, "commit", "-m", "fix review finding")
         second = self.run_workflow("prepare", "1", "--role", "reviewer", "--primary", "codex",
                                    "--brief", str(self.review_brief))
+        self.assertNotEqual(first["scope"], second["scope"])
         self.assertNotEqual(first["handoff"], second["handoff"])
-        self.assertEqual(first["review_handoff"], second["review_handoff"])
         prompt = second["review_handoff"]
         self.assertIn("Current goal", prompt)
+        self.assertIn("Keep the supporting behavior", prompt)
         self.assertIn("Current behavior works", prompt)
+        self.assertIn("Fixed values remain bounded", prompt)
         self.assertIn("focused unittest", prompt)
         self.assertNotIn("Previous verdict", prompt)
+        self.assertNotIn(finding, prompt)
         self.assertIn("Changes and reasons", prompt)
         self.assertIn(gw.head_sha(self.root), prompt)
         self.assertIn("diff_range", prompt)
         self.assertIn("diff --git", prompt)
+        self.assertIn("+value = 2", prompt)
+        self.assertIn("+stable = True", prompt)
         self.assertIn("counterexamples", prompt)
         self.assertIn("Successful tests", prompt)
         self.assertIn("fork_turns=none", second["instructions"])
@@ -524,6 +549,25 @@ class WorkerHandoffTests(unittest.TestCase):
                               "--brief", str(self.review_brief))
         self.assertEqual(seen, [prompt])
 
+    def test_review_requirements_keep_nested_sections_and_refuse_unknown_structure(self):
+        description = (
+            "## Goal\nShip it.\n### Constraints\nKeep nested detail.\n"
+            "## Context\nOld review history.\n"
+            "## Acceptance\nWorks.\n#### Examples\nNested example.\n")
+        selected = workflow.review_description(description)
+        self.assertIn("### Constraints", selected)
+        self.assertIn("#### Examples", selected)
+        self.assertNotIn("Old review history", selected)
+        for unsupported in (
+                "Unstructured task body with old history.",
+                "## Goals\nVariant heading.\n## Context\nOld history.",
+                "## Ziel\nUnsupported language.\n## Context\nOld history."):
+            with self.subTest(description=unsupported):
+                self.task.description = unsupported
+                with self.assertRaisesRegex(AgentBoxError, "exact Goal, Acceptance, or Validation"):
+                    self.run_workflow("prepare", "1", "--role", "reviewer", "--primary", "codex",
+                                      "--brief", str(self.review_brief))
+
     def test_required_review_refuses_a_missing_or_empty_author_brief(self):
         self.config.workflow.review.policy = "always"
         with self.assertRaisesRegex(AgentBoxError, "Pass --brief"):
@@ -537,7 +581,7 @@ class WorkerHandoffTests(unittest.TestCase):
         """A pending native review or failed provider must not leave human approval usable."""
         self.config.workflow.merge_mode = "local"
         self.config.workflow.review.policy = "always"
-        self.task.description = "- [x] accepted"
+        self.task.description = "## Acceptance\n- [x] accepted"
         fingerprint = workflow.scope(self.root, "main", [self.task])
         for command in ("prepare", "review"):
             with self.subTest(command=command):

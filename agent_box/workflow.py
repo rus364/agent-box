@@ -97,23 +97,32 @@ REVIEW_REQUIREMENT_SECTIONS = {
 
 def review_description(value):
     """Keep the current normative brief without importing a task's discussion history."""
-    headings = list(re.finditer(r"(?m)^##+\s+(.+?)\s*$", value))
-    if not headings:
-        return value
+    headings = list(re.finditer(r"(?m)^(##+)\s+(.+?)\s*$", value))
     selected = []
     for index, match in enumerate(headings):
-        if match.group(1).strip().casefold() not in REVIEW_REQUIREMENT_SECTIONS:
+        if match.group(2).strip().casefold() not in REVIEW_REQUIREMENT_SECTIONS:
             continue
-        end = headings[index + 1].start() if index + 1 < len(headings) else len(value)
-        selected.append(value[match.start():end].strip())
-    return "\n\n".join(selected) or value
+        level = len(match.group(1))
+        end = next((later.start() for later in headings[index + 1:]
+                    if len(later.group(1)) <= level), len(value))
+        if selected and match.start() < selected[-1][0]:
+            continue
+        selected.append((end, value[match.start():end].strip()))
+    return "\n\n".join(section for _, section in selected)
 
 
 def review_requirements(tasks):
     current = requirements(tasks)
-    return [{"id": task["id"], "title": task["title"],
-             "goal_acceptance_validation": review_description(task["description"]),
-             "parent": task["parent"], "children": task["children"]} for task in current]
+    result = []
+    for task in current:
+        description = review_description(task["description"])
+        if not description:
+            raise AgentBoxError(
+                f"Task {task['id']} review requirements need exact Goal, Acceptance, or Validation headings")
+        result.append({"id": task["id"], "title": task["title"],
+                       "goal_acceptance_validation": description,
+                       "parent": task["parent"], "children": task["children"]})
+    return result
 
 
 def read_brief(path):
