@@ -40,6 +40,7 @@ class LocalLandTests(unittest.TestCase):
         self.config = Config()
         self.config.workflow.enabled = True
         self.config.workflow.merge_mode = "local"
+        self.config.workflow.auto_push = False
         self.config.workflow.review.policy = "off"
         self.info = {"branch": "ab/7-parent", "base": "main"}
         self.saved = {"scope": workflow.scope(self.root, "main", [self.parent]),
@@ -80,6 +81,7 @@ class LocalLandTests(unittest.TestCase):
         self.config.workflow.review.max_files = 2
         result = self.dispatch(["inspect", "7"])
         self.assertEqual(result["configuration"]["merge_mode"], "local")
+        self.assertFalse(result["configuration"]["auto_push"])
         self.assertEqual(result["review"]["files"], 2)
         self.assertIn("changed files 2 >= max_files 2", result["review"]["reasons"])
         self.assertTrue(result["review"]["required"])
@@ -420,6 +422,193 @@ class LocalLandTests(unittest.TestCase):
             with self.assertRaisesRegex(AgentBoxError, "--method"):
                 self.operate("merge", method="squash")
         github.assert_not_called()
+
+
+class LocalPushTests(unittest.TestCase):
+    setUp = LocalLandTests.setUp
+    operate = LocalLandTests.operate
+    dispatch = LocalLandTests.dispatch
+
+    def remote_head(self):
+        return gw.git(Path(self.temporary.name) / "origin.git", "rev-parse", "main")
+
+    def reject_push(self):
+        hook = Path(self.temporary.name) / "origin.git/hooks/pre-receive"
+        hook.write_text("#!/bin/sh\nexit 1\n")
+        hook.chmod(0o755)
+        return hook
+
+    def test_enabled_publishes_exact_base_without_task_tags_or_github(self):
+        """Local transport needs no GitHub integration and publishes only accepted main."""
+        self.config.workflow.auto_push = True
+        gw.git(self.root, "tag", "-a", "private-tag", "-m", "private")
+        gw.git(self.root, "config", "push.followTags", "true")
+        gw.git(self.root, "config", "push.recurseSubmodules", "on-demand")
+        gw.git(self.root, "config", "remote.origin.mirror", "true")
+        gw.git(self.root, "config", "remote.origin.push", "refs/heads/*:refs/heads/*")
+        with patch("agent_box.github_workflow.gh") as github:
+            result = self.operate("merge")
+        self.assertEqual(result["publication"]["status"], "published")
+        self.assertEqual(self.remote_head(), gw.head_sha(self.root))
+        refs = gw.git(Path(self.temporary.name) / "origin.git", "for-each-ref", "--format=%(refname)")
+        self.assertEqual(refs, "refs/heads/main")
+        github.assert_not_called()
+
+    def test_disabled_leaves_remote_unchanged(self):
+        """An explicit opt-out completes locally without publishing."""
+        before = self.remote_head()
+        result = self.operate("merge")
+        self.assertEqual(result["publication"], {"status": "disabled", "pushed": False})
+        self.assertEqual(self.remote_head(), before)
+        self.adapter.set_state.assert_called_once()
+
+    def test_rejection_preserves_review_and_task_then_reconcile_retries_without_merge(self):
+        """A server rejection must retain recovery evidence and postpone cleanup and Done."""
+        self.config.workflow.auto_push = True
+        self.config.workflow.cleanup_local_branches = True
+        hook = self.reject_push()
+        with self.assertRaisesRegex(AgentBoxError, "(?s)Local merge succeeded.*land.*reconcile"):
+            self.operate("merge")
+        self.adapter.set_state.assert_not_called()
+        self.assertEqual(gw.current_branch(self.root), "main")
+        self.assertEqual(gw.local_branch_head(self.root, "ab/7-parent"), gw.head_sha(self.root))
+        hook.unlink()
+        with patch.object(gw, "git", wraps=gw.git) as git:
+            self.operate("reconcile", saved=workflow.read_evidence(self.root, self.parent))
+        self.assertFalse(any("merge" in call.args[1:] for call in git.call_args_list))
+        self.assertEqual(self.remote_head(), gw.head_sha(self.root))
+        self.assertEqual(gw.git(self.root, "branch", "--list", "ab/7-parent"), "")
+
+    def test_reconcile_never_publishes_advanced_unvalidated_base(self):
+        """Acceptance of the task cannot authorize unrelated later base commits."""
+        self.config.workflow.auto_push = True
+        hook = self.reject_push()
+        with self.assertRaises(AgentBoxError):
+            self.operate("merge")
+        hook.unlink()
+        gw.git(self.root, "commit", "--allow-empty", "-m", "unvalidated base work")
+        before = self.remote_head()
+        with self.assertRaisesRegex(AgentBoxError, "exact accepted head"):
+            self.operate("reconcile", saved=workflow.read_evidence(self.root, self.parent))
+        self.assertEqual(self.remote_head(), before)
+        self.adapter.set_state.assert_not_called()
+
+    def test_tracker_failure_after_publication_retries_already_published_head(self):
+        """A successful push followed by a failed tracker write is idempotent."""
+        self.config.workflow.auto_push = True
+        self.adapter.set_state.side_effect = AgentBoxError("tracker unavailable")
+        with self.assertRaisesRegex(AgentBoxError, "tracker unavailable"):
+            self.operate("merge")
+        self.reject_push()
+        self.adapter.set_state.side_effect = None
+        self.operate("reconcile", saved=workflow.read_evidence(self.root, self.parent))
+        self.assertEqual(self.remote_head(), gw.head_sha(self.root))
+
+
+    def test_live_default_change_and_unknown_remote_stop_before_done(self):
+        """A stale cached default or unseen remote commit is never authority to push."""
+        self.config.workflow.auto_push = True
+        origin = Path(self.temporary.name) / "origin.git"
+        gw.git(origin, "branch", "renamed", "main")
+        gw.git(origin, "symbolic-ref", "HEAD", "refs/heads/renamed")
+        before = self.remote_head()
+        with self.assertRaisesRegex(AgentBoxError, "live default/base"):
+            self.operate("merge")
+        self.assertEqual(self.remote_head(), before)
+        self.adapter.set_state.assert_not_called()
+        gw.git(origin, "symbolic-ref", "HEAD", "refs/heads/main")
+        from test_workflow_handoff import clone
+        other = clone(self.temporary.name)
+        gw.git(other, "commit", "--allow-empty", "-m", "remote-only work")
+        gw.git(other, "push", "origin", "main")
+        with self.assertRaisesRegex(AgentBoxError, "unknown or diverged"):
+            self.operate("reconcile", saved=workflow.read_evidence(self.root, self.parent))
+        gw.git(self.root, "fetch", "origin")
+        with self.assertRaisesRegex(AgentBoxError, "unknown or diverged"):
+            self.operate("reconcile", saved=workflow.read_evidence(self.root, self.parent))
+        self.adapter.set_state.assert_not_called()
+
+    def test_unique_push_url_and_chained_rewrite_safety(self):
+        """Read proof and publication must address one frozen destination."""
+        self.config.workflow.auto_push = True
+        origin = Path(self.temporary.name) / "origin.git"
+        gw.git(self.root, "config", "--add", "remote.origin.pushurl", str(origin))
+        gw.git(self.root, "config", "--add", "remote.origin.pushurl", str(origin))
+        with self.assertRaisesRegex(AgentBoxError, "exactly one"):
+            self.operate("merge")
+        gw.git(self.root, "config", "--unset-all", "remote.origin.pushurl")
+        gw.git(self.root, "config", "remote.origin.url", "publish-test:repo")
+        gw.git(self.root, "config", "url." + str(origin) + ".pushInsteadOf", "publish-test:repo")
+        gw.git(self.root, "config", "url.other-destination.insteadOf", str(origin))
+        saved = workflow.read_evidence(self.root, self.parent)
+        with self.assertRaisesRegex(AgentBoxError, "chained URL"):
+            self.operate("reconcile", saved=saved)
+        gw.git(self.root, "config", "--unset", "url.other-destination.insteadOf")
+        self.operate("reconcile", saved=saved)
+        self.assertEqual(self.remote_head(), gw.head_sha(self.root))
+
+    def test_done_reconcile_never_publishes_later_base_work(self):
+        """Done reconciliation is proof and optional cleanup, not a publication retry."""
+        self.operate("merge")
+        before = self.remote_head()
+        self.parent.state = "Done"
+        self.config.workflow.auto_push = True
+        gw.git(self.root, "commit", "--allow-empty", "-m", "later unvalidated work")
+        self.dispatch(["land", "7", "reconcile"])
+        self.assertEqual(self.remote_head(), before)
+
+    def test_explicit_opt_out_recovers_a_rejected_push_locally(self):
+        """Changing policy to false intentionally permits local-only completion."""
+        self.config.workflow.auto_push = True
+        self.reject_push()
+        before = self.remote_head()
+        with self.assertRaises(AgentBoxError):
+            self.operate("merge")
+        self.config.workflow.auto_push = False
+        self.operate("reconcile", saved=workflow.read_evidence(self.root, self.parent))
+        self.assertEqual(self.remote_head(), before)
+        self.adapter.set_state.assert_called_once()
+
+
+    def test_symbolic_local_base_and_unsafe_destination_are_not_publication_targets(self):
+        """Symbolic branches or option-like URLs must not redirect the accepted push."""
+        head = gw.head_sha(self.root)
+        gw.git(self.root, "switch", "main")
+        gw.git(self.root, "merge", "--ff-only", head)
+        gw.git(self.root, "symbolic-ref", "refs/heads/alias", "refs/heads/main")
+        with patch.object(gw, "current_branch", return_value="alias"):
+            with self.assertRaisesRegex(AgentBoxError, "symbolic"):
+                gw.push_local_base(self.root, "alias", head)
+        for url in ("--mirror", "other"):
+            if url == "other":
+                gw.git(self.root, "remote", "add", "other", str(Path(self.temporary.name) / "origin.git"))
+            gw.git(self.root, "config", "remote.origin.pushurl", url)
+            with self.assertRaisesRegex(AgentBoxError, "unsafe URL or remote alias"):
+                gw.push_local_base(self.root, "main", head)
+
+    def test_parent_push_still_rejects_base(self):
+        """Local publication does not widen the task-branch push helper's contract."""
+        gw.git(self.root, "switch", "main")
+        with self.assertRaisesRegex(AgentBoxError, "parent branch"):
+            gw.push_parent(self.root, "main", "main")
+
+
+    def test_destination_change_during_remote_check_stops_publication(self):
+        """A changed origin cannot silently receive proof obtained from its predecessor."""
+        self.config.workflow.auto_push = True
+        before = self.remote_head()
+        original = gw._query_origin
+
+        def change_destination(root, branch, url):
+            result = original(root, branch, url)
+            gw.git(root, "config", "remote.origin.pushurl", str(Path(self.temporary.name) / "other.git"))
+            return result
+
+        with patch.object(gw, "_query_origin", side_effect=change_destination):
+            with self.assertRaisesRegex(AgentBoxError, "destination changed"):
+                self.operate("merge")
+        self.assertEqual(self.remote_head(), before)
+        self.adapter.set_state.assert_not_called()
 
 
 class MergeModeRoutingTests(unittest.TestCase):

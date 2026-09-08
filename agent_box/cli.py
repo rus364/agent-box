@@ -372,6 +372,7 @@ def config_show() -> None:
     print(f"    review                    {config.workflow.review.policy}; files {config.workflow.review.max_files}; lines {config.workflow.review.max_lines}")
     print(f"    review routing            {config.workflow.review.routing}")
     print(f"    fallback / auto-push      {config.workflow.fallback} / {config.workflow.auto_push}")
+    print("    auto-push scope           " + ("accepted base after local merge" if config.workflow.merge_mode == "local" else "parent task branch after subtask integration"))
     for tier, models in config.workflow.tiers.items():
         print(f"    worker/scout tier {tier}: {models}")
     for tier, models in config.workflow.review.tiers.items():

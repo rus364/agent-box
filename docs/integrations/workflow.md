@@ -213,7 +213,14 @@ landing. `workflow land PARENT inspect` reports the derived refs and blockers;
 `workflow land PARENT merge` verifies that the local base is an ancestor of the
 validated task head before switching branches, then fast-forwards the base to
 that exact commit. `--method` is incompatible because local landing has only
-fast-forward semantics. The base is not pushed automatically.
+fast-forward semantics. `workflow.auto_push` defaults to true within the opt-in
+workflow: local landing publishes only the exact accepted base head to the unique
+effective origin before marking Done or running cleanup. It needs no GitHub API
+or integration and uses only available Git transport credentials. Setting it to
+false completes locally without publication. Local mode never publishes task
+branches. Publication checks the live default/base and fast-forward ancestry,
+freezes the destination and disables force, mirror, tag and submodule side pushes.
+Unknown or diverged remote heads and server rejection stop completion.
 
 For a local parent, the coordinator can record the user's explicit acceptance
 of the inspected, validated result as an alternative to independent review:
@@ -235,8 +242,14 @@ decision. GitHub mode and subtasks do not accept this exception. Ownership,
 checklists, dependencies, validation and merge proof remain mandatory, and the
 normal post-merge cleanup still runs.
 
-If the tracker update fails after the fast-forward, remain on the base and run
-`workflow land PARENT reconcile`. It rereads completion constraints and marks
+If publication or the tracker update fails after the fast-forward, the local merge
+and task branch are preserved and the task stays Review. Remain on the base and run
+`workflow land PARENT reconcile`. With auto-push enabled it retries publication
+of the exact accepted head without repeating the merge; an advanced local base
+is refused, and an already-published exact head safely permits retry after a
+tracker failure. An explicit auto-push=false permits local-only recovery.
+Done reconciliation and cleanup never opportunistically publish the base.
+It rereads completion constraints and marks
 Done only when the current local task-branch tip is contained in the current
 local base **and** the pre-merge acceptance still covers that exact head, base
 identity and task requirements. Before changing Git, landing saves one disposable

@@ -564,7 +564,9 @@ class WorkflowConfig:
     """Optional workflow policy; only enabled integrations may publish or delegate.
 
     auto_push defaults on *within this opt-in workflow*, as requested, and
-    still requires an explicitly enabled GitHub integration and a task branch.
+    publishes task branches only with GitHub integration in GitHub mode. Local
+    mode publishes the accepted base using available Git transport credentials;
+    it neither enables credentials nor publishes task branches.
     Routing counters and usage caches contain no authoritative task state.
     """
     enabled: bool = False

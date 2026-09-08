@@ -22,28 +22,6 @@ def _local_refs(root, prefix):
     return local, names
 
 
-def _destination(root):
-    url = gw.effective_push_url(root)
-    if not url:
-        raise AgentBoxError("origin must have exactly one effective push URL")
-    # Passing an already rewritten URL to Git applies insteadOf once more.
-    # Refuse chained rewrites rather than read one repository and delete in another.
-    if gw.git(root, "ls-remote", "--get-url", url) != url:
-        raise AgentBoxError("Cannot freeze origin destination: chained URL rewrites")
-    rules = gw._run(["git", "config", "--null", "--get-regexp",
-                     r"^url\..*\.pushinsteadof$"], cwd=root)
-    if rules.returncode not in (0, 1):
-        raise AgentBoxError("Cannot read origin URL rewrite configuration")
-    for rule in rules.stdout.split("\0"):
-        if not rule:
-            continue
-        key, prefix = rule.split("\n", 1)
-        replacement = key[len("url."):-len(".pushinsteadof")]
-        if url.startswith(prefix) and replacement + url[len(prefix):] != url:
-            raise AgentBoxError("Cannot freeze origin destination: chained push URL rewrites")
-    return url
-
-
 def _remote_refs(root, url, prefix):
     rows = gw.git(root, "ls-remote", "--symref", url, "HEAD", f"refs/heads/{prefix}*",
                   timeout=gw.REMOTE_QUERY_TIMEOUT)
@@ -121,7 +99,7 @@ def reconcile(root, config, task):
     with lock(root, "work"):
         prefix = gw.branch_prefix(task.id)
         local, names = _local_refs(root, prefix)
-        url = _destination(root)
+        url = gw.push_destination(root)
         remote, symbols, base, _ = _remote_refs(root, url, prefix)
         names.update(remote)
         if len(names) > 1:
@@ -167,7 +145,7 @@ def cleanup(root, config, task, *, branch=None, base=None, expected_head=None):
                 if config.workflow.merge_mode == "github" and not (
                         config.github.gh_token or config.github.gh_config):
                     raise AgentBoxError("Enable GitHub integration before GitHub-mode cleanup")
-                url = _destination(root)
+                url = gw.push_destination(root)
                 remote, symbols, remote_base, published = _remote_refs(root, url, prefix)
                 names.update(remote)
             except (AgentBoxError, OSError, subprocess.TimeoutExpired) as exc:
@@ -194,7 +172,7 @@ def cleanup(root, config, task, *, branch=None, base=None, expected_head=None):
         if config.workflow.merge_mode == "github":
             if not (config.github.gh_token or config.github.gh_config):
                 raise AgentBoxError("Enable GitHub integration before GitHub-mode cleanup")
-            url = url or _destination(root)
+            url = url or gw.push_destination(root)
             merged_head = _merged_head(root, url, branch, base)
         for kind in enabled:
             if result[kind]["status"] != "pending":

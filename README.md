@@ -238,7 +238,7 @@ because you asked for it.
 | Provider transport settings | on | Base URL, proxies, CA bundle — without these a container behind a proxy cannot reach the network |
 | Share skills with Claude | on | Link `~/.agents/skills` into `~/.claude/skills` |
 | Image tool groups | analysis, kubernetes | What the workspace image is built with |
-| Everything else | **off** | Credentials, task tracking, browser, notifications, auto-push |
+| Everything else | **off** | Credentials, task tracking, browser, notifications, workflow (auto-push defaults on within opt-in workflow) |
 
 Every switch and what it exposes: **[docs/integrations](docs/integrations/)**.
 

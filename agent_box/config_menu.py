@@ -24,6 +24,7 @@ HELP = {
     "browser.enabled": "Headless Chromium in the box; isolated in-memory profile, same trust boundary as agents. Unavailable in --host mode.",
     "tracker.enabled": "Expose configured tracker connections to agents. Keep credentials out of repository files.",
     "workflow.merge_mode": "Finish parent work through a GitHub pull request or a local fast-forward into origin's default branch.",
+    "workflow.auto_push": "On within opt-in workflow: GitHub mode publishes the parent task; local mode publishes only the accepted base after fast-forward, before Done. False keeps local completion unpublished.",
     "workflow.cleanup_local_branches": "Delete the completed parent's proven merged local branch after Done. Preserve checked-out branches; retry land PARENT cleanup from the base.",
     "workflow.cleanup_remote_branches": "Delete the completed parent's proven merged branch on origin with an exact head lease. Local merges must also be published in origin's base. Off by default.",
     "workflow.routing": "Workers/scouts: current provider, static weights, or weekly usage-aware weights. Reviewer provider selection is set in review.routing.",

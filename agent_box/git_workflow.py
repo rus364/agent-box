@@ -36,6 +36,7 @@ class RemoteState:
         self.default_branch_sha = default_branch_sha
         self.branch_sha = branch_sha
         self.branch_exists = branch_exists
+        self.branch_symbolic = False
 
 def effective_push_url(cwd: Path) -> str | None:
     """Where a push to origin actually lands, which is not `remote.origin.url`.
@@ -53,6 +54,30 @@ def effective_push_url(cwd: Path) -> str | None:
     urls = [line for line in result.stdout.splitlines() if line.strip()]
     return urls[0] if len(urls) == 1 else None
 
+def push_destination(root):
+    url = effective_push_url(root)
+    if not url:
+        raise AgentBoxError("origin must have exactly one effective push URL")
+    if url.startswith("-") or any(ord(char) < 32 for char in url) or url in git(root, "remote").splitlines():
+        raise AgentBoxError("Cannot freeze origin destination: unsafe URL or remote alias")
+    # Passing an already rewritten URL to Git applies insteadOf once more.
+    # Refuse chained rewrites rather than read one repository and mutate another.
+    if git(root, "ls-remote", "--get-url", url) != url:
+        raise AgentBoxError("Cannot freeze origin destination: chained URL rewrites")
+    rules = _run(["git", "config", "--null", "--get-regexp",
+                     r"^url\..*\.pushinsteadof$"], cwd=root)
+    if rules.returncode not in (0, 1):
+        raise AgentBoxError("Cannot read origin URL rewrite configuration")
+    for rule in rules.stdout.split("\0"):
+        if not rule:
+            continue
+        key, prefix = rule.split("\n", 1)
+        replacement = key[len("url."):-len(".pushinsteadof")]
+        if url.startswith(prefix) and replacement + url[len(prefix):] != url:
+            raise AgentBoxError("Cannot freeze origin destination: chained push URL rewrites")
+    return url
+
+
 def _query_origin(cwd: Path, branch: str, remote_url: str) -> RemoteState | None:
     branch_ref = f'refs/heads/{branch}'
     try:
@@ -65,10 +90,13 @@ def _query_origin(cwd: Path, branch: str, remote_url: str) -> RemoteState | None
     default_branch_sha: str | None = None
     branch_sha: str | None = None
     branch_exists = False
+    branch_symbolic = False
     for line in result.stdout.splitlines():
         if line.startswith('ref:'):
             rest = line[len('ref:'):].strip()
             ref, _, target = rest.rpartition('\t')
+            if target == branch_ref:
+                branch_symbolic = True
             if target == 'HEAD' and ref.startswith('refs/heads/'):
                 default_branch = ref[len('refs/heads/'):]
             continue
@@ -80,7 +108,9 @@ def _query_origin(cwd: Path, branch: str, remote_url: str) -> RemoteState | None
             branch_exists = True
     if default_branch is None:
         return None
-    return RemoteState(default_branch, default_branch_sha, branch_sha, branch_exists)
+    state = RemoteState(default_branch, default_branch_sha, branch_sha, branch_exists)
+    state.branch_symbolic = branch_symbolic
+    return state
 
 def _worktree_clean(cwd: Path) -> bool:
     result = _run(['git', 'status', '--porcelain'], cwd=cwd)
@@ -264,3 +294,31 @@ def push_parent(root, branch, base):
         raise AgentBoxError("Remote branch diverged; refusing automatic repair")
     git(root, *_push_config_args(), "push", "-u", "origin", f"HEAD:refs/heads/{branch}", timeout=120)
     return {"branch": branch, "head": head, "pushed": True}
+
+
+def push_local_base(root, base, accepted_head):
+    """Publish only the accepted fast-forward result, with no mutable source ref."""
+    require_clean(root)
+    git(root, "check-ref-format", f"refs/heads/{base}")
+    if current_branch(root) != base or local_branch_head(root, base) != accepted_head:
+        raise AgentBoxError("Local base must equal the exact accepted head before publication")
+    if _run(["git", "symbolic-ref", "-q", f"refs/heads/{base}"], cwd=root).returncode != 1:
+        raise AgentBoxError("Cannot publish a symbolic or unreadable local base ref")
+    url = push_destination(root)
+    state = _query_origin(root, base, url)
+    if (state is None or state.default_branch != base or state.branch_symbolic or not state.branch_sha
+            or state.default_branch_sha != state.branch_sha):
+        raise AgentBoxError("Cannot establish origin's live default/base and published head")
+    if not _is_ancestor(root, state.branch_sha, accepted_head):
+        raise AgentBoxError("Remote base is unknown or diverged; refusing automatic repair")
+    if local_branch_head(root, base) != accepted_head or push_destination(root) != url:
+        raise AgentBoxError("Local base or origin destination changed before publication")
+    if state.branch_sha != accepted_head:
+        git(root, *_push_config_args(), "push", "--no-force", "--no-mirror",
+            "--no-follow-tags", "--recurse-submodules=no", "--", url,
+            f"{accepted_head}:refs/heads/{base}", timeout=120)
+    published = _query_origin(root, base, url)
+    if (published is None or published.default_branch != base or published.branch_symbolic
+            or published.branch_sha != accepted_head or published.default_branch_sha != accepted_head):
+        raise AgentBoxError("Origin does not confirm the exact published default/base head")
+    return {"branch": base, "head": accepted_head, "pushed": True}

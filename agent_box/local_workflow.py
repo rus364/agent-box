@@ -1,6 +1,8 @@
 """Local fast-forward landing with Git and tracker state as the authorities."""
 from __future__ import annotations
 
+import subprocess
+
 from . import git_workflow as gw
 from .branch_cleanup import after_done
 from .errors import AgentBoxError
@@ -57,6 +59,20 @@ def _identity(root, info):
     return branch, base, gw.local_branch_head(root, branch), gw.local_branch_head(root, base)
 
 
+def _publish(root, config, task, base, task_head):
+    if task.state == "Done":
+        return {"status": "not-required", "pushed": False}
+    if not config.workflow.auto_push:
+        return {"status": "disabled", "pushed": False}
+    try:
+        return {"status": "published", **gw.push_local_base(root, base, task_head)}
+    except (AgentBoxError, OSError, subprocess.TimeoutExpired) as exc:
+        raise AgentBoxError(
+            f"Local merge succeeded, but base publication failed: {exc}. "
+            f"Task remains Review; preserve its branch and retry workflow land {task.id} reconcile "
+            "after resolving the publication failure") from None
+
+
 def operate(args, root, config, adapter, task, parent, info, saved):
     if task.id != parent.id:
         raise AgentBoxError("Land the parent task after all subtasks are integrated")
@@ -87,10 +103,11 @@ def operate(args, root, config, adapter, task, parent, info, saved):
                     f"Current task branch {branch} is not integrated into local base {base}")
             if reasons:
                 raise AgentBoxError("Cannot reconcile local merge: " + "; ".join(reasons))
+            publication = _publish(root, config, task, base, task_head)
             if task.state != "Done":
                 adapter.set_state(task, "Done")
             return after_done({"task": task.id, "state": "Done",
-                               "merge": {"base": base, "head": task_head}},
+                               "merge": {"base": base, "head": task_head}, "publication": publication},
                               root, config, task, branch=branch, base=base, expected_head=task_head)
 
         if current != branch:
@@ -136,8 +153,9 @@ def operate(args, root, config, adapter, task, parent, info, saved):
             gw.git(root, "switch", base)
         if gw.local_branch_head(root, branch) != task_head:
             raise AgentBoxError("Task branch moved during local merge; reconcile before completion")
+        publication = _publish(root, config, task, base, task_head)
         if task.state != "Done":
             adapter.set_state(task, "Done")
         return after_done({"task": task.id, "state": "Done",
-                           "merge": {"base": base, "head": task_head}},
+                           "merge": {"base": base, "head": task_head}, "publication": publication},
                           root, config, task, branch=branch, base=base, expected_head=task_head)

@@ -192,6 +192,7 @@ def review_blockers(config, tasks, files, lines, saved, *, allow_human=False, in
 
 def configuration_summary(config):
     return {"source": effective_config_source(), "merge_mode": config.workflow.merge_mode,
+            "auto_push": config.workflow.auto_push,
             "cleanup_local_branches": config.workflow.cleanup_local_branches,
             "cleanup_remote_branches": config.workflow.cleanup_remote_branches}
 
