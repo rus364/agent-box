@@ -97,6 +97,48 @@ class ProjectConfigTests(unittest.TestCase):
         subprocess.run(['git', '-C', str(self.root), 'worktree', 'add', '-q', '--detach', str(worktree)], check=True)
         self.assertEqual(project_config.project_path(worktree), worktree / '.agent-box.json')
 
+    def test_non_repository_and_missing_git_still_validate_the_cwd_project(self):
+        """Help remains usable without Git but must still reject forbidden project fields."""
+        from contextlib import redirect_stdout, redirect_stderr
+        import io
+        from agent_box import cli, repo_binding
+        with patch.object(Path, 'cwd', return_value=self.root):
+            self.assertEqual(project_config.project_path(self.root), self.path)
+            with patch.object(repo_binding.subprocess, 'run', side_effect=FileNotFoundError('git')):
+                with patch.object(cli.sys, 'argv', ['agent-box', '--help']), redirect_stdout(io.StringIO()):
+                    cli.main()
+                self.path.write_text(json.dumps({'tracker': {'connections': {'vikunja': {'token': ''}}}}))
+                with patch.object(cli.sys, 'argv', ['agent-box', '--help']), \
+                     redirect_stderr(io.StringIO()) as output, self.assertRaises(SystemExit) as stopped:
+                    cli.main()
+                self.assertNotEqual(stopped.exception.code, 0)
+                self.assertIn('PROJECT_CREDENTIALS_FORBIDDEN', output.getvalue())
+
+    def test_git_discovery_errors_stop_help_before_actions_without_tracebacks(self):
+        """A repository inspection failure must not silently switch to a subdirectory file."""
+        from contextlib import redirect_stderr
+        import io
+        from agent_box import cli, repo_binding
+        failures = [subprocess.TimeoutExpired(['git'], 15), PermissionError('git'),
+                    subprocess.CompletedProcess(['git'], 128, '', 'fatal: detected dubious ownership'),
+                    subprocess.CompletedProcess(['git'], 128, '', "fatal: not a git repository: '/invalid-GIT_DIR'")]
+        for failure in failures:
+            with self.subTest(failure=type(failure).__name__), \
+                 patch.object(repo_binding.subprocess, 'run') as run, \
+                 patch.object(cli.sys, 'argv', ['agent-box', '--help']), \
+                 patch.object(cli, 'usage_text') as help_action, \
+                 redirect_stderr(io.StringIO()) as output:
+                if isinstance(failure, Exception):
+                    run.side_effect = failure
+                else:
+                    run.return_value = failure
+                with self.assertRaises(SystemExit) as stopped:
+                    cli.main()
+                self.assertNotEqual(stopped.exception.code, 0)
+                self.assertIn('Git', output.getvalue())
+                self.assertNotIn('Traceback', output.getvalue())
+                help_action.assert_not_called()
+
     def test_session_connection_cannot_mutate_global_or_bypass_project_identity(self):
         original = self.config.to_dict()
         with patch.object(project_config, 'load', return_value={}), patch.dict(os.environ, {

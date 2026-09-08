@@ -92,10 +92,7 @@ def validate(data, path):
 
 
 def project_path(cwd=None):
-    try:
-        return repository_root(cwd) / BINDING_FILE
-    except AgentBoxError:
-        return (Path.cwd() if cwd is None else Path(cwd)) / BINDING_FILE
+    return repository_root(cwd, fallback=True) / BINDING_FILE
 
 
 def _unique_object(pairs):

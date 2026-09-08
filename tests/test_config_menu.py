@@ -39,6 +39,27 @@ class Screen:
 
 
 class ConfigMenuTests(unittest.TestCase):
+    def test_global_field_and_section_reset_restore_program_defaults_and_sparse_save(self):
+        """Reset removes stored global choices, without changing the input draft on cancel."""
+        import curses
+        from agent_box.config import save_config
+        config = Config()
+        config.browser.enabled = True
+        config.workflow.auto_push = False
+        config.workflow.review.max_lines = 31
+        browser = [*[curses.KEY_DOWN] * 9, '\n', 'r', '\x1b']
+        cancelled, _ = self.edit(config, [*browser, '\x1b'])
+        self.assertIsNone(cancelled)
+        self.assertTrue(config.browser.enabled)
+        result, screen = self.edit(config, [*browser, curses.KEY_DOWN, 'r',
+                                           curses.KEY_END, curses.KEY_UP, '\n'])
+        self.assertEqual(result.config.to_dict(), Config().to_dict())
+        self.assertIn('Reset to default', '\n'.join(screen.drawn))
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'config.json'
+            save_config(result.config, path)
+            self.assertEqual(json.loads(path.read_text()), {'version': 1})
+
     def test_global_reviewer_candidates_use_picker_effort_and_draft_controls(self):
         """Both override candidates share the model editor without altering tier settings."""
         import curses
@@ -386,6 +407,121 @@ class PathIntegrationTests(unittest.TestCase):
 class ProjectMenuTests(unittest.TestCase):
     edit = ConfigMenuTests.edit
 
+    def test_use_global_pins_equal_values_while_reset_follows_later_global_changes(self):
+        """Copying global is an explicit choice; reset resumes live inheritance."""
+        import curses
+        from agent_box import project_config
+        config = Config()
+        browser = [*[curses.KEY_DOWN] * 9, '\n']
+        save = ['\x1b', curses.KEY_END, curses.KEY_UP, '\n']
+        pinned, screen = self.edit(config, [*browser, 'g', *save], project={})
+        self.assertEqual(pinned.project, {'browser': {'enabled': False}})
+        self.assertIn('copy and pin', '\n'.join(screen.drawn))
+        reset, _ = self.edit(config, [*browser, 'r', *save], project=pinned.project)
+        self.assertEqual(reset.project, {})
+        config.browser.enabled = True
+        self.assertFalse(project_config.apply(config, pinned.project).browser.enabled)
+        self.assertTrue(project_config.apply(config, reset.project).browser.enabled)
+
+    def test_section_copy_filters_global_only_and_keeps_empty_explicit_values(self):
+        """Section pinning must never serialize the global integration permission."""
+        import curses
+        config = Config()
+        config.workflow.enabled = True
+        config.workflow.auto_push = False
+        config.workflow.review.sensitive_paths = []
+        workflow = [*[curses.KEY_DOWN] * 10]
+        save = [curses.KEY_END, curses.KEY_UP, '\n']
+        pinned, _ = self.edit(config, [*workflow, 'g', *save], project={})
+        expected = config.workflow.to_dict()
+        del expected['enabled']
+        self.assertEqual(pinned.project, {'workflow': expected})
+        self.assertEqual(pinned.project['workflow']['review']['override']['models']['codex']['model'], '')
+        reset, _ = self.edit(config, [*workflow, 'r', *save], project=pinned.project)
+        self.assertEqual(reset.project, {})
+        self.assertTrue(reset.config.workflow.enabled)
+
+    def test_tracker_section_copy_preserves_identity_without_copying_tokens_or_permission(self):
+        """The shared tracker section includes global secrets and project-only identity."""
+        import curses
+        from agent_box.config import TRACKER_PROVIDERS
+        config = Config()
+        config.tracker.enabled = True
+        config.tracker.connections = {provider: TrackerConnection(f'https://{provider}.example', 'FAKE_SECRET')
+                                      for provider in TRACKER_PROVIDERS}
+        project = {'tracker': {'project': '12', 'recursive': True}}
+        result, screen = self.edit(config, [*[curses.KEY_DOWN] * 8, 'g',
+                                          curses.KEY_END, curses.KEY_UP, '\n'], project=project)
+        self.assertEqual(result.project, {'tracker': {'project': '12', 'recursive': True,
+            'provider': 'vikunja', 'connections': {provider: {'url': f'https://{provider}.example'}
+                                                 for provider in TRACKER_PROVIDERS}}})
+        self.assertNotIn('FAKE_SECRET', '\n'.join(screen.drawn))
+
+    def test_tracker_section_copy_does_not_create_accounts_from_empty_menu_rows(self):
+        """A section snapshot copies configured accounts, so unused URL editors cannot block save."""
+        import curses
+        config = Config()
+        for connections in ({}, {'vikunja': TrackerConnection('https://tracker.example', 'FAKE_SECRET')}):
+            with self.subTest(configured=bool(connections)):
+                config.tracker.connections = connections
+                result, _ = self.edit(config, [*[curses.KEY_DOWN] * 8, 'g',
+                                              curses.KEY_END, curses.KEY_UP, '\n'], project={})
+                self.assertEqual(result.project, {'tracker': {'provider': 'vikunja', 'connections': {
+                    provider: {'url': connection.url} for provider, connection in connections.items()}}})
+
+    def test_tracker_section_copy_removes_stale_project_account_from_draft_and_file(self):
+        """The draft must reflect copied account keys immediately, including removed overrides."""
+        import curses
+        config = Config()
+        config.tracker.connections['vikunja'] = TrackerConnection('https://global.example', 'FAKE_SECRET')
+        project = {'tracker': {'connections': {'jira': {'url': 'https://project.example'}}}}
+        result, _ = self.edit(config, [*[curses.KEY_DOWN] * 8, 'g',
+                                      curses.KEY_END, curses.KEY_UP, '\n'], project=project)
+        self.assertNotIn('jira', result.project['tracker']['connections'])
+        self.assertNotIn('jira', result.config.tracker.connections)
+        self.assertEqual(result.config.tracker.connections['vikunja'].url, 'https://global.example')
+
+    def test_project_reset_copy_help_and_exit_controls_fit_minimum_terminal(self):
+        """Both distinct project actions remain discoverable at 40 columns."""
+        screen = Screen(['\x1b'], sizes=[(8, 40)])
+        self.edit(Config(), [], screen=screen, project={})
+        visible = screen.frames[-1]
+        for control in ('R reset', 'G copy', '? help', 'Esc back'):
+            self.assertIn(control, visible)
+
+    def test_identity_copy_is_unavailable_and_reset_removes_only_the_selected_identity(self):
+        """Project identity has no global counterpart to invent and pin."""
+        import curses
+        project = {'tracker': {'project': '12', 'recursive': True}}
+        identity = [*[curses.KEY_DOWN] * 8, '\n', *[curses.KEY_DOWN] * 3]
+        save = ['\x1b', curses.KEY_END, curses.KEY_UP, '\n']
+        result, screen = self.edit(Config(), [*identity, 'g', *save], project=project)
+        self.assertEqual(result.project, project)
+        self.assertIn('Copy current global unavailable', '\n'.join(screen.drawn))
+        reset, _ = self.edit(Config(), [*identity, 'r', *save], project=project)
+        self.assertEqual(reset.project, {'tracker': {'recursive': True}})
+
+    def test_copy_empty_global_url_requires_correction_before_save(self):
+        """A copy action cannot bypass the required project URL validation."""
+        import curses
+        url = [*[curses.KEY_DOWN] * 8, '\n', *[curses.KEY_DOWN] * 2, '\n', '\n']
+        save = [*['\x1b'] * 3, curses.KEY_END, curses.KEY_UP, '\n']
+        result, screen = self.edit(Config(), [*url, 'g', *save, '\x1b'], project={})
+        self.assertIsNone(result)
+        self.assertIn('must be an HTTP(S) URL', '\n'.join(screen.drawn))
+
+    def test_new_project_and_cancel_do_not_persist_copies_or_path_actions(self):
+        """Opening a new project starts inherited and cancellation drops copied values."""
+        import curses
+        from agent_box import pathsetup
+        with patch.object(pathsetup, 'path_entries', side_effect=AssertionError('host PATH read')):
+            result, _ = self.edit(Config(), [curses.KEY_END, curses.KEY_UP, '\n'], project={})
+            self.assertEqual(result.project, {})
+            project = {}
+            cancelled, _ = self.edit(Config(), [*[curses.KEY_DOWN] * 10, 'g', '\x1b'], project=project)
+            self.assertIsNone(cancelled)
+            self.assertEqual(project, {})
+
     def test_project_can_keep_equal_override_reset_and_block_global_fields(self):
         """Explicit equality is a choice; reset removes the choice from the file."""
         import curses
@@ -398,7 +534,7 @@ class ProjectMenuTests(unittest.TestCase):
         self.assertIn('Overridden', '\n'.join(screen.drawn))
         reset, _ = self.edit(config, [*browser, 'r', *save], project=result.project)
         self.assertEqual(reset.project, {})
-        blocked, screen = self.edit(config, [' ', curses.KEY_END, curses.KEY_UP, '\n'], project={})
+        blocked, screen = self.edit(config, [' ', 'r', 'g', curses.KEY_END, curses.KEY_UP, '\n'], project={})
         self.assertEqual(blocked.project, {})
         self.assertIn('Global only', '\n'.join(screen.drawn))
 

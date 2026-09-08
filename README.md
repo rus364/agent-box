@@ -198,11 +198,17 @@ fake one.
 
 ## Configuration
 
-One versioned JSON file:
+Global overrides are stored in a versioned JSON file:
 
 ```text
 ~/.config/agent-box/config.json
 ```
+
+Configuration has three layers: built-in `Config()` defaults, global overrides,
+then project overrides. Global saves keep only settings that differ from the
+program defaults, plus `version: 1`; missing nested settings inherit defaults.
+The Python configuration dataclasses define those defaults, with no separate
+JSON template. A new project starts without overrides.
 
 ```bash
 agent-box config        # menu: arrows, Space, Enter; save and apply
@@ -220,6 +226,9 @@ the usual curses delay. Home/End and Page Up/Down navigate long lists. Details
 sit beside the list on wide terminals and below it on narrow ones. Editors
 support cursor movement, Home, End, Backspace, Delete, insertion, and long
 values; secret values remain masked. F1 shows the editor's keyboard help.
+In the global editor, **R: Reset to default** restores the selected field or
+section to built-in program values and removes its stored override on save.
+Reset changes only the draft until you save.
 
 Worker, scout, and reviewer model fields combine local suggestions with a
 manual model-ID editor. Codex suggestions come from its local model cache when
@@ -306,9 +315,17 @@ merge by key and lists replace the whole inherited list. Explicit `false`,
 empty lists, and allowed empty strings (such as disabled model candidates)
 remain choices. Unknown fields, wrong types and invalid JSON are errors.
 
-The menu labels values **Inherited** or **Overridden**. Press **R** for
-**Reset to inherited**. Choosing a value equal to the global value still saves
-an explicit override. Credentials, environment configuration, integration
+The project menu labels values **Inherited** or **Overridden**. **R: Reset to
+default** removes the selected field or section's override, so it inherits the
+effective global value and follows subsequent global changes. **G: Copy current global**
+copies the current effective global value into an explicit project override,
+pinning it against subsequent global changes. Both actions work on fields and
+sections; section copying includes only project-allowed settings. Tracker
+sections copy configured accounts, excluding empty menu placeholders. Choosing a
+value equal to the global or program default still saves an explicit project
+override. Project identity fields have no global value to copy; the menu explains
+why Copy current global is unavailable there. Copying an empty required URL still requires
+editing it before saving. Credentials, environment configuration, integration
 enablement and host installation settings remain **Global only** and cannot
 be edited here; the label is red when the terminal supports color and keeps
 the terminal's default background. **Save project** writes only explicit

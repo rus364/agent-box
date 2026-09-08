@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import subprocess
 from dataclasses import dataclass
@@ -81,11 +82,26 @@ def binding_document(root, binding):
     return data
 
 
-def repository_root(cwd: Path | None = None):
-    result = subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=cwd,
-                            capture_output=True, text=True, timeout=15)
+def repository_root(cwd: Path | None = None, *, fallback=False):
+    directory = Path.cwd() if cwd is None else Path(cwd)
+    try:
+        result = subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=cwd,
+                                capture_output=True, text=True, timeout=15,
+                                env={**os.environ, "LC_ALL": "C"})
+    except FileNotFoundError:
+        if fallback and directory.is_dir():
+            return directory
+        raise AgentBoxError(f"Cannot discover Git repository in {directory}: Git or directory is unavailable") from None
+    except subprocess.TimeoutExpired:
+        raise AgentBoxError(f"Git repository discovery timed out in {directory}") from None
+    except OSError:
+        raise AgentBoxError(f"Cannot discover Git repository in {directory}: Git could not run") from None
     if result.returncode:
-        raise AgentBoxError("Run this command inside a Git repository")
+        if result.stderr.startswith("fatal: not a git repository (or any"):
+            if fallback:
+                return directory
+            raise AgentBoxError("Run this command inside a Git repository")
+        raise AgentBoxError(f"Git repository discovery failed in {directory} (exit {result.returncode})")
     return Path(result.stdout.strip()).resolve()
 
 

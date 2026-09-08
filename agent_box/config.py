@@ -728,7 +728,18 @@ def load_config(path: Path | None = None) -> Config:
 
 
 def save_config(config: Config, path: Path | None = None) -> None:
-    atomic_write_json(CONFIG_FILE if path is None else path, config.to_dict(), SECRET_MODE)
+    """Persist global choices; missing settings follow the program defaults."""
+    def overrides(values, defaults):
+        result = {}
+        for key, value in values.items():
+            if key in defaults and value == defaults[key]:
+                continue
+            result[key] = (overrides(value, defaults[key])
+                           if isinstance(value, dict) and isinstance(defaults.get(key), dict) else value)
+        return result
+
+    data = overrides(config.to_dict(), Config().to_dict())
+    atomic_write_json(CONFIG_FILE if path is None else path, {"version": VERSION, **data}, SECRET_MODE)
 
 
 def session_tracker(config, environ=None):

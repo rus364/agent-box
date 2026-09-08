@@ -65,6 +65,35 @@ class DefaultsAreSafeTests(unittest.TestCase):
 
 
 class RoundTripTests(unittest.TestCase):
+    def test_default_global_file_is_sparse_and_reconstructs_all_program_defaults(self):
+        """Saving defaults must leave later program defaults free to take effect."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'config.json'
+            save_config(Config(), path)
+            self.assertEqual(json.loads(path.read_text()), {'version': 1})
+            self.assertEqual(load_config(path).to_dict(), Config().to_dict())
+
+    def test_sparse_global_roundtrip_keeps_nested_false_empty_lists_and_custom_values(self):
+        """An omitted sibling inherits; false and empty lists can still override defaults."""
+        config = Config()
+        config.workflow.auto_push = False
+        config.workflow.review.sensitive_paths = []
+        config.workflow.review.override.models['codex']['model'] = 'custom-model'
+        config.image.tools['analysis'] = False
+        config.env.set['CUSTOM'] = ''
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'config.json'
+            save_config(config, path)
+            data = json.loads(path.read_text())
+            self.assertEqual(data, {
+                'version': 1, 'env': {'set': {'CUSTOM': ''}}, 'image': {'tools': {'analysis': False}},
+                'workflow': {'auto_push': False, 'review': {'sensitive_paths': [],
+                    'override': {'models': {'codex': {'model': 'custom-model'}}}}}})
+            self.assertEqual(load_config(path).to_dict(), config.to_dict())
+            path.write_text(json.dumps(config.to_dict()))
+            save_config(load_config(path), path)
+            self.assertEqual(json.loads(path.read_text()), data)
+
     def test_save_load_roundtrip_and_permissions(self):
         config = Config()
         config.claude.telegram_channel = True

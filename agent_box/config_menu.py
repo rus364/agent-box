@@ -8,7 +8,7 @@ import textwrap
 from dataclasses import dataclass
 from pathlib import Path
 
-from .config import AGENT_EFFORTS, IMAGE_TOOL_GROUP_HELP, Config, REVIEW_PRESETS, TRACKER_PROVIDERS
+from .config import AGENT_EFFORTS, IMAGE_TOOL_GROUP_HELP, Config, REVIEW_PRESETS, TRACKER_PROVIDERS, TrackerConnection
 from .errors import AgentBoxError
 from .paths import CODEX_MODELS_CACHE
 
@@ -220,12 +220,13 @@ def edit(config, *, project=None):
     choices, link = ([], None) if project_mode else (pathsetup.bin_dir_choices(), pathsetup.link_state())
     model_suggestions = {"codex": load_codex_models(), "claude": BUNDLED_MODELS["claude"]}
     inherited = copy.deepcopy(config.to_dict())
+    global_values = copy.deepcopy(inherited)
     draft = merge(inherited, overrides) if project_mode else copy.deepcopy(inherited)
     draft.pop("version", None)
     draft.pop("install", None)
     for provider in TRACKER_PROVIDERS:
-        inherited["tracker"]["connections"].setdefault(provider, {"url": "", "token": ""})
-        draft["tracker"]["connections"].setdefault(provider, {"url": "", "token": ""})
+        inherited["tracker"]["connections"].setdefault(provider, TrackerConnection().to_dict())
+        draft["tracker"]["connections"].setdefault(provider, TrackerConnection().to_dict())
     if project_mode:
         for target in (inherited, draft):
             target["tracker"].setdefault("project", "")
@@ -246,7 +247,7 @@ def edit(config, *, project=None):
             target = target.setdefault(part, {})
         target[path[-1]] = copy.deepcopy(value)
 
-    def reset(path):
+    def remove_override(path):
         def remove(target, parts):
             if parts[0] in target:
                 if len(parts) == 1:
@@ -261,8 +262,36 @@ def edit(config, *, project=None):
             value = value.get(part, {})
         return copy.deepcopy(value)
 
+    defaults = Config().to_dict()
+    for provider in TRACKER_PROVIDERS:
+        defaults['tracker']['connections'][provider] = TrackerConnection().to_dict()
+
+    def default_value(path, source):
+        value = source
+        for part in path:
+            if part not in value:
+                # Connection rows are editable defaults, but a section copy
+                # must not create accounts that the global map does not hold.
+                if path[:2] == ('tracker', 'connections') and len(path) >= 3:
+                    value = TrackerConnection().to_dict()
+                    for part in path[3:]:
+                        value = value[part]
+                    break
+                return None
+            value = value[part]
+        if project_mode and isinstance(value, dict):
+            def allowed(value, parts):
+                return {key: allowed(item, (*parts, key)) if isinstance(item, dict) else copy.deepcopy(item)
+                        for key, item in value.items() if project_field((*parts, key)) is not None}
+            value = allowed(value, path)
+        return copy.deepcopy(value)
+
     def drafted():
-        return Config.from_dict({**draft, "install": {"bin_dir": str(path_state["bin"]) if path_state["bin"] else ""}})
+        result = Config.from_dict({**draft, "install": {"bin_dir": str(path_state["bin"]) if path_state["bin"] else ""}})
+        # Empty connection rows exist for editing, not as configured accounts.
+        result.tracker.connections = {provider: connection for provider, connection in result.tracker.connections.items()
+                                      if connection != TrackerConnection()}
+        return result
 
     global_only_color = 0
 
@@ -531,11 +560,18 @@ def edit(config, *, project=None):
                 selected_path = (*path, keys[selected])
                 hint, help_title = ("Project tracker identity." if selected_path in (("tracker", "project"), ("tracker", "recursive")) else help_for(selected_path)), ".".join(selected_path)
                 if project_mode:
-                    hint = ("Global only. Edit in agent-box config. " if project_field(selected_path) is None else "R: Reset to inherited. ") + hint
+                    hint = ("Global only. Edit in agent-box config. " if project_field(selected_path) is None
+                            else "R: Reset to default (remove override; inherit future global changes). "
+                            + ("Copy current global unavailable: no global value for this project identity field. "
+                               if default_value(selected_path, global_values) is None
+                               else "G: Copy current global (copy and pin current effective global values). ")) + hint
+                else:
+                    hint = "R: Reset to default (built-in program values; remove global override on save). " + hint
             else:
                 hint, help_title = extras[selected - len(keys)][2], extras[selected - len(keys)][0]
             title = ("agent-box config --project" if project_mode else "agent-box config") + (" / " + " / ".join(label_for(part) for part in path) if path else "")
-            usable = paint(screen, rows, selected, title, hint, notice)
+            controls = ("Enter R reset G copy " if project_mode else "Enter open R reset ") + "? help Esc back"
+            usable = paint(screen, rows, selected, title, hint, notice, controls=controls)
             key = screen.get_wch()
             if key in ("\x1b", curses.KEY_LEFT):
                 return None
@@ -548,13 +584,29 @@ def edit(config, *, project=None):
                 full_help(screen, "Help: " + help_title, notice + "\n\n" + hint if notice else hint)
             elif key in ("\x1b", curses.KEY_LEFT):
                 return None
-            elif project_mode and key in ("r", "R") and selected < len(keys):
+            elif key in ("r", "R", "g", "G") and selected < len(keys):
                 full = (*path, keys[selected])
-                if project_field(full) is not None:
-                    data[keys[selected]] = reset(full)
-                    notice = "Reset to inherited"
-                else:
+                if project_mode and project_field(full) is None:
                     notice = "Global only"
+                elif project_mode and key in ("r", "R"):
+                    data[keys[selected]] = remove_override(full)
+                    notice = "Reset to default: override removed; inheriting global values"
+                elif key in ("r", "R") or project_mode:
+                    value = default_value(full, global_values if project_mode else defaults)
+                    if value is None:
+                        notice = "Copy current global unavailable: no global value for this project identity field"
+                    else:
+                        if project_mode:
+                            for name, item in value.items() if isinstance(value, dict) else [(None, value)]:
+                                record((*full, name) if name is not None else full, item)
+                            current = merge(inherited, overrides)
+                            for part in full:
+                                current = current[part]
+                            data[keys[selected]] = current
+                        else:
+                            data[keys[selected]] = value
+                        notice = ("Copy current global: current values copied as explicit project overrides" if project_mode
+                                  else "Reset to default: built-in program values restored in draft")
             elif key in (" ", "\n", "\r", curses.KEY_RIGHT):
                 if selected >= len(keys):
                     _, action, _ = extras[selected - len(keys)]

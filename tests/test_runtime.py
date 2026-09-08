@@ -488,6 +488,27 @@ class ClaudeNotifyHookLifecycleTests(IsolatedRuntimeTest):
 
 class HostModeTests(IsolatedRuntimeTest):
 
+    def test_host_session_metadata_wins_over_user_assignments_without_dropping_custom_env(self):
+        """The child must read the generated session snapshot, not an env.set substitute."""
+        from agent_box.config import effective_config
+        config = Config()
+        config.workflow.review.max_lines = 47
+        config.env.set = {'AGENT_BOX_RUNTIME_CONFIG': '/missing/wrong.json',
+                          'AGENT_BOX_PRIMARY_PROVIDER': 'wrong', 'CUSTOM_ENV': 'retained'}
+        with tempfile.TemporaryDirectory() as tmp, \
+             mock.patch.object(runtime.shutil, 'which', return_value='/usr/bin/codex'), \
+             mock.patch.object(runtime, 'resolve_workspace', return_value=Workspace(Path(tmp), Path(tmp))), \
+             mock.patch.object(runtime, 'launch_config', return_value=config), \
+             mock.patch.object(runtime.subprocess, 'call', return_value=0) as call:
+            self.assertEqual(runtime.host_main('codex', []), 0)
+            env = call.call_args.kwargs['env']
+            self.assertEqual(env['CUSTOM_ENV'], 'retained')
+            self.assertEqual(env['AGENT_BOX_PRIMARY_PROVIDER'], 'codex')
+            self.assertTrue(Path(env['AGENT_BOX_RUNTIME_CONFIG']).is_file())
+            with mock.patch.dict(os.environ, env, clear=True):
+                self.assertEqual(effective_config(include_project=False).workflow.review.max_lines, 47)
+
+
     def test_host_claude_selects_host_claude_executable(self):
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Workspace(Path(tmp), Path(tmp))

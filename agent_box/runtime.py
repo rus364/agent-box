@@ -2628,13 +2628,14 @@ def host_main(
     config = launch_config(env_specs)
     # As in container mode: a launch applies nothing to the user's own files.
     env = dict(os.environ)
-    env["AGENT_BOX_PRIMARY_PROVIDER"] = agent
-    env["AGENT_BOX_RUNTIME_CONFIG"] = str(session_runtime(config, container=False))
     # ``env.set`` states what a session should have; a host session is still a
     # session. ``env.forward`` has nothing to do here -- host mode already
     # runs in the very shell those names would have been forwarded from, so
     # the values are present already.
     env.update(config.env.set)
+    # Owned metadata describes this launch, even when env.set names these keys.
+    env["AGENT_BOX_PRIMARY_PROVIDER"] = agent
+    env["AGENT_BOX_RUNTIME_CONFIG"] = str(session_runtime(config, container=False))
     # agent-box's own request channel is not part of the session it describes.
     for key in [k for k in env if k.startswith(ENV_PREFIX)]:
         del env[key]
