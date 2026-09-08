@@ -334,7 +334,7 @@ def edit(config, *, project=None):
         for index, row in enumerate(rows[offset:offset + list_height], offset):
             attr = curses.A_REVERSE | curses.A_BOLD if index == selected else 0
             if "Global only" in row:
-                attr |= global_only_color
+                attr = global_only_color | (curses.A_BOLD | curses.A_UNDERLINE if index == selected else 0)
             add_line(screen, index - offset + 3, row, list_width, attr)
         message = help_text
         if notice:
