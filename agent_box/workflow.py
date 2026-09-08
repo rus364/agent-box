@@ -253,6 +253,10 @@ def read_review_state(root, binding, task):
                 or value["used"] < 0 or not isinstance(value.get("overrides"), list)
                 or (value.get("pending") is not None
                     and (not isinstance(value["pending"], str) or not value["pending"]))
+                or (("ceiling" in value or "ceiling_reason" in value)
+                    and (type(value.get("ceiling")) is not int or value["ceiling"] < 0
+                         or not isinstance(value.get("ceiling_reason"), str)
+                         or not value["ceiling_reason"].strip()))
                 or any(not isinstance(item, dict) or type(item.get("attempt")) is not int
                        or not 0 < item["attempt"] <= value["used"]
                        or not isinstance(item.get("reason"), str) or not item["reason"].strip()
@@ -266,9 +270,14 @@ def read_review_state(root, binding, task):
 
 
 def read_review_budget(root, binding, task, limit):
-    value = read_review_state(root, binding, task)
+    return review_budget_summary(read_review_state(root, binding, task), limit)
+
+
+def review_budget_summary(value, configured_limit):
+    limit = value.get("ceiling", configured_limit)
     return {"used": value["used"], "overrides": value["overrides"],
-            "limit": limit, "remaining": max(0, limit - value["used"])}
+            "configured_limit": configured_limit, "limit": limit,
+            "limit_reason": value.get("ceiling_reason"), "remaining": max(0, limit - value["used"])}
 
 
 def save_review_state(root, binding, task, value):
@@ -280,15 +289,16 @@ def save_review_state(root, binding, task, value):
 def reserve_review(root, binding, task, limit, reason, round_id, fingerprint):
     """Attempts outlive scope evidence; stale reports cannot restore the budget."""
     with lock(root, "review-budget"):
-        budget = read_review_budget(root, binding, task, limit)
+        state = read_review_state(root, binding, task)
+        budget = review_budget_summary(state, limit)
         if reason is not None and not reason.strip():
             raise AgentBoxError("Review override requires a non-empty reason from the user")
         if budget["remaining"] == 0 and reason is None:
             raise AgentBoxError(
-                f"Review attempt budget exhausted: used={budget['used']}, limit={limit}, remaining=0. "
-                "Only after the user's decision, pass --review-override-reason for one extra attempt")
+                f"Review attempt budget exhausted: used={budget['used']}, limit={budget['limit']}, remaining=0. "
+                "After the user's decision, set workflow review-budget TASK --limit TOTAL --reason TEXT")
         budget["used"] += 1
-        budget["remaining"] = max(0, limit - budget["used"])
+        budget["remaining"] = max(0, budget["limit"] - budget["used"])
         if reason is not None:
             budget["overrides"].append({"attempt": budget["used"], "reason": reason.strip()})
         saved = evidence(root, task, fingerprint)
@@ -297,8 +307,8 @@ def reserve_review(root, binding, task, limit, reason, round_id, fingerprint):
         # Retire acceptance before publishing a new round; report ingestion uses
         # this same lock so a late verdict cannot slip between these writes.
         save_evidence(root, task, saved)
-        save_review_state(root, binding, task,
-                          {"used": budget["used"], "overrides": budget["overrides"], "pending": round_id})
+        state.update(used=budget["used"], overrides=budget["overrides"], pending=round_id)
+        save_review_state(root, binding, task, state)
         return budget
 
 
@@ -501,12 +511,13 @@ def retire_acceptance(root, adapter, task, saved):
     standing over code it may already have changed, so acceptance is retired when
     the delegation starts and again when its report is ingested.
     """
-    check_worker_assignment(adapter, task)
-    saved.pop("validation", None)
-    saved.pop("review", None)
-    saved.pop("human_acceptance", None)
-    saved.pop("local_acceptance", None)
-    save_evidence(root, task, saved)
+    with lock(root, "review-budget"):
+        check_worker_assignment(adapter, task)
+        saved.pop("validation", None)
+        saved.pop("review", None)
+        saved.pop("human_acceptance", None)
+        saved.pop("local_acceptance", None)
+        save_evidence(root, task, saved)
 
 
 def accept_worker(root, adapter, task, saved, identity, expected):
@@ -746,12 +757,15 @@ def begin(root, adapter, task, resume):
 def parser():
     p = argparse.ArgumentParser(prog="agent-box workflow")
     sub = p.add_subparsers(dest="command", required=True)
-    for name in ("begin", "inspect", "approve", "prepare", "run", "review", "validate", "report", "finish", "pr", "land", "writer"):
+    for name in ("begin", "inspect", "approve", "prepare", "run", "review", "review-budget", "validate", "report", "finish", "pr", "land", "writer"):
         cmd = sub.add_parser(name)
         cmd.add_argument("task")
         cmd.add_argument("--primary", choices=("codex", "claude"), default=os.environ.get("AGENT_BOX_PRIMARY_PROVIDER"))
         if name == "writer":
             cmd.add_argument("--provider", choices=("codex", "claude"), required=True)
+        if name == "review-budget":
+            cmd.add_argument("--limit", type=int, required=True, help="Absolute task review attempt ceiling, including attempts already used")
+            cmd.add_argument("--reason", required=True, help="The user's explicit budget decision")
         if name == "begin":
             cmd.add_argument("--resume", action="store_true")
         if name == "approve":
@@ -800,6 +814,17 @@ def dispatch(args):
     binding = Binding.load(root)
     adapter = make_adapter(binding)
     task = adapter.get(args.task)
+    if args.command == "review-budget":
+        if args.limit < 0 or not args.reason.strip():
+            raise AgentBoxError("Review budget requires a nonnegative limit and non-empty reason from the user")
+        with lock(root, "review-budget"):
+            task = adapter.get(task.id)
+            if task.state not in ("Doing", "Review") or task.assignees != [str(adapter.identity()["id"])]:
+                raise AgentBoxError("Review budget requires the current user's Doing or Review task")
+            state = read_review_state(root, binding, task)
+            state.update(ceiling=args.limit, ceiling_reason=args.reason.strip())
+            save_review_state(root, binding, task, state)
+            return {"task": task.id, "review_budget": review_budget_summary(state, config.workflow.review.max_rounds)}
     if args.command == "land" and args.action == "cleanup":
         from .branch_cleanup import retry
         return retry(root, config, task)
@@ -809,9 +834,10 @@ def dispatch(args):
     if args.command == "writer":
         if task.state != "Doing" or task.assignees != [str(adapter.identity()["id"])]:
             raise AgentBoxError("Writer recording requires the current user’s Doing task")
-        saved = read_evidence(root, task)
-        saved["writer"] = args.provider
-        save_evidence(root, task, saved)
+        with lock(root, "review-budget"):
+            saved = read_evidence(root, task)
+            saved["writer"] = args.provider
+            save_evidence(root, task, saved)
         return {"task": task.id, "writer": args.provider}
     if args.command == "begin":
         with lock(root, "work"):
@@ -877,7 +903,7 @@ def dispatch(args):
             raise AgentBoxError("Human acceptance is available only for a local parent task")
         if not args.reason.strip():
             raise AgentBoxError("Human acceptance requires a non-empty reason from the user")
-        with lock(root, "work"):
+        with lock(root, "review-budget"), lock(root, "work"):
             task = adapter.get(task.id)
             tasks = tree(adapter, task)
             if gw.current_branch(root) != info["branch"]:
@@ -910,10 +936,12 @@ def dispatch(args):
         with lock(root, "work"):
             result = subprocess.run(command, cwd=root, stdout=sys.stderr,
                                     timeout=config.workflow.timeout_seconds)
-        if result.returncode or scope(root, base, tree(adapter, adapter.get(task.id))) != fingerprint:
-            raise AgentBoxError("Validation failed or changed the reviewed scope; no success recorded")
-        saved["validation"] = {"command": command, "exit": 0}
-        save_evidence(root, task, saved)
+        with lock(root, "review-budget"):
+            if result.returncode or scope(root, base, tree(adapter, adapter.get(task.id))) != fingerprint:
+                raise AgentBoxError("Validation failed or changed the reviewed scope; no success recorded")
+            saved = evidence(root, task, fingerprint)
+            saved["validation"] = {"command": command, "exit": 0}
+            save_evidence(root, task, saved)
         return saved
     if args.command in ("prepare", "run", "review", "report"):
         role = "reviewer" if args.command == "review" else args.role
@@ -934,8 +962,10 @@ def dispatch(args):
                                   "against task requirements using code and Git history. An empty diff is "
                                   "not acceptance; return INCONCLUSIVE if the scope cannot be established. ")
             if args.command == "review" and not required:
-                saved["review"] = {"verdict": "SKIPPED", "reason": "Configured review policy"}
-                save_evidence(root, task, saved)
+                with lock(root, "review-budget"):
+                    saved = evidence(root, task, fingerprint)
+                    saved["review"] = {"verdict": "SKIPPED", "reason": "Configured review policy"}
+                    save_evidence(root, task, saved)
                 return {**saved, "review_budget": read_review_budget(
                     root, binding, task, config.workflow.review.max_rounds)}
             brief = read_brief(args.brief) if args.command != "report" else None
@@ -1077,17 +1107,20 @@ def dispatch(args):
             result["review_budget"] = read_review_budget(root, binding, task, config.workflow.review.max_rounds)
         return result
     if args.command == "finish":
-        if not saved.get("validation"):
-            raise AgentBoxError("Run workflow validate against this exact scope before completion")
-        reasons = completion_reasons(task, tasks, str(adapter.identity()["id"])) + blocking_reasons(task, adapter.get)
-        if reasons:
-            raise AgentBoxError("Cannot finish: " + "; ".join(reasons))
-        files, lines = diff_stats(root, base)
-        review_errors = review_blockers(config.workflow.review, tasks, files, lines, saved,
-                                       allow_human=config.workflow.merge_mode == "local" and task.id == parent.id)
-        if review_errors:
-            raise AgentBoxError("; ".join(review_errors))
-        with lock(root, "work"):
+        with lock(root, "review-budget"), lock(root, "work"):
+            task = adapter.get(task.id)
+            tasks = tree(adapter, task)
+            saved = evidence(root, task, scope(root, base, tasks))
+            if not saved.get("validation"):
+                raise AgentBoxError("Run workflow validate against this exact scope before completion")
+            reasons = completion_reasons(task, tasks, str(adapter.identity()["id"])) + blocking_reasons(task, adapter.get)
+            if reasons:
+                raise AgentBoxError("Cannot finish: " + "; ".join(reasons))
+            files, lines = diff_stats(root, base)
+            review_errors = review_blockers(config.workflow.review, tasks, files, lines, saved,
+                                           allow_human=config.workflow.merge_mode == "local" and task.id == parent.id)
+            if review_errors:
+                raise AgentBoxError("; ".join(review_errors))
             if task.id == parent.id:
                 if gw.current_branch(root) != info["branch"]:
                     raise AgentBoxError("Switch to the parent branch before finishing parent work")

@@ -271,14 +271,25 @@ Provider fallback belongs to that same attempt. Failed/abandoned
 attempts consume budget; report ingestion and policy SKIPPED do not. Separate
 budget state is keyed by checkout, tracker provider/server/project and task,
 survives scope changes and coordinator restarts, and never resets automatically.
-`workflow inspect` exposes `review.budget` with used/limit/remaining; reviewer
+`workflow inspect` exposes `review.budget` with configured_limit, effective
+limit, used and remaining; reviewer
 command results expose `review_budget` for the coordinator, outside the neutral
-reviewer prompt. At exhaustion, only the user's explicit decision permits
-`--review-override-reason TEXT` for one additional attempt, with its reason saved.
+reviewer prompt. The assigned coordinator can persist the user's explicit
+decision for a Doing/Review task with
+`workflow review-budget ID --limit TOTAL --reason TEXT`. TOTAL is an absolute
+nonnegative ceiling: with three attempts used and three more authorized, set six.
+Repeating the command does not add attempts. It preserves used attempts, pending
+review, earlier one-attempt override history and acceptance evidence. The explicit
+ceiling overrides configured max_rounds for this task, including after scope or
+configuration changes; zero stops further ordinary attempts without erasing usage.
+`--review-override-reason TEXT` on a reviewer invocation remains a separate
+user-authorized one-attempt exception; it does not change the persistent ceiling.
 Every new review retires previous PASS and human acceptance under the reservation
 lock, including explicit tiers and provider failures. Result ingestion uses the
 same lock and accepts only the latest pending round; late or replayed results
-cannot restore acceptance. Remote GitHub review requests remain coordinated
+cannot restore acceptance. Finish/landing consume freshly reread evidence under
+that lock; validation rereads before saving so a revoked PASS cannot return.
+Remote GitHub review requests remain coordinated
 separately. Skills stop on ambiguity or no progress and retain human iteration
 history in the tracker. Validation is a real command with an observed exit
 status; the coordinator does not self-review.

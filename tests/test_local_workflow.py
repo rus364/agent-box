@@ -1,6 +1,7 @@
 """Local landing proves integration from Git without GitHub or stored merge state."""
 import tempfile
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -49,6 +50,7 @@ class LocalLandTests(unittest.TestCase):
     def operate(self, action, *, method=None, saved=None):
         from agent_box import local_workflow
         args = SimpleNamespace(command="land", action=action, method=method)
+        workflow.save_evidence(self.root, self.parent, self.saved if saved is None else saved)
         return local_workflow.operate(args, self.root, self.config, self.adapter,
                                       self.parent, self.parent, self.info,
                                       self.saved if saved is None else saved)
@@ -71,6 +73,133 @@ class LocalLandTests(unittest.TestCase):
         self.adapter.set_state.assert_called_once_with(self.parent, "Done")
         github.assert_not_called()
         push.assert_not_called()
+
+    def test_reservation_between_dispatch_and_acceptance_blocks_finish_and_landing(self):
+        """A cached PASS cannot survive a new round before the acceptance lock is acquired."""
+        from agent_box import local_workflow
+
+        self.config.workflow.review.policy = "always"
+        self.saved["review"] = {"verdict": "PASS"}
+        base_head = gw.local_branch_head(self.root, "main")
+        for command in (["finish", "7"], ["land", "7", "merge"]):
+            self.parent.state = "Doing" if command[0] == "finish" else "Review"
+            workflow.save_evidence(self.root, self.parent, self.saved)
+            module = workflow if command[0] == "finish" else local_workflow
+            original_lock = module.lock
+            reserved = []
+
+            @contextmanager
+            def interleave(root, purpose):
+                if not reserved:
+                    reserved.append(True)
+                    workflow.reserve_review(root, BINDING, self.parent, 3, None,
+                                            "new-round", self.saved["scope"])
+                with original_lock(root, purpose):
+                    yield
+
+            with self.subTest(command=command), patch.object(module, "lock", interleave), \
+                 self.assertRaisesRegex(AgentBoxError, "PASS review"):
+                self.dispatch(command)
+            self.assertTrue(reserved)
+            self.assertEqual(gw.local_branch_head(self.root, "main"), base_head)
+            self.adapter.set_state.assert_not_called()
+
+    def test_validation_does_not_restore_pass_retired_while_checks_run(self):
+        """Validation adds its result to current evidence, never its cached acceptance."""
+        self.saved["review"] = {"verdict": "PASS"}
+        workflow.save_evidence(self.root, self.parent, self.saved)
+        original_run = workflow.subprocess.run
+
+        def run(command, *args, **kwargs):
+            if command == ["validation-fixture"]:
+                workflow.reserve_review(self.root, BINDING, self.parent, 3, None,
+                                        "validation-round", self.saved["scope"])
+                return SimpleNamespace(returncode=0)
+            return original_run(command, *args, **kwargs)
+
+        with patch.object(workflow.subprocess, "run", run):
+            result = self.dispatch(["validate", "7", "--", "validation-fixture"])
+        self.assertEqual(result["validation"]["exit"], 0)
+        self.assertNotIn("review", result)
+        self.assertNotIn("review", workflow.read_evidence(self.root, self.parent))
+
+    def test_landing_keeps_reservation_out_until_acceptance_is_consumed(self):
+        """The other ordering allows landing and rejects a concurrent new reservation."""
+        from agent_box import local_workflow
+
+        self.config.workflow.review.policy = "always"
+        self.saved["review"] = {"verdict": "PASS"}
+        workflow.save_evidence(self.root, self.parent, self.saved)
+        original_publish = local_workflow._publish
+
+        def publish(*args):
+            with self.assertRaisesRegex(AgentBoxError, "Another local review-budget"):
+                workflow.reserve_review(self.root, BINDING, self.parent, 3, None,
+                                        "too-late", self.saved["scope"])
+            return original_publish(*args)
+
+        with patch.object(local_workflow, "_publish", publish):
+            result = self.dispatch(["land", "7", "merge"])
+        self.assertEqual(result["state"], "Done")
+        self.assertEqual(workflow.read_review_budget(self.root, BINDING, self.parent, 3)["used"], 0)
+
+    def test_reconciliation_rereads_revoked_premerge_acceptance(self):
+        """A reservation after dispatch also invalidates the cached recovery snapshot."""
+        from agent_box import local_workflow
+
+        self.config.workflow.review.policy = "always"
+        self.saved["review"] = {"verdict": "PASS"}
+        self.adapter.set_state.side_effect = AgentBoxError("tracker unavailable")
+        with self.assertRaisesRegex(AgentBoxError, "tracker unavailable"):
+            self.operate("merge")
+        self.adapter.set_state.side_effect = None
+        self.adapter.set_state.reset_mock()
+        original_operate = local_workflow.operate
+
+        def interleave(*args):
+            workflow.reserve_review(self.root, BINDING, self.parent, 3, None,
+                                    "recovery-round", workflow.scope(self.root, "main", [self.parent]))
+            return original_operate(*args)
+
+        with patch.object(local_workflow, "operate", interleave), \
+             self.assertRaisesRegex(AgentBoxError, "Pre-merge acceptance cache is missing"):
+            self.dispatch(["land", "7", "reconcile"])
+        self.adapter.set_state.assert_not_called()
+
+    def test_github_refreshes_local_acceptance_but_retains_current_head_remote_approval(self):
+        """A new local round removes cached PASS without invalidating GitHub's own approval."""
+        from agent_box import github_workflow as github
+
+        self.config.workflow.merge_mode = "github"
+        self.config.github.gh_token = True
+        self.saved["review"] = {"verdict": "PASS"}
+        head = gw.head_sha(self.root)
+        opened = {"number": 9, "url": "https://github.com/o/r/pull/9", "state": "OPEN",
+                  "isDraft": False, "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN",
+                  "headRefOid": head, "headRefName": self.info["branch"], "baseRefName": "main",
+                  "latestReviews": [], "statusCheckRollup": []}
+        original_operate = github.operate
+
+        def interleave(*args):
+            workflow.reserve_review(self.root, BINDING, self.parent, 3, None,
+                                    "github-round", self.saved["scope"])
+            return original_operate(*args)
+
+        for approved in (False, True):
+            workflow.save_evidence(self.root, self.parent, self.saved)
+            opened["latestReviews"] = [{"state": "APPROVED", "commit": {"oid": head}}] if approved else []
+            with self.subTest(approved=approved), patch.object(github, "operate", interleave), \
+                 patch.object(gw, "github_origin", return_value="o/r"), \
+                 patch.object(github, "find_pr", return_value=9), \
+                 patch.object(github, "threads", return_value=[]), \
+                 patch.object(github, "view", return_value=opened), patch.object(github, "gh") as gh:
+                if approved:
+                    self.dispatch(["land", "7", "merge"])
+                    self.assertEqual(gh.call_args.args[1:3], ("pr", "merge"))
+                else:
+                    with self.assertRaisesRegex(AgentBoxError, "fresh local PASS"):
+                        self.dispatch(["land", "7", "merge"])
+                    gh.assert_not_called()
 
     def test_inspect_explains_runtime_route_and_exact_auto_boundary_without_mutation(self):
         """A two-file change must expose the real review trigger before landing."""

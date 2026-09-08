@@ -30,11 +30,11 @@ class MergeAcceptanceTests(unittest.TestCase):
              patch.object(github, "threads", return_value=[]), patch.object(github, "gh") as command:
             child.state = "Doing"
             with self.assertRaisesRegex(AgentBoxError, "subtasks"):
-                github.operate(args, Path("/tmp"), config, adapter, parent, parent, info, saved)
+                github._operate(args, Path("/tmp"), config, adapter, parent, parent, info, saved)
             child.state = "Done"
             parent.description = "- [ ] Accepted"
             with self.assertRaisesRegex(AgentBoxError, "checklist"):
-                github.operate(args, Path("/tmp"), config, adapter, parent, parent, info, saved)
+                github._operate(args, Path("/tmp"), config, adapter, parent, parent, info, saved)
             command.assert_not_called()
             adapter.set_state.assert_not_called()
 
@@ -86,13 +86,13 @@ class MergeAcceptanceTests(unittest.TestCase):
              patch.object(github, "gh") as command:
             with patch.object(github.gw, "head_sha", return_value="newhead"):
                 with self.assertRaisesRegex(AgentBoxError, "not merged"):
-                    github.operate(args, Path("/tmp"), config, adapter, parent, parent, info, {})
+                    github._operate(args, Path("/tmp"), config, adapter, parent, parent, info, {})
                 adapter.set_state.assert_not_called()
                 command.assert_not_called()
             # The normal reconcile after a real merge still completes the task.
             with patch.object(github.gw, "head_sha", return_value="oldhead"), \
                  patch.object(github.gw, "remote_branch_head", return_value="oldhead"):
-                result = github.operate(args, Path("/tmp"), config, adapter, parent, parent, info, {})
+                result = github._operate(args, Path("/tmp"), config, adapter, parent, parent, info, {})
         self.assertEqual((result["state"], result["merge"]), ("Done", {"oid": "mergecommit"}))
         adapter.set_state.assert_called_once_with(parent, "Done")
 
@@ -129,12 +129,12 @@ class MergeAcceptanceTests(unittest.TestCase):
              patch.object(github, "gh") as command:
             with patch.object(github.gw, "remote_branch_head", return_value="B") as remote:
                 with self.assertRaisesRegex(AgentBoxError, "another checkout advanced the branch"):
-                    github.operate(args, Path("/tmp"), config, adapter, parent, parent, info, {})
+                    github._operate(args, Path("/tmp"), config, adapter, parent, parent, info, {})
                 remote.assert_called_once_with(Path("/tmp"), "ab/task")
                 adapter.set_state.assert_not_called()
                 command.assert_not_called()
             with patch.object(github.gw, "remote_branch_head", return_value="A"):
-                result = github.operate(args, Path("/tmp"), config, adapter, parent, parent, info, {})
+                result = github._operate(args, Path("/tmp"), config, adapter, parent, parent, info, {})
         self.assertEqual(result["state"], "Done")
         adapter.set_state.assert_called_once_with(parent, "Done")
 
@@ -171,7 +171,7 @@ class MergeAcceptanceTests(unittest.TestCase):
              patch.object(github, "view", return_value=merged), \
              patch.object(github, "find_pr", return_value=9), patch.object(github, "gh"):
             with patch.object(github.gw, "remote_branch_head", return_value=None):
-                result = github.operate(args, Path("/tmp"), config, adapter, parent, parent, info, {})
+                result = github._operate(args, Path("/tmp"), config, adapter, parent, parent, info, {})
             self.assertEqual((result["state"], result["merge"]), ("Done", {"oid": "mergecommit"}))
             adapter.set_state.assert_called_once_with(parent, "Done")
             # Origin that cannot be read at all is still a refusal.
@@ -179,7 +179,7 @@ class MergeAcceptanceTests(unittest.TestCase):
             with patch.object(github.gw, "remote_branch_head",
                               side_effect=AgentBoxError("Cannot read origin's copy of ab/task")):
                 with self.assertRaisesRegex(AgentBoxError, "Cannot read origin"):
-                    github.operate(args, Path("/tmp"), config, adapter, parent, parent, info, {})
+                    github._operate(args, Path("/tmp"), config, adapter, parent, parent, info, {})
             adapter.set_state.assert_not_called()
 
     def test_a_new_open_pr_wins_over_the_branch_history_and_several_do_not(self):

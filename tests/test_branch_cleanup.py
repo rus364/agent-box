@@ -482,6 +482,8 @@ class CleanupTests(unittest.TestCase):
         args = SimpleNamespace(command='land', action='merge', method=None)
         info = {'branch': self.branch, 'base': 'main'}
         saved = {'validation': {'exit': 0}, 'review': {'verdict': 'PASS'}}
+        saved['scope'] = workflow.scope(self.root, 'main', [self.task])
+        workflow.save_evidence(self.root, self.task, saved)
         with patch.object(gw, 'github_origin', return_value='o/r'), \
              patch.object(github, 'find_pr', return_value=9), \
              patch.object(github, 'threads', return_value=[]):
@@ -559,6 +561,7 @@ class CleanupTests(unittest.TestCase):
         adapter.identity.return_value = {'id': 1}
         self.config.workflow.review.policy = 'off'
         saved = {'scope': workflow.scope(self.root, 'main', [self.task]), 'validation': {'exit': 0}}
+        workflow.save_evidence(self.root, self.task, saved)
         args = SimpleNamespace(command='land', action='merge', method=None)
         info = {'branch': self.branch, 'base': 'main'}
         adapter.set_state.side_effect = AgentBoxError('tracker unavailable')

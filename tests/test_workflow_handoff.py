@@ -830,6 +830,78 @@ class WorkerHandoffTests(unittest.TestCase):
             self.run_workflow("prepare", "1", "--role", "reviewer", "--primary", "codex",
                               "--brief", str(self.review_brief))
 
+    def test_absolute_review_budget_is_idempotent_and_preserves_pending_and_acceptance(self):
+        """Retrying a budget decision must never grant more attempts or alter review evidence."""
+        state = {"used": 3, "pending": "existing-round",
+                 "overrides": [{"attempt": 3, "reason": "Earlier one-attempt decision"}]}
+        workflow.save_review_state(self.root, BINDING, self.task, state)
+        accepted = {"scope": workflow.scope(self.root, "main", [self.task]),
+                    "validation": {"exit": 0}, "review": {"verdict": "PASS"}}
+        workflow.save_evidence(self.root, self.task, accepted)
+        for task_state in ("Doing", "Review"):
+            self.task.state = task_state
+            result = self.run_workflow("review-budget", "1", "--limit", "6", "--reason", "User grants three more")
+            budget = result["review_budget"]
+            self.assertEqual((budget["used"], budget["configured_limit"], budget["limit"], budget["remaining"]),
+                             (3, 3, 6, 3))
+            self.assertEqual(workflow.read_review_state(self.root, BINDING, self.task),
+                             {**state, "ceiling": 6, "ceiling_reason": "User grants three more"})
+            self.assertEqual(workflow.read_evidence(self.root, self.task), accepted)
+        self.config.workflow.review.max_rounds = 2
+        budget = self.run_workflow("inspect", "1")["review"]["budget"]
+        self.assertEqual((budget["configured_limit"], budget["limit"]), (2, 6))
+        limited = self.run_workflow("review-budget", "1", "--limit", "0", "--reason", "User stops further attempts")
+        self.assertEqual((limited["review_budget"]["used"], limited["review_budget"]["remaining"]), (3, 0))
+
+    def test_absolute_allowance_is_shared_by_native_and_managed_across_scope_changes(self):
+        """Three additional attempts means a ceiling of six, even after failure and repeated setters."""
+        self.config.workflow.review.policy = "always"
+        fingerprint = workflow.scope(self.root, "main", [self.task])
+        for attempt in range(3):
+            workflow.reserve_review(self.root, BINDING, self.task, 3, None, f"abandoned-{attempt}", fingerprint)
+        self.run_workflow("review-budget", "1", "--limit", "6", "--reason", "THREE_EXTRA_AUTHORIZED")
+        for attempt in (4, 5, 6):
+            self.task.description += f"\nRequirement {attempt}."
+            if attempt == 5:
+                with patch.object(workflow, "run", side_effect=AgentBoxError("provider unavailable")), \
+                     self.assertRaisesRegex(AgentBoxError, "provider unavailable"):
+                    self.run_workflow("review", "1", "--primary", "codex", "--brief", str(self.review_brief))
+            else:
+                result = self.run_workflow("prepare", "1", "--role", "reviewer", "--primary", "codex",
+                                           "--brief", str(self.review_brief))
+                self.assertNotIn("THREE_EXTRA_AUTHORIZED", result["review_handoff"])
+                self.assertNotIn("configured_limit", result["review_handoff"])
+            budget = self.run_workflow("review-budget", "1", "--limit", "6", "--reason", "THREE_EXTRA_AUTHORIZED")["review_budget"]
+            self.assertEqual((budget["used"], budget["limit"], budget["remaining"]), (attempt, 6, 6 - attempt))
+        for command, flags in (("prepare", ("--role", "reviewer")), ("review", ())):
+            with self.subTest(command=command), self.assertRaisesRegex(AgentBoxError, "used=6, limit=6"):
+                self.run_workflow(command, "1", *flags, "--primary", "codex", "--brief", str(self.review_brief))
+        self.report.write_text(json.dumps({"verdict": "PASS", "summary": "Complete review", "findings": []}))
+        report = self.run_workflow("report", "1", "--role", "reviewer", "--primary", "codex",
+                                  "--provider", "claude", "--model", "m", "--effort", "high", "--fresh-context",
+                                  "--scope", result["scope"], "--handoff", result["handoff"], "--file", str(self.report))
+        self.assertEqual((report["review_budget"]["used"], report["review_budget"]["limit"]), (6, 6))
+
+    def test_budget_decision_refuses_invalid_input_ownership_and_corrupt_state(self):
+        """Only the assigned coordinator can change a valid budget for active work."""
+        for limit, reason in (("-1", "User decision"), ("6", " ")):
+            with self.subTest(limit=limit), self.assertRaisesRegex(AgentBoxError, "nonnegative limit and non-empty reason"):
+                self.run_workflow("review-budget", "1", "--limit", limit, "--reason", reason)
+        for state, assignees in (("Done", ["1"]), ("Doing", ["someone-else"]), ("Review", [])):
+            self.task.state, self.task.assignees = state, assignees
+            with self.subTest(state=state, assignees=assignees), self.assertRaisesRegex(AgentBoxError, "current user's Doing or Review"):
+                self.run_workflow("review-budget", "1", "--limit", "6", "--reason", "User decision")
+        self.task.state, self.task.assignees = "Doing", ["1"]
+        self.assertFalse(workflow.review_budget_path(self.root, BINDING, self.task).exists())
+        with workflow_state.lock(self.root, "review-budget"), \
+             self.assertRaisesRegex(AgentBoxError, "Another local review-budget"):
+            self.run_workflow("review-budget", "1", "--limit", "6", "--reason", "User decision")
+        for bad in ({"ceiling": True, "ceiling_reason": "Reason"}, {"ceiling": 6},
+                    {"ceiling": -1, "ceiling_reason": "Reason"}):
+            workflow.save_review_state(self.root, BINDING, self.task, {"used": 0, "overrides": [], **bad})
+            with self.subTest(bad=bad), self.assertRaisesRegex(AgentBoxError, "Cannot read review budget"):
+                self.run_workflow("review-budget", "1", "--limit", "6", "--reason", "Must not repair corruption")
+
     def test_policy_skipped_review_does_not_reserve_an_attempt(self):
         """A policy decision is not an independent review attempt."""
         self.config.workflow.review.policy = "off"

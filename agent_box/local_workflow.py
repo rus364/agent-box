@@ -86,7 +86,11 @@ def operate(args, root, config, adapter, task, parent, info, saved):
             raise AgentBoxError("Cloud review is unavailable in local merge mode; run ab-review locally")
         return {"provider": "local", "next": "Run ab-review in fresh context"}
 
-    with lock(root, "work"):
+    # Acceptance consumption and retirement must agree on one local ordering.
+    with lock(root, "review-budget"), lock(root, "work"):
+        from .workflow import read_evidence
+
+        saved = read_evidence(root, task)
         gw.require_clean(root)
         task = adapter.get(task.id)
         branch, base, task_head, base_head = _identity(root, info)

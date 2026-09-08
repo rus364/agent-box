@@ -10,6 +10,7 @@ from .errors import AgentBoxError
 from .tracker.core import completion_reasons, blocking_reasons
 from . import git_workflow as gw
 from .branch_cleanup import after_done, merged_identity
+from .workflow_state import lock
 
 
 def gh(root, *args, json_output=False):
@@ -128,6 +129,15 @@ def request_review(root, repo, pr, config):
 
 
 def operate(args, root, config, adapter, task, parent, info, saved):
+    from .workflow import evidence, scope, tree
+
+    with lock(root, "review-budget"), lock(root, "work"):
+        task = adapter.get(task.id)
+        saved = evidence(root, task, scope(root, info["base"], tree(adapter, task)))
+        return _operate(args, root, config, adapter, task, parent, info, saved)
+
+
+def _operate(args, root, config, adapter, task, parent, info, saved):
     from .workflow import tree
     if not (config.github.gh_token or config.github.gh_config):
         raise AgentBoxError("Enable the GitHub integration in agent-box config before workflow GitHub actions")
