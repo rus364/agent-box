@@ -169,6 +169,12 @@ class AgentTreeMountTests(unittest.TestCase):
                  mock.patch.object(runtime, "STATE_ROOT", state), \
                  mock.patch.object(runtime, "BUILD_STATE", state / "build"), \
                  mock.patch.object(runtime, "NOTIFY_STATE_ROOT", state / "notify"), \
+                 mock.patch.object(runtime, "TRACKER_RUNTIME_DIR", state / "runtime/tracker"), \
+                 mock.patch.object(runtime, "POLICY_RUNTIME_DIR", state / "runtime/policy"), \
+                 mock.patch.object(runtime, "WORKFLOW_STATE", state / "workflow"), \
+                 mock.patch.object(runtime, "CLAUDE_HOME", state / "claude"), \
+                 mock.patch.object(runtime, "CODEX_HOME", state / "codex"), \
+                 mock.patch.object(runtime, "XDG_CACHE_HOME", state / "cache"), \
                  mock.patch.object(runtime, "load_config", return_value=runtime.Config()), \
                  mock.patch.object(runtime, "NOTIFY_CREDENTIALS", state / "runtime/notify.json"):
                 argv = runtime.container_argv(

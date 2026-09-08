@@ -41,6 +41,7 @@ class ApplyConfigTests(unittest.TestCase):
             runtime,
             CLAUDE_HOME=self.claude,
             CODEX_HOME=self.root / "home/.codex",
+            XDG_CACHE_HOME=self.root / "cache",
             AGENT_SKILLS_DIR=self.shared,
             MANAGED_SKILLS_SOURCE=self.shipped,
             STATE_ROOT=self.state,

@@ -91,7 +91,9 @@ class PasswdHomeTests(unittest.TestCase):
                                                "AGENT_BOX_STATE_DIR": state}):
                 importlib.reload(paths)
                 importlib.reload(runtime)
-                with tempfile.TemporaryDirectory() as project:
+                with tempfile.TemporaryDirectory() as project, mock.patch.object(
+                    runtime, "prepare_container_lifetime_state",
+                ):
                     workspace = Workspace(Path(project), Path(project))
                     argv = runtime.container_argv(workspace, [], Path(project), ["claude"])
         self.assertIn(f"--env=HOME={real_home()}", argv)
@@ -136,7 +138,8 @@ class ClaudeConfigDirTests(unittest.TestCase):
             importlib.reload(paths)
             importlib.reload(runtime)
             workspace = Workspace(Path(project), Path(project))
-            return runtime.container_argv(workspace, [], Path(project), ["claude"])
+            with mock.patch.object(runtime, "prepare_container_lifetime_state"):
+                return runtime.container_argv(workspace, [], Path(project), ["claude"])
 
     def test_custom_claude_config_dir_is_forwarded_and_mounted(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -162,7 +165,8 @@ class ClaudeConfigDirTests(unittest.TestCase):
                 importlib.reload(paths)
                 importlib.reload(runtime)
                 workspace = Workspace(project, project)
-                argv = runtime.container_argv(workspace, [], project, ["claude"])
+                with mock.patch.object(runtime, "prepare_container_lifetime_state"):
+                    argv = runtime.container_argv(workspace, [], project, ["claude"])
         self.assertFalse([a for a in argv if a.startswith("--env=CLAUDE_CONFIG_DIR")])
 
 

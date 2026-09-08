@@ -36,6 +36,12 @@ def _argv(config, env=None, gh_token="gho_secrettoken"):
              mock.patch.object(runtime, "STATE_ROOT", state), \
              mock.patch.object(runtime, "BUILD_STATE", state / "build"), \
              mock.patch.object(runtime, "NOTIFY_STATE_ROOT", state / "notify"), \
+             mock.patch.object(runtime, "TRACKER_RUNTIME_DIR", state / "runtime/tracker"), \
+             mock.patch.object(runtime, "POLICY_RUNTIME_DIR", state / "runtime/policy"), \
+             mock.patch.object(runtime, "WORKFLOW_STATE", state / "workflow"), \
+             mock.patch.object(runtime, "CLAUDE_HOME", state / "claude"), \
+             mock.patch.object(runtime, "CODEX_HOME", state / "codex"), \
+             mock.patch.object(runtime, "XDG_CACHE_HOME", state / "cache"), \
              mock.patch.object(runtime, "NOTIFY_CREDENTIALS", state / "runtime/notify.json"), \
              mock.patch.object(runtime.shutil, "which", return_value="/usr/bin/gh"), \
              mock.patch.object(runtime.subprocess, "run",
@@ -143,6 +149,12 @@ class GitSeedingTests(unittest.TestCase):
         with mock.patch.object(runtime, "STATE_ROOT", state), \
              mock.patch.object(runtime, "BUILD_STATE", state / "build"), \
              mock.patch.object(runtime, "NOTIFY_STATE_ROOT", state / "notify"), \
+             mock.patch.object(runtime, "TRACKER_RUNTIME_DIR", state / "runtime/tracker"), \
+             mock.patch.object(runtime, "POLICY_RUNTIME_DIR", state / "runtime/policy"), \
+             mock.patch.object(runtime, "WORKFLOW_STATE", state / "workflow"), \
+             mock.patch.object(runtime, "CLAUDE_HOME", state / "claude"), \
+             mock.patch.object(runtime, "CODEX_HOME", state / "codex"), \
+             mock.patch.object(runtime, "XDG_CACHE_HOME", state / "cache"), \
              mock.patch.object(runtime, "NOTIFY_CREDENTIALS", state / "runtime/notify.json"), \
              mock.patch.object(runtime, "HOST_HOME", home), \
              mock.patch.object(runtime.subprocess, "run",
@@ -204,6 +216,12 @@ class NotificationCredentialMountTests(unittest.TestCase):
         with mock.patch.object(runtime, "STATE_ROOT", state), \
              mock.patch.object(runtime, "BUILD_STATE", state / "build"), \
              mock.patch.object(runtime, "NOTIFY_STATE_ROOT", state / "notify"), \
+             mock.patch.object(runtime, "TRACKER_RUNTIME_DIR", state / "runtime/tracker"), \
+             mock.patch.object(runtime, "POLICY_RUNTIME_DIR", state / "runtime/policy"), \
+             mock.patch.object(runtime, "WORKFLOW_STATE", state / "workflow"), \
+             mock.patch.object(runtime, "CLAUDE_HOME", state / "claude"), \
+             mock.patch.object(runtime, "CODEX_HOME", state / "codex"), \
+             mock.patch.object(runtime, "XDG_CACHE_HOME", state / "cache"), \
              mock.patch.object(runtime, "NOTIFY_CREDENTIALS", state / "runtime/notify.json"), \
              mock.patch.object(runtime, "CONTAINER_NOTIFY_CREDENTIALS",
                                home / ".local/share/agent-box/runtime/notify.json"), \
@@ -252,6 +270,12 @@ class NotificationCredentialMountTests(unittest.TestCase):
         with mock.patch.object(runtime, "STATE_ROOT", state), \
              mock.patch.object(runtime, "BUILD_STATE", state / "build"), \
              mock.patch.object(runtime, "NOTIFY_STATE_ROOT", state / "notify"), \
+             mock.patch.object(runtime, "TRACKER_RUNTIME_DIR", state / "runtime/tracker"), \
+             mock.patch.object(runtime, "POLICY_RUNTIME_DIR", state / "runtime/policy"), \
+             mock.patch.object(runtime, "WORKFLOW_STATE", state / "workflow"), \
+             mock.patch.object(runtime, "CLAUDE_HOME", state / "claude"), \
+             mock.patch.object(runtime, "CODEX_HOME", state / "codex"), \
+             mock.patch.object(runtime, "XDG_CACHE_HOME", state / "cache"), \
              mock.patch.object(runtime, "NOTIFY_CREDENTIALS", state / "runtime/notify.json"), \
              mock.patch.object(runtime, "HOST_HOME", home), \
              mock.patch.object(runtime.subprocess, "run", return_value=mock.Mock(returncode=0, stdout="")):
