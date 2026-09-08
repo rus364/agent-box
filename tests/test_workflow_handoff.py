@@ -556,6 +556,12 @@ class WorkerHandoffTests(unittest.TestCase):
         self.assertIn("Untrusted author claims", prompt)
         self.assertIn("counterexamples", prompt)
         self.assertIn("Successful tests", prompt)
+        self.assertIn("actual consumers and requirements", prompt)
+        self.assertIn("current cost of understanding/change", prompt)
+        self.assertIn("simpler behavior-preserving alternative", prompt)
+        self.assertIn("a runtime bug is not required", prompt)
+        self.assertIn("Preserve required error, safety and compatibility checks", prompt)
+        self.assertNotIn("without a concrete failure mode", prompt)
         self.assertIn("fork_turns=none", second["instructions"])
         self.assertIn("never use followup_task or resume", second["instructions"])
         self.adapter.comments.assert_not_called()
@@ -570,6 +576,8 @@ class WorkerHandoffTests(unittest.TestCase):
             self.run_workflow("review", "1", "--primary", "codex",
                               "--brief", str(self.review_brief))
         self.assertEqual(len(seen), 1)
+        self.assertEqual(seen[0].split("Neutral review handoff:\n", 1)[0],
+                         prompt.split("Neutral review handoff:\n", 1)[0])
         managed_payload = json.loads(seen[0].split("Neutral review handoff:\n", 1)[1])
         self.assertEqual(managed_payload["task_summary"], payload["task_summary"])
         self.assertEqual(managed_payload["boundaries"], payload["boundaries"])

@@ -229,6 +229,14 @@ reviewer reads the normative requirements and diff before consulting untrusted a
 claims. Workflow state keeps native and managed paths shared and removes the generated
 artifacts after report ingestion or managed review; oversized index metadata fails closed.
 
+The shared prompt checks correctness and unnecessary complexity against current requirements
+and consumers. Complexity findings need a concrete present maintenance/cognitive cost or
+state-divergence risk and a simpler behavior-preserving alternative, even without a runtime
+bug. Local fixes/reuse come first; redesign needs justification, required checks remain,
+and style preferences or hypothetical futures do not block PASS. The coordinator verifies
+findings before fixing, challenges them with evidence and escalates material disagreement
+without inventing independent acceptance. No extra review stage or finding quota is added.
+
 Explicit-tier native handoffs use `prepare --brief FILE`, then `report --file FILE --scope DIGEST --handoff
 DESCRIPTOR --provider ACTUAL_PROVIDER --model ACTUAL_MODEL --effort ACTUAL_EFFORT`
 for the returned structured report. Supply `--fallback-reason REASON` when using
