@@ -569,7 +569,61 @@ class WorkerHandoffTests(unittest.TestCase):
         with patch.object(workflow, "run", side_effect=managed_runner(provider)):
             self.run_workflow("review", "1", "--primary", "codex",
                               "--brief", str(self.review_brief))
-        self.assertEqual(seen, [prompt])
+        self.assertEqual(len(seen), 1)
+        managed_payload = json.loads(seen[0].split("Neutral review handoff:\n", 1)[1])
+        self.assertEqual(managed_payload["task_summary"], payload["task_summary"])
+        self.assertEqual(managed_payload["boundaries"], payload["boundaries"])
+        self.assertEqual(managed_payload["change_summary"], payload["change_summary"])
+        self.assertEqual(
+            {key: item["sha256"] for key, item in
+             managed_payload["required_read_evidence"]["artifacts"].items()},
+            {key: item["sha256"] for key, item in
+             payload["required_read_evidence"]["artifacts"].items()})
+        self.assertNotEqual(
+            Path(managed_payload["required_read_evidence"]["manifest_path"]).parent,
+            Path(payload["required_read_evidence"]["manifest_path"]).parent)
+
+    def test_same_scope_native_review_rounds_keep_and_clean_their_own_packages(self):
+        """Concurrent verdict rounds must not overwrite or retire each other's evidence."""
+        self.config.workflow.review.policy = "always"
+        first = self.run_workflow(
+            "prepare", "1", "--role", "reviewer", "--primary", "codex",
+            "--brief", str(self.review_brief))
+        second = self.run_workflow(
+            "prepare", "1", "--role", "reviewer", "--primary", "codex",
+            "--brief", str(self.review_brief))
+
+        def package(prepared):
+            payload = json.loads(
+                prepared["review_handoff"].split("Neutral review handoff:\n", 1)[1])
+            reads = payload["required_read_evidence"]
+            paths = [Path(reads["manifest_path"]),
+                     *(Path(item["path"]) for item in reads["artifacts"].values()),
+                     *(Path(item["artifact_path"])
+                       for item in reads["repository_instructions"])]
+            return paths[0].parent, paths
+
+        first_dir, first_paths = package(first)
+        second_dir, second_paths = package(second)
+        self.assertEqual(first["scope"], second["scope"])
+        self.assertNotEqual(first["handoff"], second["handoff"])
+        self.assertNotEqual(first_dir, second_dir)
+        self.assertEqual(first_dir.parent, second_dir.parent)
+        self.assertTrue(all(path.is_file() for path in (*first_paths, *second_paths)))
+
+        report = Path(self.directory.name) / "same-scope-review.json"
+        report.write_text(json.dumps({
+            "verdict": "PASS", "summary": "Reviewed independently", "findings": []}))
+        for cleaned, remaining in ((first, second_paths), (second, ())):
+            self.run_workflow(
+                "report", "1", "--role", "reviewer", "--primary", "codex",
+                "--provider", "claude", "--model", "m", "--effort", "high",
+                "--scope", cleaned["scope"], "--handoff", cleaned["handoff"],
+                "--file", str(report), "--fresh-context")
+            cleaned_dir, cleaned_paths = package(cleaned)
+            self.assertFalse(cleaned_dir.exists())
+            self.assertTrue(all(not path.exists() for path in cleaned_paths))
+            self.assertTrue(all(path.is_file() for path in remaining))
 
     def test_managed_reviewer_reads_ephemeral_evidence_before_cleanup(self):
         self.config.workflow.review.policy = "always"
@@ -577,6 +631,12 @@ class WorkerHandoffTests(unittest.TestCase):
         (self.root / "managed.py").write_text(marker + "\n")
         gw.git(self.root, "add", "managed.py")
         gw.git(self.root, "commit", "-m", "managed evidence fixture")
+        pending = self.run_workflow(
+            "prepare", "1", "--role", "reviewer", "--primary", "codex",
+            "--brief", str(self.review_brief))
+        pending_payload = json.loads(
+            pending["review_handoff"].split("Neutral review handoff:\n", 1)[1])
+        pending_path = Path(pending_payload["required_read_evidence"]["manifest_path"]).parent
         artifact_paths = []
 
         def provider(route, role, root, prompt, *, timeout, read_paths):
@@ -587,6 +647,8 @@ class WorkerHandoffTests(unittest.TestCase):
             artifact_paths.extend(Path(item["artifact_path"])
                                   for item in reads["repository_instructions"])
             self.assertEqual(list(read_paths), [artifact_paths[0].parent])
+            self.assertNotEqual(read_paths[0], pending_path)
+            self.assertTrue((pending_path / "manifest.json").is_file())
             self.assertTrue(all(path.is_file() for path in artifact_paths))
             self.assertIn(marker, Path(reads["artifacts"]["full_diff"]["path"]).read_text())
             self.assertEqual(json.loads(Path(reads["manifest_path"]).read_text())["boundaries"],
@@ -598,6 +660,8 @@ class WorkerHandoffTests(unittest.TestCase):
                                        "--brief", str(self.review_brief))
         self.assertEqual(result["report"]["verdict"], "PASS")
         self.assertTrue(all(not path.exists() for path in artifact_paths))
+        self.assertTrue((pending_path / "manifest.json").is_file())
+        workflow.cleanup_review_evidence(pending_path)
 
     def test_review_requirements_keep_nested_sections_and_refuse_unknown_structure(self):
         description = (
@@ -995,7 +1059,7 @@ class DelegationContextTests(unittest.TestCase):
 
             small_fingerprint = "a" * 64
             small = workflow.reviewer_handoff(
-                root, "main", [task], brief, {}, "", task.id, small_fingerprint)
+                root, "main", [task], brief, {}, "", task.id, small_fingerprint, "small")
             small_payload = json.loads(small.split("Neutral review handoff:\n", 1)[1])
             reads = small_payload["required_read_evidence"]
             self.assertEqual([item["source_path"] for item in reads["repository_instructions"]],
@@ -1030,14 +1094,15 @@ class DelegationContextTests(unittest.TestCase):
             gw.git(root, "commit", "-m", "large review fixture")
             large_fingerprint = "b" * 64
             large = workflow.reviewer_handoff(
-                root, "main", [task], brief, {}, "", task.id, large_fingerprint)
+                root, "main", [task], brief, {}, "", task.id, large_fingerprint, "large")
             self.assertNotIn(diff_marker, large)
             self.assertLess(abs(len(large) - len(small)), 100)
-            self.assertFalse(manifest_path.exists())
+            self.assertTrue(manifest_path.exists())
             large_reads = json.loads(large.split("Neutral review handoff:\n", 1)[1])["required_read_evidence"]
             large_path = Path(large_reads["artifacts"]["full_diff"]["path"])
             self.assertGreater(len(large_path.read_text()), 100000)
             workflow.cleanup_review_evidence(large_path.parent)
+            workflow.cleanup_review_evidence(manifest_path.parent)
             self.assertFalse(large_path.exists())
 
     def test_reviewer_prompt_is_bounded_with_many_paths_and_oversized_required_content(self):
@@ -1053,7 +1118,7 @@ class DelegationContextTests(unittest.TestCase):
             task = Task("task-" + "i" * 1000, "1", "Title " + "t" * 1000,
                         description="## Goal\n" + requirement_marker + "\n")
             prompt = workflow.reviewer_handoff(
-                root, "main", [task], author_marker, {}, "", task.id, "c" * 64)
+                root, "main", [task], author_marker, {}, "", task.id, "c" * 64, "bounded")
             payload = json.loads(prompt.split("Neutral review handoff:\n", 1)[1])
             reads = payload["required_read_evidence"]
 
@@ -1075,11 +1140,12 @@ class DelegationContextTests(unittest.TestCase):
             self.assertEqual(len(changed), 250)
             workflow.cleanup_review_evidence(Path(reads["manifest_path"]).parent)
 
-            rejected_path = workflow.review_evidence_path(root, task.id, "d" * 64)
+            rejected_path = workflow.review_evidence_path(root, task.id, "d" * 64, "rejected")
             with patch.object(workflow, "REVIEW_HANDOFF_MAX_BYTES", 1), \
                  self.assertRaisesRegex(AgentBoxError, "Compact reviewer handoff exceeds"):
                 workflow.reviewer_handoff(
-                    root, "main", [task], author_marker, {}, "", task.id, "d" * 64)
+                    root, "main", [task], author_marker, {}, "", task.id, "d" * 64,
+                    "rejected")
             self.assertFalse(rejected_path.exists())
 
     def test_claude_delegation_keeps_the_isolated_safe_mode_context(self):

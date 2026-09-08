@@ -305,7 +305,7 @@ def delegation_identity(root, binding, integration=None):
                         binding.project, binding.recursive]}
 
 
-def handoff_descriptor(identity, task, fingerprint, route):
+def handoff_descriptor(identity, task, fingerprint, route, delegation=None):
     """Which delegation a later report belongs to. Not a credential.
 
     Deliberately a plain, readable descriptor rather than a signed token: nothing
@@ -315,7 +315,7 @@ def handoff_descriptor(identity, task, fingerprint, route):
     coordinator is the only party that ever holds it.
     """
     payload = {**identity, "task": task.id, "scope": fingerprint, "route": route,
-               "delegation": secrets.token_urlsafe(18)}
+               "delegation": delegation or secrets.token_urlsafe(18)}
     return base64.urlsafe_b64encode(json.dumps(payload, sort_keys=True).encode()).decode()
 
 
@@ -485,9 +485,11 @@ def execute(config, selected, role, root, prompt, read_paths=()):
     raise AgentBoxError("No provider produced a valid report: " + json.dumps(failures))
 
 
-def review_evidence_path(root, task_id, fingerprint):
+def review_evidence_path(root, task_id, fingerprint, delegation):
     task_key = hashlib.sha256(task_id.encode()).hexdigest()[:24]
-    return WORKFLOW_STATE / "review-inputs" / repository_key(root) / task_key / fingerprint
+    round_key = hashlib.sha256(delegation.encode()).hexdigest()[:24]
+    return (WORKFLOW_STATE / "review-inputs" / repository_key(root) / task_key
+            / fingerprint / round_key)
 
 
 def cleanup_review_evidence(path):
@@ -497,21 +499,18 @@ def cleanup_review_evidence(path):
         candidate = path / name
         if candidate.is_file() or candidate.is_symlink():
             candidate.unlink()
-    try:
-        path.rmdir()
-        path.parent.rmdir()
-    except OSError:
-        pass
+    for candidate in (path, path.parent, path.parent.parent):
+        try:
+            candidate.rmdir()
+        except OSError:
+            break
 
 
-def write_review_evidence(root, task_id, fingerprint, boundaries, normative_requirements,
-                          author_report, recorded_validation):
-    """Materialize exact review input outside the worktree for Read-only delegates."""
-    path = review_evidence_path(root, task_id, fingerprint)
+def write_review_evidence(root, task_id, fingerprint, delegation, boundaries,
+                          normative_requirements, author_report, recorded_validation):
+    """Materialize one round without retiring evidence another reviewer may be reading."""
+    path = review_evidence_path(root, task_id, fingerprint, delegation)
     path.mkdir(mode=0o700, parents=True, exist_ok=True)
-    for stale in path.parent.iterdir():
-        if stale != path and re.fullmatch(r"[0-9a-f]{64}", stale.name):
-            cleanup_review_evidence(stale)
     diff = gw.git(root, "diff", "--no-ext-diff", "--no-textconv", "--find-renames",
                   boundaries["diff_range"], "--")
     changed_paths = gw.git(root, "diff", "--no-ext-diff", "--no-textconv",
@@ -546,7 +545,8 @@ def write_review_evidence(root, task_id, fingerprint, boundaries, normative_requ
     return path, manifest
 
 
-def reviewer_handoff(root, base, tasks, brief, saved, review_context, task_id, fingerprint):
+def reviewer_handoff(root, base, tasks, brief, saved, review_context, task_id, fingerprint,
+                     delegation):
     """Compose the same neutral, complete review input for native and managed runs."""
     head = gw.head_sha(root)
     base_commit = gw.base_commit(root, base)
@@ -555,7 +555,7 @@ def reviewer_handoff(root, base, tasks, brief, saved, review_context, task_id, f
                   "head_commit": head, "diff_range": diff_range}
     normative_requirements = review_requirements(tasks)
     evidence_path, manifest = write_review_evidence(
-        root, task_id, fingerprint, boundaries, normative_requirements, brief,
+        root, task_id, fingerprint, delegation, boundaries, normative_requirements, brief,
         saved.get("validation"))
     changed_paths = (evidence_path / "changed-paths.txt").read_text().splitlines()
 
@@ -742,7 +742,8 @@ def dispatch(args):
             output = native_output(args, descriptor["route"], delegation_tier(args, task, args.role))
         finally:
             if args.role == "reviewer":
-                cleanup_review_evidence(review_evidence_path(root, task.id, args.scope))
+                cleanup_review_evidence(review_evidence_path(
+                    root, task.id, args.scope, descriptor["delegation"]))
     if worker_report:
         saved = read_evidence(root, task)
         accept_worker(root, adapter, task, saved, identity, descriptor)
@@ -843,6 +844,8 @@ def dispatch(args):
             save_evidence(root, task, saved)
         session_action = (selected.get("mode") == "current-session" and args.command != "report"
                           and (role == "worker" or selected["model"] is None))
+        review_round = (descriptor["delegation"] if role == "reviewer" and descriptor else
+                        secrets.token_urlsafe(18) if role == "reviewer" else None)
         if args.command == "prepare" or session_action:
             if role == "worker":
                 retire_acceptance(root, adapter, task, saved)
@@ -858,7 +861,8 @@ def dispatch(args):
                 "give the delegate repository_instructions, which apply to its work. ")
             result = {"scope": fingerprint, "route": selected, "task": task.to_dict(), "base": base,
                     "report_schema": report_schema(role),
-                    "handoff": handoff_descriptor(identity, task, fingerprint, selected),
+                    "handoff": handoff_descriptor(
+                        identity, task, fingerprint, selected, delegation=review_round),
                     "repository_instructions": (None if role == "reviewer"
                                                 else repository_instructions(root)),
                     "instructions": "Fresh English context. " + review_context + delegate_contract +
@@ -877,7 +881,8 @@ def dispatch(args):
                                     "Return the role JSON schema."}
             if role == "reviewer":
                 result["review_handoff"] = reviewer_handoff(
-                    root, base, tasks, brief, saved, review_context, task.id, fingerprint)
+                    root, base, tasks, brief, saved, review_context, task.id, fingerprint,
+                    review_round)
                 result["instructions"] += (
                     " Every verdict round requires a newly spawned reviewer with no inherited coordinator or "
                     "reviewer history. For native Codex use spawn_agent with fork_turns=none; never use "
@@ -917,7 +922,8 @@ def dispatch(args):
                       "and never write tracker or GitHub data: the coordinator does that after reading your report.\n")
             if role == "reviewer":
                 prompt = reviewer_handoff(
-                    root, base, tasks, brief, saved, review_context, task.id, fingerprint)
+                    root, base, tasks, brief, saved, review_context, task.id, fingerprint,
+                    review_round)
             else:
                 guidance = repository_instructions(root)
                 if guidance:
@@ -931,11 +937,13 @@ def dispatch(args):
                 with execution_lock:
                     output = execute(
                         config.workflow, selected, role, root, prompt,
-                        read_paths=([review_evidence_path(root, task.id, fingerprint)]
+                        read_paths=([review_evidence_path(
+                            root, task.id, fingerprint, review_round)]
                                     if role == "reviewer" else ()))
             finally:
                 if role == "reviewer":
-                    cleanup_review_evidence(review_evidence_path(root, task.id, fingerprint))
+                    cleanup_review_evidence(review_evidence_path(
+                        root, task.id, fingerprint, review_round))
             if role == "worker":
                 accept_worker(root, adapter, task, saved,
                               delegation_identity(root, binding, current.get("branch") and info["branch"]),
