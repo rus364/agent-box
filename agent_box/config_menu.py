@@ -76,7 +76,7 @@ HELP = {
     "workflow.review.routing": "Cross-provider prefers a provider different from the writer; same-provider requires the writer's provider.",
     "workflow.review.max_files": "Automatic-review threshold for changed file count. The Review preset action can set this together with max lines.",
     "workflow.review.max_lines": "Automatic-review threshold for changed line count. The Review preset action can set this together with max files.",
-    "workflow.review.max_rounds": "Maximum review and repair rounds before the workflow stops for human direction.",
+    "workflow.review.max_rounds": "Maximum local review attempts, including failed or abandoned attempts, before explicit user allowance is required.",
     "workflow.review.sensitive_paths": "JSON list of glob patterns that always trigger automatic review regardless of size thresholds.",
     "workflow.review.label": "Tracker label that forces review for a task when the review policy is automatic.",
     "workflow.review.github_provider": "Provider requested for GitHub PR review: auto/local uses local review, Codex cannot pin model or effort, and Claude uses its configured Action.",
