@@ -6,8 +6,10 @@ the only writer, and a handoff descriptor ties a report to the exact repository,
 tracker project, task, scope, role and tier it was prepared for.
 """
 import base64
+import hashlib
 import inspect
 import json
+import stat
 import subprocess
 import tempfile
 import unittest
@@ -438,7 +440,7 @@ class WorkerHandoffTests(unittest.TestCase):
         brief = Path(self.directory.name) / "brief.md"
         brief.write_text("Implement the requirement.")
 
-        def provider(route, role, root, prompt, *, timeout):
+        def provider(route, role, root, prompt, *, timeout, read_paths):
             (Path(root) / "change.py").write_text("value = 1\n")
             gw.git(root, "add", ".")
             gw.git(root, "commit", "-m", "committed under the delegation")
@@ -452,7 +454,7 @@ class WorkerHandoffTests(unittest.TestCase):
         brief = Path(self.directory.name) / "brief.md"
         brief.write_text("Implement the requirement.")
 
-        def provider(route, role, root, prompt, *, timeout):
+        def provider(route, role, root, prompt, *, timeout, read_paths):
             (Path(root) / "change.py").write_text("value = 1\n")
             return {"status": "completed", "summary": "Done", "evidence": ["edited change.py"]}
 
@@ -470,7 +472,7 @@ class WorkerHandoffTests(unittest.TestCase):
             "scope": fingerprint, "human_acceptance": {
                 "scope": fingerprint, "actor": "1", "reason": "Earlier human decision"}})
 
-        def provider(route, role, root, prompt, *, timeout):
+        def provider(route, role, root, prompt, *, timeout, read_paths):
             self.assertEqual(role, "reviewer")
             return {"verdict": "PASS", "summary": "Reads correctly", "findings": []}
 
@@ -497,6 +499,13 @@ class WorkerHandoffTests(unittest.TestCase):
         gw.git(self.root, "commit", "-m", "current implementation")
         first = self.run_workflow("prepare", "1", "--role", "reviewer", "--primary", "codex",
                                   "--brief", str(self.review_brief))
+        first_payload = json.loads(first["review_handoff"].split("Neutral review handoff:\n", 1)[1])
+        first_reads = first_payload["required_read_evidence"]
+        first_artifacts = [Path(first_reads["manifest_path"]),
+                           *(Path(item["path"]) for item in first_reads["artifacts"].values()),
+                           *(Path(item["artifact_path"])
+                             for item in first_reads["repository_instructions"])]
+        self.assertTrue(all(path.is_file() for path in first_artifacts))
         finding = "value must be bounded before release"
         review = Path(self.directory.name) / "first-review.json"
         review.write_text(json.dumps({
@@ -510,6 +519,7 @@ class WorkerHandoffTests(unittest.TestCase):
             "--scope", first["scope"], "--handoff", first["handoff"],
             "--file", str(review), "--fresh-context")
         self.assertEqual(result["report"]["verdict"], "NEEDS_WORK")
+        self.assertTrue(all(not path.exists() for path in first_artifacts))
 
         (self.root / "change.py").write_text("value = 2\n")
         gw.git(self.root, "add", ".")
@@ -518,20 +528,32 @@ class WorkerHandoffTests(unittest.TestCase):
                                    "--brief", str(self.review_brief))
         self.assertNotEqual(first["scope"], second["scope"])
         self.assertNotEqual(first["handoff"], second["handoff"])
+        self.assertIsNone(second["repository_instructions"])
         prompt = second["review_handoff"]
-        self.assertIn("Current goal", prompt)
-        self.assertIn("Keep the supporting behavior", prompt)
-        self.assertIn("Current behavior works", prompt)
-        self.assertIn("Fixed values remain bounded", prompt)
-        self.assertIn("focused unittest", prompt)
+        payload = json.loads(prompt.split("Neutral review handoff:\n", 1)[1])
+        requirements_text = Path(
+            payload["required_read_evidence"]["artifacts"]["requirements"]["path"]).read_text()
+        author_text = Path(
+            payload["required_read_evidence"]["artifacts"]["author_report"]["path"]).read_text()
+        self.assertIn("Current goal", requirements_text)
+        self.assertIn("Keep the supporting behavior", requirements_text)
+        self.assertIn("Current behavior works", requirements_text)
+        self.assertIn("Fixed values remain bounded", requirements_text)
+        self.assertIn("focused unittest", requirements_text)
+        self.assertNotIn("Current goal", prompt)
         self.assertNotIn("Previous verdict", prompt)
         self.assertNotIn(finding, prompt)
-        self.assertIn("Changes and reasons", prompt)
+        self.assertIn("Changes and reasons", author_text)
+        self.assertNotIn("Changes and reasons", prompt)
         self.assertIn(gw.head_sha(self.root), prompt)
         self.assertIn("diff_range", prompt)
-        self.assertIn("diff --git", prompt)
-        self.assertIn("+value = 2", prompt)
-        self.assertIn("+stable = True", prompt)
+        self.assertIn("required_read_evidence", prompt)
+        self.assertIn("change.py", prompt)
+        self.assertIn("support.py", prompt)
+        self.assertNotIn("diff --git", prompt)
+        self.assertNotIn("+value = 2", prompt)
+        self.assertNotIn("+stable = True", prompt)
+        self.assertIn("Untrusted author claims", prompt)
         self.assertIn("counterexamples", prompt)
         self.assertIn("Successful tests", prompt)
         self.assertIn("fork_turns=none", second["instructions"])
@@ -540,7 +562,7 @@ class WorkerHandoffTests(unittest.TestCase):
 
         seen = []
 
-        def provider(route, role, root, managed_prompt, *, timeout):
+        def provider(route, role, root, managed_prompt, *, timeout, read_paths):
             seen.append(managed_prompt)
             return {"verdict": "PASS", "summary": "Reviewed", "findings": []}
 
@@ -548,6 +570,34 @@ class WorkerHandoffTests(unittest.TestCase):
             self.run_workflow("review", "1", "--primary", "codex",
                               "--brief", str(self.review_brief))
         self.assertEqual(seen, [prompt])
+
+    def test_managed_reviewer_reads_ephemeral_evidence_before_cleanup(self):
+        self.config.workflow.review.policy = "always"
+        marker = "MANAGED_REVIEW_DIFF_EVIDENCE"
+        (self.root / "managed.py").write_text(marker + "\n")
+        gw.git(self.root, "add", "managed.py")
+        gw.git(self.root, "commit", "-m", "managed evidence fixture")
+        artifact_paths = []
+
+        def provider(route, role, root, prompt, *, timeout, read_paths):
+            payload = json.loads(prompt.split("Neutral review handoff:\n", 1)[1])
+            reads = payload["required_read_evidence"]
+            artifact_paths.append(Path(reads["manifest_path"]))
+            artifact_paths.extend(Path(item["path"]) for item in reads["artifacts"].values())
+            artifact_paths.extend(Path(item["artifact_path"])
+                                  for item in reads["repository_instructions"])
+            self.assertEqual(list(read_paths), [artifact_paths[0].parent])
+            self.assertTrue(all(path.is_file() for path in artifact_paths))
+            self.assertIn(marker, Path(reads["artifacts"]["full_diff"]["path"]).read_text())
+            self.assertEqual(json.loads(Path(reads["manifest_path"]).read_text())["boundaries"],
+                             payload["boundaries"])
+            return {"verdict": "PASS", "summary": "Read exact evidence", "findings": []}
+
+        with patch.object(workflow, "run", side_effect=managed_runner(provider)):
+            result = self.run_workflow("review", "1", "--primary", "codex",
+                                       "--brief", str(self.review_brief))
+        self.assertEqual(result["report"]["verdict"], "PASS")
+        self.assertTrue(all(not path.exists() for path in artifact_paths))
 
     def test_review_requirements_keep_nested_sections_and_refuse_unknown_structure(self):
         description = (
@@ -927,6 +977,110 @@ class DelegationContextTests(unittest.TestCase):
             secret.write_text("private note")
             (root / "AGENTS.md").symlink_to(secret)
             self.assertNotIn("private note", workflow.repository_instructions(root))
+            self.assertNotIn("AGENTS.md", workflow.repository_instruction_paths(root))
+
+    def test_reviewer_handoff_points_at_checkout_evidence_without_copying_large_bodies(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = repository(directory)
+            gw.git(root, "switch", "-c", "ab/1-review")
+            instruction_marker = "MANDATORY_RULE_BODY_MUST_NOT_BE_COPIED"
+            diff_marker = "LARGE_DIFF_BODY_MUST_NOT_BE_COPIED"
+            (root / "AGENTS.md").write_text(instruction_marker + "\n")
+            (root / "CLAUDE.md").write_text("@AGENTS.md\n")
+            (root / "large.py").write_text(diff_marker + "\n")
+            gw.git(root, "add", ".")
+            gw.git(root, "commit", "-m", "small review fixture")
+            task = Task("1", "1", "Review", description="## Goal\nReview it.\n")
+            brief = "Changes and reasons: fixture. Validation: not run. Limitations: synthetic."
+
+            small_fingerprint = "a" * 64
+            small = workflow.reviewer_handoff(
+                root, "main", [task], brief, {}, "", task.id, small_fingerprint)
+            small_payload = json.loads(small.split("Neutral review handoff:\n", 1)[1])
+            reads = small_payload["required_read_evidence"]
+            self.assertEqual([item["source_path"] for item in reads["repository_instructions"]],
+                             ["AGENTS.md", "CLAUDE.md"])
+            manifest_path = Path(reads["manifest_path"])
+            diff_path = Path(reads["artifacts"]["full_diff"]["path"])
+            instruction_paths = [Path(item["artifact_path"])
+                                 for item in reads["repository_instructions"]]
+            manifest = json.loads(manifest_path.read_text())
+            diff_evidence = diff_path.read_text()
+            self.assertEqual(manifest["boundaries"], small_payload["boundaries"])
+            self.assertEqual(manifest["artifacts"]["full_diff"]["sha256"],
+                             hashlib.sha256(diff_evidence.encode()).hexdigest())
+            self.assertEqual([item["sha256"] for item in manifest["repository_instructions"]],
+                             [hashlib.sha256(path.read_text().encode()).hexdigest()
+                              for path in instruction_paths])
+            self.assertIn(diff_marker, diff_evidence)
+            self.assertEqual(instruction_paths[0].read_text(), instruction_marker + "\n")
+            evidence_paths = [Path(item["path"]) for item in reads["artifacts"].values()]
+            self.assertTrue(all(stat.S_IMODE(path.stat().st_mode) == 0o400
+                                for path in (manifest_path, *evidence_paths, *instruction_paths)))
+            self.assertEqual(small_payload["boundaries"]["head_commit"], gw.head_sha(root))
+            self.assertEqual(small_payload["boundaries"]["base_commit"], gw.base_commit(root, "main"))
+            self.assertTrue(any("large.py" in item for item in small_payload["change_summary"]["path_sample"]))
+            self.assertIn("files changed", small_payload["change_summary"]["shortstat"])
+            self.assertNotIn(instruction_marker, small)
+            self.assertNotIn(diff_marker, small)
+            self.assertNotIn("diff --git", small)
+
+            (root / "large.py").write_text((diff_marker + "\n") * 12000)
+            gw.git(root, "add", "large.py")
+            gw.git(root, "commit", "-m", "large review fixture")
+            large_fingerprint = "b" * 64
+            large = workflow.reviewer_handoff(
+                root, "main", [task], brief, {}, "", task.id, large_fingerprint)
+            self.assertNotIn(diff_marker, large)
+            self.assertLess(abs(len(large) - len(small)), 100)
+            self.assertFalse(manifest_path.exists())
+            large_reads = json.loads(large.split("Neutral review handoff:\n", 1)[1])["required_read_evidence"]
+            large_path = Path(large_reads["artifacts"]["full_diff"]["path"])
+            self.assertGreater(len(large_path.read_text()), 100000)
+            workflow.cleanup_review_evidence(large_path.parent)
+            self.assertFalse(large_path.exists())
+
+    def test_reviewer_prompt_is_bounded_with_many_paths_and_oversized_required_content(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = repository(directory)
+            gw.git(root, "switch", "-c", "ab/1-large-review")
+            for index in range(250):
+                (root / f"changed-{index:03}.txt").write_text(f"change {index}\n")
+            gw.git(root, "add", ".")
+            gw.git(root, "commit", "-m", "many changed paths")
+            requirement_marker = "FULL_NORMATIVE_REQUIREMENT_" * 8000
+            author_marker = "UNTRUSTED_AUTHOR_CLAIM_" * 8000
+            task = Task("task-" + "i" * 1000, "1", "Title " + "t" * 1000,
+                        description="## Goal\n" + requirement_marker + "\n")
+            prompt = workflow.reviewer_handoff(
+                root, "main", [task], author_marker, {}, "", task.id, "c" * 64)
+            payload = json.loads(prompt.split("Neutral review handoff:\n", 1)[1])
+            reads = payload["required_read_evidence"]
+
+            self.assertLessEqual(len(prompt.encode()), workflow.REVIEW_HANDOFF_MAX_BYTES)
+            self.assertNotIn(requirement_marker, prompt)
+            self.assertNotIn(author_marker, prompt)
+            self.assertEqual(payload["change_summary"]["path_count"], 250)
+            self.assertEqual(len(payload["change_summary"]["path_sample"]),
+                             workflow.REVIEW_SAMPLE_ITEMS)
+            self.assertEqual(payload["change_summary"]["paths_omitted"],
+                             250 - workflow.REVIEW_SAMPLE_ITEMS)
+            self.assertIn("[truncated]", payload["task_summary"]["sample"][0]["title"])
+            requirements = Path(reads["artifacts"]["requirements"]["path"]).read_text()
+            author = Path(reads["artifacts"]["author_report"]["path"]).read_text()
+            changed = Path(reads["artifacts"]["changed_paths"]["path"]).read_text().splitlines()
+            self.assertIn(requirement_marker, requirements)
+            self.assertEqual(json.loads(requirements), workflow.review_requirements([task]))
+            self.assertEqual(author, author_marker)
+            self.assertEqual(len(changed), 250)
+            workflow.cleanup_review_evidence(Path(reads["manifest_path"]).parent)
+
+            rejected_path = workflow.review_evidence_path(root, task.id, "d" * 64)
+            with patch.object(workflow, "REVIEW_HANDOFF_MAX_BYTES", 1), \
+                 self.assertRaisesRegex(AgentBoxError, "Compact reviewer handoff exceeds"):
+                workflow.reviewer_handoff(
+                    root, "main", [task], author_marker, {}, "", task.id, "d" * 64)
+            self.assertFalse(rejected_path.exists())
 
     def test_claude_delegation_keeps_the_isolated_safe_mode_context(self):
         """Safe mode is why the instructions must travel; it stays deliberately on."""

@@ -221,7 +221,13 @@ validation commands/results and limitations; it is not stored in tracker comment
 Every native verdict uses a newly spawned reviewer with no inherited coordinator or
 reviewer history (`fork_turns="none"` for Codex), never followup/resume. Pass the
 returned `review_handoff` unchanged as the initial message. Managed commands remain
-ephemeral/no-session-persistence and do not resume a prior review.
+ephemeral/no-session-persistence and do not resume a prior review. The bounded handoff
+indexes immutable base/head boundaries, task/path counts and samples, and paths and hashes
+for temporary read-only evidence containing the complete requirements, diff, changed-path
+list, mandatory repository instructions, author claims and recorded validation. The
+reviewer reads the normative requirements and diff before consulting untrusted author
+claims. Workflow state keeps native and managed paths shared and removes the generated
+artifacts after report ingestion or managed review; oversized index metadata fails closed.
 
 Explicit-tier native handoffs use `prepare --brief FILE`, then `report --file FILE --scope DIGEST --handoff
 DESCRIPTOR --provider ACTUAL_PROVIDER --model ACTUAL_MODEL --effort ACTUAL_EFFORT`

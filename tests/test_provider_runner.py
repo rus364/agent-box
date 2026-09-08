@@ -26,12 +26,18 @@ class ProviderRunnerTests(unittest.TestCase):
     def test_read_only_claude_reviewer_has_tool_restrictions_and_no_model_guess(self):
         r = importlib.import_module("agent_box.provider_runner")
         from pathlib import Path
+        evidence = Path("/tmp/exact-review-evidence")
         command = r.build_command({"provider": "claude", "model": "chosen-model", "effort": "high"},
-                                  "reviewer", Path("/tmp"), Path("/tmp/schema.json"), Path("/tmp/result.json"))
+                                  "reviewer", Path("/tmp"), Path("/tmp/schema.json"), Path("/tmp/result.json"),
+                                  [evidence])
         self.assertEqual(command[command.index("--model") + 1], "chosen-model")
         self.assertEqual(command[command.index("--effort") + 1], "high")
         self.assertIn("--tools", command)
-        self.assertNotIn("Bash", command[command.index("--tools") + 1])
+        self.assertEqual(command[command.index("--tools") + 1], "Read,Grep,Glob")
+        self.assertEqual(command[command.index("--allowedTools") + 1], "Read,Grep,Glob")
+        self.assertEqual(command[command.index("--add-dir") + 1], str(evidence))
+        self.assertNotIn(str(evidence.parent), [command[index + 1] for index, value in enumerate(command[:-1])
+                                                if value == "--add-dir"])
         self.assertIn("--strict-mcp-config", command)
 
     def test_each_managed_reviewer_command_is_ephemeral_and_has_no_resume(self):

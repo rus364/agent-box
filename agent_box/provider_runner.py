@@ -83,7 +83,7 @@ def parse_result(provider, returncode, output, stderr):
     return result
 
 
-def build_command(route, role, root, schema_path, result_path):
+def build_command(route, role, root, schema_path, result_path, read_paths=()):
     readonly = role != "worker"
     if route["provider"] == "codex":
         command = ["codex", "exec", "--ephemeral", "--ignore-user-config", "--json", "-C", str(root),
@@ -97,6 +97,8 @@ def build_command(route, role, root, schema_path, result_path):
     command = ["claude", "-p", "--model", route["model"]]
     if route["effort"] != "default":
         command += ["--effort", route["effort"]]
+    for path in read_paths:
+        command += ["--add-dir", str(path)]
     command += ["--output-format", "json", "--no-session-persistence", "--safe-mode", "--strict-mcp-config",
                "--mcp-config", '{"mcpServers":{}}', "--permission-mode", "dontAsk",
                "--tools", "Read,Grep,Glob" if readonly else "Read,Grep,Glob,Bash,Edit,Write",
@@ -106,7 +108,7 @@ def build_command(route, role, root, schema_path, result_path):
     return command
 
 
-def run(route, role, root, prompt, *, timeout=3600):
+def run(route, role, root, prompt, *, timeout=3600, read_paths=()):
     env = os.environ.copy()
     for key in ("CLAUDE_CODE_SUBAGENT_MODEL", "CLAUDE_CODE_EFFORT_LEVEL", "CLAUDECODE"):
         env.pop(key, None)
@@ -116,7 +118,7 @@ def run(route, role, root, prompt, *, timeout=3600):
         directory = Path(directory)
         schema, result = directory / "schema.json", directory / "result.json"
         schema.write_text(json.dumps(report_schema(role)))
-        command = build_command(route, role, Path(root), schema, result)
+        command = build_command(route, role, Path(root), schema, result, read_paths)
         with (directory / "stdout").open("w+") as stdout, (directory / "stderr").open("w+") as stderr:
             try:
                 process = subprocess.Popen(command, cwd=root, env=env, stdin=subprocess.PIPE, stdout=stdout,
