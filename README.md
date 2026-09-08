@@ -322,8 +322,12 @@ copies the current effective global value into an explicit project override,
 pinning it against subsequent global changes. Both actions work on fields and
 sections. The available global baseline comes from the session runtime snapshot
 when present, otherwise the host configuration; additional process account
-overrides are excluded from copying. Section copying includes only project-allowed settings. Tracker
-sections copy configured accounts, excluding empty menu placeholders. Choosing a
+overrides are excluded from copying. A temporary session retains the original
+global URLs for the editor, without retaining the replaced global token.
+Section copying includes only project-allowed settings. Copying tracker connections
+removes project-only accounts absent from the global section; copying the enclosing
+tracker section preserves its project ID and recursive choice. Empty menu
+placeholders are not configured accounts. Choosing a
 value equal to the global or program default still saves an explicit project
 override. Project identity fields have no global value to copy; the menu explains
 why Copy current global is unavailable there. Copying an empty required URL still requires
@@ -351,7 +355,10 @@ global permission.
 
 Direct tracker/workflow commands read the process environment. Launches also
 support the existing global `env.forward`/`env.set`, `--env`, and
-`AGENT_BOX_ENV_*` channels. Prefer forwarding secrets by name:
+`AGENT_BOX_ENV_*` channels. A container selects a temporary account only from
+these explicitly forwarded or assigned values; exporting the pair alone does
+not select it. `--host` inherits the full process environment as usual.
+Prefer forwarding secrets by name:
 
 ```bash
 # Export VIKUNJA_URL and VIKUNJA_TOKEN securely in your shell first.

@@ -769,11 +769,19 @@ def effective_config(base=None, environ=None, *, include_project=True) -> Config
         else:
             from .errors import AgentBoxError
             try:
-                base = Config.from_dict(read_json(Path(runtime_file)))
+                rendered = read_json(Path(runtime_file))
+                base = Config.from_dict(rendered)
+                if "global_tracker_urls" in rendered:
+                    base._global_tracker_urls = rendered["global_tracker_urls"]
             except (OSError, ValueError, TypeError):
                 raise AgentBoxError("Cannot read rendered workflow configuration") from None
     import copy
     base = copy.deepcopy(base)
+    # The editor needs the original URLs, but a session must not retain an
+    # unused global token just to remember where those URLs came from.
+    source = getattr(base, "_project_base", base)
+    base._global_tracker_urls = getattr(source, "_global_tracker_urls", {
+        name: connection.url for name, connection in source.tracker.connections.items()})
     base.tracker = session_tracker(base, environ)
     return project_config.apply(base, project_config.load()) if include_project else base
 

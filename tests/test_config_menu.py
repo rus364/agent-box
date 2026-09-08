@@ -481,6 +481,59 @@ class ProjectMenuTests(unittest.TestCase):
         self.assertNotIn('jira', result.config.tracker.connections)
         self.assertEqual(result.config.tracker.connections['vikunja'].url, 'https://global.example')
 
+    def test_connections_copy_replaces_stale_accounts_and_preserves_project_identity(self):
+        """Copying the connections map replaces its keys, including an empty global map."""
+        import curses
+        from agent_box import project_config
+        for connections in ({}, {'vikunja': TrackerConnection('https://global.example', 'FAKE_SECRET')}):
+            config = Config()
+            config.tracker.connections = connections
+            project = {'tracker': {'project': '12', 'recursive': True,
+                                  'connections': {'jira': {'url': 'https://project.example'}}}}
+            result, _ = self.edit(config, [*[curses.KEY_DOWN] * 8, '\n', *[curses.KEY_DOWN] * 2, 'g',
+                                          '\x1b', curses.KEY_END, curses.KEY_UP, '\n'], project=project)
+            expected = {provider: {'url': connection.url} for provider, connection in connections.items()}
+            self.assertEqual(result.project, {'tracker': {'project': '12', 'recursive': True,
+                                                         'connections': expected}})
+            with tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / '.agent-box.json'
+                project_config.save(path, result.project)
+                reloaded = project_config.apply(config, project_config.load(path))
+            self.assertEqual(result.config.to_dict(), reloaded.to_dict())
+
+    def test_project_copy_after_temporary_launch_uses_original_global_urls(self):
+        """A real launch snapshot retains editor URLs without retaining the unused global token."""
+        import curses
+        import os
+        from agent_box import project_config, runtime
+        from agent_box.config import effective_config
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = Config()
+            config.tracker.enabled = True
+            config.tracker.connections['vikunja'] = TrackerConnection('https://global.example', 'GLOBAL_SECRET')
+            config.env.forward = ['VIKUNJA_URL', 'VIKUNJA_TOKEN']
+            project = {'tracker': {'project': '12', 'connections': {'vikunja': {'url': 'https://temporary.example'}}}}
+            environment = {'VIKUNJA_URL': 'https://temporary.example', 'VIKUNJA_TOKEN': 'TEMPORARY_SECRET'}
+            with patch.dict(os.environ, environment, clear=True), \
+                 patch.object(runtime, 'load_config', return_value=config), \
+                 patch.object(project_config, 'load', return_value=project), \
+                 patch.object(runtime, 'TRACKER_RUNTIME_DIR', root / 'runtime'), \
+                 patch.object(runtime, 'container_tracker_url', side_effect=lambda url: url):
+                launched = runtime.launch_config()
+                state = runtime.WorkspaceRuntimeState(root / 'workspace', root / 'git', root / 'gh')
+                snapshot = runtime.session_runtime(launched, runtime_state=state)
+            self.assertNotIn('GLOBAL_SECRET', snapshot.read_text())
+            with patch.dict(os.environ, {'AGENT_BOX_RUNTIME_CONFIG': str(snapshot)}, clear=True):
+                baseline = effective_config(environ={}, include_project=False)
+                self.assertEqual(baseline.tracker.connection('vikunja').token, 'TEMPORARY_SECRET')
+                self.assertEqual(baseline.tracker.connection('vikunja').url, 'https://temporary.example')
+                result, screen = self.edit(baseline, [*[curses.KEY_DOWN] * 8, 'g',
+                                                    curses.KEY_END, curses.KEY_UP, '\n'], project=project)
+            self.assertEqual(result.project['tracker']['connections'], {'vikunja': {'url': 'https://global.example'}})
+            self.assertEqual(result.project['tracker']['project'], '12')
+            self.assertNotIn('TEMPORARY_SECRET', '\n'.join(screen.drawn))
+
     def test_project_reset_copy_help_and_exit_controls_fit_minimum_terminal(self):
         """Both distinct project actions remain discoverable at 40 columns."""
         screen = Screen(['\x1b'], sizes=[(8, 40)])

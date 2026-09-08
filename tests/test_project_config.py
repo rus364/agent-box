@@ -171,11 +171,61 @@ class ProjectConfigTests(unittest.TestCase):
             with self.subTest(session=bool(environment)), patch.dict(os.environ, environment), \
                  patch.object(runtime, 'load_config', return_value=self.config), \
                  patch.object(project_config, 'project_path', return_value=self.path):
-                result = runtime.launch_config()
+                result = runtime.launch_config([(name, None) for name in environment])
                 self.assertEqual(result.tracker.provider, 'vikunja')
                 self.assertEqual(make_adapter(self.binding, config=result).client.token, token)
                 self.assertEqual(result.tracker.connection('jira').url, 'https://project-jira.example')
         self.assertEqual(self.config.to_dict(), original)
+
+    def test_container_ignores_unforwarded_process_account_in_its_snapshot(self):
+        """A shell export alone must not grant a container the temporary account."""
+        for environment in ({'VIKUNJA_URL': self.binding.server, 'VIKUNJA_TOKEN': 'session-secret'},
+                            {'VIKUNJA_TOKEN': 'session-secret'}):
+            with self.subTest(environment=environment), patch.dict(os.environ, environment), \
+                 patch.object(runtime, 'load_config', return_value=self.config), \
+                 patch.object(project_config, 'load', return_value={}), \
+                 patch.object(runtime, 'TRACKER_RUNTIME_DIR', self.root / 'runtime'), \
+                 patch.object(runtime, 'container_tracker_url', side_effect=lambda url: url):
+                result = runtime.launch_config()
+                snapshot = runtime.session_runtime(result, runtime_state=self.runtime_state)
+                self.assertEqual(result.tracker.connection('vikunja').token, 'global-secret')
+                self.assertNotIn('session-secret', snapshot.read_text())
+
+    def test_container_selects_account_from_existing_environment_channels(self):
+        """All explicit launch channels keep their existing overlay precedence."""
+        from agent_box.config import EnvConfig
+        pair = {'VIKUNJA_URL': self.binding.server, 'VIKUNJA_TOKEN': 'session-secret'}
+        cases = [(EnvConfig(forward=list(pair)), pair, None),
+                 (EnvConfig(set=pair), {}, None),
+                 (EnvConfig(), pair, [(name, None) for name in pair]),
+                 (EnvConfig(), {}, list(pair.items())),
+                 (EnvConfig(), {'AGENT_BOX_ENV_' + name: value for name, value in pair.items()}, None)]
+        for policy, environment, specs in cases:
+            self.config.env = policy
+            with self.subTest(policy=policy, specs=specs), patch.dict(os.environ, environment, clear=True), \
+                 patch.object(runtime, 'load_config', return_value=self.config), \
+                 patch.object(project_config, 'load', return_value={}):
+                result = runtime.launch_config(specs)
+                self.assertEqual(result.tracker.connection('vikunja').token, 'session-secret')
+
+    def test_host_launch_inherits_process_account_without_forwarding(self):
+        """Host execution and its snapshot must select the account inherited by the child."""
+        from agent_box.workspace import Workspace
+        pair = {'VIKUNJA_URL': self.binding.server, 'VIKUNJA_TOKEN': 'session-secret'}
+        with patch.dict(os.environ, pair, clear=True), \
+             patch.object(runtime, 'load_config', return_value=self.config), \
+             patch.object(project_config, 'load', return_value={}), \
+             patch.object(runtime, 'TRACKER_RUNTIME_DIR', self.root / 'runtime'), \
+             patch.object(runtime, 'container_tracker_url', side_effect=lambda url: url), \
+             patch.object(runtime.shutil, 'which', return_value='/fake/codex'), \
+             patch.object(runtime, 'resolve_workspace', return_value=Workspace(self.root, self.root)), \
+             patch.object(runtime.subprocess, 'call', return_value=0) as call:
+            self.assertEqual(runtime.host_main('codex', []), 0)
+            environment = call.call_args.kwargs['env']
+            self.assertEqual(environment['VIKUNJA_TOKEN'], 'session-secret')
+            snapshot = json.loads(Path(environment['AGENT_BOX_RUNTIME_CONFIG']).read_text())
+            self.assertEqual(snapshot['tracker']['connections']['vikunja']['token'], 'session-secret')
+            self.assertFalse(snapshot['container'])
 
     def test_launch_rejects_selected_account_mismatch_and_incomplete_session_pair(self):
         """The launcher must reject invalid account selection before any consumer can connect."""
@@ -193,7 +243,7 @@ class ProjectConfigTests(unittest.TestCase):
                  patch.object(runtime, 'load_config', return_value=self.config), \
                  patch.object(project_config, 'project_path', return_value=self.path), \
                  self.assertRaises(AgentBoxError):
-                runtime.launch_config()
+                runtime.launch_config([(name, None) for name in environment])
 
     def test_session_snapshots_survive_other_sessions_and_global_disable(self):
         with patch.object(runtime, 'TRACKER_RUNTIME_DIR', self.root / 'runtime'), \

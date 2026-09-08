@@ -220,6 +220,11 @@ def edit(config, *, project=None):
     choices, link = ([], None) if project_mode else (pathsetup.bin_dir_choices(), pathsetup.link_state())
     model_suggestions = {"codex": load_codex_models(), "claude": BUNDLED_MODELS["claude"]}
     inherited = copy.deepcopy(config.to_dict())
+    if project_mode and hasattr(config, "_global_tracker_urls"):
+        # This is an editor-only baseline, not an account for tracker requests.
+        inherited["tracker"]["connections"] = {
+            provider: TrackerConnection(url).to_dict()
+            for provider, url in config._global_tracker_urls.items()}
     global_values = copy.deepcopy(inherited)
     draft = merge(inherited, overrides) if project_mode else copy.deepcopy(inherited)
     draft.pop("version", None)
@@ -597,8 +602,11 @@ def edit(config, *, project=None):
                         notice = "Copy current global unavailable: no global value for this project identity field"
                     else:
                         if project_mode:
-                            for name, item in value.items() if isinstance(value, dict) else [(None, value)]:
-                                record((*full, name) if name is not None else full, item)
+                            if full == ("tracker",):
+                                value.update({name: overrides["tracker"][name]
+                                              for name in ("project", "recursive")
+                                              if name in overrides.get("tracker", {})})
+                            record(full, value)
                             current = merge(inherited, overrides)
                             for part in full:
                                 current = current[part]

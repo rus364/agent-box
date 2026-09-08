@@ -773,6 +773,8 @@ def sync_tracker_runtime(config: Config, directory: Path | None = None, *, polic
         "tracker_urls": {name: container_tracker_url(connection.url)
                          for name, connection in config.tracker.connections.items()
                          if config.tracker.enabled},
+        "global_tracker_urls": getattr(config, "_global_tracker_urls", {
+            name: connection.url for name, connection in config.tracker.connections.items()}),
         "workflow": config.workflow.to_dict(),
         "github": config.github.to_dict(),
         "browser": config.browser.to_dict(),
@@ -801,12 +803,14 @@ def session_runtime(config, *, container=True, runtime_state=None):
     return path
 
 
-def launch_config(env_specs=None):
+def launch_config(env_specs=None, *, container=True):
     base = load_config()
-    base.env = base.env.overlay(env_specs)
-    environment = dict(os.environ)
-    environment.update(base.env.set)
+    policy = base.env.overlay(env_specs)
+    environment = ({name: os.environ[name] for name in policy.forward if name in os.environ}
+                   if container else dict(os.environ))
+    environment.update(policy.set)
     config = effective_config(base, environ=environment)
+    config.env = policy
     from .project_config import load
     from .repo_binding import server_identity
     tracker = load().get("tracker", {})
@@ -2632,7 +2636,7 @@ def host_main(
     except (NotADirectoryError, ValueError) as exc:
         raise AgentBoxError(str(exc)) from exc
 
-    config = launch_config(env_specs)
+    config = launch_config(env_specs, container=False)
     # As in container mode: a launch applies nothing to the user's own files.
     env = dict(os.environ)
     # ``env.set`` states what a session should have; a host session is still a
