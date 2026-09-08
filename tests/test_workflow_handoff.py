@@ -8,12 +8,14 @@ tracker project, task, scope, role and tier it was prepared for.
 import base64
 import hashlib
 import inspect
+import io
 import json
 import stat
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from contextlib import redirect_stderr
 from unittest.mock import Mock, patch
 
 from agent_box import git_workflow as gw
@@ -773,19 +775,21 @@ class WorkerHandoffTests(unittest.TestCase):
         self.assertEqual(report["review_budget"]["used"], 1)
         self.assertEqual(report["review_budget"]["remaining"], 0)
         self.task.description += "\nNew requirement."
+        self.run_workflow("review-budget", "1", "--limit", "2", "--reason", "User authorizes retry")
         with patch.object(workflow, "run", side_effect=AgentBoxError("provider unavailable")), \
              self.assertRaisesRegex(AgentBoxError, "provider unavailable"):
             self.run_workflow("run", "1", "--role", "reviewer", "--primary", "codex",
-                              "--brief", str(self.review_brief), "--review-override-reason", "User authorizes retry")
+                              "--brief", str(self.review_brief))
         budget = self.run_workflow("inspect", "1")["review"]["budget"]
-        self.assertEqual((budget["used"], budget["limit"], budget["remaining"]), (2, 1, 0))
+        self.assertEqual((budget["used"], budget["limit"], budget["remaining"]), (2, 2, 0))
         for command, flags in (("prepare", ("--role", "reviewer")), ("review", ())):
             with self.subTest(command=command), patch.object(workflow, "run") as provider, \
                  self.assertRaisesRegex(AgentBoxError, "budget exhausted"):
                 self.run_workflow(command, "1", *flags, "--primary", "codex", "--brief", str(self.review_brief))
             provider.assert_not_called()
+        self.run_workflow("review-budget", "1", "--limit", "3", "--reason", "User requests one more")
         extra = self.run_workflow("prepare", "1", "--role", "reviewer", "--primary", "codex",
-                                  "--brief", str(self.review_brief), "--review-override-reason", "User requests one more")
+                                  "--brief", str(self.review_brief))
         self.assertEqual(extra["review_budget"]["used"], 3)
         self.assertNotIn("User requests one more", extra["review_handoff"])
         with self.assertRaisesRegex(AgentBoxError, "budget exhausted"):
@@ -796,18 +800,29 @@ class WorkerHandoffTests(unittest.TestCase):
         """Concurrent reservation and unreadable counters fail closed; other projects are distinct."""
         with workflow_state.lock(self.root, "review-budget"), \
              self.assertRaisesRegex(AgentBoxError, "Another local review-budget"):
-            workflow.reserve_review(self.root, BINDING, self.task, 1, None, "round", "scope")
+            workflow.reserve_review(self.root, BINDING, self.task, 1, "round", "scope")
         self.assertEqual(workflow.read_review_budget(self.root, BINDING, self.task, 1)["used"], 0)
-        with self.assertRaisesRegex(AgentBoxError, "non-empty reason"):
-            workflow.reserve_review(self.root, BINDING, self.task, 1, " ", "round", "scope")
-        workflow.reserve_review(self.root, BINDING, self.task, 1, None, "round", "scope")
+        workflow.reserve_review(self.root, BINDING, self.task, 1, "round", "scope")
         other = Binding("vikunja", "https://tasks.example", "other")
         self.assertEqual(workflow.read_review_budget(self.root, other, self.task, 1)["used"], 0)
         path = workflow.review_budget_path(self.root, BINDING, self.task)
-        for malformed in ("broken", "{}", '{"used":true,"overrides":[]}', '{"used":-1,"overrides":[]}'):
+        for malformed in ("broken", "{}", '{"used":true}', '{"used":-1}'):
             path.write_text(malformed)
             with self.subTest(malformed=malformed), self.assertRaisesRegex(AgentBoxError, "Cannot read review budget"):
-                workflow.reserve_review(self.root, BINDING, self.task, 1, "Must not bypass corruption", "round", "scope")
+                workflow.reserve_review(self.root, BINDING, self.task, 1, "round", "scope")
+
+    def test_per_attempt_override_flag_is_rejected_before_reservation(self):
+        """An invocation cannot bypass the persistent absolute ceiling."""
+        self.config.workflow.review.policy = "always"
+        self.run_workflow("review-budget", "1", "--limit", "0", "--reason", "No further attempts")
+        for command, flags in (("prepare", ("--role", "reviewer")),
+                               ("run", ("--role", "reviewer")), ("review", ())):
+            with self.subTest(command=command), redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                self.run_workflow(command, "1", *flags, "--primary", "codex", "--brief", str(self.review_brief),
+                                  "--review-override-reason", "Replayable excuse")
+            with self.assertRaisesRegex(AgentBoxError, "used=0, limit=0"):
+                self.run_workflow(command, "1", *flags, "--primary", "codex", "--brief", str(self.review_brief))
+        self.assertEqual(workflow.read_review_state(self.root, BINDING, self.task)["used"], 0)
 
     def test_failed_budget_write_cannot_dispatch_an_unaccounted_review(self):
         """A failed reservation never publishes a handoff or reaches a provider."""
@@ -832,8 +847,7 @@ class WorkerHandoffTests(unittest.TestCase):
 
     def test_absolute_review_budget_is_idempotent_and_preserves_pending_and_acceptance(self):
         """Retrying a budget decision must never grant more attempts or alter review evidence."""
-        state = {"used": 3, "pending": "existing-round",
-                 "overrides": [{"attempt": 3, "reason": "Earlier one-attempt decision"}]}
+        state = {"used": 3, "pending": "existing-round", "annotation": "Preserved opaque state"}
         workflow.save_review_state(self.root, BINDING, self.task, state)
         accepted = {"scope": workflow.scope(self.root, "main", [self.task]),
                     "validation": {"exit": 0}, "review": {"verdict": "PASS"}}
@@ -858,7 +872,7 @@ class WorkerHandoffTests(unittest.TestCase):
         self.config.workflow.review.policy = "always"
         fingerprint = workflow.scope(self.root, "main", [self.task])
         for attempt in range(3):
-            workflow.reserve_review(self.root, BINDING, self.task, 3, None, f"abandoned-{attempt}", fingerprint)
+            workflow.reserve_review(self.root, BINDING, self.task, 3, f"abandoned-{attempt}", fingerprint)
         self.run_workflow("review-budget", "1", "--limit", "6", "--reason", "THREE_EXTRA_AUTHORIZED")
         for attempt in (4, 5, 6):
             self.task.description += f"\nRequirement {attempt}."
@@ -898,7 +912,7 @@ class WorkerHandoffTests(unittest.TestCase):
             self.run_workflow("review-budget", "1", "--limit", "6", "--reason", "User decision")
         for bad in ({"ceiling": True, "ceiling_reason": "Reason"}, {"ceiling": 6},
                     {"ceiling": -1, "ceiling_reason": "Reason"}):
-            workflow.save_review_state(self.root, BINDING, self.task, {"used": 0, "overrides": [], **bad})
+            workflow.save_review_state(self.root, BINDING, self.task, {"used": 0, **bad})
             with self.subTest(bad=bad), self.assertRaisesRegex(AgentBoxError, "Cannot read review budget"):
                 self.run_workflow("review-budget", "1", "--limit", "6", "--reason", "Must not repair corruption")
 

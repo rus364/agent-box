@@ -250,20 +250,16 @@ def read_review_state(root, binding, task):
     try:
         value = json.loads(path.read_text())
         if (not isinstance(value, dict) or type(value.get("used")) is not int
-                or value["used"] < 0 or not isinstance(value.get("overrides"), list)
+                or value["used"] < 0
                 or (value.get("pending") is not None
                     and (not isinstance(value["pending"], str) or not value["pending"]))
                 or (("ceiling" in value or "ceiling_reason" in value)
                     and (type(value.get("ceiling")) is not int or value["ceiling"] < 0
                          or not isinstance(value.get("ceiling_reason"), str)
-                         or not value["ceiling_reason"].strip()))
-                or any(not isinstance(item, dict) or type(item.get("attempt")) is not int
-                       or not 0 < item["attempt"] <= value["used"]
-                       or not isinstance(item.get("reason"), str) or not item["reason"].strip()
-                       for item in value["overrides"])):
+                         or not value["ceiling_reason"].strip()))):
             raise ValueError("invalid budget structure")
     except FileNotFoundError:
-        value = {"used": 0, "overrides": []}
+        value = {"used": 0}
     except (OSError, ValueError) as exc:
         raise AgentBoxError(f"Cannot read review budget {path}: {exc}") from exc
     return value
@@ -275,7 +271,7 @@ def read_review_budget(root, binding, task, limit):
 
 def review_budget_summary(value, configured_limit):
     limit = value.get("ceiling", configured_limit)
-    return {"used": value["used"], "overrides": value["overrides"],
+    return {"used": value["used"],
             "configured_limit": configured_limit, "limit": limit,
             "limit_reason": value.get("ceiling_reason"), "remaining": max(0, limit - value["used"])}
 
@@ -286,28 +282,24 @@ def save_review_state(root, binding, task, value):
     atomic_write_text(path, json.dumps(value) + "\n", 0o600)
 
 
-def reserve_review(root, binding, task, limit, reason, round_id, fingerprint):
+def reserve_review(root, binding, task, limit, round_id, fingerprint):
     """Attempts outlive scope evidence; stale reports cannot restore the budget."""
     with lock(root, "review-budget"):
         state = read_review_state(root, binding, task)
         budget = review_budget_summary(state, limit)
-        if reason is not None and not reason.strip():
-            raise AgentBoxError("Review override requires a non-empty reason from the user")
-        if budget["remaining"] == 0 and reason is None:
+        if budget["remaining"] == 0:
             raise AgentBoxError(
                 f"Review attempt budget exhausted: used={budget['used']}, limit={budget['limit']}, remaining=0. "
                 "After the user's decision, set workflow review-budget TASK --limit TOTAL --reason TEXT")
         budget["used"] += 1
         budget["remaining"] = max(0, budget["limit"] - budget["used"])
-        if reason is not None:
-            budget["overrides"].append({"attempt": budget["used"], "reason": reason.strip()})
         saved = evidence(root, task, fingerprint)
         for key in ("human_acceptance", "local_acceptance", "review"):
             saved.pop(key, None)
         # Retire acceptance before publishing a new round; report ingestion uses
         # this same lock so a late verdict cannot slip between these writes.
         save_evidence(root, task, saved)
-        state.update(used=budget["used"], overrides=budget["overrides"], pending=round_id)
+        state.update(used=budget["used"], pending=round_id)
         save_review_state(root, binding, task, state)
         return budget
 
@@ -780,7 +772,6 @@ def parser():
             cmd.add_argument("--session-effort", help="Verified active session effort for untiered execution")
         if name in ("prepare", "run", "review"):
             cmd.add_argument("--brief", required=name == "run")
-            cmd.add_argument("--review-override-reason", help="User-authorized reason for one review attempt beyond the limit")
         if name == "report":
             cmd.add_argument("--file", required=True)
             cmd.add_argument("--scope", required=True)
@@ -945,9 +936,6 @@ def dispatch(args):
         return saved
     if args.command in ("prepare", "run", "review", "report"):
         role = "reviewer" if args.command == "review" else args.role
-        override_reason = getattr(args, "review_override_reason", None)
-        if role != "reviewer" and override_reason is not None:
-            raise AgentBoxError("--review-override-reason is only valid for a reviewer")
         tier = delegation_tier(args, task, role)
         review_context = ""
         if role == "reviewer":
@@ -977,7 +965,7 @@ def dispatch(args):
                         secrets.token_urlsafe(18) if role == "reviewer" else None)
         if role == "reviewer" and args.command != "report":
             budget = reserve_review(root, binding, task, config.workflow.review.max_rounds,
-                                    override_reason, review_round, fingerprint)
+                                    review_round, fingerprint)
             saved = evidence(root, task, fingerprint)
         session_action = (selected.get("mode") == "current-session" and args.command != "report"
                           and (role == "worker" or selected["model"] is None))

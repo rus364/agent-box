@@ -279,11 +279,11 @@ decision for a Doing/Review task with
 `workflow review-budget ID --limit TOTAL --reason TEXT`. TOTAL is an absolute
 nonnegative ceiling: with three attempts used and three more authorized, set six.
 Repeating the command does not add attempts. It preserves used attempts, pending
-review, earlier one-attempt override history and acceptance evidence. The explicit
+review and acceptance evidence. The explicit
 ceiling overrides configured max_rounds for this task, including after scope or
-configuration changes; zero stops further ordinary attempts without erasing usage.
-`--review-override-reason TEXT` on a reviewer invocation remains a separate
-user-authorized one-attempt exception; it does not change the persistent ceiling.
+configuration changes; zero stops further attempts without erasing usage.
+Every reviewer invocation obeys that ceiling; only the standalone budget command
+changes the task allowance.
 Every new review retires previous PASS and human acceptance under the reservation
 lock, including explicit tiers and provider failures. Result ingestion uses the
 same lock and accepts only the latest pending round; late or replayed results

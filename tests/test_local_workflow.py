@@ -92,7 +92,7 @@ class LocalLandTests(unittest.TestCase):
             def interleave(root, purpose):
                 if not reserved:
                     reserved.append(True)
-                    workflow.reserve_review(root, BINDING, self.parent, 3, None,
+                    workflow.reserve_review(root, BINDING, self.parent, 3,
                                             "new-round", self.saved["scope"])
                 with original_lock(root, purpose):
                     yield
@@ -112,7 +112,7 @@ class LocalLandTests(unittest.TestCase):
 
         def run(command, *args, **kwargs):
             if command == ["validation-fixture"]:
-                workflow.reserve_review(self.root, BINDING, self.parent, 3, None,
+                workflow.reserve_review(self.root, BINDING, self.parent, 3,
                                         "validation-round", self.saved["scope"])
                 return SimpleNamespace(returncode=0)
             return original_run(command, *args, **kwargs)
@@ -134,7 +134,7 @@ class LocalLandTests(unittest.TestCase):
 
         def publish(*args):
             with self.assertRaisesRegex(AgentBoxError, "Another local review-budget"):
-                workflow.reserve_review(self.root, BINDING, self.parent, 3, None,
+                workflow.reserve_review(self.root, BINDING, self.parent, 3,
                                         "too-late", self.saved["scope"])
             return original_publish(*args)
 
@@ -157,7 +157,7 @@ class LocalLandTests(unittest.TestCase):
         original_operate = local_workflow.operate
 
         def interleave(*args):
-            workflow.reserve_review(self.root, BINDING, self.parent, 3, None,
+            workflow.reserve_review(self.root, BINDING, self.parent, 3,
                                     "recovery-round", workflow.scope(self.root, "main", [self.parent]))
             return original_operate(*args)
 
@@ -181,7 +181,7 @@ class LocalLandTests(unittest.TestCase):
         original_operate = github.operate
 
         def interleave(*args):
-            workflow.reserve_review(self.root, BINDING, self.parent, 3, None,
+            workflow.reserve_review(self.root, BINDING, self.parent, 3,
                                     "github-round", self.saved["scope"])
             return original_operate(*args)
 
