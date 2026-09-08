@@ -212,11 +212,18 @@ agent-box workflow prepare TASK --role worker --primary codex
 agent-box workflow run TASK --role worker --primary codex --brief /tmp/brief.md
 # The primary checks evidence and commits the resulting work.
 agent-box workflow validate TASK -- python3 -m unittest discover -s tests
-agent-box workflow review TASK --primary codex
+agent-box workflow review TASK --primary codex --brief /tmp/review-brief.md
 agent-box workflow finish TASK
 ```
 
-Explicit-tier native handoffs use `prepare`, then `report --file FILE --scope DIGEST --handoff
+The review brief is ephemeral per-round input with changes/reasons, technical risks,
+validation commands/results and limitations; it is not stored in tracker comments.
+Every native verdict uses a newly spawned reviewer with no inherited coordinator or
+reviewer history (`fork_turns="none"` for Codex), never followup/resume. Pass the
+returned `review_handoff` unchanged as the initial message. Managed commands remain
+ephemeral/no-session-persistence and do not resume a prior review.
+
+Explicit-tier native handoffs use `prepare --brief FILE`, then `report --file FILE --scope DIGEST --handoff
 DESCRIPTOR --provider ACTUAL_PROVIDER --model ACTUAL_MODEL --effort ACTUAL_EFFORT`
 for the returned structured report. Supply `--fallback-reason REASON` when using
 a fallback candidate, and `--fresh-context` for every native reviewer; unknown

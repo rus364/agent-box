@@ -145,7 +145,8 @@ class NativeRouteTests(unittest.TestCase):
 
     def test_tiered_native_review_requires_fresh_context_before_acceptance(self):
         """Exact model/effort cannot make a reused reviewer independent."""
-        prepared = self.run_workflow("prepare", "1", "--role", "reviewer", "--primary", "codex")
+        prepared = self.run_workflow("prepare", "1", "--role", "reviewer", "--primary", "codex",
+                                     "--brief", str(self.review_brief))
         self.report.write_text(json.dumps({"verdict": "PASS", "summary": "Fine", "findings": []}))
         with patch.object(workflow, "save_evidence") as save:
             with self.assertRaisesRegex(AgentBoxError, "fresh-context"):
@@ -183,7 +184,8 @@ class NativeRouteTests(unittest.TestCase):
              patch.object(workflow, "run", side_effect=[
                  workflow.ProviderFailure("Claude unavailable", "unavailable"),
                  {"verdict": "PASS", "summary": "Fine", "findings": []}]):
-            result = self.run_workflow("review", "1", "--primary", "codex")
+            result = self.run_workflow("review", "1", "--primary", "codex",
+                                       "--brief", str(self.review_brief))
         saved = workflow.read_evidence(self.root, self.task)["review"]
         self.assertEqual(saved["route"], selected["fallbacks"][0])
         self.assertEqual(saved["failures"], [{"provider": "claude", "category": "unavailable"}])
@@ -202,7 +204,8 @@ class NativeRouteTests(unittest.TestCase):
 
     def test_wrong_native_route_is_refused_before_acceptance_changes(self):
         for role in ("worker", "reviewer"):
-            prepared = self.run_workflow("prepare", "1", "--role", role, "--primary", "codex")
+            extra = ["--brief", str(self.review_brief)] if role == "reviewer" else []
+            prepared = self.run_workflow("prepare", "1", "--role", role, "--primary", "codex", *extra)
             for change in ({"model": "wrong"}, {"effort": "medium"}, {"provider": "codex"}):
                 with self.subTest(role=role, change=change), \
                      patch.object(workflow, "accept_worker") as accept, \
@@ -217,7 +220,8 @@ class NativeRouteTests(unittest.TestCase):
                     "role": "reviewer", "fallbacks": [
                         {"provider": "codex", "model": "fallback", "effort": "medium", "tier": 1}]}
         with patch.object(workflow, "route", return_value=selected):
-            prepared = self.run_workflow("prepare", "1", "--role", "reviewer", "--primary", "codex")
+            prepared = self.run_workflow("prepare", "1", "--role", "reviewer", "--primary", "codex",
+                                         "--brief", str(self.review_brief))
         self.report.write_text(json.dumps({"verdict": "PASS", "summary": "Fine", "findings": []}))
         for reason in (None, " "):
             with self.subTest(reason=reason), patch.object(workflow, "save_evidence") as save:

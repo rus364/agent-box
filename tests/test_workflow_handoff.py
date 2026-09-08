@@ -175,6 +175,11 @@ class WorkerHandoffTests(unittest.TestCase):
         self.adapter.identity.return_value = {"id": 1}
         self.report = Path(self.directory.name) / "report.json"
         self.report.write_text(json.dumps({"status": "completed", "summary": "Done", "evidence": ["edited"]}))
+        self.review_brief = Path(self.directory.name) / "review-brief.md"
+        self.review_brief.write_text(
+            "Changes and reasons: implemented the current scope.\n"
+            "Technical risks: boundary behavior.\n"
+            "Validation: unittest passed; no live provider behavior was proven.\n")
         info = {"branch": "ab/1-task", "base": "main"}
         self.patches = [
             patch.object(workflow, "effective_config", return_value=self.config),
@@ -246,7 +251,8 @@ class WorkerHandoffTests(unittest.TestCase):
             "scope": fingerprint, "review": {"verdict": "PASS"}, "validation": {"exit": 0}})
         with patch.object(workflow, "route", side_effect=AssertionError("matrix consulted")), \
              patch.object(workflow, "run", side_effect=AssertionError("provider launched")):
-            prepared = self.run_workflow("review", "1", "--primary", "codex")
+            prepared = self.run_workflow("review", "1", "--primary", "codex",
+                                         "--brief", str(self.review_brief))
         self.assertEqual(prepared["action"], "review-in-fresh-context")
         self.assertNotIn("review", workflow.read_evidence(self.root, self.task))
         self.report.write_text(json.dumps({"verdict": "PASS", "summary": "Reviewed", "findings": []}))
@@ -287,7 +293,8 @@ class WorkerHandoffTests(unittest.TestCase):
         with patch.object(workflow, "route", side_effect=AssertionError("matrix consulted")), \
              patch.object(workflow, "run", return_value={"verdict": "PASS", "summary": "Reviewed", "findings": []}) as run:
             result = self.run_workflow("review", "1", "--primary", "codex",
-                                       "--session-model", "session-only", "--session-effort", "high")
+                                       "--session-model", "session-only", "--session-effort", "high",
+                                       "--brief", str(self.review_brief))
         self.assertEqual(run.call_args.args[0]["model"], "session-only")
         self.assertEqual(run.call_args.args[0]["provider"], "codex")
         self.assertEqual(result["report"]["verdict"], "PASS")
@@ -383,7 +390,8 @@ class WorkerHandoffTests(unittest.TestCase):
         _, handoff = self.prepare()
         payload = json.loads(base64.urlsafe_b64decode(handoff))
         self.assertEqual(set(payload),
-                         {"repository", "binding", "branch", "head", "integration", "task", "scope", "route"})
+                         {"repository", "binding", "branch", "head", "integration", "task", "scope", "route",
+                          "delegation"})
 
     def test_a_worker_cannot_widen_the_route_by_editing_local_state(self):
         handed = self.prepare()
@@ -467,10 +475,63 @@ class WorkerHandoffTests(unittest.TestCase):
             return {"verdict": "PASS", "summary": "Reads correctly", "findings": []}
 
         with patch.object(workflow, "run", side_effect=managed_runner(provider)):
-            result = self.run_workflow("review", "1", "--primary", "codex")
+            result = self.run_workflow("review", "1", "--primary", "codex",
+                                       "--brief", str(self.review_brief))
         self.assertEqual(result["report"]["verdict"], "PASS")
         self.assertEqual(workflow.read_evidence(self.root, self.task)["review"]["verdict"], "PASS")
         self.assertNotIn("human_acceptance", workflow.read_evidence(self.root, self.task))
+
+    def test_native_and_managed_rounds_share_one_neutral_complete_handoff(self):
+        """A second verdict gets the whole current change, not the first review's story."""
+        self.config.workflow.review.policy = "always"
+        self.task.description = (
+            "## Goal\nCurrent goal.\n\n"
+            "## Context\nPrevious verdict found an obsolete problem.\n\n"
+            "## Acceptance\n- [ ] Current behavior works.\n\n"
+            "## Validation\nRun the focused unittest.\n")
+        (self.root / "change.py").write_text("value = 1\n")
+        gw.git(self.root, "add", ".")
+        gw.git(self.root, "commit", "-m", "current implementation")
+        first = self.run_workflow("prepare", "1", "--role", "reviewer", "--primary", "codex",
+                                  "--brief", str(self.review_brief))
+        second = self.run_workflow("prepare", "1", "--role", "reviewer", "--primary", "codex",
+                                   "--brief", str(self.review_brief))
+        self.assertNotEqual(first["handoff"], second["handoff"])
+        self.assertEqual(first["review_handoff"], second["review_handoff"])
+        prompt = second["review_handoff"]
+        self.assertIn("Current goal", prompt)
+        self.assertIn("Current behavior works", prompt)
+        self.assertIn("focused unittest", prompt)
+        self.assertNotIn("Previous verdict", prompt)
+        self.assertIn("Changes and reasons", prompt)
+        self.assertIn(gw.head_sha(self.root), prompt)
+        self.assertIn("diff_range", prompt)
+        self.assertIn("diff --git", prompt)
+        self.assertIn("counterexamples", prompt)
+        self.assertIn("Successful tests", prompt)
+        self.assertIn("fork_turns=none", second["instructions"])
+        self.assertIn("never use followup_task or resume", second["instructions"])
+        self.adapter.comments.assert_not_called()
+
+        seen = []
+
+        def provider(route, role, root, managed_prompt, *, timeout):
+            seen.append(managed_prompt)
+            return {"verdict": "PASS", "summary": "Reviewed", "findings": []}
+
+        with patch.object(workflow, "run", side_effect=managed_runner(provider)):
+            self.run_workflow("review", "1", "--primary", "codex",
+                              "--brief", str(self.review_brief))
+        self.assertEqual(seen, [prompt])
+
+    def test_required_review_refuses_a_missing_or_empty_author_brief(self):
+        self.config.workflow.review.policy = "always"
+        with self.assertRaisesRegex(AgentBoxError, "Pass --brief"):
+            self.run_workflow("prepare", "1", "--role", "reviewer", "--primary", "codex")
+        self.review_brief.write_text(" \n")
+        with self.assertRaisesRegex(AgentBoxError, "review brief is empty"):
+            self.run_workflow("review", "1", "--primary", "codex",
+                              "--brief", str(self.review_brief))
 
     def test_starting_review_retires_human_acceptance_before_a_report_exists(self):
         """A pending native review or failed provider must not leave human approval usable."""
@@ -484,11 +545,13 @@ class WorkerHandoffTests(unittest.TestCase):
                     "scope": fingerprint, "validation": {"exit": 0},
                     "human_acceptance": {"scope": fingerprint, "actor": "1", "reason": "User accepted"}})
                 if command == "prepare":
-                    self.run_workflow("prepare", "1", "--role", "reviewer", "--primary", "codex")
+                    self.run_workflow("prepare", "1", "--role", "reviewer", "--primary", "codex",
+                                      "--brief", str(self.review_brief))
                 else:
                     with patch.object(workflow, "run", side_effect=AgentBoxError("provider unavailable")), \
                          self.assertRaisesRegex(AgentBoxError, "provider unavailable"):
-                        self.run_workflow("review", "1", "--primary", "codex")
+                        self.run_workflow("review", "1", "--primary", "codex",
+                                          "--brief", str(self.review_brief))
                 self.assertNotIn("human_acceptance", workflow.read_evidence(self.root, self.task))
                 with self.assertRaisesRegex(AgentBoxError, "PASS review"):
                     self.run_workflow("finish", "1")
@@ -504,7 +567,8 @@ class WorkerHandoffTests(unittest.TestCase):
                               "--scope", scope_value, "--handoff", handoff)
 
     def test_a_reviewer_descriptor_cannot_be_spent_on_a_worker_report(self):
-        prepared = self.run_workflow("prepare", "1", "--role", "reviewer", "--primary", "codex")
+        prepared = self.run_workflow("prepare", "1", "--role", "reviewer", "--primary", "codex",
+                                     "--brief", str(self.review_brief))
         # A worker report is checked against the scope that admits its own
         # uncommitted edits, so the forged token carries exactly that scope: only
         # the role binding is left to refuse it.
@@ -519,7 +583,8 @@ class WorkerHandoffTests(unittest.TestCase):
             self.report_back((scope_value, widened))
 
     def test_a_reviewer_reports_at_the_role_and_tier_it_was_prepared_for(self):
-        prepared = self.run_workflow("prepare", "1", "--role", "reviewer", "--primary", "codex")
+        prepared = self.run_workflow("prepare", "1", "--role", "reviewer", "--primary", "codex",
+                                     "--brief", str(self.review_brief))
         self.assertEqual(prepared["route"]["role"], "reviewer")
         review = Path(self.directory.name) / "review.json"
         review.write_text(json.dumps({"verdict": "PASS", "summary": "Fine", "findings": []}))

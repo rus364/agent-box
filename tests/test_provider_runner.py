@@ -34,6 +34,21 @@ class ProviderRunnerTests(unittest.TestCase):
         self.assertNotIn("Bash", command[command.index("--tools") + 1])
         self.assertIn("--strict-mcp-config", command)
 
+    def test_each_managed_reviewer_command_is_ephemeral_and_has_no_resume(self):
+        r = importlib.import_module("agent_box.provider_runner")
+        root = Path("/tmp")
+        schema = Path("/tmp/schema.json")
+        result = Path("/tmp/result.json")
+        codex = r.build_command({"provider": "codex", "model": "m", "effort": "high"},
+                                "reviewer", root, schema, result)
+        claude = r.build_command({"provider": "claude", "model": "m", "effort": "high"},
+                                 "reviewer", root, schema, result)
+        self.assertIn("--ephemeral", codex)
+        self.assertIn("--no-session-persistence", claude)
+        for command in (codex, claude):
+            self.assertNotIn("resume", command)
+            self.assertNotIn("--session-id", command)
+
     def test_expired_oauth_is_authentication_failure_not_a_review(self):
         r = importlib.import_module("agent_box.provider_runner")
         with self.assertRaises(r.ProviderFailure) as caught:
