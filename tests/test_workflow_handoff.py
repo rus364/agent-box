@@ -1043,6 +1043,28 @@ class DelegationContextTests(unittest.TestCase):
             self.assertNotIn("private note", workflow.repository_instructions(root))
             self.assertNotIn("AGENTS.md", workflow.repository_instruction_paths(root))
 
+    def test_reviewer_handoff_fails_closed_when_a_regular_instruction_cannot_be_read(self):
+        """A verdict must not proceed with missing mandatory repository rules."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = repository(directory)
+            (root / "AGENTS.md").write_text("Mandatory review rule.\n")
+            task = Task("1", "1", "Review", description="## Goal\nReview it.\n")
+            evidence_path = workflow.review_evidence_path(
+                root, task.id, "a" * 64, "unreadable-instruction")
+            original_read_text = Path.read_text
+
+            def fail_instruction_read(path, *args, **kwargs):
+                if path == root / "AGENTS.md":
+                    raise OSError("synthetic read failure")
+                return original_read_text(path, *args, **kwargs)
+
+            with patch.object(Path, "read_text", new=fail_instruction_read), \
+                 self.assertRaisesRegex(AgentBoxError, "Cannot read repository instruction AGENTS.md"):
+                workflow.reviewer_handoff(
+                    root, "main", [task], "Validation: not run.", {}, "", task.id,
+                    "a" * 64, "unreadable-instruction")
+            self.assertFalse(evidence_path.exists())
+
     def test_reviewer_handoff_points_at_checkout_evidence_without_copying_large_bodies(self):
         with tempfile.TemporaryDirectory() as directory:
             root = repository(directory)

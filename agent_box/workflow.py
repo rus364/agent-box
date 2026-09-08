@@ -88,8 +88,8 @@ def repository_instruction_evidence(root):
     for name in repository_instruction_paths(root):
         try:
             text = (Path(root) / name).read_text(errors="replace")
-        except OSError:
-            continue
+        except OSError as exc:
+            raise AgentBoxError(f"Cannot read repository instruction {name}: {exc}") from exc
         result.append((name, text))
     return result
 
@@ -511,38 +511,42 @@ def write_review_evidence(root, task_id, fingerprint, delegation, boundaries,
     """Materialize one round without retiring evidence another reviewer may be reading."""
     path = review_evidence_path(root, task_id, fingerprint, delegation)
     path.mkdir(mode=0o700, parents=True, exist_ok=True)
-    diff = gw.git(root, "diff", "--no-ext-diff", "--no-textconv", "--find-renames",
-                  boundaries["diff_range"], "--")
-    changed_paths = gw.git(root, "diff", "--no-ext-diff", "--no-textconv",
-                           "--name-status", "--find-renames", boundaries["diff_range"], "--")
-    instructions = repository_instruction_evidence(root)
-    contents = {
-        "requirements": json.dumps(normative_requirements, ensure_ascii=False, indent=2) + "\n",
-        "full_diff": diff,
-        "changed_paths": changed_paths,
-        "author_report": author_report,
-        "recorded_validation": json.dumps(recorded_validation, ensure_ascii=False, indent=2) + "\n",
-    }
-    names = {"requirements": "requirements.json", "full_diff": "full.diff",
-             "changed_paths": "changed-paths.txt", "author_report": "author-report.md",
-             "recorded_validation": "recorded-validation.json"}
-    artifacts = {key: {"path": str(path / names[key]),
-                       "sha256": hashlib.sha256(value.encode()).hexdigest()}
-                 for key, value in contents.items()}
-    instruction_manifest = [{"source_path": name, "artifact_path": str(path / name),
-                             "sha256": hashlib.sha256(text.encode()).hexdigest()}
-                            for name, text in instructions]
-    manifest = {
-        "boundaries": boundaries,
-        "artifacts": artifacts,
-        "repository_instructions": instruction_manifest,
-    }
-    for key, value in contents.items():
-        atomic_write_text(path / names[key], value, 0o400)
-    for name, text in instructions:
-        atomic_write_text(path / name, text, 0o400)
-    atomic_write_text(path / "manifest.json", json.dumps(manifest, indent=2) + "\n", 0o400)
-    return path, manifest
+    try:
+        diff = gw.git(root, "diff", "--no-ext-diff", "--no-textconv", "--find-renames",
+                      boundaries["diff_range"], "--")
+        changed_paths = gw.git(root, "diff", "--no-ext-diff", "--no-textconv",
+                               "--name-status", "--find-renames", boundaries["diff_range"], "--")
+        instructions = repository_instruction_evidence(root)
+        contents = {
+            "requirements": json.dumps(normative_requirements, ensure_ascii=False, indent=2) + "\n",
+            "full_diff": diff,
+            "changed_paths": changed_paths,
+            "author_report": author_report,
+            "recorded_validation": json.dumps(recorded_validation, ensure_ascii=False, indent=2) + "\n",
+        }
+        names = {"requirements": "requirements.json", "full_diff": "full.diff",
+                 "changed_paths": "changed-paths.txt", "author_report": "author-report.md",
+                 "recorded_validation": "recorded-validation.json"}
+        artifacts = {key: {"path": str(path / names[key]),
+                           "sha256": hashlib.sha256(value.encode()).hexdigest()}
+                     for key, value in contents.items()}
+        instruction_manifest = [{"source_path": name, "artifact_path": str(path / name),
+                                 "sha256": hashlib.sha256(text.encode()).hexdigest()}
+                                for name, text in instructions]
+        manifest = {
+            "boundaries": boundaries,
+            "artifacts": artifacts,
+            "repository_instructions": instruction_manifest,
+        }
+        for key, value in contents.items():
+            atomic_write_text(path / names[key], value, 0o400)
+        for name, text in instructions:
+            atomic_write_text(path / name, text, 0o400)
+        atomic_write_text(path / "manifest.json", json.dumps(manifest, indent=2) + "\n", 0o400)
+        return path, manifest
+    except Exception:
+        cleanup_review_evidence(path)
+        raise
 
 
 def reviewer_handoff(root, base, tasks, brief, saved, review_context, task_id, fingerprint,
