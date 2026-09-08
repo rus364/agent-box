@@ -93,14 +93,17 @@ class NativeRouteTests(unittest.TestCase):
     run_workflow = handoff_tests.WorkerHandoffTests.run_workflow
 
     def test_native_report_requires_actual_model_and_effort(self):
+        """Explicit tiers still reject unknown facts after route-aware parsing."""
+        prepared = self.run_workflow("prepare", "1", "--primary", "codex")
         for missing in ("--model", "--effort"):
             argv = ["report", "1", "--provider", "claude", "--model", "m", "--effort", "high",
-                    "--scope", "scope", "--file", str(self.report)]
+                    "--scope", prepared["scope"], "--handoff", prepared["handoff"],
+                    "--file", str(self.report)]
             index = argv.index(missing)
             del argv[index:index + 2]
-            with self.subTest(missing=missing), contextlib.redirect_stderr(io.StringIO()):
-                with self.assertRaises(SystemExit):
-                    workflow.parser().parse_args(argv)
+            with self.subTest(missing=missing):
+                with self.assertRaisesRegex(AgentBoxError, "outside the configured route"):
+                    self.run_workflow(*argv)
 
     def test_native_worker_saves_the_full_route(self):
         prepared = self.run_workflow("prepare", "1", "--primary", "codex")
