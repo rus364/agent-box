@@ -212,16 +212,32 @@ agent-box config apply  # apply the saved file without asking anything
 ```
 
 `agent-box config` uses Python’s standard-library curses menu, with no extra
-packages or installer. Space toggles options; Enter opens sections or edits a
-value; Escape goes back. Cancel writes nothing. Save and apply performs the
-selected changes, including optional PATH setup: restoring the `agent-box`
-symlink in the directory you chose, installing the skills your integrations
-need, linking them for Claude, rendering credential files, and
-reconciling Claude's `settings.json`. `agent-box config apply` does the same
-from the saved file, without any questions — which is what you want after
-editing `config.json` by hand. `agent-box upgrade` applies on its own once it
-has moved the checkout, so a newer agent-box never leaves you with its older
-skills installed.
+packages or installer. It keeps the terminal's default background and remains
+usable down to 40 columns by 8 rows. Up and Down move, Space toggles or cycles
+the current value, Enter opens a section, choice list, or editor, `?` opens the
+complete scrollable help for the selected item, and Escape goes back without
+the usual curses delay. Home/End and Page Up/Down navigate long lists. Details
+sit beside the list on wide terminals and below it on narrow ones. Editors
+support cursor movement, Home, End, Backspace, Delete, insertion, and long
+values; secret values remain masked. F1 shows the editor's keyboard help.
+
+Worker, scout, and reviewer model fields combine local suggestions with a
+manual model-ID editor. Codex suggestions come from its local model cache when
+usable and otherwise from agent-box's bundled hints; Claude uses bundled stable
+aliases and model IDs. These lists are hints rather than availability checks,
+and opening the menu never makes a network request. Manual entry and the
+explicit disable action stay at the top of the list. Existing custom values
+remain editable, Escape restores the previous value, and disabling a candidate
+affects only the selected role, tier, and provider.
+
+Cancel writes nothing. Save and apply performs the selected changes, including
+optional PATH setup: restoring the `agent-box` symlink in the directory you
+chose, installing the skills your integrations need, linking them for Claude,
+rendering credential files, and reconciling Claude's `settings.json`.
+`agent-box config apply` does the same from the saved file, without any
+questions — which is what you want after editing `config.json` by hand.
+`agent-box upgrade` applies on its own once it has moved the checkout, so a
+newer agent-box never leaves you with its older skills installed.
 
 **Starting an agent applies nothing.** `agent-box claude` and `agent-box codex`
 read your configuration but never install a skill, write a symlink or rewrite
