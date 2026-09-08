@@ -53,6 +53,8 @@ class WorkflowGitTests(unittest.TestCase):
             info = {"branch": "ab/task", "base": "main", "writer": "codex"}
             report = Path(temporary) / "report.json"
             report.write_text(json.dumps({"status": "completed", "summary": "Implemented", "evidence": ["Changed code"]}))
+            brief = Path(temporary) / "review-brief.md"
+            brief.write_text("Changes/reasons: code change. Risks: values. Validation: static only; no live proof.\n")
             with patch.object(workflow, "effective_config", return_value=config), patch.object(workflow, "repository_root", return_value=root), \
                  patch.object(Binding, "load", return_value=Binding("vikunja", "https://tasks.example", "1")), \
                  patch.object(workflow, "make_adapter", return_value=adapter), \
@@ -73,7 +75,8 @@ class WorkflowGitTests(unittest.TestCase):
                 self.assertEqual(select(config.workflow, "reviewer", 1, "codex", {}, writer=writer)["provider"], "claude")
                 subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
                 subprocess.run(["git", "commit", "-m", "change"], cwd=root, check=True, capture_output=True)
-                prepared = workflow.dispatch(workflow.parser().parse_args(["prepare", "1", "--role", "reviewer", "--primary", "codex"]))
+                prepared = workflow.dispatch(workflow.parser().parse_args([
+                    "prepare", "1", "--role", "reviewer", "--primary", "codex", "--brief", str(brief)]))
                 (root / "change.py").write_text("value = 2\n")
                 from agent_box.errors import AgentBoxError
                 with self.assertRaises(AgentBoxError):

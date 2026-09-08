@@ -391,9 +391,11 @@ class LocalLandTests(unittest.TestCase):
         with self.assertRaisesRegex(AgentBoxError, "PASS review"):
             self.dispatch(["land", "7", "merge"])
         report = {"verdict": "PASS", "summary": "Reviewed complete implementation", "findings": []}
+        brief = Path(self.temporary.name) / "review-brief.md"
+        brief.write_text("Changes/reasons: integrated implementation. Risks: recovered history. Validation: true passed; no live proof.\n")
         with patch.object(workflow, "route", return_value={}), \
              patch.object(workflow, "execute", return_value={"report": report}) as reviewer:
-            self.dispatch(["review", "7", "--primary", "codex"])
+            self.dispatch(["review", "7", "--primary", "codex", "--brief", str(brief)])
         reviewer.assert_called_once()
         self.assertIn("review the complete implementation", reviewer.call_args.args[-1])
         result = self.dispatch(["land", "7", "merge"])
