@@ -809,6 +809,27 @@ class WorkerHandoffTests(unittest.TestCase):
             with self.subTest(malformed=malformed), self.assertRaisesRegex(AgentBoxError, "Cannot read review budget"):
                 workflow.reserve_review(self.root, BINDING, self.task, 1, "Must not bypass corruption", "round", "scope")
 
+    def test_failed_budget_write_cannot_dispatch_an_unaccounted_review(self):
+        """A failed reservation never publishes a handoff or reaches a provider."""
+        self.config.workflow.review.policy = "always"
+        self.config.workflow.review.max_rounds = 1
+        for command, flags in (("prepare", ("--role", "reviewer")), ("review", ())):
+            with self.subTest(command=command), \
+                 patch.object(workflow, "save_review_state", side_effect=OSError("disk failure")), \
+                 patch.object(workflow, "reviewer_handoff") as handoff, \
+                 patch.object(workflow, "run") as provider, \
+                 self.assertRaisesRegex(OSError, "disk failure"):
+                self.run_workflow(command, "1", *flags, "--primary", "codex",
+                                  "--brief", str(self.review_brief))
+            handoff.assert_not_called()
+            provider.assert_not_called()
+        allocated = self.run_workflow("prepare", "1", "--role", "reviewer", "--primary", "codex",
+                                      "--brief", str(self.review_brief))
+        self.assertEqual(allocated["review_budget"]["used"], 1)
+        with self.assertRaisesRegex(AgentBoxError, "budget exhausted"):
+            self.run_workflow("prepare", "1", "--role", "reviewer", "--primary", "codex",
+                              "--brief", str(self.review_brief))
+
     def test_policy_skipped_review_does_not_reserve_an_attempt(self):
         """A policy decision is not an independent review attempt."""
         self.config.workflow.review.policy = "off"

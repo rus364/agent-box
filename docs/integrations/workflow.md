@@ -265,7 +265,9 @@ are distinct from PASS. Code or requirement changes invalidate acceptance.
 
 `max_rounds` (default 3) is enforced for local reviewer `prepare`, `run` and
 `review`: each reserves one attempt under a local lock before handoff or provider
-execution. Provider fallback belongs to that same attempt. Failed/abandoned
+execution. A failed budget write dispatches nothing and allocates no attempt;
+after durable reservation, packaging/execution failures still consume it.
+Provider fallback belongs to that same attempt. Failed/abandoned
 attempts consume budget; report ingestion and policy SKIPPED do not. Separate
 budget state is keyed by checkout, tracker provider/server/project and task,
 survives scope changes and coordinator restarts, and never resets automatically.
