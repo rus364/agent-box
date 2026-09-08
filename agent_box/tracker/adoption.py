@@ -15,8 +15,8 @@ from .registry import make_adapter
 
 
 def current_binding(root):
-    path = root / BINDING_FILE
-    return Binding.load(root) if path.exists() or path.is_symlink() else None
+    from ..project_config import load
+    return Binding.load(root) if "project" in load(root / BINDING_FILE).get("tracker", {}) else None
 
 
 def save(path, receipt):

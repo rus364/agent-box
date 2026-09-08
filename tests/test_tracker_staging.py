@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from agent_box.errors import AgentBoxError
 from agent_box.repo_binding import Binding, BINDING_FILE
 from agent_box.tracker import adoption, cli
 from agent_box.tracker import vikunja_api as api
@@ -117,6 +118,38 @@ class StagingTests(unittest.TestCase):
 
     def clone(self):
         return adoption.start(self.root, '1', self.receipt, apply=True)
+
+    def test_launch_only_project_config_survives_public_adoption_and_cutover(self):
+        """Adoption can bind a launch-configured repository without discarding its policy."""
+        path = self.root / BINDING_FILE
+        overrides = {'browser': {'enabled': True}, 'workflow': {'auto_push': False}}
+        path.write_text(json.dumps(overrides))
+        report = self.clone()
+        self.assertEqual(json.loads(path.read_text()), overrides)
+        self.assertIsNone(json.loads(self.receipt.read_text())['previous_binding'])
+        self.assertEqual(adoption.staging_context(self.receipt, self.root)[1].project, report['project'])
+        self.assertTrue(adoption.cutover(self.root, self.receipt, True)['complete'])
+        result = json.loads(path.read_text())
+        self.assertEqual(result['browser'], overrides['browser'])
+        self.assertEqual(result['workflow'], overrides['workflow'])
+        self.assertEqual(Binding.load(self.root).project, report['project'])
+
+    def test_adoption_rejects_invalid_project_config_before_clone_writes(self):
+        """Launch-only support must not hide malformed files or an attempted incomplete binding."""
+        path = self.root / BINDING_FILE
+        for content in ('{', '{"browser":{"enabled":1}}', '{"tracker":{"project":"1"}}'):
+            with self.subTest(content=content):
+                path.write_text(content)
+                with self.assertRaises(AgentBoxError):
+                    self.clone()
+                self.assertFalse(self.receipt.exists())
+                self.assertEqual(self.client.writes, [])
+        path.unlink()
+        path.symlink_to(self.root / 'missing.json')
+        with self.assertRaisesRegex(AgentBoxError, 'symlink'):
+            self.clone()
+        self.assertFalse(self.receipt.exists())
+        self.assertEqual(self.client.writes, [])
 
     def test_native_tree_clone_preserves_source_and_repairs_only_staging_edges_and_assignments(self):
         report = self.clone()

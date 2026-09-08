@@ -360,8 +360,10 @@ agent-box --env VIKUNJA_URL --env VIKUNJA_TOKEN codex
 `env.set` stores its literal in global configuration. These remain user choices.
 Temporary account values are never saved in global or project configuration,
 and configuration display masks credentials and environment assignments.
-Launches use private, immutable session snapshots in agent-box runtime state
-through runtime mounts. With tracker and workflow disabled, only a separate
+Launches use immutable session snapshots in agent-box runtime state. Each
+workspace's container mount includes only that workspace's snapshots; host
+snapshots are outside container mounts. Sessions sharing one workspace box
+can access its snapshots. With tracker and workflow disabled, only a separate
 credential-free policy directory is mounted; no account or environment values
 are rendered there. Each consumer applies its current project's
 overrides to the snapshot's global baseline, so another project/session or a

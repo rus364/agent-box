@@ -573,10 +573,10 @@ def workspace_runtime_state(workspace: Workspace) -> WorkspaceRuntimeState:
     return WorkspaceRuntimeState(root=root, git=root / "git", gh=root / "gh")
 
 
-def legacy_runtime_state() -> WorkspaceRuntimeState:
+def legacy_runtime_state(workspace: Workspace | None = None) -> WorkspaceRuntimeState:
     """State used only by the retained disposable argv compatibility path."""
     return WorkspaceRuntimeState(
-        root=STATE_ROOT,
+        root=workspace_runtime_state(workspace).root if workspace is not None else STATE_ROOT,
         git=STATE_ROOT / "git",
         gh=STATE_ROOT / "gh",
     )
@@ -603,9 +603,9 @@ def prepare_container_lifetime_state(
     )
     if mount_notifications:
         notify_module.sync_credentials(config, NOTIFY_CREDENTIALS)
+    tracker_mounts(config, runtime_state)[0][0].mkdir(parents=True, exist_ok=True)
     if config.tracker.enabled or config.workflow.enabled:
         WORKFLOW_STATE.mkdir(parents=True, exist_ok=True)
-        TRACKER_RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
         for problem in tracker_warnings(config):
             warn(problem)
 
@@ -782,10 +782,15 @@ def sync_tracker_runtime(config: Config, directory: Path | None = None, *, polic
     atomic_write_json(directory / "config.json", rendered, 0o600)
 
 
-def session_runtime(config, *, container=True):
+def session_runtime(config, *, container=True, runtime_state=None):
     """Snapshots survive detached sessions; later launches never replace their file."""
     import uuid
-    root = TRACKER_RUNTIME_DIR if config.tracker.enabled or config.workflow.enabled else POLICY_RUNTIME_DIR
+    if container:
+        if runtime_state is None:
+            raise ValueError("Container snapshots require workspace runtime state")
+        root = tracker_mounts(config, runtime_state)[0][0]
+    else:
+        root = TRACKER_RUNTIME_DIR if config.tracker.enabled or config.workflow.enabled else POLICY_RUNTIME_DIR
     directory = root / "sessions" / uuid.uuid4().hex
     sync_tracker_runtime(config, directory, policy=True)
     path = directory / "config.json"
@@ -814,10 +819,13 @@ def launch_config(env_specs=None):
     return config
 
 
-def tracker_mounts(config: Config) -> list[tuple[Path, Path, bool]]:
+def tracker_mounts(config: Config, runtime_state: WorkspaceRuntimeState) -> list[tuple[Path, Path, bool]]:
+    # The workspace root is mounted even with integrations disabled. Keep
+    # credentials outside it, and never mount host or other workspace sessions.
+    workspace = runtime_state.root.name
     if not (config.tracker.enabled or config.workflow.enabled):
-        return [(POLICY_RUNTIME_DIR, CONTAINER_POLICY_RUNTIME_DIR, True)]
-    return [(TRACKER_RUNTIME_DIR, CONTAINER_TRACKER_RUNTIME_DIR, True),
+        return [(POLICY_RUNTIME_DIR / "workspaces" / workspace, CONTAINER_POLICY_RUNTIME_DIR, True)]
+    return [(TRACKER_RUNTIME_DIR / "workspaces" / workspace, CONTAINER_TRACKER_RUNTIME_DIR, True),
             (WORKFLOW_STATE, CONTAINER_WORKFLOW_STATE, False)]
 
 
@@ -1087,7 +1095,7 @@ def build_mounts(
     from .mounts import MountSpec, plan_mounts
 
     mount_workspace_runtime_state = runtime_state is not None
-    runtime_state = runtime_state or legacy_runtime_state()
+    runtime_state = runtime_state or legacy_runtime_state(workspace)
     # The project root and any explicit --mount paths can legitimately
     # overlap (a --mount of a parent directory containing the project is
     # the documented way to expose sibling repos); plan_mounts collapses
@@ -1149,7 +1157,7 @@ def build_mounts(
     ]
 
     pairs += agent_tree_mounts()
-    pairs += tracker_mounts(config)
+    pairs += tracker_mounts(config, runtime_state)
 
     out = []
     seen_paths: set[Path] = set()
@@ -1356,7 +1364,7 @@ def base_podman_args(
     avoids changing callers that only inspect the old command construction.
     """
     config = effective_config(load_config()) if config is None else config
-    runtime_state = legacy_runtime_state()
+    runtime_state = legacy_runtime_state(workspace)
     prepare_container_lifetime_state(
         config, mount_notifications=mount_notifications, runtime_state=runtime_state,
     )
@@ -2258,12 +2266,11 @@ def runtime_main(
     browser_dir = browser_session(config, workspace, runtime_state, agent)
     channel, extra_env = claude_channel_args(agent, config, workspace, rest, session)
     extra_env += [f"AGENT_BOX_PRIMARY_PROVIDER={agent}"]
-    snapshot = session_runtime(config)
+    snapshot = session_runtime(config, runtime_state=runtime_state)
+    snapshot_root, snapshot_destination, _ = tracker_mounts(config, runtime_state)[0]
+    snapshot_target = snapshot_destination / snapshot.relative_to(snapshot_root)
     if config.tracker.enabled or config.workflow.enabled:
-        snapshot_target = CONTAINER_TRACKER_RUNTIME_DIR / snapshot.relative_to(TRACKER_RUNTIME_DIR)
         extra_env += [f"AGENT_BOX_WORKFLOW_STATE={CONTAINER_WORKFLOW_STATE}"]
-    else:
-        snapshot_target = CONTAINER_POLICY_RUNTIME_DIR / snapshot.relative_to(POLICY_RUNTIME_DIR)
     extra_env += [f"AGENT_BOX_RUNTIME_CONFIG={snapshot_target}"]
 
 

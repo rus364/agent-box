@@ -24,6 +24,7 @@ class ProjectConfigTests(unittest.TestCase):
         self.config.tracker.enabled = True
         self.config.tracker.connections['vikunja'] = TrackerConnection('https://tracker.example', 'global-secret')
         self.binding = Binding('vikunja', 'https://tracker.example', '12', True)
+        self.runtime_state = runtime.WorkspaceRuntimeState(self.root / 'workspace', self.root / 'git', self.root / 'gh')
         self.env = patch.dict(os.environ, {}, clear=True)
         self.env.start()
         self.addCleanup(self.env.stop)
@@ -161,7 +162,7 @@ class ProjectConfigTests(unittest.TestCase):
     def test_session_snapshots_survive_other_sessions_and_global_disable(self):
         with patch.object(runtime, 'TRACKER_RUNTIME_DIR', self.root / 'runtime'), \
              patch.object(runtime, 'container_tracker_url', side_effect=lambda url: url):
-            first = runtime.session_runtime(self.config)
+            first = runtime.session_runtime(self.config, runtime_state=self.runtime_state)
             first_content = first.read_bytes()
             second_config = Config.from_dict(self.config.to_dict())
             second_config.workflow.auto_push = False
@@ -218,12 +219,13 @@ class ProjectConfigTests(unittest.TestCase):
         config = project_config.apply(self.config, data)
         with patch.object(runtime, 'TRACKER_RUNTIME_DIR', self.root / 'credentials'), \
              patch.object(runtime, 'POLICY_RUNTIME_DIR', self.root / 'policy'):
-            snapshot = runtime.session_runtime(config)
+            snapshot = runtime.session_runtime(config, runtime_state=self.runtime_state)
             rendered = snapshot.read_text()
             self.assertNotIn('global-secret', rendered)
             self.assertNotIn('not-for-the-box', rendered)
             self.assertEqual(json.loads(rendered)['tracker']['connections'], {})
-            self.assertEqual(runtime.tracker_mounts(config), [(self.root / 'policy', runtime.CONTAINER_POLICY_RUNTIME_DIR, True)])
+            self.assertEqual(runtime.tracker_mounts(config, self.runtime_state), [
+                (self.root / 'policy/workspaces/workspace', runtime.CONTAINER_POLICY_RUNTIME_DIR, True)])
             self.assertFalse((self.root / 'credentials').exists())
             with patch.dict(os.environ, {'AGENT_BOX_RUNTIME_CONFIG': str(snapshot)}), \
                  patch.object(project_config, 'load', return_value=data), \

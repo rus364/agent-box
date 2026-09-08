@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest import mock
 
 from agent_box import claude_settings, notify, runtime
-from agent_box.config import Config, NotificationsConfig
+from agent_box.config import Config, NotificationsConfig, TrackerConnection
 from agent_box.errors import AgentBoxError
 from agent_box.mounts import MountSpec
 from agent_box.workspace import Workspace
@@ -137,6 +137,57 @@ class MountOverlapWithProjectRootTests(IsolatedRuntimeTest):
             extra = MountSpec(path=parent.resolve(), read_only=True, label="--mount")
             with self.assertRaises(Exception):
                 runtime.container_argv(workspace, [extra], project, ["codex"])
+
+
+class CredentialSnapshotMountTests(IsolatedRuntimeTest):
+    def test_workspace_mounts_exclude_other_workspace_and_host_snapshots(self):
+        """Shared keep-id containers must not receive another workspace's session account."""
+        with tempfile.TemporaryDirectory() as project:
+            root = Path(project)
+            workspaces = [Workspace(root / name, root / name) for name in ('first', 'second')]
+            for workspace in workspaces:
+                workspace.host_root.mkdir()
+            config = Config()
+            config.tracker.enabled = True
+            config.tracker.connections['vikunja'] = TrackerConnection('https://tracker.example', 'host-secret')
+            with mock.patch.object(runtime, 'container_tracker_url', side_effect=lambda url: url):
+                host = runtime.session_runtime(config, container=False)
+                snapshots, specs, disposable = [], [], []
+                for index, workspace in enumerate(workspaces):
+                    config.tracker.connections['vikunja'].token = f'workspace-{index}-secret'
+                    spec = runtime.workspace_container_spec(workspace, [], root, config)
+                    specs.append(spec)
+                    # Both launch routes must create precisely the scoped mount source.
+                    disposable.append(runtime.container_argv(workspace, [], root, ['codex'], config))
+                    source = runtime.tracker_mounts(config, spec.runtime_state)[0][0]
+                    self.assertTrue(source.is_dir())
+                    snapshot = runtime.session_runtime(config, runtime_state=spec.runtime_state)
+                    snapshots.append(snapshot)
+                first_contents = snapshots[0].read_bytes()
+                config.tracker.connections['vikunja'].token = 'later-secret'
+                later = runtime.session_runtime(config, runtime_state=specs[0].runtime_state)
+
+            def sources(argv):
+                return [Path(arg.split('src=', 1)[1].split(',', 1)[0])
+                        for arg in argv if arg.startswith('type=bind,src=')]
+
+            def visible(path, mounts):
+                return any(path == source or source in path.parents for source in mounts)
+
+            for index, spec in enumerate(specs):
+                for argv in (spec.create_argv, disposable[index]):
+                    mounts = sources(argv)
+                    self.assertTrue(visible(snapshots[index], mounts))
+                    self.assertFalse(visible(snapshots[1 - index], mounts))
+                    self.assertFalse(visible(host, mounts))
+                disabled = runtime.workspace_container_spec(workspaces[index], [], root, Config())
+                self.assertFalse(visible(snapshots[index], sources(disabled.create_argv)))
+                self.assertFalse(visible(host, sources(disabled.create_argv)))
+            self.assertNotEqual(later, snapshots[0])
+            self.assertEqual(snapshots[0].read_bytes(), first_contents)
+            self.assertIn('workspace-0-secret', first_contents.decode())
+            self.assertIn('workspace-1-secret', snapshots[1].read_text())
+            self.assertIn('host-secret', host.read_text())
 
 
 class ContainerArgvTests(IsolatedRuntimeTest):

@@ -214,9 +214,11 @@ offline suite does not run it.
 
 ## Container access
 
-An enabled tracker renders only tracker connections and necessary workflow
-policy into a private `runtime/tracker/config.json` (directory 0700, file 0600).
-The container receives this artifact read-only, not the global config file.
+An enabled tracker renders connections and runtime policy into an immutable
+`runtime/tracker/workspaces/<id>/sessions/<session>/config.json` snapshot
+(session directory 0700, file 0600). The container receives only its workspace's
+snapshot directory read-only, not the global config file or snapshots from host
+launches or other workspaces. Sessions in the same box share access to these files.
 Local workflow evidence, locks, counters and import checkpoints have their own
 read-write state mount. Disabling tracker removes connection secrets from the
 rendered artifact even when workflow remains enabled.
