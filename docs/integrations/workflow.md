@@ -173,17 +173,34 @@ select reviewers. Routing changes neither review policy nor worker/scout routing
 All attempts preserve the selected tier and configured reviewer model/effort.
 An unsupported model is an error, not permission to guess a cheaper model.
 
-`config apply` installs owned native agent profiles with exact model/effort. A
-profile configured with effort `default` omits the effort field, but a native
-subagent may still inherit effort from its parent session. Such a route reports
-`native_profile_ready=false` and uses managed `codex exec` or `claude -p`, which
-can omit the CLI override and clear inherited Claude effort. Use native
-delegation only after checking the available role's provider, model and effort
-against the exact selected candidate and verifying the tool can enforce them.
-The role name and `native_profile_ready` alone do not establish the runtime
-settings. Each fallback candidate also reports its native profile readiness;
-check that candidate's settings before choosing it. Otherwise
-the managed CLI creates the context inside the existing host/container.
+`config apply` installs owned native agent profiles with exact model/effort.
+Native execution has two options: an exact available profile, or explicit spawn
+parameters supported by the current tool without an overriding custom agent.
+`native_profile_ready` checks only the installed profile; false does not forbid
+explicit spawn. Each candidate's `native_explicit_settings` lists required
+provider/model/effort, not discovered capabilities or proof of execution.
+
+The coordinator checks the live tool's provider, model availability, effort
+support, profile precedence, defaults and inheritance. A matching file, role name
+or prompt is not sufficient. For Codex explicit spawn, pass both `model` and
+`reasoning_effort`, use fresh context (`fork_turns="none"` where supported), and
+avoid named tier profiles; even built-in names can be shadowed. Unknown or
+unsupported capabilities require managed CLI with the exact selected settings.
+Reviewers always require independent fresh read-only context.
+
+Effort `default` omits agent-box's override; native omission can inherit one.
+It therefore has `native_profile_ready=false` and `native_explicit_settings=null`
+and uses managed CLI, retaining the existing protection against inherited Claude
+effort. This is not a literal provider effort value or a promise to disable thinking.
+
+Concrete `workflow run` and `workflow review` routes execute managed `codex exec`
+or `claude -p` inside the existing host/container. They cannot invoke the
+coordinator's native tool. Native execution uses `prepare`, coordinator spawn,
+then `report`. Provider routing (same/cross-provider) is independent of this
+backend choice; neither a new configuration matrix nor a persistent capability
+registry is needed. Untiered current-session actions retain their behavior above.
+See [native research and smoke evidence](../native-launch.md) for verified
+interfaces and limits.
 Provider errors, including Claude exit-zero error envelopes, are not review
 findings. A worker failure after possible side effects requires reconciliation.
 
@@ -202,7 +219,8 @@ agent-box workflow finish TASK
 Explicit-tier native handoffs use `prepare`, then `report --file FILE --scope DIGEST --handoff
 DESCRIPTOR --provider ACTUAL_PROVIDER --model ACTUAL_MODEL --effort ACTUAL_EFFORT`
 for the returned structured report. Supply `--fallback-reason REASON` when using
-a fallback candidate; unknown model or effort is a reason to use managed CLI,
+a fallback candidate, and `--fresh-context` for every native reviewer; unknown
+model or effort is a reason to use managed CLI,
 never to guess report fields. Report ingestion checks role/tier and exact
 provider/model/effort against the prepared candidates before changing acceptance.
 Accepted worker/reviewer evidence records the full route and any native fallback

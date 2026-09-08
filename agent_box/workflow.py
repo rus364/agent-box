@@ -316,8 +316,12 @@ def native_output(args, selected, tier):
     reason = (args.fallback_reason or "").strip()
     if match and not reason:
         raise AgentBoxError("A native fallback reason is required; explain why the preferred route could not run")
+    if args.role == "reviewer" and not args.fresh_context:
+        raise AgentBoxError("Confirm --fresh-context for independent native review")
     report = validate_report(json.loads(Path(args.file).read_text()), args.role)
     output = {"route": actual, "report": report}
+    if args.role == "reviewer":
+        output["fresh_context"] = True
     if reason:
         output["fallback_reason"] = reason
     return output
@@ -371,6 +375,11 @@ def route(config, role, tier, primary, writer=None):
     for candidate in [result, *result["fallbacks"]]:
         candidate["native_profile"] = f"ab-{role}-{tier}"
         candidate["native_profile_ready"] = native_available(candidate["provider"], role, tier, candidate)
+        # These are requirements for the coordinator's live tool, not discovered
+        # capabilities. A missing installed profile says nothing about that tool.
+        candidate["native_explicit_settings"] = (
+            {key: candidate[key] for key in ("provider", "model", "effort")}
+            if candidate["effort"] != "default" else None)
     return result
 
 
@@ -641,9 +650,15 @@ def dispatch(args):
                     "instructions": "Fresh English context. " + review_context + delegate_contract +
                                     "the coordinator owns the tracker, commits, branches and GitHub. Keep handoff to yourself "
                                     "and pass it back to report; give the delegate repository_instructions, which apply to its work. "
-                                    "Verify the available native role, provider, model and effort match an allowed route candidate; "
-                                    "a role name or native_profile_ready alone is insufficient. Use managed CLI if exact settings "
-                                    "cannot be enforced. Report actual --provider, --model and --effort, and --fallback-reason "
+                                    "Use either an exact available native profile or supported explicit spawn parameters "
+                                    "without an overriding custom agent. native_profile_ready describes only the installed profile; "
+                                    "false does not forbid explicit spawn. native_explicit_settings are required values, not tool capabilities. "
+                                    "Verify the live tool's provider, available model/effort, profile precedence, defaults and inheritance; "
+                                    "a role name or prompt is not proof. If capabilities are unknown or unsupported, use managed CLI. "
+                                    "For effort=default use managed CLI: omitting native effort may inherit an override. "
+                                    "Reviewers require independent fresh read-only context; confirm --fresh-context on their reports. "
+                                    "workflow run/review execute managed CLI for concrete routes; native uses prepare/spawn/report. "
+                                    "Report actual --provider, --model and --effort, and --fallback-reason "
                                     "when using a fallback candidate. "
                                     "Return the role JSON schema."}
             if selected.get("mode") == "current-session":
@@ -699,7 +714,7 @@ def dispatch(args):
                 raise AgentBoxError("Code or requirements changed during review; report is stale")
             saved.pop("human_acceptance", None)
             saved["review"] = {**output["report"], **{
-                key: output[key] for key in ("route", "fallback_reason", "failures") if key in output}}
+                key: output[key] for key in ("route", "fallback_reason", "failures", "fresh_context") if key in output}}
             save_evidence(root, task, saved)
         return {**output, "scope": fingerprint}
     if args.command == "finish":

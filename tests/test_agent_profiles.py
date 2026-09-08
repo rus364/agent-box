@@ -1,5 +1,6 @@
 """Native profile pins and local edits survive the apply/remove lifecycle."""
 import tempfile
+import os
 import unittest
 from pathlib import Path
 import tomllib
@@ -9,6 +10,21 @@ from agent_box.config import Config
 
 
 class AgentProfileTests(unittest.TestCase):
+    def test_forced_parent_model_cannot_be_proven_by_an_exact_claude_profile(self):
+        """Claude can force the parent model even without SUBAGENT_MODEL being set."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = Config()
+            config.workflow.enabled = True
+            spec = {"model": "chosen-model", "effort": "high"}
+            config.workflow.tiers["1"]["claude"] = spec
+            sync(config, root / "codex", root / "claude")
+            with patch("agent_box.paths.CLAUDE_HOME", root / "claude"), \
+                 patch.dict(os.environ, {}, clear=True):
+                self.assertTrue(available("claude", "worker", 1, spec))
+                with patch.dict(os.environ, {"CLAUDE_CODE_SUBAGENT_MODEL_FORCE": "1"}):
+                    self.assertFalse(available("claude", "worker", 1, spec))
+
     def test_empty_reviewer_models_never_install_worker_models_as_reviewers(self):
         with tempfile.TemporaryDirectory() as directory:
             codex, claude = Path(directory) / "codex", Path(directory) / "claude"

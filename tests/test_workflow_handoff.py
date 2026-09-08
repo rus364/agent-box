@@ -525,7 +525,7 @@ class WorkerHandoffTests(unittest.TestCase):
         review.write_text(json.dumps({"verdict": "PASS", "summary": "Fine", "findings": []}))
         result = self.run_workflow("report", "1", "--role", "reviewer", "--primary", "codex",
                                    "--provider", "claude", "--model", "m", "--effort", "high", "--file", str(review),
-                                   "--scope", prepared["scope"], "--handoff", prepared["handoff"])
+                                   "--scope", prepared["scope"], "--handoff", prepared["handoff"], "--fresh-context")
         self.assertEqual(result["report"]["verdict"], "PASS")
 
 

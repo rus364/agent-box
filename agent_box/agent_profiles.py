@@ -70,6 +70,11 @@ def sync(config, codex_home, claude_home):
 
 
 def available(provider, role, tier, spec):
+    """Inspect the installed profile only; the coordinator checks the live tool.
+
+    Project/custom agents can shadow this file and explicit spawn can work
+    without it. Neither capability is discoverable from the host profile.
+    """
     import os
     from .paths import CODEX_HOME, CLAUDE_HOME
     # A native subagent may inherit the coordinator's effort when its profile
@@ -77,6 +82,7 @@ def available(provider, role, tier, spec):
     if spec["effort"] == "default":
         return False
     if provider == "claude" and (os.environ.get("CLAUDE_CODE_SAFE_MODE") or
+            os.environ.get("CLAUDE_CODE_SUBAGENT_MODEL_FORCE") or
             os.environ.get("CLAUDE_CODE_SUBAGENT_MODEL", spec["model"]) != spec["model"] or
             os.environ.get("CLAUDE_CODE_EFFORT_LEVEL", spec["effort"]) != spec["effort"]):
         return False
