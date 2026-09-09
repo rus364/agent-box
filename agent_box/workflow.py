@@ -1316,6 +1316,11 @@ def dispatch(args):
                     "If native cannot run and model/effort are known, use workflow review TASK "
                     "--handoff DESCRIPTOR --brief FILE --fallback-reason REASON (repeat --tier if supplied) "
                     "for one managed dispatch in this pending round. Omit --handoff only for an independent new round.")
+                if selected.get("mode") == "current-session" and selected.get("model") is None:
+                    result["instructions"] += (
+                        " This inherited route cannot run managed without known session settings. Use native for this "
+                        "reserved round; before a future round, verified active settings may be supplied with "
+                        "--session-model MODEL --session-effort EFFORT. Never infer them from a tier or profile.")
             if result.get("action") != "work-in-current-session":
                 result["instructions"] += " " + LAUNCH_CONTEXT
                 if result["delegate_handoff"] is None:

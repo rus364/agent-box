@@ -215,7 +215,11 @@ def preflight(route):
     if route.get("provider") not in ("codex", "claude"):
         raise ProviderFailure("Unsupported managed provider", "unsupported")
     if not route.get("model") or not route.get("effort"):
-        raise ProviderFailure("Managed execution requires known model and effort", "unsupported")
+        raise ProviderFailure(
+            "Managed execution requires known model and effort; for untiered work pass verified "
+            "--session-model and --session-effort before dispatch",
+            "unsupported",
+        )
     if not shutil.which(route["provider"]):
         raise ProviderFailure(f"Cannot find {route['provider']} CLI", "unavailable")
 

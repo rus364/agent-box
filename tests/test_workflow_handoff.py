@@ -505,6 +505,8 @@ class WorkerHandoffTests(unittest.TestCase):
                                          "--brief", str(self.review_brief))
         self.assertEqual(prepared["action"], "review-in-fresh-context")
         self.assertIn("--session-inherited --fresh-context", prepared["report_command"])
+        self.assertIn("--session-model MODEL --session-effort EFFORT", prepared["instructions"])
+        self.assertIn("cannot run managed", prepared["instructions"])
         self.assertIn(workflow.LAUNCH_CONTEXT, prepared["instructions"])
         self.assertNotIn("review", workflow.read_evidence(self.root, self.task))
         self.report.write_text(json.dumps({"verdict": "PASS", "summary": "Reviewed", "findings": []}))
