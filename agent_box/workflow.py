@@ -811,8 +811,13 @@ def begin(root, adapter, task, resume):
         gw.switch_branch(root, child, branch, resume=resume)
         if starting and not existing_child:
             saved = read_evidence(root, task)
-            saved["child_start"] = {"head": gw.head_sha(root), "parent": parent.id}
-            save_evidence(root, task, saved)
+            # Reopening a deleted branch must not reclassify prior work as a
+            # new no-code start. Unrelated scout scope evidence is harmless.
+            prior_work = ("child_start", "writer", "worker", "validation", "review",
+                          "human_acceptance", "local_acceptance")
+            if not any(key in saved for key in prior_work):
+                saved["child_start"] = {"head": gw.head_sha(root), "parent": parent.id}
+                save_evidence(root, task, saved)
     return {"task": task.id, "parent": parent.id, "branch": gw.current_branch(root), "base": base}
 
 

@@ -41,6 +41,18 @@ class ChildFinishTests(unittest.TestCase):
         self.adapter.set_state.side_effect = None
         self.adapter.reset_mock()
 
+    def begin_ready_child(self):
+        def claimed(task, state):
+            task.state = state
+            return task
+
+        self.adapter.update.return_value = self.child
+        self.adapter.set_state.side_effect = claimed
+        try:
+            return self.dispatch(["begin", self.child.id])
+        finally:
+            self.adapter.set_state.side_effect = None
+
     def test_tracker_outage_retry_finishes_original_work_without_merge_or_validation(self):
         """The advanced parent must not turn the accepted child into an empty diff."""
         self.interrupted_finish()
@@ -182,6 +194,21 @@ class ChildFinishTests(unittest.TestCase):
         self.assertNotIn("child_start", workflow.read_evidence(self.root, self.child))
         self.adapter.set_state.assert_not_called()
 
+    def test_reopened_child_without_origin_cannot_promote_prior_acceptance_to_no_code(self):
+        """Deleting an accepted branch does not make its later recreation a first start."""
+        self.interrupted_finish()
+        gw.git(self.root, "branch", "-D", "ab/8-child")
+        self.child.state = "Ready"
+        self.begin_ready_child()
+        self.adapter.reset_mock()
+        workflow.retire_acceptance(self.root, self.adapter, self.child,
+                                   workflow.read_evidence(self.root, self.child))
+        self.dispatch(["validate", "8", "--", "true"])
+        with self.assertRaisesRegex(AgentBoxError, "acceptance.*missing"):
+            self.dispatch(["finish", "8"])
+        self.assertNotIn("child_start", workflow.read_evidence(self.root, self.child))
+        self.adapter.set_state.assert_not_called()
+
     def test_retry_rejects_retired_or_stale_snapshot(self):
         """Neither evidence from another scope nor acceptance revoked by a review round survives."""
         self.interrupted_finish()
@@ -245,6 +272,7 @@ class NoCodeChildFinishTests(unittest.TestCase):
     dispatch = test_local_workflow.LocalLandTests.dispatch
     commit = ChildFinishTests.commit
     interrupted_finish = ChildFinishTests.interrupted_finish
+    begin_ready_child = ChildFinishTests.begin_ready_child
 
     def setUp(self):
         test_local_workflow.LocalLandTests.setUp(self)
@@ -253,15 +281,7 @@ class NoCodeChildFinishTests(unittest.TestCase):
         self.child = Task("8", "1", "Child", state="Ready", assignees=["1"],
                           parent="7", description="- [x] accepted")
         self.adapter.get.side_effect = lambda ident: {"7": self.parent, "8": self.child}[ident]
-        self.adapter.update.return_value = self.child
-
-        def claimed(task, state):
-            task.state = state
-            return task
-
-        self.adapter.set_state.side_effect = claimed
-        self.dispatch(["begin", "8"])
-        self.adapter.set_state.side_effect = None
+        self.begin_ready_child()
         self.head = gw.head_sha(self.root)
         self.adapter.reset_mock()
 
@@ -366,6 +386,37 @@ class NoCodeChildFinishTests(unittest.TestCase):
         with self.assertRaisesRegex(AgentBoxError, "acceptance.*missing"):
             self.dispatch(["finish", "8"])
         self.adapter.set_state.assert_not_called()
+
+    def test_reopening_after_integration_preserves_original_start_and_refuses_empty_acceptance(self):
+        """A genuine Ready reopen must not erase the origin of already integrated code."""
+        original_start = workflow.read_evidence(self.root, self.child)["child_start"]
+        self.commit("child.py")
+        self.head = gw.head_sha(self.root)
+        self.dispatch(["validate", "8", "--", "true"])
+        self.interrupted_finish()
+        gw.git(self.root, "branch", "-D", "ab/8-child")
+        self.child.state = "Ready"
+        self.begin_ready_child()
+        self.adapter.reset_mock()
+        workflow.retire_acceptance(self.root, self.adapter, self.child,
+                                   workflow.read_evidence(self.root, self.child))
+        self.dispatch(["validate", "8", "--", "true"])
+        with self.assertRaisesRegex(AgentBoxError, "acceptance.*missing"):
+            self.dispatch(["finish", "8"])
+        self.assertEqual(workflow.read_evidence(self.root, self.child)["child_start"], original_start)
+        self.adapter.set_state.assert_not_called()
+
+    def test_unrelated_scope_evidence_does_not_prevent_first_no_code_start(self):
+        """Read-only investigation before begin is not prior implementation or acceptance."""
+        self.child = replace(self.child, id="9", state="Ready")
+        self.parent.children = ["9"]
+        self.adapter.get.side_effect = lambda ident: {"7": self.parent, "9": self.child}[ident]
+        workflow.save_evidence(self.root, self.child, {"scope": "prior-investigation"})
+        self.begin_ready_child()
+        self.adapter.reset_mock()
+        self.dispatch(["validate", "9", "--", "true"])
+        self.assertEqual(self.dispatch(["finish", "9"])["state"], "Done")
+        self.adapter.set_state.assert_called_once_with(self.child, "Done")
 
     def test_missing_start_cannot_be_recreated_by_resume(self):
         """Existing equal tips cannot prove how a child began after its evidence is lost."""
