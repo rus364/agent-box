@@ -8,7 +8,7 @@ from unittest.mock import Mock, patch
 from agent_box import branch_cleanup as cleanup
 from agent_box import git_workflow as gw
 from agent_box import github_workflow as github
-from agent_box import local_workflow, workflow, workflow_state
+from agent_box import workflow, workflow_state
 from agent_box.config import Config
 from agent_box.errors import AgentBoxError
 from agent_box.repo_binding import Binding
@@ -479,7 +479,7 @@ class CleanupTests(unittest.TestCase):
         adapter = Mock()
         adapter.identity.return_value = {'id': 1}
         adapter.get.return_value = self.task
-        args = SimpleNamespace(command='land', action='merge', method=None)
+        args = SimpleNamespace(command='land', task=self.task.id, action='merge', method=None)
         saved = {'validation': {'exit': 0}, 'review': {'verdict': 'PASS'}}
         saved['scope'] = workflow.scope(self.root, 'main', [self.task])
         workflow.save_evidence(self.root, self.task, saved)
@@ -490,17 +490,17 @@ class CleanupTests(unittest.TestCase):
                            {'mergedAt': None}, {'mergeCommit': None}):
                 with patch.object(github, 'view', side_effect=[opened, {**merged, **change}]):
                     with self.assertRaisesRegex(AgentBoxError, 'identity'):
-                        github.operate(args, self.root, self.config, adapter, self.task.id)
+                        workflow.landing(args, self.root, self.config, adapter)
             adapter.set_state.assert_not_called()
             with patch.object(github, 'view', side_effect=[opened, merged]):
-                result = github.operate(args, self.root, self.config, adapter, self.task.id)
+                result = workflow.landing(args, self.root, self.config, adapter)
         self.assertEqual(result['state'], 'Done')
         for kind in ('local', 'remote'):
             self.assertIn('current branch', result['cleanup'][kind]['reason'])
         adapter.set_state.assert_called_once_with(self.task, 'Done')
         self.task.state = 'Done'
         gw.git(self.root, 'switch', 'main')
-        self.assertEqual(cleanup.retry(self.root, self.config, self.task)['cleanup']['local']['status'], 'deleted')
+        self.assertEqual(self.dispatch_land('cleanup')['cleanup']['local']['status'], 'deleted')
 
     def test_github_mismatched_or_missing_merge_identity_preserves_branches(self):
         pr = self.github_proof()
@@ -549,7 +549,7 @@ class CleanupTests(unittest.TestCase):
         for state, parent in (('Review', None), ('Done', '6')):
             self.task.state, self.task.parent = state, parent
             with self.assertRaisesRegex(AgentBoxError, 'Done parent'):
-                cleanup.retry(self.root, self.config, self.task)
+                self.dispatch_land('cleanup')
         self.assertTrue(self.exists())
 
     def test_cleanup_runs_only_after_tracker_success_and_failure_preserves_done_result(self):
@@ -561,22 +561,22 @@ class CleanupTests(unittest.TestCase):
         self.config.workflow.review.policy = 'off'
         saved = {'scope': workflow.scope(self.root, 'main', [self.task]), 'validation': {'exit': 0}}
         workflow.save_evidence(self.root, self.task, saved)
-        args = SimpleNamespace(command='land', action='merge', method=None)
+        args = SimpleNamespace(command='land', task=self.task.id, action='merge', method=None)
         adapter.set_state.side_effect = AgentBoxError('tracker unavailable')
         with patch.object(cleanup, 'cleanup') as clean:
             with self.assertRaisesRegex(AgentBoxError, 'tracker unavailable'):
-                local_workflow.operate(args, self.root, self.config, adapter, self.task.id)
+                workflow.landing(args, self.root, self.config, adapter)
         clean.assert_not_called()
         self.assertTrue(self.exists())
         adapter.set_state.side_effect = None
         args.action = 'reconcile'
         with patch.object(cleanup, '_local_refs', side_effect=RuntimeError('unexpected failure')):
-            result = local_workflow.operate(args, self.root, self.config, adapter, self.task.id)
+            result = workflow.landing(args, self.root, self.config, adapter)
         self.assertEqual(result['state'], 'Done')
         self.assertEqual(result['merge']['head'], self.head)
         self.assertEqual(result['cleanup']['local']['status'], 'error')
         self.assertIn('unexpected failure', result['cleanup']['local']['reason'])
-        result = local_workflow.operate(args, self.root, self.config, adapter, self.task.id)
+        result = workflow.landing(args, self.root, self.config, adapter)
         self.assertEqual(result['cleanup']['local']['status'], 'deleted')
 
 

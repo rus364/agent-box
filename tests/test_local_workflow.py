@@ -48,11 +48,9 @@ class LocalLandTests(unittest.TestCase):
                       "validation": {"command": ["true"], "exit": 0}}
 
     def operate(self, action, *, method=None, saved=None):
-        from agent_box import local_workflow
-        args = SimpleNamespace(command="land", action=action, method=method)
+        args = SimpleNamespace(command="land", task=self.parent.id, action=action, method=method)
         workflow.save_evidence(self.root, self.parent, self.saved if saved is None else saved)
-        return local_workflow.operate(args, self.root, self.config, self.adapter,
-                                      self.parent.id)
+        return workflow.landing(args, self.root, self.config, self.adapter)
 
     def dispatch(self, arguments):
         with patch.object(workflow, "effective_config", return_value=self.config), \
@@ -75,16 +73,13 @@ class LocalLandTests(unittest.TestCase):
 
     def test_reservation_between_dispatch_and_acceptance_blocks_finish_and_landing(self):
         """A cached PASS cannot survive a new round before the acceptance lock is acquired."""
-        from agent_box import local_workflow
-
         self.config.workflow.review.policy = "always"
         self.saved["review"] = {"verdict": "PASS"}
         base_head = gw.local_branch_head(self.root, "main")
         for command in (["finish", "7"], ["land", "7", "merge"]):
             self.parent.state = "Doing" if command[0] == "finish" else "Review"
             workflow.save_evidence(self.root, self.parent, self.saved)
-            module = workflow if command[0] == "finish" else local_workflow
-            original_lock = module.lock
+            original_lock = workflow.lock
             reserved = []
 
             @contextmanager
@@ -96,7 +91,7 @@ class LocalLandTests(unittest.TestCase):
                 with original_lock(root, purpose):
                     yield
 
-            with self.subTest(command=command), patch.object(module, "lock", interleave), \
+            with self.subTest(command=command), patch.object(workflow, "lock", interleave), \
                  self.assertRaisesRegex(AgentBoxError, "PASS review"):
                 self.dispatch(command)
             self.assertTrue(reserved)
@@ -144,7 +139,6 @@ class LocalLandTests(unittest.TestCase):
 
     def test_reconciliation_rereads_revoked_premerge_acceptance(self):
         """A reservation after dispatch also invalidates the cached recovery snapshot."""
-        from agent_box import local_workflow
 
         self.config.workflow.review.policy = "always"
         self.saved["review"] = {"verdict": "PASS"}
@@ -153,14 +147,14 @@ class LocalLandTests(unittest.TestCase):
             self.operate("merge")
         self.adapter.set_state.side_effect = None
         self.adapter.set_state.reset_mock()
-        original_operate = local_workflow.operate
+        original_landing = workflow.landing
 
         def interleave(*args):
             workflow.reserve_review(self.root, BINDING, self.parent, 3,
                                     "recovery-round", workflow.scope(self.root, "main", [self.parent]))
-            return original_operate(*args)
+            return original_landing(*args)
 
-        with patch.object(local_workflow, "operate", interleave), \
+        with patch.object(workflow, "landing", interleave), \
              self.assertRaisesRegex(AgentBoxError, "Pre-merge acceptance cache is missing"):
             self.dispatch(["land", "7", "reconcile"])
         self.adapter.set_state.assert_not_called()
@@ -177,17 +171,17 @@ class LocalLandTests(unittest.TestCase):
                   "isDraft": False, "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN",
                   "headRefOid": head, "headRefName": self.info["branch"], "baseRefName": "main",
                   "latestReviews": [], "statusCheckRollup": []}
-        original_operate = github.operate
+        original_landing = workflow.landing
 
         def interleave(*args):
             workflow.reserve_review(self.root, BINDING, self.parent, 3,
                                     "github-round", self.saved["scope"])
-            return original_operate(*args)
+            return original_landing(*args)
 
         for approved in (False, True):
             workflow.save_evidence(self.root, self.parent, self.saved)
             opened["latestReviews"] = [{"state": "APPROVED", "commit": {"oid": head}}] if approved else []
-            with self.subTest(approved=approved), patch.object(github, "operate", interleave), \
+            with self.subTest(approved=approved), patch.object(workflow, "landing", interleave), \
                  patch.object(gw, "github_origin", return_value="o/r"), \
                  patch.object(github, "find_pr", return_value=9), \
                  patch.object(github, "threads", return_value=[]), \
@@ -545,7 +539,7 @@ class LocalLandTests(unittest.TestCase):
         with patch("agent_box.github_workflow.gh") as github:
             with self.assertRaisesRegex(AgentBoxError, "local merge mode"):
                 local_workflow.operate(SimpleNamespace(command="pr"), self.root, self.config,
-                                       self.adapter, self.parent.id)
+                                       self.adapter, self.parent)
             self.config.workflow.review.github_provider = "codex"
             with self.assertRaisesRegex(AgentBoxError, "Cloud review"):
                 self.operate("request-review")

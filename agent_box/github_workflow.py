@@ -10,7 +10,6 @@ from .errors import AgentBoxError
 from .tracker.core import completion_reasons, blocking_reasons
 from . import git_workflow as gw
 from .branch_cleanup import after_done, merged_identity
-from .workflow_state import lock
 
 
 def gh(root, *args, json_output=False):
@@ -128,17 +127,16 @@ def request_review(root, repo, pr, config):
             "next": "Read feedback; absence of a current-head approval requires local review"}
 
 
-def operate(args, root, config, adapter, task_id):
+def operate(args, root, config, adapter, task):
+    """Consume the fresh task while workflow.landing owns the acceptance locks."""
     from .workflow import evidence, resolve, scope, tree
 
-    with lock(root, "review-budget"), lock(root, "work"):
-        task = adapter.get(task_id)
-        parent, info, _, _ = resolve(root, adapter, task)
-        tasks, saved = [], {}
-        if args.command == "pr":
-            tasks = tree(adapter, task)
-            saved = evidence(root, task, scope(root, info["base"], tasks))
-        return _operate(args, root, config, adapter, task, parent, info, saved, tasks)
+    parent, info, _, _ = resolve(root, adapter, task)
+    tasks, saved = [], {}
+    if args.command == "pr":
+        tasks = tree(adapter, task)
+        saved = evidence(root, task, scope(root, info["base"], tasks))
+    return _operate(args, root, config, adapter, task, parent, info, saved, tasks)
 
 
 def _landing_tasks(root, adapter, task_id, info, *, states=("Review",)):

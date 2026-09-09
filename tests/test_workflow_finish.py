@@ -454,6 +454,109 @@ class TransitionReadTests(unittest.TestCase):
     setUp = test_local_workflow.LocalLandTests.setUp
     dispatch = test_local_workflow.LocalLandTests.dispatch
 
+    def locked_task(self, ident):
+        for purpose in ("review-budget", "work"):
+            with self.assertRaisesRegex(AgentBoxError, f"Another local {purpose}"):
+                with workflow.lock(self.root, purpose):
+                    pass
+        return self.parent
+
+    def test_local_reconcile_reads_recovery_root_once_under_both_locks(self):
+        """Recovery routing and acceptance must consume the same locked root snapshot."""
+        workflow.save_evidence(self.root, self.parent, self.saved)
+        self.adapter.set_state.side_effect = AgentBoxError("tracker unavailable")
+        with self.assertRaisesRegex(AgentBoxError, "tracker unavailable"):
+            self.dispatch(["land", "7", "merge"])
+        self.adapter.set_state.side_effect = None
+        self.adapter.get.reset_mock()
+        self.adapter.get.side_effect = self.locked_task
+        with patch.object(workflow, "tree", wraps=workflow.tree) as tree, \
+             patch.object(workflow, "scope", wraps=workflow.scope) as scope, \
+             patch.object(gw, "git", wraps=gw.git) as git:
+            self.assertEqual(self.dispatch(["land", "7", "reconcile"])["state"], "Done")
+        self.adapter.get.assert_called_once_with("7")
+        tree.assert_called_once()
+        scope.assert_not_called()
+        self.assertFalse(any(call.args[1:2] == ("merge",) for call in git.call_args_list))
+
+    def test_github_reconcile_keeps_locked_root_refresh_after_network(self):
+        """The routing snapshot cannot replace the acceptance read after remote queries."""
+        from agent_box import github_workflow as github
+
+        self.config.workflow.merge_mode = "github"
+        self.config.github.gh_token = True
+        events = []
+
+        def read(ident):
+            events.append("task")
+            return self.locked_task(ident)
+
+        def remote(*args):
+            events.append("remote")
+            return None
+
+        self.adapter.get.side_effect = read
+        merged = {"number": 9, "url": "https://github.com/o/r/pull/9", "state": "MERGED",
+                  "headRefOid": gw.head_sha(self.root), "headRefName": "ab/7-parent",
+                  "baseRefName": "main", "mergedAt": "2026-01-01T00:00:00Z",
+                  "mergeCommit": {"oid": "merged"}}
+        with patch.object(gw, "github_origin", return_value="o/r"), \
+             patch.object(github, "find_pr", return_value=9), \
+             patch.object(github, "view", return_value=merged), \
+             patch.object(gw, "remote_branch_head", side_effect=remote), \
+             patch.object(workflow, "tree", wraps=workflow.tree) as tree:
+            self.assertEqual(self.dispatch(["land", "7", "reconcile"])["state"], "Done")
+        self.assertEqual(events, ["task", "remote", "task"])
+        tree.assert_called_once()
+        self.adapter.set_state.assert_called_once_with(self.parent, "Done")
+
+    def test_done_reconcile_and_cleanup_read_root_under_the_action_locks(self):
+        """Done routing must obtain fresh lifecycle before inspecting or deleting refs."""
+        gw.git(self.root, "switch", "main")
+        gw.git(self.root, "merge", "--ff-only", "ab/7-parent")
+        self.parent.state = "Done"
+        self.adapter.get.side_effect = self.locked_task
+        for action in ("reconcile", "cleanup"):
+            self.adapter.get.reset_mock()
+            with self.subTest(action=action):
+                self.assertEqual(self.dispatch(["land", "7", action])["state"], "Done")
+            self.adapter.get.assert_called_once_with("7")
+        self.adapter.set_state.assert_not_called()
+
+    def test_reconcile_selects_route_from_lifecycle_at_lock_acquisition(self):
+        """A lifecycle change before locking must select the corresponding recovery path."""
+        from agent_box import branch_cleanup, local_workflow
+
+        workflow.save_evidence(self.root, self.parent, self.saved)
+        self.adapter.set_state.side_effect = AgentBoxError("tracker unavailable")
+        with self.assertRaisesRegex(AgentBoxError, "tracker unavailable"):
+            self.dispatch(["land", "7", "merge"])
+        self.adapter.set_state.side_effect = None
+        original_lock = workflow.lock
+        for initial, fresh in (("Review", "Done"), ("Done", "Review")):
+            self.parent.state = initial
+            self.adapter.set_state.reset_mock()
+            self.adapter.get.side_effect = lambda ident: replace(self.parent)
+
+            @contextmanager
+            def interleave(root, purpose):
+                if purpose == "work":
+                    self.parent.state = fresh
+                with original_lock(root, purpose):
+                    yield
+
+            with self.subTest(initial=initial, fresh=fresh), \
+                 patch.object(workflow, "lock", interleave), \
+                 patch.object(branch_cleanup, "reconcile", wraps=branch_cleanup.reconcile) as done, \
+                 patch.object(local_workflow, "operate", wraps=local_workflow.operate) as active:
+                self.assertEqual(self.dispatch(["land", "7", "reconcile"])["state"], "Done")
+            (done if fresh == "Done" else active).assert_called_once()
+            (active if fresh == "Done" else done).assert_not_called()
+            if fresh == "Done":
+                self.adapter.set_state.assert_not_called()
+            else:
+                self.adapter.set_state.assert_called_once_with(self.parent, "Done")
+
     def test_finish_and_local_land_have_one_locked_task_tree_scope_read(self):
         """Unused dispatch reads add round trips without making locked acceptance fresher."""
         workflow.save_evidence(self.root, self.parent, self.saved)

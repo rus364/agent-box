@@ -87,40 +87,38 @@ def _integrated_head(root, head, base, merged_head=None):
 
 
 def reconcile(root, config, task):
-    """Done avoids another lifecycle write, never proof of surviving work.
+    """Recheck Done under workflow.landing locks, never infer proof from lifecycle.
 
     Unlike optional deletion, reconciliation must inspect live origin even when
     cleanup is disabled. Tracking refs can disambiguate names but cannot prove
     that a deleted branch survives, or supply a missing merge identity.
     """
-    from .workflow_state import lock
     if task.parent or task.state != "Done":
         raise AgentBoxError("Reconciliation retry requires a Done parent task")
-    with lock(root, "work"):
-        prefix = gw.branch_prefix(task.id)
-        local, names = _local_refs(root, prefix)
-        url = gw.push_destination(root)
-        remote, symbols, base, _ = _remote_refs(root, url, prefix)
-        names.update(remote)
-        if len(names) > 1:
-            raise AgentBoxError("Ambiguous task namespace; preserving all candidates: " + ", ".join(sorted(names)))
-        branch = next(iter(names), None)
-        result = {"task": task.id, "state": "Done"}
-        if not local and not remote:
-            return after_done(result, root, config, task)
-        merged_head = None
-        if config.workflow.merge_mode == "github":
-            if not (config.github.gh_token or config.github.gh_config):
-                raise AgentBoxError("Enable GitHub integration before GitHub-mode reconciliation")
-            merged_head = _merged_head(root, url, branch, base)
-        candidates = list(local.values())
-        candidates.extend((head, f"refs/heads/{name}" in symbols)
-                          for name, head in remote.items())
-        for head, symbolic in candidates:
-            if symbolic:
-                raise AgentBoxError("Preserving symbolic ref")
-            _integrated_head(root, head, base, merged_head)
-        return after_done(result, root, config, task, branch=branch, base=base)
+    prefix = gw.branch_prefix(task.id)
+    local, names = _local_refs(root, prefix)
+    url = gw.push_destination(root)
+    remote, symbols, base, _ = _remote_refs(root, url, prefix)
+    names.update(remote)
+    if len(names) > 1:
+        raise AgentBoxError("Ambiguous task namespace; preserving all candidates: " + ", ".join(sorted(names)))
+    branch = next(iter(names), None)
+    result = {"task": task.id, "state": "Done"}
+    if not local and not remote:
+        return after_done(result, root, config, task)
+    merged_head = None
+    if config.workflow.merge_mode == "github":
+        if not (config.github.gh_token or config.github.gh_config):
+            raise AgentBoxError("Enable GitHub integration before GitHub-mode reconciliation")
+        merged_head = _merged_head(root, url, branch, base)
+    candidates = list(local.values())
+    candidates.extend((head, f"refs/heads/{name}" in symbols)
+                      for name, head in remote.items())
+    for head, symbolic in candidates:
+        if symbolic:
+            raise AgentBoxError("Preserving symbolic ref")
+        _integrated_head(root, head, base, merged_head)
+    return after_done(result, root, config, task, branch=branch, base=base)
 
 
 def cleanup(root, config, task, *, branch=None, base=None, expected_head=None):
@@ -214,8 +212,7 @@ def after_done(result, root, config, task, **identity):
 
 
 def retry(root, config, task):
-    from .workflow_state import lock
+    """Retry parent cleanup with the fresh task and locks owned by workflow.landing."""
     if task.parent or task.state != "Done":
         raise AgentBoxError("Cleanup requires a Done parent task; reconcile a proven merge first")
-    with lock(root, "work"):
-        return {"task": task.id, "state": "Done", "cleanup": cleanup(root, config, task)}
+    return {"task": task.id, "state": "Done", "cleanup": cleanup(root, config, task)}

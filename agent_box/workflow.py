@@ -876,11 +876,21 @@ def parser():
 
 
 def landing(args, root, config, adapter):
-    if config.workflow.merge_mode == "local":
-        from .local_workflow import operate
-    else:
-        from .github_workflow import operate
-    return operate(args, root, config, adapter, args.task)
+    # Routing and acceptance share one snapshot and the same retirement ordering.
+    with lock(root, "review-budget"), lock(root, "work"):
+        task = adapter.get(args.task)
+        if args.command == "land":
+            if args.action == "cleanup":
+                from .branch_cleanup import retry
+                return retry(root, config, task)
+            if args.action == "reconcile" and task.state == "Done":
+                from .branch_cleanup import reconcile
+                return reconcile(root, config, task)
+        if config.workflow.merge_mode == "local":
+            from .local_workflow import operate
+        else:
+            from .github_workflow import operate
+        return operate(args, root, config, adapter, task)
 
 
 def finish(root, config, adapter, task_id):
@@ -1007,7 +1017,7 @@ def dispatch(args):
     adapter = make_adapter(binding)
     if args.command == "finish":
         return finish(root, config, adapter, args.task)
-    if args.command in ("pr", "land") and getattr(args, "action", None) not in ("cleanup", "reconcile"):
+    if args.command in ("pr", "land"):
         return landing(args, root, config, adapter)
     task = adapter.get(args.task)
     if args.command == "review-budget":
@@ -1021,12 +1031,6 @@ def dispatch(args):
             state.update(ceiling=args.limit, ceiling_reason=args.reason.strip())
             save_review_state(root, binding, task, state)
             return {"task": task.id, "review_budget": review_budget_summary(state, config.workflow.review.max_rounds)}
-    if args.command == "land" and args.action == "cleanup":
-        from .branch_cleanup import retry
-        return retry(root, config, task)
-    if args.command == "land" and args.action == "reconcile" and task.state == "Done":
-        from .branch_cleanup import reconcile
-        return reconcile(root, config, task)
     if args.command == "writer":
         if task.state != "Doing" or task.assignees != [str(adapter.identity()["id"])]:
             raise AgentBoxError("Writer recording requires the current user’s Doing task")
@@ -1040,8 +1044,6 @@ def dispatch(args):
             return {**begin(root, adapter, task, args.resume), "configuration": configuration_summary(config)}
     if args.command == "inspect":
         return inspect(root, binding, adapter, task, config)
-    if args.command == "land" and args.action == "reconcile":
-        return landing(args, root, config, adapter)
     scouting = getattr(args, "role", None) == "scout"
     if scouting:
         parent, info, current, base = task, {}, {}, "HEAD"

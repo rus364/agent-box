@@ -199,7 +199,7 @@ class LandingFreshnessTests(unittest.TestCase):
         from contextlib import ExitStack
         from types import SimpleNamespace
         from unittest.mock import patch
-        from agent_box import github_workflow as github
+        from agent_box import github_workflow as github, workflow
 
         def event(name, value):
             if phase == name:
@@ -220,8 +220,8 @@ class LandingFreshnessTests(unittest.TestCase):
             stack.enter_context(patch.object(github.gw, "remote_branch_head",
                                             side_effect=lambda *a: event("remote", self.pr["headRefOid"])))
             self.command = stack.enter_context(patch.object(github, "gh"))
-            return github.operate(SimpleNamespace(command="land", action=action, method="squash"),
-                                  self.root, self.config, self.adapter, self.parent.id)
+            return workflow.landing(SimpleNamespace(command="land", task=self.parent.id, action=action, method="squash"),
+                                    self.root, self.config, self.adapter)
 
     def advance(self):
         from agent_box import git_workflow as gw
