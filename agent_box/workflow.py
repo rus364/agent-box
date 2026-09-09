@@ -959,10 +959,10 @@ def landing(args, root, config, adapter):
         if args.command == "land":
             if args.action == "cleanup":
                 from .branch_cleanup import retry
-                return retry(root, config, task)
+                return retry(root, config, task, adapter)
             if args.action == "reconcile" and task.state == "Done":
                 from .branch_cleanup import reconcile
-                return reconcile(root, config, task)
+                return reconcile(root, config, task, adapter)
         if config.workflow.merge_mode == "local":
             from .local_workflow import operate
         else:

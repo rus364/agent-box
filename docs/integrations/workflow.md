@@ -564,8 +564,11 @@ marking the parent Done. Cleanup outcomes appear separately under `cleanup` in
 the result; a cleanup failure never reverses merge or Done. With both disabled,
 cleanup performs no additional Git or GitHub operations.
 
-Cleanup covers only the completed parent's local branch and its copy on origin.
-It leaves child branches alone. Candidates come from the parent's task namespace
+Cleanup covers the completed parent and its completed descendants, including
+nested tasks discovered from the live tracker hierarchy. Unfinished descendants
+are preserved with their current state. Each task has independent local/remote
+outcomes; descendant results appear in `cleanup.descendants`, and hierarchy read
+failures in `cleanup.descendants_error`. Candidates come from each task namespace
 in Git, including live origin refs when remote cleanup is enabled. It never
 guesses a missing branch from the task's title. Ambiguous names, symbolic refs,
 the base/default branch, the current branch and branches used by any worktree
@@ -574,12 +577,17 @@ that is checked out locally. Cleanup never switches branches.
 
 In GitHub mode, cleanup requires the enabled GitHub integration and one exact
 merged PR head/base with a merge timestamp and merge commit. The candidate tip
-must equal the merged head, so squash and rebase merges work without treating
-local ancestry as proof. After GitHub landing, the parent may still be checked
-out: switch to the base yourself and run `workflow land PARENT cleanup`.
-In local mode, the candidate head must be an ancestor of the local base.
-Remote deletion additionally requires that head in the live published base on
-the same effective origin destination. An unpublished local merge, or a missing
+of the parent must equal the merged head. Descendant heads must be ancestors of
+that exact parent PR head, so squashing or rebasing the parent does not erase
+their integration proof. A missing parent ref can recover proof from a unique
+merged PR in its task namespace; missing or ambiguous PR evidence preserves
+descendants. After GitHub landing, the parent may still be checked out: switch
+to the base yourself and run `workflow land PARENT cleanup`.
+In local mode, the parent head must be an ancestor of the local base, and each
+descendant head must be an ancestor of the accepted parent head. On retry, Git
+supplies the surviving parent head, or the local base when parent refs are
+already absent. Remote deletion additionally requires the candidate head in the
+live published base on the same effective origin destination. An unpublished local merge, or a missing
 commit object, preserves the remote branch with publish/fetch guidance; cleanup
 never publishes the base or fetches objects implicitly.
 
@@ -594,15 +602,18 @@ deletion. As with other workflow operations, concurrent agents cooperate;
 expected-head comparison protects against refs moving during the operation.
 
 `workflow land PARENT cleanup` retries the same configured policy for a Done
-parent without merging or writing tracker state. Each surviving branch must
-prove integration again; Done alone is never merge evidence. Missing branches
+parent and its live descendants without merging or writing tracker state.
+Remaining descendants are considered even when the parent ref is absent.
+Each surviving branch must prove integration again; Done alone is never merge evidence. Missing branches
 are safe no-ops, including after a partial cleanup or a title change.
 Reconciliation of an already Done parent checks surviving local and live origin
 refs independently of cleanup settings, without rewriting tracker state. Each
 head must match the exact merged PR in GitHub mode or be integrated into the
 local base in local mode. Ambiguous or unmerged refs refuse reconciliation;
-current-branch and worktree protections apply only to deletion. If all task
-refs are absent, reconciliation is a safe no-op and reports no merge identity.
+current-branch and worktree protections apply only to deletion. If parent
+refs are absent, reconciliation reports no merge identity and still attempts
+configured descendant cleanup. When all eligible refs are absent, cleanup is a
+safe no-op.
 Keep cleanup failures separate from successful completion when reporting results.
 
 ## GitHub review

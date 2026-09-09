@@ -109,7 +109,7 @@ def operate(args, root, config, adapter, task):
             adapter.set_state(task, "Done")
         return after_done({"task": task.id, "state": "Done",
                            "merge": {"base": base, "head": task_head}, "publication": publication},
-                          root, config, task, branch=branch, base=base, expected_head=task_head)
+                          root, config, task, adapter, branch=branch, base=base, expected_head=task_head)
 
     if current != branch:
         raise AgentBoxError(f"Switch to the parent branch {branch} before local landing")
@@ -159,4 +159,4 @@ def operate(args, root, config, adapter, task):
         adapter.set_state(task, "Done")
     return after_done({"task": task.id, "state": "Done",
                        "merge": {"base": base, "head": task_head}, "publication": publication},
-                      root, config, task, branch=branch, base=base, expected_head=task_head)
+                      root, config, task, adapter, branch=branch, base=base, expected_head=task_head)

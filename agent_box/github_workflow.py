@@ -249,7 +249,7 @@ def _operate(args, root, config, adapter, task, parent, info, saved, tasks):
         if task.state != "Done":
             adapter.set_state(task, "Done")
         return after_done({"task": task.id, "state": "Done", "merge": pr["mergeCommit"], "url": pr["url"]},
-                          root, config, task, branch=info["branch"], base=info["base"],
+                          root, config, task, adapter, branch=info["branch"], base=info["base"],
                           expected_head=pr["headRefOid"])
     if args.action == "request-review":
         gw.require_clean(root)
@@ -290,5 +290,5 @@ def _operate(args, root, config, adapter, task, parent, info, saved, tasks):
         raise AgentBoxError("Cannot complete merged task: " + "; ".join(reasons))
     adapter.set_state(task, "Done")
     return after_done({"task": task.id, "state": "Done", "url": merged["url"], "merge": merged["mergeCommit"]},
-                      root, config, task, branch=info["branch"], base=info["base"],
+                      root, config, task, adapter, branch=info["branch"], base=info["base"],
                       expected_head=merged["headRefOid"])
