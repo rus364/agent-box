@@ -99,13 +99,17 @@ uncertain assumptions against facts and concrete scenarios and stop once only
 safe implementation choices remain. The adoption and landing recovery rules were
 retained because they guard real provider, ref and user-data transitions.
 
-The matched probe used frozen source `e450d5e` and the final source in separate
+The matched probe used frozen source `e450d5e` and was rerun against `c4e8894`
+on 2026-09-09; all After values below were reproduced unchanged. It runs in separate
 isolated processes with the same synthetic repository, task, brief, routes and
 two-review change/fix sequence. It counted UTF-8 bytes and whitespace-separated
 words delivered across the invoked skill, coordinator prepare/result, native
 profile, delegate handoff and every mandatory reviewer artifact. Temporary paths
 were normalized before counting. Provider execution was mocked only to capture
 the actual composed input; this is input measurement, not runtime or token proof.
+Repository instructions come from the synthetic fixture, not this checkout's
+AGENTS.md. These totals therefore measure the matched workflow paths, not the
+complete input of a real delegation or later edits to repository documentation.
 
 | Matched mandatory input | Before bytes / words | After bytes / words |
 | --- | ---: | ---: |

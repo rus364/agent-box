@@ -120,14 +120,15 @@ Hook removal only ever touches agent-box's own commands.
 ## Commands
 
 ```bash
-python3 -m unittest discover -s tests    # full suite (no external network)
+python3 tests/run_suite.py              # full suite; isolated paths, no outer PTY
 ./agent-box selftest                     # fast, no Podman
 uvx ruff check --select E4,E9,F agent_box/ tests/   # what CI lints
 ./agent-box config show                  # inspect the live config, tokens redacted
 ```
 
-Test modules import each other by bare name (`from test_runtime import ...`), so
-run them through `discover`, not `python3 -m unittest tests.test_browser`.
+The runner uses unittest discovery, temporary state/integration paths and piped
+stdio. For focused runs: `python3 tests/run_suite.py discover -s tests -p test_browser.py`.
+Test modules import each other by bare name, so keep discovery.
 
 ## Gotchas
 

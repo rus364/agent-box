@@ -1,8 +1,8 @@
 # Task workflow
 
 Enable **workflow** in `agent-box config`, configure tracker access, and run
-`ab-setup` in a repository. This installs eight short owned skills:
-`ab-tracker`, `ab-setup`, `ab-interview`, `ab-plan`, `ab-work`, `ab-review`,
+`ab-setup` in a repository. This installs nine short owned skills:
+`ab-tracker`, `ab-setup`, `ab-adopt`, `ab-interview`, `ab-plan`, `ab-work`, `ab-review`,
 `ab-pr`, `ab-land`. They compose around the external tracker, without a `.flow`
 task database, bootstrap framework, update patches or agent-turn push hooks.
 
