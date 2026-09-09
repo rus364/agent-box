@@ -468,7 +468,7 @@ class TransitionReadTests(unittest.TestCase):
             self.assertEqual(scope.call_count, 1)
 
     def test_github_pr_reuses_locked_tree_and_land_refreshes_after_network(self):
-        """PR uses its locked tree; landing must refresh child state after network reads."""
+        """PR reads once; landing defers its full root/tree/scope until after network reads."""
         from agent_box import github_workflow as github
 
         child = Task("8", "1", "Child", state="Done", parent="7")
@@ -483,21 +483,24 @@ class TransitionReadTests(unittest.TestCase):
               "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN", "headRefOid": gw.head_sha(self.root),
               "headRefName": "ab/7-parent", "baseRefName": "main", "latestReviews": [], "statusCheckRollup": []}
         for arguments in (["pr", "7", "--title", "Parent", "--body-file", "/unused"],
-                          ["land", "7", "inspect"]):
+                          ["land", "7", "inspect"], ["land", "7", "merge"]):
             self.adapter.get.reset_mock()
             with self.subTest(arguments=arguments), \
                  patch.object(gw, "github_origin", return_value="o/r"), \
                  patch.object(gw, "push_parent"), \
                  patch.object(github, "find_pr", return_value=9), \
-                 patch.object(github, "view", return_value=pr), \
+                 patch.object(github, "view", side_effect=[pr, {**pr, "state": "MERGED",
+                                                               "mergedAt": "2026-01-01T00:00:00Z",
+                                                               "mergeCommit": {"oid": "merged"}}]), \
                  patch.object(github, "threads", return_value=[]), \
                  patch.object(github, "gh", return_value=[]), \
                  patch.object(workflow, "tree", wraps=workflow.tree) as tree, \
                  patch.object(workflow, "scope", wraps=workflow.scope) as scope:
                 self.dispatch(arguments)
-            self.assertEqual(self.adapter.get.call_count, 2 if arguments[0] == "pr" else 3)
-            self.assertEqual(tree.call_count, 1 if arguments[0] == "pr" else 2)
-            self.assertEqual(scope.call_count, 1)
+            merging = arguments[-1] == "merge"
+            self.assertEqual(self.adapter.get.call_count, 2 if arguments[0] == "pr" else 5 if merging else 3)
+            self.assertEqual(tree.call_count, 2 if merging else 1)
+            self.assertEqual(scope.call_count, 2 if merging else 1)
 
     def test_validation_keeps_both_task_and_scope_reads(self):
         """Validation must compare requirements and committed work before and after the command."""

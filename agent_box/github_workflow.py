@@ -134,13 +134,34 @@ def operate(args, root, config, adapter, task_id):
     with lock(root, "review-budget"), lock(root, "work"):
         task = adapter.get(task_id)
         parent, info, _, _ = resolve(root, adapter, task)
-        tasks = tree(adapter, task)
-        saved = evidence(root, task, scope(root, info["base"], tasks))
+        tasks, saved = [], {}
+        if args.command == "pr":
+            tasks = tree(adapter, task)
+            saved = evidence(root, task, scope(root, info["base"], tasks))
         return _operate(args, root, config, adapter, task, parent, info, saved, tasks)
 
 
-def _operate(args, root, config, adapter, task, parent, info, saved, tasks):
+def _landing_tasks(root, adapter, task_id, info, *, states=("Review",)):
     from .workflow import tree
+
+    # Tracker responses are snapshots: traversing an old root misses changed
+    # requirements and newly attached children even if descendants are reread.
+    task = adapter.get(task_id)
+    tasks = tree(adapter, task)
+    reasons = completion_reasons(task, tasks, str(adapter.identity()["id"]), states=states)
+    reasons += blocking_reasons(task, adapter.get)
+    if task.parent or gw.current_branch(root) != info["branch"]:
+        raise AgentBoxError("Current parent branch identity differs from the landing request")
+    return task, tasks, reasons
+
+
+def _current_head(root, pr):
+    if pr["headRefOid"] != gw.head_sha(root):
+        raise AgentBoxError("Local and remote parent heads differ; the current work is not merged")
+
+
+def _operate(args, root, config, adapter, task, parent, info, saved, tasks):
+    from .workflow import evidence, scope
     if not (config.github.gh_token or config.github.gh_config):
         raise AgentBoxError("Enable the GitHub integration in agent-box config before workflow GitHub actions")
     if task.id != parent.id:
@@ -195,21 +216,30 @@ def _operate(args, root, config, adapter, task, parent, info, saved, tasks):
             raise AgentBoxError(
                 f"origin/{info['branch']} is at {remote_head[:12]}, not the merged "
                 f"{pr['headRefOid'][:12]}; another checkout advanced the branch, so reconcile first")
+        merged_identity(pr, info["branch"], info["base"])
+        task, tasks, reasons = _landing_tasks(root, adapter, task.id, info, states=("Review", "Done"))
+        gw.require_clean(root)
+        _current_head(root, pr)
+        if reasons:
+            raise AgentBoxError("Cannot complete merged task: " + "; ".join(reasons))
         if task.state != "Done":
             adapter.set_state(task, "Done")
         return after_done({"task": task.id, "state": "Done", "merge": pr["mergeCommit"], "url": pr["url"]},
                           root, config, task, branch=info["branch"], base=info["base"],
                           expected_head=pr["headRefOid"])
-    if pr["headRefOid"] != gw.head_sha(root):
-        raise AgentBoxError("Local and remote parent heads differ; reconcile before review or merge")
     if args.action == "request-review":
+        gw.require_clean(root)
+        _current_head(root, pr)
         return request_review(root, repo, pr, config.workflow.review)
     feedback = threads(root, repo, pr["number"])
-    reasons = blockers(pr, feedback, saved)
-    reasons += completion_reasons(task, tree(adapter, task), str(adapter.identity()["id"]), states=("Review",))
-    reasons += blocking_reasons(task, adapter.get)
     if args.action == "inspect":
         comments = gh(root, "api", "--paginate", "--slurp", f"repos/{repo}/issues/{pr['number']}/comments", json_output=True)
+    # Acceptance belongs after network feedback, immediately before the action.
+    task, tasks, reasons = _landing_tasks(root, adapter, task.id, info)
+    saved = evidence(root, task, scope(root, info["base"], tasks))
+    _current_head(root, pr)
+    reasons += blockers(pr, feedback, saved)
+    if args.action == "inspect":
         return {"pr": pr, "threads": feedback, "comments": [c for page in comments for c in page],
                 "blockers": reasons, "max_rounds": config.workflow.review.max_rounds,
                 "wait_seconds": config.workflow.review.wait_seconds}
@@ -221,6 +251,16 @@ def _operate(args, root, config, adapter, task, parent, info, saved, tasks):
     if merged["state"] != "MERGED":
         return {"state": merged["state"], "next": "Wait for GitHub merge queue; do not mark the task Done"}
     merged_identity(merged, info["branch"], info["base"], pr["headRefOid"])
+    # GitHub can merge the accepted head while local work or tracker acceptance
+    # advances during the request. That successful merge cannot finish new work.
+    task, tasks, reasons = _landing_tasks(root, adapter, task.id, info)
+    current = evidence(root, task, scope(root, info["base"], tasks))
+    _current_head(root, merged)
+    if current["scope"] != saved["scope"]:
+        reasons.append("Code or requirements changed during merge; validate and review the current scope")
+    reasons += blockers(pr, feedback, current)
+    if reasons:
+        raise AgentBoxError("Cannot complete merged task: " + "; ".join(reasons))
     adapter.set_state(task, "Done")
     return after_done({"task": task.id, "state": "Done", "url": merged["url"], "merge": merged["mergeCommit"]},
                       root, config, task, branch=info["branch"], base=info["base"],
