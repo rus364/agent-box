@@ -152,6 +152,10 @@ it is not evidence that work ran or completed. Pass the active provider with
 `--primary` (or `AGENT_BOX_PRIMARY_PROVIDER`). No usage counters, tier matrices
 or installed tier profiles participate.
 
+Every `prepare` result also returns `report_command`, an exact role/tier/scope
+template for native result ingestion. Replace the ACTUAL route values, descriptor
+and report path with observed execution facts; fallback also supplies its reason.
+
 Without an applicable global reviewer override, untiered review uses the active session provider/model/effort in an independent
 fresh read-only context, even when explicit-tier review routing prefers another
 provider. Without exact session facts, `review` returns

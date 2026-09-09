@@ -1244,10 +1244,24 @@ def dispatch(args):
                                  f"The {role} reads and reports without changing files; ")
             repository_guidance = (
                 "delegate_handoff is the complete role input, including repository instructions or mandatory read evidence. ")
+            report_command = ["agent-box", "workflow", "report", str(task.id), "--role", role]
+            if args.primary:
+                report_command.extend(("--primary", args.primary))
+            if tier is not None:
+                report_command.extend(("--tier", str(tier)))
+            report_command.extend(("--provider", "ACTUAL_PROVIDER"))
+            if selected.get("mode") == "current-session" and selected.get("model") is None:
+                report_command.append("--session-inherited")
+            else:
+                report_command.extend(("--model", "ACTUAL_MODEL", "--effort", "ACTUAL_EFFORT"))
+            if role == "reviewer":
+                report_command.append("--fresh-context")
+            report_command.extend(("--scope", fingerprint, "--handoff", "DESCRIPTOR", "--file", "REPORT.json"))
             result = {"scope": fingerprint, "route": selected,
                     "task": {"id": task.id, "title": task.title, "state": task.state, "tier": task.tier},
                     "base": base,
                     "report_schema": report_schema(role),
+                    "report_command": " ".join(report_command),
                     "context_policy": context_policy(),
                     "delegate_handoff": None,
                     "handoff": handoff_descriptor(
@@ -1260,8 +1274,9 @@ def dispatch(args):
                                     "live provider/model/effort, profile precedence and inheritance; "
                                     "profile readiness describes only the installed profile, and explicit settings are requirements, "
                                     "not capability proof; unknown or unsupported capabilities and effort=default require managed CLI. "
-                                    "Native uses prepare/spawn/report; managed uses run/review. Report actual route facts and any "
-                                    "fallback reason. Return the role JSON schema."}
+                                    "Native uses prepare/spawn then report_command; managed uses run/review. Replace its ACTUAL values, "
+                                    "DESCRIPTOR and REPORT.json from the execution; add --fallback-reason REASON for fallback. "
+                                    "Return the role JSON schema."}
             if role != "reviewer" and args.brief:
                 result["delegate_handoff"] = assignment_handoff(root, task, base, read_brief(args.brief), role)
             if role == "reviewer":

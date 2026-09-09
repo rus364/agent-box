@@ -231,6 +231,15 @@ class WorkerHandoffTests(unittest.TestCase):
                                                  "--brief", str(self.review_brief))
                     prompt = prepared["delegate_handoff"]
                     self.assertEqual(set(prepared["task"]), {"id", "title", "state", "tier"})
+                    self.assertIn(f"workflow report 1 --role {role}", prepared["report_command"])
+                    self.assertIn(f"--scope {prepared['scope']}", prepared["report_command"])
+                    self.assertIn("--handoff DESCRIPTOR --file REPORT.json", prepared["report_command"])
+                    command = (prepared["report_command"].replace("ACTUAL_PROVIDER", "claude")
+                               .replace("ACTUAL_MODEL", "m").replace("ACTUAL_EFFORT", "high")
+                               .replace("DESCRIPTOR", prepared["handoff"]))
+                    parsed = workflow.parser().parse_args(command.split()[2:])
+                    self.assertEqual((parsed.command, parsed.role, parsed.scope),
+                                     ("report", role, prepared["scope"]))
                     self.assertIn(workflow.LAUNCH_CONTEXT, prepared["instructions"])
                     payload = json.loads(prompt.split("Delegation handoff:\n", 1)[1])
                     self.assertEqual(payload["role"], role)
@@ -471,6 +480,7 @@ class WorkerHandoffTests(unittest.TestCase):
                 self.assertNotIn("Before delegating", result["instructions"])
                 self.assertNotIn("fork_turns", result["instructions"])
                 self.assertEqual(result["context_policy"], workflow.context_policy())
+                self.assertIn("--session-inherited", result["report_command"])
                 self.assertTrue(result["handoff"])
                 self.assertEqual(result["delegate_handoff"] is not None, with_brief)
 
@@ -494,6 +504,7 @@ class WorkerHandoffTests(unittest.TestCase):
             prepared = self.run_workflow("review", "1", "--primary", "codex",
                                          "--brief", str(self.review_brief))
         self.assertEqual(prepared["action"], "review-in-fresh-context")
+        self.assertIn("--session-inherited --fresh-context", prepared["report_command"])
         self.assertIn(workflow.LAUNCH_CONTEXT, prepared["instructions"])
         self.assertNotIn("review", workflow.read_evidence(self.root, self.task))
         self.report.write_text(json.dumps({"verdict": "PASS", "summary": "Reviewed", "findings": []}))

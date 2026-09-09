@@ -109,11 +109,11 @@ the actual composed input; this is input measurement, not runtime or token proof
 
 | Matched mandatory input | Before bytes / words | After bytes / words |
 | --- | ---: | ---: |
-| All nine skill files (inventory, not one invocation) | 37,095 / 5,093 | 31,216 / 4,367 |
-| Exact-ID untiered direct worker | 9,612 / 1,188 | 7,059 / 834 |
-| Tiered managed worker | 8,960 / 1,172 | 7,333 / 908 |
-| Tiered native worker | 10,826 / 1,351 | 13,734 / 1,580 |
-| Two fresh native review rounds around a fix | 47,492 / 4,029 | 52,595 / 4,390 |
+| All nine skill files (inventory, not one invocation) | 37,095 / 5,093 | 31,326 / 4,382 |
+| Exact-ID untiered direct worker | 9,612 / 1,188 | 7,373 / 864 |
+| Tiered managed worker | 8,960 / 1,172 | 7,408 / 920 |
+| Tiered native worker | 10,826 / 1,351 | 14,160 / 1,624 |
+| Two fresh native review rounds around a fix | 47,492 / 4,029 | 53,387 / 4,463 |
 
 The native rows grew because the old path omitted generated complete worker
 handoff data and silently truncated ordinary repository instructions; review now
