@@ -45,6 +45,36 @@ class ProjectConfigTests(unittest.TestCase):
         self.assertTrue(result.image.tools['analysis'])
         self.assertEqual(self.config.to_dict(), original)
 
+    def test_worker_override_project_values_reach_runtime_without_changing_global(self):
+        """Sparse project false/empty choices supersede global worker candidates only."""
+        override = self.config.workflow.worker.override
+        override.enabled = override.apply_to_tiered = True
+        override.models['codex'] = {'model': 'global-codex', 'effort': 'high'}
+        override.models['claude'] = {'model': 'global-claude', 'effort': 'medium'}
+        original = self.config.to_dict()
+        data = {'workflow': {'worker': {'override': {'apply_to_tiered': False,
+                'models': {'codex': {'model': ''}, 'claude': {'effort': 'default'}}}}}}
+        project_config.save(self.path, data)
+        result = project_config.apply(self.config, project_config.load(self.path))
+        runtime.sync_tracker_runtime(result, self.root / 'rendered')
+        artifact = self.root / 'rendered' / 'config.json'
+        with patch.dict(os.environ, {'AGENT_BOX_RUNTIME_CONFIG': str(artifact)}), \
+             patch.object(project_config, 'load', return_value=project_config.load(self.path)):
+            rendered = effective_config()
+            self.assertEqual(effective_config(include_project=False).workflow.worker.override, override)
+        chosen = rendered.workflow.worker.override
+        self.assertTrue(chosen.enabled)
+        self.assertFalse(chosen.apply_to_tiered)
+        self.assertEqual(chosen.models['codex'], {'model': '', 'effort': 'high'})
+        self.assertEqual(chosen.models['claude'], {'model': 'global-claude', 'effort': 'default'})
+        self.assertEqual(rendered.workflow.review, self.config.workflow.review)
+        self.assertEqual(self.config.to_dict(), original)
+        disabled = project_config.apply(self.config, {'workflow': {'worker': {'override': {'enabled': False}}}})
+        self.assertIsNone(disabled.workflow.override_for('worker', None))
+        for bad in ({'enabled': 'true'}, {'models': {'claude': {'effort': 'ultra'}}}):
+            with self.assertRaises(AgentBoxError):
+                project_config.validate({'workflow': {'worker': {'override': bad}}}, self.path)
+
     def test_unknown_forbidden_and_malformed_values_never_fall_back(self):
         for data in ({'browser': {'enabled': 1}}, {'env': {}}, {'workflow': {'enabled': False}},
                      {'workflow': {'unknown': 1}}, {'workflow': {'merge_mode': ''}},

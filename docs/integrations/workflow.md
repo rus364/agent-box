@@ -97,7 +97,8 @@ for facts, scouting and structuring; task difficulty remains 1-3, represented in
 Vikunja by one `ab:tier:1`, `ab:tier:2` or `ab:tier:3` label. A user-set task tier
 wins over a coordinator suggestion. Each subtask may have its own explicit tier. Without a task tier, no assessment or label is required for readiness, audit, claim, validation, review or completion; malformed/conflicting explicit labels remain invalid. An explicit `--tier` invocation override selects configured routing when the card has no tier and never changes its labels.
 
-Untiered workers stay in the active session's provider, model and effort.
+Without an applicable global worker override, untiered workers stay in the active
+session's provider, model and effort.
 `prepare` and `run` return `action: work-in-current-session`, with the task,
 handoff and instructions, instead of launching another CLI. The coordinator
 implements directly, preserving settings. The action checks assigned Doing
@@ -127,7 +128,8 @@ reports, use `--session-inherited` and omit unknown model/effort. Independent
 review and validation/finish gates remain required by policy; SKIPPED is
 resolved before asking for session settings.
 
-Explicit-tier workers/scouts choose one of three modes:
+Workers with an applicable global override, explicit-tier workers and scouts
+choose one of three provider modes:
 
 - **current**: only the session's provider;
 - **weighted**: smooth weighted round robin, independently per tier;
@@ -171,6 +173,44 @@ Set `workflow.review.routing` in `agent-box config` under workflow / review:
 For explicit tiers, both modes use `workflow.review.tiers` unless the global override applies. Worker weights and usage do not
 select reviewers. Routing changes neither review policy nor worker/scout routing.
 All attempts preserve the selected tier and configured reviewer model/effort.
+
+### Global worker override
+
+In `agent-box config`, open workflow / worker / Global worker override.
+`workflow.worker.override` holds `enabled` (default false), `apply_to_tiered`
+(default false), and independent `models.codex` / `models.claude` candidates
+with `model` and `effort`. Empty models disable candidates; effort starts at
+`medium`. The model picker supports offline suggestions, manual IDs and an
+explicit disable choice.
+
+| Enabled | Also override tiered tasks | Without an effective tier | With an effective tier |
+| --- | --- | --- | --- |
+| Off | Either | Active session | `workflow.tiers` |
+| On | Off | Worker override candidates | `workflow.tiers` |
+| On | On | Worker override candidates | Worker override candidates |
+
+The effective tier remains the card's tier, otherwise explicit `--tier`, otherwise
+null. An override never changes tracker labels or invents a tier. It replaces
+only model/effort candidates: current/weighted/usage-aware provider selection,
+weights, availability filtering, budget limits and fallback retain their existing
+rules. In current mode, an unavailable current-provider candidate is an error;
+it does not select the other provider. If no override candidate is eligible, selection fails
+with an explicit error without returning to session or tier models. Reviewer and
+scout configuration remain independent.
+
+`prepare` returns the selected route for native execution; `run` selects and
+executes a route through managed CLI. Reports record actual provider/model/effort against
+the prepared route, including permitted fallback candidates and their reasons,
+even if configuration changes later. Running workers are not rescheduled.
+Untiered overrides have no native tier profile. Use supported explicit native
+model/effort settings, or managed CLI if capabilities are unknown or effort is
+`default`; omitting native effort can inherit a session override. For tiered
+workers, profile readiness still requires an exact match to the chosen candidate.
+
+These settings appear separately from reviewer overrides in `config show`, use
+the same project configuration inheritance and reset controls, and travel in the
+minimal runtime artifact. A project can override individual flags or model/effort
+fields without changing the global configuration.
 
 ### Global reviewer override
 

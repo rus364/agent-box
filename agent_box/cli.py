@@ -371,10 +371,11 @@ def config_show() -> None:
     print(f"    routing                   {config.workflow.routing}; weights {config.workflow.weights}")
     print(f"    review                    {config.workflow.review.policy}; files {config.workflow.review.max_files}; lines {config.workflow.review.max_lines}")
     print(f"    review routing            {config.workflow.review.routing}")
-    override = config.workflow.review.override
-    print(f"    reviewer override         {'on' if override.enabled else 'off'}; also tiered {override.apply_to_tiered}")
-    for provider, spec in override.models.items():
-        print(f"    reviewer override {provider}: {spec}")
+    for role, settings in (("worker", config.workflow.worker), ("reviewer", config.workflow.review)):
+        override = settings.override
+        print(f"    {role + ' override':26s}{'on' if override.enabled else 'off'}; also tiered {override.apply_to_tiered}")
+        for provider, spec in override.models.items():
+            print(f"    {role} override {provider}: {spec}")
     print(f"    fallback / auto-push      {config.workflow.fallback} / {config.workflow.auto_push}")
     print("    auto-push scope           " + ("accepted base after local merge" if config.workflow.merge_mode == "local" else "parent task branch after subtask integration"))
     for tier, models in config.workflow.tiers.items():

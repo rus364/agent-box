@@ -308,7 +308,7 @@ bound project still require a complete tracker binding.
 
 The allowed shared paths are `workflow` except its top-level `enabled`,
 `browser.enabled`, `image.tools`, `tracker.provider`, and
-`tracker.connections.<provider>.url`. Workflow includes reviewer overrides,
+`tracker.connections.<provider>.url`. Workflow includes independent worker and reviewer overrides,
 models, efforts and tier policy. `tracker.project` and `tracker.recursive` are
 project identity fields. Missing fields inherit global settings; nested objects
 merge by key and lists replace the whole inherited list. Explicit `false`,

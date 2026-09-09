@@ -30,7 +30,7 @@ def select(config, role, tier, primary, state, usage=None, *, now=None, writer=N
     errors = config.validate()
     if errors:
         raise AgentBoxError("; ".join(errors))
-    override = role == "reviewer" and config.review.override.applies(tier)
+    override = config.override_for(role, tier)
     if (tier not in (0, 1, 2, 3) and not (tier is None and override)
             or role not in ("worker", "scout", "reviewer") or (tier == 0 and role != "scout")):
         raise AgentBoxError("Tier 0 is reserved for scouts; workers and reviewers require tier 1-3")
@@ -39,9 +39,9 @@ def select(config, role, tier, primary, state, usage=None, *, now=None, writer=N
     now = time.time() if now is None else now
     usage = usage or {}
     available = set(AGENT_PROVIDERS if available is None else available)
-    matrix = ("workflow.review.override.models" if override else
+    matrix = (f"workflow.{'review' if role == 'reviewer' else 'worker'}.override.models" if override else
               f"workflow.review.tiers.{tier}" if role == "reviewer" else f"workflow.tiers.{tier}")
-    models = (config.review.override.models if override else
+    models = (override.models if override else
               (config.review.tiers if role == "reviewer" else config.tiers)[str(tier)])
     allowed = [p for p in AGENT_PROVIDERS if p in available and models[p]["model"]]
     writer = writer or primary
@@ -64,7 +64,7 @@ def select(config, role, tier, primary, state, usage=None, *, now=None, writer=N
             if any(w["remaining"] <= 0 and w["reset_at"] > now for w in windows):
                 allowed.remove(provider)
         if not allowed:
-            raise AgentBoxError(f"No available configured provider in tier {tier}; configure models or wait for limits")
+            raise AgentBoxError(f"No available configured provider in {matrix}; configure models or wait for limits; no automatic session/tier fallback")
         weights = {p: config.weights[p] for p in allowed}
         scores = {}
         if config.routing == "usage-aware":

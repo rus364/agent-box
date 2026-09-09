@@ -36,6 +36,46 @@ class WorkflowConfigTests(unittest.TestCase):
         config.workflow.review.override.models["claude"]["effort"] = "invalid"
         self.assertIn("workflow.review.override.models.claude: invalid effort", config.workflow.validate())
 
+    def test_worker_override_roundtrips_into_runtime_without_sharing_candidates(self):
+        """The container must receive the same opt-in and independent settings as the menu."""
+        from agent_box import runtime
+        original = Config()
+        self.assertFalse(original.workflow.worker.override.enabled)
+        self.assertFalse(original.workflow.worker.override.apply_to_tiered)
+        self.assertTrue(all(not spec["model"] for spec in original.workflow.worker.override.models.values()))
+        for apply in (False, True):
+            config = Config.from_dict({"workflow": {"enabled": True, "worker": {"override": {
+                "enabled": True, "apply_to_tiered": apply, "models": {
+                    "codex": {"model": "custom-codex", "effort": "default"},
+                    "claude": {"model": "custom-claude", "effort": "high"}}}}}})
+            with tempfile.TemporaryDirectory() as directory:
+                runtime.sync_tracker_runtime(config, Path(directory))
+                rendered = Config.from_dict(json.loads((Path(directory) / "config.json").read_text()))
+            self.assertEqual(rendered.workflow.worker.override, config.workflow.worker.override)
+            self.assertEqual(rendered.workflow.validate(), [])
+            rendered.workflow.worker.override.models["codex"]["model"] = "changed"
+            self.assertEqual(rendered.workflow.review.tiers["1"]["codex"]["model"], "")
+            self.assertEqual(rendered.workflow.tiers["1"]["codex"]["model"], "")
+            self.assertEqual(original.workflow.worker.override.models["codex"]["model"], "")
+        self.assertEqual(rendered.workflow.review.override, original.workflow.review.override)
+        config.workflow.worker.override.models["claude"]["effort"] = "invalid"
+        self.assertIn("workflow.worker.override.models.claude: invalid effort", config.workflow.validate())
+
+    def test_show_distinguishes_worker_and_reviewer_override_scope(self):
+        """A visible worker override must not imply reviewer settings have changed."""
+        from agent_box import cli
+        config = Config()
+        config.workflow.worker.override.enabled = True
+        config.workflow.worker.override.models['codex'] = {'model': 'worker-model', 'effort': 'high'}
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output), patch.object(cli, 'effective_config', return_value=config), \
+             patch.object(cli, '_statusline_note', return_value=''), \
+             patch.object(cli, '_image_note', return_value=''), patch.object(cli, '_browser_note', return_value=''):
+            cli.config_show()
+        self.assertIn('worker override           on; also tiered False', output.getvalue())
+        self.assertIn('reviewer override         off; also tiered False', output.getvalue())
+        self.assertIn("worker override codex: {'model': 'worker-model', 'effort': 'high'}", output.getvalue())
+
     def test_show_reads_the_runtime_artifact_instead_of_host_defaults(self):
         """A container must show the same merge route that workflow dispatch uses."""
         from agent_box import cli

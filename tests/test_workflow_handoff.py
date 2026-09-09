@@ -212,6 +212,110 @@ class WorkerHandoffTests(unittest.TestCase):
                                  "--provider", "claude", "--model", "m", "--effort", "high", "--file", str(self.report),
                                  "--scope", scope, "--handoff", handoff)
 
+    def test_worker_override_binds_native_facts_even_after_config_changes(self):
+        """Both providers report the prepared route, never a changed config or invented tier."""
+        self.patches[5].stop()
+        self.task.labels = []
+        override = self.config.workflow.worker.override
+        self.config.workflow.routing = "weighted"
+        for provider, other in (("codex", "claude"), ("claude", "codex")):
+            override.enabled = True
+            override.models = {p: {"model": p + "-global", "effort": "high"} for p in (provider, other)}
+            self.config.workflow.weights = {provider: 3, other: 1}
+            with patch.object(workflow.shutil, "which", side_effect=lambda name: name), \
+                 patch("agent_box.agent_profiles.available") as profile:
+                prepared = self.run_workflow("prepare", "1", "--primary", provider)
+            profile.assert_not_called()
+            route = prepared["route"]
+            self.assertEqual((route["provider"], route["tier"]), (provider, None))
+            self.assertIsNone(route["native_profile"])
+            self.assertFalse(route["native_profile_ready"])
+            self.assertEqual(route["native_explicit_settings"],
+                             {"provider": provider, "model": provider + "-global", "effort": "high"})
+            override.enabled = False
+            override.models[provider]["model"] = "changed"
+            argv = ["report", "1", "--role", "worker", "--scope", prepared["scope"],
+                    "--handoff", prepared["handoff"], "--file", str(self.report)]
+            for model, effort in (("changed", "high"), (provider + "-global", "medium")):
+                with self.assertRaisesRegex(AgentBoxError, "outside the configured route"):
+                    self.run_workflow(*argv, "--provider", provider, "--model", model, "--effort", effort)
+            with self.assertRaisesRegex(AgentBoxError, "fallback reason"):
+                self.run_workflow(*argv, "--provider", other, "--model", other + "-global", "--effort", "high")
+            result = self.run_workflow(*argv, "--provider", other, "--model", other + "-global",
+                                       "--effort", "high", "--fallback-reason", "Preferred provider unavailable")
+            self.assertEqual(result["route"], {"provider": other, "model": other + "-global", "effort": "high", "tier": None})
+            self.assertEqual(workflow.read_evidence(self.root, self.task)["worker"]["route"], result["route"])
+            self.assertEqual(self.task.labels, [])
+
+    def test_worker_override_managed_fallback_keeps_route_after_config_change(self):
+        """A provider failure can use its prepared fallback, but cannot reschedule from new config."""
+        self.patches[5].stop()
+        self.task.labels = []
+        self.config.workflow.routing = "weighted"
+        self.config.workflow.weights = {"codex": 3, "claude": 1}
+        override = self.config.workflow.worker.override
+        override.enabled = True
+        override.models = {p: {"model": p + "-global", "effort": "high"} for p in ("codex", "claude")}
+
+        def run(candidate, *args, **kwargs):
+            if candidate["provider"] == "codex":
+                override.enabled = False
+                override.models["claude"]["model"] = "new-model"
+                raise provider_runner.ProviderFailure("provider unavailable", "unavailable")
+            self.assertEqual(candidate["model"], "claude-global")
+            return {"status": "completed", "summary": "Done", "evidence": []}
+
+        with patch.object(workflow.shutil, "which", side_effect=lambda name: name), \
+             patch("agent_box.agent_profiles.available", return_value=False), \
+             patch.object(workflow, "run", side_effect=run) as execute:
+            result = self.run_workflow("run", "1", "--primary", "codex", "--brief", str(self.review_brief))
+        self.assertEqual(execute.call_count, 2)
+        self.assertEqual(result["route"], {"provider": "claude", "model": "claude-global", "effort": "high", "tier": None})
+        self.assertEqual(result["failures"], [{"provider": "codex", "category": "unavailable"}])
+        self.assertEqual(workflow.read_evidence(self.root, self.task)["writer"], "claude")
+
+    def test_worker_override_priority_and_managed_default_effort(self):
+        """Prepare and run agree; the card tier wins and default effort stays managed."""
+        self.patches[5].stop()
+        override = self.config.workflow.worker.override
+        for provider in ("codex", "claude"):
+            override.models[provider] = {"model": provider + "-global", "effort": "default"}
+            for tier in ("1", "2"):
+                self.config.workflow.tiers[tier][provider] = {"model": provider + "-tier", "effort": "high"}
+            for enabled, apply, card, explicit, expected in (
+                    (False, False, None, None, "session"), (False, True, None, None, "session"),
+                    (False, True, 1, 2, "tier"), (True, False, 1, 2, "tier"),
+                    (True, False, None, 2, "tier"), (True, False, None, None, "global"),
+                    (True, True, 1, 2, "global"), (True, True, None, 2, "global")):
+                override.enabled, override.apply_to_tiered = enabled, apply
+                self.task.labels = [f"ab:tier:{card}"] if card else []
+                for command in ("prepare", "run"):
+                    argv = [command, "1", "--primary", provider, "--brief", str(self.review_brief),
+                            "--session-model", provider + "-session", "--session-effort", "medium"]
+                    if explicit:
+                        argv += ["--tier", str(explicit)]
+                    with self.subTest(provider=provider, enabled=enabled, apply=apply, card=card, explicit=explicit, command=command), \
+                         patch.object(workflow.shutil, "which", side_effect=lambda name: name), \
+                         patch("agent_box.agent_profiles.available", return_value=False), \
+                         patch.object(workflow, "run", return_value={"status": "completed", "summary": "Done", "evidence": []}) as run:
+                        result = self.run_workflow(*argv)
+                    route = result["route"]
+                    self.assertEqual((route["model"], route["tier"]), (provider + "-" + expected, card or explicit))
+                    if command == "prepare" or expected == "session":
+                        run.assert_not_called()
+                    else:
+                        self.assertEqual(run.call_args.args[0]["model"], route["model"])
+                    if expected == "session":
+                        self.assertEqual(result["action"], "work-in-current-session")
+                    if expected == "global":
+                        self.assertEqual(route["effort"], "default")
+                        if command == "prepare":
+                            self.assertIsNone(route["native_explicit_settings"])
+                        cmd = provider_runner.build_command(route, "worker", self.root, self.report, self.report)
+                        self.assertNotIn("--effort", cmd)
+                        self.assertFalse(any("model_reasoning_effort=" in arg for arg in cmd))
+                    self.assertEqual(self.task.labels, [f"ab:tier:{card}"] if card else [])
+
     def test_override_prepare_and_report_bind_real_candidates_without_fabricating_a_tier(self):
         """Config changes cannot rewrite a prepared review's parameters or admit stale reports."""
         self.patches[5].stop()  # Exercise the real route, not the generic handoff fixture.

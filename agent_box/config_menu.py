@@ -70,6 +70,11 @@ HELP = {
     "workflow.scout_limit": "Maximum number of concurrent read-only scouts, from 1 through 16.",
     "workflow.auto_push": "Within the opt-in workflow, publish the parent task in GitHub mode or the accepted base after a local fast-forward. Turning this off keeps completion local.",
     "workflow.timeout_seconds": "Maximum delegated agent runtime in seconds, from 30 through 86400.",
+    "workflow.worker": "Worker model overrides. Provider routing, weights, usage limits and fallback stay in the shared workflow policy.",
+    "workflow.worker.override": "Optional global worker models for Codex and Claude. Replaces only model/effort candidates; reviewer and scout settings stay independent.",
+    "workflow.worker.override.enabled": "Use global worker candidates without a tier. Off preserves the active session without a tier and workflow.tiers with a tier.",
+    "workflow.worker.override.apply_to_tiered": "When override is enabled, also replace worker tier models, including an explicit --tier. Off applies only without a tier; the task tier is unchanged.",
+    "workflow.worker.override.models": "Independent global worker candidates. Empty models disable candidates; provider policy and fallback use only these candidates, with no return to session/tier models.",
     "workflow.review": "Independent review routing, thresholds, provider selection, and reviewer candidates. Worker tier settings are never inherited.",
     "workflow.review.tiers": "Independent reviewer candidates for tiers 1-3. An empty model explicitly disables that provider candidate.",
     "workflow.review.override": "Optional global reviewer models for Codex and Claude. Same/cross-provider still selects the provider; worker and scout settings stay independent.",
@@ -101,11 +106,13 @@ LABELS = {
     "env": "Environment", "providers": "Provider environment", "image": "Workspace image",
     "url": "URL", "token": "Access token", "effort": "Reasoning effort",
     "github_model": "GitHub review model", "github_effort": "GitHub review effort",
-    "override": "Global reviewer override", "apply_to_tiered": "Also override tiered tasks",
+    "apply_to_tiered": "Also override tiered tasks",
 }
 
 
-def label_for(key):
+def label_for(key, path=()):
+    if key == "override" and path in (("workflow", "worker"), ("workflow", "review")):
+        return "Global worker override" if path[-1] == "worker" else "Global reviewer override"
     return LABELS.get(key, f"Tier {key}" if key.isdigit() else key.replace("_", " ").capitalize())
 
 
@@ -150,10 +157,10 @@ def help_for(path):
         return f"Independent reviewer tier {path[-1]} candidates for Codex and Claude. Empty models disable candidates."
     if len(path) == 5 and path[:3] == ("workflow", "review", "tiers"):
         return f"{path[-1].title()} reviewer candidate for tier {path[-2]}. It does not inherit worker settings."
-    if len(path) == 5 and path[:4] == ("workflow", "review", "override", "models"):
-        return f"Global {path[-1].title()} reviewer candidate. It does not inherit session or tier settings."
-    if len(path) == 6 and (path[:3] == ("workflow", "review", "tiers") or path[:4] == ("workflow", "review", "override", "models")):
-        subject = f"{path[-2].title()} reviewer candidate"
+    if len(path) == 5 and path[:4] in (("workflow", "review", "override", "models"), ("workflow", "worker", "override", "models")):
+        return f"Global {path[-1].title()} {'worker' if path[1] == 'worker' else 'reviewer'} candidate. It does not inherit session or tier settings."
+    if len(path) == 6 and (path[:3] == ("workflow", "review", "tiers") or path[:4] in (("workflow", "review", "override", "models"), ("workflow", "worker", "override", "models"))):
+        subject = f"{path[-2].title()} {'worker' if path[1] == 'worker' else 'reviewer'} candidate"
         return (f"Model for the {subject}. Choose a suggestion, enter any supported ID, or disable this candidate." if path[-1] == "model" else f"Reasoning effort for the {subject}. Default omits agent-box's effort override.")
     raise KeyError(f"No menu help for {dotted}")
 
@@ -199,7 +206,7 @@ def parse_value(text, current):
 def _candidate_field(path):
     return (len(path) == 5 and path[:2] == ("workflow", "tiers") or
             len(path) == 6 and (path[:3] == ("workflow", "review", "tiers") or
-                               path[:4] == ("workflow", "review", "override", "models")))
+                               path[:4] in (("workflow", "review", "override", "models"), ("workflow", "worker", "override", "models"))))
 
 
 def _model_path(path):
@@ -538,7 +545,7 @@ def edit(config, *, project=None):
                 extras = [(path_row(), "path", path_row() + ". " + ACTION_HELP["path"]), ("Save and apply", "save", ACTION_HELP["save"]), ("Cancel", "cancel", ACTION_HELP["cancel"])]
                 if project_mode:
                     extras = [("PATH integration: Global only", "global", "Global only: configure host integration in agent-box config."), ("Save project", "save", "Save explicit project overrides without applying host integrations."), ("Cancel", "cancel", ACTION_HELP["cancel"])]
-            labels = [label_for(key) for key in keys]
+            labels = [label_for(key, path) for key in keys]
             label_width = min(24, max(map(len, labels), default=0))
             rows = []
             for key, label in zip(keys, labels):
@@ -574,7 +581,7 @@ def edit(config, *, project=None):
                     hint = "R: Reset to default (built-in program values; remove global override on save). " + hint
             else:
                 hint, help_title = extras[selected - len(keys)][2], extras[selected - len(keys)][0]
-            title = ("agent-box config --project" if project_mode else "agent-box config") + (" / " + " / ".join(label_for(part) for part in path) if path else "")
+            title = ("agent-box config --project" if project_mode else "agent-box config") + (" / " + " / ".join(label_for(part, path[:index]) for index, part in enumerate(path)) if path else "")
             controls = ("Enter R reset G copy " if project_mode else "Enter open R reset ") + "? help Esc back"
             usable = paint(screen, rows, selected, title, hint, notice, controls=controls)
             key = screen.get_wch()

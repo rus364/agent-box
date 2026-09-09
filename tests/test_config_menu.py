@@ -88,6 +88,36 @@ class ConfigMenuTests(unittest.TestCase):
                     self.assertEqual(result.config.workflow.tiers, config.workflow.tiers)
         self.assertFalse(config.workflow.review.override.enabled)
 
+    def test_global_worker_candidates_use_picker_effort_and_draft_controls(self):
+        """Both override candidates share the model editor without altering tier settings."""
+        import curses
+        config = Config()
+        prefix = [*[curses.KEY_DOWN] * 10, "\n",
+                  *[curses.KEY_DOWN] * list(config.workflow.to_dict()).index("worker"), "\n",
+                  *[curses.KEY_DOWN] * 0, "\n",
+                  " ", curses.KEY_DOWN, " ", curses.KEY_DOWN, "\n"]
+        for index, provider in enumerate(("codex", "claude")):
+            cases = [([curses.KEY_HOME, "\n", *"manual-worker", "\n"], "manual-worker"),
+                     ([curses.KEY_END, "\n"], config_menu.BUNDLED_MODELS[provider][-1]),
+                     ([curses.KEY_HOME, curses.KEY_DOWN, "\n"], "")]
+            for pick, expected in cases:
+                with self.subTest(provider=provider, expected=expected):
+                    edit_keys = [*prefix, *[curses.KEY_DOWN] * index, "\n", "\n", *pick,
+                                 curses.KEY_DOWN, *[" "] * (5 if provider == "codex" else 4)]
+                    cancelled, _ = self.edit(config, [*edit_keys, *["\x1b"] * 6])
+                    self.assertIsNone(cancelled)
+                    result, screen = self.edit(config, [*edit_keys, *["\x1b"] * 5,
+                                                   curses.KEY_DOWN, curses.KEY_DOWN, "\n"])
+                    self.assertIn("Global worker override", "\n".join(screen.drawn))
+                    self.assertEqual(result.config.workflow.review, config.workflow.review)
+                    override = result.config.workflow.worker.override
+                    self.assertTrue(override.enabled)
+                    self.assertTrue(override.apply_to_tiered)
+                    self.assertEqual(override.models[provider], {"model": expected, "effort": "default"})
+                    self.assertEqual(result.config.workflow.review.tiers, config.workflow.review.tiers)
+                    self.assertEqual(result.config.workflow.tiers, config.workflow.tiers)
+        self.assertFalse(config.workflow.worker.override.enabled)
+
     def test_cleanup_toggles_save_independently_without_enabling_the_other(self):
         import curses
         fields = list(Config().workflow.to_dict())
@@ -406,6 +436,23 @@ class PathIntegrationTests(unittest.TestCase):
 
 class ProjectMenuTests(unittest.TestCase):
     edit = ConfigMenuTests.edit
+
+    def test_worker_override_project_copy_and_reset_preserve_inheritance(self):
+        """Project copy pins worker settings; reset restores future global values."""
+        import curses
+        from agent_box import project_config
+        config = Config()
+        config.workflow.worker.override.enabled = True
+        prefix = [*[curses.KEY_DOWN] * 10, '\n',
+                  *[curses.KEY_DOWN] * list(config.workflow.to_dict()).index('worker'), '\n']
+        save = ['\x1b', '\x1b', curses.KEY_END, curses.KEY_UP, '\n']
+        pinned, _ = self.edit(config, [*prefix, 'g', *save], project={})
+        self.assertTrue(pinned.project['workflow']['worker']['override']['enabled'])
+        reset, _ = self.edit(config, [*prefix, 'r', *save], project=pinned.project)
+        self.assertEqual(reset.project, {})
+        config.workflow.worker.override.enabled = False
+        self.assertTrue(project_config.apply(config, pinned.project).workflow.worker.override.enabled)
+        self.assertFalse(project_config.apply(config, reset.project).workflow.worker.override.enabled)
 
     def test_use_global_pins_equal_values_while_reset_follows_later_global_changes(self):
         """Copying global is an explicit choice; reset resumes live inheritance."""

@@ -527,8 +527,8 @@ def model_tiers(numbers, data=None):
 
 
 @dataclass
-class ReviewOverride:
-    """Opt in before replacing session inheritance or explicit reviewer tiers."""
+class ModelOverride:
+    """Opt in before replacing a role's session inheritance or explicit tiers."""
     enabled: bool = False
     apply_to_tiered: bool = False
     models: dict[str, dict] = field(default_factory=model_candidates)
@@ -541,6 +541,15 @@ class ReviewOverride:
         data = _mapping(data)
         return cls(_bool(data, "enabled", False), _bool(data, "apply_to_tiered", False),
                    model_candidates(data.get("models")))
+
+
+@dataclass
+class WorkerConfig:
+    override: ModelOverride = field(default_factory=ModelOverride)
+
+    @classmethod
+    def from_dict(cls, data):
+        return cls(ModelOverride.from_dict(_mapping(data).get("override")))
 
 
 @dataclass
@@ -559,7 +568,7 @@ class ReviewConfig:
     github_model: str = ""
     github_effort: str = ""
     wait_seconds: int = 600
-    override: ReviewOverride = field(default_factory=ReviewOverride)
+    override: ModelOverride = field(default_factory=ModelOverride)
 
     def to_dict(self):
         from dataclasses import asdict
@@ -570,7 +579,7 @@ class ReviewConfig:
         data = _mapping(data)
         result = cls()
         result.tiers = model_tiers(range(1, 4), data.get("tiers"))
-        result.override = ReviewOverride.from_dict(data.get("override"))
+        result.override = ModelOverride.from_dict(data.get("override"))
         for key in ("policy", "routing", "label", "github_provider", "github_model", "github_effort"):
             if key in data and isinstance(data[key], str):
                 setattr(result, key, data[key].strip())
@@ -605,10 +614,15 @@ class WorkflowConfig:
     review: ReviewConfig = field(default_factory=ReviewConfig)
     cleanup_local_branches: bool = False
     cleanup_remote_branches: bool = False
+    worker: WorkerConfig = field(default_factory=WorkerConfig)
 
     def to_dict(self):
         from dataclasses import asdict
         return asdict(self)
+
+    def override_for(self, role, tier):
+        settings = self.worker if role == "worker" else self.review if role == "reviewer" else None
+        return settings.override if settings and settings.override.applies(tier) else None
 
     def validate(self):
         import math
@@ -639,7 +653,8 @@ class WorkflowConfig:
                       for path, tiers in (("workflow.tiers", self.tiers),
                                           ("workflow.review.tiers", self.review.tiers))
                       for tier, models in tiers.items()]
-        candidates.append(("workflow.review.override.models", self.review.override.models))
+        candidates.extend((f"workflow.{name}.override.models", settings.override.models)
+                          for name, settings in (("worker", self.worker), ("review", self.review)))
         for path, models in candidates:
             for provider, spec in models.items():
                 if spec.get("effort") not in AGENT_EFFORTS.get(provider, ()):
@@ -661,6 +676,7 @@ class WorkflowConfig:
         result.weights = {p: _number(weights, p, 1) for p in AGENT_PROVIDERS}
         result.tiers = model_tiers(range(4), data.get("tiers"))
         result.review = ReviewConfig.from_dict(data.get("review"))
+        result.worker = WorkerConfig.from_dict(data.get("worker"))
         return result
 
 

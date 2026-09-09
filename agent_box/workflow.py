@@ -960,7 +960,7 @@ def dispatch(args):
             brief = read_brief(args.brief) if args.command != "report" else None
         # The route the delegation was prepared with rides in the descriptor, so
         # the report is ingested at the role and tier it was actually run at.
-        inherit_session = tier is None and not (role == "reviewer" and config.workflow.review.override.applies(tier))
+        inherit_session = tier is None and not config.workflow.override_for(role, tier)
         selected = (descriptor["route"] if descriptor else session_route(args, role) if inherit_session
                     else route(config.workflow, role, tier, args.primary, saved.get("writer")))
         review_round = (descriptor["delegation"] if role == "reviewer" and descriptor else
