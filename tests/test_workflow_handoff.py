@@ -214,6 +214,45 @@ class WorkerHandoffTests(unittest.TestCase):
                                  "--provider", "claude", "--model", "m", "--effort", "high", "--file", str(self.report),
                                  "--scope", scope, "--handoff", handoff)
 
+    def test_worker_and_scout_native_and_managed_receive_the_same_current_english_input(self):
+        """Raw task history and previous assignments must not leak via managed composition."""
+        self.task.description = "## Goal\nТекущая цель\n## Context\nPRIVATE_PARENT_HISTORY"
+        (self.root / "AGENTS.md").write_text("Full repository instructions: café.\n", encoding="utf-8")
+        gw.git(self.root, "add", ".")
+        gw.git(self.root, "commit", "-m", "instructions fixture")
+        for role in ("worker", "scout"):
+            previous = None
+            for round_number in (1, 2):
+                with self.subTest(role=role, round=round_number):
+                    marker = f"{role}_assignment_{round_number}"
+                    self.review_brief.write_text(
+                        f"Goal: {marker}. Acceptance: preserve café. Validation: inspect only.\n", encoding="utf-8")
+                    prepared = self.run_workflow("prepare", "1", "--role", role, "--primary", "codex",
+                                                 "--brief", str(self.review_brief))
+                    prompt = prepared["delegate_handoff"]
+                    payload = json.loads(prompt.split("Delegation handoff:\n", 1)[1])
+                    self.assertEqual(payload["role"], role)
+                    self.assertIn(marker, payload["assignment"])
+                    self.assertIn("café", prompt)
+                    self.assertNotIn(r"\u00e9", prompt)
+                    self.assertNotIn("PRIVATE_PARENT_HISTORY", prompt)
+                    self.assertNotIn("Текущая цель", prompt)
+                    self.assertNotIn("related_scope", payload)
+                    self.assertEqual(payload["context_policy"], prepared["context_policy"])
+                    self.assertFalse(payload["context_policy"]["parent_transcript"])
+                    self.assertFalse(payload["context_policy"]["tracker_comments"])
+                    self.assertFalse(payload["context_policy"]["previous_agent_history"])
+                    if previous:
+                        self.assertNotIn(previous, prompt)
+                    previous = marker
+                    report = {"status": "completed", "summary": "Inspected", "evidence": ["Synthetic fixture only"]}
+                    with patch.object(workflow, "run", return_value=report) as runner:
+                        result = self.run_workflow("run", "1", "--role", role, "--primary", "codex",
+                                                   "--brief", str(self.review_brief))
+                    self.assertEqual(runner.call_args.args[3], prompt)
+                    self.assertEqual(result["diagnostics"], {"usage": None, "total_cost_usd": None})
+        self.adapter.comments.assert_not_called()
+
     def test_worker_override_binds_native_facts_even_after_config_changes(self):
         """Both providers report the prepared route, never a changed config or invented tier."""
         self.patches[5].stop()
@@ -620,7 +659,7 @@ class WorkerHandoffTests(unittest.TestCase):
         brief = Path(self.directory.name) / "brief.md"
         brief.write_text("Implement the requirement.")
 
-        def provider(route, role, root, prompt, *, timeout, read_paths):
+        def provider(route, role, root, prompt, *, timeout, read_paths, diagnostics):
             (Path(root) / "change.py").write_text("value = 1\n")
             gw.git(root, "add", ".")
             gw.git(root, "commit", "-m", "committed under the delegation")
@@ -634,7 +673,7 @@ class WorkerHandoffTests(unittest.TestCase):
         brief = Path(self.directory.name) / "brief.md"
         brief.write_text("Implement the requirement.")
 
-        def provider(route, role, root, prompt, *, timeout, read_paths):
+        def provider(route, role, root, prompt, *, timeout, read_paths, diagnostics):
             (Path(root) / "change.py").write_text("value = 1\n")
             return {"status": "completed", "summary": "Done", "evidence": ["edited change.py"]}
 
@@ -652,7 +691,7 @@ class WorkerHandoffTests(unittest.TestCase):
             "scope": fingerprint, "human_acceptance": {
                 "scope": fingerprint, "actor": "1", "reason": "Earlier human decision"}})
 
-        def provider(route, role, root, prompt, *, timeout, read_paths):
+        def provider(route, role, root, prompt, *, timeout, read_paths, diagnostics):
             self.assertEqual(role, "reviewer")
             return {"verdict": "PASS", "summary": "Reads correctly", "findings": []}
 
@@ -679,7 +718,7 @@ class WorkerHandoffTests(unittest.TestCase):
         gw.git(self.root, "commit", "-m", "current implementation")
         first = self.run_workflow("prepare", "1", "--role", "reviewer", "--primary", "codex",
                                   "--brief", str(self.review_brief))
-        first_payload = json.loads(first["review_handoff"].split("Neutral review handoff:\n", 1)[1])
+        first_payload = json.loads(first["delegate_handoff"].split("Delegation handoff:\n", 1)[1])
         first_reads = first_payload["required_read_evidence"]
         first_artifacts = [Path(first_reads["manifest_path"]),
                            *(Path(item["path"]) for item in first_reads["artifacts"].values()),
@@ -708,9 +747,9 @@ class WorkerHandoffTests(unittest.TestCase):
                                    "--brief", str(self.review_brief))
         self.assertNotEqual(first["scope"], second["scope"])
         self.assertNotEqual(first["handoff"], second["handoff"])
-        self.assertIsNone(second["repository_instructions"])
-        prompt = second["review_handoff"]
-        payload = json.loads(prompt.split("Neutral review handoff:\n", 1)[1])
+        self.assertNotIn("repository_instructions", second)
+        prompt = second["delegate_handoff"]
+        payload = json.loads(prompt.split("Delegation handoff:\n", 1)[1])
         requirements_text = Path(
             payload["required_read_evidence"]["artifacts"]["requirements"]["path"]).read_text()
         author_text = Path(
@@ -749,7 +788,7 @@ class WorkerHandoffTests(unittest.TestCase):
 
         seen = []
 
-        def provider(route, role, root, managed_prompt, *, timeout, read_paths):
+        def provider(route, role, root, managed_prompt, *, timeout, read_paths, diagnostics):
             seen.append(managed_prompt)
             return {"verdict": "PASS", "summary": "Reviewed", "findings": []}
 
@@ -757,9 +796,9 @@ class WorkerHandoffTests(unittest.TestCase):
             self.run_workflow("review", "1", "--primary", "codex",
                               "--brief", str(self.review_brief))
         self.assertEqual(len(seen), 1)
-        self.assertEqual(seen[0].split("Neutral review handoff:\n", 1)[0],
-                         prompt.split("Neutral review handoff:\n", 1)[0])
-        managed_payload = json.loads(seen[0].split("Neutral review handoff:\n", 1)[1])
+        self.assertEqual(seen[0].split("Delegation handoff:\n", 1)[0],
+                         prompt.split("Delegation handoff:\n", 1)[0])
+        managed_payload = json.loads(seen[0].split("Delegation handoff:\n", 1)[1])
         self.assertEqual(managed_payload["task_summary"], payload["task_summary"])
         self.assertEqual(managed_payload["boundaries"], payload["boundaries"])
         self.assertEqual(managed_payload["change_summary"], payload["change_summary"])
@@ -784,7 +823,7 @@ class WorkerHandoffTests(unittest.TestCase):
 
         def package(prepared):
             payload = json.loads(
-                prepared["review_handoff"].split("Neutral review handoff:\n", 1)[1])
+                prepared["delegate_handoff"].split("Delegation handoff:\n", 1)[1])
             reads = payload["required_read_evidence"]
             paths = [Path(reads["manifest_path"]),
                      *(Path(item["path"]) for item in reads["artifacts"].values()),
@@ -836,7 +875,7 @@ class WorkerHandoffTests(unittest.TestCase):
         self.config.workflow.review.policy = "always"
         pending = []
 
-        def provider(route, role, root, prompt, *, timeout, read_paths):
+        def provider(route, role, root, prompt, *, timeout, read_paths, diagnostics):
             pending.append(self.run_workflow(
                 "prepare", "1", "--role", "reviewer", "--primary", "codex",
                 "--brief", str(self.review_brief)))
@@ -866,12 +905,12 @@ class WorkerHandoffTests(unittest.TestCase):
             "prepare", "1", "--role", "reviewer", "--primary", "codex",
             "--brief", str(self.review_brief))
         pending_payload = json.loads(
-            pending["review_handoff"].split("Neutral review handoff:\n", 1)[1])
+            pending["delegate_handoff"].split("Delegation handoff:\n", 1)[1])
         pending_path = Path(pending_payload["required_read_evidence"]["manifest_path"]).parent
         artifact_paths = []
 
-        def provider(route, role, root, prompt, *, timeout, read_paths):
-            payload = json.loads(prompt.split("Neutral review handoff:\n", 1)[1])
+        def provider(route, role, root, prompt, *, timeout, read_paths, diagnostics):
+            payload = json.loads(prompt.split("Delegation handoff:\n", 1)[1])
             reads = payload["required_read_evidence"]
             artifact_paths.append(Path(reads["manifest_path"]))
             artifact_paths.extend(Path(item["path"]) for item in reads["artifacts"].values())
@@ -1141,7 +1180,7 @@ except AgentBoxError:
         first = self.run_workflow("prepare", "1", "--role", "reviewer", "--primary", "codex",
                                   "--brief", str(self.review_brief))
         self.assertEqual(first["review_budget"]["used"], 1)
-        self.assertNotIn("review_budget", first["review_handoff"])
+        self.assertNotIn("review_budget", first["delegate_handoff"])
         self.report.write_text(json.dumps({"verdict": "PASS", "summary": "Checked", "findings": []}))
         report = self.run_workflow("report", "1", "--role", "reviewer", "--primary", "codex",
                                   "--provider", "claude", "--model", "m", "--effort", "high",
@@ -1166,7 +1205,7 @@ except AgentBoxError:
         extra = self.run_workflow("prepare", "1", "--role", "reviewer", "--primary", "codex",
                                   "--brief", str(self.review_brief))
         self.assertEqual(extra["review_budget"]["used"], 3)
-        self.assertNotIn("User requests one more", extra["review_handoff"])
+        self.assertNotIn("User requests one more", extra["delegate_handoff"])
         with self.assertRaisesRegex(AgentBoxError, "budget exhausted"):
             self.run_workflow("prepare", "1", "--role", "reviewer", "--primary", "codex",
                               "--brief", str(self.review_brief))
@@ -1258,8 +1297,8 @@ except AgentBoxError:
             else:
                 result = self.run_workflow("prepare", "1", "--role", "reviewer", "--primary", "codex",
                                            "--brief", str(self.review_brief))
-                self.assertNotIn("THREE_EXTRA_AUTHORIZED", result["review_handoff"])
-                self.assertNotIn("configured_limit", result["review_handoff"])
+                self.assertNotIn("THREE_EXTRA_AUTHORIZED", result["delegate_handoff"])
+                self.assertNotIn("configured_limit", result["delegate_handoff"])
             budget = self.run_workflow("review-budget", "1", "--limit", "6", "--reason", "THREE_EXTRA_AUTHORIZED")["review_budget"]
             self.assertEqual((budget["used"], budget["limit"], budget["remaining"]), (attempt, 6, 6 - attempt))
         for command, flags in (("prepare", ("--role", "reviewer")), ("review", ())):
@@ -1337,7 +1376,7 @@ except AgentBoxError:
         with self.assertRaisesRegex(AgentBoxError, "Pass --brief"):
             self.run_workflow("prepare", "1", "--role", "reviewer", "--primary", "codex")
         self.review_brief.write_text(" \n")
-        with self.assertRaisesRegex(AgentBoxError, "review brief is empty"):
+        with self.assertRaisesRegex(AgentBoxError, "handoff brief is empty"):
             self.run_workflow("review", "1", "--primary", "codex",
                               "--brief", str(self.review_brief))
 
@@ -1701,6 +1740,23 @@ class DelegationContextTests(unittest.TestCase):
             self.assertIn("Never add a compatibility shim.", guidance)
             self.assertIn("@AGENTS.md", guidance)
 
+    def test_large_worker_and_scout_instructions_are_complete_and_invalid_utf8_is_explicit(self):
+        """Rules beyond the old 16 KiB cutoff must reach both execution backends."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "AGENTS.md"
+            text = "Repository rule.\n" * 2000 + "FINAL_MANDATORY_RULE\n"
+            path.write_text(text, encoding="utf-8")
+            task = Task("1", "1", "Task")
+            for role in ("worker", "scout"):
+                handoff = workflow.assignment_handoff(root, task, "main", "Goal: inspect.", role)
+                payload = json.loads(handoff.split("Delegation handoff:\n", 1)[1])
+                self.assertIn(text, payload["repository_instructions"])
+                self.assertEqual(payload["repository_instructions"].count("FINAL_MANDATORY_RULE"), 1)
+            path.write_bytes(b"invalid UTF-8: \xff")
+            with self.assertRaisesRegex(AgentBoxError, "Cannot read repository instruction AGENTS.md"):
+                workflow.repository_instructions(root)
+
     def test_a_symlinked_instruction_file_is_not_followed(self):
         with tempfile.TemporaryDirectory() as directory:
             root = repository(directory)
@@ -1749,7 +1805,7 @@ class DelegationContextTests(unittest.TestCase):
             small_fingerprint = "a" * 64
             small = workflow.reviewer_handoff(
                 root, "main", [task], brief, {}, "", task.id, small_fingerprint, "small")
-            small_payload = json.loads(small.split("Neutral review handoff:\n", 1)[1])
+            small_payload = json.loads(small.split("Delegation handoff:\n", 1)[1])
             reads = small_payload["required_read_evidence"]
             self.assertEqual([item["source_path"] for item in reads["repository_instructions"]],
                              ["AGENTS.md", "CLAUDE.md"])
@@ -1787,7 +1843,7 @@ class DelegationContextTests(unittest.TestCase):
             self.assertNotIn(diff_marker, large)
             self.assertLess(abs(len(large) - len(small)), 100)
             self.assertTrue(manifest_path.exists())
-            large_reads = json.loads(large.split("Neutral review handoff:\n", 1)[1])["required_read_evidence"]
+            large_reads = json.loads(large.split("Delegation handoff:\n", 1)[1])["required_read_evidence"]
             large_path = Path(large_reads["artifacts"]["full_diff"]["path"])
             self.assertGreater(len(large_path.read_text()), 100000)
             workflow.cleanup_review_evidence(large_path.parent)
@@ -1808,7 +1864,7 @@ class DelegationContextTests(unittest.TestCase):
                         description="## Goal\n" + requirement_marker + "\n")
             prompt = workflow.reviewer_handoff(
                 root, "main", [task], author_marker, {}, "", task.id, "c" * 64, "bounded")
-            payload = json.loads(prompt.split("Neutral review handoff:\n", 1)[1])
+            payload = json.loads(prompt.split("Delegation handoff:\n", 1)[1])
             reads = payload["required_read_evidence"]
 
             self.assertLessEqual(len(prompt.encode()), workflow.REVIEW_HANDOFF_MAX_BYTES)

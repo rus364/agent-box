@@ -109,7 +109,7 @@ def response_metadata(result):
     usage = result.get("usage")
     safe = {}
     if isinstance(usage, dict):
-        for key in ("input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"):
+        for key in ("input_tokens", "output_tokens", "cached_input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"):
             safe[key] = number(usage.get(key))
         for key, fields in (("cache_creation", ("ephemeral_5m_input_tokens", "ephemeral_1h_input_tokens")),
                             ("server_tool_use", ("web_search_requests", "web_fetch_requests"))):
@@ -244,7 +244,30 @@ def build_command(route, role, root, schema_path, result_path, read_paths=()):
     return command
 
 
-def run(route, role, root, prompt, *, timeout=3600, read_paths=()):
+def codex_usage(path):
+    """Read turn counters from JSONL; the final report file contains no usage."""
+    totals = {}
+    with path.open("rb") as stream:
+        while line := stream.readline(RESPONSE_LIMIT + 1):
+            if len(line) > RESPONSE_LIMIT:
+                while line and not line.endswith(b"\n"):
+                    line = stream.readline(RESPONSE_LIMIT + 1)
+                continue
+            try:
+                event = json.loads(line)
+            except (ValueError, UnicodeError, RecursionError):
+                continue
+            if not isinstance(event, dict) or event.get("type") != "turn.completed":
+                continue
+            usage = response_metadata(event)["usage"] or {}
+            for key in ("input_tokens", "output_tokens", "cached_input_tokens"):
+                value = usage.get(key)
+                if value is not None:
+                    totals[key] = totals.get(key, 0) + value
+    return response_metadata({"usage": totals or None})
+
+
+def run(route, role, root, prompt, *, timeout=3600, read_paths=(), diagnostics=None):
     env = os.environ.copy()
     for key in ("CLAUDE_CODE_SUBAGENT_MODEL", "CLAUDE_CODE_EFFORT_LEVEL", "CLAUDECODE"):
         env.pop(key, None)
@@ -256,13 +279,13 @@ def run(route, role, root, prompt, *, timeout=3600, read_paths=()):
     with tempfile.TemporaryDirectory(prefix="agent-box-run-") as directory:
         directory = Path(directory)
         schema, result = directory / "schema.json", directory / "result.json"
-        schema.write_text(json.dumps(report_schema(role)))
+        schema.write_text(json.dumps(report_schema(role), ensure_ascii=False), encoding="utf-8")
         command = build_command(route, role, Path(root), schema, result, read_paths)
         with (directory / "stdout").open("w+") as stdout, (directory / "stderr").open("w+") as stderr:
             try:
                 try:
                     process = subprocess.Popen(command, cwd=root, env=env, stdin=subprocess.PIPE, stdout=stdout,
-                                               stderr=stderr, text=True, start_new_session=True)
+                                               stderr=stderr, text=True, encoding="utf-8", start_new_session=True)
                     try:
                         process.communicate(prompt, timeout=timeout)
                     except subprocess.TimeoutExpired:
@@ -288,8 +311,13 @@ def run(route, role, root, prompt, *, timeout=3600, read_paths=()):
                         output = ""
                     else:
                         invalid("json", "response is not valid UTF-8")
-                return validate_report(parse_result(route["provider"], process.returncode, output,
-                                                    error.decode("utf-8", errors="replace"), metadata=metadata), role)
+                report = validate_report(parse_result(route["provider"], process.returncode, output,
+                                                     error.decode("utf-8", errors="replace"), metadata=metadata), role)
+                if route["provider"] == "codex":
+                    metadata.update(codex_usage(directory / "stdout"))
+                if diagnostics is not None:
+                    diagnostics.update({key: metadata[key] for key in ("usage", "total_cost_usd")})
+                return report
             except ProviderFailure as exc:
                 stdout.flush()
                 stderr.flush()

@@ -54,3 +54,25 @@ maintained here, not periodically patched or fetched from upstream.
 No upstream bootstrap, task database, vendor updater or mandatory microtask
 ceremony is shipped. The reference licenses are retained in
 [third-party notices](third-party-notices.md) for the workflow adaptations.
+
+## Delegation context evidence (2026-09-09)
+
+The task 335 implementation checked the available tool schema and installed CLI
+help separately from prompt-composition tests. No new live provider executions
+were needed; tests do not attest external model behavior.
+
+| Interface | Observed launch contract | Limits |
+| --- | --- | --- |
+| Codex native `spawn_agent` | The exposed schema defaults `fork_turns` to `all`; explicit `none` excludes surrounding conversation. New assignments use a new spawn. | Schema and actual call arguments are evidence, not a receipt of hidden initial context. Profiles only describe routing. |
+| Claude native | No native Claude tool was exposed in this session. | Freshness, inheritance defaults and exact routing are unconfirmed here; use managed fallback unless the active tool verifies the equivalent contract. |
+| Codex managed | Installed `codex exec --help` exposes a new exec entrypoint, separate resume/fork subcommands, `--ephemeral` and `--ignore-user-config`. The runner uses exec, never resume/fork. | Ephemeral means no persisted session files; it alone does not prove an empty context. JSONL turn counters are optional numeric diagnostics. |
+| Claude managed | Installed `claude --help` exposes `-p`, `--no-session-persistence`, and separate continue/resume controls. The runner supplies neither continue nor resume; `--safe-mode` excludes customizations. | `--fork-session` accompanies resume/continue and is not an equivalent fresh-input mechanism. Numeric usage/cost comes from the result envelope when available. |
+
+The shared English assignment and mandatory repository evidence are the input
+contract for both backends. Original-language tracker requirements may be labeled
+source evidence; parent transcripts, comments and previous-agent history are absent
+by default. Complete instructions must be read, including imports; read failures
+and truncation are explicit limitations. A new scope/hash or coordinator assertion
+does not independently verify context. Missing full-context receipts alone do not
+disqualify native. Matched before/after input measurement belongs to task 348;
+bytes and words must not be reported as exact tokens.

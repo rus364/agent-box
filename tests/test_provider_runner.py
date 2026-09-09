@@ -40,20 +40,19 @@ class ProviderRunnerTests(unittest.TestCase):
                                                 if value == "--add-dir"])
         self.assertIn("--strict-mcp-config", command)
 
-    def test_each_managed_reviewer_command_is_ephemeral_and_has_no_resume(self):
+    def test_each_managed_role_starts_without_resume_or_parent_transcript(self):
+        """All roles use fresh CLI entrypoints; flags do not attest hidden context."""
         r = importlib.import_module("agent_box.provider_runner")
         root = Path("/tmp")
         schema = Path("/tmp/schema.json")
         result = Path("/tmp/result.json")
-        codex = r.build_command({"provider": "codex", "model": "m", "effort": "high"},
-                                "reviewer", root, schema, result)
-        claude = r.build_command({"provider": "claude", "model": "m", "effort": "high"},
-                                 "reviewer", root, schema, result)
-        self.assertIn("--ephemeral", codex)
-        self.assertIn("--no-session-persistence", claude)
-        for command in (codex, claude):
-            self.assertNotIn("resume", command)
-            self.assertNotIn("--session-id", command)
+        for role in ("worker", "scout", "reviewer"):
+            for provider, flag in (("codex", "--ephemeral"), ("claude", "--no-session-persistence")):
+                with self.subTest(role=role, provider=provider):
+                    command = r.build_command({"provider": provider, "model": "m", "effort": "high"},
+                                              role, root, schema, result)
+                    self.assertIn(flag, command)
+                    self.assertFalse({"resume", "--resume", "--continue", "--fork-session", "--session-id"} & set(command))
 
     def test_expired_oauth_is_authentication_failure_not_a_review(self):
         r = importlib.import_module("agent_box.provider_runner")
@@ -111,7 +110,7 @@ class FailureDiagnosticsTests(unittest.TestCase):
         self.route = {"provider": "claude", "model": "haiku", "effort": "low", "tier": 1}
         self.report = {"verdict": "PASS", "summary": "Checked", "findings": []}
 
-    def run_response(self, output, *, stderr=b"", code=0, route=None, result=None, timeout=False):
+    def run_response(self, output, *, stderr=b"", code=0, route=None, result=None, timeout=False, diagnostics=None):
         def popen(command, **kwargs):
             kwargs["stdout"].buffer.write(output)
             kwargs["stderr"].buffer.write(stderr)
@@ -123,7 +122,44 @@ class FailureDiagnosticsTests(unittest.TestCase):
             return process
         with patch.object(self.r.subprocess, "Popen", side_effect=popen), \
              patch.object(self.r.os, "killpg"):
-            return self.r.run(route or self.route, "reviewer", self.root, "private prompt")
+            return self.r.run(route or self.route, "reviewer", self.root, "private prompt", diagnostics=diagnostics)
+
+    def test_success_usage_survives_the_runner_and_workflow_without_artifacts(self):
+        """Success diagnostics must reach callers just as failure counters do."""
+        from types import SimpleNamespace
+        from agent_box import workflow
+        for provider in ("codex", "claude"):
+            with self.subTest(provider=provider):
+                route = {**self.route, "provider": provider, "fallbacks": []}
+                envelope = {"structured_output": self.report, "usage": {"input_tokens": 17, "output_tokens": 3},
+                            "total_cost_usd": 0.002, "private-key": "private-value"}
+                events = [{"type": "item.completed", "item": {"text": "private-value"}},
+                          {"type": "turn.completed", "usage": {"input_tokens": 17, "output_tokens": 3,
+                                                                "cached_input_tokens": 5}}]
+                output = ("\n".join(json.dumps(event) for event in events) if provider == "codex"
+                          else json.dumps(envelope)).encode()
+
+                def runner(*args, diagnostics, **kwargs):
+                    return self.run_response(output, route=route, diagnostics=diagnostics,
+                                             result=json.dumps(self.report).encode() if provider == "codex" else None)
+
+                with patch.object(workflow, "run", side_effect=runner):
+                    result = workflow.execute(SimpleNamespace(timeout_seconds=1), route, "reviewer", self.root, "prompt")
+                self.assertEqual(result["report"], self.report)
+                metadata = result["diagnostics"]
+                self.assertEqual(metadata["usage"]["input_tokens"], 17)
+                self.assertEqual(metadata["usage"]["output_tokens"], 3)
+                self.assertEqual(metadata["total_cost_usd"], 0.002 if provider == "claude" else None)
+                self.assertNotIn("private", json.dumps(metadata))
+        self.assertFalse((self.state / "provider-failures").exists())
+
+    def test_missing_success_counters_remain_unknown(self):
+        """No usage event or envelope value must not turn into zero cost/tokens."""
+        for provider in ("codex", "claude"):
+            diagnostics = {}
+            self.run_response(json.dumps(self.report).encode(),
+                              route={**self.route, "provider": provider}, diagnostics=diagnostics)
+            self.assertEqual(diagnostics, {"usage": None, "total_cost_usd": None})
 
     def fail_response(self, output, **kwargs):
         with self.assertRaises(self.r.ProviderFailure) as caught:

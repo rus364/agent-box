@@ -4,20 +4,14 @@ import json
 from pathlib import Path
 
 from .atomicio import atomic_write_text
+from .delegation import role_instructions
 
 ROLES = {"scout": (0, 1, 2), "worker": (1, 2, 3), "reviewer": (1, 2, 3)}
 
 
 def body(provider, role, tier, spec):
     name = f"ab-{role}-{tier}"
-    instructions = (f"Act only as the assigned {role}. Use English for handoffs and implementation. "
-                    "The coordinator owns branches, commits, task lifecycle, requirements, dependencies, "
-                    "the tracker and GitHub; never write to any of them. "
-                    "Return a structured report with evidence; report uncertainty explicitly. ")
-    if role == "worker":
-        instructions += "Work only on the assigned task, sequentially, changing project files in the working tree. Progress belongs in your report, not in the tracker."
-    else:
-        instructions += "Read-only: do not edit code or tracker data. Review findings require location, evidence and violated requirement."
+    instructions = role_instructions(role)
     if provider == "codex":
         fields = {"name": name, "description": f"Configured agent-box {role}, tier {tier}", "model": spec["model"],
                   "model_reasoning_effort": spec["effort"], "sandbox_mode": "workspace-write" if role == "worker" else "read-only",

@@ -5,11 +5,28 @@ import unittest
 from pathlib import Path
 import tomllib
 from unittest.mock import patch
-from agent_box.agent_profiles import available, sync
+from agent_box.agent_profiles import available, body, sync
 from agent_box.config import Config
 
 
 class AgentProfileTests(unittest.TestCase):
+    def test_both_providers_keep_report_language_and_role_evidence_semantics(self):
+        """An installed scout must not inherit the reviewer's findings contract."""
+        for provider in ("codex", "claude"):
+            for role in ("worker", "scout", "reviewer"):
+                with self.subTest(provider=provider, role=role):
+                    content = body(provider, role, 1, {"model": "chosen-model", "effort": "high"})
+                    instructions = (tomllib.loads(content)["developer_instructions"]
+                                    if provider == "codex" else content.split("---\n", 2)[2])
+                    self.assertIn("English for handoffs, reports", instructions)
+                    self.assertIn("do not load parent conversation", instructions)
+                    self.assertIn("report missing, unreadable or truncated instructions", instructions)
+                    if role == "scout":
+                        self.assertIn("facts with source locations and uncertainty", instructions)
+                        self.assertNotIn("Review findings require", instructions)
+                    elif role == "reviewer":
+                        self.assertIn("Review findings require location, evidence and violated requirement", instructions)
+
     def test_forced_parent_model_cannot_be_proven_by_an_exact_claude_profile(self):
         """Claude can force the parent model even without SUBAGENT_MODEL being set."""
         with tempfile.TemporaryDirectory() as directory:

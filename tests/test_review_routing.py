@@ -8,7 +8,7 @@ from agent_box.config import Config
 from agent_box.errors import AgentBoxError
 from agent_box.provider_runner import ProviderFailure
 from agent_box.routing import select
-from agent_box import workflow
+from agent_box import workflow, workflow_state
 import test_routing
 
 
@@ -113,6 +113,7 @@ class ReviewRoutingTests(unittest.TestCase):
                     if missing == "model":
                         config.review.tiers["2"][writer]["model"] = ""
                     with patch.object(workflow, "WORKFLOW_STATE", Path(directory)), \
+                         patch.object(workflow_state, "WORKFLOW_STATE", Path(directory)), \
                          patch.object(workflow.shutil, "which", side_effect=lambda p: None if p == writer and missing == "executable" else p), \
                          patch.object(workflow, "run") as run:
                         with self.assertRaisesRegex(AgentBoxError, "No allowed reviewer"):

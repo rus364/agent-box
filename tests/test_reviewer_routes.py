@@ -8,7 +8,7 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
-from agent_box import routing, workflow
+from agent_box import routing, workflow, workflow_state
 from agent_box.config import Config
 from agent_box.agent_profiles import sync
 from agent_box.errors import AgentBoxError
@@ -29,6 +29,7 @@ class NativePreparationTests(unittest.TestCase):
             with patch("agent_box.paths.CODEX_HOME", root / "codex"), \
                  patch("agent_box.paths.CLAUDE_HOME", root / "claude"), \
                  patch.object(workflow, "WORKFLOW_STATE", root / "state"), \
+                 patch.object(workflow_state, "WORKFLOW_STATE", root / "state"), \
                  patch.object(workflow.shutil, "which", return_value="provider-cli"):
                 for state, ready in (("missing", False), ("exact", True), ("overridden", False)):
                     with self.subTest(state=state):

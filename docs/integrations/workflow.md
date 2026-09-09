@@ -60,8 +60,8 @@ tree, and returns a structured report. It never commits, pushes, switches or
 creates a branch, never writes the tracker, and never writes GitHub. Progress
 and evidence travel back in the report, and the coordinator decides from it what
 to record. Reviewers and scouts are read-only: they change no project file and
-no tracker, Git or GitHub state either, and return findings the coordinator
-comments into the task, unchecking contradicted items. A checkbox is not a PASS.
+no tracker, Git or GitHub state either, and return English reports. Scouts report facts, sources and uncertainty; reviewers
+return violated-requirement findings for the coordinator to journal and reconcile. A checkbox is not a PASS.
 
 A native subagent of the coordinator's session and a managed `codex exec` /
 `claude -p` run share exactly this logical contract. It is a contract boundary,
@@ -92,9 +92,37 @@ passes it back to `report --handoff`; each delegation needs its own `prepare`.
 Claude workers and reviewers run with `--safe-mode`, which is what keeps the
 context free of the user's hooks, skills, MCP servers and agents - and which also
 disables CLAUDE.md discovery. The repository's own `AGENTS.md` and `CLAUDE.md`
-therefore travel in the handoff itself, together with an instruction to read the
-nested ones next to the files being changed. `prepare` returns the same text as
-`repository_instructions` for native delegation.
+therefore travel completely in `delegate_handoff` (or its mandatory review evidence),
+together with instructions to read nested files and @path imports relative to the
+checkout source. Read errors and invalid UTF-8 fail explicitly; text is not silently
+truncated. Symlinked instruction files are excluded with an explicit limitation.
+
+For every role, `prepare --brief FILE` and managed execution compose the same
+`delegate_handoff`: one UTF-8 English assignment, role report schema, repository
+instructions and backend-neutral `context_policy`. The coordinator translates current
+Goal/Acceptance/Validation faithfully, adds only necessary technical context, and keeps
+tracker text in its original language. Review includes labeled normative source
+evidence; worker/scout input does not repeat raw task descriptions or task trees.
+Prepare without a worker/scout brief can select a route but provides no delegate message.
+Never send the full prepare result, descriptor, parent transcript, tracker comments
+or previous-agent history to a delegate. Reports are English, with role-specific fields.
+
+One new delegation requires one new context. Clarifications and ordinary file edits
+stay with the active worker; changed files/hashes alone do not create a delegation.
+New scope or task, work after completion (including review fixes), and every reviewer
+verdict require a new instance. Untiered direct coordinator work is not a delegation.
+Codex native explicitly passes `fork_turns="none"` or a verified equivalent; omitted
+inheritance, `all` and reuse of completed agents violate the contract. Claude native
+requires a verified equivalent through the available interface; unknown support uses
+managed fallback. Prefer native when route and context requirements are supported.
+Capabilities and actual calls are evidence, not independent attestation of hidden
+context; a missing full-context receipt alone does not prohibit native.
+
+Successful managed runs return optional `diagnostics.usage` and `total_cost_usd`
+through workflow output; native and unavailable counters remain null. Codex turn
+counters come from JSONL, Claude counters from the result envelope. These diagnostics
+do not change acceptance or create another telemetry store. Input bytes/words are
+separate measures, never exact tokens; compare identical scenarios and mandatory reads.
 
 ## Models and routing
 
@@ -271,7 +299,7 @@ provider/model/effort, not discovered capabilities or proof of execution.
 The coordinator checks the live tool's provider, model availability, effort
 support, profile precedence, defaults and inheritance. A matching file, role name
 or prompt is not sufficient. For Codex explicit spawn, pass both `model` and
-`reasoning_effort`, use fresh context (`fork_turns="none"` where supported), and
+`reasoning_effort`, use fresh context (`fork_turns="none"` or a verified equivalent), and
 avoid named tier profiles; even built-in names can be shadowed. Unknown or
 unsupported capabilities require managed CLI with the exact selected settings.
 Reviewers always require independent fresh read-only context.
@@ -304,7 +332,8 @@ agent-box workflow review TASK --primary codex --brief /tmp/review-brief.md
 agent-box workflow finish TASK
 ```
 
-The review brief is ephemeral per-round input with changes/reasons, technical risks,
+The review brief is ephemeral per-round English input with a faithful current
+Goal/Acceptance/Validation translation, changes/reasons, technical risks,
 validation commands/results and limitations; it is not stored in tracker comments.
 Keep it outside the working tree: `review_brief=$(mktemp /tmp/agent-box-review.XXXXXX)`,
 write the report there, then pass `--brief "$review_brief"`. Remove it after the round.
@@ -312,7 +341,7 @@ Acceptance operations require a clean tree including untracked files; an untrack
 brief blocks prepare/review even when no branch switch is needed.
 Every native verdict uses a newly spawned reviewer with no inherited coordinator or
 reviewer history (`fork_turns="none"` for Codex), never followup/resume. Pass the
-returned `review_handoff` unchanged as the initial message. Managed commands remain
+returned `delegate_handoff` unchanged as the initial message. Managed commands remain
 ephemeral/no-session-persistence and do not resume a prior review. The bounded handoff
 indexes immutable base/head boundaries, task/path counts and samples, and paths and hashes
 for temporary read-only evidence containing the complete requirements, diff, changed-path

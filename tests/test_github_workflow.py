@@ -258,7 +258,7 @@ class LandingFreshnessTests(unittest.TestCase):
             if native:
                 prepared = self.dispatch(["prepare", "7", "--role", "reviewer", "--primary", "codex",
                                           "--brief", str(brief)])
-                handoff = json.loads(prepared["review_handoff"].split("Neutral review handoff:\n", 1)[1])
+                handoff = json.loads(prepared["delegate_handoff"].split("Delegation handoff:\n", 1)[1])
                 self.assertIn("review the complete implementation", handoff["scope_note"])
                 self.assertEqual(handoff["change_summary"]["path_count"], 0)
                 output = Path(self.temporary.name) / "review.json"
