@@ -230,6 +230,7 @@ class WorkerHandoffTests(unittest.TestCase):
                     prepared = self.run_workflow("prepare", "1", "--role", role, "--primary", "codex",
                                                  "--brief", str(self.review_brief))
                     prompt = prepared["delegate_handoff"]
+                    self.assertEqual(set(prepared["task"]), {"id", "title", "state", "tier"})
                     self.assertIn(workflow.LAUNCH_CONTEXT, prepared["instructions"])
                     payload = json.loads(prompt.split("Delegation handoff:\n", 1)[1])
                     self.assertEqual(payload["role"], role)

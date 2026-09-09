@@ -143,8 +143,9 @@ wins over a coordinator suggestion. Each subtask may have its own explicit tier.
 
 Without an applicable global worker override, untiered workers stay in the active
 session's provider, model and effort.
-`prepare` and `run` return `action: work-in-current-session`, with the task,
-handoff and instructions, instead of launching another CLI. The coordinator
+`prepare` and `run` return `action: work-in-current-session`, with compact task
+identity, handoff and instructions, instead of launching another CLI. The full
+task stays in `tracker get`; prepare does not repeat its description or history. The coordinator
 implements directly, preserving settings. The action checks assigned Doing
 ownership, retires previous acceptance and records the actual primary writer;
 it is not evidence that work ran or completed. Pass the active provider with

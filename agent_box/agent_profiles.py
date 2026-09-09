@@ -4,14 +4,14 @@ import json
 from pathlib import Path
 
 from .atomicio import atomic_write_text
-from .delegation import role_instructions
+from .delegation import profile_instructions
 
 ROLES = {"scout": (0, 1, 2), "worker": (1, 2, 3), "reviewer": (1, 2, 3)}
 
 
 def body(provider, role, tier, spec):
     name = f"ab-{role}-{tier}"
-    instructions = role_instructions(role)
+    instructions = profile_instructions(role)
     if provider == "codex":
         fields = {"name": name, "description": f"Configured agent-box {role}, tier {tier}", "model": spec["model"],
                   "model_reasoning_effort": spec["effort"], "sandbox_mode": "workspace-write" if role == "worker" else "read-only",

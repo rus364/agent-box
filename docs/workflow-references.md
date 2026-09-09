@@ -48,7 +48,7 @@ maintained here, not periodically patched or fetched from upstream.
 | --- | --- | --- |
 | Flow-Next | `65646d7514726140f89ad9ecf6a13cbc741de99d` | Targeted scouts, concise evidence briefs, independent review, grouping PR feedback, bounded land convergence |
 | obra/superpowers | `b36e0829c6d0140e93cfef2ca599b1b07d4a7797` | Clarify material uncertainty, investigate root causes, useful failing regression tests, verify before claiming completion |
-| Matt Pocock skills / Grill Me | `3cca18b368ae95cdbdebbff572ccafa662551015` | One decision at a time, dependency order, concrete options, challenge assumptions |
+| Matt Pocock skills / Grill Me | `3cca18b368ae95cdbdebbff572ccafa662551015` | One decision at a time, dependency order, concrete options, test uncertain assumptions against facts and scenarios |
 | OpenAI Symphony | `8001b52e3062495a16e520e4ceaf8f9de868c4d0` | Explicit tracker boundary and external task state |
 
 No upstream bootstrap, task database, vendor updater or mandatory microtask
@@ -86,3 +86,49 @@ and truncation are explicit limitations. A new scope/hash or coordinator asserti
 does not independently verify context. Missing full-context receipts alone do not
 disqualify native. Matched before/after input measurement belongs to task 348;
 bytes and words must not be reported as exact tokens.
+
+## Workflow input audit (2026-09-09)
+
+Task 348 audited all nine shipped skills plus repository binding, native profiles,
+prepare output and workflow documentation. Route mechanics now come from the
+actual `workflow prepare` result instead of being copied into plan/work/review.
+An exact task ID no longer requires `tracker ready`; `config show` is diagnostic;
+library/version research runs only for a material dependency choice. Task,
+repository and applicable rule reads remain mandatory. Interview questions test
+uncertain assumptions against facts and concrete scenarios and stop once only
+safe implementation choices remain. The adoption and landing recovery rules were
+retained because they guard real provider, ref and user-data transitions.
+
+The matched probe used frozen source `e450d5e` and the final source in separate
+isolated processes with the same synthetic repository, task, brief, routes and
+two-review change/fix sequence. It counted UTF-8 bytes and whitespace-separated
+words delivered across the invoked skill, coordinator prepare/result, native
+profile, delegate handoff and every mandatory reviewer artifact. Temporary paths
+were normalized before counting. Provider execution was mocked only to capture
+the actual composed input; this is input measurement, not runtime or token proof.
+
+| Matched mandatory input | Before bytes / words | After bytes / words |
+| --- | ---: | ---: |
+| All nine skill files (inventory, not one invocation) | 37,095 / 5,093 | 31,216 / 4,367 |
+| Exact-ID untiered direct worker | 9,612 / 1,188 | 7,059 / 834 |
+| Tiered managed worker | 8,960 / 1,172 | 7,333 / 908 |
+| Tiered native worker | 10,826 / 1,351 | 13,734 / 1,580 |
+| Two fresh native review rounds around a fix | 47,492 / 4,029 | 52,595 / 4,390 |
+
+The native rows grew because the old path omitted generated complete worker
+handoff data and silently truncated ordinary repository instructions; review now
+indexes complete immutable requirements, diff, validation and instruction
+artifacts. Removing those bytes would restore the defect. The managed worker and
+direct paths shrink because compact skills and prepare task identity remove real
+duplication. These byte/word counts are not model tokens. Real successful managed
+usage is reported separately when the provider exposes it; unavailable native or
+managed usage remains null.
+
+For an exact-ID task with no dependency choice, the documented coordinator CLI
+sequence drops from six commands (`get`, `ready`, `config show`, `inspect`,
+`begin`, `prepare`) to four (`get`, `inspect`, `begin`, `prepare`). Task selection
+still uses `ready`, and configuration diagnosis still uses `config show`. A
+prepared native-to-managed review fallback remains two commands but now consumes
+one logical attempt instead of two and reuses the same handoff. Two verdicts
+around a fix still consume two attempts and two fresh contexts. Re-reading
+`workflow inspect` after compaction consumes no attempt.

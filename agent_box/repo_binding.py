@@ -127,12 +127,12 @@ def update_block(original: str, body: str, name: str, path: Path):
 
 
 AGENT_RULES = """Read the tracked task before work; .agent-box.json binds this repository to its tracker project.
-Use agent-box tracker for task state, progress, history, and dependencies; search related tasks when context is missing.
+Use agent-box tracker for task state, progress and dependencies; read related history when context is missing.
 Use ab-interview, ab-plan, ab-work, ab-review, ab-pr, and ab-land as needed. ab-setup maintains this binding and ab-adopt brings an existing project in line with the workflow.
 The coordinator owns branches, commits, lifecycle, dependencies, and GitHub actions. Delegate implementation sequentially; independent read-only scouts may run in parallel.
-A worker changes project files in the working tree and returns a report; the coordinator records what it accepts. Review runs in fresh context and returns findings to the coordinator.
+A worker changes project files and reports; a fresh read-only reviewer returns findings. The coordinator records accepted evidence.
 Tracker comments are a human journal. Branch, base branch, and pull request come from Git and GitHub; lifecycle comes from the tracker's own fields, never from comment text.
-Communicate with the user in their language and write tracker content in the task's language. Fixed diagnostic comments generated automatically by agent-box may be English. Use English for agent handoffs and implementation.
+Use the user's language with them and the task's language in the tracker. Use English for agent handoffs, reports and implementation; generated diagnostics may be English.
 Complete subtasks only after validation and integration into the parent branch; complete parents only after merge into the base branch.
 """
 

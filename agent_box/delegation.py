@@ -20,16 +20,14 @@ def context_policy():
 
 
 LAUNCH_CONTEXT = (
-    "Prefer native when the live interface supports the configured route and context_policy. "
-    "For Codex native explicitly pass fork_turns=\"none\" or a verified equivalent; all, omitted "
-    "default inheritance, and reuse of a completed agent are noncompliant. For Claude native verify "
-    "an equivalent new conversation without parent history using the available tool; if unknown or "
-    "unsupported, use managed CLI. Profile names, prepare, scope, and coordinator assertions do not "
-    "independently attest hidden context. Record observed tool capabilities and actual calls separately "
-    "from unconfirmed behavior; missing full-context receipts alone do not prohibit native. "
-    "Keep ordinary clarifications with the active worker; new work after completion, changed assignment "
-    "scope, and every reviewer verdict require a new instance. "
-    "Pass delegate_handoff as the complete initial message, never this prepare output or conversation. "
+    "Prefer native when the live interface satisfies the prepared route and context_policy. "
+    "Codex native requires fork_turns=none or a verified equivalent; omitted inheritance, all, "
+    "and completed-agent reuse fail the contract. Claude native needs a verified fresh conversation "
+    "without parent history; otherwise use managed CLI. Profiles, prepare, scope and coordinator claims "
+    "do not attest hidden context; record observed facts and limitations. A missing full-context receipt "
+    "alone does not prohibit native. Clarifications stay with the active worker; a new scope/task, work "
+    "after completion and every review verdict require a new instance. Pass only delegate_handoff as "
+    "the initial message. "
 )
 
 
@@ -50,6 +48,20 @@ def role_instructions(role):
     if role == "scout":
         return text + "Read-only: change nothing. Report facts with source locations and uncertainty; evidence is not a reviewer verdict or violated-requirement finding."
     return text + "Read-only: change nothing. Review findings require location, evidence and violated requirement; distinguish verified consequences from uncertainty."
+
+
+def profile_instructions(role):
+    """Keep stable native role identity short; each handoff supplies the full contract."""
+    common = (f"Act only as the assigned {role}. Follow the complete current handoff and repository instructions. "
+              "Use English for handoffs, reports and implementation. The coordinator owns commits, branches, "
+              "requirements, tracker and GitHub; never write to any of them; do not load parent conversation, "
+              "tracker comments or previous-agent history. Read all instructions and report missing, unreadable "
+              "or truncated instructions. ")
+    if role == "worker":
+        return common + "Change only assigned project files and return evidence; preserve other work."
+    if role == "scout":
+        return common + "Read only; report facts with source locations and uncertainty, never findings."
+    return common + "Read only; Review findings require location, evidence and violated requirement."
 
 
 def render_handoff(role, payload, instructions=""):
