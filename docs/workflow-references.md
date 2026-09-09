@@ -57,16 +57,26 @@ ceremony is shipped. The reference licenses are retained in
 
 ## Delegation context evidence (2026-09-09)
 
-The task 335 implementation checked the available tool schema and installed CLI
-help separately from prompt-composition tests. No new live provider executions
-were needed; tests do not attest external model behavior.
+Task 335 checked tool schemas and installed CLI help separately from mocked
+launch and prompt-composition tests; those tests do not attest provider behavior.
+The coordinator then ran six fresh managed Codex no-op probes in a temporary Git
+repository through the current `render_handoff`, `report_schema` and
+`build_command` paths, using `gpt-5.6-sol` at medium effort: two sequential
+assignments each for worker, scout and reviewer. All six exited zero, returned
+their current marker, and emitted `thread.started` with distinct IDs and
+`turn.completed`. Each role's second invocation reported its predecessor's marker
+absent from initial input. These exposed events and marker reports support
+separate executions, not verification of the complete hidden initial context.
+Reviewer reports deliberately used `INCONCLUSIVE` as diagnostics, never acceptance;
+the first correctly reported the literal sentinel `NONE` present in its question.
+Detailed probe paths and results belong in the tracker journal, not committed logs.
 
 | Interface | Observed launch contract | Limits |
 | --- | --- | --- |
-| Codex native `spawn_agent` | The exposed schema defaults `fork_turns` to `all`; explicit `none` excludes surrounding conversation. New assignments use a new spawn. | Schema and actual call arguments are evidence, not a receipt of hidden initial context. Profiles only describe routing. |
+| Codex native `spawn_agent` | The exposed schema defaults `fork_turns` to `all`; explicit `none` requests no surrounding conversation and is supported by actual call arguments. New assignments use a new spawn. | Fresh creation returned `agent thread limit reached`, so no new native matrix ran. Task 328 remains the preserved negative incident for inherited `fork_turns="all"`. Schema and call arguments do not attest hidden initial context; profiles only describe routing. |
 | Claude native | No native Claude tool was exposed in this session. | Freshness, inheritance defaults and exact routing are unconfirmed here; use managed fallback unless the active tool verifies the equivalent contract. |
 | Codex managed | Installed `codex exec --help` exposes a new exec entrypoint, separate resume/fork subcommands, `--ephemeral` and `--ignore-user-config`. The runner uses exec, never resume/fork. | Ephemeral means no persisted session files; it alone does not prove an empty context. JSONL turn counters are optional numeric diagnostics. |
-| Claude managed | Installed `claude --help` exposes `-p`, `--no-session-persistence`, and separate continue/resume controls. The runner supplies neither continue nor resume; `--safe-mode` excludes customizations. | `--fork-session` accompanies resume/continue and is not an equivalent fresh-input mechanism. Numeric usage/cost comes from the result envelope when available. |
+| Claude managed | Installed `claude --help` exposes `-p`, `--no-session-persistence`, and separate continue/resume controls. The runner supplies neither continue nor resume; `--safe-mode` excludes customizations. | The actual task 335 review attempt hit quota before review execution; context behavior is unverified and the attempt was not repeated for counters. `--fork-session` accompanies resume/continue, not fresh input. Numeric usage/cost comes from the result envelope when available. |
 
 The shared English assignment and mandatory repository evidence are the input
 contract for both backends. Original-language tracker requirements may be labeled
