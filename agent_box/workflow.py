@@ -859,6 +859,123 @@ def parser():
     return p
 
 
+def landing(args, root, config, adapter):
+    if config.workflow.merge_mode == "local":
+        from .local_workflow import operate
+    else:
+        from .github_workflow import operate
+    return operate(args, root, config, adapter, args.task)
+
+
+def finish(root, config, adapter, task_id):
+    with lock(root, "review-budget"), lock(root, "work"):
+        task = adapter.get(task_id)
+        parent, info, current, base = resolve(root, adapter, task)
+        tasks = tree(adapter, task)
+        reasons = completion_reasons(task, tasks, str(adapter.identity()["id"])) + blocking_reasons(task, adapter.get)
+        if reasons:
+            raise AgentBoxError("Cannot finish: " + "; ".join(reasons))
+        if task.id != parent.id:
+            return finish_child(root, config, adapter, task, parent, info, current["branch"], tasks)
+        if gw.current_branch(root) != info["branch"]:
+            raise AgentBoxError("Switch to the parent branch before finishing parent work")
+        saved = evidence(root, task, scope(root, base, tasks))
+        if saved.get("validation", {}).get("exit") != 0:
+            raise AgentBoxError("Run workflow validate against this exact scope before completion")
+        files, lines = diff_stats(root, base)
+        reasons = review_blockers(config.workflow.review, tasks, files, lines, saved,
+                                  allow_human=config.workflow.merge_mode == "local")
+        if reasons:
+            raise AgentBoxError("; ".join(reasons))
+        adapter.set_state(task, "Review")
+        next_step = ("Run ab-land for a local fast-forward into the base"
+                     if config.workflow.merge_mode == "local" else
+                     "Offer ab-pr; Done follows the actual GitHub merge")
+        return {"task": task.id, "state": "Review", "next": next_step}
+
+
+def finish_child(root, config, adapter, task, parent, info, branch, tasks):
+    """Carry original acceptance over the parent's fast-forward, never infer it from ancestry."""
+    gw.require_clean(root)
+    base = info["branch"]
+    current = gw.current_branch(root)
+    if current not in (branch, base):
+        raise AgentBoxError("Current branch is not this task or its parent")
+    head = gw.local_branch_head(root, branch)
+    base_head = gw.local_branch_head(root, base)
+    integrated = gw._is_ancestor(root, head, base_head)
+    saved = read_evidence(root, task)
+    if integrated:
+        accepted = saved.get("local_acceptance", {})
+        recovery = (f"Preserve both branches; restore the original acceptance evidence or "
+                    f"reconstruct and validate the original child change before retrying workflow finish {task.id}")
+        reasons = []
+        required = {"head", "base", "base_head", "requirements", "scope", "files", "lines", "validation"}
+        if not required.issubset(accepted) or not accepted.get("scope"):
+            reasons.append("Pre-merge acceptance cache is missing")
+        else:
+            if accepted.get("head") != head:
+                reasons.append("Accepted child head has changed")
+            if accepted.get("base") != base:
+                reasons.append("Accepted parent branch has changed")
+            if accepted.get("requirements") != requirements(tasks):
+                reasons.append("Accepted child requirements have changed")
+            original_scope = hashlib.sha256(json.dumps(
+                {"head": head, "base": accepted["base_head"], "tasks": requirements(tasks)},
+                sort_keys=True).encode()).hexdigest()
+            if accepted["scope"] != saved.get("scope") or accepted["scope"] != original_scope:
+                reasons.append("Original child acceptance scope is stale")
+            if accepted.get("validation", {}).get("exit") != 0:
+                reasons.append("Original child validation is missing")
+            reasons += review_blockers(config.workflow.review, tasks, accepted.get("files", []),
+                                       accepted.get("lines", 0), accepted)
+        if reasons:
+            raise AgentBoxError("Cannot finish integrated child: " + "; ".join(reasons) + ". " + recovery)
+    else:
+        if current != branch:
+            raise AgentBoxError(f"Switch to child branch {branch} before validating and finishing its work")
+        saved = evidence(root, task, scope(root, base, tasks))
+        if saved.get("validation", {}).get("exit") != 0:
+            raise AgentBoxError("Run workflow validate against this exact scope before completion")
+        files, lines = diff_stats(root, base)
+        reasons = review_blockers(config.workflow.review, tasks, files, lines, saved)
+        if reasons:
+            raise AgentBoxError("; ".join(reasons))
+        if not gw._is_ancestor(root, base_head, head):
+            raise AgentBoxError("Parent and child branches have diverged; reconcile before completion")
+        # The existing disposable acceptance slot is retired on new worker/review
+        # activity and survives only the Git change this completion authorized.
+        saved["local_acceptance"] = {"head": head, "base": base, "base_head": base_head,
+                                     "requirements": requirements(tasks), "scope": saved["scope"],
+                                     "files": files, "lines": lines,
+                                     "validation": saved["validation"], "review": saved.get("review", {})}
+        save_evidence(root, task, saved)
+    if gw.local_branch_head(root, branch) != head or gw.local_branch_head(root, base) != base_head:
+        raise AgentBoxError("Child or parent head changed after acceptance; inspect before retrying")
+    if current != base:
+        gw.git(root, "switch", base)
+    if not integrated:
+        gw.git(root, "merge", "--ff-only", head)
+    if (gw.local_branch_head(root, branch) != head
+            or gw.local_branch_head(root, base) != (base_head if integrated else head)):
+        raise AgentBoxError("Child or parent head changed during integration; reconcile before completion")
+    writer = saved.get("writer")
+    if writer:
+        parent_state = read_evidence(root, parent)
+        parent_state["writer"] = writer
+        save_evidence(root, parent, parent_state)
+    result = {"task": task.id, "state": "Done", "parent_branch": base}
+    if (config.workflow.merge_mode == "github" and config.workflow.auto_push
+            and (config.github.gh_token or config.github.gh_config)):
+        if gw.local_branch_head(root, base) != head:
+            raise AgentBoxError("Parent publication requires the exact accepted child head; inspect later parent work")
+        result["push"] = gw.push_parent(root, base, info["base"])
+        if gw.local_branch_head(root, branch) != head or gw.local_branch_head(root, base) != head:
+            raise AgentBoxError("Child or parent head changed during publication; inspect before completion")
+    adapter.set_state(task, "Done")
+    return result
+
+
 def dispatch(args):
     config = effective_config()
     if not config.workflow.enabled:
@@ -869,6 +986,10 @@ def dispatch(args):
     root = repository_root()
     binding = Binding.load(root)
     adapter = make_adapter(binding)
+    if args.command == "finish":
+        return finish(root, config, adapter, args.task)
+    if args.command in ("pr", "land") and getattr(args, "action", None) not in ("cleanup", "reconcile"):
+        return landing(args, root, config, adapter)
     task = adapter.get(args.task)
     if args.command == "review-budget":
         if args.limit < 0 or not args.reason.strip():
@@ -900,19 +1021,13 @@ def dispatch(args):
             return {**begin(root, adapter, task, args.resume), "configuration": configuration_summary(config)}
     if args.command == "inspect":
         return inspect(root, binding, adapter, task, config)
+    if args.command == "land" and args.action == "reconcile":
+        return landing(args, root, config, adapter)
     scouting = getattr(args, "role", None) == "scout"
     if scouting:
         parent, info, current, base = task, {}, {}, "HEAD"
     else:
         parent, info, current, base = resolve(root, adapter, task)
-    if args.command == "land" and args.action == "reconcile":
-        if config.workflow.merge_mode == "local":
-            from .local_workflow import operate
-            saved = read_evidence(root, task)
-        else:
-            from .github_workflow import operate
-            saved = {}
-        return operate(args, root, config, adapter, task, parent, info, saved)
     tasks = tree(adapter, task)
     worker_report = args.command == "report" and args.role == "worker"
     # A worker's own edits are expected to be uncommitted when it hands back.
@@ -960,12 +1075,6 @@ def dispatch(args):
                                         "reason": args.reason.strip()}
             save_evidence(root, task, saved)
         return {"task": task.id, "head": gw.head_sha(root), "human_acceptance": saved["human_acceptance"]}
-    if args.command in ("pr", "land"):
-        if config.workflow.merge_mode == "local":
-            from .local_workflow import operate
-        else:
-            from .github_workflow import operate
-        return operate(args, root, config, adapter, task, parent, info, saved)
     if args.command == "validate":
         command = args.arguments
         if command and command[0] == "--":
@@ -1143,49 +1252,6 @@ def dispatch(args):
         if role == "reviewer":
             result["review_budget"] = read_review_budget(root, binding, task, config.workflow.review.max_rounds)
         return result
-    if args.command == "finish":
-        with lock(root, "review-budget"), lock(root, "work"):
-            task = adapter.get(task.id)
-            tasks = tree(adapter, task)
-            saved = evidence(root, task, scope(root, base, tasks))
-            if not saved.get("validation"):
-                raise AgentBoxError("Run workflow validate against this exact scope before completion")
-            reasons = completion_reasons(task, tasks, str(adapter.identity()["id"])) + blocking_reasons(task, adapter.get)
-            if reasons:
-                raise AgentBoxError("Cannot finish: " + "; ".join(reasons))
-            files, lines = diff_stats(root, base)
-            review_errors = review_blockers(config.workflow.review, tasks, files, lines, saved,
-                                           allow_human=config.workflow.merge_mode == "local" and task.id == parent.id)
-            if review_errors:
-                raise AgentBoxError("; ".join(review_errors))
-            if task.id == parent.id:
-                if gw.current_branch(root) != info["branch"]:
-                    raise AgentBoxError("Switch to the parent branch before finishing parent work")
-                adapter.set_state(task, "Review")
-                next_step = ("Run ab-land for a local fast-forward into the base"
-                             if config.workflow.merge_mode == "local" else
-                             "Offer ab-pr; Done follows the actual GitHub merge")
-                return {"task": task.id, "state": "Review", "next": next_step}
-            branch = current.get("branch")
-            if gw.current_branch(root) not in (branch, info["branch"]):
-                raise AgentBoxError("Current branch is not this task or its parent")
-            if gw.current_branch(root) == branch:
-                gw.git(root, "switch", info["branch"])
-                gw.git(root, "merge", "--ff-only", branch)
-            if not gw._is_ancestor(root, branch, info["branch"]):
-                raise AgentBoxError("Subtask branch has not been integrated into the parent")
-            # The parent's review must prefer whoever last wrote into its branch.
-            writer = saved.get("writer")
-            if writer:
-                parent_state = read_evidence(root, parent)
-                parent_state["writer"] = writer
-                save_evidence(root, parent, parent_state)
-            adapter.set_state(task, "Done")
-            result = {"task": task.id, "state": "Done", "parent_branch": info["branch"]}
-            if (config.workflow.merge_mode == "github" and config.workflow.auto_push
-                    and (config.github.gh_token or config.github.gh_config)):
-                result["push"] = gw.push_parent(root, info["branch"], info["base"])
-            return result
     raise AgentBoxError("Unknown workflow command")
 
 

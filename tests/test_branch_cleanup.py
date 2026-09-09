@@ -480,7 +480,6 @@ class CleanupTests(unittest.TestCase):
         adapter.identity.return_value = {'id': 1}
         adapter.get.return_value = self.task
         args = SimpleNamespace(command='land', action='merge', method=None)
-        info = {'branch': self.branch, 'base': 'main'}
         saved = {'validation': {'exit': 0}, 'review': {'verdict': 'PASS'}}
         saved['scope'] = workflow.scope(self.root, 'main', [self.task])
         workflow.save_evidence(self.root, self.task, saved)
@@ -491,10 +490,10 @@ class CleanupTests(unittest.TestCase):
                            {'mergedAt': None}, {'mergeCommit': None}):
                 with patch.object(github, 'view', side_effect=[opened, {**merged, **change}]):
                     with self.assertRaisesRegex(AgentBoxError, 'identity'):
-                        github.operate(args, self.root, self.config, adapter, self.task, self.task, info, saved)
+                        github.operate(args, self.root, self.config, adapter, self.task.id)
             adapter.set_state.assert_not_called()
             with patch.object(github, 'view', side_effect=[opened, merged]):
-                result = github.operate(args, self.root, self.config, adapter, self.task, self.task, info, saved)
+                result = github.operate(args, self.root, self.config, adapter, self.task.id)
         self.assertEqual(result['state'], 'Done')
         for kind in ('local', 'remote'):
             self.assertIn('current branch', result['cleanup'][kind]['reason'])
@@ -563,23 +562,21 @@ class CleanupTests(unittest.TestCase):
         saved = {'scope': workflow.scope(self.root, 'main', [self.task]), 'validation': {'exit': 0}}
         workflow.save_evidence(self.root, self.task, saved)
         args = SimpleNamespace(command='land', action='merge', method=None)
-        info = {'branch': self.branch, 'base': 'main'}
         adapter.set_state.side_effect = AgentBoxError('tracker unavailable')
         with patch.object(cleanup, 'cleanup') as clean:
             with self.assertRaisesRegex(AgentBoxError, 'tracker unavailable'):
-                local_workflow.operate(args, self.root, self.config, adapter, self.task, self.task, info, saved)
+                local_workflow.operate(args, self.root, self.config, adapter, self.task.id)
         clean.assert_not_called()
         self.assertTrue(self.exists())
         adapter.set_state.side_effect = None
         args.action = 'reconcile'
-        accepted = workflow.read_evidence(self.root, self.task)
         with patch.object(cleanup, '_local_refs', side_effect=RuntimeError('unexpected failure')):
-            result = local_workflow.operate(args, self.root, self.config, adapter, self.task, self.task, info, accepted)
+            result = local_workflow.operate(args, self.root, self.config, adapter, self.task.id)
         self.assertEqual(result['state'], 'Done')
         self.assertEqual(result['merge']['head'], self.head)
         self.assertEqual(result['cleanup']['local']['status'], 'error')
         self.assertIn('unexpected failure', result['cleanup']['local']['reason'])
-        result = local_workflow.operate(args, self.root, self.config, adapter, self.task, self.task, info, accepted)
+        result = local_workflow.operate(args, self.root, self.config, adapter, self.task.id)
         self.assertEqual(result['cleanup']['local']['status'], 'deleted')
 
 

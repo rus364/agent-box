@@ -73,26 +73,26 @@ def _publish(root, config, task, base, task_head):
             "after resolving the publication failure") from None
 
 
-def operate(args, root, config, adapter, task, parent, info, saved):
-    if task.id != parent.id:
-        raise AgentBoxError("Land the parent task after all subtasks are integrated")
+def operate(args, root, config, adapter, task_id):
     if args.command == "pr":
         raise AgentBoxError("Pull requests are unavailable in local merge mode")
     if getattr(args, "method", None) is not None:
         raise AgentBoxError("--method is incompatible with local merge mode; local merge is fast-forward-only")
-    if args.action == "request-review":
-        provider = config.workflow.review.github_provider
-        if provider in ("codex", "claude"):
-            raise AgentBoxError("Cloud review is unavailable in local merge mode; run ab-review locally")
-        return {"provider": "local", "next": "Run ab-review in fresh context"}
-
     # Acceptance consumption and retirement must agree on one local ordering.
     with lock(root, "review-budget"), lock(root, "work"):
-        from .workflow import read_evidence
+        from .workflow import read_evidence, resolve
 
+        task = adapter.get(task_id)
+        parent, info, _, _ = resolve(root, adapter, task)
+        if task.id != parent.id:
+            raise AgentBoxError("Land the parent task after all subtasks are integrated")
+        if args.action == "request-review":
+            provider = config.workflow.review.github_provider
+            if provider in ("codex", "claude"):
+                raise AgentBoxError("Cloud review is unavailable in local merge mode; run ab-review locally")
+            return {"provider": "local", "next": "Run ab-review in fresh context"}
         saved = read_evidence(root, task)
         gw.require_clean(root)
-        task = adapter.get(task.id)
         branch, base, task_head, base_head = _identity(root, info)
         current = gw.current_branch(root)
         if args.action == "reconcile":

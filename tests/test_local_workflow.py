@@ -43,7 +43,7 @@ class LocalLandTests(unittest.TestCase):
         self.config.workflow.merge_mode = "local"
         self.config.workflow.auto_push = False
         self.config.workflow.review.policy = "off"
-        self.info = {"branch": "ab/7-parent", "base": "main"}
+        self.info = {"branch": "ab/7-parent", "base": gw.default_base(self.root)}
         self.saved = {"scope": workflow.scope(self.root, "main", [self.parent]),
                       "validation": {"command": ["true"], "exit": 0}}
 
@@ -52,8 +52,7 @@ class LocalLandTests(unittest.TestCase):
         args = SimpleNamespace(command="land", action=action, method=method)
         workflow.save_evidence(self.root, self.parent, self.saved if saved is None else saved)
         return local_workflow.operate(args, self.root, self.config, self.adapter,
-                                      self.parent, self.parent, self.info,
-                                      self.saved if saved is None else saved)
+                                      self.parent.id)
 
     def dispatch(self, arguments):
         with patch.object(workflow, "effective_config", return_value=self.config), \
@@ -546,7 +545,7 @@ class LocalLandTests(unittest.TestCase):
         with patch("agent_box.github_workflow.gh") as github:
             with self.assertRaisesRegex(AgentBoxError, "local merge mode"):
                 local_workflow.operate(SimpleNamespace(command="pr"), self.root, self.config,
-                                       self.adapter, self.parent, self.parent, self.info, self.saved)
+                                       self.adapter, self.parent.id)
             self.config.workflow.review.github_provider = "codex"
             with self.assertRaisesRegex(AgentBoxError, "Cloud review"):
                 self.operate("request-review")

@@ -128,11 +128,12 @@ def request_review(root, repo, pr, config):
             "next": "Read feedback; absence of a current-head approval requires local review"}
 
 
-def operate(args, root, config, adapter, task, parent, info, saved):
-    from .workflow import evidence, scope, tree
+def operate(args, root, config, adapter, task_id):
+    from .workflow import evidence, resolve, scope, tree
 
     with lock(root, "review-budget"), lock(root, "work"):
-        task = adapter.get(task.id)
+        task = adapter.get(task_id)
+        parent, info, _, _ = resolve(root, adapter, task)
         saved = evidence(root, task, scope(root, info["base"], tree(adapter, task)))
         return _operate(args, root, config, adapter, task, parent, info, saved)
 
