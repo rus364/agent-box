@@ -125,7 +125,7 @@ class FailureDiagnosticsTests(unittest.TestCase):
             return self.r.run(route or self.route, "reviewer", self.root, "private prompt", diagnostics=diagnostics)
 
     def test_success_usage_survives_the_runner_and_workflow_without_artifacts(self):
-        """Success diagnostics must reach callers just as failure counters do."""
+        """All observed Codex turn counters must survive aggregation into workflow output."""
         from types import SimpleNamespace
         from agent_box import workflow
         for provider in ("codex", "claude"):
@@ -135,7 +135,12 @@ class FailureDiagnosticsTests(unittest.TestCase):
                             "total_cost_usd": 0.002, "private-key": "private-value"}
                 events = [{"type": "item.completed", "item": {"text": "private-value"}},
                           {"type": "turn.completed", "usage": {"input_tokens": 17, "output_tokens": 3,
-                                                                "cached_input_tokens": 5}}]
+                                                                "cached_input_tokens": 5,
+                                                                "cache_write_input_tokens": 4,
+                                                                "reasoning_output_tokens": 2,
+                                                                "private-key": 99}},
+                          {"type": "turn.completed", "usage": {"cache_write_input_tokens": 6,
+                                                                "reasoning_output_tokens": 1}}]
                 output = ("\n".join(json.dumps(event) for event in events) if provider == "codex"
                           else json.dumps(envelope)).encode()
 
@@ -149,9 +154,34 @@ class FailureDiagnosticsTests(unittest.TestCase):
                 metadata = result["diagnostics"]
                 self.assertEqual(metadata["usage"]["input_tokens"], 17)
                 self.assertEqual(metadata["usage"]["output_tokens"], 3)
+                self.assertEqual(metadata["usage"]["cached_input_tokens"], 5 if provider == "codex" else None)
+                self.assertEqual(metadata["usage"]["cache_write_input_tokens"], 10 if provider == "codex" else None)
+                self.assertEqual(metadata["usage"]["reasoning_output_tokens"], 3 if provider == "codex" else None)
                 self.assertEqual(metadata["total_cost_usd"], 0.002 if provider == "claude" else None)
                 self.assertNotIn("private", json.dumps(metadata))
         self.assertFalse((self.state / "provider-failures").exists())
+
+    def test_codex_cache_write_and_reasoning_counters_keep_numeric_bounds(self):
+        """Invalid values stay unknown, zero survives, and summed counters remain bounded."""
+        path = self.root / "usage.jsonl"
+        cases = [({}, None), ({"value": None}, None), ({"value": True}, None),
+                 ({"value": "secret"}, None), ({"value": -1}, None),
+                 ({"value": float("nan")}, None), ({"value": float("inf")}, None),
+                 ({"value": 10**15 + 1}, None), ({"value": 0}, 0),
+                 ({"value": 1.5}, 1.5), ({"value": 10**15}, 10**15)]
+        for key in ("cache_write_input_tokens", "reasoning_output_tokens"):
+            for values, expected in cases:
+                with self.subTest(key=key, values=values):
+                    usage = {"input_tokens": 1, "secret-key": 99}
+                    if values:
+                        usage[key] = values["value"]
+                    event = {"type": "turn.completed", "usage": usage}
+                    path.write_text(json.dumps(event) + "\n")
+                    for metadata in (self.r.response_metadata(event), self.r.codex_usage(path)):
+                        self.assertEqual(metadata["usage"][key], expected)
+                        self.assertNotIn("secret", json.dumps(metadata))
+            path.write_text((json.dumps({"type": "turn.completed", "usage": {key: 10**15}}) + "\n") * 2)
+            self.assertIsNone(self.r.codex_usage(path)["usage"][key])
 
     def test_missing_success_counters_remain_unknown(self):
         """No usage event or envelope value must not turn into zero cost/tokens."""

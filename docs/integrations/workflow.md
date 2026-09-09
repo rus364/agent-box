@@ -120,7 +120,8 @@ context; a missing full-context receipt alone does not prohibit native.
 
 Successful managed runs return optional `diagnostics.usage` and `total_cost_usd`
 through workflow output; native and unavailable counters remain null. Codex turn
-counters come from JSONL, Claude counters from the result envelope. These diagnostics
+counters, including cache-write input and reasoning output tokens, come from JSONL;
+Claude counters come from the result envelope. These diagnostics
 do not change acceptance or create another telemetry store. Input bytes/words are
 separate measures, never exact tokens; compare identical scenarios and mandatory reads.
 

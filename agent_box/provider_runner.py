@@ -109,7 +109,8 @@ def response_metadata(result):
     usage = result.get("usage")
     safe = {}
     if isinstance(usage, dict):
-        for key in ("input_tokens", "output_tokens", "cached_input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"):
+        for key in ("input_tokens", "output_tokens", "cached_input_tokens", "cache_write_input_tokens",
+                    "reasoning_output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"):
             safe[key] = number(usage.get(key))
         for key, fields in (("cache_creation", ("ephemeral_5m_input_tokens", "ephemeral_1h_input_tokens")),
                             ("server_tool_use", ("web_search_requests", "web_fetch_requests"))):
@@ -260,7 +261,8 @@ def codex_usage(path):
             if not isinstance(event, dict) or event.get("type") != "turn.completed":
                 continue
             usage = response_metadata(event)["usage"] or {}
-            for key in ("input_tokens", "output_tokens", "cached_input_tokens"):
+            for key in ("input_tokens", "output_tokens", "cached_input_tokens", "cache_write_input_tokens",
+                        "reasoning_output_tokens"):
                 value = usage.get(key)
                 if value is not None:
                     totals[key] = totals.get(key, 0) + value
