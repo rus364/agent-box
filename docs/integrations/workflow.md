@@ -566,7 +566,11 @@ cleanup performs no additional Git or GitHub operations.
 
 Cleanup covers the completed parent and its completed descendants, including
 nested tasks discovered from the live tracker hierarchy. Unfinished descendants
-are preserved with their current state. Each task has independent local/remote
+receive read-only ref discovery: each enabled local/remote outcome reports a
+unique `branch`/`head` as `preserved` with the task state, no refs as `absent`,
+or ambiguity as `error` with `candidates` containing branch/head pairs and a
+reason. Remote read failures remain separate errors; unfinished tasks never
+trigger merge proof or deletion. Each task has independent local/remote
 outcomes; descendant results appear in `cleanup.descendants`, and hierarchy read
 failures in `cleanup.descendants_error`. Candidates come from each task namespace
 in Git, including live origin refs when remote cleanup is enabled. It never

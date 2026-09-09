@@ -126,7 +126,7 @@ def reconcile(root, config, task, adapter):
 
 
 def _cleanup_branch(root, config, task, *, branch=None, base=None, expected_head=None,
-                    parent_proof=None):
+                    parent_proof=None, preserve_reason=None):
     """Return independent outcomes, including failures, after a successful Done write.
 
     A missing ref permits only a no-op; every surviving candidate must prove
@@ -144,7 +144,7 @@ def _cleanup_branch(root, config, task, *, branch=None, base=None, expected_head
         remote, symbols, url, published, remote_base = {}, set(), None, None, None
         if enabled["remote"]:
             try:
-                if config.workflow.merge_mode == "github" and not (
+                if preserve_reason is None and config.workflow.merge_mode == "github" and not (
                         config.github.gh_token or config.github.gh_config):
                     raise AgentBoxError("Enable GitHub integration before GitHub-mode cleanup")
                 url = gw.push_destination(root)
@@ -152,6 +152,20 @@ def _cleanup_branch(root, config, task, *, branch=None, base=None, expected_head
                 names.update(remote)
             except (AgentBoxError, OSError, subprocess.TimeoutExpired) as exc:
                 result["remote"] = {"status": "error", "reason": str(exc)}
+        if preserve_reason is not None:
+            for kind, refs in (("local", local), ("remote", remote)):
+                if result[kind]["status"] != "pending":
+                    continue
+                candidates = [{"branch": name, "head": refs[name][0] if kind == "local" else refs[name]}
+                              for name in sorted(refs)]
+                if not candidates:
+                    result[kind] = {"status": "absent"}
+                elif len(candidates) == 1:
+                    result[kind] = {"status": "preserved", "reason": preserve_reason, **candidates[0]}
+                else:
+                    result[kind] = {"status": "error", "reason": "Ambiguous task namespace; " + preserve_reason,
+                                    "candidates": candidates}
+            return result
         if branch:
             names.add(branch)
         if len(names) > 1:
@@ -257,8 +271,7 @@ def _parent_proof(root, config, task, tasks, *, branch=None, base=None, expected
         except (AgentBoxError, OSError, subprocess.TimeoutExpired):
             # Origin failure must not disable local acceptance and integration
             # proof. Each remote deletion reports its own transport failure.
-            if not local and expected_head is None and config.workflow.merge_mode == "github":
-                raise
+            pass
     if branch:
         names.add(branch)
     if len(names) > 1:
@@ -312,13 +325,9 @@ def cleanup(root, config, task, adapter, **identity):
     # Descendants consume the parent proof while its refs still exist; each ref
     # has independent deletion/lease checks and cannot prevent sibling cleanup.
     for child in descendants:
-        if child.state != "Done":
-            outcome = {kind: ({"status": "preserved", "reason": f"Task {child.id} is {child.state}, not Done"}
-                              if enabled else {"status": "disabled"})
-                       for kind, enabled in (("local", config.workflow.cleanup_local_branches),
-                                             ("remote", config.workflow.cleanup_remote_branches))}
-        else:
-            outcome = _cleanup_branch(root, config, child, base=identity.get("base"), parent_proof=proof)
+        reason = f"Task {child.id} is {child.state}, not Done" if child.state != "Done" else None
+        outcome = _cleanup_branch(root, config, child, base=identity.get("base"),
+                                  parent_proof=proof, preserve_reason=reason)
         outcomes.append({"task": child.id, **outcome})
     result = _cleanup_branch(root, config, task, **identity)
     result.update(scope="parent and descendant task branches", descendants=outcomes)

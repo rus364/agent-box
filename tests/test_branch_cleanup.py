@@ -264,7 +264,7 @@ class CleanupTests(unittest.TestCase):
         gh.assert_not_called()
 
     def test_multiple_and_nested_descendants_use_live_hierarchy_and_exact_git_names(self):
-        """Only completed tasks in the current hierarchy authorize namespace discovery."""
+        """Only completed tasks in the current hierarchy authorize branch deletion."""
         self.integrated()
         child, _ = self.descendant('8')
         self.descendant('9')
@@ -339,6 +339,70 @@ class CleanupTests(unittest.TestCase):
             self.assertEqual(result['9'][kind]['status'], 'deleted')
         self.assertEqual(gw.local_branch_head(self.root, branch), self.head)
         self.assertEqual(gw.local_branch_head(self.origin, branch), self.head)
+
+    def test_unfinished_discovery_reports_refs_without_proof_or_writes(self):
+        """Unfinished namespaces expose live refs and failures without authorizing cleanup."""
+        _, branch = self.descendant('8', state='Doing')
+        ref = 'refs/heads/' + branch
+        second = 'ab/8-second'
+        second_ref = 'refs/heads/' + second
+        gw.git(self.root, 'commit', '--allow-empty', '-m', 'unfinished local work')
+        moved = gw.head_sha(self.root)
+        gw.git(self.origin, 'fetch', str(self.root), 'refs/heads/main')
+        for root in (self.root, self.origin):
+            gw.git(root, 'update-ref', '-d', self.ref)
+        gw.git(self.root, 'update-ref', '-d', 'refs/remotes/origin/' + self.branch)
+        self.config.workflow.merge_mode = 'github'
+        self.config.github.gh_token = False
+        original_remote = cleanup._remote_refs
+        reason = 'Task 8 is Doing, not Done'
+        for scenario in ('unique', 'ambiguous-local', 'ambiguous-remote', 'absent', 'remote-error'):
+            for local_enabled, remote_enabled in ((True, True), (True, False), (False, True)):
+                with self.subTest(scenario=scenario, local=local_enabled, remote=remote_enabled):
+                    self.config.workflow.cleanup_local_branches = local_enabled
+                    self.config.workflow.cleanup_remote_branches = remote_enabled
+                    for root, head in ((self.root, moved), (self.origin, self.head)):
+                        gw.git(root, 'update-ref', ref, head)
+                        gw.git(root, 'update-ref', '-d', second_ref)
+                        if scenario == 'absent':
+                            gw.git(root, 'update-ref', '-d', ref)
+                    if scenario.startswith('ambiguous-'):
+                        root = self.root if scenario == 'ambiguous-local' else self.origin
+                        gw.git(root, 'update-ref', second_ref, moved)
+                    before = [gw.git(root, 'show-ref') for root in (self.root, self.origin)]
+                    remote_effect = (AgentBoxError('origin unavailable') if scenario == 'remote-error'
+                                     else original_remote)
+                    with patch.object(cleanup, '_remote_refs', side_effect=remote_effect) as remote, \
+                         patch.object(cleanup, '_parent_proof') as parent_proof, \
+                         patch.object(cleanup, '_merged_head') as merged, \
+                         patch.object(cleanup, '_integrated_head') as integrated, \
+                         patch.object(gw, 'git', wraps=gw.git) as git:
+                        result = self.descendant_outcomes(self.dispatch_land('cleanup')['cleanup'])['8']
+                    parent_proof.assert_not_called()
+                    merged.assert_not_called()
+                    integrated.assert_not_called()
+                    self.assertFalse(any('update-ref' in call.args or 'push' in call.args
+                                         for call in git.call_args_list))
+                    if remote_enabled:
+                        self.assertTrue(any(call.args[-1] == 'ab/8-' for call in remote.call_args_list))
+                    else:
+                        remote.assert_not_called()
+                    self.assertEqual(before, [gw.git(root, 'show-ref') for root in (self.root, self.origin)])
+                    for kind, enabled, head in (('local', local_enabled, moved),
+                                                 ('remote', remote_enabled, self.head)):
+                        if not enabled:
+                            expected = {'status': 'disabled'}
+                        elif scenario == 'remote-error' and kind == 'remote':
+                            expected = {'status': 'error', 'reason': 'origin unavailable'}
+                        elif scenario == 'absent':
+                            expected = {'status': 'absent'}
+                        elif scenario == 'ambiguous-' + kind:
+                            expected = {'status': 'error', 'reason': 'Ambiguous task namespace; ' + reason,
+                                        'candidates': [{'branch': branch, 'head': head},
+                                                       {'branch': second, 'head': moved}]}
+                        else:
+                            expected = {'status': 'preserved', 'reason': reason, 'branch': branch, 'head': head}
+                        self.assertEqual(result[kind], expected)
 
     def land_with_occupied_child(self):
         child, branch = self.descendant('8')
@@ -589,6 +653,45 @@ class CleanupTests(unittest.TestCase):
             second = self.run_cleanup()
         self.assertEqual(self.descendant_outcomes(second)['8']['local']['status'], 'absent')
         gh.assert_not_called()
+
+    def test_github_absent_parent_origin_failure_allows_exact_pr_local_cleanup(self):
+        """Origin transport failure cannot suppress local proof from the unique parent PR."""
+        self.github_proof()
+        self.run_cleanup()
+        gw.git(self.root, 'update-ref', '-d', 'refs/remotes/origin/' + self.branch)
+        _, branch = self.descendant('8')
+        with patch.object(cleanup, '_remote_refs', side_effect=AgentBoxError('origin unavailable')):
+            result = self.dispatch_land('cleanup')['cleanup']
+        child = self.descendant_outcomes(result)['8']
+        self.assertEqual(child['local'], {'status': 'deleted', 'head': self.head})
+        self.assertEqual(result['local']['status'], 'absent')
+        for item in (result, child):
+            self.assertEqual(item['remote'], {'status': 'error', 'reason': 'origin unavailable'})
+        self.assertNotIn('--head', github.gh.call_args.args)
+        github.view.assert_called_with(self.root, 'o/r', 9)
+        self.assertEqual(gw.local_branch_head(self.origin, branch), self.head)
+        self.assertNotEqual(gw._run(['git', 'show-ref', '--verify', '--quiet',
+                                    'refs/heads/' + branch], cwd=self.root).returncode, 0)
+
+    def test_github_absent_parent_origin_failure_still_requires_unique_pr_proof(self):
+        """Independent remote failure must not weaken missing, ambiguous or unavailable PR proof."""
+        self.github_proof()
+        self.run_cleanup()
+        gw.git(self.root, 'update-ref', '-d', 'refs/remotes/origin/' + self.branch)
+        _, branch = self.descendant('8')
+        rows = [{'number': number, 'state': 'MERGED', 'headRefName': self.branch} for number in (9, 10)]
+        for response, reason in (([], 'missing or ambiguous'), (rows, 'missing or ambiguous'),
+                                 (AgentBoxError('GitHub unavailable'), 'GitHub unavailable')):
+            with self.subTest(reason=reason, response=response):
+                options = {'side_effect': response} if isinstance(response, Exception) else {'return_value': response}
+                with patch.object(cleanup, '_remote_refs', side_effect=AgentBoxError('origin unavailable')), \
+                     patch.object(github, 'gh', **options):
+                    child = self.descendant_outcomes(self.dispatch_land('cleanup')['cleanup'])['8']
+                self.assertEqual(child['local']['status'], 'error')
+                self.assertIn(reason, child['local']['reason'])
+                self.assertEqual(child['remote'], {'status': 'error', 'reason': 'origin unavailable'})
+                for root in (self.root, self.origin):
+                    self.assertEqual(gw.local_branch_head(root, branch), self.head)
 
     def test_github_ambiguous_absent_parent_pr_preserves_descendants(self):
         """Retry must not choose among merged or reopened parent results."""
