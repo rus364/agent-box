@@ -1,6 +1,7 @@
 """Completion retries retain acceptance of the work that actually advanced Git."""
 import unittest
 from contextlib import contextmanager
+from dataclasses import replace
 from unittest.mock import patch
 
 from agent_box import git_workflow as gw
@@ -108,19 +109,77 @@ class ChildFinishTests(unittest.TestCase):
             self.assertEqual(self.dispatch(["finish", "8"])["state"], "Done")
         push.assert_called_once()
 
-    def test_retry_accepts_original_work_after_later_parent_work_without_publishing_it(self):
-        """Current integration may include later work, but child acceptance covers its own head only."""
+    def test_retry_publishes_current_parent_containing_the_accepted_child(self):
+        """Auto-push publishes the parent tip while acceptance stays bound to the child."""
         self.interrupted_finish()
         self.commit("parent-later.py")
-        self.assertEqual(self.dispatch(["finish", "8"])["state"], "Done")
-        self.adapter.reset_mock()
+        parent_head = gw.head_sha(self.root)
         self.config.workflow.merge_mode = "github"
         self.config.workflow.auto_push = True
         self.config.github.gh_token = True
-        with patch.object(gw, "push_parent") as push, \
-             self.assertRaisesRegex(AgentBoxError, "exact accepted child head"):
+
+        def publish(root, branch, base):
+            self.adapter.set_state.assert_not_called()
+            self.assertEqual(gw.local_branch_head(root, branch), parent_head)
+            self.assertEqual(workflow.read_evidence(root, self.child)["local_acceptance"]["head"], self.head)
+            return {"pushed": True, "head": parent_head}
+
+        with patch.object(gw, "push_parent", side_effect=publish) as push, \
+             patch.object(workflow, "scope", wraps=workflow.scope) as scope:
+            self.assertEqual(self.dispatch(["finish", "8"])["state"], "Done")
+        push.assert_called_once_with(self.root, "ab/7-parent", "main")
+        scope.assert_not_called()
+        self.adapter.set_state.assert_called_once_with(self.child, "Done")
+
+    def test_parent_or_child_change_during_publication_keeps_done_unwritten(self):
+        """A containing parent may be published only while both checked refs stay stable."""
+        self.interrupted_finish()
+        self.commit("parent-later.py")
+        self.config.workflow.merge_mode = "github"
+        self.config.workflow.auto_push = True
+        self.config.github.gh_token = True
+        for branch in ("ab/8-child", "ab/7-parent"):
+            original = gw.local_branch_head(self.root, branch)
+
+            def publish(*args):
+                gw.git(self.root, "update-ref", "refs/heads/" + branch, "main")
+                return {"pushed": True}
+
+            with self.subTest(branch=branch), patch.object(gw, "push_parent", side_effect=publish), \
+                 self.assertRaisesRegex(AgentBoxError, "head changed during publication"):
+                self.dispatch(["finish", "8"])
+            self.adapter.set_state.assert_not_called()
+            gw.git(self.root, "update-ref", "refs/heads/" + branch, original)
+
+    def test_deleted_child_branch_and_lost_acceptance_cannot_invent_no_code_work(self):
+        """Resuming Doing after integration cannot recreate the provenance lost with state."""
+        self.interrupted_finish()
+        gw.git(self.root, "branch", "-D", "ab/8-child")
+        workflow.evidence_path(self.root, self.child).unlink()
+        self.dispatch(["begin", "8", "--resume"])
+        self.dispatch(["validate", "8", "--", "true"])
+        with self.assertRaisesRegex(AgentBoxError, "acceptance.*missing"):
             self.dispatch(["finish", "8"])
-        push.assert_not_called()
+        self.assertNotIn("child_start", workflow.read_evidence(self.root, self.child))
+        self.adapter.set_state.assert_not_called()
+
+    def test_stale_ready_read_cannot_resume_doing_as_a_new_child_claim(self):
+        """Only a claim that itself observes Ready can prove a new no-code origin."""
+        self.interrupted_finish()
+        gw.git(self.root, "branch", "-D", "ab/8-child")
+        workflow.evidence_path(self.root, self.child).unlink()
+        reads = []
+
+        def get(ident):
+            if ident == self.parent.id:
+                return self.parent
+            reads.append(ident)
+            return replace(self.child, state="Ready") if len(reads) == 1 else self.child
+
+        self.adapter.get.side_effect = get
+        with self.assertRaisesRegex(AgentBoxError, "already Doing"):
+            self.dispatch(["begin", "8", "--resume"])
+        self.assertNotIn("child_start", workflow.read_evidence(self.root, self.child))
         self.adapter.set_state.assert_not_called()
 
     def test_retry_rejects_retired_or_stale_snapshot(self):
@@ -191,10 +250,18 @@ class NoCodeChildFinishTests(unittest.TestCase):
         test_local_workflow.LocalLandTests.setUp(self)
         self.parent.state = "Doing"
         self.parent.children = ["8"]
-        self.child = Task("8", "1", "Child", state="Doing", assignees=["1"],
+        self.child = Task("8", "1", "Child", state="Ready", assignees=["1"],
                           parent="7", description="- [x] accepted")
         self.adapter.get.side_effect = lambda ident: {"7": self.parent, "8": self.child}[ident]
-        self.dispatch(["begin", "8", "--resume"])
+        self.adapter.update.return_value = self.child
+
+        def claimed(task, state):
+            task.state = state
+            return task
+
+        self.adapter.set_state.side_effect = claimed
+        self.dispatch(["begin", "8"])
+        self.adapter.set_state.side_effect = None
         self.head = gw.head_sha(self.root)
         self.adapter.reset_mock()
 
@@ -263,6 +330,31 @@ class NoCodeChildFinishTests(unittest.TestCase):
         self.assertEqual(self.dispatch(["finish", "8"])["state"], "Done")
         self.assertEqual(gw.local_branch_head(self.root, "ab/7-parent"), parent_head)
 
+    def test_no_code_auto_push_allows_later_parent_work_and_retries_failure(self):
+        """An empty child still publishes the current parent before Done, including retries."""
+        gw.git(self.root, "switch", "ab/7-parent")
+        self.commit("later-parent.py")
+        parent_head = gw.head_sha(self.root)
+        gw.git(self.root, "switch", "ab/8-child")
+        self.dispatch(["validate", "8", "--", "true"])
+        self.config.workflow.merge_mode = "github"
+        self.config.workflow.auto_push = True
+        self.config.github.gh_token = True
+        with patch.object(gw, "push_parent", side_effect=AgentBoxError("publication unavailable")):
+            with self.assertRaisesRegex(AgentBoxError, "publication unavailable"):
+                self.dispatch(["finish", "8"])
+        self.adapter.set_state.assert_not_called()
+
+        def publish(root, branch, base):
+            self.adapter.set_state.assert_not_called()
+            self.assertEqual(gw.local_branch_head(root, branch), parent_head)
+            return {"pushed": True, "head": parent_head}
+
+        with patch.object(gw, "push_parent", side_effect=publish) as push:
+            self.assertEqual(self.dispatch(["finish", "8"])["state"], "Done")
+        push.assert_called_once_with(self.root, "ab/7-parent", "main")
+        self.adapter.set_state.assert_called_once_with(self.child, "Done")
+
     def test_resume_after_real_integration_cannot_reset_start_to_current_head(self):
         """Revalidation after resume cannot disguise lost acceptance of committed work."""
         self.commit("child.py")
@@ -324,8 +416,8 @@ class TransitionReadTests(unittest.TestCase):
             self.assertEqual(tree.call_count, 1)
             self.assertEqual(scope.call_count, 1)
 
-    def test_github_pr_and_land_retain_post_network_tree_refresh_only(self):
-        """PR network calls can reopen a child, so the second handler tree read is necessary."""
+    def test_github_pr_reuses_locked_tree_and_land_refreshes_after_network(self):
+        """PR uses its locked tree; landing must refresh child state after network reads."""
         from agent_box import github_workflow as github
 
         child = Task("8", "1", "Child", state="Done", parent="7")
@@ -352,8 +444,8 @@ class TransitionReadTests(unittest.TestCase):
                  patch.object(workflow, "tree", wraps=workflow.tree) as tree, \
                  patch.object(workflow, "scope", wraps=workflow.scope) as scope:
                 self.dispatch(arguments)
-            self.assertEqual(self.adapter.get.call_count, 3)
-            self.assertEqual(tree.call_count, 2)
+            self.assertEqual(self.adapter.get.call_count, 2 if arguments[0] == "pr" else 3)
+            self.assertEqual(tree.call_count, 1 if arguments[0] == "pr" else 2)
             self.assertEqual(scope.call_count, 1)
 
     def test_validation_keeps_both_task_and_scope_reads(self):

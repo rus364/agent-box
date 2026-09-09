@@ -134,11 +134,12 @@ def operate(args, root, config, adapter, task_id):
     with lock(root, "review-budget"), lock(root, "work"):
         task = adapter.get(task_id)
         parent, info, _, _ = resolve(root, adapter, task)
-        saved = evidence(root, task, scope(root, info["base"], tree(adapter, task)))
-        return _operate(args, root, config, adapter, task, parent, info, saved)
+        tasks = tree(adapter, task)
+        saved = evidence(root, task, scope(root, info["base"], tasks))
+        return _operate(args, root, config, adapter, task, parent, info, saved, tasks)
 
 
-def _operate(args, root, config, adapter, task, parent, info, saved):
+def _operate(args, root, config, adapter, task, parent, info, saved, tasks):
     from .workflow import tree
     if not (config.github.gh_token or config.github.gh_config):
         raise AgentBoxError("Enable the GitHub integration in agent-box config before workflow GitHub actions")
@@ -150,7 +151,7 @@ def _operate(args, root, config, adapter, task, parent, info, saved):
     if args.command == "pr":
         if task.state != "Review" or not saved.get("validation"):
             raise AgentBoxError("Finish parent acceptance and validation before opening a PR")
-        if any(child.state != "Done" for child in tree(adapter, task) if child.id != task.id):
+        if any(child.state != "Done" for child in tasks if child.id != task.id):
             raise AgentBoxError("All subtasks must be integrated before opening the parent PR")
         gw.push_parent(root, info["branch"], info["base"])
         existing = gh(root, "pr", "list", "--repo", repo, "--head", info["branch"], "--base", info["base"],

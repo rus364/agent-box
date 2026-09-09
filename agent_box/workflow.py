@@ -192,14 +192,20 @@ def read_brief(path):
     return value
 
 
+def scope_fingerprint(head, base, task_requirements, *, working_diff=None):
+    content = {"head": head, "base": base, "tasks": task_requirements}
+    if working_diff is not None:
+        content["working_diff"] = working_diff
+    return hashlib.sha256(json.dumps(content, sort_keys=True).encode()).hexdigest()
+
+
 def scope(root, base, tasks, *, allow_dirty=False):
     if not allow_dirty:
         gw.require_clean(root)
-    content = {"head": gw.head_sha(root), "base": gw.base_commit(root, base),
-               "tasks": requirements(tasks)}
-    if allow_dirty:
-        content["working_diff"] = gw.git(root, "diff", "HEAD", "--")
-    return hashlib.sha256(json.dumps(content, sort_keys=True).encode()).hexdigest()
+    head, base_head = gw.head_sha(root), gw.base_commit(root, base)
+    task_requirements = requirements(tasks)
+    working_diff = gw.git(root, "diff", "HEAD", "--") if allow_dirty else None
+    return scope_fingerprint(head, base_head, task_requirements, working_diff=working_diff)
 
 
 def repository_key(root):
@@ -796,13 +802,14 @@ def begin(root, adapter, task, resume):
     # the interrupted-work case --resume is for.
     gw.switch_branch(root, branch, base, resume=resume or bool(existing))
     if task.id != parent.id:
-        task = claim(adapter, task.id, resume)
+        starting = task.state == "Ready"
+        task = claim(adapter, task.id, resume=resume and not starting)
         existing_child = gw.task_branch(root, task)
         child = existing_child or gw.branch_name(task)
         if child == branch:
             raise AgentBoxError("Subtask branch cannot be the parent branch")
         gw.switch_branch(root, child, branch, resume=resume)
-        if not existing_child:
+        if starting and not existing_child:
             saved = read_evidence(root, task)
             saved["child_start"] = {"head": gw.head_sha(root), "parent": parent.id}
             save_evidence(root, task, saved)
@@ -928,9 +935,7 @@ def finish_child(root, config, adapter, task, parent, info, branch, tasks):
                 reasons.append("Accepted parent branch has changed")
             if accepted.get("requirements") != requirements(tasks):
                 reasons.append("Accepted child requirements have changed")
-            original_scope = hashlib.sha256(json.dumps(
-                {"head": head, "base": accepted["base_head"], "tasks": requirements(tasks)},
-                sort_keys=True).encode()).hexdigest()
+            original_scope = scope_fingerprint(head, accepted["base_head"], requirements(tasks))
             if accepted["scope"] != saved.get("scope") or accepted["scope"] != original_scope:
                 reasons.append("Original child acceptance scope is stale")
             if accepted.get("validation", {}).get("exit") != 0:
@@ -975,10 +980,11 @@ def finish_child(root, config, adapter, task, parent, info, branch, tasks):
     result = {"task": task.id, "state": "Done", "parent_branch": base}
     if (config.workflow.merge_mode == "github" and config.workflow.auto_push
             and (config.github.gh_token or config.github.gh_config)):
-        if gw.local_branch_head(root, base) != head:
-            raise AgentBoxError("Parent publication requires the exact accepted child head; inspect later parent work")
+        parent_head = base_head if integrated else head
+        if gw.local_branch_head(root, branch) != head or gw.local_branch_head(root, base) != parent_head:
+            raise AgentBoxError("Child or parent head changed before publication; inspect before completion")
         result["push"] = gw.push_parent(root, base, info["base"])
-        if gw.local_branch_head(root, branch) != head or gw.local_branch_head(root, base) != head:
+        if gw.local_branch_head(root, branch) != head or gw.local_branch_head(root, base) != parent_head:
             raise AgentBoxError("Child or parent head changed during publication; inspect before completion")
     adapter.set_state(task, "Done")
     return result

@@ -158,6 +158,10 @@ class InspectTests(unittest.TestCase):
 
     def test_in_tree_brief_blocks_acceptance_without_spending_review_budget(self):
         """The early dirty refusal leaves evidence intact; moving the same brief enables prepare."""
+        # Completion owns its lock before checking cleanliness; lock-file creation
+        # does not spend review budget or change acceptance evidence.
+        with workflow.lock(self.root, "review-budget"), workflow.lock(self.root, "work"):
+            pass
         brief = self.root / ".review-brief.md"
         brief.write_text("Changes/reasons: implementation. Risks: none known. Validation: tests only.")
         for args in (("prepare", "1", "--role", "reviewer", "--primary", "codex", "--brief", str(brief)),
