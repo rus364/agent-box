@@ -1288,8 +1288,9 @@ class ParentSubtaskBranchTests(unittest.TestCase):
 
             def claimed(_adapter, task_id, resume=False):
                 task = {"7": parent, "8": child}[task_id]
+                starting = task.state == "Ready"
                 task.state, task.assignees = "Doing", ["1"]
-                return task
+                return task, starting
 
             with patch.object(workflow, "claim", side_effect=claimed), \
                  patch.object(workflow, "WORKFLOW_STATE", Path(directory) / "state"):
@@ -1331,8 +1332,9 @@ class FreshCloneBranchTests(unittest.TestCase):
             adapter.get.return_value = parent
 
             def claimed(_adapter, task_id, resume=False):
+                starting = parent.state == "Ready"
                 parent.state, parent.assignees = "Doing", ["1"]
-                return parent
+                return parent, starting
 
             with patch.object(workflow, "claim", side_effect=claimed):
                 workflow.begin(other, adapter, parent, resume=False)
@@ -1360,8 +1362,9 @@ class FreshCloneBranchTests(unittest.TestCase):
 
             def claimed(_adapter, task_id, resume=False):
                 task = {"7": parent, "8": child}[task_id]
+                starting = task.state == "Ready"
                 task.state, task.assignees = "Doing", ["1"]
-                return task
+                return task, starting
 
             with patch.object(workflow, "claim", side_effect=claimed):
                 workflow.begin(other, adapter, child, resume=True)
@@ -1428,8 +1431,9 @@ class SubtaskIntegrationTests(unittest.TestCase):
 
             def claimed(_adapter, task_id, resume=False):
                 task = {"7": parent, "8": child}[task_id]
+                starting = task.state == "Ready"
                 task.state, task.assignees = "Doing", ["1"]
-                return task
+                return task, starting
 
             state = Path(directory) / "state"
             with patch.object(workflow, "effective_config", return_value=config), \

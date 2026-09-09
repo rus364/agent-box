@@ -1,15 +1,38 @@
 """Tracker progress and readiness cannot silently erase work or release unavailable code."""
 import importlib
+import io
+import json
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from dataclasses import replace
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 
 class TrackerWorkflowTests(unittest.TestCase):
     def core(self):
         return importlib.import_module("agent_box.tracker.core")
+
+    def test_claim_cli_keeps_task_json_for_new_work_and_resumes(self):
+        """Internal claim provenance must not change the public task JSON response."""
+        from agent_box import workflow_state
+        from agent_box.tracker import cli
+
+        for state in ("Ready", "Doing", "Review"):
+            with self.subTest(state=state), tempfile.TemporaryDirectory() as tmp:
+                task = self.core().Task("1", "p", "Work", state=state, assignees=["7"])
+                adapter = Mock()
+                adapter.get.return_value = task
+                adapter.identity.return_value = {"id": 7}
+                adapter.update.side_effect = lambda current, fields: replace(current, **fields)
+                adapter.set_state.side_effect = lambda current, state: replace(current, state=state)
+                output = io.StringIO()
+                with patch.object(cli, "context", return_value=(adapter, None, Path(tmp))), \
+                     patch.object(workflow_state, "WORKFLOW_STATE", Path(tmp) / "state"), \
+                     redirect_stdout(output):
+                    self.assertEqual(cli.main(["claim", "1", "--resume"]), 0)
+                self.assertEqual(json.loads(output.getvalue()), replace(task, state="Doing").to_dict())
 
     def test_untiered_readiness_claim_resume_and_completion_preserve_labels(self):
         """Ordinary tracker lifecycle operations must never invent a routing tier."""
@@ -28,7 +51,8 @@ class TrackerWorkflowTests(unittest.TestCase):
         adapter.update.side_effect = update
         adapter.set_state.side_effect = lambda current, state: update(current, {"state": state})
         self.assertEqual(c.ready_tasks([task], adapter.get, "7"), [task])
-        claimed = c.claim(adapter, "1")
+        claimed, started = c.claim(adapter, "1")
+        self.assertTrue(started)
         self.assertEqual((claimed.state, claimed.assignees), ("Doing", ["7"]))
         self.assertIsNone(claimed.tier)
         self.assertEqual(claimed.labels, ["product"])
@@ -38,7 +62,8 @@ class TrackerWorkflowTests(unittest.TestCase):
         for state in ("Doing", "Review"):
             current = adapter.set_state(task, state)
             self.assertEqual(c.completion_reasons(current, [current], "7"), [])
-            resumed = c.claim(adapter, "1", resume=True)
+            resumed, started = c.claim(adapter, "1", resume=True)
+            self.assertFalse(started)
             self.assertEqual(resumed.state, "Doing")
             self.assertIsNone(resumed.tier)
             self.assertEqual(resumed.labels, ["product"])

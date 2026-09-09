@@ -41,17 +41,33 @@ class ChildFinishTests(unittest.TestCase):
         self.adapter.set_state.side_effect = None
         self.adapter.reset_mock()
 
-    def begin_ready_child(self):
-        def claimed(task, state):
-            task.state = state
-            return task
+    def begin_ready_child(self, *, snapshot_state=None, resume=False):
+        initial = replace(self.child, state=snapshot_state or self.child.state)
+        authoritative = self.child
+        reads = []
 
-        self.adapter.update.return_value = self.child
-        self.adapter.set_state.side_effect = claimed
+        def get(ident):
+            if ident == self.parent.id:
+                return self.parent
+            reads.append(ident)
+            return initial if len(reads) == 1 else self.child
+
+        def update(task, fields):
+            self.child = replace(task, **fields)
+            return self.child
+
+        previous = (self.adapter.get.side_effect, self.adapter.update.side_effect,
+                    self.adapter.set_state.side_effect)
+        self.adapter.get.side_effect = get
+        self.adapter.update.side_effect = update
+        self.adapter.set_state.side_effect = lambda task, state: update(task, {"state": state})
         try:
-            return self.dispatch(["begin", self.child.id])
+            result = self.dispatch(["begin", self.child.id, *(["--resume"] if resume else [])])
         finally:
-            self.adapter.set_state.side_effect = None
+            (self.adapter.get.side_effect, self.adapter.update.side_effect,
+             self.adapter.set_state.side_effect) = previous
+        self.assertEqual(initial.state, snapshot_state or authoritative.state)
+        return result
 
     def test_tracker_outage_retry_finishes_original_work_without_merge_or_validation(self):
         """The advanced parent must not turn the accepted child into an empty diff."""
@@ -189,9 +205,11 @@ class ChildFinishTests(unittest.TestCase):
             return replace(self.child, state="Ready") if len(reads) == 1 else self.child
 
         self.adapter.get.side_effect = get
-        with self.assertRaisesRegex(AgentBoxError, "already Doing"):
-            self.dispatch(["begin", "8", "--resume"])
+        self.dispatch(["begin", "8", "--resume"])
         self.assertNotIn("child_start", workflow.read_evidence(self.root, self.child))
+        self.dispatch(["validate", "8", "--", "true"])
+        with self.assertRaisesRegex(AgentBoxError, "acceptance.*missing"):
+            self.dispatch(["finish", "8"])
         self.adapter.set_state.assert_not_called()
 
     def test_reopened_child_without_origin_cannot_promote_prior_acceptance_to_no_code(self):
@@ -296,6 +314,43 @@ class NoCodeChildFinishTests(unittest.TestCase):
         self.assertFalse(any(call.args[1] == "merge" for call in git.call_args_list))
         self.adapter.set_state.assert_called_once_with(self.child, "Done")
 
+    def test_stale_doing_snapshot_cannot_suppress_a_genuine_ready_start(self):
+        """The Ready claim read must prove no-code origin even if dispatch saw Doing."""
+        for resume, ident in ((False, "9"), (True, "10")):
+            with self.subTest(resume=resume):
+                self.child = replace(self.child, id=ident, state="Ready")
+                self.parent.children = [ident]
+                self.adapter.get.side_effect = lambda key: self.parent if key == "7" else self.child
+                ready = self.child
+                self.begin_ready_child(snapshot_state="Doing", resume=resume)
+                self.assertEqual(ready.state, "Ready")
+                self.assertEqual(workflow.read_evidence(self.root, self.child)["child_start"],
+                                 {"head": gw.head_sha(self.root), "parent": self.parent.id})
+                self.adapter.reset_mock()
+                self.dispatch(["validate", ident, "--", "true"])
+                self.assertEqual(self.dispatch(["finish", ident])["state"], "Done")
+                self.adapter.set_state.assert_called_once_with(self.child, "Done")
+
+    def test_stale_ready_snapshot_requires_resume_and_cannot_invent_origin(self):
+        """Doing and Review claims need deliberate resume and never establish a new start."""
+        for state, ident in (("Doing", "9"), ("Review", "10")):
+            with self.subTest(state=state):
+                self.child = replace(self.child, id=ident, state=state)
+                self.parent.children = [ident]
+                self.adapter.get.side_effect = lambda key: self.parent if key == "7" else self.child
+                current = self.child
+                with self.assertRaisesRegex(AgentBoxError, "already Doing"):
+                    self.begin_ready_child(snapshot_state="Ready")
+                self.begin_ready_child(snapshot_state="Ready", resume=True)
+                self.assertEqual(current.state, state)
+                self.assertEqual(self.child.state, "Doing")
+                self.assertNotIn("child_start", workflow.read_evidence(self.root, self.child))
+                self.adapter.reset_mock()
+                self.dispatch(["validate", ident, "--", "true"])
+                with self.assertRaisesRegex(AgentBoxError, "acceptance.*missing"):
+                    self.dispatch(["finish", ident])
+                self.adapter.set_state.assert_not_called()
+
     def test_no_code_done_outage_retries_original_acceptance_from_parent(self):
         """An unchanged child needs the same reliable Done retry as one with code."""
         self.dispatch(["validate", "8", "--", "true"])
@@ -395,8 +450,8 @@ class NoCodeChildFinishTests(unittest.TestCase):
         self.dispatch(["validate", "8", "--", "true"])
         self.interrupted_finish()
         gw.git(self.root, "branch", "-D", "ab/8-child")
-        self.child.state = "Ready"
-        self.begin_ready_child()
+        self.child = replace(self.child, state="Ready")
+        self.begin_ready_child(snapshot_state="Doing", resume=True)
         self.adapter.reset_mock()
         workflow.retire_acceptance(self.root, self.adapter, self.child,
                                    workflow.read_evidence(self.root, self.child))

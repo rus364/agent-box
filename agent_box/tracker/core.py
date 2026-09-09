@@ -168,7 +168,8 @@ def set_checkbox(body: str, index: int, checked: bool, expected: str) -> str:
     return body[:offset] + line + body[offset + len(target["line"]):]
 
 
-def claim(adapter: Adapter, task_id: str, resume=False) -> Task:
+def claim(adapter: Adapter, task_id: str, resume=False) -> tuple[Task, bool]:
+    """Return the confirmed task and whether this claim observed a new Ready start."""
     task = adapter.get(task_id)
     user = str(adapter.identity()["id"])
     if any(assignee != user for assignee in task.assignees):
@@ -179,7 +180,7 @@ def claim(adapter: Adapter, task_id: str, resume=False) -> Task:
         blockers = blocking_reasons(task, adapter.get)
         if blockers:
             raise TrackerError("; ".join(blockers), "conflict")
-        return adapter.set_state(task, "Doing") if task.state == "Review" else task
+        return (adapter.set_state(task, "Doing") if task.state == "Review" else task), False
     if task.state != "Ready":
         raise TrackerError(f"Task must be Ready, currently {task.state}", "conflict")
     blockers = blocking_reasons(task, adapter.get)
@@ -189,7 +190,7 @@ def claim(adapter: Adapter, task_id: str, resume=False) -> Task:
     task = adapter.set_state(task, "Doing")
     if task.assignees != [user] or task.state != "Doing":
         raise TrackerError("Claim was not confirmed; inspect the task before continuing", "conflict")
-    return task
+    return task, True
 
 
 def completion_reasons(task, tasks, user, *, states=("Doing", "Review")):

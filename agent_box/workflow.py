@@ -793,7 +793,7 @@ def begin(root, adapter, task, resume):
     if branch == base:
         raise AgentBoxError("Task branch cannot be the base branch")
     if parent.state == "Ready" or parent.id == task.id or parent.state == "Review" and resume:
-        parent = claim(adapter, parent.id, resume)
+        parent, _ = claim(adapter, parent.id, resume)
     else:
         user = str(adapter.identity()["id"])
         if parent.state != "Doing" or parent.assignees != [user]:
@@ -802,8 +802,7 @@ def begin(root, adapter, task, resume):
     # the interrupted-work case --resume is for.
     gw.switch_branch(root, branch, base, resume=resume or bool(existing))
     if task.id != parent.id:
-        starting = task.state == "Ready"
-        task = claim(adapter, task.id, resume=resume and not starting)
+        task, starting = claim(adapter, task.id, resume=resume)
         existing_child = gw.task_branch(root, task)
         child = existing_child or gw.branch_name(task)
         if child == branch:

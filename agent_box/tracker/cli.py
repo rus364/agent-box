@@ -214,7 +214,8 @@ def dispatch(args):
     if args.command == "claim":
         from ..workflow_state import lock
         with lock(root, "claim"):
-            return claim(adapter, task.id, args.resume)
+            task, _ = claim(adapter, task.id, args.resume)
+            return task
     if args.command == "update":
         fields = {name: value for name in ("title", "priority") if (value := getattr(args, name)) is not None}
         if args.description_file:
