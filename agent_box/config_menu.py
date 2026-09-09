@@ -11,7 +11,7 @@ from pathlib import Path
 
 from .config import AGENT_EFFORTS, IMAGE_TOOL_GROUP_HELP, Config, REVIEW_PRESETS, TRACKER_PROVIDERS, TrackerConnection
 from .errors import AgentBoxError
-from .paths import CODEX_MODELS_CACHE
+from .model_catalog import BUNDLED_MODELS, load_model_catalogs
 
 CHOICES = {
     "tracker.provider": TRACKER_PROVIDERS,
@@ -21,14 +21,6 @@ CHOICES = {
     "workflow.review.policy": ("off", "auto", "always"),
     "workflow.review.github_provider": ("auto", "local", "codex", "claude"),
 }
-# Offline suggestions, not a promise of account access. Sources:
-# https://learn.chatgpt.com/docs/models
-# https://code.claude.com/docs/en/model-config
-BUNDLED_MODELS = {
-    "codex": ("gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.3-codex-spark"),
-    "claude": ("opus", "sonnet", "haiku", "claude-opus-5", "claude-sonnet-5"),
-}
-
 HELP = {
     "claude": "Claude host integration settings. Changes are applied only after Save and apply.",
     "claude.telegram_channel": "Start Claude with Anthropic's official Telegram channel plugin. This requires its host-side setup and exposes the session through that channel.",
@@ -177,21 +169,6 @@ def label_for(key, path=()):
     return LABELS.get(key, f"Tier {key}" if key.isdigit() else key.replace("_", " ").capitalize())
 
 
-def _valid_model_slug(value):
-    return isinstance(value, str) and bool(value) and value.strip() == value and all(c.isalnum() or c in "._-:/" for c in value)
-
-
-def load_codex_models(path=None):
-    """Read visible CLI model slugs without invoking Codex or using a network."""
-    try:
-        data = json.loads((path if path is not None else CODEX_MODELS_CACHE).read_text())
-        models = data.get("models") if isinstance(data, dict) else None
-        visible = [item["slug"] for item in models if isinstance(item, dict) and item.get("visibility") == "list" and _valid_model_slug(item.get("slug"))]
-    except (OSError, ValueError, TypeError):
-        visible = []
-    return tuple(dict.fromkeys(visible or BUNDLED_MODELS["codex"]))
-
-
 def help_for(path):
     """Return complete help for every static and generated menu entry."""
     dotted = ".".join(path)
@@ -286,7 +263,7 @@ def edit(config, *, project=None):
     project_mode = project is not None
     overrides = copy.deepcopy(project) if project_mode else None
     choices, link = ([], None) if project_mode else (pathsetup.bin_dir_choices(), pathsetup.link_state())
-    model_suggestions = {"codex": load_codex_models(), "claude": BUNDLED_MODELS["claude"]}
+    model_suggestions = load_model_catalogs()
     inherited = copy.deepcopy(config.to_dict())
     if project_mode and hasattr(config, "_global_tracker_urls"):
         # This is an editor-only baseline, not an account for tracker requests.
@@ -593,12 +570,14 @@ def edit(config, *, project=None):
     def model_value(screen, path, current):
         provider = path[-2]
         suggestions = list(model_suggestions[provider])
+        if current and current not in suggestions:
+            suggestions.insert(0, current)
         rows = ["Enter a custom model ID...", "Disable this candidate (empty model)"]
         rows += [model + (" (current)" if model == current else "") for model in suggestions]
         # The two escape hatches stay above the list, visible even with many
-        # cached models. An unset candidate opens on a useful suggestion.
-        index = suggestions.index(current) + 2 if current in suggestions else 0 if current else 2
-        about = f"Current model: {current or '(disabled)'}. Suggestions are local hints; availability depends on your provider account."
+        # suggested models. An unset candidate opens on a useful suggestion.
+        index = suggestions.index(current) + 2 if current else 2
+        about = f"Current model: {current or '(disabled)'}. Suggestions come from the CLI or bundled fallback; availability depends on your provider account."
         details = [
             "Type or edit any provider-supported model ID. Esc cancels editing. " + about,
             "Clear the model to exclude this provider from this tier. Other tiers and roles are unchanged. " + about,

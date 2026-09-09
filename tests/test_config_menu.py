@@ -263,17 +263,19 @@ class ConfigMenuTests(unittest.TestCase):
     def test_merge_mode_is_an_explicit_menu_choice(self):
         self.assertEqual(config_menu.CHOICES["workflow.merge_mode"], ("github", "local"))
 
-    def edit(self, config, keys, choices=(), link=None, screen=None, project=None):
+    def edit(self, config, keys, choices=(), link=None, screen=None, project=None, catalogs=None):
         import curses
         from agent_box import pathsetup
         screen = screen or Screen(keys)
         state = link or pathsetup.LinkState("ours", Path("/somewhere/bin/agent-box"))
         with patch.object(config_menu.sys.stdin, "isatty", return_value=True), patch.object(config_menu.sys.stdout, "isatty", return_value=True), \
              patch.object(curses, "wrapper", side_effect=lambda callback: callback(screen)), patch.object(curses, "curs_set"), \
-             patch.object(config_menu, "load_codex_models", return_value=config_menu.BUNDLED_MODELS["codex"]), \
+             patch.object(config_menu, "load_model_catalogs", return_value=catalogs or config_menu.BUNDLED_MODELS) as refresh, \
              patch.object(pathsetup, "link_state", return_value=state), \
              patch.object(pathsetup, "bin_dir_choices", return_value=list(choices)):
-            return config_menu.edit(config, project=project), screen
+            result = config_menu.edit(config, project=project)
+            refresh.assert_called_once_with()
+            return result, screen
 
     def test_cancel_discards_draft_while_save_returns_the_selected_values(self):
         import curses
@@ -351,20 +353,6 @@ class ConfigMenuTests(unittest.TestCase):
         check(data)
         self.assertEqual(set(config_menu.ACTION_HELP), {"path", "save", "cancel", "preset"})
 
-    def test_codex_cache_uses_only_visible_valid_slugs_and_falls_back(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            path = Path(temporary) / "models_cache.json"
-            path.write_text(json.dumps({"models": [
-                {"slug": "visible-model", "visibility": "list"},
-                {"slug": "hidden-model", "visibility": "hide"},
-                {"slug": "bad model", "visibility": "list"},
-            ]}))
-            self.assertEqual(config_menu.load_codex_models(path), ("visible-model",))
-            path.write_text("not json")
-            self.assertEqual(config_menu.load_codex_models(path), config_menu.BUNDLED_MODELS["codex"])
-            path.write_text('{"models": []}')
-            self.assertEqual(config_menu.load_codex_models(path), config_menu.BUNDLED_MODELS["codex"])
-
     def test_editor_inserts_and_deletes_at_the_visible_cursor(self):
         import curses
         config = Config()
@@ -395,18 +383,33 @@ class ConfigMenuTests(unittest.TestCase):
         prefix = [*select("workflow"), "\n", *select("tiers", ("workflow",)),
                   "\n", "\n", "\n", "\n"]
         finish = [*['\x1b'] * 4, curses.KEY_END, curses.KEY_UP, "\n"]
-        suggestions = config_menu.BUNDLED_MODELS["codex"]
-        with patch.object(config_menu, "load_codex_models", return_value=suggestions):
-            kept, _ = self.edit(config, [*prefix, "\x1b", *finish])
-            self.assertEqual(kept.config.workflow.tiers["0"]["codex"]["model"], "private-model")
+        kept, screen = self.edit(config, [*prefix, "\n", *finish])
+        self.assertEqual(kept.config.workflow.tiers["0"]["codex"]["model"], "private-model")
+        self.assertIn("private-model (current)", screen.drawn)
 
-            custom, _ = self.edit(config, [*prefix, curses.KEY_HOME,
-                                           "\n", "\x15", *"manual-model", "\n", *finish])
-            self.assertEqual(custom.config.workflow.tiers["0"]["codex"]["model"], "manual-model")
+        custom, _ = self.edit(config, [*prefix, curses.KEY_HOME,
+                                       "\n", "\x15", *"manual-model", "\n", *finish])
+        self.assertEqual(custom.config.workflow.tiers["0"]["codex"]["model"], "manual-model")
 
-            disabled, _ = self.edit(config, [*prefix, curses.KEY_HOME, curses.KEY_DOWN,
-                                             "\n", *finish])
-            self.assertEqual(disabled.config.workflow.tiers["0"]["codex"]["model"], "")
+        disabled, _ = self.edit(config, [*prefix, curses.KEY_HOME, curses.KEY_DOWN,
+                                         "\n", *finish])
+        self.assertEqual(disabled.config.workflow.tiers["0"]["codex"]["model"], "")
+
+    def test_catalogs_refresh_once_per_global_or_project_entry_not_per_picker(self):
+        """Both providers keep unavailable selections across repeated picker visits."""
+        import curses
+        catalogs = {"codex": ("new-codex",), "claude": ("new-claude",)}
+        for project in (None, {}):
+            for provider_index, provider in enumerate(catalogs):
+                config = Config()
+                config.workflow.tiers["0"][provider]["model"] = "private-model"
+                prefix = [*select("workflow"), "\n", *select("tiers", ("workflow",)),
+                          "\n", "\n", *[curses.KEY_DOWN] * provider_index, "\n", "\n"]
+                keys = [*prefix, "\x1b", "\n", "\n", *["\x1b"] * 5]
+                result, screen = self.edit(config, keys, project=project, catalogs=catalogs)
+                self.assertIsNone(result)
+                self.assertIn("private-model (current)", screen.drawn)
+                self.assertIn(catalogs[provider][0], screen.drawn)
 
     def test_default_terminal_colors_and_short_escape_delay_are_restored(self):
         import curses
@@ -428,6 +431,7 @@ class ConfigMenuTests(unittest.TestCase):
              patch.object(config_menu.sys.stdout, "isatty", return_value=True), \
              patch.object(curses, "wrapper", side_effect=lambda callback: callback(screen)), \
              patch.object(curses, "curs_set"), \
+             patch.object(config_menu, "load_model_catalogs", return_value=config_menu.BUNDLED_MODELS), \
              patch.object(pathsetup, "link_state", return_value=pathsetup.LinkState("ours", Path("/bin/agent-box"))), \
              patch.object(pathsetup, "bin_dir_choices", return_value=[]):
             self.assertIsNone(config_menu.edit(Config()))
@@ -853,7 +857,7 @@ class ProjectMenuTests(unittest.TestCase):
                      patch.object(config_menu.sys.stdout, 'isatty', return_value=True), \
                      patch.object(curses, 'wrapper', side_effect=lambda callback: callback(screen)), \
                      patch.object(curses, 'curs_set'), \
-                     patch.object(config_menu, 'load_codex_models', return_value=config_menu.BUNDLED_MODELS['codex']), \
+                     patch.object(config_menu, 'load_model_catalogs', return_value=config_menu.BUNDLED_MODELS), \
                      patch.object(cli, 'save_config', side_effect=AssertionError('global write')), \
                      patch('agent_box.runtime.apply_config', side_effect=AssertionError('global apply')), \
                      patch('agent_box.pathsetup.append_rc_block', side_effect=AssertionError('PATH write')):
