@@ -1312,11 +1312,12 @@ def dispatch(args):
                     "If native cannot run and model/effort are known, use workflow review TASK "
                     "--handoff DESCRIPTOR --brief FILE --fallback-reason REASON (repeat --tier if supplied) "
                     "for one managed dispatch in this pending round. Omit --handoff only for an independent new round.")
-            result["instructions"] += " " + LAUNCH_CONTEXT
-            if result["delegate_handoff"] is None:
-                result["instructions"] += ("Before delegating, supply --brief FILE with a compact English Goal/Acceptance/Validation, "
-                                           "bounded scope, relevant paths, decisions and limitations. Translate the current requirements "
-                                           "faithfully; do not paste task history or comments. Untiered direct work is not a delegation.")
+            if result.get("action") != "work-in-current-session":
+                result["instructions"] += " " + LAUNCH_CONTEXT
+                if result["delegate_handoff"] is None:
+                    result["instructions"] += ("Before delegating, supply --brief FILE with a compact English Goal/Acceptance/Validation, "
+                                               "bounded scope, relevant paths, decisions and limitations. Translate the current requirements "
+                                               "faithfully; do not paste task history or comments.")
             return result
         if args.command == "report":
             if not worker_report and args.scope != fingerprint:

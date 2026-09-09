@@ -230,6 +230,7 @@ class WorkerHandoffTests(unittest.TestCase):
                     prepared = self.run_workflow("prepare", "1", "--role", role, "--primary", "codex",
                                                  "--brief", str(self.review_brief))
                     prompt = prepared["delegate_handoff"]
+                    self.assertIn(workflow.LAUNCH_CONTEXT, prepared["instructions"])
                     payload = json.loads(prompt.split("Delegation handoff:\n", 1)[1])
                     self.assertEqual(payload["role"], role)
                     self.assertIn(marker, payload["assignment"])
@@ -455,6 +456,23 @@ class WorkerHandoffTests(unittest.TestCase):
         self.adapter.update.assert_not_called()
         self.adapter.set_state.assert_not_called()
 
+    def test_untiered_worker_instructions_keep_direct_work_with_or_without_brief(self):
+        """A supplied brief must not turn current-session instructions into a delegate launch."""
+        self.task.labels = []
+        for command, with_brief in (("prepare", False), ("prepare", True), ("run", True)):
+            with self.subTest(command=command, with_brief=with_brief):
+                extra = ["--brief", str(self.review_brief)] if with_brief else []
+                result = self.run_workflow(command, "1", "--primary", "codex", *extra)
+                self.assertEqual(result["action"], "work-in-current-session")
+                self.assertIn("Implement in the active session", result["instructions"])
+                self.assertIn("Read repository instructions and follow task acceptance", result["instructions"])
+                self.assertNotIn("delegate_handoff", result["instructions"])
+                self.assertNotIn("Before delegating", result["instructions"])
+                self.assertNotIn("fork_turns", result["instructions"])
+                self.assertEqual(result["context_policy"], workflow.context_policy())
+                self.assertTrue(result["handoff"])
+                self.assertEqual(result["delegate_handoff"] is not None, with_brief)
+
     def test_untiered_worker_still_requires_owned_doing_task(self):
         """Session inheritance cannot bypass ownership before editing code."""
         self.task.labels = []
@@ -475,6 +493,7 @@ class WorkerHandoffTests(unittest.TestCase):
             prepared = self.run_workflow("review", "1", "--primary", "codex",
                                          "--brief", str(self.review_brief))
         self.assertEqual(prepared["action"], "review-in-fresh-context")
+        self.assertIn(workflow.LAUNCH_CONTEXT, prepared["instructions"])
         self.assertNotIn("review", workflow.read_evidence(self.root, self.task))
         self.report.write_text(json.dumps({"verdict": "PASS", "summary": "Reviewed", "findings": []}))
         argv = ["report", "1", "--role", "reviewer", "--provider", "codex",
@@ -783,6 +802,7 @@ class WorkerHandoffTests(unittest.TestCase):
         self.assertIn("Preserve required error, safety and compatibility checks", prompt)
         self.assertNotIn("without a concrete failure mode", prompt)
         self.assertIn("fork_turns=none", second["instructions"])
+        self.assertIn(workflow.LAUNCH_CONTEXT, second["instructions"])
         self.assertIn("never use followup_task or resume", second["instructions"])
         self.adapter.comments.assert_not_called()
 
