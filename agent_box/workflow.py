@@ -211,10 +211,9 @@ def evidence_path(root, task):
     return WORKFLOW_STATE / "evidence" / repository_key(root) / f"{ident}.json"
 
 
-# Which provider actually wrote the code decides who reviews it, so it survives
-# the scope change that the writing itself causes. Everything else is acceptance
-# of one exact scope and dies with it.
-DURABLE_EVIDENCE = ("writer",)
+# Writer identity and the head at child creation describe how work began, not
+# acceptance. They survive scope changes; validation and review do not.
+DURABLE_EVIDENCE = ("writer", "child_start")
 
 
 def read_evidence(root, task):
@@ -798,10 +797,15 @@ def begin(root, adapter, task, resume):
     gw.switch_branch(root, branch, base, resume=resume or bool(existing))
     if task.id != parent.id:
         task = claim(adapter, task.id, resume)
-        child = gw.task_branch(root, task) or gw.branch_name(task)
+        existing_child = gw.task_branch(root, task)
+        child = existing_child or gw.branch_name(task)
         if child == branch:
             raise AgentBoxError("Subtask branch cannot be the parent branch")
         gw.switch_branch(root, child, branch, resume=resume)
+        if not existing_child:
+            saved = read_evidence(root, task)
+            saved["child_start"] = {"head": gw.head_sha(root), "parent": parent.id}
+            save_evidence(root, task, saved)
     return {"task": task.id, "parent": parent.id, "branch": gw.current_branch(root), "base": base}
 
 
@@ -905,7 +909,8 @@ def finish_child(root, config, adapter, task, parent, info, branch, tasks):
     base_head = gw.local_branch_head(root, base)
     integrated = gw._is_ancestor(root, head, base_head)
     saved = read_evidence(root, task)
-    if integrated:
+    unchanged_child = saved.get("child_start") == {"head": head, "parent": parent.id}
+    if integrated and ("local_acceptance" in saved or not unchanged_child):
         accepted = saved.get("local_acceptance", {})
         recovery = (f"Preserve both branches; restore the original acceptance evidence or "
                     f"reconstruct and validate the original child change before retrying workflow finish {task.id}")
@@ -913,6 +918,9 @@ def finish_child(root, config, adapter, task, parent, info, branch, tasks):
         required = {"head", "base", "base_head", "requirements", "scope", "files", "lines", "validation"}
         if not required.issubset(accepted) or not accepted.get("scope"):
             reasons.append("Pre-merge acceptance cache is missing")
+            if not unchanged_child:
+                reasons.append("No-code origin is unproven: child creation evidence is missing or its head/parent changed; "
+                               "begin --resume does not recreate it")
         else:
             if accepted.get("head") != head:
                 reasons.append("Accepted child head has changed")
@@ -941,11 +949,11 @@ def finish_child(root, config, adapter, task, parent, info, branch, tasks):
         reasons = review_blockers(config.workflow.review, tasks, files, lines, saved)
         if reasons:
             raise AgentBoxError("; ".join(reasons))
-        if not gw._is_ancestor(root, base_head, head):
+        if not integrated and not gw._is_ancestor(root, base_head, head):
             raise AgentBoxError("Parent and child branches have diverged; reconcile before completion")
         # The existing disposable acceptance slot is retired on new worker/review
         # activity and survives only the Git change this completion authorized.
-        saved["local_acceptance"] = {"head": head, "base": base, "base_head": base_head,
+        saved["local_acceptance"] = {"head": head, "base": base, "base_head": head if integrated else base_head,
                                      "requirements": requirements(tasks), "scope": saved["scope"],
                                      "files": files, "lines": lines,
                                      "validation": saved["validation"], "review": saved.get("review", {})}

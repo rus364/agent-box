@@ -1291,7 +1291,8 @@ class ParentSubtaskBranchTests(unittest.TestCase):
                 task.state, task.assignees = "Doing", ["1"]
                 return task
 
-            with patch.object(workflow, "claim", side_effect=claimed):
+            with patch.object(workflow, "claim", side_effect=claimed), \
+                 patch.object(workflow, "WORKFLOW_STATE", Path(directory) / "state"):
                 result = workflow.begin(root, adapter, child, resume=False)
             self.assertEqual(result["base"], "main")
             self.assertEqual(gw.current_branch(root), "ab/8-first-subtask")

@@ -180,6 +180,133 @@ class ChildFinishTests(unittest.TestCase):
         self.assertEqual(workflow.read_evidence(self.root, self.parent)["writer"], "codex")
 
 
+class NoCodeChildFinishTests(unittest.TestCase):
+    """A child begun without commits still needs current acceptance, not just ancestry."""
+
+    dispatch = test_local_workflow.LocalLandTests.dispatch
+    commit = ChildFinishTests.commit
+    interrupted_finish = ChildFinishTests.interrupted_finish
+
+    def setUp(self):
+        test_local_workflow.LocalLandTests.setUp(self)
+        self.parent.state = "Doing"
+        self.parent.children = ["8"]
+        self.child = Task("8", "1", "Child", state="Doing", assignees=["1"],
+                          parent="7", description="- [x] accepted")
+        self.adapter.get.side_effect = lambda ident: {"7": self.parent, "8": self.child}[ident]
+        self.dispatch(["begin", "8", "--resume"])
+        self.head = gw.head_sha(self.root)
+        self.adapter.reset_mock()
+
+    def test_new_child_without_commits_finishes_only_after_current_validation(self):
+        """Beginning at the parent tip identifies no-code work but does not accept it."""
+        with self.assertRaisesRegex(AgentBoxError, "workflow validate"):
+            self.dispatch(["finish", "8"])
+        self.adapter.set_state.assert_not_called()
+        self.dispatch(["validate", "8", "--", "true"])
+        with patch.object(gw, "git", wraps=gw.git) as git:
+            self.assertEqual(self.dispatch(["finish", "8"])["state"], "Done")
+        self.assertFalse(any(call.args[1] == "merge" for call in git.call_args_list))
+        self.adapter.set_state.assert_called_once_with(self.child, "Done")
+
+    def test_no_code_done_outage_retries_original_acceptance_from_parent(self):
+        """An unchanged child needs the same reliable Done retry as one with code."""
+        self.dispatch(["validate", "8", "--", "true"])
+        self.interrupted_finish()
+        with patch.object(workflow, "scope", wraps=workflow.scope) as scope:
+            self.assertEqual(self.dispatch(["finish", "8"])["state"], "Done")
+        scope.assert_not_called()
+
+    def test_no_code_requirements_change_requires_fresh_validation(self):
+        """The creation head survives a scope change; the prior acceptance does not."""
+        self.dispatch(["validate", "8", "--", "true"])
+        self.interrupted_finish()
+        self.child.description += "\nNew requirement"
+        with self.assertRaisesRegex(AgentBoxError, "requirements.*changed"):
+            self.dispatch(["finish", "8"])
+        self.dispatch(["begin", "8", "--resume"])
+        with self.assertRaisesRegex(AgentBoxError, "Validation failed"):
+            self.dispatch(["validate", "8", "--", "false"])
+        with self.assertRaisesRegex(AgentBoxError, "requirements.*changed"):
+            self.dispatch(["finish", "8"])
+        self.dispatch(["validate", "8", "--", "true"])
+        self.assertEqual(self.dispatch(["finish", "8"])["state"], "Done")
+
+    def test_no_code_current_review_policy_and_retirement_apply(self):
+        """An unchanged head cannot skip a required review or retain a retired PASS."""
+        self.dispatch(["validate", "8", "--", "true"])
+        self.interrupted_finish()
+        self.config.workflow.review.policy = "always"
+        with self.assertRaisesRegex(AgentBoxError, "PASS review"):
+            self.dispatch(["finish", "8"])
+        self.dispatch(["begin", "8", "--resume"])
+        saved = workflow.read_evidence(self.root, self.child)
+        workflow.reserve_review(self.root, BINDING, self.child, 3, "new-round", saved["scope"])
+        with self.assertRaisesRegex(AgentBoxError, "PASS review"):
+            self.dispatch(["finish", "8"])
+        saved = workflow.read_evidence(self.root, self.child)
+        saved["review"] = {"verdict": "PASS"}
+        workflow.save_evidence(self.root, self.child, saved)
+        self.assertEqual(self.dispatch(["finish", "8"])["state"], "Done")
+
+    def test_no_code_acceptance_and_retry_allow_later_parent_work_locally(self):
+        """The child's empty scope ends at its own head even when its parent advances."""
+        gw.git(self.root, "switch", "ab/7-parent")
+        self.commit("later-parent.py")
+        parent_head = gw.head_sha(self.root)
+        gw.git(self.root, "switch", "ab/8-child")
+        self.dispatch(["validate", "8", "--", "true"])
+        self.adapter.set_state.side_effect = AgentBoxError("tracker unavailable")
+        with self.assertRaisesRegex(AgentBoxError, "tracker unavailable"):
+            self.dispatch(["finish", "8"])
+        self.adapter.set_state.side_effect = None
+        self.assertEqual(self.dispatch(["finish", "8"])["state"], "Done")
+        self.assertEqual(gw.local_branch_head(self.root, "ab/7-parent"), parent_head)
+
+    def test_resume_after_real_integration_cannot_reset_start_to_current_head(self):
+        """Revalidation after resume cannot disguise lost acceptance of committed work."""
+        self.commit("child.py")
+        self.head = gw.head_sha(self.root)
+        self.dispatch(["validate", "8", "--", "true"])
+        self.interrupted_finish()
+        self.dispatch(["begin", "8", "--resume"])
+        self.dispatch(["validate", "8", "--", "true"])
+        with self.assertRaisesRegex(AgentBoxError, "acceptance.*missing"):
+            self.dispatch(["finish", "8"])
+        self.adapter.set_state.assert_not_called()
+
+    def test_missing_start_cannot_be_recreated_by_resume(self):
+        """Existing equal tips cannot prove how a child began after its evidence is lost."""
+        workflow.evidence_path(self.root, self.child).unlink(missing_ok=True)
+        self.dispatch(["begin", "8", "--resume"])
+        self.dispatch(["validate", "8", "--", "true"])
+        with self.assertRaisesRegex(AgentBoxError, "acceptance.*missing"):
+            self.dispatch(["finish", "8"])
+        self.adapter.set_state.assert_not_called()
+
+    def test_adopting_remote_equal_tip_does_not_invent_no_code_start(self):
+        """A published branch can already contain integrated work, even at the parent tip."""
+        gw.git(self.root, "push", "origin", "ab/8-child")
+        gw.git(self.root, "switch", "ab/7-parent")
+        gw.git(self.root, "branch", "-D", "ab/8-child")
+        workflow.evidence_path(self.root, self.child).unlink(missing_ok=True)
+        self.dispatch(["begin", "8", "--resume"])
+        self.dispatch(["validate", "8", "--", "true"])
+        with self.assertRaisesRegex(AgentBoxError, "acceptance.*missing"):
+            self.dispatch(["finish", "8"])
+        self.adapter.set_state.assert_not_called()
+
+    def test_worker_retirement_keeps_origin_but_requires_new_validation(self):
+        """Delegating investigation can retire acceptance without creating a code diff."""
+        self.dispatch(["validate", "8", "--", "true"])
+        workflow.retire_acceptance(self.root, self.adapter, self.child,
+                                   workflow.read_evidence(self.root, self.child))
+        with self.assertRaisesRegex(AgentBoxError, "workflow validate"):
+            self.dispatch(["finish", "8"])
+        self.dispatch(["validate", "8", "--", "true"])
+        self.assertEqual(self.dispatch(["finish", "8"])["state"], "Done")
+
+
 class TransitionReadTests(unittest.TestCase):
     setUp = test_local_workflow.LocalLandTests.setUp
     dispatch = test_local_workflow.LocalLandTests.dispatch

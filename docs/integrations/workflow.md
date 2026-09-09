@@ -33,6 +33,17 @@ branch creation by delegated agents. Read-only scouts may run concurrently withi
 `scout_limit`. A finished sibling unblocks after integration; a dependency in
 another parent remains blocked until that parent's merge.
 
+`workflow begin CHILD` records a new child's initial head in the existing local
+evidence. A child still at that head can finish without commits after
+`workflow validate CHILD -- COMMAND ARGS` and the configured review. Resuming an
+existing branch or adopting a remote branch does not create or reset this
+evidence. Child finish saves acceptance before integration/publication, so retry `workflow finish CHILD`
+after a failed Done write. It rechecks the accepted head, requirements and current
+review policy. Lost acceptance of an integrated change cannot be replaced by
+validating its now-empty diff; preserve the branches and restore the original
+acceptance or reconstruct the original change. Missing creation evidence also
+prevents claiming that an already-integrated child began without commits.
+
 The coordinator is the only writer. It alone writes tracker requirements,
 lifecycle state, assignees, relations and dependencies, progress comments and
 checkboxes; it alone creates branches, commits and pushes; it alone touches
