@@ -1059,7 +1059,7 @@ def dispatch(args):
             save_evidence(root, task, saved)
         return {"task": task.id, "writer": args.provider}
     if args.command == "begin":
-        with lock(root, "work"):
+        with lock(root, "review-budget"), lock(root, "work"):
             return {**begin(root, adapter, task, args.resume), "configuration": configuration_summary(config)}
     if args.command == "inspect":
         return inspect(root, binding, adapter, task, config)

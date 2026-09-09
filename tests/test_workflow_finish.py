@@ -314,6 +314,53 @@ class NoCodeChildFinishTests(unittest.TestCase):
         self.assertFalse(any(call.args[1] == "merge" for call in git.call_args_list))
         self.adapter.set_state.assert_called_once_with(self.child, "Done")
 
+    def test_begin_cannot_overwrite_a_concurrent_review_reservation(self):
+        """Origin writes must preserve a new round and never resurrect retired acceptance."""
+        self.dispatch(["validate", "8", "--", "true"])
+        saved = workflow.read_evidence(self.root, self.child)
+        saved["review"] = {"verdict": "PASS"}
+        workflow.save_evidence(self.root, self.child, saved)
+        self.interrupted_finish()
+        gw.git(self.root, "switch", "ab/8-child")
+        self.commit("later.py")
+
+        for resume in (True, False):
+            with self.subTest(resume=resume):
+                if not resume:
+                    self.child = replace(self.child, id="9", state="Ready")
+                    self.parent.children = [self.child.id]
+                original_read = workflow.read_evidence
+                attempted, busy = [], []
+
+                def reserve(fingerprint):
+                    return workflow.reserve_review(self.root, BINDING, self.child, 3,
+                                                   "new-round", fingerprint)
+
+                def interleave(root, task):
+                    value = original_read(root, task)
+                    if task.id == self.child.id and not attempted:
+                        fingerprint = workflow.scope(root, "ab/7-parent", [self.child])
+                        attempted.append(fingerprint)
+                        try:
+                            reserve(fingerprint)
+                        except AgentBoxError as exc:
+                            self.assertIn("Another local review-budget", str(exc))
+                            busy.append(True)
+                    return value
+
+                with patch.object(workflow, "read_evidence", interleave):
+                    self.begin_ready_child(resume=resume)
+                self.assertEqual(len(attempted), 1)
+                if busy:
+                    reserve(attempted[0])
+                current = workflow.read_evidence(self.root, self.child)
+                self.assertNotIn("review", current)
+                self.assertNotIn("local_acceptance", current)
+                self.assertEqual(current.get("scope"), attempted[0])
+                self.assertEqual(current["child_start"]["work_observed"], resume)
+                budget = workflow.read_review_state(self.root, BINDING, self.child)
+                self.assertEqual((budget["used"], budget["pending"]), (1, "new-round"))
+
     def test_stale_doing_snapshot_cannot_suppress_a_genuine_ready_start(self):
         """The Ready claim read must prove no-code origin even if dispatch saw Doing."""
         for resume, ident in ((False, "9"), (True, "10")):
