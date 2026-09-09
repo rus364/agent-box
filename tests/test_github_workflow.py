@@ -9,8 +9,7 @@ class MergeAcceptanceTests(unittest.TestCase):
         # These unit tests isolate PR/ref identity; scope acceptance is exercised
         # below against real temporary Git repositories and evidence files.
         from unittest.mock import patch
-        for name, value in (("scope", "current"), ("diff_stats", ([], 0)),
-                            ("integrated_parent", False),
+        for name, value in (("scope", "current"),
                             ("evidence", {"scope": "current", "validation": {"exit": 0},
                                           "review": {"verdict": "PASS"}})):
             patcher = patch.object(workflow, name, return_value=value)
@@ -291,7 +290,7 @@ class LandingFreshnessTests(unittest.TestCase):
                 self.assertEqual(inspected["review"]["files"], 0)
                 with self.assertRaisesRegex(AgentBoxError, "PASS review"):
                     self.dispatch(["finish", "7"])
-                with self.assertRaisesRegex(AgentBoxError, "PASS review"):
+                with self.assertRaisesRegex(AgentBoxError, "GitHub approval or a fresh local PASS"):
                     self.run_land(action="reconcile")
                 self.adapter.set_state.assert_not_called()
                 self.recover_review(native=native)
@@ -300,8 +299,8 @@ class LandingFreshnessTests(unittest.TestCase):
                 self.adapter.set_state.assert_called_once_with(self.parent, "Done")
                 self.adapter.set_state.reset_mock()
 
-    def test_integrated_recovery_with_review_off_still_requires_validation(self):
-        """Off permits policy skipping but never substitutes merge proof for validation."""
+    def test_integrated_recovery_with_review_off_requires_validation_and_acceptance(self):
+        """Skipping local review cannot substitute merge proof for GitHub acceptance."""
         from agent_box import git_workflow as gw
         from agent_box.errors import AgentBoxError
         gw.git(self.root, "update-ref", "refs/heads/main", self.pr["headRefOid"])
@@ -310,37 +309,69 @@ class LandingFreshnessTests(unittest.TestCase):
             self.run_land(action="reconcile")
         self.dispatch(["validate", "7", "--", "true"])
         self.assertEqual(self.dispatch(["review", "7", "--primary", "codex"])["review"]["verdict"], "SKIPPED")
+        with self.assertRaisesRegex(AgentBoxError, "GitHub approval or a fresh local PASS"):
+            self.run_land(action="reconcile")
+        self.adapter.set_state.assert_not_called()
+        self.merged["latestReviews"] = [{"state": "APPROVED", "commit": {"oid": self.pr["headRefOid"]}}]
         self.assertEqual(self.run_land(action="reconcile")["state"], "Done")
         self.command.assert_not_called()
 
-    def test_reconcile_applies_review_policy_to_current_unabsorbed_diff(self):
-        """Auto still skips small work, but sensitive paths and always require current PASS."""
+    def test_reconcile_requires_github_approval_or_local_pass_regardless_of_local_policy(self):
+        """Reconcile uses the same acceptance alternatives as merging an open PR."""
         from agent_box.errors import AgentBoxError
-        for policy, sensitive, required in (("off", ["*.py"], False), ("auto", [], False),
-                                             ("auto", ["*.py"], True), ("always", [], True)):
-            with self.subTest(policy=policy, sensitive=sensitive):
-                self.config.workflow.review.policy = policy
-                self.config.workflow.review.sensitive_paths = sensitive
-                workflow.save_evidence(self.root, self.parent, {**self.saved, "review": {"verdict": "SKIPPED"}})
-                if required:
-                    with self.assertRaisesRegex(AgentBoxError, "PASS review"):
-                        self.run_land(action="reconcile")
-                    self.adapter.set_state.assert_not_called()
-                else:
-                    self.assertEqual(self.run_land(action="reconcile")["state"], "Done")
+        for policy in ("off", "auto", "always"):
+            self.config.workflow.review.policy = policy
+            for approval, verdict, accepted in ((None, None, False), (None, "SKIPPED", False),
+                                                ("old-head", "SKIPPED", False),
+                                                (self.pr["headRefOid"], "SKIPPED", True),
+                                                (None, "PASS", True)):
+                with self.subTest(policy=policy, approval=approval, verdict=verdict):
+                    self.merged["latestReviews"] = ([{"state": "APPROVED", "commit": {"oid": approval}}]
+                                                    if approval else [])
+                    workflow.save_evidence(self.root, self.parent, {**self.saved, "review": {"verdict": verdict}})
+                    if accepted:
+                        self.assertEqual(self.run_land(action="reconcile")["state"], "Done")
+                        self.adapter.set_state.assert_called_once_with(self.parent, "Done")
+                    else:
+                        with self.assertRaisesRegex(AgentBoxError, "GitHub approval or a fresh local PASS"):
+                            self.run_land(action="reconcile")
+                        self.adapter.set_state.assert_not_called()
+                    self.command.assert_not_called()
+                    self.adapter.set_state.reset_mock()
+
+    def test_reconcile_approval_cannot_replace_current_successful_validation(self):
+        """Current-head cloud approval still needs a successful check of today's scope."""
+        from agent_box.errors import AgentBoxError
+        self.merged["latestReviews"] = [{"state": "APPROVED", "commit": {"oid": self.pr["headRefOid"]}}]
+        for validation in ({}, {"exit": 1}, {"command": ["true"]}):
+            with self.subTest(validation=validation):
+                workflow.save_evidence(self.root, self.parent, {**self.saved, "validation": validation})
+                with self.assertRaisesRegex(AgentBoxError, "validation"):
+                    self.run_land(action="reconcile")
+                self.adapter.set_state.assert_not_called()
                 self.command.assert_not_called()
-                self.adapter.set_state.reset_mock()
+
+    def test_reconcile_rejects_stale_pass_after_current_scope_revalidation(self):
+        """Revalidation cannot revive review acceptance of earlier requirements."""
+        from dataclasses import replace
+        from agent_box.errors import AgentBoxError
+        self.parent = replace(self.parent, title="Changed goal")
+        self.dispatch(["validate", "7", "--", "true"])
+        with self.assertRaisesRegex(AgentBoxError, "GitHub approval or a fresh local PASS"):
+            self.run_land(action="reconcile")
+        self.adapter.set_state.assert_not_called()
+        self.command.assert_not_called()
 
     def test_reconcile_rechecks_head_after_acceptance_reads(self):
         """Acceptance work must not open a window for completing a newer local commit."""
         from unittest.mock import patch
         from agent_box.errors import AgentBoxError
-        stats = workflow.diff_stats
-        def moving_stats(*args):
-            value = stats(*args)
+        evidence = workflow.evidence
+        def moving_evidence(*args):
+            value = evidence(*args)
             self.advance()
             return value
-        with patch.object(workflow, "diff_stats", side_effect=moving_stats):
+        with patch.object(workflow, "evidence", side_effect=moving_evidence):
             with self.assertRaisesRegex(AgentBoxError, "heads differ"):
                 self.run_land(action="reconcile")
         self.adapter.set_state.assert_not_called()
@@ -456,7 +487,7 @@ class LandingFreshnessTests(unittest.TestCase):
         self.adapter.set_state.assert_not_called()
         self.config.workflow.review.policy = "always"
         self.dispatch(["validate", "7", "--", "true"])
-        with self.assertRaisesRegex(AgentBoxError, "PASS review"):
+        with self.assertRaisesRegex(AgentBoxError, "GitHub approval or a fresh local PASS"):
             self.run_land(action="reconcile")
         current = workflow.read_evidence(self.root, self.parent)
         workflow.save_evidence(self.root, self.parent, {**current, "review": {"verdict": "PASS"}})

@@ -689,7 +689,7 @@ class TransitionReadTests(unittest.TestCase):
 
         self.config.workflow.merge_mode = "github"
         self.config.github.gh_token = True
-        workflow.save_evidence(self.root, self.parent, self.saved)
+        workflow.save_evidence(self.root, self.parent, {**self.saved, "review": {"verdict": "PASS"}})
         events = []
 
         def read(ident):
