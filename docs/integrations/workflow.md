@@ -584,9 +584,14 @@ merged PR in its task namespace; missing or ambiguous PR evidence preserves
 descendants. After GitHub landing, the parent may still be checked out: switch
 to the base yourself and run `workflow land PARENT cleanup`.
 In local mode, the parent head must be an ancestor of the local base, and each
-descendant head must be an ancestor of the accepted parent head. On retry, Git
-supplies the surviving parent head, or the local base when parent refs are
-already absent. Remote deletion additionally requires the candidate head in the
+descendant head must be an ancestor of the exact accepted parent head supplied
+by landing or unfinished-parent reconciliation. Done cleanup retries recover
+that head from the existing local acceptance snapshot, checking the task/base
+context, original scope, validation and applicable review. This works after
+parent refs disappear; a later base or moved parent ref cannot widen the accepted
+result. Missing, stale or inconsistent evidence preserves descendants with a
+reason, without blocking independent parent cleanup or undoing Done.
+Remote deletion additionally requires the candidate head in the
 live published base on the same effective origin destination. An unpublished local merge, or a missing
 commit object, preserves the remote branch with publish/fetch guidance; cleanup
 never publishes the base or fetches objects implicitly.

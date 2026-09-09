@@ -1,4 +1,5 @@
 """Deletion is conditional on live integration proof, never on tracker Done alone."""
+import copy
 import tempfile
 import unittest
 from pathlib import Path
@@ -54,6 +55,19 @@ class CleanupTests(unittest.TestCase):
 
     def run_cleanup(self, **kwargs):
         return cleanup.cleanup(self.root, self.config, self.task, self.adapter, **kwargs)
+
+    def accept_parent(self):
+        """Supply the same disposable snapshot as a successful local landing."""
+        tasks = workflow.tree(self.adapter, self.task)
+        requirements = workflow.requirements(tasks)
+        base_head = gw.git(self.root, 'rev-parse', self.head + '^')
+        fingerprint = workflow.scope_fingerprint(self.head, base_head, requirements)
+        saved = {'scope': fingerprint, 'local_acceptance': {
+            'head': self.head, 'base': 'main', 'base_head': base_head,
+            'requirements': requirements, 'scope': fingerprint,
+            'validation': {'exit': 0}, 'review': {'verdict': 'PASS'}}}
+        workflow.save_evidence(self.root, self.task, saved)
+        return saved
 
     def exists(self, *, remote=False):
         root = self.origin if remote else self.root
@@ -254,6 +268,7 @@ class CleanupTests(unittest.TestCase):
         child, _ = self.descendant('8')
         self.descendant('9')
         self.descendant('10', parent=child)
+        self.accept_parent()
         gw.git(self.root, 'branch', 'ab/80-unrelated', self.head)
         with patch.object(github, 'gh') as gh:
             result = self.dispatch_land('cleanup')['cleanup']
@@ -285,6 +300,7 @@ class CleanupTests(unittest.TestCase):
         self.integrated()
         _, branch = self.descendant('8')
         self.config.workflow.cleanup_remote_branches = False
+        self.accept_parent()
         with patch.object(cleanup, '_remote_refs') as remote:
             first = self.descendant_outcomes(self.run_cleanup())['8']
         self.assertEqual([first[k]['status'] for k in ('local', 'remote')], ['deleted', 'disabled'])
@@ -302,6 +318,7 @@ class CleanupTests(unittest.TestCase):
         gw.git(self.root, 'update-ref', '-d', 'refs/remotes/origin/' + self.branch)
         child, _ = self.descendant('8')
         self.descendant('9', parent=child)
+        self.accept_parent()
         for expected in ('deleted', 'absent'):
             result = self.dispatch_land('reconcile')['cleanup']
             self.assertEqual(result['local']['status'], 'absent')
@@ -313,6 +330,7 @@ class CleanupTests(unittest.TestCase):
         self.integrated()
         child, branch = self.descendant('8', state='Doing')
         self.descendant('9', parent=child)
+        self.accept_parent()
         result = self.descendant_outcomes(self.run_cleanup())
         for kind in ('local', 'remote'):
             self.assertEqual(result['8'][kind]['status'], 'preserved')
@@ -320,6 +338,103 @@ class CleanupTests(unittest.TestCase):
             self.assertEqual(result['9'][kind]['status'], 'deleted')
         self.assertEqual(gw.local_branch_head(self.root, branch), self.head)
         self.assertEqual(gw.local_branch_head(self.origin, branch), self.head)
+
+    def land_with_occupied_child(self):
+        child, branch = self.descendant('8')
+        occupied = self.directory / 'occupied'
+        gw.git(self.root, 'worktree', 'add', str(occupied), branch)
+        self.task.state = 'Review'
+        gw.git(self.root, 'switch', self.branch)
+        self.adapter.identity.return_value = {'id': 1}
+        self.config.workflow.review.policy = 'off'
+        saved = {'scope': workflow.scope(self.root, 'main', [self.task, child]), 'validation': {'exit': 0}}
+        workflow.save_evidence(self.root, self.task, saved)
+        args = SimpleNamespace(command='land', task=self.task.id, action='merge', method=None)
+        result = workflow.landing(args, self.root, self.config, self.adapter)
+        self.assertEqual(result['state'], 'Done')
+        for kind in ('local', 'remote'):
+            self.assertEqual(result['cleanup'][kind]['status'], 'deleted')
+            self.assertIn('worktree', self.descendant_outcomes(result['cleanup'])['8'][kind]['reason'])
+        self.task.state = 'Done'
+        self.adapter.reset_mock()
+        gw.git(self.root, 'worktree', 'remove', str(occupied))
+        return branch
+
+    def test_absent_parent_retry_preserves_child_moved_to_later_published_base(self):
+        """Later base ancestry cannot enlarge the result accepted before parent deletion."""
+        branch = self.land_with_occupied_child()
+        gw.git(self.root, 'commit', '--allow-empty', '-m', 'later base work')
+        moved = gw.head_sha(self.root)
+        gw.git(self.root, 'push', 'origin', 'refs/heads/main')
+        gw.git(self.root, 'update-ref', 'refs/heads/' + branch, moved)
+        gw.git(self.root, 'push', 'origin', 'refs/heads/' + branch)
+        for action in ('cleanup', 'reconcile', 'cleanup'):
+            result = self.dispatch_land(action)
+            self.assertEqual(result['state'], 'Done')
+            for kind in ('local', 'remote'):
+                self.assertEqual(result['cleanup'][kind]['status'], 'absent')
+                self.assertEqual(self.descendant_outcomes(result['cleanup'])['8'][kind]['status'], 'error')
+                self.assertIn('accepted parent result',
+                              self.descendant_outcomes(result['cleanup'])['8'][kind]['reason'])
+            for root in (self.root, self.origin):
+                self.assertEqual(gw.local_branch_head(root, branch), moved)
+
+    def test_invalid_acceptance_preserves_children_without_blocking_parent_or_done(self):
+        """Missing, stale or inconsistent evidence cannot authorize retry deletion."""
+        branch = self.land_with_occupied_child()
+        original = workflow.read_evidence(self.root, self.task)
+        changes = (
+            ('missing', None, None), ('base', 'base', 'other'),
+            ('requirements', 'requirements', []), ('head', 'head', 'f' * 40),
+            ('base_head', 'base_head', 'f' * 40), ('scope', 'scope', 'stale'),
+            ('nonexact head', 'head', 'main'), ('validation', 'validation', {'exit': 1}),
+            ('malformed', None, []), ('retired scope', None, 'retired'),
+        )
+        for label, key, value in changes:
+            with self.subTest(evidence=label):
+                saved = copy.deepcopy(original)
+                if key:
+                    saved['local_acceptance'][key] = value
+                elif label == 'retired scope':
+                    saved['scope'] = value
+                else:
+                    saved['local_acceptance'] = value
+                workflow.save_evidence(self.root, self.task, saved)
+                for root in (self.root, self.origin):
+                    gw.git(root, 'update-ref', self.ref, self.head)
+                for action, parent_status in (('cleanup', 'deleted'), ('reconcile', 'absent')):
+                    result = self.dispatch_land(action)
+                    self.assertEqual(result['state'], 'Done')
+                    for kind in ('local', 'remote'):
+                        self.assertEqual(result['cleanup'][kind]['status'], parent_status)
+                        self.assertIn('acceptance evidence',
+                                      self.descendant_outcomes(result['cleanup'])['8'][kind]['reason'])
+                    for root in (self.root, self.origin):
+                        self.assertEqual(gw.local_branch_head(root, branch), self.head)
+        workflow.save_evidence(self.root, self.task, original)
+        result = self.dispatch_land('cleanup')['cleanup']
+        for kind in ('local', 'remote'):
+            self.assertEqual(self.descendant_outcomes(result)['8'][kind]['status'], 'deleted')
+
+    def test_absent_parent_acceptance_allows_local_cleanup_when_origin_is_unavailable(self):
+        """Recoverable local proof stays usable even after both parent refs were deleted."""
+        branch = self.land_with_occupied_child()
+        with patch.object(cleanup, '_remote_refs', side_effect=AgentBoxError('origin unavailable')):
+            result = self.descendant_outcomes(self.dispatch_land('cleanup')['cleanup'])['8']
+        self.assertEqual(result['local']['status'], 'deleted')
+        self.assertIn('origin unavailable', result['remote']['reason'])
+        self.assertEqual(gw.local_branch_head(self.origin, branch), self.head)
+
+    def test_changed_task_requirements_retire_absent_parent_cleanup_proof(self):
+        """A snapshot for earlier requirements cannot authorize the live task tree."""
+        branch = self.land_with_occupied_child()
+        self.task.description += '\nNew acceptance requirement'
+        result = self.dispatch_land('cleanup')
+        self.assertEqual(result['state'], 'Done')
+        for kind in ('local', 'remote'):
+            self.assertIn('task/base scope', self.descendant_outcomes(result['cleanup'])['8'][kind]['reason'])
+        for root in (self.root, self.origin):
+            self.assertEqual(gw.local_branch_head(root, branch), self.head)
 
     def test_descendant_new_work_outside_accepted_parent_is_preserved(self):
         """Even later base work is outside a supplied accepted parent result."""
@@ -341,6 +456,7 @@ class CleanupTests(unittest.TestCase):
         self.descendant('10')
         _, symbolic = self.descendant('11')
         self.descendant('12')
+        self.accept_parent()
         gw.git(self.root, 'branch', 'ab/10-second', self.head)
         gw.git(self.root, 'symbolic-ref', 'refs/heads/' + symbolic, 'refs/heads/main')
         gw.git(self.root, 'worktree', 'add', str(self.directory / 'occupied'), occupied)
@@ -397,6 +513,7 @@ class CleanupTests(unittest.TestCase):
         """Local success cannot authorize origin deletion until that head is published."""
         self.integrated(published=False)
         self.descendant('8')
+        self.accept_parent()
         child = self.descendant_outcomes(self.run_cleanup())['8']
         self.assertEqual(child['local']['status'], 'deleted')
         self.assertIn('published origin base', child['remote']['reason'])
@@ -408,6 +525,7 @@ class CleanupTests(unittest.TestCase):
         """An unavailable remote must not suppress proven local descendant deletion."""
         self.integrated()
         _, branch = self.descendant('8')
+        self.accept_parent()
         with patch.object(cleanup, '_remote_refs', side_effect=AgentBoxError('origin unavailable')):
             child = self.descendant_outcomes(self.run_cleanup())['8']
         self.assertEqual(child['local']['status'], 'deleted')

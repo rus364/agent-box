@@ -39,7 +39,9 @@ expected-old-OID deletion; [git-push](https://git-scm.com/docs/git-push) documen
 the explicit ref/OID lease used only for remote deletion. These comparisons do
 not check branch occupancy: [git-branch](https://git-scm.com/docs/git-branch) and
 `git worktree list --porcelain` inform the separate worktree guard. Cleanup uses
-no merge registry and is limited to the completed parent's branch.
+no merge registry and covers the completed parent and its completed descendants.
+Local descendant retries reuse the existing acceptance snapshot to pin the
+original parent result, then check live Git integration.
 
 These local reference checkouts informed the design. The shipped skill prose is
 maintained here, not periodically patched or fetched from upstream.

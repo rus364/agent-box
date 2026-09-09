@@ -1,6 +1,7 @@
-"""Optional task-tree cleanup; Git and merged PRs supply every deletion proof."""
+"""Optional task-tree cleanup with exact acceptance and live integration proof."""
 from __future__ import annotations
 
+import re
 import subprocess
 
 from . import git_workflow as gw
@@ -128,8 +129,8 @@ def _cleanup_branch(root, config, task, *, branch=None, base=None, expected_head
                     parent_proof=None):
     """Return independent outcomes, including failures, after a successful Done write.
 
-    A retry supplies no old merge record. A missing ref permits only a no-op;
-    every surviving candidate must prove integration again.
+    A missing ref permits only a no-op; every surviving candidate must prove
+    integration again, within the accepted result for descendants.
     """
     enabled = {"local": config.workflow.cleanup_local_branches,
                "remote": config.workflow.cleanup_remote_branches}
@@ -214,8 +215,34 @@ def _cleanup_branch(root, config, task, *, branch=None, base=None, expected_head
     return result
 
 
-def _parent_proof(root, config, task, *, branch=None, base=None, expected_head=None):
-    """Recover proof before deleting the parent; a PR survives rewritten/absent refs."""
+def _accepted_local_head(root, config, task, tasks, base):
+    """The disposable landing snapshot pins acceptance after Git refs disappear."""
+    from .local_workflow import _acceptance_reasons
+    from .workflow import read_evidence, requirements, scope_fingerprint
+
+    saved = read_evidence(root, task)
+    accepted = saved.get("local_acceptance")
+    if not isinstance(accepted, dict) or not accepted:
+        raise AgentBoxError("Local parent acceptance evidence is missing; preserving descendant refs")
+    if any(not isinstance(accepted.get(key), str)
+           or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", accepted[key])
+           for key in ("head", "base_head")):
+        raise AgentBoxError("Local parent acceptance evidence has no exact commit identity; preserving descendant refs")
+    task_requirements = requirements(tasks)
+    fingerprint = scope_fingerprint(accepted["head"], accepted["base_head"], task_requirements)
+    if (accepted.get("base") != base or accepted.get("requirements") != task_requirements
+            or accepted.get("scope") != fingerprint or saved.get("scope") != fingerprint):
+        raise AgentBoxError("Local parent acceptance evidence is stale or inconsistent with the task/base scope; "
+                            "preserving descendant refs")
+    reasons = _acceptance_reasons(config.workflow, tasks, accepted)
+    if reasons:
+        raise AgentBoxError("Local parent acceptance evidence is stale or inconsistent; preserving descendant refs: "
+                            + "; ".join(reasons))
+    return accepted["head"]
+
+
+def _parent_proof(root, config, task, tasks, *, branch=None, base=None, expected_head=None):
+    """Acceptance evidence and PRs retain exact heads after parent refs disappear."""
     prefix = gw.branch_prefix(task.id)
     local, names = _local_refs(root, prefix)
     remote = {}
@@ -228,9 +255,9 @@ def _parent_proof(root, config, task, *, branch=None, base=None, expected_head=N
             names.update(remote)
             base = base or remote_base
         except (AgentBoxError, OSError, subprocess.TimeoutExpired):
-            # Origin failure must not disable a surviving local integration
+            # Origin failure must not disable local acceptance and integration
             # proof. Each remote deletion reports its own transport failure.
-            if not local and expected_head is None:
+            if not local and expected_head is None and config.workflow.merge_mode == "github":
                 raise
     if branch:
         names.add(branch)
@@ -247,13 +274,12 @@ def _parent_proof(root, config, task, *, branch=None, base=None, expected_head=N
         if expected_head is not None and head != expected_head:
             raise AgentBoxError("Parent merged PR head differs from the accepted head")
         return head
-    # With no surviving parent, the local base is the remaining Git integration
-    # proof. Never reconstruct a deleted ref from a title or tracker journal.
+    # A surviving ref or the base can advance after landing. Only the original
+    # acceptance snapshot can replace the head supplied by initial landing.
     if expected_head is None and ((branch in local and local[branch][1])
                                   or f"refs/heads/{branch}" in symbols):
         raise AgentBoxError("Symbolic parent ref cannot prove descendant integration")
-    head = expected_head or (local[branch][0] if branch in local else remote.get(branch))
-    head = head or gw.local_branch_head(root, base)
+    head = expected_head if expected_head is not None else _accepted_local_head(root, config, task, tasks, base)
     _integrated_head(root, head, base)
     return head
 
@@ -279,7 +305,7 @@ def cleanup(root, config, task, adapter, **identity):
     def proof():
         nonlocal accepted_head
         if accepted_head is None:
-            accepted_head = _parent_proof(root, config, task, **identity)
+            accepted_head = _parent_proof(root, config, task, tasks, **identity)
         return accepted_head
 
     outcomes = []
