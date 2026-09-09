@@ -132,13 +132,6 @@ Test modules import each other by bare name, so keep discovery.
 
 ## Gotchas
 
-- This is the agent-box checkout when the repository root contains both the
-  `agent_box/` package and the `./agent-box` launcher. Commands still run in the
-  coordinator's current environment: do not assume Podman, a provider CLI or
-  credentials are available just because agent-box is the project under test.
-  Run the full unittest suite without an outer PTY and with process-level state
-  paths isolated; a test that needs a PTY must create its own. Treat explicit
-  runtime smoke evidence separately from unit validation.
 - `tests/` must never touch the developer's real `~/.claude` or `~/.agents`.
   Anything that calls `config_interactive` or `apply_config` has to patch
   `runtime.CLAUDE_HOME`, `runtime.CODEX_HOME`, `runtime.AGENT_SKILLS_DIR`, `runtime.MANAGED_SKILLS_SOURCE`
