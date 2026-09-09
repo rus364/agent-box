@@ -2,6 +2,7 @@
 import copy
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -973,14 +974,23 @@ class CleanupTests(unittest.TestCase):
         self.assertEqual(result['cleanup']['local']['status'], 'deleted')
         self.assertEqual(self.descendant_outcomes(result['cleanup'])['8']['local']['status'], 'deleted')
 
-    def test_local_landing_cleans_descendants_only_after_successful_done_write(self):
-        """The normal local merge passes the live hierarchy and accepted head to cleanup."""
-        child, _ = self.descendant('8')
+    def test_local_landing_discovers_child_attached_at_done_despite_stale_snapshot(self):
+        """Adapters return new snapshots; a late Done child must not escape cleanup."""
         self.task.state = 'Review'
+        fresh = replace(self.task, state='Done', children=[])
+        child, child_branch = self.descendant('8', parent=fresh)
+        self.adapter.get.side_effect = lambda task_id: copy.deepcopy(self.tasks[task_id])
+
+        def set_done(task, state):
+            self.assertEqual((task.id, state), (self.task.id, 'Done'))
+            self.tasks[self.task.id] = fresh
+            return copy.deepcopy(fresh)
+
+        self.adapter.set_state.side_effect = set_done
         gw.git(self.root, 'switch', self.branch)
         self.adapter.identity.return_value = {'id': 1}
         self.config.workflow.review.policy = 'off'
-        saved = {'scope': workflow.scope(self.root, 'main', [self.task, child]), 'validation': {'exit': 0}}
+        saved = {'scope': workflow.scope(self.root, 'main', [self.task]), 'validation': {'exit': 0}}
         workflow.save_evidence(self.root, self.task, saved)
         args = SimpleNamespace(command='land', task=self.task.id, action='merge', method=None)
         original = cleanup.cleanup
@@ -992,8 +1002,14 @@ class CleanupTests(unittest.TestCase):
         with patch.object(cleanup, 'cleanup', side_effect=after_state):
             result = workflow.landing(args, self.root, self.config, self.adapter)
         self.assertEqual(result['state'], 'Done')
+        self.assertEqual(self.task.state, 'Review')
+        self.assertEqual(self.task.children, [])
+        self.assertEqual(set(self.descendant_outcomes(result['cleanup'])), {child.id})
         for item in [result['cleanup'], *result['cleanup']['descendants']]:
             self.assertEqual([item[k]['status'] for k in ('local', 'remote')], ['deleted', 'deleted'])
+        for root in (self.root, self.origin):
+            self.assertNotEqual(gw._run(['git', 'show-ref', '--verify', '--quiet',
+                                        'refs/heads/' + child_branch], cwd=root).returncode, 0)
 
 
 if __name__ == '__main__':

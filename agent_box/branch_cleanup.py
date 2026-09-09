@@ -291,7 +291,7 @@ def cleanup(root, config, task, adapter, **identity):
     if config.workflow.cleanup_local_branches or config.workflow.cleanup_remote_branches:
         try:
             from .workflow import tree
-            tasks = tree(adapter, task)
+            tasks = tree(adapter, adapter.get(task.id))
             by_id = {item.id: item for item in tasks}
             for parent in tasks:
                 if any(by_id[child].parent != parent.id for child in parent.children):
