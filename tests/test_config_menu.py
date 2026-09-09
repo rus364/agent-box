@@ -6,6 +6,7 @@ from unittest.mock import patch
 from pathlib import Path
 from agent_box.config import Config, TrackerConnection
 from agent_box import config_menu
+from agent_box.model_catalog import BUNDLED_MODELS
 
 
 def select(key, path=()):
@@ -202,7 +203,7 @@ class ConfigMenuTests(unittest.TestCase):
                   " ", curses.KEY_DOWN, " ", curses.KEY_DOWN, "\n"]
         for index, provider in enumerate(("codex", "claude")):
             cases = [([curses.KEY_HOME, "\n", *"manual-reviewer", "\n"], "manual-reviewer"),
-                     ([curses.KEY_END, "\n"], config_menu.BUNDLED_MODELS[provider][-1]),
+                     ([curses.KEY_END, "\n"], BUNDLED_MODELS[provider][-1]),
                      ([curses.KEY_HOME, curses.KEY_DOWN, "\n"], "")]
             for pick, expected in cases:
                 with self.subTest(provider=provider, expected=expected):
@@ -230,7 +231,7 @@ class ConfigMenuTests(unittest.TestCase):
                   " ", curses.KEY_DOWN, " ", curses.KEY_DOWN, "\n"]
         for index, provider in enumerate(("codex", "claude")):
             cases = [([curses.KEY_HOME, "\n", *"manual-worker", "\n"], "manual-worker"),
-                     ([curses.KEY_END, "\n"], config_menu.BUNDLED_MODELS[provider][-1]),
+                     ([curses.KEY_END, "\n"], BUNDLED_MODELS[provider][-1]),
                      ([curses.KEY_HOME, curses.KEY_DOWN, "\n"], "")]
             for pick, expected in cases:
                 with self.subTest(provider=provider, expected=expected):
@@ -270,7 +271,7 @@ class ConfigMenuTests(unittest.TestCase):
         state = link or pathsetup.LinkState("ours", Path("/somewhere/bin/agent-box"))
         with patch.object(config_menu.sys.stdin, "isatty", return_value=True), patch.object(config_menu.sys.stdout, "isatty", return_value=True), \
              patch.object(curses, "wrapper", side_effect=lambda callback: callback(screen)), patch.object(curses, "curs_set"), \
-             patch.object(config_menu, "load_model_catalogs", return_value=catalogs or config_menu.BUNDLED_MODELS) as refresh, \
+             patch.object(config_menu, "load_model_catalogs", return_value=catalogs or BUNDLED_MODELS) as refresh, \
              patch.object(pathsetup, "link_state", return_value=state), \
              patch.object(pathsetup, "bin_dir_choices", return_value=list(choices)):
             result = config_menu.edit(config, project=project)
@@ -431,7 +432,7 @@ class ConfigMenuTests(unittest.TestCase):
              patch.object(config_menu.sys.stdout, "isatty", return_value=True), \
              patch.object(curses, "wrapper", side_effect=lambda callback: callback(screen)), \
              patch.object(curses, "curs_set"), \
-             patch.object(config_menu, "load_model_catalogs", return_value=config_menu.BUNDLED_MODELS), \
+             patch.object(config_menu, "load_model_catalogs", return_value=BUNDLED_MODELS), \
              patch.object(pathsetup, "link_state", return_value=pathsetup.LinkState("ours", Path("/bin/agent-box"))), \
              patch.object(pathsetup, "bin_dir_choices", return_value=[]):
             self.assertIsNone(config_menu.edit(Config()))
@@ -451,7 +452,7 @@ class ConfigMenuTests(unittest.TestCase):
                     prefix += [*select("tiers", ("workflow",)), "\n"]
                 prefix += ["\n", *[curses.KEY_DOWN] * provider_index, "\n", "\n"]
                 suffix = [*["\x1b"] * (5 if reviewer else 4), curses.KEY_END, curses.KEY_UP, "\n"]
-                cases = [(["\n"], config_menu.BUNDLED_MODELS[provider][0]),
+                cases = [(["\n"], BUNDLED_MODELS[provider][0]),
                          ([curses.KEY_HOME, "\n", *"custom/deployment", "\n"], "custom/deployment"),
                          ([curses.KEY_HOME, "\n", *"discarded", "\x1b"], "")]
                 for editing, expected in cases:
@@ -857,7 +858,7 @@ class ProjectMenuTests(unittest.TestCase):
                      patch.object(config_menu.sys.stdout, 'isatty', return_value=True), \
                      patch.object(curses, 'wrapper', side_effect=lambda callback: callback(screen)), \
                      patch.object(curses, 'curs_set'), \
-                     patch.object(config_menu, 'load_model_catalogs', return_value=config_menu.BUNDLED_MODELS), \
+                     patch.object(config_menu, 'load_model_catalogs', return_value=BUNDLED_MODELS), \
                      patch.object(cli, 'save_config', side_effect=AssertionError('global write')), \
                      patch('agent_box.runtime.apply_config', side_effect=AssertionError('global apply')), \
                      patch('agent_box.pathsetup.append_rc_block', side_effect=AssertionError('PATH write')):

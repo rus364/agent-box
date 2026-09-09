@@ -11,7 +11,7 @@ from pathlib import Path
 
 from .config import AGENT_EFFORTS, IMAGE_TOOL_GROUP_HELP, Config, REVIEW_PRESETS, TRACKER_PROVIDERS, TrackerConnection
 from .errors import AgentBoxError
-from .model_catalog import BUNDLED_MODELS, load_model_catalogs
+from .model_catalog import load_model_catalogs
 
 CHOICES = {
     "tracker.provider": TRACKER_PROVIDERS,
