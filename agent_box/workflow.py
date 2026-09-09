@@ -573,7 +573,7 @@ def execute(config, selected, role, root, prompt, read_paths=()):
                          read_paths=read_paths)
             return {"route": {k: candidate[k] for k in ("provider", "model", "effort", "tier")}, "report": report, "failures": failures}
         except ProviderFailure as exc:
-            failures.append({"provider": candidate["provider"], "category": exc.category})
+            failures.append({"provider": candidate["provider"], "category": exc.category, **exc.diagnostic})
             # A worker may have edited files before an error; never restart it blindly.
             if role == "worker" and exc.category not in ("unavailable", "model-unavailable"):
                 raise AgentBoxError(f"Worker failed ({exc.category}); reconcile files and task progress before retrying") from None

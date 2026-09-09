@@ -180,15 +180,22 @@ class NativeRouteTests(unittest.TestCase):
         selected = {"provider": "claude", "model": "m", "effort": "high", "tier": 1,
                     "role": "reviewer", "fallbacks": [
                         {"provider": "codex", "model": "fallback", "effort": "medium", "tier": 1}]}
+        failure = workflow.ProviderFailure("Invalid response", "invalid-report")
+        failure.diagnostic = {"model": "m", "effort": "high", "role": "reviewer",
+                              "stage": "json", "reason": "response is not valid JSON",
+                              "artifact": "provider-failures/fixture.json", "exit_code": 0,
+                              "duration_seconds": 1.25, "stdout_bytes": 7, "stderr_bytes": 0,
+                              "usage": None, "total_cost_usd": None, "response_source": "stdout"}
         with patch.object(workflow, "route", return_value=selected), \
              patch.object(workflow, "run", side_effect=[
-                 workflow.ProviderFailure("Claude unavailable", "unavailable"),
+                 failure,
                  {"verdict": "PASS", "summary": "Fine", "findings": []}]):
             result = self.run_workflow("review", "1", "--primary", "codex",
                                        "--brief", str(self.review_brief))
         saved = workflow.read_evidence(self.root, self.task)["review"]
         self.assertEqual(saved["route"], selected["fallbacks"][0])
-        self.assertEqual(saved["failures"], [{"provider": "claude", "category": "unavailable"}])
+        self.assertEqual(saved["failures"], [{"provider": "claude", "category": "invalid-report",
+                                               **failure.diagnostic}])
         self.assertEqual(saved["failures"], result["failures"])
 
     def report_route(self, prepared, *, role="worker", provider="claude", model="m",

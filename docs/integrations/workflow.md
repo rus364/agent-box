@@ -528,3 +528,27 @@ in a comment pretending to override the Action. The command checks configured
 pins and reports unsupported configurations. `wait_seconds` bounds waiting.
 Silence or a stale review never means acceptance; allowed fallback uses local
 fresh review. GitHub approvals and required checks still follow repository policy.
+
+## Failed managed attempts
+
+Managed provider failures record the configured provider/model/effort/role,
+exit code, elapsed seconds, response source, stream byte sizes, numeric usage
+and cost when supplied, and a specific JSON, envelope or report-field reason.
+Missing counters remain null. Fallback evidence keeps each failed attempt and
+the accepted report's actual route. Error envelopes never supply a task verdict,
+even when they contain a report; null structured output and Markdown wrappers
+remain invalid. These diagnostics do not establish the cause of older failures
+whose original responses were lost. The provider schema includes nonblank strings
+and nonnegative line numbers. PASS/NEEDS_WORK findings invariants are described
+in the schema and enforced locally: Claude rejects top-level conditional schemas,
+so provider schema conformance alone cannot establish acceptance.
+
+Raw output stays in private `WORKFLOW_STATE/provider-failures/<id>.json` files
+(directory 0700, files 0600). Each contains safe metadata and base64 byte prefixes
+for offline decoding: at most 1 MiB each of stdout and the final result file,
+and 64 KiB stderr, with truncation flags. Parsing is limited to 4 MiB. Prompts
+and commands are not retained. Public results carry only safe metadata and a
+relative artifact reference, never raw output. Up to 20 artifacts are retained
+(about 55 MiB maximum); files older than seven days and excess oldest files are
+removed when the next failure is saved. Delete individual artifact files to
+remove them sooner; inactive state is not cleaned by a background service.
