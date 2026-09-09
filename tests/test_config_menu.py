@@ -128,7 +128,6 @@ class ConfigMenuTests(unittest.TestCase):
 
     def test_unicode_values_are_clipped_before_the_terminal_or_sidebar_boundary(self):
         """Wide characters use two columns; combining marks stay with their base."""
-        import curses
         keys = [*select('workflow'), '\n', *select('review', ('workflow',)), '\n',
                 *select('label', ('workflow', 'review')), *['\x1b'] * 3]
         for width, label_columns, value_columns in ((40, 18, 19), (100, 23, 24)):
