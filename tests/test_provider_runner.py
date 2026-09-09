@@ -286,11 +286,13 @@ class FailureDiagnosticsTests(unittest.TestCase):
         timeout = self.fail_response(b"partial-private", code=-9, timeout=True)
         self.assertEqual(timeout.category, "timeout")
         self.assertEqual(timeout.diagnostic["exit_code"], -9)
+        self.assertIsNone(timeout.diagnostic["response_source"])
         with patch.object(self.r.subprocess, "Popen", side_effect=FileNotFoundError("secret")):
             with self.assertRaises(self.r.ProviderFailure) as caught:
                 self.r.run(self.route, "reviewer", self.root, "private")
         self.assertEqual(caught.exception.category, "unavailable")
         self.assertIsNone(caught.exception.diagnostic["exit_code"])
+        self.assertIsNone(caught.exception.diagnostic["response_source"])
         with patch.object(self.r, "save_failure", side_effect=OSError("secret")):
             failure = self.fail_response(b"bad")
         self.assertEqual(failure.category, "invalid-report")

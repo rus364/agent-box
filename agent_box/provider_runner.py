@@ -240,7 +240,6 @@ def run(route, role, root, prompt, *, timeout=3600, read_paths=()):
     from .notify import SUPPRESS_NOTIFY_ENV
     env[SUPPRESS_NOTIFY_ENV] = "1"
     metadata = failure_metadata(route, role)
-    metadata["response_source"] = "stdout"
     started = time.monotonic()
     process = None
     with tempfile.TemporaryDirectory(prefix="agent-box-run-") as directory:
