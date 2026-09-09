@@ -5,6 +5,7 @@ import copy
 import json
 import sys
 import textwrap
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -141,9 +142,33 @@ def menu_keys(data, path=()):
     return ordered + [key for key in data if key not in ordered]
 
 
+def character_width(character):
+    if unicodedata.combining(character):
+        return 0
+    return 2 if unicodedata.east_asian_width(character) in ("W", "F") else 1
+
+
+def display_width(text):
+    return sum(character_width(character) for character in text)
+
+
+def column_prefix(text, width):
+    """Keep whole wide characters and the combining marks on their last base."""
+    used = 0
+    for index, character in enumerate(text):
+        used += character_width(character)
+        if used > width:
+            return text[:index]
+    return text
+
+
+def padded(text, width):
+    return text + " " * max(0, width - display_width(text))
+
+
 def clipped(text, width):
-    """Reserve columns before drawing, so long labels cannot displace values."""
-    return text if len(text) <= width else text[:max(0, width - 3)] + "." * min(3, width)
+    """Reserve terminal columns, not code points, before adding an ellipsis."""
+    return text if display_width(text) <= width else column_prefix(text, max(0, width - 3)) + "." * min(3, width)
 
 
 def label_for(key, path=()):
@@ -345,7 +370,8 @@ def edit(config, *, project=None):
 
     def add_line(screen, y, value, width, attr=0, x=0):
         try:
-            screen.addnstr(y, x, value, max(1, width - 1), attr)
+            visible = column_prefix(value, max(1, width - 1))
+            screen.addnstr(y, x, value, len(visible), attr)
         except curses.error:
             # A resize can arrive between measuring the screen and drawing it.
             pass
@@ -373,7 +399,7 @@ def edit(config, *, project=None):
         add_line(screen, 0, count, len(count) + 1, x=width - len(count) - 1)
         add_line(screen, 1, "Up/Down: move  Home/End  PgUp/PgDn", width)
         add_line(screen, 2, group, list_width, curses.A_BOLD)
-        label_width = min(max((len(row[0]) for row in rows if isinstance(row, tuple)), default=0),
+        label_width = min(max((display_width(row[0]) for row in rows if isinstance(row, tuple)), default=0),
                           32, list_width // 2 - 2)
         offset = min(max(0, selected - list_height + 1), max(0, len(rows) - list_height))
         for index, row in enumerate(rows[offset:offset + list_height], offset):
@@ -382,7 +408,7 @@ def edit(config, *, project=None):
                 attr = global_only_color | (curses.A_BOLD | curses.A_UNDERLINE if index == selected else 0)
             if isinstance(row, tuple):
                 label, value = row
-                row = f"{clipped(label, label_width):<{label_width}}: {clipped(value, list_width - label_width - 3)}"
+                row = padded(clipped(label, label_width), label_width) + ": " + clipped(value, list_width - label_width - 3)
             add_line(screen, index - offset + 3, row, list_width, attr)
         message = help_text
         if notice:
@@ -475,19 +501,30 @@ def edit(config, *, project=None):
                 height, width = screen.getmaxyx()
                 usable = height >= 8 and width >= 40
                 available = max(1, width - 12)
-                if cursor < scroll:
-                    scroll = cursor
-                elif cursor >= scroll + available:
-                    scroll = cursor - available + 1
-                scroll = min(scroll, max(0, len(value) - available + 1))
                 shown = "*" * len(value) if hidden else value
+                columns = [0]
+                for character in shown:
+                    columns.append(columns[-1] + character_width(character))
+                scroll = min(scroll, cursor)
+                while scroll and columns[-1] - columns[scroll - 1] < available:
+                    scroll -= 1
+                # A viewport begins at a base character; otherwise a combining
+                # mark would decorate the left scroll marker instead of its text.
+                while scroll and scroll < len(shown) and not character_width(shown[scroll]):
+                    scroll -= 1
+                cursor_width = max(1, character_width(shown[cursor]) if cursor < len(shown) else 1)
+                while scroll < cursor and columns[cursor] - columns[scroll] + cursor_width > available:
+                    scroll += 1
+                    while scroll < cursor and not character_width(shown[scroll]):
+                        scroll += 1
+                visible = column_prefix(shown[scroll:], available)
                 add_line(screen, 0, clipped("Edit " + label, width - 1), width, curses.A_BOLD)
                 if usable:
                     add_line(screen, 1, "Left/Right Home/End  Backspace/Delete", width)
                     add_line(screen, 3, "Value: [" + ("<" if scroll else " "), width)
-                    add_line(screen, 3, shown[scroll:scroll + available].ljust(available),
+                    add_line(screen, 3, padded(visible, available),
                              available + 1, curses.A_UNDERLINE, x=9)
-                    add_line(screen, 3, (">" if scroll + available < len(value) else " ") + "]",
+                    add_line(screen, 3, (">" if scroll + len(visible) < len(shown) else " ") + "]",
                              3, x=9 + available)
                     add_line(screen, 4, f"Position {cursor + 1}/{len(value) + 1}  < > more text", width)
                     add_line(screen, height - 2, "Enter accepts; Esc restores previous value", width)
@@ -496,7 +533,7 @@ def edit(config, *, project=None):
                     add_line(screen, 1, "Resize terminal to at least 40 columns x 8 rows (Esc: back)", width)
                 if usable and hasattr(screen, "move"):
                     try:
-                        screen.move(3, 9 + cursor - scroll)
+                        screen.move(3, 9 + columns[cursor] - columns[scroll])
                     except curses.error:
                         pass
                 screen.refresh()

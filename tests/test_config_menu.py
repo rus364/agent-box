@@ -126,6 +126,52 @@ class ConfigMenuTests(unittest.TestCase):
             self.assertTrue(all(not attr & (curses.A_REVERSE | curses.A_COLOR) for _, _, _, attr in attrs))
         self.assertTrue(all(y == 3 and 9 <= x < 37 for y, x in screen.cursor))
 
+    def test_unicode_values_are_clipped_before_the_terminal_or_sidebar_boundary(self):
+        """Wide characters use two columns; combining marks stay with their base."""
+        import curses
+        keys = [*select('workflow'), '\n', *select('review', ('workflow',)), '\n',
+                *select('label', ('workflow', 'review')), *['\x1b'] * 3]
+        for width, label_columns, value_columns in ((40, 18, 19), (100, 23, 24)):
+            for character, columns in (('界', 2), ('e\u0301', 1)):
+                with self.subTest(width=width, character=character):
+                    config = Config()
+                    config.workflow.review.label = character * 30
+                    screen = Screen(keys, sizes=[(24, width)])
+                    self.edit(config, [], screen=screen)
+                    rows = [text for _, x, text, _ in screen.writes
+                            if x == 0 and text.startswith('Label') and ':' in text]
+                    expected = 'Label'.ljust(label_columns) + ': ' + character * ((value_columns - 3) // columns) + '...'
+                    self.assertTrue(rows)
+                    self.assertTrue(all(text == expected for text in rows))
+
+    def test_unicode_editor_scroll_and_cursor_use_displayed_columns(self):
+        """CJK scrolls by cells, while a combining accent never adds a cursor column."""
+        import curses
+        cases = (
+            ('界' * 20, '界' * 13 + '  ', [35, 9, 11, 13, 35], True),
+            ('e\u0301' * 20, 'e\u0301' * 20 + ' ' * 8, [29, 9, 10, 10, 29], False),
+            ('e\u0301' * 40, 'e\u0301' * 27 + ' ', [36, 9, 10, 10, 36], True),
+        )
+        keys = [*select('notifications'), '\n', curses.KEY_DOWN, curses.KEY_DOWN, '\n',
+                curses.KEY_HOME, curses.KEY_RIGHT, curses.KEY_RIGHT, curses.KEY_END, '\n',
+                '\x1b', curses.KEY_END, curses.KEY_UP, '\n']
+        for value, first_field, cursor_columns, overflow in cases:
+            with self.subTest(value=value):
+                config = Config()
+                config.notifications.telegram_chat_id = value
+                screen = Screen(keys, sizes=[(8, 40)])
+                result, _ = self.edit(config, [], screen=screen)
+                self.assertEqual(result.config.notifications.telegram_chat_id, value)
+                fields = [text for y, x, text, _ in screen.writes if y == 3 and x == 9]
+                self.assertEqual(fields[0], first_field)
+                self.assertTrue(all(not text.startswith('\u0301') for text in fields))
+                self.assertEqual(screen.cursor, [(3, column) for column in cursor_columns])
+                left = [text for y, x, text, _ in screen.writes if y == 3 and x == 0 and text.startswith('Value: [')]
+                right = [text for y, x, text, _ in screen.writes if y == 3 and x == 37]
+                self.assertEqual(left[0], 'Value: [<' if overflow else 'Value: [ ')
+                self.assertEqual(right[0], ' ]')
+                self.assertEqual(right[1], '>]' if overflow else ' ]')
+
     def test_global_field_and_section_reset_restore_program_defaults_and_sparse_save(self):
         """Reset removes stored global choices, without changing the input draft on cancel."""
         import curses
