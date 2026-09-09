@@ -97,13 +97,29 @@ def blockers(pr, review_threads, saved):
 def acceptance_blockers(pr, saved):
     """A confirmed merge cannot replace the acceptance required before merging."""
     reasons = []
-    approved = any(review.get("state") == "APPROVED" and (review.get("commit") or {}).get("oid") == pr["headRefOid"]
-                   for review in pr.get("latestReviews") or [])
+    approved = current_approval(pr)
+    if pr["state"] == "MERGED":
+        # GitHub binds reviews to commits, not tracker requirements. Only an
+        # approval observed before merge can be associated with that scope.
+        approved = (approved and bool(saved.get("scope"))
+                    and saved.get("github_approval") == approval_scope(pr, saved["scope"]))
     if not approved and saved.get("review", {}).get("verdict") != "PASS":
         reasons.append("Need a current-head GitHub approval or a fresh local PASS; silence is not approval")
+        if pr["state"] == "MERGED":
+            reasons.append("Merged GitHub approval needs a matching pre-merge scope snapshot; otherwise run a fresh independent local review")
     if saved.get("validation", {}).get("exit") != 0:
         reasons.append("Local validation for the current scope is missing")
     return reasons
+
+
+def current_approval(pr):
+    return any(review.get("state") == "APPROVED" and (review.get("commit") or {}).get("oid") == pr["headRefOid"]
+               for review in pr.get("latestReviews") or [])
+
+
+def approval_scope(pr, fingerprint):
+    return {"scope": fingerprint, "head": pr["headRefOid"], "url": pr["url"],
+            "branch": pr["headRefName"], "base": pr["baseRefName"]}
 
 
 def request_review(root, repo, pr, config):
@@ -165,7 +181,7 @@ def _current_head(root, pr):
 
 
 def _operate(args, root, config, adapter, task, parent, info, saved, tasks):
-    from .workflow import evidence, scope
+    from .workflow import evidence, save_evidence, scope
     if not (config.github.gh_token or config.github.gh_config):
         raise AgentBoxError("Enable the GitHub integration in agent-box config before workflow GitHub actions")
     if task.id != parent.id:
@@ -253,6 +269,9 @@ def _operate(args, root, config, adapter, task, parent, info, saved, tasks):
                 "wait_seconds": config.workflow.review.wait_seconds}
     if reasons:
         raise AgentBoxError("Cannot merge: " + "; ".join(reasons))
+    if current_approval(pr):
+        saved["github_approval"] = approval_scope(pr, saved["scope"])
+        save_evidence(root, task, saved)
     gh(root, "pr", "merge", pr["number"], "--repo", repo, "--" + (args.method or "squash"),
        "--match-head-commit", pr["headRefOid"])
     merged = view(root, repo, pr["number"])

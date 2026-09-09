@@ -245,7 +245,7 @@ class LandingFreshnessTests(unittest.TestCase):
         from test_local_workflow import LocalLandTests
         return LocalLandTests.dispatch(self, arguments)
 
-    def recover_review(self, *, native=False):
+    def recover_review(self, *, native=False, integrated=True):
         import json
         from pathlib import Path
         from unittest.mock import patch
@@ -269,15 +269,17 @@ class LandingFreshnessTests(unittest.TestCase):
                 with patch.object(workflow, "execute", return_value={"report": report}) as reviewer:
                     self.dispatch(["review", "7", "--primary", "codex", "--brief", str(brief)])
                 reviewer.assert_called_once()
-                self.assertIn("review the complete implementation", reviewer.call_args.args[-1])
+                if integrated:
+                    self.assertIn("review the complete implementation", reviewer.call_args.args[-1])
 
     def test_lost_evidence_with_integrated_remote_only_base_requires_real_review(self):
-        """New-clone recovery can review an absorbed implementation through either route."""
+        """A new clone must review current requirements even when the merged SHA was approved."""
         from agent_box import git_workflow as gw
         from agent_box.errors import AgentBoxError
         gw.git(self.root, "update-ref", "refs/remotes/origin/main", self.pr["headRefOid"])
         gw.git(self.root, "branch", "-D", "main")
         self.parent.labels = ["ab:tier:1"]
+        self.merged["latestReviews"] = [{"state": "APPROVED", "commit": {"oid": self.pr["headRefOid"]}}]
         for native, policy in ((False, "auto"), (True, "always")):
             with self.subTest(native=native, policy=policy):
                 self.config.workflow.review.policy = policy
@@ -304,6 +306,7 @@ class LandingFreshnessTests(unittest.TestCase):
         from agent_box import git_workflow as gw
         from agent_box.errors import AgentBoxError
         gw.git(self.root, "update-ref", "refs/heads/main", self.pr["headRefOid"])
+        self.parent.labels = ["ab:tier:1"]
         workflow.evidence_path(self.root, self.parent).unlink()
         with self.assertRaisesRegex(AgentBoxError, "validation"):
             self.run_land(action="reconcile")
@@ -313,17 +316,21 @@ class LandingFreshnessTests(unittest.TestCase):
             self.run_land(action="reconcile")
         self.adapter.set_state.assert_not_called()
         self.merged["latestReviews"] = [{"state": "APPROVED", "commit": {"oid": self.pr["headRefOid"]}}]
+        with self.assertRaisesRegex(AgentBoxError, "pre-merge scope snapshot"):
+            self.run_land(action="reconcile")
+        self.config.workflow.review.policy = "always"
+        self.recover_review()
         self.assertEqual(self.run_land(action="reconcile")["state"], "Done")
         self.command.assert_not_called()
 
-    def test_reconcile_requires_github_approval_or_local_pass_regardless_of_local_policy(self):
-        """Reconcile uses the same acceptance alternatives as merging an open PR."""
+    def test_reconcile_unbound_github_approval_requires_local_pass_regardless_of_local_policy(self):
+        """GitHub commit approval alone cannot establish acceptance of the current scope."""
         from agent_box.errors import AgentBoxError
         for policy in ("off", "auto", "always"):
             self.config.workflow.review.policy = policy
             for approval, verdict, accepted in ((None, None, False), (None, "SKIPPED", False),
                                                 ("old-head", "SKIPPED", False),
-                                                (self.pr["headRefOid"], "SKIPPED", True),
+                                                (self.pr["headRefOid"], "SKIPPED", False),
                                                 (None, "PASS", True)):
                 with self.subTest(policy=policy, approval=approval, verdict=verdict):
                     self.merged["latestReviews"] = ([{"state": "APPROVED", "commit": {"oid": approval}}]
@@ -389,6 +396,70 @@ class LandingFreshnessTests(unittest.TestCase):
         self.assertEqual(self.run_land(action="reconcile")["state"], "Done")
         self.command.assert_not_called()
         self.adapter.set_state.assert_called_once_with(self.parent, "Done")
+
+    def approve_github(self):
+        self.pr["latestReviews"] = [{"state": "APPROVED", "commit": {"oid": self.pr["headRefOid"]}}]
+        self.merged["latestReviews"] = self.pr["latestReviews"]
+        workflow.save_evidence(self.root, self.parent, {**self.saved, "review": {"verdict": "SKIPPED"}})
+
+    def test_github_approval_is_saved_before_merge_and_recovers_same_scope_tracker_failure(self):
+        """The observed cloud approval must survive a failed Done write without remerging."""
+        from unittest.mock import patch
+        from agent_box.errors import AgentBoxError
+        self.approve_github()
+        save = workflow.save_evidence
+
+        def save_before_merge(*args):
+            self.command.assert_not_called()
+            return save(*args)
+
+        self.adapter.set_state.side_effect = AgentBoxError("tracker unavailable")
+        with patch.object(workflow, "save_evidence", side_effect=save_before_merge):
+            with self.assertRaisesRegex(AgentBoxError, "tracker unavailable"):
+                self.run_land()
+        self.command.assert_called_once()
+        saved = workflow.read_evidence(self.root, self.parent)
+        self.assertEqual(saved["github_approval"], {
+            "scope": self.saved["scope"], "head": self.pr["headRefOid"], "url": self.pr["url"],
+            "branch": self.pr["headRefName"], "base": "main"})
+        self.adapter.set_state.side_effect = None
+        self.adapter.set_state.reset_mock()
+        self.assertEqual(self.run_land(action="reconcile")["state"], "Done")
+        self.command.assert_not_called()
+        self.adapter.set_state.assert_called_once_with(self.parent, "Done")
+
+    def test_approved_merge_cannot_complete_changed_requirements_after_revalidation(self):
+        """Approval of the same SHA cannot revive a pre-merge snapshot for new requirements."""
+        from dataclasses import replace
+        from agent_box.errors import AgentBoxError
+        self.approve_github()
+        self.adapter.set_state.side_effect = AgentBoxError("tracker unavailable")
+        with self.assertRaisesRegex(AgentBoxError, "tracker unavailable"):
+            self.run_land()
+        self.adapter.set_state.side_effect = None
+        self.adapter.set_state.reset_mock()
+        self.parent = replace(self.parent, description="## Acceptance\n- [x] Changed requirements",
+                              labels=["ab:tier:1"])
+        self.dispatch(["validate", "7", "--", "true"])
+        self.assertNotIn("github_approval", workflow.read_evidence(self.root, self.parent))
+        with self.assertRaisesRegex(AgentBoxError, "pre-merge scope snapshot"):
+            self.run_land(action="reconcile")
+        self.adapter.set_state.assert_not_called()
+        self.command.assert_not_called()
+        self.config.workflow.review.policy = "always"
+        self.recover_review(integrated=False)
+        self.assertEqual(self.run_land(action="reconcile")["state"], "Done")
+        self.command.assert_not_called()
+
+    def test_inspecting_open_approval_does_not_authorize_a_later_external_merge(self):
+        """Read-only inspection must not bind approval to requirements on another merge path."""
+        self.approve_github()
+        self.assertEqual(self.run_land(action="inspect")["blockers"], [])
+        self.assertNotIn("github_approval", workflow.read_evidence(self.root, self.parent))
+        from agent_box.errors import AgentBoxError
+        with self.assertRaisesRegex(AgentBoxError, "pre-merge scope snapshot"):
+            self.run_land(action="reconcile")
+        self.adapter.set_state.assert_not_called()
 
     def test_checked_root_requirements_changed_during_network_need_new_acceptance(self):
         """A replaced root invalidates saved PASS even if every checkbox remains checked."""
@@ -478,6 +549,7 @@ class LandingFreshnessTests(unittest.TestCase):
         """Retrying a confirmed merge must not accept requirements the first call refused."""
         from dataclasses import replace
         from agent_box.errors import AgentBoxError
+        self.approve_github()
         with self.assertRaisesRegex(AgentBoxError, "requirements changed"):
             self.run_land("result", lambda: setattr(self, "parent", replace(self.parent, title="New goal")))
         self.command.assert_called_once()
