@@ -8,6 +8,16 @@ from agent_box.config import Config, TrackerConnection
 from agent_box import config_menu
 
 
+def select(key, path=()):
+    """Navigate by field identity so behavior tests survive presentation changes."""
+    import curses
+    data = Config().to_dict()
+    for part in path:
+        data = data[part]
+    keys = config_menu.menu_keys(data, path)
+    return [curses.KEY_HOME, *[curses.KEY_DOWN] * keys.index(key)]
+
+
 class Screen:
     def __init__(self, keys, sizes=None):
         self.keys = iter(keys)
@@ -16,6 +26,9 @@ class Screen:
         self.size = (24, 120)
         self.cursor = []
         self.frames = []
+        self.writes = []
+        self.frame_writes = []
+        self.attributes = []
     def getmaxyx(self):
         self.size = next(self.sizes, self.size)
         return self.size
@@ -23,15 +36,19 @@ class Screen:
         return next(self.keys)
     def addnstr(self, y, x, text, width, attr):
         self.drawn.append(text)
+        self.writes.append((y, x, text[:width], attr))
+        self.frame_writes.append((y, x, text[:width], attr))
         while len(self.frame) <= y:
             self.frame.append(" " * self.size[1])
         visible = text[:width]
         line = self.frame[y]
         self.frame[y] = line[:x] + visible + line[x + len(visible):]
     def erase(self):
+        self.frame_writes = []
         self.frame = [" " * self.size[1] for _ in range(self.size[0])]
     def refresh(self):
         self.frames.append("\n".join(self.frame))
+        self.attributes.append(self.frame_writes.copy())
     def keypad(self, enabled):
         pass
     def move(self, y, x):
@@ -39,6 +56,76 @@ class Screen:
 
 
 class ConfigMenuTests(unittest.TestCase):
+    def test_purpose_order_does_not_follow_configuration_serialization(self):
+        """Routing, review and delivery stay together even if storage order changes."""
+        data = Config().to_dict()
+        data.pop('version')
+        data.pop('install')
+        expected = {
+            (): ['workflow', 'tracker', 'image', 'browser', 'env', 'providers',
+                 'github', 'git', 'claude', 'skills', 'notifications'],
+            ('workflow',): ['enabled', 'routing', 'worker', 'tiers', 'weights', 'fallback',
+                           'reserve_percent', 'smoothing_hours', 'review', 'merge_mode',
+                           'auto_push', 'cleanup_local_branches', 'cleanup_remote_branches',
+                           'scout_limit', 'timeout_seconds'],
+            ('workflow', 'review'): ['policy', 'max_files', 'max_lines', 'sensitive_paths',
+                                    'label', 'routing', 'override', 'tiers', 'max_rounds',
+                                    'github_provider', 'github_model', 'github_effort', 'wait_seconds'],
+        }
+        for path, keys in expected.items():
+            section = data
+            for part in path:
+                section = section[part]
+            with self.subTest(path=path):
+                self.assertEqual(config_menu.menu_keys(dict(reversed(section.items())), path), keys)
+                self.assertCountEqual(keys, section)
+
+    def test_long_labels_keep_value_columns_and_full_selected_help_at_supported_widths(self):
+        """A long override label must neither shift its value nor disappear from help."""
+        import curses
+        keys = [*select('workflow'), '\n', *select('worker', ('workflow',)), '\n', '\n',
+                curses.KEY_DOWN, '?', '\x1b', *['\x1b'] * 4]
+        for size in ((8, 40), (24, 80), (24, 100), (40, 160)):
+            with self.subTest(size=size):
+                screen = Screen(keys, sizes=[size])
+                self.edit(Config(), [], screen=screen)
+                rows = [text for _, x, text, _ in screen.writes if x == 0 and ': [ ]' in text]
+                override_rows = [row for row in rows if row.startswith(('Enabled', 'Also override'))]
+                self.assertTrue(any(row.startswith('Also override') for row in override_rows))
+                # Read only frames in the override submenu; other sections have their own widths.
+                for frame, writes in zip(screen.frames, screen.attributes):
+                    if 'Models' not in frame or 'Also override' not in frame:
+                        continue
+                    columns = [text.index(':') for _, x, text, _ in writes
+                               if x == 0 and text.startswith(('Enabled', 'Also override', 'Models')) and ':' in text]
+                    self.assertEqual(len(set(columns)), 1)
+                full_help = next(frame for frame in screen.frames if 'Help: workflow.worker' in frame)
+                self.assertIn('Also override tiered tasks', full_help)
+                if size[1] in (40, 100):
+                    self.assertTrue(any('...:' in row for row in override_rows))
+
+    def test_editor_field_has_default_background_cursor_and_overflow_markers(self):
+        """Input stays legible at 40 columns, with both hidden ends and no reverse fill."""
+        import curses
+        config = Config()
+        config.notifications.telegram_chat_id = 'a' * 90
+        keys = [*select('notifications'), '\n', curses.KEY_DOWN, curses.KEY_DOWN, '\n',
+                curses.KEY_HOME, *[curses.KEY_RIGHT] * 35, curses.KEY_END, 'Z', '\n',
+                '\x1b', curses.KEY_END, curses.KEY_UP, '\n']
+        screen = Screen(keys, sizes=[(8, 40)])
+        result, _ = self.edit(config, [], screen=screen)
+        self.assertEqual(result.config.notifications.telegram_chat_id, 'a' * 90 + 'Z')
+        editors = [(frame, attrs) for frame, attrs in zip(screen.frames, screen.attributes)
+                   if frame.startswith('Edit ')]
+        self.assertTrue(editors)
+        self.assertTrue(any('Value: [<' in frame and '>]' in frame for frame, _ in editors))
+        for frame, attrs in editors:
+            self.assertIn('Value: [', frame)
+            self.assertIn('Position ', frame)
+            self.assertIn('Esc cancel', frame)
+            self.assertTrue(all(not attr & (curses.A_REVERSE | curses.A_COLOR) for _, _, _, attr in attrs))
+        self.assertTrue(all(y == 3 and 9 <= x < 37 for y, x in screen.cursor))
+
     def test_global_field_and_section_reset_restore_program_defaults_and_sparse_save(self):
         """Reset removes stored global choices, without changing the input draft on cancel."""
         import curses
@@ -47,11 +134,11 @@ class ConfigMenuTests(unittest.TestCase):
         config.browser.enabled = True
         config.workflow.auto_push = False
         config.workflow.review.max_lines = 31
-        browser = [*[curses.KEY_DOWN] * 9, '\n', 'r', '\x1b']
+        browser = [*select("browser"), '\n', 'r', '\x1b']
         cancelled, _ = self.edit(config, [*browser, '\x1b'])
         self.assertIsNone(cancelled)
         self.assertTrue(config.browser.enabled)
-        result, screen = self.edit(config, [*browser, curses.KEY_DOWN, 'r',
+        result, screen = self.edit(config, [*browser, *select("workflow"), 'r',
                                            curses.KEY_END, curses.KEY_UP, '\n'])
         self.assertEqual(result.config.to_dict(), Config().to_dict())
         self.assertIn('Reset to default', '\n'.join(screen.drawn))
@@ -64,9 +151,9 @@ class ConfigMenuTests(unittest.TestCase):
         """Both override candidates share the model editor without altering tier settings."""
         import curses
         config = Config()
-        prefix = [*[curses.KEY_DOWN] * 10, "\n",
-                  *[curses.KEY_DOWN] * list(config.workflow.to_dict()).index("review"), "\n",
-                  *[curses.KEY_DOWN] * list(config.workflow.review.to_dict()).index("override"), "\n",
+        prefix = [*select("workflow"), "\n",
+                  *select("review", ("workflow",)), "\n",
+                  *select("override", ("workflow", "review")), "\n",
                   " ", curses.KEY_DOWN, " ", curses.KEY_DOWN, "\n"]
         for index, provider in enumerate(("codex", "claude")):
             cases = [([curses.KEY_HOME, "\n", *"manual-reviewer", "\n"], "manual-reviewer"),
@@ -79,7 +166,7 @@ class ConfigMenuTests(unittest.TestCase):
                     cancelled, _ = self.edit(config, [*edit_keys, *["\x1b"] * 6])
                     self.assertIsNone(cancelled)
                     result, _ = self.edit(config, [*edit_keys, *["\x1b"] * 5,
-                                                   curses.KEY_DOWN, curses.KEY_DOWN, "\n"])
+                                                   curses.KEY_END, curses.KEY_UP, "\n"])
                     override = result.config.workflow.review.override
                     self.assertTrue(override.enabled)
                     self.assertTrue(override.apply_to_tiered)
@@ -92,8 +179,8 @@ class ConfigMenuTests(unittest.TestCase):
         """Both override candidates share the model editor without altering tier settings."""
         import curses
         config = Config()
-        prefix = [*[curses.KEY_DOWN] * 10, "\n",
-                  *[curses.KEY_DOWN] * list(config.workflow.to_dict()).index("worker"), "\n",
+        prefix = [*select("workflow"), "\n",
+                  *select("worker", ("workflow",)), "\n",
                   *[curses.KEY_DOWN] * 0, "\n",
                   " ", curses.KEY_DOWN, " ", curses.KEY_DOWN, "\n"]
         for index, provider in enumerate(("codex", "claude")):
@@ -107,7 +194,7 @@ class ConfigMenuTests(unittest.TestCase):
                     cancelled, _ = self.edit(config, [*edit_keys, *["\x1b"] * 6])
                     self.assertIsNone(cancelled)
                     result, screen = self.edit(config, [*edit_keys, *["\x1b"] * 5,
-                                                   curses.KEY_DOWN, curses.KEY_DOWN, "\n"])
+                                                   curses.KEY_END, curses.KEY_UP, "\n"])
                     self.assertIn("Global worker override", "\n".join(screen.drawn))
                     self.assertEqual(result.config.workflow.review, config.workflow.review)
                     override = result.config.workflow.worker.override
@@ -120,10 +207,9 @@ class ConfigMenuTests(unittest.TestCase):
 
     def test_cleanup_toggles_save_independently_without_enabling_the_other(self):
         import curses
-        fields = list(Config().workflow.to_dict())
         for field in ('cleanup_local_branches', 'cleanup_remote_branches'):
-            keys = [*[curses.KEY_DOWN] * 10, '\n', *[curses.KEY_DOWN] * fields.index(field),
-                    ' ', '\x1b', curses.KEY_DOWN, curses.KEY_DOWN, '\n']
+            keys = [*select("workflow"), '\n', *select(field, ("workflow",)),
+                    ' ', '\x1b', curses.KEY_END, curses.KEY_UP, '\n']
             result, _ = self.edit(Config(), keys)
             self.assertTrue(getattr(result.config.workflow, field))
             other = 'cleanup_remote_branches' if field == 'cleanup_local_branches' else 'cleanup_local_branches'
@@ -147,11 +233,11 @@ class ConfigMenuTests(unittest.TestCase):
     def test_cancel_discards_draft_while_save_returns_the_selected_values(self):
         import curses
         config = Config()
-        keys = ["\n", curses.KEY_DOWN, " ", "\x1b"]
+        keys = [*select("claude"), "\n", curses.KEY_DOWN, " ", "\x1b"]
         result, _ = self.edit(config, [*keys, "\x1b"])
         self.assertIsNone(result)
         self.assertTrue(config.claude.statusline)
-        result, _ = self.edit(config, [*keys, curses.KEY_UP, curses.KEY_UP, "\n"])
+        result, _ = self.edit(config, [*keys, curses.KEY_END, curses.KEY_UP, "\n"])
         self.assertFalse(result.config.claude.statusline)
         self.assertTrue(config.claude.statusline)
         self.assertEqual(result.config.install.bin_dir, "")
@@ -160,15 +246,15 @@ class ConfigMenuTests(unittest.TestCase):
         import curses
         config = Config()
         config.tracker.connections["vikunja"] = TrackerConnection("https://example.invalid", "secret-token")
-        _, screen = self.edit(config, [*[curses.KEY_DOWN]*8, "\n", curses.KEY_DOWN, curses.KEY_DOWN, "\n", "\n", "\x1b", "\x1b", "\x1b", "\x1b"])
+        _, screen = self.edit(config, [*select("tracker"), "\n", curses.KEY_DOWN, curses.KEY_DOWN, "\n", "\n", "\x1b", "\x1b", "\x1b", "\x1b"])
         self.assertNotIn("secret-token", "\n".join(screen.drawn))
         self.assertIn("Access token: <configured>", screen.drawn)
 
     def test_tier_effort_default_can_be_selected_and_saved_for_both_providers(self):
         import curses
         # Open workflow / tiers / tier 0 / provider, then cycle medium to default.
-        prefix = [*[curses.KEY_DOWN] * 10, "\n", *[curses.KEY_DOWN] * 4, "\n", "\n"]
-        suffix = ["\x1b", "\x1b", "\x1b", "\x1b", curses.KEY_DOWN, curses.KEY_DOWN, "\n"]
+        prefix = [*select("workflow"), "\n", *select("tiers", ("workflow",)), "\n", "\n"]
+        suffix = ["\x1b", "\x1b", "\x1b", "\x1b", curses.KEY_END, curses.KEY_UP, "\n"]
         codex, _ = self.edit(Config(), [*prefix, "\n", curses.KEY_DOWN, *[" "] * 5, *suffix])
         claude, _ = self.edit(Config(), [*prefix, curses.KEY_DOWN, "\n", curses.KEY_DOWN, *[" "] * 4, *suffix])
         self.assertEqual(codex.config.workflow.tiers["0"]["codex"]["effort"], "default")
@@ -177,24 +263,24 @@ class ConfigMenuTests(unittest.TestCase):
     def test_review_routing_can_be_saved_without_changing_policy_or_worker_routing(self):
         """The review submenu must persist strict routing independently of review triggers."""
         import curses
-        prefix = [*[curses.KEY_DOWN] * 10, "\n", *[curses.KEY_DOWN] * 11, "\n"]
-        suffix = ["\x1b", "\x1b", curses.KEY_DOWN, curses.KEY_DOWN, "\n"]
+        prefix = [*select("workflow"), "\n", *select("review", ("workflow",)), "\n"]
+        suffix = ["\x1b", "\x1b", curses.KEY_END, curses.KEY_UP, "\n"]
         config = Config()
-        cancelled, _ = self.edit(config, [*prefix, curses.KEY_DOWN, curses.KEY_DOWN, " ", *["\x1b"] * 3])
+        cancelled, _ = self.edit(config, [*prefix, *select("routing", ("workflow", "review")), " ", *["\x1b"] * 3])
         self.assertIsNone(cancelled)
         self.assertEqual(config.workflow.review.routing, "cross-provider")
-        result, _ = self.edit(config, [*prefix, curses.KEY_DOWN, curses.KEY_DOWN, " ", *suffix])
+        result, _ = self.edit(config, [*prefix, *select("routing", ("workflow", "review")), " ", *suffix])
         self.assertEqual(result.config.workflow.review.routing, "same-provider")
         self.assertEqual(result.config.workflow.review.policy, "auto")
         self.assertEqual(result.config.workflow.routing, "current")
-        result, _ = self.edit(result.config, [*prefix, curses.KEY_DOWN, curses.KEY_DOWN, " ", *suffix])
+        result, _ = self.edit(result.config, [*prefix, *select("routing", ("workflow", "review")), " ", *suffix])
         self.assertEqual(result.config.workflow.review.routing, "cross-provider")
 
     def test_reviewer_effort_menu_uses_provider_choices_without_changing_workers(self):
         import curses
         # workflow / review / tiers / tier 1 / provider
-        prefix = [*[curses.KEY_DOWN] * 10, "\n", *[curses.KEY_DOWN] * 11, "\n", "\n", "\n"]
-        suffix = [*["\x1b"] * 5, curses.KEY_DOWN, curses.KEY_DOWN, "\n"]
+        prefix = [*select("workflow"), "\n", *select("review", ("workflow",)), "\n", *select("tiers", ("workflow", "review")), "\n", "\n"]
+        suffix = [*["\x1b"] * 5, curses.KEY_END, curses.KEY_UP, "\n"]
         for provider, selection, cycles in (("codex", [], 5), ("claude", [curses.KEY_DOWN], 4)):
             with self.subTest(provider=provider):
                 result, _ = self.edit(Config(), [*prefix, *selection, "\n", curses.KEY_DOWN,
@@ -238,19 +324,19 @@ class ConfigMenuTests(unittest.TestCase):
         import curses
         config = Config()
         config.notifications.telegram_chat_id = "abcd"
-        keys = [curses.KEY_DOWN, "\n", curses.KEY_DOWN, curses.KEY_DOWN, "\n",
+        keys = [*select("notifications"), "\n", curses.KEY_DOWN, curses.KEY_DOWN, "\n",
                 curses.KEY_HOME, "X", curses.KEY_RIGHT, curses.KEY_DC,
                 curses.KEY_END, curses.KEY_LEFT, curses.KEY_BACKSPACE, "\n",
-                "\x1b", curses.KEY_UP, curses.KEY_UP, curses.KEY_UP, "\n"]
+                "\x1b", curses.KEY_END, curses.KEY_UP, "\n"]
         result, screen = self.edit(config, keys)
         self.assertEqual(result.config.notifications.telegram_chat_id, "Xad")
-        self.assertIn((3, len("Value: ")), screen.cursor)
+        self.assertIn((3, len("Value: [ ")), screen.cursor)
 
     def test_secret_editor_masks_the_value_and_escape_restores_it(self):
         import curses
         config = Config()
         config.notifications.telegram_token = "do-not-draw-this"
-        result, screen = self.edit(config, [curses.KEY_DOWN, "\n", curses.KEY_DOWN,
+        result, screen = self.edit(config, [*select("notifications"), "\n", curses.KEY_DOWN,
                                             "\n", curses.KEY_LEFT, "X", "\x1b",
                                             "\x1b", "\x1b"])
         self.assertIsNone(result)
@@ -261,9 +347,9 @@ class ConfigMenuTests(unittest.TestCase):
         import curses
         config = Config()
         config.workflow.tiers["0"]["codex"]["model"] = "private-model"
-        prefix = [*[curses.KEY_DOWN] * 10, "\n", *[curses.KEY_DOWN] * 4,
+        prefix = [*select("workflow"), "\n", *select("tiers", ("workflow",)),
                   "\n", "\n", "\n", "\n"]
-        finish = [*['\x1b'] * 4, curses.KEY_DOWN, curses.KEY_DOWN, "\n"]
+        finish = [*['\x1b'] * 4, curses.KEY_END, curses.KEY_UP, "\n"]
         suggestions = config_menu.BUNDLED_MODELS["codex"]
         with patch.object(config_menu, "load_codex_models", return_value=suggestions):
             kept, _ = self.edit(config, [*prefix, "\x1b", *finish])
@@ -301,7 +387,7 @@ class ConfigMenuTests(unittest.TestCase):
              patch.object(pathsetup, "bin_dir_choices", return_value=[]):
             self.assertIsNone(config_menu.edit(Config()))
         self.assertIn("Resize terminal to at least 40 columns x 8 rows (Esc: back)", screen.drawn)
-        self.assertIn("Help: claude", screen.drawn)
+        self.assertIn("Help: workflow", screen.drawn)
 
     def test_both_roles_and_providers_offer_suggestions_custom_entry_and_cancel(self):
         """Every model matrix must use the same picker without changing effort or the other role."""
@@ -309,13 +395,13 @@ class ConfigMenuTests(unittest.TestCase):
         for reviewer in (False, True):
             for provider_index, provider in enumerate(("codex", "claude")):
                 config = Config()
-                prefix = [*[curses.KEY_DOWN] * 10, "\n"]
+                prefix = [*select("workflow"), "\n"]
                 if reviewer:
-                    prefix += [*[curses.KEY_DOWN] * 11, "\n", "\n"]
+                    prefix += [*select("review", ("workflow",)), "\n", *select("tiers", ("workflow", "review")), "\n"]
                 else:
-                    prefix += [*[curses.KEY_DOWN] * 4, "\n"]
+                    prefix += [*select("tiers", ("workflow",)), "\n"]
                 prefix += ["\n", *[curses.KEY_DOWN] * provider_index, "\n", "\n"]
-                suffix = [*["\x1b"] * (5 if reviewer else 4), curses.KEY_DOWN, curses.KEY_DOWN, "\n"]
+                suffix = [*["\x1b"] * (5 if reviewer else 4), curses.KEY_END, curses.KEY_UP, "\n"]
                 cases = [(["\n"], config_menu.BUNDLED_MODELS[provider][0]),
                          ([curses.KEY_HOME, "\n", *"custom/deployment", "\n"], "custom/deployment"),
                          ([curses.KEY_HOME, "\n", *"discarded", "\x1b"], "")]
@@ -341,17 +427,17 @@ class ConfigMenuTests(unittest.TestCase):
         """Full help must actually scroll, and stale notices must not hide the next field's explanation."""
         import curses
         screen = Screen(["?", curses.KEY_END, "\x1b", curses.KEY_DOWN, "?", "\x1b", "\x1b"], sizes=[(8, 40)])
-        with patch.dict(config_menu.HELP, {"claude": "First paragraph. " * 50 + "LAST_SENTENCE"}):
+        with patch.dict(config_menu.HELP, {"workflow": "First paragraph. " * 50 + "LAST_SENTENCE"}):
             self.edit(Config(), [], screen=screen)
         self.assertTrue(any("LAST_SENTENCE" in frame for frame in screen.frames))
-        self.assertIn("Help: notifications", "\n".join(screen.frames))
+        self.assertIn("Help: tracker", "\n".join(screen.frames))
 
     def test_editor_scrolls_long_values_and_preserves_draft_across_resize(self):
         """Editing the visible tail and then shrinking the terminal must retain the full value."""
         import curses
         config = Config()
         config.notifications.telegram_chat_id = "a" * 150
-        keys = [curses.KEY_DOWN, "\n", curses.KEY_DOWN, curses.KEY_DOWN, "\n",
+        keys = [*select("notifications"), "\n", curses.KEY_DOWN, curses.KEY_DOWN, "\n",
                 curses.KEY_LEFT, "Z", curses.KEY_RESIZE, curses.KEY_RESIZE,
                 curses.KEY_HOME, "Q", curses.KEY_END, "\n", "\x1b",
                 curses.KEY_END, curses.KEY_UP, "\n"]
@@ -437,14 +523,30 @@ class PathIntegrationTests(unittest.TestCase):
 class ProjectMenuTests(unittest.TestCase):
     edit = ConfigMenuTests.edit
 
+    def test_global_only_leaf_stays_visible_and_read_only_at_minimum_width(self):
+        """A long label must not hide the scope restriction or expose a global value."""
+        import curses
+        config = Config()
+        config.workflow.enabled = True
+        keys = ['\n', ' ', 'r', 'g', '\x1b', curses.KEY_END, curses.KEY_UP, '\n']
+        screen = Screen(keys, sizes=[(8, 40)])
+        result, _ = self.edit(config, [], screen=screen, project={})
+        self.assertEqual(result.project, {})
+        self.assertTrue(result.config.workflow.enabled)
+        rows = [(text, attr) for _, x, text, attr in screen.writes
+                if x == 0 and text.startswith('Enabled') and ':' in text]
+        self.assertTrue(rows)
+        self.assertTrue(all('[Global only]' in text for text, _ in rows))
+        self.assertTrue(all(not attr & curses.A_REVERSE for _, attr in rows))
+
     def test_worker_override_project_copy_and_reset_preserve_inheritance(self):
         """Project copy pins worker settings; reset restores future global values."""
         import curses
         from agent_box import project_config
         config = Config()
         config.workflow.worker.override.enabled = True
-        prefix = [*[curses.KEY_DOWN] * 10, '\n',
-                  *[curses.KEY_DOWN] * list(config.workflow.to_dict()).index('worker'), '\n']
+        prefix = [*select("workflow"), '\n',
+                  *select("worker", ("workflow",)), '\n']
         save = ['\x1b', '\x1b', curses.KEY_END, curses.KEY_UP, '\n']
         pinned, _ = self.edit(config, [*prefix, 'g', *save], project={})
         self.assertTrue(pinned.project['workflow']['worker']['override']['enabled'])
@@ -459,7 +561,7 @@ class ProjectMenuTests(unittest.TestCase):
         import curses
         from agent_box import project_config
         config = Config()
-        browser = [*[curses.KEY_DOWN] * 9, '\n']
+        browser = [*select("browser"), '\n']
         save = ['\x1b', curses.KEY_END, curses.KEY_UP, '\n']
         pinned, screen = self.edit(config, [*browser, 'g', *save], project={})
         self.assertEqual(pinned.project, {'browser': {'enabled': False}})
@@ -477,7 +579,7 @@ class ProjectMenuTests(unittest.TestCase):
         config.workflow.enabled = True
         config.workflow.auto_push = False
         config.workflow.review.sensitive_paths = []
-        workflow = [*[curses.KEY_DOWN] * 10]
+        workflow = [*select("workflow")]
         save = [curses.KEY_END, curses.KEY_UP, '\n']
         pinned, _ = self.edit(config, [*workflow, 'g', *save], project={})
         expected = config.workflow.to_dict()
@@ -497,7 +599,7 @@ class ProjectMenuTests(unittest.TestCase):
         config.tracker.connections = {provider: TrackerConnection(f'https://{provider}.example', 'FAKE_SECRET')
                                       for provider in TRACKER_PROVIDERS}
         project = {'tracker': {'project': '12', 'recursive': True}}
-        result, screen = self.edit(config, [*[curses.KEY_DOWN] * 8, 'g',
+        result, screen = self.edit(config, [*select("tracker"), 'g',
                                           curses.KEY_END, curses.KEY_UP, '\n'], project=project)
         self.assertEqual(result.project, {'tracker': {'project': '12', 'recursive': True,
             'provider': 'vikunja', 'connections': {provider: {'url': f'https://{provider}.example'}
@@ -511,7 +613,7 @@ class ProjectMenuTests(unittest.TestCase):
         for connections in ({}, {'vikunja': TrackerConnection('https://tracker.example', 'FAKE_SECRET')}):
             with self.subTest(configured=bool(connections)):
                 config.tracker.connections = connections
-                result, _ = self.edit(config, [*[curses.KEY_DOWN] * 8, 'g',
+                result, _ = self.edit(config, [*select("tracker"), 'g',
                                               curses.KEY_END, curses.KEY_UP, '\n'], project={})
                 self.assertEqual(result.project, {'tracker': {'provider': 'vikunja', 'connections': {
                     provider: {'url': connection.url} for provider, connection in connections.items()}}})
@@ -522,7 +624,7 @@ class ProjectMenuTests(unittest.TestCase):
         config = Config()
         config.tracker.connections['vikunja'] = TrackerConnection('https://global.example', 'FAKE_SECRET')
         project = {'tracker': {'connections': {'jira': {'url': 'https://project.example'}}}}
-        result, _ = self.edit(config, [*[curses.KEY_DOWN] * 8, 'g',
+        result, _ = self.edit(config, [*select("tracker"), 'g',
                                       curses.KEY_END, curses.KEY_UP, '\n'], project=project)
         self.assertNotIn('jira', result.project['tracker']['connections'])
         self.assertNotIn('jira', result.config.tracker.connections)
@@ -537,7 +639,7 @@ class ProjectMenuTests(unittest.TestCase):
             config.tracker.connections = connections
             project = {'tracker': {'project': '12', 'recursive': True,
                                   'connections': {'jira': {'url': 'https://project.example'}}}}
-            result, _ = self.edit(config, [*[curses.KEY_DOWN] * 8, '\n', *[curses.KEY_DOWN] * 2, 'g',
+            result, _ = self.edit(config, [*select("tracker"), '\n', *[curses.KEY_DOWN] * 2, 'g',
                                           '\x1b', curses.KEY_END, curses.KEY_UP, '\n'], project=project)
             expected = {provider: {'url': connection.url} for provider, connection in connections.items()}
             self.assertEqual(result.project, {'tracker': {'project': '12', 'recursive': True,
@@ -575,7 +677,7 @@ class ProjectMenuTests(unittest.TestCase):
                 baseline = effective_config(environ={}, include_project=False)
                 self.assertEqual(baseline.tracker.connection('vikunja').token, 'TEMPORARY_SECRET')
                 self.assertEqual(baseline.tracker.connection('vikunja').url, 'https://temporary.example')
-                result, screen = self.edit(baseline, [*[curses.KEY_DOWN] * 8, 'g',
+                result, screen = self.edit(baseline, [*select("tracker"), 'g',
                                                     curses.KEY_END, curses.KEY_UP, '\n'], project=project)
             self.assertEqual(result.project['tracker']['connections'], {'vikunja': {'url': 'https://global.example'}})
             self.assertEqual(result.project['tracker']['project'], '12')
@@ -593,7 +695,7 @@ class ProjectMenuTests(unittest.TestCase):
         """Project identity has no global counterpart to invent and pin."""
         import curses
         project = {'tracker': {'project': '12', 'recursive': True}}
-        identity = [*[curses.KEY_DOWN] * 8, '\n', *[curses.KEY_DOWN] * 3]
+        identity = [*select("tracker"), '\n', *[curses.KEY_DOWN] * 3]
         save = ['\x1b', curses.KEY_END, curses.KEY_UP, '\n']
         result, screen = self.edit(Config(), [*identity, 'g', *save], project=project)
         self.assertEqual(result.project, project)
@@ -604,7 +706,7 @@ class ProjectMenuTests(unittest.TestCase):
     def test_copy_empty_global_url_requires_correction_before_save(self):
         """A copy action cannot bypass the required project URL validation."""
         import curses
-        url = [*[curses.KEY_DOWN] * 8, '\n', *[curses.KEY_DOWN] * 2, '\n', '\n']
+        url = [*select("tracker"), '\n', *[curses.KEY_DOWN] * 2, '\n', '\n']
         save = [*['\x1b'] * 3, curses.KEY_END, curses.KEY_UP, '\n']
         result, screen = self.edit(Config(), [*url, 'g', *save, '\x1b'], project={})
         self.assertIsNone(result)
@@ -618,7 +720,7 @@ class ProjectMenuTests(unittest.TestCase):
             result, _ = self.edit(Config(), [curses.KEY_END, curses.KEY_UP, '\n'], project={})
             self.assertEqual(result.project, {})
             project = {}
-            cancelled, _ = self.edit(Config(), [*[curses.KEY_DOWN] * 10, 'g', '\x1b'], project=project)
+            cancelled, _ = self.edit(Config(), [*select("workflow"), 'g', '\x1b'], project=project)
             self.assertIsNone(cancelled)
             self.assertEqual(project, {})
 
@@ -626,7 +728,7 @@ class ProjectMenuTests(unittest.TestCase):
         """Explicit equality is a choice; reset removes the choice from the file."""
         import curses
         config = Config()
-        browser = [*[curses.KEY_DOWN] * 9, '\n']
+        browser = [*select("browser"), '\n']
         save = ['\x1b', curses.KEY_END, curses.KEY_UP, '\n']
         result, screen = self.edit(config, [*browser, ' ', ' ', *save], project={})
         self.assertEqual(result.project, {'browser': {'enabled': False}})
@@ -634,16 +736,16 @@ class ProjectMenuTests(unittest.TestCase):
         self.assertIn('Overridden', '\n'.join(screen.drawn))
         reset, _ = self.edit(config, [*browser, 'r', *save], project=result.project)
         self.assertEqual(reset.project, {})
-        blocked, screen = self.edit(config, [' ', 'r', 'g', curses.KEY_END, curses.KEY_UP, '\n'], project={})
+        blocked, screen = self.edit(config, [*select('claude'), ' ', 'r', 'g', curses.KEY_END, curses.KEY_UP, '\n'], project={})
         self.assertEqual(blocked.project, {})
         self.assertIn('Global only', '\n'.join(screen.drawn))
 
     def test_project_reviewer_picker_retains_manual_disable_and_default_effort(self):
         import curses
         config = Config()
-        prefix = [*[curses.KEY_DOWN] * 10, '\n',
-                  *[curses.KEY_DOWN] * list(config.workflow.to_dict()).index('review'), '\n',
-                  *[curses.KEY_DOWN] * list(config.workflow.review.to_dict()).index('override'), '\n',
+        prefix = [*select("workflow"), '\n',
+                  *select("review", ("workflow",)), '\n',
+                  *select("override", ("workflow", "review")), '\n',
                   curses.KEY_DOWN, curses.KEY_DOWN, '\n', '\n', '\n']
         for pick, expected in (([curses.KEY_HOME, '\n', *'custom-model', '\n'], 'custom-model'),
                                ([curses.KEY_HOME, curses.KEY_DOWN, '\n'], '')):
@@ -697,7 +799,7 @@ class ProjectMenuTests(unittest.TestCase):
                 environment = {'VIKUNJA_URL': 'https://temporary.example', 'VIKUNJA_TOKEN': 'TEMPORARY_SECRET'}
                 if source == 'runtime':
                     environment['AGENT_BOX_RUNTIME_CONFIG'] = str(runtime_path)
-                screen = Screen([*[curses.KEY_DOWN] * 8, 'g', curses.KEY_END, curses.KEY_UP, '\n'])
+                screen = Screen([*select("tracker"), 'g', curses.KEY_END, curses.KEY_UP, '\n'])
                 with self.subTest(source=source), redirect_stdout(io.StringIO()), \
                      patch.dict(os.environ, environment, clear=True), \
                      patch.object(config_module, 'CONFIG_FILE', global_path), \

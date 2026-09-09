@@ -106,8 +106,44 @@ LABELS = {
     "env": "Environment", "providers": "Provider environment", "image": "Workspace image",
     "url": "URL", "token": "Access token", "effort": "Reasoning effort",
     "github_model": "GitHub review model", "github_effort": "GitHub review effort",
+    "telegram_chat_id": "Telegram chat ID",
     "apply_to_tiered": "Also override tiered tasks",
 }
+
+# Presentation follows the user's decisions, not dataclass serialization order.
+MENU_GROUPS = {
+    (): (
+        ("Tracked work", ("workflow", "tracker")),
+        ("Workspace", ("image", "browser", "env")),
+        ("Host access", ("providers", "github", "git")),
+        ("Host integrations", ("claude", "skills", "notifications")),
+    ),
+    ("workflow",): (
+        ("Workflow", ("enabled",)),
+        ("Routing and models", ("routing", "worker", "tiers", "weights", "fallback",
+                                "reserve_percent", "smoothing_hours")),
+        ("Review", ("review",)),
+        ("Delivery and cleanup", ("merge_mode", "auto_push", "cleanup_local_branches",
+                                  "cleanup_remote_branches")),
+        ("Execution limits", ("scout_limit", "timeout_seconds")),
+    ),
+    ("workflow", "review"): (
+        ("Review triggers", ("policy", "max_files", "max_lines", "sensitive_paths", "label")),
+        ("Routing and models", ("routing", "override", "tiers")),
+        ("Review attempts", ("max_rounds",)),
+        ("GitHub review", ("github_provider", "github_model", "github_effort", "wait_seconds")),
+    ),
+}
+
+
+def menu_keys(data, path=()):
+    ordered = [key for _, keys in MENU_GROUPS.get(path, ()) for key in keys if key in data]
+    return ordered + [key for key in data if key not in ordered]
+
+
+def clipped(text, width):
+    """Reserve columns before drawing, so long labels cannot displace values."""
+    return text if len(text) <= width else text[:max(0, width - 3)] + "." * min(3, width)
 
 
 def label_for(key, path=()):
@@ -314,7 +350,7 @@ def edit(config, *, project=None):
             # A resize can arrive between measuring the screen and drawing it.
             pass
 
-    def paint(screen, rows, selected, title, help_text="", notice="", controls=None, editor=False):
+    def paint(screen, rows, selected, title, help_text="", notice="", controls=None, group=""):
         screen.erase()
         height, width = screen.getmaxyx()
         if height < 8 or width < 40:
@@ -324,7 +360,7 @@ def edit(config, *, project=None):
             screen.refresh()
             return False
         controls = controls or "Enter open  Space set  ? help  Esc back"
-        sidebar = width >= 100 and height >= 14 and not editor
+        sidebar = width >= 100 and height >= 14
         help_height = min(5, max(2, height // 5))
         list_width = max(46, width // 2) if sidebar else width
         separator = height - 2 if sidebar else height - help_height - 2
@@ -335,13 +371,18 @@ def edit(config, *, project=None):
             title = "... " + title[-(title_width - 4):]
         add_line(screen, 0, title, title_width, curses.A_BOLD)
         add_line(screen, 0, count, len(count) + 1, x=width - len(count) - 1)
-        navigation = "Left/Right Home/End  Backspace/Delete" if editor else "Up/Down: move  Home/End  PgUp/PgDn"
-        add_line(screen, 1, navigation, width)
+        add_line(screen, 1, "Up/Down: move  Home/End  PgUp/PgDn", width)
+        add_line(screen, 2, group, list_width, curses.A_BOLD)
+        label_width = min(max((len(row[0]) for row in rows if isinstance(row, tuple)), default=0),
+                          32, list_width // 2 - 2)
         offset = min(max(0, selected - list_height + 1), max(0, len(rows) - list_height))
         for index, row in enumerate(rows[offset:offset + list_height], offset):
             attr = curses.A_REVERSE | curses.A_BOLD if index == selected else 0
-            if "Global only" in row:
+            if "Global only" in (row[1] if isinstance(row, tuple) else row):
                 attr = global_only_color | (curses.A_BOLD | curses.A_UNDERLINE if index == selected else 0)
+            if isinstance(row, tuple):
+                label, value = row
+                row = f"{clipped(label, label_width):<{label_width}}: {clipped(value, list_width - label_width - 3)}"
             add_line(screen, index - offset + 3, row, list_width, attr)
         message = help_text
         if notice:
@@ -423,29 +464,42 @@ def edit(config, *, project=None):
 
     def input_value(screen, label, initial, hidden):
         value, cursor, scroll = initial, len(initial), 0
-        explanation = "Enter accepts. Esc restores the previous value. Ctrl-U clears. Home, End, Left, Right, Backspace and Delete edit at the cursor. Long values scroll horizontally."
+        explanation = label + ". Enter accepts. Esc restores the previous value. Ctrl-U clears. Home, End, Left, Right, Backspace and Delete edit at the cursor. The < and > markers show text outside the visible field."
         try:
             curses.curs_set(1)
         except curses.error:
             pass
         try:
             while True:
-                _, width = screen.getmaxyx()
-                available = max(1, width - len("Value: ") - 4)
+                screen.erase()
+                height, width = screen.getmaxyx()
+                usable = height >= 8 and width >= 40
+                available = max(1, width - 12)
                 if cursor < scroll:
                     scroll = cursor
-                elif cursor > scroll + available:
-                    scroll = cursor - available
+                elif cursor >= scroll + available:
+                    scroll = cursor - available + 1
+                scroll = min(scroll, max(0, len(value) - available + 1))
                 shown = "*" * len(value) if hidden else value
-                usable = paint(screen, ["Value: " + shown[scroll:scroll + available]], 0,
-                               "Edit " + label, explanation,
-                               controls="Enter OK  Esc cancel  ^U clear  F1 help", editor=True)
+                add_line(screen, 0, clipped("Edit " + label, width - 1), width, curses.A_BOLD)
+                if usable:
+                    add_line(screen, 1, "Left/Right Home/End  Backspace/Delete", width)
+                    add_line(screen, 3, "Value: [" + ("<" if scroll else " "), width)
+                    add_line(screen, 3, shown[scroll:scroll + available].ljust(available),
+                             available + 1, curses.A_UNDERLINE, x=9)
+                    add_line(screen, 3, (">" if scroll + available < len(value) else " ") + "]",
+                             3, x=9 + available)
+                    add_line(screen, 4, f"Position {cursor + 1}/{len(value) + 1}  < > more text", width)
+                    add_line(screen, height - 2, "Enter accepts; Esc restores previous value", width)
+                    add_line(screen, height - 1, "Enter OK  Esc cancel  ^U clear  F1 help", width, curses.A_BOLD)
+                elif height > 1:
+                    add_line(screen, 1, "Resize terminal to at least 40 columns x 8 rows (Esc: back)", width)
                 if usable and hasattr(screen, "move"):
                     try:
-                        screen.move(3, min(width - 2, len("Value: ") + cursor - scroll))
-                        screen.refresh()
+                        screen.move(3, 9 + cursor - scroll)
                     except curses.error:
                         pass
+                screen.refresh()
                 key = screen.get_wch()
                 if key == "\x1b":
                     return None
@@ -519,7 +573,7 @@ def edit(config, *, project=None):
         if picked == 1:
             return ""
         if picked == 0:
-            return input_value(screen, ".".join(path), current, False)
+            return input_value(screen, " / ".join(label_for(part, path[:index]) for index, part in enumerate(path)), current, False)
         return suggestions[picked - 2]
 
     def path_pending():
@@ -539,14 +593,13 @@ def edit(config, *, project=None):
     def menu(screen, data, path=()):
         selected, notice = (len(data), "Setup starts here: agent-box is not on PATH yet") if not path and path_pending() else (0, "")
         while True:
-            keys = list(data)
+            keys = menu_keys(data, path)
             extras = [("Review preset", "preset", ACTION_HELP["preset"])] if path == ("workflow", "review") else []
             if not path:
                 extras = [(path_row(), "path", path_row() + ". " + ACTION_HELP["path"]), ("Save and apply", "save", ACTION_HELP["save"]), ("Cancel", "cancel", ACTION_HELP["cancel"])]
                 if project_mode:
                     extras = [("PATH integration: Global only", "global", "Global only: configure host integration in agent-box config."), ("Save project", "save", "Save explicit project overrides without applying host integrations."), ("Cancel", "cancel", ACTION_HELP["cancel"])]
             labels = [label_for(key, path) for key in keys]
-            label_width = min(24, max(map(len, labels), default=0))
             rows = []
             for key, label in zip(keys, labels):
                 value, full = data[key], (*path, key)
@@ -563,9 +616,10 @@ def edit(config, *, project=None):
                 if project_mode:
                     status = "Global only" if project_field(full) is None else "Overridden" if explicit(full) else "Inherited"
                     if project_field(full) is None:
-                        shown = ">" if isinstance(value, dict) else "<global>"
-                    shown += "  [" + status + "]"
-                rows.append(f"{label:<{label_width}}: {shown}")
+                        shown = (">  " if isinstance(value, dict) else "") + "[Global only]"
+                    else:
+                        shown += "  [" + status + "]"
+                rows.append((label, shown))
             rows += [entry[0] for entry in extras]
             selected = min(selected, len(rows) - 1)
             if selected < len(keys):
@@ -579,11 +633,14 @@ def edit(config, *, project=None):
                                else "G: Copy current global (copy and pin current effective global values). ")) + hint
                 else:
                     hint = "R: Reset to default (built-in program values; remove global override on save). " + hint
+                hint = labels[selected] + "\n" + hint
             else:
                 hint, help_title = extras[selected - len(keys)][2], extras[selected - len(keys)][0]
             title = ("agent-box config --project" if project_mode else "agent-box config") + (" / " + " / ".join(label_for(part, path[:index]) for index, part in enumerate(path)) if path else "")
             controls = ("Enter R reset G copy " if project_mode else "Enter open R reset ") + "? help Esc back"
-            usable = paint(screen, rows, selected, title, hint, notice, controls=controls)
+            group = next((heading for heading, fields in MENU_GROUPS.get(path, ())
+                          if selected < len(keys) and keys[selected] in fields), "")
+            usable = paint(screen, rows, selected, title, hint, notice, controls=controls, group=group)
             key = screen.get_wch()
             if key in ("\x1b", curses.KEY_LEFT):
                 return None
@@ -693,7 +750,7 @@ def edit(config, *, project=None):
                     menu(screen, value, full)
                 else:
                     initial = json.dumps(value) if isinstance(value, (dict, list)) else str(value)
-                    changed = input_value(screen, ".".join(full), initial, secret(full))
+                    changed = input_value(screen, " / ".join(label_for(part, full[:index]) for index, part in enumerate(full)), initial, secret(full))
                     if changed is not None:
                         try:
                             data[name], notice = parse_value(changed, value), "Draft updated; save to keep changes"
