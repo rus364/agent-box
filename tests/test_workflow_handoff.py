@@ -12,6 +12,7 @@ import io
 import json
 import stat
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -192,6 +193,7 @@ class WorkerHandoffTests(unittest.TestCase):
             patch.object(workflow, "make_adapter", return_value=self.adapter),
             patch.object(workflow, "resolve", return_value=(self.task, info, {}, "main")),
             patch.object(workflow, "route", side_effect=selected_route),
+            patch.object(provider_runner.shutil, "which", side_effect=lambda name: name),
             patch.object(workflow, "WORKFLOW_STATE", Path(self.directory.name) / "state"),
             patch.object(workflow_state, "WORKFLOW_STATE", Path(self.directory.name) / "state"),
         ]
@@ -935,6 +937,203 @@ class WorkerHandoffTests(unittest.TestCase):
         with self.assertRaisesRegex(AgentBoxError, "Unclosed Markdown fence"):
             workflow.review_description("## Acceptance\n```\n## Context\nOld history.")
 
+    def prepared_review(self):
+        return self.run_workflow("prepare", "1", "--role", "reviewer", "--primary", "codex",
+                                 "--brief", str(self.review_brief))
+
+    def managed_fallback(self, prepared):
+        return self.run_workflow("review", "1", "--handoff", prepared["handoff"],
+                                 "--brief", str(self.review_brief),
+                                 "--fallback-reason", "Native interface cannot express the route")
+
+    def test_invalid_review_requirements_do_not_reserve_publish_or_execute(self):
+        """Repeated author input errors must leave both usage and existing acceptance intact."""
+        self.config.workflow.review.policy = "always"
+        for description in ("No headings", "## Acceptance\nWorks\n## Mystery\nUnknown",
+                            "## Goal\n```python\nnot closed"):
+            self.task.description = description
+            fingerprint = workflow.scope(self.root, "main", [self.task])
+            saved = {"scope": fingerprint, "review": {"verdict": "PASS"},
+                     "human_acceptance": {"reason": "User accepted"}}
+            workflow.save_evidence(self.root, self.task, saved)
+            for command in ("prepare", "review", "run"):
+                with self.subTest(description=description, command=command), \
+                     patch.object(workflow, "reserve_review", wraps=workflow.reserve_review) as reserve, \
+                     patch.object(workflow, "reviewer_handoff") as handoff, \
+                     patch.object(workflow, "run") as provider:
+                    args = [] if command == "review" else ["--role", "reviewer"]
+                    with self.assertRaises(AgentBoxError):
+                        self.run_workflow(command, "1", *args, "--primary", "codex",
+                                          "--brief", str(self.review_brief))
+                    reserve.assert_not_called()
+                    handoff.assert_not_called()
+                    provider.assert_not_called()
+                    self.assertEqual(workflow.read_evidence(self.root, self.task), saved)
+        self.assertFalse(workflow.review_budget_path(self.root, BINDING, self.task).exists())
+
+    def test_known_managed_launch_refusals_precede_reservation(self):
+        """Only observed local process constraints may block a round before spending it."""
+        self.config.workflow.review.policy = "always"
+        for cause in ("unavailable", "unsupported", "busy"):
+            with self.subTest(cause=cause), \
+                 patch.object(workflow, "reserve_review", wraps=workflow.reserve_review) as reserve, \
+                 patch.object(workflow, "reviewer_handoff") as handoff, \
+                 patch.object(workflow, "run") as provider:
+                with patch.object(provider_runner.shutil, "which", return_value=None if cause == "unavailable" else "cli"):
+                    if cause == "unsupported":
+                        self.task.labels = []
+                        args = ["--session-model", "m", "--session-effort", "high"]
+                        with patch.object(workflow, "session_route", return_value={
+                                "mode": "current-session", "provider": "other", "model": "m",
+                                "effort": "high", "tier": None, "role": "reviewer", "fallbacks": []}), \
+                             self.assertRaisesRegex(AgentBoxError, "Unsupported managed provider"):
+                            self.run_workflow("review", "1", "--primary", "codex", *args,
+                                              "--brief", str(self.review_brief))
+                        self.task.labels = ["ab:tier:1"]
+                    elif cause == "busy":
+                        with workflow_state.lock(self.root, "review"), \
+                             self.assertRaisesRegex(AgentBoxError, "Another local review"):
+                            self.run_workflow("review", "1", "--primary", "codex",
+                                              "--brief", str(self.review_brief))
+                    else:
+                        with self.assertRaisesRegex(AgentBoxError, "Cannot find claude CLI"):
+                            self.run_workflow("review", "1", "--primary", "codex",
+                                              "--brief", str(self.review_brief))
+                reserve.assert_not_called()
+                handoff.assert_not_called()
+                provider.assert_not_called()
+        self.assertEqual(workflow.read_review_state(self.root, BINDING, self.task), {"used": 0})
+
+    def test_prepared_managed_fallback_spends_once_and_cannot_be_replayed(self):
+        """Changing backend is part of the reserved round, even with no remaining allowance."""
+        self.config.workflow.review.max_rounds = 1
+        with patch.object(workflow, "reserve_review", wraps=workflow.reserve_review) as reserve, \
+             patch.object(workflow, "run", return_value={
+                 "verdict": "PASS", "summary": "Mock independent review", "findings": []}) as provider:
+            prepared = self.prepared_review()
+            self.assertEqual(reserve.call_count, 1)
+            provider.assert_not_called()
+            # Policy off must not skip a round explicitly selected by its descriptor.
+            self.config.workflow.review.policy = "off"
+            result = self.managed_fallback(prepared)
+            self.assertEqual((reserve.call_count, provider.call_count), (1, 1))
+            self.assertEqual((result["review_budget"]["used"], result["review_budget"]["remaining"]), (1, 0))
+            self.assertIn("Native interface", result["fallback_reason"])
+            with self.assertRaisesRegex(AgentBoxError, "stale or already reported"):
+                self.managed_fallback(prepared)
+            self.assertEqual((reserve.call_count, provider.call_count), (1, 1))
+            self.run_workflow("review-budget", "1", "--limit", "2", "--reason", "User grants one new round")
+            self.prepared_review()
+            self.assertEqual((reserve.call_count, provider.call_count), (2, 1))
+
+    def test_failed_managed_fallback_stays_spent_and_rejects_native_report(self):
+        """A provider failure cannot turn a pending descriptor into an unlimited retry token."""
+        with patch.object(workflow, "reserve_review", wraps=workflow.reserve_review) as reserve, \
+             patch.object(workflow, "run", side_effect=provider_runner.ProviderFailure("mock failure", "timeout")) as provider:
+            prepared = self.prepared_review()
+            workflow.save_evidence(self.root, self.task, {
+                "scope": prepared["scope"], "human_acceptance": {"reason": "Accepted while pending"}})
+            with self.assertRaisesRegex(AgentBoxError, "No provider produced"):
+                self.managed_fallback(prepared)
+            with self.assertRaisesRegex(AgentBoxError, "already started managed"):
+                self.managed_fallback(prepared)
+            self.report.write_text(json.dumps({"verdict": "PASS", "summary": "Late native", "findings": []}))
+            with self.assertRaisesRegex(AgentBoxError, "native report is stale"):
+                self.run_workflow("report", "1", "--role", "reviewer", "--provider", "claude",
+                                  "--model", "m", "--effort", "high", "--fresh-context",
+                                  "--scope", prepared["scope"], "--handoff", prepared["handoff"],
+                                  "--file", str(self.report))
+            self.assertEqual((reserve.call_count, provider.call_count), (1, 1))
+            self.assertNotIn("review", workflow.read_evidence(self.root, self.task))
+            self.assertNotIn("human_acceptance", workflow.read_evidence(self.root, self.task))
+
+    def test_provider_fallbacks_share_the_claim_without_new_reservations(self):
+        """Runtime provider failures may try configured alternatives once within the same round."""
+        selected = selected_route(None, "reviewer", 1, "codex")
+        selected["fallbacks"] = [{**selected, "provider": "codex", "fallbacks": []}]
+        with patch.object(workflow, "route", return_value=selected), \
+             patch.object(workflow, "reserve_review", wraps=workflow.reserve_review) as reserve, \
+             patch.object(workflow, "run", side_effect=[
+                 provider_runner.ProviderFailure("Mock timeout", "timeout"),
+                 {"verdict": "PASS", "summary": "Mock fallback", "findings": []}]) as provider:
+            result = self.managed_fallback(self.prepared_review())
+        self.assertEqual((reserve.call_count, provider.call_count), (1, 2))
+        self.assertEqual([call.args[0]["provider"] for call in provider.call_args_list], ["claude", "codex"])
+        self.assertEqual(result["review_budget"]["used"], 1)
+        self.assertEqual(result["route"]["provider"], "codex")
+
+    def test_fallback_preflight_failure_keeps_native_round_available(self):
+        """An unavailable CLI or unknown inherited settings must not claim the prepared round."""
+        prepared = self.prepared_review()
+        with patch.object(provider_runner.shutil, "which", return_value=None), \
+             patch.object(workflow, "run") as provider, \
+             self.assertRaisesRegex(AgentBoxError, "No managed review route"):
+            self.managed_fallback(prepared)
+        provider.assert_not_called()
+        self.assertEqual(workflow.read_review_state(self.root, BINDING, self.task)["pending_backend"], "native")
+        self.task.labels = []
+        prepared = self.prepared_review()
+        with patch.object(workflow, "run") as provider, \
+             self.assertRaisesRegex(AgentBoxError, "known model and effort"):
+            self.managed_fallback(prepared)
+        provider.assert_not_called()
+        self.assertEqual(workflow.read_review_state(self.root, BINDING, self.task)["pending_backend"], "native")
+
+    def test_stale_or_wrong_role_descriptor_cannot_start_managed_review(self):
+        """Fallback must validate the same exact scope and role as native acceptance."""
+        _, worker_handoff = self.prepare()
+        with patch.object(workflow, "run") as provider:
+            with self.assertRaisesRegex(AgentBoxError, "different role or tier"):
+                self.managed_fallback({"handoff": worker_handoff})
+            old = self.prepared_review()
+            current = self.prepared_review()
+            with self.assertRaisesRegex(AgentBoxError, "stale or already reported"):
+                self.managed_fallback(old)
+            self.task.description += "\nNew requirement"
+            with self.assertRaisesRegex(AgentBoxError, "different scope"):
+                self.managed_fallback(current)
+            provider.assert_not_called()
+        self.assertEqual(workflow.read_review_state(self.root, BINDING, self.task)["used"], 2)
+
+    def test_restart_and_concurrent_claim_keep_one_dispatch_per_prepared_round(self):
+        """Separate coordinator processes share the durable claim, including after abandonment."""
+        prepared = self.prepared_review()
+        descriptor = json.loads(base64.urlsafe_b64decode(prepared["handoff"]))
+        script = '''
+import sys
+from pathlib import Path
+from agent_box import workflow, workflow_state
+from agent_box.errors import AgentBoxError
+from agent_box.repo_binding import Binding
+from agent_box.tracker.core import Task
+workflow.WORKFLOW_STATE = workflow_state.WORKFLOW_STATE = Path(sys.argv[1])
+try:
+    binding = Binding("vikunja", "https://tasks.example", "1")
+    if sys.argv[5] == "claim":
+        workflow.claim_managed_review(Path(sys.argv[2]), binding, Task("1", "1", "Task"),
+                                      sys.argv[3], sys.argv[4])
+    else:
+        workflow.reserve_review(Path(sys.argv[2]), binding, Task("2", "1", "Task"),
+                                1, sys.argv[3], sys.argv[4])
+except AgentBoxError:
+    sys.exit(2)
+'''
+        command = [sys.executable, "-c", script, str(workflow.WORKFLOW_STATE), str(self.root),
+                   descriptor["delegation"], prepared["scope"], "claim"]
+        processes = [subprocess.Popen(command) for _ in range(2)]
+        self.assertEqual(sorted(process.wait(timeout=10) for process in processes), [0, 2])
+        self.assertEqual(subprocess.run(command, timeout=10).returncode, 2)
+        self.assertEqual(workflow.read_review_state(self.root, BINDING, self.task)["used"], 1)
+        with patch.object(workflow, "run") as provider, \
+             self.assertRaisesRegex(AgentBoxError, "already started managed"):
+            self.managed_fallback(prepared)
+        provider.assert_not_called()
+        command[-1] = "reserve"
+        processes = [subprocess.Popen(command) for _ in range(2)]
+        self.assertEqual(sorted(process.wait(timeout=10) for process in processes), [0, 2])
+        self.assertEqual(subprocess.run(command, timeout=10).returncode, 2)
+        self.assertEqual(workflow.read_review_state(self.root, BINDING, Task("2", "1", "Task"))["used"], 1)
+
     def test_review_budget_spans_native_managed_scope_changes_and_reports(self):
         """Retries cannot replenish the task budget by changing scope or ingesting a report."""
         self.config.workflow.review.max_rounds = 1
@@ -1236,6 +1435,7 @@ class SubtaskWorkerHandoffTests(unittest.TestCase):
             patch.object(workflow, "resolve", return_value=resolved),
             patch.object(workflow, "route", side_effect=selected_route),
             patch.object(workflow, "WORKFLOW_STATE", Path(self.directory.name) / "state"),
+            patch.object(workflow_state, "WORKFLOW_STATE", Path(self.directory.name) / "state"),
         ]
         for item in self.patches:
             item.start()
@@ -1485,6 +1685,13 @@ class DelegationContractTests(unittest.TestCase):
 
 
 class DelegationContextTests(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        state = patch.object(workflow, "WORKFLOW_STATE", Path(directory.name))
+        state.start()
+        self.addCleanup(state.stop)
+
     def test_the_handoff_carries_the_repository_instructions_safe_mode_hides(self):
         with tempfile.TemporaryDirectory() as directory:
             root = repository(directory)

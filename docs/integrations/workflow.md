@@ -361,9 +361,28 @@ subtasks and the complete parent diff. SKIPPED, INCONCLUSIVE and provider errors
 are distinct from PASS. Code or requirement changes invalidate acceptance.
 
 `max_rounds` (default 3) is enforced for local reviewer `prepare`, `run` and
-`review`: each reserves one attempt under a local lock before handoff or provider
-execution. A failed budget write dispatches nothing and allocates no attempt;
+`review`: a new round reserves one attempt under a local lock before handoff or provider
+execution. Normative headings/fences and known managed launch constraints are checked
+first; their refusal publishes no handoff, reserves nothing and runs no provider.
+Preflight checks local executables and supported routes, without guessing live model,
+account or native tool availability. A failed budget write dispatches nothing and allocates no attempt;
 after durable reservation, packaging/execution failures still consume it.
+Prefer native when the live interface supports the configured route and common role
+contract. If native cannot run after `prepare`, use the returned descriptor:
+
+```bash
+agent-box workflow review TASK --handoff DESCRIPTOR --brief FILE --fallback-reason REASON
+```
+
+Repeat `--tier` if it was supplied to prepare. This runs managed fallback once within
+the latest pending round, preserving its configured route, role, tier and exact scope.
+It requires known model/effort; unknown inherited session settings cannot run managed.
+The durable dispatch claim precedes execution, so failure, abandonment or restart
+cannot allow repeated managed dispatch or a late native report on that descriptor.
+Completed and superseded rounds cannot be reused. Omit `--handoff` to request an
+independent new round, which reserves another attempt. Reuse may finish an already
+reserved round with no remaining allowance; it never increases the ceiling.
+
 Provider fallback belongs to that same attempt. Failed/abandoned
 attempts consume budget; report ingestion and policy SKIPPED do not. Separate
 budget state is keyed by checkout, tracker provider/server/project and task,

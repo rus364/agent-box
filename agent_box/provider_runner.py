@@ -8,6 +8,7 @@ import math
 import os
 import re
 import signal
+import shutil
 import subprocess
 import tempfile
 import time
@@ -206,6 +207,16 @@ def save_failure(metadata, directory):
         return reference
     finally:
         os.close(fd)
+
+
+def preflight(route):
+    """Check local launch facts without guessing live model or account availability."""
+    if route.get("provider") not in ("codex", "claude"):
+        raise ProviderFailure("Unsupported managed provider", "unsupported")
+    if not route.get("model") or not route.get("effort"):
+        raise ProviderFailure("Managed execution requires known model and effort", "unsupported")
+    if not shutil.which(route["provider"]):
+        raise ProviderFailure(f"Cannot find {route['provider']} CLI", "unavailable")
 
 
 def build_command(route, role, root, schema_path, result_path, read_paths=()):

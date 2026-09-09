@@ -13,7 +13,7 @@ from agent_box.config import Config
 from agent_box.errors import AgentBoxError
 from agent_box.repo_binding import Binding
 from agent_box.tracker.core import Task
-from test_workflow_handoff import BINDING, repository
+from test_workflow_handoff import BINDING, repository, selected_route
 
 
 class LocalLandTests(unittest.TestCase):
@@ -515,7 +515,8 @@ class LocalLandTests(unittest.TestCase):
         report = {"verdict": "PASS", "summary": "Reviewed complete implementation", "findings": []}
         brief = Path(self.temporary.name) / "review-brief.md"
         brief.write_text("Changes/reasons: integrated implementation. Risks: recovered history. Validation: true passed; no live proof.\n")
-        with patch.object(workflow, "route", return_value={}), \
+        with patch.object(workflow, "route", side_effect=selected_route), \
+             patch.object(workflow.shutil, "which", return_value="provider-cli"), \
              patch.object(workflow, "execute", return_value={"report": report}) as reviewer:
             self.dispatch(["review", "7", "--primary", "codex", "--brief", str(brief)])
         reviewer.assert_called_once()
