@@ -24,25 +24,41 @@ def emit(value):
 
 
 def parser():
-    p = argparse.ArgumentParser(prog="agent-box tracker")
+    p = argparse.ArgumentParser(prog="agent-box tracker", description=(
+        "Read and maintain tracker tasks. Output is JSON by default; no --json flag is needed. "
+        "Use status for account/binding/lifecycle and get TASK for a full task."))
     p.add_argument("--provider", help="Override the configured provider")
     p.add_argument("--adoption", type=Path, help="Use a receipt's staging scope without changing the repository binding")
     sub = p.add_subparsers(dest="command", required=True)
-    sub.add_parser("status")
-    cmd = sub.add_parser("audit")
+    sub.add_parser("status", help="Show account, repository binding and lifecycle columns",
+                   description="Show account, repository binding and lifecycle columns as JSON.")
+    cmd = sub.add_parser("audit", help="Check project workflow structure without changes")
     cmd.add_argument("--project", help="Audit this project without saving a binding")
     cmd.add_argument("--recursive", action="store_true")
-    projects = sub.add_parser("projects")
+    projects = sub.add_parser("projects", help="List projects, optionally filtering their titles")
     projects.add_argument("query", nargs="?", default="")
     for name in ("search", "ready", "next"):
-        cmd = sub.add_parser(name)
+        description = {"search": "Find tasks; return compact summaries",
+                       "ready": "List Ready tasks eligible for the current user",
+                       "next": "Select the first eligible Ready task"}[name]
+        cmd = sub.add_parser(name, help=description, description=description + "; output is JSON.")
         if name == "search":
             cmd.add_argument("query", nargs="?", default="")
         cmd.add_argument("--project")
         cmd.add_argument("--recursive", action="store_true")
     for name in ("get", "comments", "checklist", "claim", "update", "state", "check", "comment", "tier", "relation"):
-        cmd = sub.add_parser(name)
-        cmd.add_argument("task")
+        description = {"get": "Read a full task, including requirements, relations and comments",
+                       "comments": "Read task comments",
+                       "checklist": "Read checklist indices and text",
+                       "claim": "Claim an eligible task and enter Doing",
+                       "update": "Update selected task fields",
+                       "state": "Move a task to a lifecycle state",
+                       "check": "Check or uncheck an exact checklist item",
+                       "comment": "Append a human journal comment from a file or stdin",
+                       "tier": "Set the task's execution tier",
+                       "relation": "Add or remove a task relation"}[name]
+        cmd = sub.add_parser(name, help=description, description=description + "; output is JSON.")
+        cmd.add_argument("task", help="Task ID")
         if name == "claim":
             cmd.add_argument("--resume", action="store_true")
         elif name == "state":
@@ -63,23 +79,23 @@ def parser():
             cmd.add_argument("--title")
             cmd.add_argument("--description-file")
             cmd.add_argument("--priority", type=int, choices=range(6))
-    cmd = sub.add_parser("create")
+    cmd = sub.add_parser("create", help="Create a task from a title and description file")
     cmd.add_argument("--project")
     cmd.add_argument("--title", required=True)
     cmd.add_argument("--description-file", required=True)
     cmd.add_argument("--parent")
     cmd.add_argument("--tier", type=int, choices=(1, 2, 3))
-    cmd = sub.add_parser("setup")
+    cmd = sub.add_parser("setup", help="Preview repository binding; save with --apply")
     cmd.add_argument("--project", required=True)
     cmd.add_argument("--recursive", action="store_true",
                      help="Include every project under the root project in the workflow")
     cmd.add_argument("--apply", action="store_true", help="Save binding and managed repository instructions")
-    cmd = sub.add_parser("adopt")
+    cmd = sub.add_parser("adopt", help="Clone, normalize or activate a staging project tree")
     cmd.add_argument("operation", choices=("clone", "boards", "cutover"))
     cmd.add_argument("--project", help="Exact source project for clone")
     cmd.add_argument("--receipt", type=Path, required=True)
     cmd.add_argument("--apply", action="store_true")
-    cmd = sub.add_parser("provider")
+    cmd = sub.add_parser("provider", help="Run an explicitly provider-specific command")
     cmd.add_argument("provider", choices=("vikunja",))
     cmd.add_argument("arguments", nargs=argparse.REMAINDER)
     return p

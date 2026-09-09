@@ -291,6 +291,10 @@ agent-box workflow finish TASK
 
 The review brief is ephemeral per-round input with changes/reasons, technical risks,
 validation commands/results and limitations; it is not stored in tracker comments.
+Keep it outside the working tree: `review_brief=$(mktemp /tmp/agent-box-review.XXXXXX)`,
+write the report there, then pass `--brief "$review_brief"`. Remove it after the round.
+Acceptance operations require a clean tree including untracked files; an untracked in-tree
+brief blocks prepare/review even when no branch switch is needed.
 Every native verdict uses a newly spawned reviewer with no inherited coordinator or
 reviewer history (`fork_turns="none"` for Codex), never followup/resume. Pass the
 returned `review_handoff` unchanged as the initial message. Managed commands remain
@@ -326,8 +330,13 @@ because it decides who reviews the result.
 
 Review policy is off/auto/always. Auto considers explicit review labels, sensitive
 paths, changed-file count and added/deleted lines (binary changes require review).
-`workflow inspect TASK` on the task branch reports the effective configuration
-source, merge mode, exact scope, validation and every review trigger. Thresholds
+`agent-box workflow inspect TASK` is read-only and works before begin, from another
+branch or with uncommitted files. It reports current/found branches, effective
+configuration, review budget, acceptance availability/reasons and a next step.
+`scope` is null until the expected task branch is clean; scope-dependent review
+and validation fields are unavailable too. On that branch it returns the exact
+scope, validation and every review trigger. Ambiguous refs or failed Git/tracker
+reads remain errors. Thresholds
 are inclusive: two files trigger review when `max_files=2`. `config show` reads
 the same rendered configuration inside a container; host-only settings are not
 part of that artifact.

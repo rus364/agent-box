@@ -365,21 +365,79 @@ def configuration_summary(config):
             "cleanup_remote_branches": config.workflow.cleanup_remote_branches}
 
 
-def resolve(root, adapter, task):
+def resolve(root, adapter, task, *, allow_missing=False):
     """Branch and base for this task, read back out of Git rather than a record."""
     parent = root_task(task, adapter.get)
     branch = gw.task_branch(root, parent)
-    if not branch:
-        raise AgentBoxError(f"No branch exists for parent task {parent.id}; run agent-box workflow begin")
+    if not branch and not allow_missing:
+        raise AgentBoxError(f"No branch exists for parent task {parent.id}; run agent-box workflow begin {task.id}")
     info = {"branch": branch, "base": gw.default_base(root)}
     if task.id == parent.id:
         return parent, info, {}, info["base"]
     child = gw.task_branch(root, task)
-    if not child:
-        raise AgentBoxError(f"No branch exists for task {task.id}; run agent-box workflow begin")
+    if not child and not allow_missing:
+        raise AgentBoxError(f"No branch exists for task {task.id}; run agent-box workflow begin {task.id}")
     # A subtask's diff starts where it left the parent branch, and the fork point
     # is exactly what the merge base gives back without recording a commit ID.
     return parent, info, {"branch": child}, branch
+
+
+def inspect(root, binding, adapter, task, config):
+    """Diagnostics can precede begin; acceptance still belongs to a clean task branch."""
+    parent, info, current, base = resolve(root, adapter, task, allow_missing=True)
+    tasks = tree(adapter, task)
+    expected = current.get("branch") if task.id != parent.id else info["branch"]
+    branch = gw.current_branch(root)
+    head = gw.git(root, "rev-parse", "--verify", "HEAD")
+    changes = gw.worktree_changes(root)
+    unavailable = []
+    if not info["branch"]:
+        unavailable.append(f"No branch exists for parent task {parent.id}")
+    if task.id != parent.id and not expected:
+        unavailable.append(f"No branch exists for task {task.id}")
+    if expected and branch != expected:
+        unavailable.append(f"Current branch {branch or '(detached HEAD)'} is not task branch {expected}")
+    if changes:
+        unavailable.append(gw.dirty_tree_reason(changes))
+    review = {"policy": config.workflow.review.policy,
+              "budget": read_review_budget(root, binding, task, config.workflow.review.max_rounds),
+              "max_files": config.workflow.review.max_files, "max_lines": config.workflow.review.max_lines,
+              "files": None, "lines": None, "required": None, "reasons": [],
+              "independent_verdict": None, "human_accepted": None}
+    result = {"task": task.id, **info, "task_branch": expected, "current_branch": branch,
+              "head": head, "scope": None, "configuration": configuration_summary(config),
+              "acceptance": {"available": not unavailable, "reasons": unavailable},
+              "review": review, "validation": None}
+    if unavailable:
+        if changes:
+            next_step = f"Commit intended changes or preserve unrelated work outside the working tree, then rerun agent-box workflow inspect {task.id}"
+        elif not info["branch"] or not expected:
+            if "Done" in (task.state, parent.state):
+                next_step = f"Read agent-box tracker get {task.id} and Git history for completed work; do not restart a Done task"
+            elif "Backlog" in (task.state, parent.state):
+                next_step = f"Use ab-plan or ab-interview to prepare any Backlog task or parent and mark it Ready before agent-box workflow begin {task.id}"
+            elif task.state in ("Doing", "Review"):
+                next_step = f"Inspect existing work and ownership before deliberate recovery with agent-box workflow begin {task.id} --resume"
+            else:
+                next_step = f"Run agent-box workflow begin {task.id}; readiness and ownership checks still apply"
+        else:
+            next_step = f"Switch to task branch {expected}, then rerun agent-box workflow inspect {task.id}"
+        result["next_step"] = next_step
+        return result
+    fingerprint = scope(root, base, tasks)
+    saved = evidence(root, task, fingerprint)
+    files, lines = diff_stats(root, base)
+    reasons = review_reasons(config.workflow.review, tasks, files, lines)
+    integrated = (config.workflow.merge_mode == "local" and task.id == parent.id
+                  and gw._is_ancestor(root, head, gw.local_branch_head(root, base)))
+    if integrated and config.workflow.review.policy != "off":
+        reasons.append("already integrated scope requires acceptance of the original work")
+    review.update(files=len(files), lines=lines, required=bool(reasons), reasons=reasons,
+                  independent_verdict=saved.get("review", {}).get("verdict"),
+                  human_accepted=human_accepted(saved))
+    result.update(scope=fingerprint, validation=saved.get("validation"),
+                  next_step=f"Continue with ab-work; validate committed work with agent-box workflow validate {task.id} -- COMMAND ARGS, then follow ab-review and ab-land as applicable")
+    return result
 
 
 def delegation_identity(root, binding, integration=None):
@@ -751,7 +809,12 @@ def parser():
     p = argparse.ArgumentParser(prog="agent-box workflow")
     sub = p.add_subparsers(dest="command", required=True)
     for name in ("begin", "inspect", "approve", "prepare", "run", "review", "review-budget", "validate", "report", "finish", "pr", "land", "writer"):
-        cmd = sub.add_parser(name)
+        description = {
+            "inspect": "Read branch, acceptance availability, review budget and next step; works before begin or with uncommitted files",
+            "prepare": "Prepare a delegation; workers and reviewers require a clean task branch",
+            "review": "Apply review policy to the clean task scope and dispatch a required review",
+        }.get(name)
+        cmd = sub.add_parser(name, **({"help": description, "description": description} if description else {}))
         cmd.add_argument("task")
         cmd.add_argument("--primary", choices=("codex", "claude"), default=os.environ.get("AGENT_BOX_PRIMARY_PROVIDER"))
         if name == "writer":
@@ -772,7 +835,8 @@ def parser():
             cmd.add_argument("--session-model", help="Verified active session model for untiered execution")
             cmd.add_argument("--session-effort", help="Verified active session effort for untiered execution")
         if name in ("prepare", "run", "review"):
-            cmd.add_argument("--brief", required=name == "run")
+            cmd.add_argument("--brief", required=name == "run", help=(
+                "UTF-8 handoff file; required for dispatched reviews. Keep temporary briefs outside the working tree"))
         if name == "report":
             cmd.add_argument("--file", required=True)
             cmd.add_argument("--scope", required=True)
@@ -834,6 +898,8 @@ def dispatch(args):
     if args.command == "begin":
         with lock(root, "work"):
             return {**begin(root, adapter, task, args.resume), "configuration": configuration_summary(config)}
+    if args.command == "inspect":
+        return inspect(root, binding, adapter, task, config)
     scouting = getattr(args, "role", None) == "scout"
     if scouting:
         parent, info, current, base = task, {}, {}, "HEAD"
@@ -871,25 +937,6 @@ def dispatch(args):
         accept_worker(root, adapter, task, saved, identity, descriptor)
     else:
         saved = evidence(root, task, fingerprint)
-    if args.command == "inspect":
-        expected_branch = current.get("branch") or info["branch"]
-        if gw.current_branch(root) != expected_branch:
-            raise AgentBoxError(f"Switch to {expected_branch} before inspecting its acceptance scope")
-        files, lines = diff_stats(root, base)
-        reasons = review_reasons(config.workflow.review, tasks, files, lines)
-        integrated = (config.workflow.merge_mode == "local" and task.id == parent.id
-                      and gw._is_ancestor(root, gw.head_sha(root), gw.local_branch_head(root, base)))
-        if integrated and config.workflow.review.policy != "off":
-            reasons.append("already integrated scope requires acceptance of the original work")
-        return {"task": task.id, **info, "head": gw.head_sha(root), "scope": fingerprint,
-                "configuration": configuration_summary(config),
-                "review": {"policy": config.workflow.review.policy, "files": len(files), "lines": lines,
-                           "budget": read_review_budget(root, binding, task, config.workflow.review.max_rounds),
-                           "max_files": config.workflow.review.max_files, "max_lines": config.workflow.review.max_lines,
-                           "required": bool(reasons), "reasons": reasons,
-                           "independent_verdict": saved.get("review", {}).get("verdict"),
-                           "human_accepted": human_accepted(saved)},
-                "validation": saved.get("validation")}
     if args.command == "approve":
         if config.workflow.merge_mode != "local" or task.id != parent.id:
             raise AgentBoxError("Human acceptance is available only for a local parent task")

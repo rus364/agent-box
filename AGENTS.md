@@ -102,6 +102,10 @@ Hook removal only ever touches agent-box's own commands.
 
 ## Working in the code
 
+- **All text an agent may read must be functionally compact.** Skills, instructions,
+  handoffs, messages, errors, hints, CLI help and command output need enough context,
+  exact commands and necessary constraints to act without guessing; remove filler
+  and repetition without cryptic compression.
 - **Comments explain why, not what.** The existing docstrings state the decision
   and the alternative that was rejected. Match that; do not add narration.
 - **Tests are the specification.** Every test's name and docstring says what

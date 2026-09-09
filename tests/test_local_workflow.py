@@ -333,7 +333,7 @@ class LocalLandTests(unittest.TestCase):
 
     def test_merge_refuses_dirty_or_diverged_work_before_switching(self):
         (self.root / "dirty").write_text("dirty")
-        with self.assertRaisesRegex(AgentBoxError, "Commit or preserve"):
+        with self.assertRaisesRegex(AgentBoxError, "requires a clean working tree"):
             self.operate("merge")
         self.assertEqual(gw.current_branch(self.root), "ab/7-parent")
         (self.root / "dirty").unlink()

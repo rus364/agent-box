@@ -6,7 +6,9 @@ Jira, Linear and GitHub Issues entries are explicit unsupported-provider stubs.
 They fail with an actionable error instead of pretending to synchronize tasks.
 
 The command is `agent-box tracker` in both host and container sessions. There is
-no separate skill-owned executable or independent credential configuration.
+no separate skill-owned executable or independent credential configuration. Output
+is JSON by default; no `--json` flag. `agent-box tracker status` reads account,
+binding and lifecycle columns; `agent-box tracker get ID` reads a full task.
 Enable the workflow to install the remaining `ab-*` skills, then use `ab-setup`
 to connect a repository to a project.
 

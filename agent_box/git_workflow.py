@@ -20,8 +20,10 @@ def _run(args: list[str], cwd: Path | str | None=None, timeout: float=10) -> sub
 
 def current_branch(cwd: Path) -> str | None:
     result = _run(['git', 'symbolic-ref', '--short', '-q', 'HEAD'], cwd=cwd)
-    if result.returncode != 0:
+    if result.returncode == 1:
         return None
+    if result.returncode:
+        raise AgentBoxError(f"Cannot read current Git branch: {result.stderr.strip()[:1000]}")
     branch = result.stdout.strip()
     return branch or None
 
@@ -135,9 +137,30 @@ def git(root, *args, timeout=30):
     return result.stdout.strip()
 
 
+def worktree_changes(root):
+    """Keep Git's quoted paths and XY columns; diagnostics must not refresh the index."""
+    try:
+        result = _run(['git', '--no-optional-locks', '-c', 'core.quotePath=false',
+                       'status', '--porcelain=v1', '--untracked-files=all'], cwd=root)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise AgentBoxError(f"Cannot inspect working tree: {type(exc).__name__}") from None
+    if result.returncode:
+        raise AgentBoxError(f"Cannot inspect working tree: {result.stderr.strip()[:1000]}")
+    return result.stdout.removesuffix("\n").split("\n") if result.stdout else []
+
+
+def dirty_tree_reason(changes):
+    sample = "; ".join(line[:197] + "..." if len(line) > 200 else line for line in changes[:10])
+    if len(changes) > 10:
+        sample += f"; ... {len(changes) - 10} more"
+    return ("This workflow operation requires a clean working tree (tracked and untracked files). "
+            f"Commit intended changes or preserve unrelated work outside the working tree. Changes: {sample}")
+
+
 def require_clean(root):
-    if not _worktree_clean(root):
-        raise AgentBoxError("Commit or preserve the current changes before changing workflow branches")
+    changes = worktree_changes(root)
+    if changes:
+        raise AgentBoxError(dirty_tree_reason(changes))
 
 
 def branch_prefix(task_id):
