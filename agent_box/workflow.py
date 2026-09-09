@@ -217,8 +217,8 @@ def evidence_path(root, task):
     return WORKFLOW_STATE / "evidence" / repository_key(root) / f"{ident}.json"
 
 
-# Writer identity and the head at child creation describe how work began, not
-# acceptance. They survive scope changes; validation and review do not.
+# Writer identity and child provenance describe observed history, not acceptance.
+# They survive scope changes; validation and review do not.
 DURABLE_EVIDENCE = ("writer", "child_start")
 
 
@@ -242,6 +242,16 @@ def save_evidence(root, task, value):
     path = evidence_path(root, task)
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     atomic_write_text(path, json.dumps(value, indent=2) + "\n", 0o600)
+
+
+def observe_child_head(root, task, head):
+    """Returning a ref to its origin cannot erase work the workflow already saw."""
+    saved = read_evidence(root, task)
+    start = saved.get("child_start")
+    if start and start["head"] != head and not start.get("work_observed"):
+        start["work_observed"] = True
+        save_evidence(root, task, saved)
+    return saved
 
 
 def review_budget_path(root, binding, task):
@@ -808,14 +818,16 @@ def begin(root, adapter, task, resume):
         if child == branch:
             raise AgentBoxError("Subtask branch cannot be the parent branch")
         gw.switch_branch(root, child, branch, resume=resume)
+        head = gw.head_sha(root)
+        saved = observe_child_head(root, task, head)
         if starting and not existing_child:
-            saved = read_evidence(root, task)
             # Reopening a deleted branch must not reclassify prior work as a
             # new no-code start. Unrelated scout scope evidence is harmless.
             prior_work = ("child_start", "writer", "worker", "validation", "review",
                           "human_acceptance", "local_acceptance")
             if not any(key in saved for key in prior_work):
-                saved["child_start"] = {"head": gw.head_sha(root), "parent": parent.id}
+                saved["child_start"] = {"head": head, "parent": parent.id,
+                                        "work_observed": False}
                 save_evidence(root, task, saved)
     return {"task": task.id, "parent": parent.id, "branch": gw.current_branch(root), "base": base}
 
@@ -929,8 +941,9 @@ def finish_child(root, config, adapter, task, parent, info, branch, tasks):
     head = gw.local_branch_head(root, branch)
     base_head = gw.local_branch_head(root, base)
     integrated = gw._is_ancestor(root, head, base_head)
-    saved = read_evidence(root, task)
-    unchanged_child = saved.get("child_start") == {"head": head, "parent": parent.id}
+    saved = observe_child_head(root, task, head)
+    unchanged_child = saved.get("child_start") == {"head": head, "parent": parent.id,
+                                                  "work_observed": False}
     if integrated and ("local_acceptance" in saved or not unchanged_child):
         accepted = saved.get("local_acceptance", {})
         recovery = (f"Preserve both branches; restore the original acceptance evidence or "
@@ -940,7 +953,8 @@ def finish_child(root, config, adapter, task, parent, info, branch, tasks):
         if not required.issubset(accepted) or not accepted.get("scope"):
             reasons.append("Pre-merge acceptance cache is missing")
             if not unchanged_child:
-                reasons.append("No-code origin is unproven: child creation evidence is missing or its head/parent changed; "
+                reasons.append("No-code origin is unproven: child creation evidence is missing, "
+                               "its head/parent changed, or non-origin work was observed; "
                                "begin --resume does not recreate it")
         else:
             if accepted.get("head") != head:
@@ -1107,6 +1121,8 @@ def dispatch(args):
         with lock(root, "review-budget"):
             if result.returncode or scope(root, base, tree(adapter, adapter.get(task.id))) != fingerprint:
                 raise AgentBoxError("Validation failed or changed the reviewed scope; no success recorded")
+            if task.id != parent.id and identity["branch"] == current["branch"]:
+                observe_child_head(root, task, identity["head"])
             saved = evidence(root, task, fingerprint)
             saved["validation"] = {"command": command, "exit": 0}
             save_evidence(root, task, saved)

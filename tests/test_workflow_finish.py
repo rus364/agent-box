@@ -325,7 +325,8 @@ class NoCodeChildFinishTests(unittest.TestCase):
                 self.begin_ready_child(snapshot_state="Doing", resume=resume)
                 self.assertEqual(ready.state, "Ready")
                 self.assertEqual(workflow.read_evidence(self.root, self.child)["child_start"],
-                                 {"head": gw.head_sha(self.root), "parent": self.parent.id})
+                                 {"head": gw.head_sha(self.root), "parent": self.parent.id,
+                                  "work_observed": False})
                 self.adapter.reset_mock()
                 self.dispatch(["validate", ident, "--", "true"])
                 self.assertEqual(self.dispatch(["finish", ident])["state"], "Done")
@@ -405,6 +406,15 @@ class NoCodeChildFinishTests(unittest.TestCase):
         self.assertEqual(self.dispatch(["finish", "8"])["state"], "Done")
         self.assertEqual(gw.local_branch_head(self.root, "ab/7-parent"), parent_head)
 
+    def test_parent_head_seen_during_validation_is_not_child_work(self):
+        """Validation invoked from another branch must not invent changes to an untouched child."""
+        gw.git(self.root, "switch", "ab/7-parent")
+        self.commit("later-parent.py")
+        self.dispatch(["validate", "8", "--", "true"])
+        self.dispatch(["begin", "8", "--resume"])
+        self.dispatch(["validate", "8", "--", "true"])
+        self.assertEqual(self.dispatch(["finish", "8"])["state"], "Done")
+
     def test_no_code_auto_push_allows_later_parent_work_and_retries_failure(self):
         """An empty child still publishes the current parent before Done, including retries."""
         gw.git(self.root, "switch", "ab/7-parent")
@@ -442,6 +452,97 @@ class NoCodeChildFinishTests(unittest.TestCase):
             self.dispatch(["finish", "8"])
         self.adapter.set_state.assert_not_called()
 
+    def returned_origin(self, *, remote=False, retirement="scope", integrate=True):
+        origin = self.head
+        if remote:
+            gw.git(self.root, "push", "origin", "ab/8-child")
+        self.commit("child.py")
+        self.head = gw.head_sha(self.root)
+        self.dispatch(["validate", "8", "--", "true"])
+        if integrate:
+            self.interrupted_finish()
+        else:
+            gw.git(self.root, "switch", "ab/7-parent")
+        if retirement == "scope":
+            self.child.description += "\nNew requirement"
+            self.dispatch(["begin", "8", "--resume"])
+            self.dispatch(["validate", "8", "--", "true"])
+            gw.git(self.root, "switch", "ab/7-parent")
+        elif retirement == "review":
+            saved = workflow.read_evidence(self.root, self.child)
+            workflow.reserve_review(self.root, BINDING, self.child, 3, "new-round", saved["scope"])
+        else:
+            workflow.retire_acceptance(self.root, self.adapter, self.child,
+                                       workflow.read_evidence(self.root, self.child))
+        self.assertNotIn("local_acceptance", workflow.read_evidence(self.root, self.child))
+        if remote:
+            gw.git(self.root, "branch", "-D", "ab/8-child")
+        else:
+            gw.git(self.root, "update-ref", "refs/heads/ab/8-child", origin)
+        self.dispatch(["begin", "8", "--resume"])
+        self.assertEqual(gw.head_sha(self.root), origin)
+        self.assertEqual(gw.local_branch_head(self.root, "ab/7-parent"), self.head if integrate else origin)
+        self.dispatch(["validate", "8", "--", "true"])
+        self.assertEqual(gw.git(self.root, "diff", "ab/7-parent...HEAD", "--"), "")
+        with self.assertRaisesRegex(AgentBoxError, "acceptance.*missing"):
+            self.dispatch(["finish", "8"])
+        self.adapter.set_state.assert_not_called()
+
+    def test_stale_remote_origin_cannot_accept_work_lost_after_requirements_retirement(self):
+        """Adopting published H0 cannot disguise integrated H1 after its acceptance is retired."""
+        self.returned_origin(remote=True)
+
+    def test_finish_records_non_origin_history_before_merge_and_retries_accepted_work(self):
+        """Durable history precedes integration and does not revoke its valid retry evidence."""
+        origin = self.head
+        self.commit("child.py")
+        self.head = gw.head_sha(self.root)
+        saved = workflow.read_evidence(self.root, self.child)
+        saved.update(scope=workflow.scope(self.root, "ab/7-parent", [self.child]),
+                     validation={"command": ["true"], "exit": 0})
+        workflow.save_evidence(self.root, self.child, saved)
+        original_git = gw.git
+
+        def observe(root, *args, **kwargs):
+            if args[0] == "merge":
+                before_merge = workflow.read_evidence(root, self.child)
+                self.assertEqual(before_merge["child_start"],
+                                 {"head": origin, "parent": self.parent.id, "work_observed": True})
+                self.assertEqual(before_merge["local_acceptance"]["head"], self.head)
+            return original_git(root, *args, **kwargs)
+
+        with patch.object(gw, "git", side_effect=observe):
+            self.interrupted_finish()
+        with patch.object(gw, "git", wraps=gw.git) as git, \
+             patch.object(workflow, "scope", wraps=workflow.scope) as scope:
+            self.assertEqual(self.dispatch(["finish", "8"])["state"], "Done")
+        scope.assert_not_called()
+        self.assertFalse(any(call.args[1] == "merge" for call in git.call_args_list))
+        self.adapter.set_state.assert_called_once_with(self.child, "Done")
+
+    def test_direct_ref_return_cannot_erase_integration_after_review_retirement(self):
+        """Starting another review cannot make a reset child look continuously unchanged."""
+        self.returned_origin(retirement="review")
+
+    def test_direct_ref_return_cannot_erase_integration_after_worker_retirement(self):
+        """Delegation retires acceptance but must preserve known non-origin work."""
+        self.returned_origin(retirement="worker")
+
+    def test_validated_non_origin_work_cannot_be_reset_into_no_code_acceptance(self):
+        """Observed child work stays known even when a ref is reset before workflow integrates it."""
+        self.returned_origin(integrate=False)
+
+    def test_resumed_non_origin_ref_cannot_be_reset_into_no_code_acceptance(self):
+        """Resuming an existing changed child must not forget that work on a later reset."""
+        origin = self.head
+        self.commit("child.py")
+        self.dispatch(["begin", "8", "--resume"])
+        gw.git(self.root, "reset", "--hard", origin)
+        self.dispatch(["validate", "8", "--", "true"])
+        with self.assertRaisesRegex(AgentBoxError, "acceptance.*missing"):
+            self.dispatch(["finish", "8"])
+        self.adapter.set_state.assert_not_called()
+
     def test_reopening_after_integration_preserves_original_start_and_refuses_empty_acceptance(self):
         """A genuine Ready reopen must not erase the origin of already integrated code."""
         original_start = workflow.read_evidence(self.root, self.child)["child_start"]
@@ -458,7 +559,8 @@ class NoCodeChildFinishTests(unittest.TestCase):
         self.dispatch(["validate", "8", "--", "true"])
         with self.assertRaisesRegex(AgentBoxError, "acceptance.*missing"):
             self.dispatch(["finish", "8"])
-        self.assertEqual(workflow.read_evidence(self.root, self.child)["child_start"], original_start)
+        self.assertEqual(workflow.read_evidence(self.root, self.child)["child_start"],
+                         {**original_start, "work_observed": True})
         self.adapter.set_state.assert_not_called()
 
     def test_unrelated_scope_evidence_does_not_prevent_first_no_code_start(self):
