@@ -1120,6 +1120,37 @@ class WorkerHandoffTests(unittest.TestCase):
             self.assertNotIn("review", workflow.read_evidence(self.root, self.task))
             self.assertNotIn("human_acceptance", workflow.read_evidence(self.root, self.task))
 
+    def test_managed_fallback_preserves_prepared_prompt_and_artifact_hashes(self):
+        """Brief and validation edits cannot rewrite files a native reviewer may still read."""
+        prepared = self.prepared_review()
+        prompt = prepared["delegate_handoff"]
+        payload = json.loads(prompt.split("Delegation handoff:\n", 1)[1])
+        evidence = payload["required_read_evidence"]
+        directory = Path(evidence["manifest_path"]).parent
+        before = {path: (path.read_bytes(), path.stat().st_ino, path.stat().st_mtime_ns)
+                  for path in directory.iterdir()}
+        self.review_brief.write_text("Goal: changed after prepare")
+        saved = workflow.read_evidence(self.root, self.task)
+        saved["validation"] = {"command": ["changed-after-prepare"], "exit": 0}
+        workflow.save_evidence(self.root, self.task, saved)
+
+        def provider(route, role, root, managed_prompt, **kwargs):
+            self.assertEqual(managed_prompt, prompt)
+            self.assertEqual(hashlib.sha256(managed_prompt.encode()).hexdigest(),
+                             hashlib.sha256(prompt.encode()).hexdigest())
+            for path, snapshot in before.items():
+                self.assertEqual((path.read_bytes(), path.stat().st_ino, path.stat().st_mtime_ns), snapshot)
+            for artifact in evidence["artifacts"].values():
+                self.assertEqual(hashlib.sha256(Path(artifact["path"]).read_bytes()).hexdigest(),
+                                 artifact["sha256"])
+            return {"verdict": "PASS", "summary": "Mock preserved input", "findings": []}
+
+        with patch.object(workflow, "run", side_effect=managed_runner(provider)) as runner:
+            result = self.managed_fallback(prepared)
+        self.assertEqual(runner.call_count, 1)
+        self.assertEqual(result["review_budget"]["used"], 1)
+        self.assertFalse(directory.exists())
+
     def test_provider_fallbacks_share_the_claim_without_new_reservations(self):
         """Runtime provider failures may try configured alternatives once within the same round."""
         selected = selected_route(None, "reviewer", 1, "codex")

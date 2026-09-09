@@ -361,6 +361,63 @@ class NoCodeChildFinishTests(unittest.TestCase):
                 budget = workflow.read_review_state(self.root, BINDING, self.child)
                 self.assertEqual((budget["used"], budget["pending"]), (1, "new-round"))
 
+    def test_claimed_child_recovers_creation_and_switch_failures_at_original_parent(self):
+        """A successful Ready claim survives Git failure without substituting the later parent tip."""
+        for failure, ident in (("branch", "9"), ("switch", "10")):
+            with self.subTest(failure=failure):
+                self.child = replace(self.child, id=ident, state="Ready")
+                self.parent.children = [ident]
+                self.adapter.get.side_effect = lambda key: self.parent if key == "7" else self.child
+                origin = gw.local_branch_head(self.root, "ab/7-parent")
+                original_git = gw.git
+
+                def fail(root, *args, **kwargs):
+                    if args[:2] == (failure, f"ab/{ident}-child"):
+                        self.assertEqual(self.child.state, "Doing")
+                        raise AgentBoxError("injected child Git failure")
+                    return original_git(root, *args, **kwargs)
+
+                with patch.object(gw, "git", side_effect=fail), \
+                     self.assertRaisesRegex(AgentBoxError, "injected child Git failure"):
+                    self.begin_ready_child()
+                self.assertEqual(self.child.state, "Doing")
+                saved = workflow.read_evidence(self.root, self.child)
+                self.assertEqual(saved.get("child_begin", saved.get("child_start"))["head"], origin)
+                self.commit(f"parent-after-{ident}.py")
+                self.begin_ready_child(resume=True)
+                self.assertEqual(gw.head_sha(self.root), origin)
+                self.assertEqual(workflow.read_evidence(self.root, self.child)["child_start"],
+                                 {"head": origin, "parent": self.parent.id, "work_observed": False})
+                self.adapter.reset_mock()
+                with self.assertRaisesRegex(AgentBoxError, "workflow validate"):
+                    self.dispatch(["finish", ident])
+                self.adapter.set_state.assert_not_called()
+                self.dispatch(["validate", ident, "--", "true"])
+                self.assertEqual(self.dispatch(["finish", ident])["state"], "Done")
+
+    def test_interrupted_creation_does_not_adopt_an_arbitrary_existing_branch(self):
+        """A branch appearing after failed creation does not prove the recorded origin."""
+        self.child = replace(self.child, id="9", state="Ready")
+        self.parent.children = ["9"]
+        self.adapter.get.side_effect = lambda key: self.parent if key == "7" else self.child
+        original_git = gw.git
+
+        def fail(root, *args, **kwargs):
+            if args[:2] == ("branch", "ab/9-child"):
+                raise AgentBoxError("injected creation failure")
+            return original_git(root, *args, **kwargs)
+
+        with patch.object(gw, "git", side_effect=fail), \
+             self.assertRaisesRegex(AgentBoxError, "injected creation failure"):
+            self.begin_ready_child()
+        for head in ("ab/7-parent", "main"):
+            with self.subTest(head=head):
+                gw.git(self.root, "branch", "ab/9-child", head)
+                with self.assertRaisesRegex(AgentBoxError, "reconcile its origin"):
+                    self.begin_ready_child(resume=True)
+                self.assertNotIn("child_start", workflow.read_evidence(self.root, self.child))
+                gw.git(self.root, "branch", "-D", "ab/9-child")
+
     def test_stale_doing_snapshot_cannot_suppress_a_genuine_ready_start(self):
         """The Ready claim read must prove no-code origin even if dispatch saw Doing."""
         for resume, ident in ((False, "9"), (True, "10")):

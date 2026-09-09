@@ -47,7 +47,7 @@ INSTRUCTION_FILES = ("AGENTS.md", "CLAUDE.md")
 REVIEW_HANDOFF_MAX_BYTES = 32768
 REVIEW_SAMPLE_ITEMS = 20
 REVIEW_SAMPLE_CHARS = 200
-REVIEW_EVIDENCE_FILES = ("manifest.json", "requirements.json", "full.diff",
+REVIEW_EVIDENCE_FILES = ("manifest.json", "handoff.txt", "requirements.json", "full.diff",
                          "changed-paths.txt", "author-report.md", "recorded-validation.json",
                          *INSTRUCTION_FILES)
 
@@ -234,7 +234,7 @@ def evidence_path(root, task):
 
 # Writer identity and child provenance describe observed history, not acceptance.
 # They survive scope changes; validation and review do not.
-DURABLE_EVIDENCE = ("writer", "child_start")
+DURABLE_EVIDENCE = ("writer", "child_start", "child_begin")
 
 
 def read_evidence(root, task):
@@ -842,6 +842,7 @@ def reviewer_handoff(root, base, tasks, brief, saved, review_context, task_id, f
         cleanup_review_evidence(evidence_path)
         raise AgentBoxError(
             f"Compact reviewer handoff exceeds {REVIEW_HANDOFF_MAX_BYTES} bytes; shorten repository path metadata")
+    atomic_write_text(evidence_path / "handoff.txt", prompt, 0o400)
     return prompt
 
 
@@ -868,18 +869,29 @@ def begin(root, adapter, task, resume):
         child = existing_child or gw.branch_name(task)
         if child == branch:
             raise AgentBoxError("Subtask branch cannot be the parent branch")
-        gw.switch_branch(root, child, branch, resume=resume)
-        head = gw.head_sha(root)
-        saved = observe_child_head(root, task, head)
+        saved = read_evidence(root, task)
         if starting and not existing_child:
             # Reopening a deleted branch must not reclassify prior work as a
             # new no-code start. Unrelated scout scope evidence is harmless.
-            prior_work = ("child_start", "writer", "worker", "validation", "review",
+            prior_work = ("child_start", "child_begin", "writer", "worker", "validation", "review",
                           "human_acceptance", "local_acceptance")
             if not any(key in saved for key in prior_work):
-                saved["child_start"] = {"head": head, "parent": parent.id,
-                                        "work_observed": False}
+                # Preserve the authoritative Ready claim before fallible Git
+                # creation; a retry must use this head even if the parent moves.
+                saved["child_begin"] = {"head": gw.head_sha(root), "parent": parent.id}
                 save_evidence(root, task, saved)
+        pending = saved.get("child_begin")
+        created = False
+        if pending:
+            if existing_child or pending["parent"] != parent.id:
+                raise AgentBoxError("Interrupted child creation has an existing branch or changed parent; "
+                                    "reconcile its origin before resuming")
+            gw.git(root, "branch", child, pending["head"])
+            saved["child_start"] = {**saved.pop("child_begin"), "work_observed": False}
+            save_evidence(root, task, saved)
+            created = True
+        gw.switch_branch(root, child, branch, resume=resume or created)
+        observe_child_head(root, task, gw.head_sha(root))
     return {"task": task.id, "parent": parent.id, "branch": gw.current_branch(root), "base": base}
 
 
@@ -1217,7 +1229,7 @@ def dispatch(args):
                     save_evidence(root, task, saved)
                 return {**saved, "review_budget": read_review_budget(
                     root, binding, task, config.workflow.review.max_rounds)}
-            brief = read_brief(args.brief) if args.command != "report" else None
+            brief = read_brief(args.brief) if args.command != "report" and not reuse_review else None
             if args.command != "report":
                 review_requirements(tasks)
         # The route the delegation was prepared with rides in the descriptor, so
@@ -1352,9 +1364,13 @@ def dispatch(args):
                                            review_round, fingerprint, managed=True)
                         managed_started = True
                         saved = evidence(root, task, fingerprint)
-                        prompt = reviewer_handoff(
-                            root, base, tasks, brief, saved, review_context, task.id, fingerprint,
-                            review_round)
+                        if reuse_review:
+                            prompt = (review_evidence_path(
+                                root, task.id, fingerprint, review_round) / "handoff.txt").read_text(encoding="utf-8")
+                        else:
+                            prompt = reviewer_handoff(
+                                root, base, tasks, brief, saved, review_context, task.id, fingerprint,
+                                review_round)
                     output = execute(
                         config.workflow, selected, role, root, prompt,
                         read_paths=([review_evidence_path(
