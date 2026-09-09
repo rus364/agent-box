@@ -159,7 +159,7 @@ def _current_head(root, pr):
 
 
 def _operate(args, root, config, adapter, task, parent, info, saved, tasks):
-    from .workflow import evidence, scope
+    from .workflow import diff_stats, evidence, integrated_parent, review_blockers, scope
     if not (config.github.gh_token or config.github.gh_config):
         raise AgentBoxError("Enable the GitHub integration in agent-box config before workflow GitHub actions")
     if task.id != parent.id:
@@ -217,6 +217,14 @@ def _operate(args, root, config, adapter, task, parent, info, saved, tasks):
         merged_identity(pr, info["branch"], info["base"])
         task, tasks, reasons = _landing_tasks(root, adapter, task.id, info, states=("Review", "Done"))
         gw.require_clean(root)
+        if task.state != "Done":
+            # A merged PR proves integration, not acceptance of today's requirements.
+            saved = evidence(root, task, scope(root, info["base"], tasks))
+            if saved.get("validation", {}).get("exit") != 0:
+                reasons.append("Current scope validation is missing; run workflow validate before completion")
+            files, lines = diff_stats(root, info["base"])
+            reasons += review_blockers(config.workflow.review, tasks, files, lines, saved,
+                                       integrated=integrated_parent(root, task, parent, info["base"]))
         _current_head(root, pr)
         if reasons:
             raise AgentBoxError("Cannot complete merged task: " + "; ".join(reasons))

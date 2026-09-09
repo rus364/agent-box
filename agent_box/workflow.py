@@ -359,6 +359,12 @@ def human_accepted(saved):
                 and accepted.get("actor") and accepted.get("reason"))
 
 
+def integrated_parent(root, task, parent, base):
+    """An advanced base hides the original parent diff in either landing mode."""
+    return (task.id == parent.id
+            and gw.base_commit(root, base) == gw.head_sha(root))
+
+
 def review_blockers(config, tasks, files, lines, saved, *, allow_human=False, integrated=False):
     reasons = review_reasons(config, tasks, files, lines)
     if integrated and config.policy != "off":
@@ -443,8 +449,7 @@ def inspect(root, binding, adapter, task, config):
     saved = evidence(root, task, fingerprint)
     files, lines = diff_stats(root, base)
     reasons = review_reasons(config.workflow.review, tasks, files, lines)
-    integrated = (config.workflow.merge_mode == "local" and task.id == parent.id
-                  and gw._is_ancestor(root, head, gw.local_branch_head(root, base)))
+    integrated = integrated_parent(root, task, parent, base)
     if integrated and config.workflow.review.policy != "off":
         reasons.append("already integrated scope requires acceptance of the original work")
     review.update(files=len(files), lines=lines, required=bool(reasons), reasons=reasons,
@@ -921,7 +926,8 @@ def finish(root, config, adapter, task_id):
             raise AgentBoxError("Run workflow validate against this exact scope before completion")
         files, lines = diff_stats(root, base)
         reasons = review_blockers(config.workflow.review, tasks, files, lines, saved,
-                                  allow_human=config.workflow.merge_mode == "local")
+                                  allow_human=config.workflow.merge_mode == "local",
+                                  integrated=integrated_parent(root, task, parent, base))
         if reasons:
             raise AgentBoxError("; ".join(reasons))
         adapter.set_state(task, "Review")
@@ -1133,12 +1139,11 @@ def dispatch(args):
         review_context = ""
         if role == "reviewer":
             files, lines = diff_stats(root, base)
-            integrated = (config.workflow.merge_mode == "local" and task.id == parent.id
-                          and gw._is_ancestor(root, gw.head_sha(root), gw.local_branch_head(root, base)))
+            integrated = integrated_parent(root, task, parent, base)
             required = review_required(config.workflow.review, tasks, files, lines)
             if integrated:
                 required = required or config.workflow.review.policy != "off"
-                review_context = ("The task head is already included in the local base. The base diff "
+                review_context = ("The task head is already included in the resolved base. The base diff "
                                   "does not describe the original work: review the complete implementation "
                                   "against task requirements using code and Git history. An empty diff is "
                                   "not acceptance; return INCONCLUSIVE if the scope cannot be established. ")

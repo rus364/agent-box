@@ -490,6 +490,15 @@ CI, comments and paginated unresolved threads, fixes sequentially, obtains
 current-head acceptance and merges with `--match-head-commit`. Branch protection
 is never bypassed. Merge-queue entry is not completion. If the tracker write
 fails after merge, `workflow land PARENT reconcile` retries only reconciliation.
+Before changing an unfinished parent to Done, reconciliation requires successful
+validation and applicable independent review of current code and requirements.
+A merged PR proves integration, not acceptance of changed requirements. Missing
+local evidence, including in a new clone, requires fresh `workflow validate`
+and ab-review as required from the parent branch, then another reconcile without
+another merge. If the base already contains the implementation, auto/always
+requires review of the complete implementation using requirements, code and Git
+history; an empty diff cannot justify skipping review. Already-Done reconciliation
+checks surviving refs and does not write lifecycle.
 
 ## Branch cleanup
 

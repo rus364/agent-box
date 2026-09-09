@@ -1,9 +1,22 @@
 """A prior PASS cannot authorize landing work that has since been reopened."""
 import unittest
+from agent_box import workflow
 from agent_box.tracker.core import Task
 
 
 class MergeAcceptanceTests(unittest.TestCase):
+    def setUp(self):
+        # These unit tests isolate PR/ref identity; scope acceptance is exercised
+        # below against real temporary Git repositories and evidence files.
+        from unittest.mock import patch
+        for name, value in (("scope", "current"), ("diff_stats", ([], 0)),
+                            ("integrated_parent", False),
+                            ("evidence", {"scope": "current", "validation": {"exit": 0},
+                                          "review": {"verdict": "PASS"}})):
+            patcher = patch.object(workflow, name, return_value=value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
     def test_the_pull_request_is_looked_up_on_github_not_read_from_a_comment(self):
         """A stored number let tracker text decide which PR the workflow lands."""
         from unittest.mock import patch
@@ -229,6 +242,123 @@ class LandingFreshnessTests(unittest.TestCase):
         gw.git(self.root, "add", "later.py")
         gw.git(self.root, "commit", "-m", "later work")
 
+    def dispatch(self, arguments):
+        from test_local_workflow import LocalLandTests
+        return LocalLandTests.dispatch(self, arguments)
+
+    def recover_review(self, *, native=False):
+        import json
+        from pathlib import Path
+        from unittest.mock import patch
+        from test_workflow_handoff import selected_route
+        brief = Path(self.temporary.name) / "recovery-brief.md"
+        brief.write_text("Changes: original implementation. Risks: lost acceptance. Validation: true passed; no live proof.")
+        report = {"verdict": "PASS", "summary": "Reviewed current implementation and requirements", "findings": []}
+        with patch.object(workflow, "route", side_effect=selected_route):
+            if native:
+                prepared = self.dispatch(["prepare", "7", "--role", "reviewer", "--primary", "codex",
+                                          "--brief", str(brief)])
+                handoff = json.loads(prepared["review_handoff"].split("Neutral review handoff:\n", 1)[1])
+                self.assertIn("review the complete implementation", handoff["scope_note"])
+                self.assertEqual(handoff["change_summary"]["path_count"], 0)
+                output = Path(self.temporary.name) / "review.json"
+                output.write_text(json.dumps(report))
+                self.dispatch(["report", "7", "--role", "reviewer", "--scope", prepared["scope"],
+                               "--handoff", prepared["handoff"], "--file", str(output),
+                               "--provider", "claude", "--model", "m", "--effort", "high", "--fresh-context"])
+            else:
+                with patch.object(workflow, "execute", return_value={"report": report}) as reviewer:
+                    self.dispatch(["review", "7", "--primary", "codex", "--brief", str(brief)])
+                reviewer.assert_called_once()
+                self.assertIn("review the complete implementation", reviewer.call_args.args[-1])
+
+    def test_lost_evidence_with_integrated_remote_only_base_requires_real_review(self):
+        """New-clone recovery can review an absorbed implementation through either route."""
+        from agent_box import git_workflow as gw
+        from agent_box.errors import AgentBoxError
+        gw.git(self.root, "update-ref", "refs/remotes/origin/main", self.pr["headRefOid"])
+        gw.git(self.root, "branch", "-D", "main")
+        self.parent.labels = ["ab:tier:1"]
+        for native, policy in ((False, "auto"), (True, "always")):
+            with self.subTest(native=native, policy=policy):
+                self.config.workflow.review.policy = policy
+                workflow.evidence_path(self.root, self.parent).unlink(missing_ok=True)
+                with self.assertRaisesRegex(AgentBoxError, "validation"):
+                    self.run_land(action="reconcile")
+                self.dispatch(["validate", "7", "--", "true"])
+                inspected = self.dispatch(["inspect", "7"])
+                self.assertTrue(inspected["review"]["required"])
+                self.assertEqual(inspected["review"]["files"], 0)
+                with self.assertRaisesRegex(AgentBoxError, "PASS review"):
+                    self.dispatch(["finish", "7"])
+                with self.assertRaisesRegex(AgentBoxError, "PASS review"):
+                    self.run_land(action="reconcile")
+                self.adapter.set_state.assert_not_called()
+                self.recover_review(native=native)
+                self.assertEqual(self.run_land(action="reconcile")["state"], "Done")
+                self.command.assert_not_called()
+                self.adapter.set_state.assert_called_once_with(self.parent, "Done")
+                self.adapter.set_state.reset_mock()
+
+    def test_integrated_recovery_with_review_off_still_requires_validation(self):
+        """Off permits policy skipping but never substitutes merge proof for validation."""
+        from agent_box import git_workflow as gw
+        from agent_box.errors import AgentBoxError
+        gw.git(self.root, "update-ref", "refs/heads/main", self.pr["headRefOid"])
+        workflow.evidence_path(self.root, self.parent).unlink()
+        with self.assertRaisesRegex(AgentBoxError, "validation"):
+            self.run_land(action="reconcile")
+        self.dispatch(["validate", "7", "--", "true"])
+        self.assertEqual(self.dispatch(["review", "7", "--primary", "codex"])["review"]["verdict"], "SKIPPED")
+        self.assertEqual(self.run_land(action="reconcile")["state"], "Done")
+        self.command.assert_not_called()
+
+    def test_reconcile_applies_review_policy_to_current_unabsorbed_diff(self):
+        """Auto still skips small work, but sensitive paths and always require current PASS."""
+        from agent_box.errors import AgentBoxError
+        for policy, sensitive, required in (("off", ["*.py"], False), ("auto", [], False),
+                                             ("auto", ["*.py"], True), ("always", [], True)):
+            with self.subTest(policy=policy, sensitive=sensitive):
+                self.config.workflow.review.policy = policy
+                self.config.workflow.review.sensitive_paths = sensitive
+                workflow.save_evidence(self.root, self.parent, {**self.saved, "review": {"verdict": "SKIPPED"}})
+                if required:
+                    with self.assertRaisesRegex(AgentBoxError, "PASS review"):
+                        self.run_land(action="reconcile")
+                    self.adapter.set_state.assert_not_called()
+                else:
+                    self.assertEqual(self.run_land(action="reconcile")["state"], "Done")
+                self.command.assert_not_called()
+                self.adapter.set_state.reset_mock()
+
+    def test_reconcile_rechecks_head_after_acceptance_reads(self):
+        """Acceptance work must not open a window for completing a newer local commit."""
+        from unittest.mock import patch
+        from agent_box.errors import AgentBoxError
+        stats = workflow.diff_stats
+        def moving_stats(*args):
+            value = stats(*args)
+            self.advance()
+            return value
+        with patch.object(workflow, "diff_stats", side_effect=moving_stats):
+            with self.assertRaisesRegex(AgentBoxError, "heads differ"):
+                self.run_land(action="reconcile")
+        self.adapter.set_state.assert_not_called()
+
+    def test_same_scope_done_outage_retry_uses_current_acceptance_without_remerge(self):
+        """A failed lifecycle write does not invalidate surviving exact-scope acceptance."""
+        from agent_box.errors import AgentBoxError
+        self.config.workflow.review.policy = "always"
+        self.adapter.set_state.side_effect = AgentBoxError("tracker unavailable")
+        with self.assertRaisesRegex(AgentBoxError, "tracker unavailable"):
+            self.run_land()
+        self.command.assert_called_once()
+        self.adapter.set_state.side_effect = None
+        self.adapter.set_state.reset_mock()
+        self.assertEqual(self.run_land(action="reconcile")["state"], "Done")
+        self.command.assert_not_called()
+        self.adapter.set_state.assert_called_once_with(self.parent, "Done")
+
     def test_checked_root_requirements_changed_during_network_need_new_acceptance(self):
         """A replaced root invalidates saved PASS even if every checkbox remains checked."""
         from dataclasses import replace
@@ -313,6 +443,26 @@ class LandingFreshnessTests(unittest.TestCase):
                 self.assertEqual(self.command.call_count, 0 if phase == "threads" else 1)
                 self.adapter.set_state.assert_not_called()
 
+    def test_reconcile_cannot_bypass_requirements_changed_after_merge(self):
+        """Retrying a confirmed merge must not accept requirements the first call refused."""
+        from dataclasses import replace
+        from agent_box.errors import AgentBoxError
+        with self.assertRaisesRegex(AgentBoxError, "requirements changed"):
+            self.run_land("result", lambda: setattr(self, "parent", replace(self.parent, title="New goal")))
+        self.command.assert_called_once()
+        with self.assertRaisesRegex(AgentBoxError, "validation"):
+            self.run_land(action="reconcile")
+        self.command.assert_not_called()
+        self.adapter.set_state.assert_not_called()
+        self.config.workflow.review.policy = "always"
+        self.dispatch(["validate", "7", "--", "true"])
+        with self.assertRaisesRegex(AgentBoxError, "PASS review"):
+            self.run_land(action="reconcile")
+        current = workflow.read_evidence(self.root, self.parent)
+        workflow.save_evidence(self.root, self.parent, {**current, "review": {"verdict": "PASS"}})
+        self.assertEqual(self.run_land(action="reconcile")["state"], "Done")
+        self.command.assert_not_called()
+
     def test_reconcile_rechecks_head_and_checklist_after_remote_lookup(self):
         """The remote branch lookup is itself a network window before Done."""
         from dataclasses import replace
@@ -325,6 +475,36 @@ class LandingFreshnessTests(unittest.TestCase):
         with self.assertRaisesRegex(AgentBoxError, "not merged"):
             self.run_land("remote", self.advance, action="reconcile")
         self.adapter.set_state.assert_not_called()
+
+    def test_reconcile_rechecks_current_requirements_and_constraints_after_remote_lookup(self):
+        """A merged PR cannot mask fresh topology, ownership, blocker or scope changes."""
+        from dataclasses import replace
+        from agent_box.errors import AgentBoxError
+        original = self.parent
+        self.child = replace(self.child, state="Doing")
+        for change in ({"title": "Changed goal"}, {"labels": ["sensitive"]}, {"children": ["8"]},
+                       {"assignees": ["2"]}, {"blockers": ["8"]},
+                       {"description": "## Acceptance\n- [x] Different requirement"}):
+            self.parent = original
+            with self.subTest(change=change):
+                with self.assertRaises(AgentBoxError):
+                    self.run_land("remote", lambda: setattr(self, "parent", replace(original, **change)),
+                                  action="reconcile")
+                self.command.assert_not_called()
+                self.adapter.set_state.assert_not_called()
+
+    def test_already_done_after_remote_lookup_needs_no_acceptance_or_lifecycle_write(self):
+        """A concurrent successful completion retains ref checks without rewriting Done."""
+        from dataclasses import replace
+        from unittest.mock import patch
+        workflow.evidence_path(self.root, self.parent).unlink()
+        with patch.object(workflow, "evidence") as evidence:
+            result = self.run_land("remote", lambda: setattr(self, "parent", replace(self.parent, state="Done")),
+                                   action="reconcile")
+        self.assertEqual(result["state"], "Done")
+        evidence.assert_not_called()
+        self.adapter.set_state.assert_not_called()
+        self.command.assert_not_called()
 
     def test_review_request_and_reconcile_still_refuse_dirty_work(self):
         """Dropping unused scope reads must retain their clean-worktree prerequisite."""

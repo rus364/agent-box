@@ -642,6 +642,7 @@ class TransitionReadTests(unittest.TestCase):
 
         self.config.workflow.merge_mode = "github"
         self.config.github.gh_token = True
+        workflow.save_evidence(self.root, self.parent, self.saved)
         events = []
 
         def read(ident):
@@ -661,10 +662,12 @@ class TransitionReadTests(unittest.TestCase):
              patch.object(github, "find_pr", return_value=9), \
              patch.object(github, "view", return_value=merged), \
              patch.object(gw, "remote_branch_head", side_effect=remote), \
-             patch.object(workflow, "tree", wraps=workflow.tree) as tree:
+             patch.object(workflow, "tree", wraps=workflow.tree) as tree, \
+             patch.object(workflow, "scope", wraps=workflow.scope) as scope:
             self.assertEqual(self.dispatch(["land", "7", "reconcile"])["state"], "Done")
         self.assertEqual(events, ["task", "remote", "task"])
         tree.assert_called_once()
+        scope.assert_called_once()
         self.adapter.set_state.assert_called_once_with(self.parent, "Done")
 
     def test_done_reconcile_and_cleanup_read_root_under_the_action_locks(self):
