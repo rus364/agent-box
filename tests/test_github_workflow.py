@@ -266,7 +266,8 @@ class LandingFreshnessTests(unittest.TestCase):
                                "--handoff", prepared["handoff"], "--file", str(output),
                                "--provider", "claude", "--model", "m", "--effort", "high", "--fresh-context"])
             else:
-                with patch.object(workflow, "execute", return_value={"report": report}) as reviewer:
+                with patch.object(workflow, "preflight", return_value=None), \
+                     patch.object(workflow, "execute", return_value={"report": report}) as reviewer:
                     self.dispatch(["review", "7", "--primary", "codex", "--brief", str(brief)])
                 reviewer.assert_called_once()
                 if integrated:
