@@ -689,8 +689,8 @@ Use `workflow prepare TASK --role scout --question "ONE QUESTION" --brief FILE`,
 then the returned native report command or `workflow run TASK --role scout
 --handoff DESCRIPTOR --brief FILE` (repeat the prepared tier). Run consumes the
 prepared route and question, without rescheduling. Changed context, scope, route,
-identity and already consumed descriptors refuse. Only descriptor metadata persists,
-never raw scout reports or conversations.
+identity and already consumed descriptors refuse. Pending descriptor metadata is
+removed after terminal consumption; raw scout reports or conversations are never stored.
 
 Delegated worker prepare/run optionally accept `--facts FILE`, a coordinator-owned
 UTF-8 JSON object with exactly `task` (task ID string), `scope` (current scope digest)
@@ -699,7 +699,7 @@ characters), `sources` (1–6 nonempty path/source reference strings, at most 30
 characters each), and optional `limitations` (nonempty, at most 500 characters).
 The file is limited to 16384 bytes. Wrong keys/types, task or scope refuse before
 routing. Direct workers and other roles reject facts. Managed consumption requires
-the same file path and bytes. The descriptor/evidence bind digest, count and scope;
+the same validated bytes. The descriptor/evidence bind digest, count and scope;
 worker `delegate_handoff.selected_source_evidence` carries the validated object.
 These selected facts reduce repeated reading/context without promising token savings.
 Never supply raw scout output, transcripts, comments or agent history. Facts do not

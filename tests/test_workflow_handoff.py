@@ -243,10 +243,10 @@ class WorkerHandoffTests(unittest.TestCase):
             self.assertEqual(execute.call_args.args[1], prepared["route"])
             self.assertEqual(execute.call_args.args[4], prepared["delegate_handoff"])
             route.assert_not_called()
-            with self.assertRaisesRegex(AgentBoxError, "already started/reported"):
+            with self.assertRaisesRegex(AgentBoxError, "stale or unknown"):
                 self.run_workflow(*command)
         metadata = list((Path(self.directory.name) / "state" / "scouts").rglob("*.json"))
-        self.assertNotIn('"report"', metadata[0].read_text())
+        self.assertEqual(metadata, [])
 
     def test_scout_reports_reject_changed_code_before_acceptance(self):
         """Read-only findings cannot be accepted for code different from the prepared scope."""

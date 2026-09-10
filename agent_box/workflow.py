@@ -25,6 +25,7 @@ import re
 import secrets
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -253,7 +254,7 @@ def read_facts(path, task, fingerprint):
         if "limitations" in fact and not compact(fact["limitations"], 500):
             raise AgentBoxError(prefix + " limitations must be a nonempty string of at most 500 characters")
     return value, {"digest": hashlib.sha256(raw).hexdigest(), "count": len(items),
-                   "scope": fingerprint, "file": str(Path(path).resolve())}
+                   "scope": fingerprint}
 
 
 def scope_fingerprint(head, base, task_requirements, *, working_diff=None):
@@ -274,8 +275,17 @@ def scope(root, base, tasks, *, allow_dirty=False):
         for name in gw.git(root, "ls-files", "--others", "--exclude-standard", "-z").split("\0"):
             if name:
                 path = Path(root) / name
-                content = os.readlink(path).encode() if path.is_symlink() else path.read_bytes()
-                untracked[name] = hashlib.sha256(content).hexdigest()
+                mode = path.lstat().st_mode
+                if stat.S_ISLNK(mode):
+                    digest = hashlib.sha256(os.readlink(path).encode())
+                elif stat.S_ISREG(mode):
+                    digest = hashlib.sha256()
+                    with path.open("rb") as stream:
+                        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                            digest.update(chunk)
+                else:
+                    raise AgentBoxError(f"Cannot fingerprint untracked non-regular path {name}")
+                untracked[name] = digest.hexdigest()
         working_diff = {"diff": gw.git(root, "diff", "--binary", "HEAD", "--"), "untracked": untracked}
     return scope_fingerprint(head, base_head, task_requirements, working_diff=working_diff)
 
@@ -1352,10 +1362,13 @@ def scout_dispatch(args, root, binding, adapter, task, config):
         execution_lock = scout_slot(root, config.workflow.scout_limit) if args.command == "run" else nullcontext()
         with execution_lock:
             atomic_write_text(path, json.dumps({"descriptor": descriptor, "status": "consumed"}), 0o600)
-            output = (execute(config.workflow, descriptor["route"], "scout", root, prompt)
-                      if args.command == "run" else native_output(args, descriptor["route"], tier))
-            if scope(root, "HEAD", tree(adapter, adapter.get(task.id)), allow_dirty=True) != fingerprint:
-                raise AgentBoxError("Scout code or requirements changed; report is stale")
+            try:
+                output = (execute(config.workflow, descriptor["route"], "scout", root, prompt)
+                          if args.command == "run" else native_output(args, descriptor["route"], tier))
+                if scope(root, "HEAD", tree(adapter, adapter.get(task.id)), allow_dirty=True) != fingerprint:
+                    raise AgentBoxError("Scout code or requirements changed; report is stale")
+            finally:
+                path.unlink(missing_ok=True)
         return {**output, "scope": fingerprint, **scout_diagnostics(config)}
 
 
