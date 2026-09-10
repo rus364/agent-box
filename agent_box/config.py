@@ -529,27 +529,27 @@ def model_tiers(numbers, data=None):
 @dataclass
 class ModelOverride:
     """Opt in before replacing a role's session inheritance or explicit tiers."""
-    enabled: bool = False
-    apply_to_tiered: bool = False
+    scope: str = "off"
     models: dict[str, dict] = field(default_factory=model_candidates)
 
     def applies(self, tier):
-        return self.enabled and (tier is None or self.apply_to_tiered)
+        return self.scope == "all" or self.scope == "untiered" and tier is None
 
     @classmethod
     def from_dict(cls, data):
         data = _mapping(data)
-        return cls(_bool(data, "enabled", False), _bool(data, "apply_to_tiered", False),
-                   model_candidates(data.get("models")))
+        return cls(data.get("scope", "off"), model_candidates(data.get("models")))
 
 
 @dataclass
 class WorkerConfig:
+    execution: str = "auto"
     override: ModelOverride = field(default_factory=ModelOverride)
 
     @classmethod
     def from_dict(cls, data):
-        return cls(ModelOverride.from_dict(_mapping(data).get("override")))
+        data = _mapping(data)
+        return cls(data.get("execution", "auto"), ModelOverride.from_dict(data.get("override")))
 
 
 @dataclass
@@ -631,6 +631,11 @@ class WorkflowConfig:
             errors.append("workflow.merge_mode must be github or local")
         if self.routing not in ("current", "weighted", "usage-aware"):
             errors.append("workflow.routing must be current, weighted, or usage-aware")
+        if self.worker.execution not in ("auto", "direct", "delegated"):
+            errors.append("workflow.worker.execution must be auto, direct, or delegated")
+        for name, settings in (("worker", self.worker), ("review", self.review)):
+            if settings.override.scope not in ("off", "untiered", "all"):
+                errors.append(f"workflow.{name}.override.scope must be off, untiered, or all")
         if any(not isinstance(v, (int, float)) or not math.isfinite(v) or v < 0
                for v in self.weights.values()) or not any(self.weights.values()):
             errors.append("workflow.weights must be finite, nonnegative, and not all zero")

@@ -9,7 +9,7 @@ from agent_box.routing import select
 class WorkerOverrideRoutingTests(unittest.TestCase):
     def config(self):
         config = WorkflowConfig()
-        config.worker.override.enabled = True
+        config.worker.override.scope = "untiered"
         for provider in ('codex', 'claude'):
             config.worker.override.models[provider] = {'model': provider + '-global', 'effort': 'high'}
             for tier in config.tiers.values():
@@ -19,18 +19,17 @@ class WorkerOverrideRoutingTests(unittest.TestCase):
         return config
 
     def test_tier_priority_changes_only_worker_candidates(self):
-        """Tiered opt-in is independent of enablement, and other roles keep their routes."""
+        """Scope selects worker models while other roles keep their routes."""
         config = self.config()
         for role, tier in (('scout', 0), ('reviewer', 2)):
             before = select(config, role, tier, 'codex', {})
-            config.worker.override.apply_to_tiered = True
+            config.worker.override.scope = "all"
             self.assertEqual(select(config, role, tier, 'codex', {}), before)
         for provider in ('codex', 'claude'):
-            for enabled, apply, tier, expected in ((False, True, 2, 'tier'),
-                    (True, False, 2, 'tier'), (True, True, 2, 'global'),
-                    (True, False, None, 'global')):
-                config.worker.override.enabled = enabled
-                config.worker.override.apply_to_tiered = apply
+            for scope, tier, expected in (("off", 2, 'tier'),
+                    ("untiered", 2, 'tier'), ("all", 2, 'global'),
+                    ("untiered", None, 'global'), ("all", None, 'global')):
+                config.worker.override.scope = scope
                 result = select(config, 'worker', tier, provider, {})
                 self.assertEqual((result['model'], result['tier']), (provider + '-' + expected, tier))
                 self.assertEqual(result['effort'], 'high' if expected == 'global' else 'low')

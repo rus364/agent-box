@@ -94,7 +94,7 @@ class ReviewerMatrixTests(unittest.TestCase):
                     cli.config_show()
                 rows = [" ".join(row.split()) for row in output.getvalue().splitlines()]
                 self.assertIn(f"review routing {mode}", rows)
-                self.assertTrue(any(row.startswith("routing weighted;") for row in rows))
+                self.assertTrue(any(row.startswith("delegated routing weighted;") for row in rows))
                 self.assertIn("review auto; files 5; lines 200", rows)
 
     def test_reviewer_defaults_are_empty_and_have_only_task_tiers(self):

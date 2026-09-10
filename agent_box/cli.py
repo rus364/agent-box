@@ -368,12 +368,13 @@ def config_show() -> None:
     print(f"    merge mode                {config.workflow.merge_mode}")
     print(f"    cleanup local branches    {config.workflow.cleanup_local_branches}")
     print(f"    cleanup remote branches   {config.workflow.cleanup_remote_branches}")
-    print(f"    routing                   {config.workflow.routing}; weights {config.workflow.weights}")
+    print(f"    worker execution          {config.workflow.worker.execution}")
+    print(f"    delegated routing         {config.workflow.routing}; weights {config.workflow.weights}")
     print(f"    review                    {config.workflow.review.policy}; files {config.workflow.review.max_files}; lines {config.workflow.review.max_lines}")
     print(f"    review routing            {config.workflow.review.routing}")
     for role, settings in (("worker", config.workflow.worker), ("reviewer", config.workflow.review)):
         override = settings.override
-        print(f"    {role + ' override':26s}{'on' if override.enabled else 'off'}; also tiered {override.apply_to_tiered}")
+        print(f"    {role + ' model scope':26s}{override.scope}")
         for provider, spec in override.models.items():
             print(f"    {role} override {provider}: {spec}")
     print(f"    fallback / auto-push      {config.workflow.fallback} / {config.workflow.auto_push}")

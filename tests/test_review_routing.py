@@ -17,23 +17,23 @@ class ReviewRoutingTests(unittest.TestCase):
         """An override replaces model settings, never writer identity or fallback policy."""
         config = test_routing.RoutingTests().config()
         override = config.review.override
-        override.enabled = True
+        override.scope = "untiered"
         override.models = {p: {"model": p + "-global", "effort": "default"} for p in ("codex", "claude")}
         for tier in (None, 1, 2, 3):
-            for apply in (False, True):
-                override.apply_to_tiered = apply
+            for scope in ("untiered", "all"):
+                override.scope = scope
                 for writer, other in (("codex", "claude"), ("claude", "codex")):
                     for mode in ("same-provider", "cross-provider"):
                         config.review.routing = mode
                         for fallback in (False, True):
                             config.fallback = fallback
-                            with self.subTest(tier=tier, apply=apply, writer=writer, mode=mode, fallback=fallback):
+                            with self.subTest(tier=tier, scope=scope, writer=writer, mode=mode, fallback=fallback):
                                 route = select(config, "reviewer", tier, other, {}, writer=writer)
                                 expected = [writer] if mode == "same-provider" else [other] + ([writer] if fallback else [])
                                 candidates = [route, *route["fallbacks"]]
                                 self.assertEqual([r["provider"] for r in candidates], expected)
                                 for candidate in candidates:
-                                    global_model = tier is None or apply
+                                    global_model = tier is None or scope == "all"
                                     self.assertEqual(candidate["model"], candidate["provider"] + ("-global" if global_model else "-reviewer"))
                                     self.assertEqual(candidate["effort"], "default" if global_model else "medium")
                                     self.assertEqual(candidate["tier"], tier)
@@ -41,7 +41,7 @@ class ReviewRoutingTests(unittest.TestCase):
     def test_empty_or_unavailable_global_candidates_cannot_inherit_session_or_tiers(self):
         """A disabled override candidate cannot silently launch an unrelated configured model."""
         config = test_routing.RoutingTests().config()
-        config.review.override.enabled = True
+        config.review.override.scope = "untiered"
         for writer, other in (("codex", "claude"), ("claude", "codex")):
             for mode in ("same-provider", "cross-provider"):
                 config.review.routing = mode
@@ -67,9 +67,9 @@ class ReviewRoutingTests(unittest.TestCase):
         """Reviewer choices cannot reschedule implementation or introduce a fake tier."""
         config = test_routing.RoutingTests().config()
         for role, tier in (("worker", 2), ("scout", 0)):
-            config.review.override.enabled = False
+            config.review.override.scope = "off"
             expected = select(config, role, tier, "codex", {})
-            config.review.override.enabled = config.review.override.apply_to_tiered = True
+            config.review.override.scope = "all"
             self.assertEqual(select(config, role, tier, "codex", {}), expected)
         with self.assertRaisesRegex(AgentBoxError, "Tier 0"):
             select(config, "reviewer", 0, "codex", {})

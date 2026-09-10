@@ -65,10 +65,11 @@ class ConfigMenuTests(unittest.TestCase):
         expected = {
             (): ['workflow', 'tracker', 'image', 'browser', 'env', 'providers',
                  'github', 'git', 'claude', 'skills', 'notifications'],
-            ('workflow',): ['enabled', 'routing', 'worker', 'tiers', 'weights', 'fallback',
+            ('workflow',): ['enabled', 'worker', 'tiers', 'routing', 'weights', 'fallback',
                            'reserve_percent', 'smoothing_hours', 'review', 'merge_mode',
                            'auto_push', 'cleanup_local_branches', 'cleanup_remote_branches',
                            'scout_limit', 'timeout_seconds'],
+            ('workflow', 'worker'): ['execution', 'override'],
             ('workflow', 'review'): ['policy', 'max_files', 'max_lines', 'sensitive_paths',
                                     'label', 'routing', 'override', 'tiers', 'max_rounds',
                                     'github_provider', 'github_model', 'github_effort', 'wait_seconds'],
@@ -83,26 +84,25 @@ class ConfigMenuTests(unittest.TestCase):
 
     def test_long_labels_keep_value_columns_and_full_selected_help_at_supported_widths(self):
         """A long override label must neither shift its value nor disappear from help."""
-        import curses
-        keys = [*select('workflow'), '\n', *select('worker', ('workflow',)), '\n', '\n',
-                curses.KEY_DOWN, '?', '\x1b', *['\x1b'] * 4]
+        keys = [*select('workflow'), '\n', *select('worker', ('workflow',)), '\n',
+                *select('override', ('workflow', 'worker')), '\n',
+                '?', '\x1b', *['\x1b'] * 4]
         for size in ((8, 40), (24, 80), (24, 100), (40, 160)):
             with self.subTest(size=size):
                 screen = Screen(keys, sizes=[size])
                 self.edit(Config(), [], screen=screen)
-                rows = [text for _, x, text, _ in screen.writes if x == 0 and ': [ ]' in text]
-                override_rows = [row for row in rows if row.startswith(('Enabled', 'Also override'))]
-                self.assertTrue(any(row.startswith('Also override') for row in override_rows))
-                # Read only frames in the override submenu; other sections have their own widths.
+                rows = [text for _, x, text, _ in screen.writes if x == 0 and ':' in text]
+                override_rows = [row for row in rows if row.startswith('Model override')]
+                self.assertTrue(override_rows)
                 for frame, writes in zip(screen.frames, screen.attributes):
-                    if 'Models' not in frame or 'Also override' not in frame:
+                    if 'Models' not in frame or 'Model override' not in frame:
                         continue
                     columns = [text.index(':') for _, x, text, _ in writes
-                               if x == 0 and text.startswith(('Enabled', 'Also override', 'Models')) and ':' in text]
+                               if x == 0 and text.startswith(('Model override', 'Models')) and ':' in text]
                     self.assertEqual(len(set(columns)), 1)
                 full_help = next(frame for frame in screen.frames if 'Help: workflow.worker' in frame)
-                self.assertIn('Also override tiered tasks', full_help)
-                if size[1] in (40, 100):
+                self.assertIn('Model override scope', full_help)
+                if size[1] == 40:
                     self.assertTrue(any('...:' in row for row in override_rows))
 
     def test_editor_field_has_default_background_cursor_and_overflow_markers(self):
@@ -200,7 +200,7 @@ class ConfigMenuTests(unittest.TestCase):
         prefix = [*select("workflow"), "\n",
                   *select("review", ("workflow",)), "\n",
                   *select("override", ("workflow", "review")), "\n",
-                  " ", curses.KEY_DOWN, " ", curses.KEY_DOWN, "\n"]
+                  " ", " ", curses.KEY_DOWN, "\n"]
         for index, provider in enumerate(("codex", "claude")):
             cases = [([curses.KEY_HOME, "\n", *"manual-reviewer", "\n"], "manual-reviewer"),
                      ([curses.KEY_END, "\n"], BUNDLED_MODELS[provider][-1]),
@@ -214,12 +214,11 @@ class ConfigMenuTests(unittest.TestCase):
                     result, _ = self.edit(config, [*edit_keys, *["\x1b"] * 5,
                                                    curses.KEY_END, curses.KEY_UP, "\n"])
                     override = result.config.workflow.review.override
-                    self.assertTrue(override.enabled)
-                    self.assertTrue(override.apply_to_tiered)
+                    self.assertEqual(override.scope, "all")
                     self.assertEqual(override.models[provider], {"model": expected, "effort": "default"})
                     self.assertEqual(result.config.workflow.review.tiers, config.workflow.review.tiers)
                     self.assertEqual(result.config.workflow.tiers, config.workflow.tiers)
-        self.assertFalse(config.workflow.review.override.enabled)
+        self.assertEqual(config.workflow.review.override.scope, "off")
 
     def test_global_worker_candidates_use_picker_effort_and_draft_controls(self):
         """Both override candidates share the model editor without altering tier settings."""
@@ -227,8 +226,8 @@ class ConfigMenuTests(unittest.TestCase):
         config = Config()
         prefix = [*select("workflow"), "\n",
                   *select("worker", ("workflow",)), "\n",
-                  *[curses.KEY_DOWN] * 0, "\n",
-                  " ", curses.KEY_DOWN, " ", curses.KEY_DOWN, "\n"]
+                  *select("override", ("workflow", "worker")), "\n",
+                  " ", " ", curses.KEY_DOWN, "\n"]
         for index, provider in enumerate(("codex", "claude")):
             cases = [([curses.KEY_HOME, "\n", *"manual-worker", "\n"], "manual-worker"),
                      ([curses.KEY_END, "\n"], BUNDLED_MODELS[provider][-1]),
@@ -244,12 +243,11 @@ class ConfigMenuTests(unittest.TestCase):
                     self.assertIn("Global worker override", "\n".join(screen.drawn))
                     self.assertEqual(result.config.workflow.review, config.workflow.review)
                     override = result.config.workflow.worker.override
-                    self.assertTrue(override.enabled)
-                    self.assertTrue(override.apply_to_tiered)
+                    self.assertEqual(override.scope, "all")
                     self.assertEqual(override.models[provider], {"model": expected, "effort": "default"})
                     self.assertEqual(result.config.workflow.review.tiers, config.workflow.review.tiers)
                     self.assertEqual(result.config.workflow.tiers, config.workflow.tiers)
-        self.assertFalse(config.workflow.worker.override.enabled)
+        self.assertEqual(config.workflow.worker.override.scope, "off")
 
     def test_cleanup_toggles_save_independently_without_enabling_the_other(self):
         import curses
@@ -263,6 +261,21 @@ class ConfigMenuTests(unittest.TestCase):
 
     def test_merge_mode_is_an_explicit_menu_choice(self):
         self.assertEqual(config_menu.CHOICES["workflow.merge_mode"], ("github", "local"))
+
+    def test_worker_execution_choices_save_globally_and_as_project_overrides(self):
+        """Execution can be chosen independently while model scope remains inherited."""
+        import curses
+        for project in (None, {}):
+            for steps, execution in enumerate(("auto", "direct", "delegated")):
+                keys = [*select("workflow"), '\n', *select("worker", ("workflow",)), '\n',
+                        *select("execution", ("workflow", "worker")), *[' '] * (steps or 3),
+                        '\x1b', '\x1b', curses.KEY_END, curses.KEY_UP, '\n']
+                with self.subTest(project=project, execution=execution):
+                    result, _ = self.edit(Config(), keys, project=project)
+                    self.assertEqual(result.config.workflow.worker.execution, execution)
+                    self.assertEqual(result.config.workflow.worker.override.scope, "off")
+                    if project is not None:
+                        self.assertEqual(result.project, {"workflow": {"worker": {"execution": execution}}})
 
     def edit(self, config, keys, choices=(), link=None, screen=None, project=None, catalogs=None):
         import curses
@@ -594,17 +607,18 @@ class ProjectMenuTests(unittest.TestCase):
         import curses
         from agent_box import project_config
         config = Config()
-        config.workflow.worker.override.enabled = True
+        config.workflow.worker.override.scope = "untiered"
         prefix = [*select("workflow"), '\n',
-                  *select("worker", ("workflow",)), '\n']
+                  *select("worker", ("workflow",)), '\n',
+                  *select("override", ("workflow", "worker"))]
         save = ['\x1b', '\x1b', curses.KEY_END, curses.KEY_UP, '\n']
         pinned, _ = self.edit(config, [*prefix, 'g', *save], project={})
-        self.assertTrue(pinned.project['workflow']['worker']['override']['enabled'])
+        self.assertEqual(pinned.project['workflow']['worker']['override']['scope'], 'untiered')
         reset, _ = self.edit(config, [*prefix, 'r', *save], project=pinned.project)
         self.assertEqual(reset.project, {})
-        config.workflow.worker.override.enabled = False
-        self.assertTrue(project_config.apply(config, pinned.project).workflow.worker.override.enabled)
-        self.assertFalse(project_config.apply(config, reset.project).workflow.worker.override.enabled)
+        config.workflow.worker.override.scope = "off"
+        self.assertEqual(project_config.apply(config, pinned.project).workflow.worker.override.scope, "untiered")
+        self.assertEqual(project_config.apply(config, reset.project).workflow.worker.override.scope, "off")
 
     def test_use_global_pins_equal_values_while_reset_follows_later_global_changes(self):
         """Copying global is an explicit choice; reset resumes live inheritance."""
@@ -796,7 +810,7 @@ class ProjectMenuTests(unittest.TestCase):
         prefix = [*select("workflow"), '\n',
                   *select("review", ("workflow",)), '\n',
                   *select("override", ("workflow", "review")), '\n',
-                  curses.KEY_DOWN, curses.KEY_DOWN, '\n', '\n', '\n']
+                  curses.KEY_DOWN, '\n', '\n', '\n']
         for pick, expected in (([curses.KEY_HOME, '\n', *'custom-model', '\n'], 'custom-model'),
                                ([curses.KEY_HOME, curses.KEY_DOWN, '\n'], '')):
             keys = [*prefix, *pick, curses.KEY_DOWN, *[' '] * 5,
@@ -804,7 +818,7 @@ class ProjectMenuTests(unittest.TestCase):
             result, _ = self.edit(config, keys, project={})
             self.assertEqual(result.project['workflow']['review']['override']['models']['codex'],
                              {'model': expected, 'effort': 'default'})
-            self.assertFalse(result.config.workflow.review.override.enabled)
+            self.assertEqual(result.config.workflow.review.override.scope, "off")
 
     def test_project_save_and_cancel_do_not_apply_or_configure_path(self):
         from agent_box import cli, project_config

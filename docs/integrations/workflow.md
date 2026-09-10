@@ -223,20 +223,23 @@ For explicit tiers, both modes use `workflow.review.tiers` unless the global ove
 select reviewers. Routing changes neither review policy nor worker/scout routing.
 All attempts preserve the selected tier and configured reviewer model/effort.
 
-### Global worker override
+### Worker execution and model source
 
-In `agent-box config`, open workflow / worker / Global worker override.
-`workflow.worker.override` holds `enabled` (default false), `apply_to_tiered`
-(default false), and independent `models.codex` / `models.claude` candidates
-with `model` and `effort`. Empty models disable candidates; effort starts at
-`medium`. The model picker supports offline suggestions, manual IDs and an
-explicit disable choice.
+In `agent-box config`, workflow / worker separates execution from model selection.
+`workflow.worker.execution` accepts `auto` (default), `direct` or `delegated`.
+This preference is saved and displayed; dispatch currently retains its existing
+behavior. Model scope does not choose execution mode.
 
-| Enabled | Also override tiered tasks | Without an effective tier | With an effective tier |
-| --- | --- | --- | --- |
-| Off | Either | Active session | `workflow.tiers` |
-| On | Off | Worker override candidates | `workflow.tiers` |
-| On | On | Worker override candidates | Worker override candidates |
+Open Global worker override to set `workflow.worker.override.scope` and
+independent `models.codex` / `models.claude` candidates with `model` and `effort`.
+Empty models disable candidates; effort defaults to `medium`. The picker offers
+offline suggestions, manual IDs and an explicit disable choice.
+
+| Scope | Without an effective tier | With an effective tier |
+| --- | --- | --- |
+| `off` (default) | Active session | `workflow.tiers` |
+| `untiered` | Worker override candidates | `workflow.tiers` |
+| `all` | Worker override candidates | Worker override candidates |
 
 The effective tier remains the card's tier, otherwise explicit `--tier`, otherwise
 null. An override never changes tracker labels or invents a tier. It replaces
@@ -258,28 +261,26 @@ workers, profile readiness still requires an exact match to the chosen candidate
 
 These settings appear separately from reviewer overrides in `config show`, use
 the same project configuration inheritance and reset controls, and travel in the
-minimal runtime artifact. A project can override individual flags or model/effort
+minimal runtime artifact. A project can override execution, scope or individual model/effort
 fields without changing the global configuration.
 
 ### Global reviewer override
 
 In `agent-box config`, open workflow / review / Global reviewer override.
-Enable it to select reviewer model and effort independently for Codex and Claude
+Set Scope to select reviewer model and effort independently for Codex and Claude
 under Models. The same/cross-provider policy still chooses the provider relative
 to the actual writer, including for untiered tasks. Empty models disable candidates;
 there is no implicit fallback to session settings or tier models.
 
-`workflow.review.override` contains `enabled` (default false), `apply_to_tiered`
-(default false), and `models.codex` / `models.claude`, each with `model` and `effort`.
-The model picker supports offline suggestions, manual IDs and disabling a candidate.
+`workflow.review.override` contains `scope` and `models.codex` / `models.claude`,
+each with `model` and `effort`. It shares the worker scope choices but owns its
+candidates independently:
 
-| Override | Effective tier | Reviewer settings |
+| Scope | Without an effective tier | With an effective tier |
 | --- | --- | --- |
-| Disabled | None | Active session |
-| Disabled | 1-3 | Reviewer tier matrix |
-| Enabled, also tiered off | None | Global reviewer candidates |
-| Enabled, also tiered off | 1-3 | Reviewer tier matrix |
-| Enabled, also tiered on | Any | Global reviewer candidates |
+| `off` (default) | Active session | Reviewer tier matrix |
+| `untiered` | Global reviewer candidates | Reviewer tier matrix |
+| `all` | Global reviewer candidates | Global reviewer candidates |
 
 The effective tier is the task's tier, otherwise an explicit `--tier`, otherwise
 none. The override never changes it or adds a tracker label. It also leaves

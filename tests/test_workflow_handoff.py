@@ -271,7 +271,7 @@ class WorkerHandoffTests(unittest.TestCase):
         override = self.config.workflow.worker.override
         self.config.workflow.routing = "weighted"
         for provider, other in (("codex", "claude"), ("claude", "codex")):
-            override.enabled = True
+            override.scope = "untiered"
             override.models = {p: {"model": p + "-global", "effort": "high"} for p in (provider, other)}
             self.config.workflow.weights = {provider: 3, other: 1}
             with patch.object(workflow.shutil, "which", side_effect=lambda name: name), \
@@ -284,7 +284,7 @@ class WorkerHandoffTests(unittest.TestCase):
             self.assertFalse(route["native_profile_ready"])
             self.assertEqual(route["native_explicit_settings"],
                              {"provider": provider, "model": provider + "-global", "effort": "high"})
-            override.enabled = False
+            override.scope = "off"
             override.models[provider]["model"] = "changed"
             argv = ["report", "1", "--role", "worker", "--scope", prepared["scope"],
                     "--handoff", prepared["handoff"], "--file", str(self.report)]
@@ -299,6 +299,24 @@ class WorkerHandoffTests(unittest.TestCase):
             self.assertEqual(workflow.read_evidence(self.root, self.task)["worker"]["route"], result["route"])
             self.assertEqual(self.task.labels, [])
 
+    def test_execution_preference_does_not_change_current_dispatch(self):
+        """Persisting the preference must not activate dispatch rules before they are implemented."""
+        self.patches[5].stop()
+        self.config.workflow.tiers["1"]["codex"] = {"model": "codex-tier", "effort": "high"}
+        for execution in ("auto", "direct", "delegated"):
+            self.config.workflow.worker.execution = execution
+            for tier in (None, 1):
+                self.task.labels = [f"ab:tier:{tier}"] if tier else []
+                with self.subTest(execution=execution, tier=tier), \
+                     patch.object(workflow.shutil, "which", side_effect=lambda name: name), \
+                     patch("agent_box.agent_profiles.available", return_value=False), \
+                     patch.object(workflow, "run", return_value={"status": "completed", "summary": "Done", "evidence": []}) as run:
+                    result = self.run_workflow("run", "1", "--primary", "codex",
+                                               "--brief", str(self.review_brief),
+                                               "--session-model", "codex-session", "--session-effort", "medium")
+                self.assertEqual(result["route"]["model"], "codex-tier" if tier else "codex-session")
+                self.assertEqual(run.call_count, 1 if tier else 0)
+
     def test_worker_override_managed_fallback_keeps_route_after_config_change(self):
         """A provider failure can use its prepared fallback, but cannot reschedule from new config."""
         self.patches[5].stop()
@@ -306,12 +324,12 @@ class WorkerHandoffTests(unittest.TestCase):
         self.config.workflow.routing = "weighted"
         self.config.workflow.weights = {"codex": 3, "claude": 1}
         override = self.config.workflow.worker.override
-        override.enabled = True
+        override.scope = "untiered"
         override.models = {p: {"model": p + "-global", "effort": "high"} for p in ("codex", "claude")}
 
         def run(candidate, *args, **kwargs):
             if candidate["provider"] == "codex":
-                override.enabled = False
+                override.scope = "off"
                 override.models["claude"]["model"] = "new-model"
                 raise provider_runner.ProviderFailure("provider unavailable", "unavailable")
             self.assertEqual(candidate["model"], "claude-global")
@@ -334,19 +352,19 @@ class WorkerHandoffTests(unittest.TestCase):
             override.models[provider] = {"model": provider + "-global", "effort": "default"}
             for tier in ("1", "2"):
                 self.config.workflow.tiers[tier][provider] = {"model": provider + "-tier", "effort": "high"}
-            for enabled, apply, card, explicit, expected in (
-                    (False, False, None, None, "session"), (False, True, None, None, "session"),
-                    (False, True, 1, 2, "tier"), (True, False, 1, 2, "tier"),
-                    (True, False, None, 2, "tier"), (True, False, None, None, "global"),
-                    (True, True, 1, 2, "global"), (True, True, None, 2, "global")):
-                override.enabled, override.apply_to_tiered = enabled, apply
+            for scope, card, explicit, expected in (
+                    ("off", None, None, "session"), ("off", 1, 2, "tier"),
+                    ("untiered", 1, 2, "tier"), ("untiered", None, 2, "tier"),
+                    ("untiered", None, None, "global"), ("all", None, None, "global"),
+                    ("all", 1, 2, "global"), ("all", None, 2, "global")):
+                override.scope = scope
                 self.task.labels = [f"ab:tier:{card}"] if card else []
                 for command in ("prepare", "run"):
                     argv = [command, "1", "--primary", provider, "--brief", str(self.review_brief),
                             "--session-model", provider + "-session", "--session-effort", "medium"]
                     if explicit:
                         argv += ["--tier", str(explicit)]
-                    with self.subTest(provider=provider, enabled=enabled, apply=apply, card=card, explicit=explicit, command=command), \
+                    with self.subTest(provider=provider, scope=scope, card=card, explicit=explicit, command=command), \
                          patch.object(workflow.shutil, "which", side_effect=lambda name: name), \
                          patch("agent_box.agent_profiles.available", return_value=False), \
                          patch.object(workflow, "run", return_value={"status": "completed", "summary": "Done", "evidence": []}) as run:
@@ -372,7 +390,7 @@ class WorkerHandoffTests(unittest.TestCase):
         """Config changes cannot rewrite a prepared review's parameters or admit stale reports."""
         self.patches[5].stop()  # Exercise the real route, not the generic handoff fixture.
         self.task.labels = []
-        self.config.workflow.review.override.enabled = True
+        self.config.workflow.review.override.scope = "untiered"
         self.config.workflow.review.override.models = {
             "codex": {"model": "codex-global", "effort": "medium"},
             "claude": {"model": "claude-global", "effort": "high"}}
@@ -414,10 +432,10 @@ class WorkerHandoffTests(unittest.TestCase):
             self.config.workflow.review.tiers["2"][provider] = {"model": provider + "-tier", "effort": "high"}
         for command in ("run", "review"):
             for provider in ("codex", "claude"):
-                for enabled, apply, explicit, expected in ((False, True, False, "session"),
-                        (False, True, True, "tier"), (True, False, False, "global"),
-                        (True, False, True, "tier"), (True, True, True, "global")):
-                    override.enabled, override.apply_to_tiered = enabled, apply
+                for scope, explicit, expected in (("off", False, "session"),
+                        ("off", True, "tier"), ("untiered", False, "global"),
+                        ("untiered", True, "tier"), ("all", True, "global")):
+                    override.scope = scope
                     argv = [command, "1", "--primary", provider, "--brief", str(self.review_brief),
                             "--session-model", provider + "-session", "--session-effort", "medium"]
                     if command == "run":

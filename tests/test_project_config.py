@@ -30,7 +30,7 @@ class ProjectConfigTests(unittest.TestCase):
         self.addCleanup(self.env.stop)
 
     def test_partial_override_preserves_false_empty_list_empty_model_and_global(self):
-        self.config.workflow.review.override.enabled = True
+        self.config.workflow.review.override.scope = "untiered"
         original = self.config.to_dict()
         data = {'browser': {'enabled': False}, 'image': {'tools': {'browser': True}},
                 'workflow': {'review': {'sensitive_paths': [], 'override': {'models': {'codex': {'model': ''}}}},
@@ -38,7 +38,7 @@ class ProjectConfigTests(unittest.TestCase):
         project_config.validate(data, self.path)
         result = project_config.apply(self.config, data)
         self.assertEqual(result.workflow.review.sensitive_paths, [])
-        self.assertTrue(result.workflow.review.override.enabled)
+        self.assertEqual(result.workflow.review.override.scope, "untiered")
         self.assertEqual(result.workflow.review.override.models['codex']['model'], '')
         self.assertFalse(result.workflow.auto_push)
         self.assertTrue(result.image.tools['browser'])
@@ -46,13 +46,13 @@ class ProjectConfigTests(unittest.TestCase):
         self.assertEqual(self.config.to_dict(), original)
 
     def test_worker_override_project_values_reach_runtime_without_changing_global(self):
-        """Sparse project false/empty choices supersede global worker candidates only."""
+        """Sparse project scope/execution choices supersede global settings without sharing candidates."""
         override = self.config.workflow.worker.override
-        override.enabled = override.apply_to_tiered = True
+        override.scope = "all"
         override.models['codex'] = {'model': 'global-codex', 'effort': 'high'}
         override.models['claude'] = {'model': 'global-claude', 'effort': 'medium'}
         original = self.config.to_dict()
-        data = {'workflow': {'worker': {'override': {'apply_to_tiered': False,
+        data = {'workflow': {'worker': {'execution': 'delegated', 'override': {'scope': 'untiered',
                 'models': {'codex': {'model': ''}, 'claude': {'effort': 'default'}}}}}}
         project_config.save(self.path, data)
         result = project_config.apply(self.config, project_config.load(self.path))
@@ -63,15 +63,15 @@ class ProjectConfigTests(unittest.TestCase):
             rendered = effective_config()
             self.assertEqual(effective_config(include_project=False).workflow.worker.override, override)
         chosen = rendered.workflow.worker.override
-        self.assertTrue(chosen.enabled)
-        self.assertFalse(chosen.apply_to_tiered)
+        self.assertEqual(chosen.scope, "untiered")
+        self.assertEqual(rendered.workflow.worker.execution, "delegated")
         self.assertEqual(chosen.models['codex'], {'model': '', 'effort': 'high'})
         self.assertEqual(chosen.models['claude'], {'model': 'global-claude', 'effort': 'default'})
         self.assertEqual(rendered.workflow.review, self.config.workflow.review)
         self.assertEqual(self.config.to_dict(), original)
-        disabled = project_config.apply(self.config, {'workflow': {'worker': {'override': {'enabled': False}}}})
+        disabled = project_config.apply(self.config, {'workflow': {'worker': {'override': {'scope': 'off'}}}})
         self.assertIsNone(disabled.workflow.override_for('worker', None))
-        for bad in ({'enabled': 'true'}, {'models': {'claude': {'effort': 'ultra'}}}):
+        for bad in ({'scope': 'invalid'}, {'models': {'claude': {'effort': 'ultra'}}}):
             with self.assertRaises(AgentBoxError):
                 project_config.validate({'workflow': {'worker': {'override': bad}}}, self.path)
 
@@ -88,6 +88,19 @@ class ProjectConfigTests(unittest.TestCase):
         with self.assertRaises(AgentBoxError) as caught:
             project_config.load(self.path)
         self.assertNotIn('secret-value', str(caught.exception))
+
+    def test_project_execution_and_role_scopes_reject_invalid_enums(self):
+        """Project overrides must not silently restore global or default enum choices."""
+        for path in (("worker", "execution"), ("worker", "override", "scope"),
+                     ("review", "override", "scope")):
+            for invalid in ("invalid", "", None, False, 1, [], {}):
+                data = {"workflow": {}}
+                target = data["workflow"]
+                for part in path[:-1]:
+                    target = target.setdefault(part, {})
+                target[path[-1]] = invalid
+                with self.subTest(path=path, invalid=invalid), self.assertRaises(AgentBoxError):
+                    project_config.validate(data, self.path)
 
     def test_credential_presence_is_rejected_before_other_validation(self):
         for token in ('do-not-display', '', None):
