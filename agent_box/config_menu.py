@@ -614,6 +614,21 @@ def edit(config, *, project=None):
             return f"PATH integration: found {link.found}, kept by you, not agent-box"
         return "PATH integration: agent-box is not on PATH yet"
 
+    def applicability(path):
+        """Direct keeps delegated settings editable while naming their remaining consumers."""
+        if draft["workflow"]["worker"]["execution"] != "direct":
+            return ""
+        if path[:3] == ("workflow", "worker", "override"):
+            return "Inapplicable to direct workers"
+        if path[:2] == ("workflow", "tiers"):
+            return ("Scouts only; direct workers inapplicable" if len(path) < 3 or path[2] == "0"
+                    else "Inapplicable to direct workers")
+        if path[:2] in (("workflow", "routing"), ("workflow", "weights"),
+                        ("workflow", "fallback"), ("workflow", "reserve_percent"),
+                        ("workflow", "smoothing_hours")):
+            return "Scouts only; direct workers inapplicable"
+        return ""
+
     def menu(screen, data, path=()):
         selected, notice = (len(data), "Setup starts here: agent-box is not on PATH yet") if not path and path_pending() else (0, "")
         while True:
@@ -643,6 +658,9 @@ def edit(config, *, project=None):
                         shown = (">  " if isinstance(value, dict) else "") + "[Global only]"
                     else:
                         shown += "  [" + status + "]"
+                applies = applicability(full)
+                if applies:
+                    shown += "  [" + applies + "]"
                 rows.append((label, shown))
             rows += [entry[0] for entry in extras]
             selected = min(selected, len(rows) - 1)
@@ -657,6 +675,9 @@ def edit(config, *, project=None):
                                else "G: Copy current global (copy and pin current effective global values). ")) + hint
                 else:
                     hint = "R: Reset to default (built-in program values; remove global override on save). " + hint
+                applies = applicability(selected_path)
+                if applies:
+                    hint = applies + ". " + hint
                 hint = labels[selected] + "\n" + hint
             else:
                 hint, help_title = extras[selected - len(keys)][2], extras[selected - len(keys)][0]

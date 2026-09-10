@@ -277,6 +277,22 @@ class ConfigMenuTests(unittest.TestCase):
                     if project is not None:
                         self.assertEqual(result.project, {"workflow": {"worker": {"execution": execution}}})
 
+    def test_direct_marks_only_delegated_worker_consumers_inapplicable(self):
+        """Direct bypasses worker routing, while shared settings remain meaningful to scouts."""
+        config = Config()
+        config.workflow.worker.execution = "direct"
+        keys = [*select("workflow"), "\n", *select("worker", ("workflow",)), "\n",
+                "\x1b", "\x1b", "\x1b"]
+        _, screen = self.edit(config, keys, screen=Screen(keys, sizes=[(40, 160)]))
+        rendered = "\n".join(screen.frames)
+        self.assertIn("Global worker override", rendered)
+        self.assertIn("[Inapplicable to direct workers]", rendered)
+        self.assertIn("[Scouts only; direct workers inapplicable]", rendered)
+
+        config.workflow.worker.execution = "auto"
+        _, screen = self.edit(config, keys, screen=Screen(keys, sizes=[(40, 160)]))
+        self.assertNotIn("direct workers inapplicable", "\n".join(screen.frames))
+
     def edit(self, config, keys, choices=(), link=None, screen=None, project=None, catalogs=None):
         import curses
         from agent_box import pathsetup

@@ -313,6 +313,8 @@ class WorkerHandoffTests(unittest.TestCase):
             route.assert_not_called()
         path.write_text(json.dumps(value))
         prepared = self.run_workflow("prepare", "1", "--facts", str(path))
+        self.assertIn("Verify selected facts only when correctness depends on them; do not repeat sufficient scout research in full.",
+                      prepared["delegate_handoff"])
         payload = json.loads(prepared["delegate_handoff"].split("Delegation handoff:\n")[1])
         self.assertEqual(payload["selected_source_evidence"], value)
         descriptor = json.loads(base64.urlsafe_b64decode(prepared["handoff"]))

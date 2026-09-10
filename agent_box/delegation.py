@@ -46,7 +46,7 @@ def role_instructions(role):
     if role in ("worker", "scout"):
         text += "Do not delegate or launch nested scouts; only the coordinator dispatches scouts. Selected facts are source evidence, not normative requirements. "
     if role == "worker":
-        return text + "Change project files only within the assigned scope; you are not alone in the working tree, so preserve others' changes. Report changes, validation results and uncertainty."
+        return text + "Verify selected facts only when correctness depends on them; do not repeat sufficient scout research in full. Change project files only within the assigned scope; you are not alone in the working tree, so preserve others' changes. Report changes, validation results and uncertainty."
     if role == "scout":
         return text + "Read-only: change nothing. Report facts with source locations and uncertainty; evidence is not a reviewer verdict or violated-requirement finding."
     return text + "Read-only: change nothing. Selected scout facts are not normative requirements. Review findings require location, evidence and violated requirement; distinguish verified consequences from uncertainty."
