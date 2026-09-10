@@ -246,6 +246,7 @@ class LandingFreshnessTests(unittest.TestCase):
         return LocalLandTests.dispatch(self, arguments)
 
     def recover_review(self, *, native=False, integrated=True):
+        import base64
         import json
         from pathlib import Path
         from unittest.mock import patch
@@ -257,7 +258,9 @@ class LandingFreshnessTests(unittest.TestCase):
             if native:
                 prepared = self.dispatch(["prepare", "7", "--role", "reviewer", "--primary", "codex",
                                           "--brief", str(brief)])
-                handoff = json.loads(prepared["delegate_handoff"].split("Delegation handoff:\n", 1)[1])
+                descriptor = json.loads(base64.urlsafe_b64decode(prepared["handoff"]))
+                prompt = Path(descriptor["input"]["path"]).read_bytes().decode("utf-8")
+                handoff = json.loads(prompt.split("Delegation handoff:\n", 1)[1])
                 self.assertIn("review the complete implementation", handoff["scope_note"])
                 self.assertEqual(handoff["change_summary"]["path_count"], 0)
                 output = Path(self.temporary.name) / "review.json"

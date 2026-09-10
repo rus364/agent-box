@@ -780,7 +780,7 @@ def cleanup_review_evidence(path):
     cleanup_input_directory(path, REVIEW_EVIDENCE_FILES)
 
 
-def check_input_directory(path, names):
+def check_input_directory(path, names, identity=None):
     """Unknown contents and path indirections are never workflow cleanup targets."""
     path = Path(path)
     for parent in (path, *path.parents):
@@ -789,6 +789,8 @@ def check_input_directory(path, names):
         if parent == WORKFLOW_STATE:
             break
     if path.exists():
+        if identity is not None and file_identity(path.lstat()) != identity:
+            raise AgentBoxError("Delegation input package was replaced; leaving it untouched")
         if not path.is_dir():
             raise AgentBoxError(f"Delegation input directory is not a directory: {path}")
         for candidate in path.iterdir():
@@ -796,9 +798,9 @@ def check_input_directory(path, names):
                 raise AgentBoxError(f"Unknown delegation input content; leaving package untouched: {candidate}")
 
 
-def cleanup_input_directory(path, names):
+def cleanup_input_directory(path, names, identity=None):
     path = Path(path)
-    check_input_directory(path, names)
+    check_input_directory(path, names, identity)
     for name in names:
         (path / name).unlink(missing_ok=True)
     for candidate in (path, path.parent, path.parent.parent):
@@ -826,9 +828,7 @@ def input_files(descriptor):
 def cleanup_delegation_input(root, descriptor):
     if "input" in descriptor:
         path = delegation_input_path(root, descriptor)
-        if path.exists() and file_identity(path.lstat()) != descriptor["input"]["directory"]:
-            raise AgentBoxError("Delegation input package was replaced; leaving it untouched")
-        cleanup_input_directory(path, input_files(descriptor))
+        cleanup_input_directory(path, input_files(descriptor), descriptor["input"]["directory"])
 
 
 def bind_delegation_input(root, descriptor, prompt):
@@ -849,7 +849,10 @@ def bind_delegation_input(root, descriptor, prompt):
         atomic_write_text(path / "descriptor.json", json.dumps(descriptor, sort_keys=True), 0o400)
         read_delegation_input(root, descriptor)
     except BaseException:
-        cleanup_input_directory(path, input_files(descriptor))
+        if "input" in descriptor:
+            cleanup_delegation_input(root, descriptor)
+        else:
+            cleanup_input_directory(path, input_files(descriptor))
         raise
     return base64.urlsafe_b64encode(json.dumps(descriptor, sort_keys=True).encode()).decode()
 
@@ -857,10 +860,10 @@ def bind_delegation_input(root, descriptor, prompt):
 def read_delegation_input(root, descriptor):
     """Read canonical bytes; mode is operational read-only, hashes detect alteration."""
     path = delegation_input_path(root, descriptor)
-    check_input_directory(path, input_files(descriptor))
     artifact = descriptor.get("input")
     if not isinstance(artifact, dict) or artifact.get("path") != str(path / "handoff.txt"):
         raise AgentBoxError("Delegation input path differs from the prepared package")
+    check_input_directory(path, input_files(descriptor), artifact["directory"])
     try:
         saved = path / "descriptor.json"
         if saved.is_symlink() or not saved.is_file() or stat.S_IMODE(saved.stat().st_mode) != 0o400:
@@ -872,7 +875,6 @@ def read_delegation_input(root, descriptor):
     try:
         source = path / "handoff.txt"
         if (stat.S_IMODE(path.stat().st_mode) != 0o700 or source.is_symlink()
-                or file_identity(path.lstat()) != artifact["directory"]
                 or not source.is_file() or stat.S_IMODE(source.stat().st_mode) != 0o400):
             raise AgentBoxError("Delegation input is missing or not read-only")
         before = source.lstat()
@@ -1714,7 +1716,10 @@ def dispatch(args):
                     review_round)
                 result["handoff"] = bind_delegation_input(root, descriptor, prompt)
             except BaseException:
-                cleanup_review_evidence(review_evidence_path(root, task.id, fingerprint, review_round))
+                if "input" in descriptor:
+                    cleanup_delegation_input(root, descriptor)
+                else:
+                    cleanup_review_evidence(review_evidence_path(root, task.id, fingerprint, review_round))
                 raise
             result["delegate_handoff"] = bootstrap(role, descriptor["input"])
             result["instructions"] += (
@@ -1796,8 +1801,11 @@ def dispatch(args):
                         output["fallback_reason"] = args.fallback_reason.strip()
             finally:
                 if managed_started:
-                    cleanup_review_evidence(review_evidence_path(
-                        root, task.id, fingerprint, review_round))
+                    if descriptor and "input" in descriptor:
+                        cleanup_delegation_input(root, descriptor)
+                    else:
+                        cleanup_review_evidence(review_evidence_path(
+                            root, task.id, fingerprint, review_round))
         with lock(root, "review-budget"):
             state = read_review_state(root, binding, task)
             if state.get("pending") != review_round:

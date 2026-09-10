@@ -471,7 +471,6 @@ class WorkerHandoffTests(unittest.TestCase):
         self.assertEqual(prepared["scout_limit"], self.config.workflow.scout_limit)
         self.assertIn("coordinator-counted", prepared["scout_slots"])
         prompt = self.delegation_input(prepared).read_bytes().decode("utf-8")
-        prompt = self.delegation_input(prepared).read_text(encoding="utf-8")
         command = ("run", "1", "--role", "scout", "--handoff", prepared["handoff"],
                    "--brief", str(self.review_brief))
         with patch.object(workflow, "execute") as execute, patch.object(workflow, "route") as route:
@@ -493,6 +492,146 @@ class WorkerHandoffTests(unittest.TestCase):
                 self.run_workflow(*command)
         metadata = list((Path(self.directory.name) / "state" / "scouts").rglob("*.json"))
         self.assertEqual(metadata, [])
+
+    def prepare_read_only(self, role):
+        self.config.workflow.review.max_rounds = 10
+        return self.run_workflow(
+            "prepare", "1", "--role", role, "--brief", str(self.review_brief),
+            *(["--question", "Where is the boundary?"] if role == "scout" else []))
+
+    def consume_read_only(self, prepared, *, managed):
+        role = prepared["route"]["role"]
+        if managed:
+            if role == "reviewer":
+                return self.managed_fallback(prepared)
+            return self.run_workflow("run", "1", "--role", role, "--handoff", prepared["handoff"],
+                                     "--brief", str(self.review_brief))
+        report = ({"verdict": "PASS", "summary": "Checked", "findings": []} if role == "reviewer"
+                  else {"status": "completed", "summary": "Checked", "evidence": []})
+        self.report.write_text(json.dumps(report))
+        return self.run_workflow(
+            "report", "1", "--role", role, "--handoff", prepared["handoff"], "--scope", prepared["scope"],
+            "--provider", "claude", "--model", "m", "--effort", "high", "--file", str(self.report),
+            *(["--fresh-context"] if role == "reviewer" else []))
+
+    def test_read_only_input_damage_blocks_both_backends_without_consuming(self):
+        """Scouts and reviewers require the same intact package before dispatch or acceptance."""
+        for role in ("scout", "reviewer"):
+            for damage in ("missing", "modified", "symlink", "replaced-package", "unknown-file"):
+                with self.subTest(role=role, damage=damage):
+                    prepared = self.prepare_read_only(role)
+                    descriptor = json.loads(base64.urlsafe_b64decode(prepared["handoff"]))
+                    path = self.delegation_input(prepared)
+                    original = path.read_bytes()
+                    target = path.parent.with_name(path.parent.name + "-original")
+                    if damage == "missing":
+                        path.unlink()
+                    elif damage == "modified":
+                        path.chmod(0o600)
+                        path.write_text("changed")
+                        path.chmod(0o400)
+                    elif damage == "symlink":
+                        path.rename(target)
+                        path.symlink_to(target)
+                    elif damage == "replaced-package":
+                        path.parent.rename(target)
+                        path.parent.mkdir(mode=0o700)
+                        for item in target.iterdir():
+                            item.rename(path.parent / item.name)
+                    else:
+                        (path.parent / "user-notes.txt").write_text("keep")
+                    before = workflow.read_evidence(self.root, self.task)
+                    review_state = workflow.read_review_state(self.root, BINDING, self.task)
+                    with patch.object(workflow, "execute") as execute:
+                        for managed in (False, True):
+                            with self.assertRaisesRegex(AgentBoxError, "[Dd]elegation input"):
+                                self.consume_read_only(prepared, managed=managed)
+                        execute.assert_not_called()
+                    self.assertEqual(workflow.read_evidence(self.root, self.task), before)
+                    self.assertEqual(workflow.read_review_state(self.root, BINDING, self.task), review_state)
+                    if damage in ("replaced-package", "unknown-file"):
+                        with self.assertRaisesRegex(AgentBoxError, "replaced|Unknown delegation input"):
+                            workflow.cleanup_delegation_input(self.root, descriptor)
+                        self.assertEqual(path.read_bytes(), original)
+                        if damage == "unknown-file":
+                            notes = path.parent / "user-notes.txt"
+                            self.assertEqual(notes.read_text(), "keep")
+                            notes.unlink()
+                            self.consume_read_only(prepared, managed=False)
+                            self.assertFalse(path.parent.exists())
+                    else:
+                        workflow.cleanup_delegation_input(self.root, descriptor)
+                        self.assertFalse(path.parent.exists())
+                        if damage == "symlink":
+                            self.assertEqual(target.read_bytes(), original)
+
+    def test_read_only_managed_runs_use_exact_bytes_and_clean_only_owned_packages(self):
+        """Failures retire each started input; replacement packages and unknown files remain untouched."""
+        packages = set()
+        for role in ("scout", "reviewer"):
+            for outcome in ("success", "failure", "symlink", "replaced-package", "unknown-file"):
+                with self.subTest(role=role, outcome=outcome):
+                    prepared = self.prepare_read_only(role)
+                    path = self.delegation_input(prepared)
+                    self.assertNotIn(path.parent, packages)
+                    packages.add(path.parent)
+                    raw = path.read_bytes()
+                    target = path.parent.with_name(path.parent.name + "-original")
+
+                    def provider(route, actual_role, root, prompt, **kwargs):
+                        self.assertEqual(actual_role, role)
+                        self.assertEqual(prompt.encode("utf-8"), raw)
+                        if outcome == "failure":
+                            raise provider_runner.ProviderFailure("mock timeout", "timeout")
+                        if outcome == "symlink":
+                            path.rename(target)
+                            path.symlink_to(target)
+                        elif outcome == "replaced-package":
+                            path.parent.rename(target)
+                            path.parent.mkdir(mode=0o700)
+                            for item in target.iterdir():
+                                item.rename(path.parent / item.name)
+                        elif outcome == "unknown-file":
+                            (path.parent / "user-notes.txt").write_text("keep")
+                        return ({"verdict": "PASS", "summary": "Checked", "findings": []}
+                                if role == "reviewer" else
+                                {"status": "completed", "summary": "Checked", "evidence": []})
+
+                    with patch.object(workflow, "run", side_effect=managed_runner(provider)) as runner:
+                        if outcome == "success":
+                            self.consume_read_only(prepared, managed=True)
+                        else:
+                            with self.assertRaises(AgentBoxError):
+                                self.consume_read_only(prepared, managed=True)
+                            self.assertNotIn("review", workflow.read_evidence(self.root, self.task))
+                        self.assertEqual(runner.call_count, 1)
+                    if outcome in ("replaced-package", "unknown-file"):
+                        self.assertEqual(path.read_bytes(), raw)
+                        if outcome == "unknown-file":
+                            self.assertEqual((path.parent / "user-notes.txt").read_text(), "keep")
+                    else:
+                        self.assertFalse(path.parent.exists())
+                        if outcome == "symlink":
+                            self.assertEqual(target.read_bytes(), raw)
+                    with patch.object(workflow, "execute") as execute:
+                        with self.assertRaisesRegex(AgentBoxError, "stale|already started"):
+                            self.consume_read_only(prepared, managed=True)
+                        execute.assert_not_called()
+
+    def test_unpublished_read_only_inputs_are_cleaned_after_write_failure(self):
+        """A descriptor or scout metadata write failure must not strand an unpublished input."""
+        write = workflow.atomic_write_text
+        for role, failed_file in (("reviewer", "descriptor.json"), ("scout", "descriptor.json"),
+                                  ("scout", "metadata")):
+            with self.subTest(role=role, failed_file=failed_file):
+                def fail(path, *args, **kwargs):
+                    if path.name == failed_file or (failed_file == "metadata" and "scouts" in path.parts):
+                        raise OSError("disk full")
+                    return write(path, *args, **kwargs)
+                with patch.object(workflow, "atomic_write_text", side_effect=fail):
+                    with self.assertRaisesRegex(OSError, "disk full"):
+                        self.prepare_read_only(role)
+                self.assertFalse(list(workflow.WORKFLOW_STATE.rglob("handoff.txt")))
 
     def test_scout_reports_reject_changed_code_before_acceptance(self):
         """Read-only findings cannot be accepted for code different from the prepared scope."""
