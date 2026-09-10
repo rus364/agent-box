@@ -711,6 +711,21 @@ class WorkerHandoffTests(unittest.TestCase):
         with self.assertRaisesRegex(AgentBoxError, "stale"):
             self.report_back((prepared["scope"], prepared["handoff"]))
 
+    def test_managed_worker_rechecks_requirements_after_execution(self):
+        """A long-running worker cannot report against acceptance changed while it ran."""
+        prepared = self.run_workflow("prepare", "1", "--primary", "codex")
+
+        def execute(*args):
+            self.task.description += "\n- [ ] added while worker ran"
+            return {"route": prepared["route"],
+                    "report": {"status": "completed", "summary": "Stale", "evidence": []}}
+
+        with patch.object(workflow, "execute", side_effect=execute):
+            with self.assertRaisesRegex(AgentBoxError, "requirements changed during execution"):
+                self.run_workflow("run", "1", "--handoff", prepared["handoff"],
+                                  "--brief", str(self.review_brief))
+        self.assertEqual(workflow.read_evidence(self.root, self.task)["execution"]["status"], "failed")
+
     def test_worker_override_managed_fallback_keeps_route_after_config_change(self):
         """A provider failure can use its prepared fallback, but cannot reschedule from new config."""
         self.patches[5].stop()

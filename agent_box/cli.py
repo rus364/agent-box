@@ -370,18 +370,28 @@ def config_show() -> None:
     print(f"    cleanup remote branches   {config.workflow.cleanup_remote_branches}")
     print(f"    scout limit               {config.workflow.scout_limit}; managed shared slots, native coordinator-counted (no CLI lease)")
     print(f"    worker execution          {config.workflow.worker.execution}")
-    print(f"    delegated routing         {config.workflow.routing}; weights {config.workflow.weights}")
+    direct = config.workflow.worker.execution == "direct"
+    model_source = ("active-session" if direct else
+                    "chosen after auto execution decision" if config.workflow.worker.execution == "auto" else
+                    "session, override, or tier selected at delegation")
+    print(f"    worker model source       {model_source}")
+    direct_shared = "; scouts only, inapplicable to direct workers" if direct else ""
+    direct_worker = "  [inapplicable to direct workers]" if direct else ""
+    print(f"    delegated routing         {config.workflow.routing}; weights {config.workflow.weights}{direct_shared}")
     print(f"    review                    {config.workflow.review.policy}; files {config.workflow.review.max_files}; lines {config.workflow.review.max_lines}")
     print(f"    review routing            {config.workflow.review.routing}")
     for role, settings in (("worker", config.workflow.worker), ("reviewer", config.workflow.review)):
         override = settings.override
-        print(f"    {role + ' model scope':26s}{override.scope}")
+        suffix = direct_worker if role == "worker" else ""
+        print(f"    {role + ' model scope':26s}{override.scope}{suffix}")
         for provider, spec in override.models.items():
-            print(f"    {role} override {provider}: {spec}")
+            print(f"    {role} override {provider}: {spec}{suffix}")
     print(f"    fallback / auto-push      {config.workflow.fallback} / {config.workflow.auto_push}")
     print("    auto-push scope           " + ("accepted base after local merge" if config.workflow.merge_mode == "local" else "parent task branch after subtask integration"))
     for tier, models in config.workflow.tiers.items():
-        print(f"    worker/scout tier {tier}: {models}")
+        suffix = ("  [scouts only; inapplicable to direct workers]" if direct and tier == "0"
+                  else direct_worker)
+        print(f"    worker/scout tier {tier}: {models}{suffix}")
     for tier, models in config.workflow.review.tiers.items():
         print(f"    reviewer tier {tier}: {models}")
     print(f"  Agent browser (containers)  {'on' if config.browser.enabled else 'off'}{_browser_note(config)}")

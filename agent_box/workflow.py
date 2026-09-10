@@ -1202,6 +1202,8 @@ def worker_dispatch(args, root, binding, adapter, task, config):
                 output = execute(config.workflow, selected, "worker", root, prompt)
                 if delegation_identity(root, binding, current.get("branch") and info["branch"]) != identity:
                     raise AgentBoxError("Worker branch changed, HEAD moved or integration changed; reconcile before accepting the report")
+                if requirements(tree(adapter, adapter.get(task.id))) != previous["requirements"]:
+                    raise AgentBoxError("Worker requirements changed during execution; report is stale")
             except BaseException:
                 previous["status"] = "failed"
                 save_evidence(root, task, saved)

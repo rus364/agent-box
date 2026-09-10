@@ -121,6 +121,24 @@ class WorkflowConfigTests(unittest.TestCase):
         self.assertEqual(output.getvalue().count('delegated routing'), 1)
         self.assertIn("worker override codex: {'model': 'worker-model', 'effort': 'high'}", output.getvalue())
 
+    def test_show_marks_delegated_worker_settings_inapplicable_under_direct(self):
+        """Forced direct reports the active-session source without hiding scout consumers."""
+        from agent_box import cli
+        config = Config()
+        config.workflow.worker.execution = "direct"
+        config.workflow.worker.override.scope = "all"
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output), patch.object(cli, 'effective_config', return_value=config), \
+             patch.object(cli, '_statusline_note', return_value=''), \
+             patch.object(cli, '_image_note', return_value=''), patch.object(cli, '_browser_note', return_value=''):
+            cli.config_show()
+        rendered = output.getvalue()
+        self.assertIn('worker model source       active-session', rendered)
+        self.assertIn('worker model scope        all  [inapplicable to direct workers]', rendered)
+        self.assertIn('delegated routing         current; weights', rendered)
+        self.assertIn('scouts only, inapplicable to direct workers', rendered)
+        self.assertIn('worker/scout tier 0:', rendered)
+
     def test_show_reads_the_runtime_artifact_instead_of_host_defaults(self):
         """A container must show the same merge route that workflow dispatch uses."""
         from agent_box import cli
