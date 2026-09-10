@@ -67,7 +67,7 @@ HELP = {
     "workflow.auto_push": "Within the opt-in workflow, publish the parent task in GitHub mode or the accepted base after a local fast-forward. Turning this off keeps completion local.",
     "workflow.timeout_seconds": "Maximum delegated agent runtime in seconds, from 30 through 86400.",
     "workflow.worker": "Worker execution preference and model source. Delegated provider routing is shared with scouts; reviewer settings stay independent.",
-    "workflow.worker.execution": "Worker execution preference: auto, direct in the coordinator session, or delegated to a worker. Saved for dispatch support; currently does not change execution.",
+    "workflow.worker.execution": "Worker execution policy: auto requires the coordinator to choose with a reason; direct works in the active session; delegated launches a bounded worker assignment.",
     "workflow.worker.override": "Optional global worker models for Codex and Claude. Replaces only model/effort candidates; reviewer and scout settings stay independent.",
     "workflow.worker.override.scope": "Off uses session/tier models; untiered replaces only session models; all also replaces explicit tier models. Selects model/effort only, without changing execution, provider routing or task tier.",
     "workflow.worker.override.models": "Independent global worker candidates. Empty models disable candidates; provider policy and fallback use only these candidates, with no return to session/tier models.",
