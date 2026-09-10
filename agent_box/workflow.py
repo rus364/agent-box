@@ -614,6 +614,15 @@ def native_output(args, selected, tier):
     return output
 
 
+def reconcile_abandoned_managed(root, task, saved):
+    """The work lock makes persisted managed evidence an interrupted prior run."""
+    execution = saved.get("execution")
+    if execution and execution.get("status") == "managed":
+        execution["status"] = "failed"
+        save_evidence(root, task, saved)
+    return execution
+
+
 def route(config, role, tier, primary, writer=None):
     path = WORKFLOW_STATE / "routing.json"
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -956,11 +965,10 @@ def finish(root, config, adapter, task_id):
         reasons = completion_reasons(task, tasks, str(adapter.identity()["id"])) + blocking_reasons(task, adapter.get)
         if reasons:
             raise AgentBoxError("Cannot finish: " + "; ".join(reasons))
-        status = read_evidence(root, task).get("execution", {}).get("status")
+        saved = read_evidence(root, task)
+        status = (reconcile_abandoned_managed(root, task, saved) or {}).get("status")
         if status == "prepared":
             raise AgentBoxError("Cannot finish: worker execution is prepared; submit its report with workflow report before completion")
-        if status == "managed":
-            raise AgentBoxError("Cannot finish: worker execution is managed; wait for workflow run to return before completion")
         # Failed assignments are terminal, not reports; current acceptance is
         # still required, but a provider failure must not block work forever.
         if task.id != parent.id:
@@ -1080,7 +1088,7 @@ def worker_dispatch(args, root, binding, adapter, task, config):
     tasks = tree(adapter, task)
     identity = delegation_identity(root, binding, current.get("branch") and info["branch"])
     saved = read_evidence(root, task)
-    previous = saved.get("execution")
+    previous = reconcile_abandoned_managed(root, task, saved)
     handed = getattr(args, "handoff", None)
     if args.command == "report" or handed:
         if not handed:
@@ -1119,7 +1127,7 @@ def worker_dispatch(args, root, binding, adapter, task, config):
                 output = execute(config.workflow, selected, "worker", root, prompt)
                 if delegation_identity(root, binding, current.get("branch") and info["branch"]) != identity:
                     raise AgentBoxError("Worker branch changed, HEAD moved or integration changed; reconcile before accepting the report")
-            except Exception:
+            except BaseException:
                 previous["status"] = "failed"
                 save_evidence(root, task, saved)
                 raise

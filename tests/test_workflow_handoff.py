@@ -376,18 +376,14 @@ class WorkerHandoffTests(unittest.TestCase):
         """Config changes cannot make a prepared or running delegation replaceable."""
         prepared = self.run_workflow("prepare", "1", "--primary", "codex")
         self.config.workflow.worker.execution = "direct"
-        for status in ("prepared", "managed"):
-            with self.subTest(status=status):
-                saved = workflow.read_evidence(self.root, self.task)
-                saved["execution"]["status"] = status
-                workflow.save_evidence(self.root, self.task, saved)
-                before = workflow.evidence_path(self.root, self.task).read_bytes()
-                with self.assertRaisesRegex(AgentBoxError, "cannot transition"):
-                    self.run_workflow("prepare", "1", "--primary", "codex", "--execution", "direct")
-                with self.assertRaisesRegex(AgentBoxError, "active worker"):
-                    self.run_workflow("prepare", "1", "--primary", "codex")
-                self.assertEqual(workflow.evidence_path(self.root, self.task).read_bytes(), before)
-                self.assertEqual(saved["execution"]["descriptor"]["execution"], prepared["execution"])
+        saved = workflow.read_evidence(self.root, self.task)
+        before = workflow.evidence_path(self.root, self.task).read_bytes()
+        with self.assertRaisesRegex(AgentBoxError, "cannot transition"):
+            self.run_workflow("prepare", "1", "--primary", "codex", "--execution", "direct")
+        with self.assertRaisesRegex(AgentBoxError, "active worker"):
+            self.run_workflow("prepare", "1", "--primary", "codex")
+        self.assertEqual(workflow.evidence_path(self.root, self.task).read_bytes(), before)
+        self.assertEqual(saved["execution"]["descriptor"]["execution"], prepared["execution"])
 
     def test_completed_assignment_uses_current_policy_after_checkpoint(self):
         """A completed delegation cannot pin the execution policy of the next assignment."""
@@ -420,22 +416,35 @@ class WorkerHandoffTests(unittest.TestCase):
             self.report_back((prepared["scope"], prepared["handoff"]))
         self.report_back((retried["scope"], retried["handoff"]))
 
+    def test_interrupted_managed_execution_is_failed_and_retryable(self):
+        """Interrupt cleanup and the work lock recover both catchable and hard exits."""
+        prepared = self.run_workflow("prepare", "1", "--primary", "codex")
+        with patch.object(workflow, "execute", side_effect=KeyboardInterrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                self.run_workflow("run", "1", "--handoff", prepared["handoff"],
+                                  "--brief", str(self.review_brief))
+        self.assertEqual(workflow.read_evidence(self.root, self.task)["execution"]["status"], "failed")
+        retried = self.run_workflow("prepare", "1", "--primary", "codex")
+        saved = workflow.read_evidence(self.root, self.task)
+        saved["execution"]["status"] = "managed"
+        workflow.save_evidence(self.root, self.task, saved)
+        recovered = self.run_workflow("prepare", "1", "--primary", "codex")
+        self.assertNotEqual(recovered["handoff"], retried["handoff"])
+        with self.assertRaisesRegex(AgentBoxError, "stale"):
+            self.report_back((retried["scope"], retried["handoff"]))
+
     def test_finish_rejects_active_execution_even_with_current_acceptance(self):
         """Completion must not orphan a prepared or running assignment."""
         self.task.description = "## Acceptance\n- [x] requirement"
         prepared = self.run_workflow("prepare", "1", "--primary", "codex")
-        for status, action in (
-                ("prepared", "submit its report with workflow report before completion"),
-                ("managed", "wait for workflow run to return before completion")):
-            with self.subTest(status=status):
-                saved = workflow.read_evidence(self.root, self.task)
-                saved.update(validation={"exit": 0}, review={"verdict": "PASS"})
-                saved["execution"]["status"] = status
-                workflow.save_evidence(self.root, self.task, saved)
-                with self.assertRaises(AgentBoxError) as error:
-                    self.run_workflow("finish", "1")
-                self.assertEqual(str(error.exception), f"Cannot finish: worker execution is {status}; {action}")
-                self.adapter.set_state.assert_not_called()
+        saved = workflow.read_evidence(self.root, self.task)
+        saved.update(validation={"exit": 0}, review={"verdict": "PASS"})
+        workflow.save_evidence(self.root, self.task, saved)
+        with self.assertRaises(AgentBoxError) as error:
+            self.run_workflow("finish", "1")
+        self.assertEqual(str(error.exception), "Cannot finish: worker execution is prepared; "
+                         "submit its report with workflow report before completion")
+        self.adapter.set_state.assert_not_called()
         saved["execution"]["status"] = "prepared"
         workflow.save_evidence(self.root, self.task, saved)
         self.report_back((prepared["scope"], prepared["handoff"]))
@@ -466,6 +475,17 @@ class WorkerHandoffTests(unittest.TestCase):
         saved = workflow.read_evidence(self.root, self.task)
         self.assertEqual(saved["execution"]["status"], "failed")
         self.assertNotIn("worker", saved)
+
+    def test_finish_reconciles_managed_state_left_by_a_terminated_process(self):
+        """Owning the work lock proves that persisted managed evidence is abandoned."""
+        self.task.description = "## Acceptance\n- [x] requirement"
+        self.run_workflow("prepare", "1", "--primary", "codex")
+        saved = workflow.read_evidence(self.root, self.task)
+        saved["execution"]["status"] = "managed"
+        saved.update(validation={"exit": 0}, review={"verdict": "PASS"})
+        workflow.save_evidence(self.root, self.task, saved)
+        self.assertEqual(self.run_workflow("finish", "1")["state"], "Review")
+        self.assertEqual(workflow.read_evidence(self.root, self.task)["execution"]["status"], "failed")
 
     def test_worker_publication_retires_native_and_managed_review_rounds(self):
         """Late verdicts cannot restore PASS after new work, and attempts stay spent."""

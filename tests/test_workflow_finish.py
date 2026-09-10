@@ -75,15 +75,11 @@ class ChildFinishTests(unittest.TestCase):
                                   "--reason", "Inspect child work"])
         self.dispatch(["validate", "8", "--", "true"])
         parent_head = gw.local_branch_head(self.root, "ab/7-parent")
-        for status in ("prepared", "managed"):
-            with self.subTest(status=status):
-                saved = workflow.read_evidence(self.root, self.child)
-                saved["execution"]["status"] = status
-                workflow.save_evidence(self.root, self.child, saved)
-                with self.assertRaisesRegex(AgentBoxError, f"Cannot finish: worker execution is {status}"):
-                    self.dispatch(["finish", "8"])
-                self.assertEqual(gw.local_branch_head(self.root, "ab/7-parent"), parent_head)
-                self.adapter.set_state.assert_not_called()
+        saved = workflow.read_evidence(self.root, self.child)
+        with self.assertRaisesRegex(AgentBoxError, "Cannot finish: worker execution is prepared"):
+            self.dispatch(["finish", "8"])
+        self.assertEqual(gw.local_branch_head(self.root, "ab/7-parent"), parent_head)
+        self.adapter.set_state.assert_not_called()
         self.assertEqual(saved["execution"]["descriptor"]["scope"], prepared["scope"])
 
     def test_tracker_outage_retry_finishes_original_work_without_merge_or_validation(self):
