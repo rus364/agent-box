@@ -491,6 +491,14 @@ class WorkerHandoffTests(unittest.TestCase):
         self.assertEqual(result["route"]["model"], "session")
         self.assertEqual(result["execution"]["model_source"], "active-session")
 
+    def test_direct_still_rejects_the_scout_only_tier(self):
+        """Bypassing model routing must not bypass the worker/scout role boundary."""
+        self.task.labels = []
+        with patch.object(workflow, "route", side_effect=AssertionError("routed direct work")):
+            with self.assertRaisesRegex(AgentBoxError, "Tier 0 is reserved for scouts"):
+                self.run_workflow("prepare", "1", "--primary", "codex", "--execution", "direct",
+                                  "--tier", "0")
+
     def test_escalation_requires_clean_checkpoint_and_retires_old_descriptor(self):
         """Escalation preserves dirty edits and only replaces a direct assignment at a clean checkpoint."""
         direct = self.run_workflow("prepare", "1", "--primary", "codex", "--execution", "direct")

@@ -39,7 +39,7 @@ from . import git_workflow as gw
 from .paths import WORKFLOW_STATE
 from .provider_runner import ProviderFailure, preflight, run, validate_report, report_schema
 from .repo_binding import Binding, repository_root, server_identity
-from .routing import select
+from .routing import select, validate_role_tier
 from .tracker.core import claim, checkboxes, root_task, completion_reasons, blocking_reasons
 from .tracker.registry import make_adapter
 from .usage import usage_snapshot
@@ -1239,6 +1239,7 @@ def worker_dispatch(args, root, binding, adapter, task, config):
             raise AgentBoxError("Cannot escalate direct to delegated with a dirty worktree; commit a coordinator checkpoint, then retry. No files were changed")
     fingerprint = scope(root, base, tasks)
     tier = delegation_tier(args, task, "worker")
+    validate_role_tier("worker", tier)
     facts, facts_binding = read_facts(getattr(args, "facts", None), task, fingerprint)
     if choice == "direct" and facts is not None:
         raise AgentBoxError("--facts requires delegated worker execution")

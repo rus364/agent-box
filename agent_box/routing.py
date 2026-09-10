@@ -7,6 +7,12 @@ from .config import AGENT_PROVIDERS
 from .errors import AgentBoxError
 
 
+def validate_role_tier(role, tier):
+    """Tier remains a role boundary even when execution bypasses model routing."""
+    if role not in ("worker", "scout", "reviewer") or tier not in (None, 0, 1, 2, 3) or (tier == 0 and role != "scout"):
+        raise AgentBoxError("Tier 0 is reserved for scouts; workers and reviewers require tier 1-3")
+
+
 def applicable_windows(snapshot, model):
     return [window for window in snapshot.get("windows", [])
             if not window.get("models") or any(name in model for name in window["models"])]
@@ -30,9 +36,9 @@ def select(config, role, tier, primary, state, usage=None, *, now=None, writer=N
     errors = config.validate()
     if errors:
         raise AgentBoxError("; ".join(errors))
+    validate_role_tier(role, tier)
     override = config.override_for(role, tier)
-    if (tier not in (0, 1, 2, 3) and not (tier is None and override)
-            or role not in ("worker", "scout", "reviewer") or (tier == 0 and role != "scout")):
+    if tier is None and not override:
         raise AgentBoxError("Tier 0 is reserved for scouts; workers and reviewers require tier 1-3")
     if primary not in AGENT_PROVIDERS:
         raise AgentBoxError("Specify the primary provider: codex or claude")
