@@ -255,22 +255,43 @@ class WorkerHandoffTests(unittest.TestCase):
         descriptor = json.loads(base64.urlsafe_b64decode(prepared["handoff"]))
         return Path(descriptor["input"]["path"])
 
-    def assert_worker_input_rejected(self, prepared):
+    def assert_worker_input_rejected(self, prepared, backend="run"):
         before = workflow.read_evidence(self.root, self.task)
         with patch.object(workflow, "execute") as execute:
-            with self.assertRaisesRegex(AgentBoxError, "Delegation input"):
+            with self.assertRaisesRegex(AgentBoxError, "[Dd]elegation input"):
+                if backend == "report":
+                    self.report_back((prepared["scope"], prepared["handoff"]))
+                else:
+                    self.run_workflow("run", "1", "--handoff", prepared["handoff"],
+                                      "--brief", str(self.review_brief))
+            execute.assert_not_called()
+        before["execution"]["status"] = "failed"
+        self.assertEqual(workflow.read_evidence(self.root, self.task), before)
+        self.assert_worker_descriptor_stale(prepared)
+        fresh = self.run_workflow("prepare", "1")
+        self.assertNotEqual(self.delegation_input(fresh), self.delegation_input(prepared))
+        self.assertTrue(self.delegation_input(fresh).is_file())
+        self.assert_worker_descriptor_stale(prepared)
+        self.report_back((fresh["scope"], fresh["handoff"]))
+
+    def assert_worker_descriptor_stale(self, prepared):
+        with self.assertRaisesRegex(AgentBoxError, "stale"):
+            self.report_back((prepared["scope"], prepared["handoff"]))
+        with patch.object(workflow, "execute") as execute:
+            with self.assertRaisesRegex(AgentBoxError, "stale"):
                 self.run_workflow("run", "1", "--handoff", prepared["handoff"],
                                   "--brief", str(self.review_brief))
             execute.assert_not_called()
-        with self.assertRaisesRegex(AgentBoxError, "Delegation input"):
-            self.report_back((prepared["scope"], prepared["handoff"]))
-        self.assertEqual(workflow.read_evidence(self.root, self.task), before)
 
-    def test_missing_worker_input_blocks_both_backends_without_consuming_assignment(self):
-        """An intact descriptor cannot stand in for the input the worker actually received."""
-        prepared = self.run_workflow("prepare", "1")
-        self.delegation_input(prepared).unlink()
-        self.assert_worker_input_rejected(prepared)
+    def test_missing_worker_input_retires_both_backends_and_allows_fresh_preparation(self):
+        """An irrecoverable input must not strand the task behind an active assignment."""
+        for backend in ("report", "run"):
+            with self.subTest(backend=backend):
+                prepared = self.run_workflow("prepare", "1")
+                path = self.delegation_input(prepared)
+                path.unlink()
+                self.assert_worker_input_rejected(prepared, backend)
+                self.assertFalse(path.parent.exists())
 
     def test_modified_worker_input_is_rejected_even_with_read_only_mode_restored(self):
         """Restoring permissions must not conceal a changed assignment."""
@@ -305,19 +326,21 @@ class WorkerHandoffTests(unittest.TestCase):
         self.assertFalse(path.is_symlink())
 
     def test_replaced_worker_package_is_rejected_and_not_cleaned(self):
-        """Moving the original handoff into another directory cannot replace its package."""
-        prepared = self.run_workflow("prepare", "1")
-        path = self.delegation_input(prepared)
-        original = path.parent.with_name("original-package")
-        path.parent.rename(original)
-        path.parent.mkdir(mode=0o700)
-        (original / path.name).rename(path)
-        (original / "descriptor.json").rename(path.parent / "descriptor.json")
-        self.assert_worker_input_rejected(prepared)
-        descriptor = json.loads(base64.urlsafe_b64decode(prepared["handoff"]))
-        with self.assertRaisesRegex(AgentBoxError, "replaced"):
-            workflow.cleanup_delegation_input(self.root, descriptor)
-        self.assertTrue(path.is_file())
+        """A replaced package must survive cleanup without keeping either backend active."""
+        for backend in ("report", "run"):
+            with self.subTest(backend=backend):
+                prepared = self.run_workflow("prepare", "1")
+                path = self.delegation_input(prepared)
+                original = path.parent.with_name(f"original-package-{backend}")
+                path.parent.rename(original)
+                path.parent.mkdir(mode=0o700)
+                (original / path.name).rename(path)
+                (original / "descriptor.json").rename(path.parent / "descriptor.json")
+                self.assert_worker_input_rejected(prepared, backend)
+                descriptor = json.loads(base64.urlsafe_b64decode(prepared["handoff"]))
+                with self.assertRaisesRegex(AgentBoxError, "replaced"):
+                    workflow.cleanup_delegation_input(self.root, descriptor)
+                self.assertTrue(path.is_file())
 
     def test_worker_input_permissions_are_checked_before_execution_or_acceptance(self):
         """Widening package access invalidates the prepared read-only input contract."""
@@ -340,28 +363,19 @@ class WorkerHandoffTests(unittest.TestCase):
                         self.run_workflow("run", "1", "--handoff", token, "--brief", str(self.review_brief))
                     execute.assert_not_called()
 
-    def test_native_worker_consumes_one_unique_package_and_keeps_unknown_files(self):
-        """A report retires only its own known input; another assignment gets a fresh package."""
-        first = self.run_workflow("prepare", "1")
-        path = self.delegation_input(first)
-        unknown = path.parent / "user-notes.txt"
-        unknown.write_text("keep")
-        with self.assertRaisesRegex(AgentBoxError, "Unknown delegation input content"):
-            self.report_back((first["scope"], first["handoff"]))
-        self.assertTrue(path.exists())
-        self.assertEqual(unknown.read_text(), "keep")
-        unknown.unlink()
-        self.report_back((first["scope"], first["handoff"]))
-        with self.assertRaisesRegex(AgentBoxError, "stale"):
-            self.report_back((first["scope"], first["handoff"]))
-        second = self.run_workflow("prepare", "1")
-        next_path = self.delegation_input(second)
-        self.assertNotEqual(next_path.parent, path.parent)
-        self.assertTrue(next_path.is_file())
-        with self.assertRaisesRegex(AgentBoxError, "stale"):
-            self.report_back((first["scope"], first["handoff"]))
-        self.report_back((second["scope"], second["handoff"]))
-        self.assertFalse(next_path.parent.exists())
+    def test_unknown_worker_package_content_survives_retirement_for_both_backends(self):
+        """Cleanup refusal cannot strand an assignment or revive it after removing unknown files."""
+        for backend in ("report", "run"):
+            with self.subTest(backend=backend):
+                prepared = self.run_workflow("prepare", "1")
+                path = self.delegation_input(prepared)
+                unknown = path.parent / "user-notes.txt"
+                unknown.write_text("keep")
+                self.assert_worker_input_rejected(prepared, backend)
+                self.assertTrue(path.exists())
+                self.assertEqual(unknown.read_text(), "keep")
+                unknown.unlink()
+                self.assert_worker_descriptor_stale(prepared)
 
     def test_managed_worker_uses_artifact_text_instead_of_equal_recomputed_text(self):
         """Freshness recomposition is only a comparison; the provider gets canonical input bytes."""

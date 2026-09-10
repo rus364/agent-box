@@ -1289,7 +1289,19 @@ def worker_dispatch(args, root, binding, adapter, task, config):
             raise AgentBoxError("Worker requirements changed; report is stale")
         selected = descriptor["route"]
         decision = descriptor["execution"]
-        prompt = read_delegation_input(root, descriptor) if decision["choice"] == "delegated" else None
+        prompt = None
+        if decision["choice"] == "delegated":
+            try:
+                prompt = read_delegation_input(root, descriptor)
+            except (AgentBoxError, OSError):
+                # Retire before cleanup: a replaced or unknown package must be
+                # preserved without stranding the task behind a prepared worker.
+                previous["status"] = "failed"
+                try:
+                    save_evidence(root, task, saved)
+                finally:
+                    cleanup_delegation_input(root, descriptor)
+                raise
         if args.command == "report":
             output = native_output(args, selected, selected["tier"])
         elif decision["choice"] == "direct":
