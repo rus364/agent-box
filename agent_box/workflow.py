@@ -1502,7 +1502,8 @@ def dispatch(args):
             save_evidence(root, task, saved)
         return saved
     if args.command in ("prepare", "run", "review", "report"):
-        role = "reviewer" if args.command == "review" else args.role
+        # Worker and scout commands returned through their dedicated state machines.
+        role = "reviewer"
         tier = delegation_tier(args, task, role)
         review_context = ""
         if role == "reviewer":
@@ -1575,19 +1576,16 @@ def dispatch(args):
                                     "Native uses prepare/spawn then report_command; managed uses run/review. Replace its ACTUAL values, "
                                     "DESCRIPTOR and REPORT.json from the execution; add --fallback-reason REASON for fallback. "
                                     "Return the role JSON schema."}
-            if role != "reviewer" and args.brief:
-                result["delegate_handoff"] = assignment_handoff(root, task, base, read_brief(args.brief), role)
-            if role == "reviewer":
-                result["review_budget"] = budget
-                result["delegate_handoff"] = reviewer_handoff(
-                    root, base, tasks, brief, saved, review_context, task.id, fingerprint,
-                    review_round)
-                result["instructions"] += (
-                    " Every verdict round requires a newly spawned reviewer with no inherited coordinator or "
-                    "reviewer history. For native Codex use spawn_agent with fork_turns=none; never use "
-                    "followup_task or resume an earlier reviewer. Pass delegate_handoff as the complete initial "
-                    "message. A new prepare, scope, descriptor, or --fresh-context assertion does not itself "
-                    "prove that a new reviewer instance ran.")
+            result["review_budget"] = budget
+            result["delegate_handoff"] = reviewer_handoff(
+                root, base, tasks, brief, saved, review_context, task.id, fingerprint,
+                review_round)
+            result["instructions"] += (
+                " Every verdict round requires a newly spawned reviewer with no inherited coordinator or "
+                "reviewer history. For native Codex use spawn_agent with fork_turns=none; never use "
+                "followup_task or resume an earlier reviewer. Pass delegate_handoff as the complete initial "
+                "message. A new prepare, scope, descriptor, or --fresh-context assertion does not itself "
+                "prove that a new reviewer instance ran.")
             if selected.get("mode") == "current-session":
                 result["action"] = "review-in-fresh-context"
                 result["instructions"] = (
@@ -1596,9 +1594,7 @@ def dispatch(args):
                     "spawn_agent with fork_turns=none, never followup_task or resume an earlier reviewer, and pass "
                     "delegate_handoff as its complete initial message. Do not use a named tier profile. ")
                 result["instructions"] += (
-                    review_context + ("Follow delegate_handoff requirements and mandatory read evidence. "
-                                      if role == "reviewer" else
-                                      "Read repository instructions and follow task acceptance. ") +
+                    review_context + "Follow delegate_handoff requirements and mandatory read evidence. " +
                     "This action has not executed work "
                     "or produced a verdict. Keep the handoff descriptor with the coordinator. After actual work, report "
                     "with the prepared provider and exact model/effort when known; otherwise omit model/effort and affirm "
@@ -1607,17 +1603,16 @@ def dispatch(args):
                     "Return the role JSON schema; never invent execution facts or PASS.")
                 if args.command == "run":
                     result["brief"] = Path(args.brief).read_text()
-            if role == "reviewer":
+            result["instructions"] += (
+                " Prefer native when the live interface supports this route and role contract. "
+                "If native cannot run and model/effort are known, use workflow review TASK "
+                "--handoff DESCRIPTOR --brief FILE --fallback-reason REASON (repeat --tier if supplied) "
+                "for one managed dispatch in this pending round. Omit --handoff only for an independent new round.")
+            if selected.get("mode") == "current-session" and selected.get("model") is None:
                 result["instructions"] += (
-                    " Prefer native when the live interface supports this route and role contract. "
-                    "If native cannot run and model/effort are known, use workflow review TASK "
-                    "--handoff DESCRIPTOR --brief FILE --fallback-reason REASON (repeat --tier if supplied) "
-                    "for one managed dispatch in this pending round. Omit --handoff only for an independent new round.")
-                if selected.get("mode") == "current-session" and selected.get("model") is None:
-                    result["instructions"] += (
-                        " This inherited route cannot run managed without known session settings. Use native for this "
-                        "reserved round; before a future round, verified active settings may be supplied with "
-                        "--session-model MODEL --session-effort EFFORT. Never infer them from a tier or profile.")
+                    " This inherited route cannot run managed without known session settings. Use native for this "
+                    "reserved round; before a future round, verified active settings may be supplied with "
+                    "--session-model MODEL --session-effort EFFORT. Never infer them from a tier or profile.")
             if result.get("action") != "work-in-current-session":
                 result["instructions"] += " " + LAUNCH_CONTEXT
                 if result["delegate_handoff"] is None:
@@ -1629,64 +1624,57 @@ def dispatch(args):
             if args.scope != fingerprint:
                 raise AgentBoxError("Report scope is stale; review current code and requirements")
         else:
-            if role != "reviewer":
-                prompt = assignment_handoff(root, task, base, read_brief(args.brief), role)
-            execution_lock = scout_slot(root, config.workflow.scout_limit) if role == "scout" else lock(root, "review")
-            if role == "reviewer":
-                selected, preflight_failures = managed_review_route(selected)
+            execution_lock = lock(root, "review")
+            selected, preflight_failures = managed_review_route(selected)
             managed_started = False
             try:
                 with execution_lock:
-                    if role == "reviewer":
-                        if scope(root, base, tree(adapter, adapter.get(task.id))) != fingerprint:
-                            raise AgentBoxError("Code or requirements changed before review; prepare the current scope")
-                        if reuse_review:
-                            claim_managed_review(root, binding, task, review_round, fingerprint)
-                        else:
-                            reserve_review(root, binding, task, config.workflow.review.max_rounds,
-                                           review_round, fingerprint, managed=True)
-                        managed_started = True
-                        saved = evidence(root, task, fingerprint)
-                        if reuse_review:
-                            prompt = (review_evidence_path(
-                                root, task.id, fingerprint, review_round) / "handoff.txt").read_text(encoding="utf-8")
-                        else:
-                            prompt = reviewer_handoff(
-                                root, base, tasks, brief, saved, review_context, task.id, fingerprint,
-                                review_round)
+                    if scope(root, base, tree(adapter, adapter.get(task.id))) != fingerprint:
+                        raise AgentBoxError("Code or requirements changed before review; prepare the current scope")
+                    if reuse_review:
+                        claim_managed_review(root, binding, task, review_round, fingerprint)
+                    else:
+                        reserve_review(root, binding, task, config.workflow.review.max_rounds,
+                                       review_round, fingerprint, managed=True)
+                    managed_started = True
+                    saved = evidence(root, task, fingerprint)
+                    if reuse_review:
+                        prompt = (review_evidence_path(
+                            root, task.id, fingerprint, review_round) / "handoff.txt").read_text(encoding="utf-8")
+                    else:
+                        prompt = reviewer_handoff(
+                            root, base, tasks, brief, saved, review_context, task.id, fingerprint,
+                            review_round)
                     output = execute(
                         config.workflow, selected, role, root, prompt,
                         read_paths=([review_evidence_path(
                             root, task.id, fingerprint, review_round)]
                                     if role == "reviewer" else ()))
-                    if role == "reviewer":
-                        output["failures"] = preflight_failures + output.get("failures", [])
-                        if reuse_review:
-                            output["fallback_reason"] = args.fallback_reason.strip()
+                    output["failures"] = preflight_failures + output.get("failures", [])
+                    if reuse_review:
+                        output["fallback_reason"] = args.fallback_reason.strip()
             finally:
-                if role == "reviewer" and managed_started:
+                if managed_started:
                     cleanup_review_evidence(review_evidence_path(
                         root, task.id, fingerprint, review_round))
-        if role == "reviewer":
-            with lock(root, "review-budget"):
-                state = read_review_state(root, binding, task)
-                if state.get("pending") != review_round:
-                    raise AgentBoxError("Review round is stale or already reported; only the latest pending round can report")
-                if args.command == "report" and state.get("pending_backend") != "native":
-                    raise AgentBoxError("This round moved to managed execution; its native report is stale")
-                if scope(root, base, tree(adapter, adapter.get(task.id))) != fingerprint:
-                    raise AgentBoxError("Code or requirements changed during review; report is stale")
-                saved = evidence(root, task, fingerprint)
-                saved.pop("human_acceptance", None)
-                saved["review"] = {**output["report"], **{
-                    key: output[key] for key in ("route", "fallback_reason", "failures", "fresh_context") if key in output}}
-                save_evidence(root, task, saved)
-                state.pop("pending", None)
-                state.pop("pending_backend", None)
-                save_review_state(root, binding, task, state)
+        with lock(root, "review-budget"):
+            state = read_review_state(root, binding, task)
+            if state.get("pending") != review_round:
+                raise AgentBoxError("Review round is stale or already reported; only the latest pending round can report")
+            if args.command == "report" and state.get("pending_backend") != "native":
+                raise AgentBoxError("This round moved to managed execution; its native report is stale")
+            if scope(root, base, tree(adapter, adapter.get(task.id))) != fingerprint:
+                raise AgentBoxError("Code or requirements changed during review; report is stale")
+            saved = evidence(root, task, fingerprint)
+            saved.pop("human_acceptance", None)
+            saved["review"] = {**output["report"], **{
+                key: output[key] for key in ("route", "fallback_reason", "failures", "fresh_context") if key in output}}
+            save_evidence(root, task, saved)
+            state.pop("pending", None)
+            state.pop("pending_backend", None)
+            save_review_state(root, binding, task, state)
         result = {**output, "scope": fingerprint}
-        if role == "reviewer":
-            result["review_budget"] = read_review_budget(root, binding, task, config.workflow.review.max_rounds)
+        result["review_budget"] = read_review_budget(root, binding, task, config.workflow.review.max_rounds)
         return result
     raise AgentBoxError("Unknown workflow command")
 
