@@ -214,11 +214,255 @@ class WorkerHandoffTests(unittest.TestCase):
         prepared = self.run_workflow("prepare", "1", "--primary", "codex")
         return prepared["scope"], prepared["handoff"]
 
+    def test_native_bootstrap_preserves_large_input_in_a_bound_read_only_file(self):
+        """Tool-message limits must not lose assignment or instruction bytes for any role."""
+        marker = "Complete instructions café " * 4000
+        (self.root / "AGENTS.md").write_text(marker, encoding="utf-8")
+        gw.git(self.root, "add", ".")
+        gw.git(self.root, "commit", "-m", "large instruction fixture")
+        for role in ("worker", "scout", "reviewer"):
+            with self.subTest(role=role):
+                prepared = self.run_workflow(
+                    "prepare", "1", "--role", role, "--brief", str(self.review_brief),
+                    *(["--question", "Where is the boundary?"] if role == "scout" else []))
+                self.assertLess(len(prepared["delegate_handoff"].encode()), 2048)
+                descriptor = json.loads(base64.urlsafe_b64decode(prepared["handoff"]))
+                artifact = descriptor["input"]
+                path = Path(artifact["path"])
+                raw = path.read_bytes()
+                self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o400)
+                self.assertEqual(stat.S_IMODE(path.parent.stat().st_mode), 0o700)
+                self.assertEqual(hashlib.sha256(raw).hexdigest(), artifact["sha256"])
+                self.assertIn(str(path), prepared["delegate_handoff"])
+                self.assertIn(artifact["sha256"], prepared["delegate_handoff"])
+                self.assertNotIn("Delegation handoff:", prepared["delegate_handoff"])
+                self.assertNotIn(self.review_brief.read_text().strip(), prepared["delegate_handoff"])
+                payload = json.loads(raw.decode().split("Delegation handoff:\n", 1)[1])
+                self.assertEqual(payload["role"], role)
+                if role == "reviewer":
+                    instructions = payload["required_read_evidence"]["repository_instructions"]
+                    self.assertEqual(Path(instructions[0]["artifact_path"]).read_text(), marker)
+                else:
+                    self.assertIn(marker, payload["repository_instructions"])
+
     def report_back(self, handed, scope=None):
         scope, handoff = (scope, handed) if scope else handed
         return self.run_workflow("report", "1", "--role", "worker", "--primary", "codex",
                                  "--provider", "claude", "--model", "m", "--effort", "high", "--file", str(self.report),
                                  "--scope", scope, "--handoff", handoff)
+
+    def delegation_input(self, prepared):
+        descriptor = json.loads(base64.urlsafe_b64decode(prepared["handoff"]))
+        return Path(descriptor["input"]["path"])
+
+    def assert_worker_input_rejected(self, prepared):
+        before = workflow.read_evidence(self.root, self.task)
+        with patch.object(workflow, "execute") as execute:
+            with self.assertRaisesRegex(AgentBoxError, "Delegation input"):
+                self.run_workflow("run", "1", "--handoff", prepared["handoff"],
+                                  "--brief", str(self.review_brief))
+            execute.assert_not_called()
+        with self.assertRaisesRegex(AgentBoxError, "Delegation input"):
+            self.report_back((prepared["scope"], prepared["handoff"]))
+        self.assertEqual(workflow.read_evidence(self.root, self.task), before)
+
+    def test_missing_worker_input_blocks_both_backends_without_consuming_assignment(self):
+        """An intact descriptor cannot stand in for the input the worker actually received."""
+        prepared = self.run_workflow("prepare", "1")
+        self.delegation_input(prepared).unlink()
+        self.assert_worker_input_rejected(prepared)
+
+    def test_modified_worker_input_is_rejected_even_with_read_only_mode_restored(self):
+        """Restoring permissions must not conceal a changed assignment."""
+        prepared = self.run_workflow("prepare", "1")
+        path = self.delegation_input(prepared)
+        path.chmod(0o600)
+        path.write_text("different assignment")
+        path.chmod(0o400)
+        self.assert_worker_input_rejected(prepared)
+
+    def test_identical_replacement_worker_input_is_not_the_prepared_artifact(self):
+        """Digest equality alone cannot identify a replaced handoff file."""
+        prepared = self.run_workflow("prepare", "1")
+        path = self.delegation_input(prepared)
+        replacement = path.parent / "replacement.txt"
+        replacement.write_bytes(path.read_bytes())
+        replacement.chmod(0o400)
+        replacement.replace(path)
+        self.assert_worker_input_rejected(prepared)
+
+    def test_symlinked_worker_input_is_rejected_and_cleanup_preserves_its_target(self):
+        """A link cannot redirect a prepared assignment or cleanup to someone else's file."""
+        prepared = self.run_workflow("prepare", "1")
+        path = self.delegation_input(prepared)
+        target = Path(self.directory.name) / "user-input.txt"
+        path.rename(target)
+        path.symlink_to(target)
+        self.assert_worker_input_rejected(prepared)
+        descriptor = json.loads(base64.urlsafe_b64decode(prepared["handoff"]))
+        workflow.cleanup_delegation_input(self.root, descriptor)
+        self.assertTrue(target.is_file())
+        self.assertFalse(path.is_symlink())
+
+    def test_replaced_worker_package_is_rejected_and_not_cleaned(self):
+        """Moving the original handoff into another directory cannot replace its package."""
+        prepared = self.run_workflow("prepare", "1")
+        path = self.delegation_input(prepared)
+        original = path.parent.with_name("original-package")
+        path.parent.rename(original)
+        path.parent.mkdir(mode=0o700)
+        (original / path.name).rename(path)
+        (original / "descriptor.json").rename(path.parent / "descriptor.json")
+        self.assert_worker_input_rejected(prepared)
+        descriptor = json.loads(base64.urlsafe_b64decode(prepared["handoff"]))
+        with self.assertRaisesRegex(AgentBoxError, "replaced"):
+            workflow.cleanup_delegation_input(self.root, descriptor)
+        self.assertTrue(path.is_file())
+
+    def test_worker_input_permissions_are_checked_before_execution_or_acceptance(self):
+        """Widening package access invalidates the prepared read-only input contract."""
+        prepared = self.run_workflow("prepare", "1")
+        self.delegation_input(prepared).parent.chmod(0o755)
+        self.assert_worker_input_rejected(prepared)
+
+    def test_worker_input_reference_is_bound_to_the_descriptor(self):
+        """Changing path or digest cannot redirect a valid prepared worker report."""
+        prepared = self.run_workflow("prepare", "1")
+        original = json.loads(base64.urlsafe_b64decode(prepared["handoff"]))
+        for key, value in (("path", "/tmp/other-input"), ("sha256", "0" * 64)):
+            with self.subTest(key=key):
+                changed = {**original, "input": {**original["input"], key: value}}
+                token = base64.urlsafe_b64encode(json.dumps(changed).encode()).decode()
+                with self.assertRaisesRegex(AgentBoxError, "stale"):
+                    self.report_back((prepared["scope"], token))
+                with patch.object(workflow, "execute") as execute:
+                    with self.assertRaisesRegex(AgentBoxError, "stale"):
+                        self.run_workflow("run", "1", "--handoff", token, "--brief", str(self.review_brief))
+                    execute.assert_not_called()
+
+    def test_native_worker_consumes_one_unique_package_and_keeps_unknown_files(self):
+        """A report retires only its own known input; another assignment gets a fresh package."""
+        first = self.run_workflow("prepare", "1")
+        path = self.delegation_input(first)
+        unknown = path.parent / "user-notes.txt"
+        unknown.write_text("keep")
+        with self.assertRaisesRegex(AgentBoxError, "Unknown delegation input content"):
+            self.report_back((first["scope"], first["handoff"]))
+        self.assertTrue(path.exists())
+        self.assertEqual(unknown.read_text(), "keep")
+        unknown.unlink()
+        self.report_back((first["scope"], first["handoff"]))
+        with self.assertRaisesRegex(AgentBoxError, "stale"):
+            self.report_back((first["scope"], first["handoff"]))
+        second = self.run_workflow("prepare", "1")
+        next_path = self.delegation_input(second)
+        self.assertNotEqual(next_path.parent, path.parent)
+        self.assertTrue(next_path.is_file())
+        with self.assertRaisesRegex(AgentBoxError, "stale"):
+            self.report_back((first["scope"], first["handoff"]))
+        self.report_back((second["scope"], second["handoff"]))
+        self.assertFalse(next_path.parent.exists())
+
+    def test_managed_worker_uses_artifact_text_instead_of_equal_recomputed_text(self):
+        """Freshness recomposition is only a comparison; the provider gets canonical input bytes."""
+        prepared = self.run_workflow("prepare", "1")
+        path = self.delegation_input(prepared)
+        raw = path.read_bytes()
+        recomputed = raw.decode("utf-8")
+        saved = workflow.read_evidence(self.root, self.task)
+        self.assertNotIn("prompt", saved["execution"])
+        with patch.object(workflow, "assignment_handoff", return_value=recomputed), \
+                patch.object(workflow, "run", return_value=json.loads(self.report.read_text())) as runner:
+            self.run_workflow("run", "1", "--handoff", prepared["handoff"], "--brief", str(self.review_brief))
+        prompt = runner.call_args.args[3]
+        self.assertEqual(prompt.encode("utf-8"), raw)
+        self.assertIsNot(prompt, recomputed)
+        self.assertFalse(path.parent.exists())
+        with self.assertRaisesRegex(AgentBoxError, "stale"):
+            self.report_back((prepared["scope"], prepared["handoff"]))
+
+    def test_managed_worker_keeps_brief_and_instruction_freshness_checks(self):
+        """Canonical storage must not permit managed dispatch with a changed brief or repository rules."""
+        prepared = self.run_workflow("prepare", "1")
+        command = ("run", "1", "--handoff", prepared["handoff"], "--brief", str(self.review_brief))
+        brief = self.review_brief.read_text()
+        with patch.object(workflow, "execute") as execute:
+            self.review_brief.write_text("Goal: changed")
+            with self.assertRaisesRegex(AgentBoxError, "brief or repository instructions changed"):
+                self.run_workflow(*command)
+            self.review_brief.write_text(brief)
+            with patch.object(workflow, "repository_instructions", return_value="Changed instructions"):
+                with self.assertRaisesRegex(AgentBoxError, "brief or repository instructions changed"):
+                    self.run_workflow(*command)
+            execute.assert_not_called()
+        self.assertTrue(self.delegation_input(prepared).is_file())
+        self.report_back((prepared["scope"], prepared["handoff"]))
+
+    def test_managed_worker_rechecks_canonical_input_before_accepting_output(self):
+        """A provider report cannot hide artifact tampering during execution."""
+        prepared = self.run_workflow("prepare", "1")
+        path = self.delegation_input(prepared)
+        def provider(*args, **kwargs):
+            path.chmod(0o600)
+            path.write_text("changed during run")
+            path.chmod(0o400)
+            return json.loads(self.report.read_text())
+        with patch.object(workflow, "run", side_effect=provider):
+            with self.assertRaisesRegex(AgentBoxError, "Delegation input"):
+                self.run_workflow("run", "1", "--handoff", prepared["handoff"],
+                                  "--brief", str(self.review_brief))
+        self.assertEqual(workflow.read_evidence(self.root, self.task)["execution"]["status"], "failed")
+        self.assertFalse(path.parent.exists())
+
+    def test_unpublished_worker_package_is_cleaned_when_evidence_write_fails(self):
+        """Failed preparation must not strand canonical assignment files."""
+        with patch.object(workflow, "save_evidence", side_effect=OSError("disk full")):
+            with self.assertRaisesRegex(OSError, "disk full"):
+                self.run_workflow("prepare", "1")
+        self.assertFalse(list(workflow.WORKFLOW_STATE.rglob("handoff.txt")))
+        prepared = self.run_workflow("prepare", "1")
+        self.assertTrue(self.delegation_input(prepared).is_file())
+
+    def test_direct_worker_never_creates_a_delegation_package(self):
+        """Current-session implementation needs no native bootstrap or managed input artifact."""
+        with patch.object(workflow, "bind_delegation_input") as write:
+            prepared = self.run_workflow("prepare", "1", "--primary", "codex", "--execution", "direct")
+        write.assert_not_called()
+        self.assertIsNone(prepared["delegate_handoff"])
+        descriptor = json.loads(base64.urlsafe_b64decode(prepared["handoff"]))
+        self.assertNotIn("input", descriptor)
+        self.assertFalse((workflow.WORKFLOW_STATE / "delegation-inputs").exists())
+
+    def test_worker_artifact_digest_is_checked_independently_of_file_identity(self):
+        """Metadata checks alone must not admit bytes that differ from the published digest."""
+        prepared = self.run_workflow("prepare", "1")
+        path = self.delegation_input(prepared)
+        original = Path.read_bytes
+        def read(candidate):
+            return b"different bytes" if candidate == path else original(candidate)
+        with patch.object(Path, "read_bytes", read):
+            self.assert_worker_input_rejected(prepared)
+
+    def test_invalid_native_worker_report_keeps_the_input_available_for_correction(self):
+        """Canonical storage must retain schema validation and allow correcting a malformed report."""
+        prepared = self.run_workflow("prepare", "1")
+        path = self.delegation_input(prepared)
+        self.report.write_text(json.dumps({"status": "completed"}))
+        with self.assertRaises(AgentBoxError):
+            self.report_back((prepared["scope"], prepared["handoff"]))
+        self.assertTrue(path.exists())
+        self.assertEqual(workflow.read_evidence(self.root, self.task)["execution"]["status"], "prepared")
+        self.report.write_text(json.dumps({"status": "completed", "summary": "Done", "evidence": []}))
+        self.report_back((prepared["scope"], prepared["handoff"]))
+        self.assertFalse(path.parent.exists())
+
+    def test_worker_package_refuses_workflow_state_inside_the_repository(self):
+        """An environment override must not turn canonical input into worker-editable project content."""
+        descriptor = {"task": "1", "scope": "scope", "delegation": "unique", "route": {"role": "worker"}}
+        with patch.object(workflow, "WORKFLOW_STATE", self.root / "state"):
+            with self.assertRaisesRegex(AgentBoxError, "outside the repository"):
+                workflow.bind_delegation_input(self.root, descriptor, "assignment")
+        self.assertFalse((self.root / "state").exists())
 
     def test_prepared_scout_consumes_context_route_once_and_rejects_changes(self):
         """Routing drift must not replace the scout whose evidence is being accepted."""
@@ -226,6 +470,8 @@ class WorkerHandoffTests(unittest.TestCase):
                                      "--brief", str(self.review_brief), "--primary", "codex")
         self.assertEqual(prepared["scout_limit"], self.config.workflow.scout_limit)
         self.assertIn("coordinator-counted", prepared["scout_slots"])
+        prompt = self.delegation_input(prepared).read_bytes().decode("utf-8")
+        prompt = self.delegation_input(prepared).read_text(encoding="utf-8")
         command = ("run", "1", "--role", "scout", "--handoff", prepared["handoff"],
                    "--brief", str(self.review_brief))
         with patch.object(workflow, "execute") as execute, patch.object(workflow, "route") as route:
@@ -241,7 +487,7 @@ class WorkerHandoffTests(unittest.TestCase):
             execute.return_value = {"report": {"status": "completed"}}
             self.run_workflow(*command)
             self.assertEqual(execute.call_args.args[1], prepared["route"])
-            self.assertEqual(execute.call_args.args[4], prepared["delegate_handoff"])
+            self.assertEqual(execute.call_args.args[4], prompt)
             route.assert_not_called()
             with self.assertRaisesRegex(AgentBoxError, "stale or unknown"):
                 self.run_workflow(*command)
@@ -313,9 +559,10 @@ class WorkerHandoffTests(unittest.TestCase):
             route.assert_not_called()
         path.write_text(json.dumps(value))
         prepared = self.run_workflow("prepare", "1", "--facts", str(path))
+        prompt = self.delegation_input(prepared).read_text(encoding="utf-8")
         self.assertIn("Verify selected facts only when correctness depends on them; do not repeat sufficient scout research in full.",
-                      prepared["delegate_handoff"])
-        payload = json.loads(prepared["delegate_handoff"].split("Delegation handoff:\n")[1])
+                      prompt)
+        payload = json.loads(prompt.split("Delegation handoff:\n")[1])
         self.assertEqual(payload["selected_source_evidence"], value)
         descriptor = json.loads(base64.urlsafe_b64decode(prepared["handoff"]))
         self.assertEqual(descriptor["facts"]["count"], 1)
@@ -330,7 +577,7 @@ class WorkerHandoffTests(unittest.TestCase):
             path.write_text(json.dumps(value))
             execute.return_value = {"route": prepared["route"], "report": {"status": "completed"}}
             self.run_workflow(*command, "--facts", str(path))
-            self.assertEqual(execute.call_args.args[4], prepared["delegate_handoff"])
+            self.assertEqual(execute.call_args.args[4], prompt)
 
     def test_managed_scouts_share_limit_across_concurrent_runs(self):
         """Two active CLI scouts exhaust two slots while distinct prepared work remains retryable."""
@@ -377,7 +624,7 @@ class WorkerHandoffTests(unittest.TestCase):
                     prepared = self.run_workflow("prepare", "1", "--role", role, "--primary", "codex",
                                                  "--brief", str(self.review_brief),
                                                  *(["--question", "Which implementation handles this boundary?"] if role == "scout" else []))
-                    prompt = prepared["delegate_handoff"]
+                    prompt = self.delegation_input(prepared).read_bytes().decode("utf-8")
                     self.assertEqual(set(prepared["task"]), {"id", "title", "state", "tier"})
                     self.assertIn(f"workflow report 1 --role {role}", prepared["report_command"])
                     self.assertIn(f"--scope {prepared['scope']}", prepared["report_command"])
@@ -560,6 +807,7 @@ class WorkerHandoffTests(unittest.TestCase):
             with self.assertRaisesRegex(AgentBoxError, "provider unavailable"):
                 self.run_workflow("run", "1", "--handoff", prepared["handoff"], "--brief", str(self.review_brief))
         self.assertEqual(workflow.read_evidence(self.root, self.task)["execution"]["status"], "failed")
+        self.assertFalse(self.delegation_input(prepared).parent.exists())
         retried = self.run_workflow("prepare", "1", "--primary", "codex")
         self.assertNotEqual(retried["handoff"], prepared["handoff"])
         with self.assertRaisesRegex(AgentBoxError, "stale"):
@@ -574,12 +822,14 @@ class WorkerHandoffTests(unittest.TestCase):
                 self.run_workflow("run", "1", "--handoff", prepared["handoff"],
                                   "--brief", str(self.review_brief))
         self.assertEqual(workflow.read_evidence(self.root, self.task)["execution"]["status"], "failed")
+        self.assertFalse(self.delegation_input(prepared).parent.exists())
         retried = self.run_workflow("prepare", "1", "--primary", "codex")
         saved = workflow.read_evidence(self.root, self.task)
         saved["execution"]["status"] = "managed"
         workflow.save_evidence(self.root, self.task, saved)
         recovered = self.run_workflow("prepare", "1", "--primary", "codex")
         self.assertNotEqual(recovered["handoff"], retried["handoff"])
+        self.assertFalse(self.delegation_input(retried).parent.exists())
         with self.assertRaisesRegex(AgentBoxError, "stale"):
             self.report_back((retried["scope"], retried["handoff"]))
 
@@ -1083,7 +1333,7 @@ class WorkerHandoffTests(unittest.TestCase):
         payload = json.loads(base64.urlsafe_b64decode(handoff))
         self.assertEqual(set(payload),
                          {"repository", "binding", "branch", "head", "integration", "task", "scope", "route",
-                          "delegation", "execution", "facts"})
+                          "delegation", "execution", "facts", "input"})
 
     def test_a_worker_cannot_widen_the_route_by_editing_local_state(self):
         handed = self.prepare()
@@ -1189,7 +1439,7 @@ class WorkerHandoffTests(unittest.TestCase):
         gw.git(self.root, "commit", "-m", "current implementation")
         first = self.run_workflow("prepare", "1", "--role", "reviewer", "--primary", "codex",
                                   "--brief", str(self.review_brief))
-        first_payload = json.loads(first["delegate_handoff"].split("Delegation handoff:\n", 1)[1])
+        first_payload = json.loads(self.delegation_input(first).read_bytes().decode("utf-8").split("Delegation handoff:\n", 1)[1])
         first_reads = first_payload["required_read_evidence"]
         first_artifacts = [Path(first_reads["manifest_path"]),
                            *(Path(item["path"]) for item in first_reads["artifacts"].values()),
@@ -1219,7 +1469,7 @@ class WorkerHandoffTests(unittest.TestCase):
         self.assertNotEqual(first["scope"], second["scope"])
         self.assertNotEqual(first["handoff"], second["handoff"])
         self.assertNotIn("repository_instructions", second)
-        prompt = second["delegate_handoff"]
+        prompt = self.delegation_input(second).read_bytes().decode("utf-8")
         payload = json.loads(prompt.split("Delegation handoff:\n", 1)[1])
         requirements_text = Path(
             payload["required_read_evidence"]["artifacts"]["requirements"]["path"]).read_text()
@@ -1295,7 +1545,7 @@ class WorkerHandoffTests(unittest.TestCase):
 
         def package(prepared):
             payload = json.loads(
-                prepared["delegate_handoff"].split("Delegation handoff:\n", 1)[1])
+                self.delegation_input(prepared).read_bytes().decode("utf-8").split("Delegation handoff:\n", 1)[1])
             reads = payload["required_read_evidence"]
             paths = [Path(reads["manifest_path"]),
                      *(Path(item["path"]) for item in reads["artifacts"].values()),
@@ -1332,8 +1582,7 @@ class WorkerHandoffTests(unittest.TestCase):
         accepted = report_round(second)
         self.assertEqual(accepted["review_budget"]["used"], 2)
         self.assertNotIn("pending", accepted["review_budget"])
-        for cleaned in (first, second):
-            cleaned_dir, cleaned_paths = package(cleaned)
+        for cleaned_dir, cleaned_paths in ((first_dir, first_paths), (second_dir, second_paths)):
             self.assertFalse(cleaned_dir.exists())
             self.assertTrue(all(not path.exists() for path in cleaned_paths))
         report.write_text(json.dumps({"verdict": "INCONCLUSIVE", "summary": "Replay", "findings": []}))
@@ -1377,7 +1626,7 @@ class WorkerHandoffTests(unittest.TestCase):
             "prepare", "1", "--role", "reviewer", "--primary", "codex",
             "--brief", str(self.review_brief))
         pending_payload = json.loads(
-            pending["delegate_handoff"].split("Delegation handoff:\n", 1)[1])
+            self.delegation_input(pending).read_bytes().decode("utf-8").split("Delegation handoff:\n", 1)[1])
         pending_path = Path(pending_payload["required_read_evidence"]["manifest_path"]).parent
         artifact_paths = []
 
@@ -1561,7 +1810,7 @@ class WorkerHandoffTests(unittest.TestCase):
     def test_managed_fallback_preserves_prepared_prompt_and_artifact_hashes(self):
         """Brief and validation edits cannot rewrite files a native reviewer may still read."""
         prepared = self.prepared_review()
-        prompt = prepared["delegate_handoff"]
+        prompt = self.delegation_input(prepared).read_bytes().decode("utf-8")
         payload = json.loads(prompt.split("Delegation handoff:\n", 1)[1])
         evidence = payload["required_read_evidence"]
         directory = Path(evidence["manifest_path"]).parent
@@ -1683,7 +1932,7 @@ except AgentBoxError:
         first = self.run_workflow("prepare", "1", "--role", "reviewer", "--primary", "codex",
                                   "--brief", str(self.review_brief))
         self.assertEqual(first["review_budget"]["used"], 1)
-        self.assertNotIn("review_budget", first["delegate_handoff"])
+        self.assertNotIn("review_budget", self.delegation_input(first).read_bytes().decode("utf-8"))
         self.report.write_text(json.dumps({"verdict": "PASS", "summary": "Checked", "findings": []}))
         report = self.run_workflow("report", "1", "--role", "reviewer", "--primary", "codex",
                                   "--provider", "claude", "--model", "m", "--effort", "high",
@@ -1708,7 +1957,7 @@ except AgentBoxError:
         extra = self.run_workflow("prepare", "1", "--role", "reviewer", "--primary", "codex",
                                   "--brief", str(self.review_brief))
         self.assertEqual(extra["review_budget"]["used"], 3)
-        self.assertNotIn("User requests one more", extra["delegate_handoff"])
+        self.assertNotIn("User requests one more", self.delegation_input(extra).read_bytes().decode("utf-8"))
         with self.assertRaisesRegex(AgentBoxError, "budget exhausted"):
             self.run_workflow("prepare", "1", "--role", "reviewer", "--primary", "codex",
                               "--brief", str(self.review_brief))
@@ -1800,8 +2049,8 @@ except AgentBoxError:
             else:
                 result = self.run_workflow("prepare", "1", "--role", "reviewer", "--primary", "codex",
                                            "--brief", str(self.review_brief))
-                self.assertNotIn("THREE_EXTRA_AUTHORIZED", result["delegate_handoff"])
-                self.assertNotIn("configured_limit", result["delegate_handoff"])
+                self.assertNotIn("THREE_EXTRA_AUTHORIZED", self.delegation_input(result).read_bytes().decode("utf-8"))
+                self.assertNotIn("configured_limit", self.delegation_input(result).read_bytes().decode("utf-8"))
             budget = self.run_workflow("review-budget", "1", "--limit", "6", "--reason", "THREE_EXTRA_AUTHORIZED")["review_budget"]
             self.assertEqual((budget["used"], budget["limit"], budget["remaining"]), (attempt, 6, 6 - attempt))
         for command, flags in (("prepare", ("--role", "reviewer")), ("review", ())):

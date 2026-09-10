@@ -27,7 +27,7 @@ LAUNCH_CONTEXT = (
     "do not attest hidden context; record observed facts and limitations. A missing full-context receipt "
     "alone does not prohibit native. Clarifications stay with the active worker; a new scope/task, work "
     "after completion and every review verdict require a new instance. Pass only delegate_handoff as "
-    "the initial message. "
+    "the initial bootstrap message; never inline, summarize or reconstruct its canonical input file. "
 )
 
 
@@ -72,3 +72,16 @@ def render_handoff(role, payload, instructions=""):
                "report_schema": report_schema(role)}
     return (role_instructions(role) + "\n" + instructions + "\nDelegation handoff:\n"
             + json.dumps(handoff, ensure_ascii=False, indent=2) + "\n")
+
+
+def bootstrap(role, artifact):
+    """Native messages locate the canonical input without copying its contents."""
+    return (
+        f"Assigned role: {role}. Read the complete UTF-8 delegation input at "
+        f"{json.dumps(artifact['path'], ensure_ascii=False)} in chunks without truncation. "
+        f"Verify SHA-256 {artifact['sha256']} before acting. Follow that input's role, "
+        "scope, repository instructions, evidence policy and report schema. Do not load "
+        "parent conversation, tracker comments or previous-agent history. If the file is "
+        "missing, unreadable, truncated or its digest differs, stop and report blocked "
+        "with the concrete limitation; never reconstruct the assignment."
+    )
