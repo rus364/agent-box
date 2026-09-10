@@ -372,6 +372,71 @@ class WorkerHandoffTests(unittest.TestCase):
         with self.assertRaisesRegex(AgentBoxError, "stale"):
             self.report_back((delegated["scope"], delegated["handoff"]))
 
+    def test_active_assignment_keeps_policy_and_cannot_be_replaced(self):
+        """Config changes cannot make a prepared or running delegation replaceable."""
+        prepared = self.run_workflow("prepare", "1", "--primary", "codex")
+        self.config.workflow.worker.execution = "direct"
+        for status in ("prepared", "managed"):
+            with self.subTest(status=status):
+                saved = workflow.read_evidence(self.root, self.task)
+                saved["execution"]["status"] = status
+                workflow.save_evidence(self.root, self.task, saved)
+                before = workflow.evidence_path(self.root, self.task).read_bytes()
+                with self.assertRaisesRegex(AgentBoxError, "cannot transition"):
+                    self.run_workflow("prepare", "1", "--primary", "codex", "--execution", "direct")
+                with self.assertRaisesRegex(AgentBoxError, "active worker"):
+                    self.run_workflow("prepare", "1", "--primary", "codex")
+                self.assertEqual(workflow.evidence_path(self.root, self.task).read_bytes(), before)
+                self.assertEqual(saved["execution"]["descriptor"]["execution"], prepared["execution"])
+
+    def test_completed_assignment_uses_current_policy_after_checkpoint(self):
+        """A completed delegation cannot pin the execution policy of the next assignment."""
+        prepared = self.run_workflow("prepare", "1", "--primary", "codex")
+        (self.root / "change.py").write_text("value = 1\n")
+        self.report_back((prepared["scope"], prepared["handoff"]))
+        gw.git(self.root, "add", ".")
+        gw.git(self.root, "commit", "-m", "coordinator accepts completed work")
+        self.config.workflow.worker.execution = "direct"
+        direct = self.run_workflow("prepare", "1", "--primary", "codex", "--execution", "direct")
+        self.assertEqual(direct["execution"]["policy"], "direct")
+        self.assertEqual(direct["action"], "work-in-current-session")
+        self.run_workflow("report", "1", "--scope", direct["scope"], "--handoff", direct["handoff"],
+                          "--provider", "codex", "--session-inherited", "--file", str(self.report))
+        self.config.workflow.worker.execution = "delegated"
+        delegated = self.run_workflow("prepare", "1", "--primary", "codex")
+        self.assertEqual(delegated["execution"]["policy"], "delegated")
+        self.assertEqual(delegated["action"], "delegate")
+
+    def test_managed_failure_allows_clean_retry_and_keeps_old_report_stale(self):
+        """Inspection can lead to a fresh assignment, never revival of the failed descriptor."""
+        prepared = self.run_workflow("prepare", "1", "--primary", "codex")
+        with patch.object(workflow, "execute", side_effect=AgentBoxError("provider unavailable")):
+            with self.assertRaisesRegex(AgentBoxError, "provider unavailable"):
+                self.run_workflow("run", "1", "--handoff", prepared["handoff"], "--brief", str(self.review_brief))
+        self.assertEqual(workflow.read_evidence(self.root, self.task)["execution"]["status"], "failed")
+        retried = self.run_workflow("prepare", "1", "--primary", "codex")
+        self.assertNotEqual(retried["handoff"], prepared["handoff"])
+        with self.assertRaisesRegex(AgentBoxError, "stale"):
+            self.report_back((prepared["scope"], prepared["handoff"]))
+        self.report_back((retried["scope"], retried["handoff"]))
+
+    def test_managed_failure_preserves_dirty_edits_and_refuses_retry(self):
+        """A failed provider's edits require coordinator inspection and a clean checkpoint."""
+        prepared = self.run_workflow("prepare", "1", "--primary", "codex")
+
+        def fail(*args):
+            (self.root / "change.py").write_text("value = 1\n")
+            raise AgentBoxError("provider failed after editing")
+
+        with patch.object(workflow, "execute", side_effect=fail):
+            with self.assertRaisesRegex(AgentBoxError, "provider failed after editing"):
+                self.run_workflow("run", "1", "--handoff", prepared["handoff"], "--brief", str(self.review_brief))
+        before = workflow.evidence_path(self.root, self.task).read_bytes()
+        with self.assertRaisesRegex(AgentBoxError, "clean"):
+            self.run_workflow("prepare", "1", "--primary", "codex")
+        self.assertEqual(workflow.evidence_path(self.root, self.task).read_bytes(), before)
+        self.assertEqual((self.root / "change.py").read_text(), "value = 1\n")
+
     def test_managed_failure_retires_acceptance_added_after_prepare(self):
         """A failed managed worker must not leave acceptance recorded while it awaited dispatch."""
         prepared = self.run_workflow("prepare", "1", "--primary", "codex")

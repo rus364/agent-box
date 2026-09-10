@@ -1141,9 +1141,14 @@ def worker_dispatch(args, root, binding, adapter, task, config):
                 saved.pop(key, None)
             previous["status"] = "managed"
             save_evidence(root, task, saved)
-            output = execute(config.workflow, selected, "worker", root, prompt)
-            if delegation_identity(root, binding, current.get("branch") and info["branch"]) != identity:
-                raise AgentBoxError("Worker branch changed, HEAD moved or integration changed; reconcile before accepting the report")
+            try:
+                output = execute(config.workflow, selected, "worker", root, prompt)
+                if delegation_identity(root, binding, current.get("branch") and info["branch"]) != identity:
+                    raise AgentBoxError("Worker branch changed, HEAD moved or integration changed; reconcile before accepting the report")
+            except Exception:
+                previous["status"] = "failed"
+                save_evidence(root, task, saved)
+                raise
         previous["status"] = "reported"
         for key in ("validation", "review", "human_acceptance", "local_acceptance"):
             saved.pop(key, None)
@@ -1151,7 +1156,8 @@ def worker_dispatch(args, root, binding, adapter, task, config):
         saved["worker"] = {key: output[key] for key in ("route", "fallback_reason", "failures") if key in output}
         save_evidence(root, task, saved)
         return {**output, "scope": fingerprint, "execution": decision}
-    policy = previous["descriptor"]["execution"]["policy"] if previous else config.workflow.worker.execution
+    active = previous and previous["status"] in ("prepared", "managed")
+    policy = previous["descriptor"]["execution"]["policy"] if active else config.workflow.worker.execution
     choice = getattr(args, "execution", None)
     reason = (getattr(args, "reason", None) or "").strip()
     if policy == "auto":
@@ -1163,12 +1169,12 @@ def worker_dispatch(args, root, binding, adapter, task, config):
         choice, reason = policy, reason or f"Configured {policy} policy"
     if len(reason) > 500 or "\n" in reason:
         raise AgentBoxError("Execution reason must be one compact line of at most 500 characters")
-    if previous:
+    if active:
         old = previous["descriptor"]["execution"]
         if old["choice"] == "delegated" and choice == "direct":
             raise AgentBoxError("Worker execution cannot transition from delegated to direct")
         escalating = old["choice"] == "direct" and choice == "delegated" and policy == "auto"
-        if previous["status"] != "reported" and not escalating:
+        if not escalating:
             raise AgentBoxError("An active worker execution already exists; use its descriptor, do not replace it")
         if escalating and not gw._worktree_clean(root):
             raise AgentBoxError("Cannot escalate direct to delegated with a dirty worktree; commit a coordinator checkpoint, then retry. No files were changed")
