@@ -141,16 +141,30 @@ for facts, scouting and structuring; task difficulty remains 1-3, represented in
 Vikunja by one `ab:tier:1`, `ab:tier:2` or `ab:tier:3` label. A user-set task tier
 wins over a coordinator suggestion. Each subtask may have its own explicit tier. Without a task tier, no assessment or label is required for readiness, audit, claim, validation, review or completion; malformed/conflicting explicit labels remain invalid. An explicit `--tier` invocation override selects configured routing when the card has no tier and never changes its labels.
 
-Without an applicable global worker override, untiered workers stay in the active
-session's provider, model and effort.
-`prepare` and `run` return `action: work-in-current-session`, with compact task
-identity, handoff and instructions, instead of launching another CLI. The full
-task stays in `tracker get`; prepare does not repeat its description or history. The coordinator
-implements directly, preserving settings. The action checks assigned Doing
-ownership, retires previous acceptance and records the actual primary writer;
-it is not evidence that work ran or completed. Pass the active provider with
-`--primary` (or `AGENT_BOX_PRIMARY_PROVIDER`). No usage counters, tier matrices
-or installed tier profiles participate.
+Worker execution is decided before provider/model routing. In auto policy, use
+`agent-box workflow prepare TASK --primary PROVIDER --execution direct --reason "Small bounded edit"`
+or `agent-box workflow prepare TASK --primary PROVIDER --execution delegated --reason "Separate implementation assignment" --brief /tmp/brief.md`.
+Forced direct/delegated policies determine the choice and reject contradictory flags.
+The reason is one non-empty line of at most 500 characters. Direct returns
+`action: work-in-current-session`, preserving the active provider/model/effort even
+when the task has a tier or a global worker override. Supply verified
+`--session-model MODEL --session-effort EFFORT` together, or inherit unknown settings.
+Direct never consults routing counters, tier matrices or profiles.
+
+The durable descriptor binds policy, effective choice, reason, task scope and route.
+`workflow inspect TASK` exposes this execution evidence and its model source:
+`active-session`, `workflow.worker.override.models`, or `workflow.tiers.N`.
+Later configuration changes cannot reschedule prepared work. Native delegation
+uses the complete bounded `delegate_handoff`; managed execution uses the returned
+`managed_command`: `agent-box workflow run TASK --handoff DESCRIPTOR --brief /tmp/brief.md`
+(repeat a supplied `--tier`). It consumes the same assignment and route once.
+Never replace an active delegated worker; late, repeated or mismatched reports fail.
+
+Auto permits only direct-to-delegated escalation. Before edits or after a coordinator
+checkpoint commit, repeat prepare with `--execution delegated --reason TEXT --brief FILE`.
+Dirty escalation fails with: `Cannot escalate direct to delegated with a dirty worktree; commit a coordinator checkpoint, then retry. No files were changed`.
+It never stashes, resets or adopts dirty files. Escalation retires the direct descriptor
+and validation/review acceptance. Delegated-to-direct transition is rejected.
 
 Every `prepare` result also returns `report_command`, an exact role/tier/scope
 template for native result ingestion. Replace the ACTUAL route values, descriptor
@@ -227,8 +241,9 @@ All attempts preserve the selected tier and configured reviewer model/effort.
 
 In `agent-box config`, workflow / worker separates execution from model selection.
 `workflow.worker.execution` accepts `auto` (default), `direct` or `delegated`.
-This preference is saved and displayed; dispatch currently retains its existing
-behavior. Model scope does not choose execution mode.
+Auto requires an explicit coordinator choice and reason; forced policies determine
+the choice. Direct bypasses model routing. Model scope applies only after delegated
+execution is selected.
 
 Open Global worker override to set `workflow.worker.override.scope` and
 independent `models.codex` / `models.claude` candidates with `model` and `effort`.
@@ -250,8 +265,8 @@ it does not select the other provider. If no override candidate is eligible, sel
 with an explicit error without returning to session or tier models. Reviewer and
 scout configuration remain independent.
 
-`prepare` returns the selected route for native execution; `run` selects and
-executes a route through managed CLI. Reports record actual provider/model/effort against
+`prepare` returns the selected route for native execution; worker `run --handoff`
+executes that route through managed CLI. A new worker `run` requires the same execution choice and reason as prepare. Reports record actual provider/model/effort against
 the prepared route, including permitted fallback candidates and their reasons,
 even if configuration changes later. Running workers are not rescheduled.
 Untiered overrides have no native tier profile. Use supported explicit native
@@ -331,8 +346,8 @@ findings. A worker failure after possible side effects requires reconciliation.
 
 ```bash
 agent-box workflow begin TASK --primary codex
-agent-box workflow prepare TASK --role worker --primary codex
-agent-box workflow run TASK --role worker --primary codex --brief /tmp/brief.md
+agent-box workflow prepare TASK --role worker --primary codex --execution delegated --reason "Bounded implementation" --brief /tmp/brief.md
+agent-box workflow run TASK --handoff DESCRIPTOR --brief /tmp/brief.md
 # The primary checks evidence and commits the resulting work.
 agent-box workflow validate TASK -- python3 -m unittest discover -s tests
 agent-box workflow review TASK --primary codex --brief /tmp/review-brief.md

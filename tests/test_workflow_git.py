@@ -60,7 +60,7 @@ class WorkflowGitTests(unittest.TestCase):
                  patch.object(workflow, "make_adapter", return_value=adapter), \
                  patch.object(workflow, "resolve", return_value=(task, info, info, "main")), \
                  patch.object(workflow, "route", return_value=route), patch.object(workflow, "WORKFLOW_STATE", Path(temporary) / "state"):
-                prepared = workflow.dispatch(workflow.parser().parse_args(["prepare", "1", "--primary", "codex"]))
+                prepared = workflow.dispatch(workflow.parser().parse_args(["prepare", "1", "--primary", "codex", "--execution", "delegated", "--reason", "Git fixture", "--brief", str(brief)]))
                 (root / "change.py").write_text("value = 1\n")
                 result = workflow.dispatch(workflow.parser().parse_args(["report", "1", "--role", "worker", "--primary", "codex", "--provider", "claude", "--model", "exact-model", "--effort", "high", "--file", str(report), "--scope", prepared["scope"], "--handoff", prepared["handoff"]]))
                 self.assertEqual(result["route"]["provider"], "claude")
