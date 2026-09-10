@@ -278,14 +278,16 @@ def scope(root, base, tasks, *, allow_dirty=False):
                 mode = path.lstat().st_mode
                 if stat.S_ISLNK(mode):
                     digest = hashlib.sha256(os.readlink(path).encode())
+                    kind = {"kind": "symlink"}
                 elif stat.S_ISREG(mode):
                     digest = hashlib.sha256()
                     with path.open("rb") as stream:
                         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
                             digest.update(chunk)
+                    kind = {"kind": "file", "executable": bool(mode & 0o111)}
                 else:
                     raise AgentBoxError(f"Cannot fingerprint untracked non-regular path {name}")
-                untracked[name] = digest.hexdigest()
+                untracked[name] = {**kind, "digest": digest.hexdigest()}
         working_diff = {"diff": gw.git(root, "diff", "--binary", "HEAD", "--"), "untracked": untracked}
     return scope_fingerprint(head, base_head, task_requirements, working_diff=working_diff)
 

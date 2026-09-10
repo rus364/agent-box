@@ -260,6 +260,24 @@ class WorkerHandoffTests(unittest.TestCase):
                                   "--effort", "high", "--file", str(self.report))
             output.assert_not_called()
 
+    def test_scout_scope_distinguishes_untracked_type_and_executable_mode(self):
+        """Equal text cannot hide a file-to-symlink or executable-mode change."""
+        path = self.root / "probe"
+        path.write_text("target")
+        prepared = self.run_workflow("prepare", "1", "--role", "scout", "--question", "Where?",
+                                     "--brief", str(self.review_brief))
+        regular_scope = workflow.scope(self.root, "HEAD", [self.task], allow_dirty=True)
+        path.chmod(0o755)
+        self.assertNotEqual(workflow.scope(self.root, "HEAD", [self.task], allow_dirty=True), regular_scope)
+        path.unlink()
+        path.symlink_to("target")
+        with patch.object(workflow, "native_output") as output:
+            with self.assertRaisesRegex(AgentBoxError, "different scope"):
+                self.run_workflow("report", "1", "--role", "scout", "--handoff", prepared["handoff"],
+                                  "--scope", prepared["scope"], "--provider", "claude", "--model", "m",
+                                  "--effort", "high", "--file", str(self.report))
+            output.assert_not_called()
+
     def test_facts_reject_wrong_task_extra_keys_and_nonworker_roles(self):
         """Only explicitly selected, correctly scoped evidence may enter a delegated worker."""
         fingerprint = workflow.scope(self.root, "main", [self.task])
