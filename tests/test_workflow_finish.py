@@ -69,6 +69,23 @@ class ChildFinishTests(unittest.TestCase):
         self.assertEqual(initial.state, snapshot_state or authoritative.state)
         return result
 
+    def test_active_child_execution_blocks_integration_despite_validation(self):
+        """Child completion must not merge or close work with an outstanding worker."""
+        prepared = self.dispatch(["prepare", "8", "--primary", "codex", "--execution", "direct",
+                                  "--reason", "Inspect child work"])
+        self.dispatch(["validate", "8", "--", "true"])
+        parent_head = gw.local_branch_head(self.root, "ab/7-parent")
+        for status in ("prepared", "managed"):
+            with self.subTest(status=status):
+                saved = workflow.read_evidence(self.root, self.child)
+                saved["execution"]["status"] = status
+                workflow.save_evidence(self.root, self.child, saved)
+                with self.assertRaisesRegex(AgentBoxError, f"Cannot finish: worker execution is {status}"):
+                    self.dispatch(["finish", "8"])
+                self.assertEqual(gw.local_branch_head(self.root, "ab/7-parent"), parent_head)
+                self.adapter.set_state.assert_not_called()
+        self.assertEqual(saved["execution"]["descriptor"]["scope"], prepared["scope"])
+
     def test_tracker_outage_retry_finishes_original_work_without_merge_or_validation(self):
         """The advanced parent must not turn the accepted child into an empty diff."""
         self.interrupted_finish()
@@ -219,8 +236,7 @@ class ChildFinishTests(unittest.TestCase):
         self.child.state = "Ready"
         self.begin_ready_child()
         self.adapter.reset_mock()
-        workflow.retire_acceptance(self.root, self.adapter, self.child,
-                                   workflow.read_evidence(self.root, self.child))
+        test_local_workflow.completed_worker(self, self.child)
         self.dispatch(["validate", "8", "--", "true"])
         with self.assertRaisesRegex(AgentBoxError, "acceptance.*missing"):
             self.dispatch(["finish", "8"])
@@ -576,8 +592,9 @@ class NoCodeChildFinishTests(unittest.TestCase):
             saved = workflow.read_evidence(self.root, self.child)
             workflow.reserve_review(self.root, BINDING, self.child, 3, "new-round", saved["scope"])
         else:
-            workflow.retire_acceptance(self.root, self.adapter, self.child,
-                                       workflow.read_evidence(self.root, self.child))
+            gw.git(self.root, "switch", "ab/8-child")
+            test_local_workflow.completed_worker(self, self.child)
+            gw.git(self.root, "switch", "ab/7-parent")
         self.assertNotIn("local_acceptance", workflow.read_evidence(self.root, self.child))
         if remote:
             gw.git(self.root, "branch", "-D", "ab/8-child")
@@ -658,8 +675,7 @@ class NoCodeChildFinishTests(unittest.TestCase):
         self.child = replace(self.child, state="Ready")
         self.begin_ready_child(snapshot_state="Doing", resume=True)
         self.adapter.reset_mock()
-        workflow.retire_acceptance(self.root, self.adapter, self.child,
-                                   workflow.read_evidence(self.root, self.child))
+        test_local_workflow.completed_worker(self, self.child)
         self.dispatch(["validate", "8", "--", "true"])
         with self.assertRaisesRegex(AgentBoxError, "acceptance.*missing"):
             self.dispatch(["finish", "8"])
@@ -703,8 +719,7 @@ class NoCodeChildFinishTests(unittest.TestCase):
     def test_worker_retirement_keeps_origin_but_requires_new_validation(self):
         """Delegating investigation can retire acceptance without creating a code diff."""
         self.dispatch(["validate", "8", "--", "true"])
-        workflow.retire_acceptance(self.root, self.adapter, self.child,
-                                   workflow.read_evidence(self.root, self.child))
+        test_local_workflow.completed_worker(self, self.child)
         with self.assertRaisesRegex(AgentBoxError, "workflow validate"):
             self.dispatch(["finish", "8"])
         self.dispatch(["validate", "8", "--", "true"])

@@ -420,6 +420,92 @@ class WorkerHandoffTests(unittest.TestCase):
             self.report_back((prepared["scope"], prepared["handoff"]))
         self.report_back((retried["scope"], retried["handoff"]))
 
+    def test_finish_rejects_active_execution_even_with_current_acceptance(self):
+        """Completion must not orphan a prepared or running assignment."""
+        self.task.description = "## Acceptance\n- [x] requirement"
+        prepared = self.run_workflow("prepare", "1", "--primary", "codex")
+        for status, action in (
+                ("prepared", "submit its report with workflow report before completion"),
+                ("managed", "wait for workflow run to return before completion")):
+            with self.subTest(status=status):
+                saved = workflow.read_evidence(self.root, self.task)
+                saved.update(validation={"exit": 0}, review={"verdict": "PASS"})
+                saved["execution"]["status"] = status
+                workflow.save_evidence(self.root, self.task, saved)
+                with self.assertRaises(AgentBoxError) as error:
+                    self.run_workflow("finish", "1")
+                self.assertEqual(str(error.exception), f"Cannot finish: worker execution is {status}; {action}")
+                self.adapter.set_state.assert_not_called()
+        saved["execution"]["status"] = "prepared"
+        workflow.save_evidence(self.root, self.task, saved)
+        self.report_back((prepared["scope"], prepared["handoff"]))
+        self.run_workflow("validate", "1", "--", "true")
+        self.config.workflow.review.policy = "always"
+        with patch.object(workflow, "run", return_value={"verdict": "PASS", "summary": "Reviewed", "findings": []}):
+            self.run_workflow("review", "1", "--primary", "codex", "--brief", str(self.review_brief))
+        self.assertEqual(self.run_workflow("finish", "1")["state"], "Review")
+
+    def test_failed_execution_requires_fresh_acceptance_but_not_a_worker_report(self):
+        """Terminal failure cannot supply acceptance or permanently prevent completion."""
+        self.task.description = "## Acceptance\n- [x] requirement"
+        prepared = self.run_workflow("prepare", "1", "--primary", "codex")
+        with patch.object(workflow, "execute", side_effect=AgentBoxError("provider unavailable")):
+            with self.assertRaisesRegex(AgentBoxError, "provider unavailable"):
+                self.run_workflow("run", "1", "--handoff", prepared["handoff"], "--brief", str(self.review_brief))
+        with self.assertRaisesRegex(AgentBoxError, "workflow validate"):
+            self.run_workflow("finish", "1")
+        with self.assertRaisesRegex(AgentBoxError, "stale"):
+            self.report_back((prepared["scope"], prepared["handoff"]))
+        self.config.workflow.review.policy = "always"
+        self.run_workflow("validate", "1", "--", "true")
+        with self.assertRaisesRegex(AgentBoxError, "PASS review"):
+            self.run_workflow("finish", "1")
+        with patch.object(workflow, "run", return_value={"verdict": "PASS", "summary": "Reviewed", "findings": []}):
+            self.run_workflow("review", "1", "--primary", "codex", "--brief", str(self.review_brief))
+        self.assertEqual(self.run_workflow("finish", "1")["state"], "Review")
+        saved = workflow.read_evidence(self.root, self.task)
+        self.assertEqual(saved["execution"]["status"], "failed")
+        self.assertNotIn("worker", saved)
+
+    def test_worker_publication_retires_native_and_managed_review_rounds(self):
+        """Late verdicts cannot restore PASS after new work, and attempts stay spent."""
+        self.config.workflow.review.policy = "always"
+        for backend in ("native", "managed"):
+            for choice in ("direct", "delegated"):
+                with self.subTest(backend=backend, choice=choice):
+                    workflow.evidence_path(self.root, self.task).unlink(missing_ok=True)
+                    self.run_workflow("review-budget", "1", "--limit", "10", "--reason", "More attempts approved")
+                    prepared = self.run_workflow("prepare", "1", "--role", "reviewer", "--primary", "codex",
+                                                 "--brief", str(self.review_brief))
+                    before = workflow.read_review_state(self.root, BINDING, self.task)
+
+                    def publish(*args, **kwargs):
+                        saved = workflow.read_evidence(self.root, self.task)
+                        saved.update(validation={"exit": 0}, review={"verdict": "PASS"},
+                                     human_acceptance={"reason": "Approved"}, local_acceptance={"accepted": True})
+                        workflow.save_evidence(self.root, self.task, saved)
+                        self.run_workflow("prepare", "1", "--primary", "codex", "--execution", choice)
+                        self.assertEqual(workflow.read_review_state(self.root, BINDING, self.task),
+                                         {key: value for key, value in before.items()
+                                          if key not in ("pending", "pending_backend")})
+                        saved = workflow.read_evidence(self.root, self.task)
+                        for key in ("validation", "review", "human_acceptance", "local_acceptance"):
+                            self.assertNotIn(key, saved)
+                        return {"verdict": "PASS", "summary": "Late review", "findings": []}
+
+                    if backend == "native":
+                        self.report.write_text(json.dumps(publish()))
+                        with self.assertRaisesRegex(AgentBoxError, "stale"):
+                            self.run_workflow("report", "1", "--role", "reviewer", "--provider", "claude",
+                                              "--model", "m", "--effort", "high", "--fresh-context",
+                                              "--scope", prepared["scope"], "--handoff", prepared["handoff"],
+                                              "--file", str(self.report))
+                    else:
+                        with patch.object(workflow, "run", side_effect=publish):
+                            with self.assertRaisesRegex(AgentBoxError, "stale"):
+                                self.managed_fallback(prepared)
+                    self.assertNotIn("review", workflow.read_evidence(self.root, self.task))
+
     def test_managed_failure_preserves_dirty_edits_and_refuses_retry(self):
         """A failed provider's edits require coordinator inspection and a clean checkpoint."""
         prepared = self.run_workflow("prepare", "1", "--primary", "codex")

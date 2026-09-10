@@ -216,11 +216,9 @@ class NativeRouteTests(unittest.TestCase):
             prepared = self.run_workflow("prepare", "1", "--role", role, "--primary", "codex", *extra)
             for change in ({"model": "wrong"}, {"effort": "medium"}, {"provider": "codex"}):
                 with self.subTest(role=role, change=change), \
-                     patch.object(workflow, "accept_worker") as accept, \
                      patch.object(workflow, "save_evidence") as save:
                     with self.assertRaisesRegex(AgentBoxError, "configured route"):
                         self.report_route(prepared, role=role, **change)
-                    accept.assert_not_called()
                     save.assert_not_called()
 
     def test_native_review_saves_full_route_and_requires_fallback_reason(self):

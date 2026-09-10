@@ -16,6 +16,18 @@ from agent_box.tracker.core import Task
 from test_workflow_handoff import BINDING, repository, selected_route
 
 
+def completed_worker(case, task):
+    """Retire acceptance through an actual current-session assignment and report."""
+    prepared = case.dispatch(["prepare", task.id, "--primary", "codex",
+                              "--execution", "direct", "--reason", "Inspect current work"])
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json") as report:
+        report.write('{"status":"completed","summary":"Inspected current work","evidence":[]}')
+        report.flush()
+        case.dispatch(["report", task.id, "--scope", prepared["scope"],
+                       "--handoff", prepared["handoff"], "--provider", "codex",
+                       "--session-inherited", "--file", report.name])
+
+
 class LocalLandTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -317,8 +329,8 @@ class LocalLandTests(unittest.TestCase):
         self.parent.state = "Doing"
         self.config.workflow.review.policy = "always"
         self.approve()
+        completed_worker(self, self.parent)
         saved = workflow.read_evidence(self.root, self.parent)
-        workflow.retire_acceptance(self.root, self.adapter, self.parent, saved)
         saved["validation"] = {"exit": 0}
         workflow.save_evidence(self.root, self.parent, saved)
         with self.assertRaisesRegex(AgentBoxError, "PASS review"):

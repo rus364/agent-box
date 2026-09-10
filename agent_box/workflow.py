@@ -614,39 +614,6 @@ def native_output(args, selected, tier):
     return output
 
 
-def retire_acceptance(root, adapter, task, saved):
-    """Drop validation and review around a worker, not only after it reports.
-
-    A worker that fails, misbehaves or never answers must not leave a stale PASS
-    standing over code it may already have changed, so acceptance is retired when
-    the delegation starts and again when its report is ingested.
-    """
-    with lock(root, "review-budget"):
-        check_worker_assignment(adapter, task)
-        saved.pop("validation", None)
-        saved.pop("review", None)
-        saved.pop("human_acceptance", None)
-        saved.pop("local_acceptance", None)
-        save_evidence(root, task, saved)
-
-
-def accept_worker(root, adapter, task, saved, identity, expected):
-    """Ingest a worker report against the delegation it was prepared for.
-
-    The two cheap facts checked here are correctness, not a security perimeter: a
-    worker edits working files, so the branch it was handed and the commit it
-    started from must still be the ones the report describes. Everything else the
-    worker is not allowed to touch is the coordinator's own responsibility, which
-    is why nothing here inventories the tracker or the ref store.
-    """
-    for key, description in (("branch", "the branch changed"), ("head", "HEAD moved"),
-                             ("integration", "the branch this work integrates into moved")):
-        if identity[key] != expected.get(key):
-            raise AgentBoxError(f"Since this delegation was prepared, {description}; "
-                                "reconcile the repository before accepting the report")
-    retire_acceptance(root, adapter, task, saved)
-
-
 def route(config, role, tier, primary, writer=None):
     path = WORKFLOW_STATE / "routing.json"
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -989,6 +956,13 @@ def finish(root, config, adapter, task_id):
         reasons = completion_reasons(task, tasks, str(adapter.identity()["id"])) + blocking_reasons(task, adapter.get)
         if reasons:
             raise AgentBoxError("Cannot finish: " + "; ".join(reasons))
+        status = read_evidence(root, task).get("execution", {}).get("status")
+        if status == "prepared":
+            raise AgentBoxError("Cannot finish: worker execution is prepared; submit its report with workflow report before completion")
+        if status == "managed":
+            raise AgentBoxError("Cannot finish: worker execution is managed; wait for workflow run to return before completion")
+        # Failed assignments are terminal, not reports; current acceptance is
+        # still required, but a provider failure must not block work forever.
         if task.id != parent.id:
             return finish_child(root, config, adapter, task, parent, info, current["branch"], tasks)
         if gw.current_branch(root) != info["branch"]:
@@ -1206,6 +1180,12 @@ def worker_dispatch(args, root, binding, adapter, task, config):
                           "status": "prepared", "prompt": prompt}
     if choice == "direct":
         saved["writer"] = selected["provider"]
+    # Dispatch holds review-budget through publication. Retire the round first
+    # so even a failed evidence write cannot leave a late verdict admissible.
+    state = read_review_state(root, binding, task)
+    state.pop("pending", None)
+    state.pop("pending_backend", None)
+    save_review_state(root, binding, task, state)
     save_evidence(root, task, saved)
     report = ["agent-box", "workflow", "report", task.id, "--role", "worker", "--provider", "ACTUAL_PROVIDER",
               "--scope", fingerprint, "--handoff", "DESCRIPTOR", "--file", "REPORT.json"]
