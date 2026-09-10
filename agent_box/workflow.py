@@ -97,12 +97,14 @@ def repository_instruction_evidence(root):
     return result
 
 
-def assignment_handoff(root, task, base, brief, role):
+def assignment_handoff(root, task, base, brief, role, *, question=None, facts=None):
     """The coordinator translates current requirements once, without task history."""
     return render_handoff(role, {
         "task": {"id": task.id, "project": task.project},
         "base": base,
         "assignment": brief,
+        **({"question": question} if question is not None else {}),
+        **({"selected_source_evidence": facts} if facts is not None else {}),
         "repository_instructions": repository_instructions(root),
     })
 
@@ -208,6 +210,52 @@ def read_brief(path):
     return value
 
 
+def read_facts(path, task, fingerprint):
+    """Selected evidence is bounded input, never a substitute for requirements."""
+    if not path:
+        return None, None
+    def unique_keys(pairs):
+        result = {}
+        for key, item in pairs:
+            if key in result:
+                raise ValueError(f"duplicate key: {key}")
+            result[key] = item
+        return result
+    try:
+        with Path(path).open("rb") as stream:
+            raw = stream.read(16385)
+        if len(raw) > 16384:
+            raise AgentBoxError("Facts file exceeds 16384 bytes")
+        value = json.loads(raw.decode("utf-8"), object_pairs_hook=unique_keys)
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise AgentBoxError(f"Cannot read UTF-8 facts JSON: {exc}") from exc
+    if not isinstance(value, dict) or set(value) != {"task", "scope", "facts"}:
+        raise AgentBoxError("Facts must contain exactly task, scope and facts")
+    if not isinstance(value["task"], str) or value["task"] != task.id:
+        raise AgentBoxError("Facts task does not match the current task")
+    if not isinstance(value["scope"], str) or value["scope"] != fingerprint:
+        raise AgentBoxError("Facts scope does not match the current scope")
+    items = value["facts"]
+    if not isinstance(items, list) or not 1 <= len(items) <= 12:
+        raise AgentBoxError("Facts must be an array of 1 to 12 facts")
+    def compact(value, limit):
+        return isinstance(value, str) and bool(value.strip()) and len(value) <= limit
+    for index, fact in enumerate(items):
+        prefix = f"Fact {index + 1}"
+        if (not isinstance(fact, dict) or not {"text", "sources"} <= set(fact)
+                or set(fact) - {"text", "sources", "limitations"}):
+            raise AgentBoxError(prefix + " must contain text, sources and optional limitations only")
+        if not compact(fact["text"], 1000):
+            raise AgentBoxError(prefix + " text must be a nonempty string of at most 1000 characters")
+        sources = fact["sources"]
+        if not isinstance(sources, list) or not 1 <= len(sources) <= 6 or not all(compact(x, 300) for x in sources):
+            raise AgentBoxError(prefix + " sources must contain 1 to 6 nonempty references of at most 300 characters")
+        if "limitations" in fact and not compact(fact["limitations"], 500):
+            raise AgentBoxError(prefix + " limitations must be a nonempty string of at most 500 characters")
+    return value, {"digest": hashlib.sha256(raw).hexdigest(), "count": len(items),
+                   "scope": fingerprint, "file": str(Path(path).resolve())}
+
+
 def scope_fingerprint(head, base, task_requirements, *, working_diff=None):
     content = {"head": head, "base": base, "tasks": task_requirements}
     if working_diff is not None:
@@ -220,7 +268,15 @@ def scope(root, base, tasks, *, allow_dirty=False):
         gw.require_clean(root)
     head, base_head = gw.head_sha(root), gw.base_commit(root, base)
     task_requirements = requirements(tasks)
-    working_diff = gw.git(root, "diff", "HEAD", "--") if allow_dirty else None
+    working_diff = None
+    if allow_dirty:
+        untracked = {}
+        for name in gw.git(root, "ls-files", "--others", "--exclude-standard", "-z").split("\0"):
+            if name:
+                path = Path(root) / name
+                content = os.readlink(path).encode() if path.is_symlink() else path.read_bytes()
+                untracked[name] = hashlib.sha256(content).hexdigest()
+        working_diff = {"diff": gw.git(root, "diff", "--binary", "HEAD", "--"), "untracked": untracked}
     return scope_fingerprint(head, base_head, task_requirements, working_diff=working_diff)
 
 
@@ -416,6 +472,7 @@ def review_blockers(config, tasks, files, lines, saved, *, allow_human=False, in
 def configuration_summary(config):
     return {"source": effective_config_source(), "merge_mode": config.workflow.merge_mode,
             "auto_push": config.workflow.auto_push,
+            **scout_diagnostics(config),
             "cleanup_local_branches": config.workflow.cleanup_local_branches,
             "cleanup_remote_branches": config.workflow.cleanup_remote_branches}
 
@@ -902,8 +959,11 @@ def parser():
         if name in ("prepare", "run"):
             cmd.add_argument("--execution", choices=("direct", "delegated"), help="Worker choice; required with --reason in auto policy")
             cmd.add_argument("--reason", help="Compact reason for the worker execution choice")
+        if name in ("prepare", "run"):
+            cmd.add_argument("--facts", help="Bounded coordinator-selected facts JSON; delegated workers only; reuse the same file for run")
+            cmd.add_argument("--question", help="One compact scout question, separate from the brief; required at scout prepare")
         if name == "run":
-            cmd.add_argument("--handoff", help="Execute the exact prepared worker route once")
+            cmd.add_argument("--handoff", help="Execute the exact prepared worker or scout route/context once")
         if name in ("prepare", "run", "report"):
             cmd.add_argument("--role", choices=("worker", "reviewer", "scout"), default="worker")
         if name in ("prepare", "run", "review", "report"):
@@ -1116,7 +1176,10 @@ def worker_dispatch(args, root, binding, adapter, task, config):
         else:
             if selected["model"] is None or selected["effort"] is None:
                 raise AgentBoxError("Prepared inherited worker requires native execution; managed execution needs verified session model and effort at prepare")
-            prompt = assignment_handoff(root, task, base, read_brief(args.brief), "worker")
+            facts, facts_binding = read_facts(getattr(args, "facts", None), task, fingerprint)
+            if facts_binding != descriptor.get("facts"):
+                raise AgentBoxError("Worker facts changed; use the same prepared facts file")
+            prompt = assignment_handoff(root, task, base, read_brief(args.brief), "worker", facts=facts)
             if prompt != previous["prompt"]:
                 raise AgentBoxError("Worker brief or repository instructions changed; prepared handoff must match")
             for key in ("validation", "review", "human_acceptance", "local_acceptance"):
@@ -1162,13 +1225,16 @@ def worker_dispatch(args, root, binding, adapter, task, config):
             raise AgentBoxError("Cannot escalate direct to delegated with a dirty worktree; commit a coordinator checkpoint, then retry. No files were changed")
     fingerprint = scope(root, base, tasks)
     tier = delegation_tier(args, task, "worker")
+    facts, facts_binding = read_facts(getattr(args, "facts", None), task, fingerprint)
+    if choice == "direct" and facts is not None:
+        raise AgentBoxError("--facts requires delegated worker execution")
     if choice == "direct":
         selected = session_route(args, "worker")
         selected["tier"] = tier
         model_source = "active-session"
         prompt = None
     else:
-        prompt = assignment_handoff(root, task, base, read_brief(args.brief), "worker")
+        prompt = assignment_handoff(root, task, base, read_brief(args.brief), "worker", facts=facts)
         selected = (session_route(args, "worker") if tier is None and not config.workflow.override_for("worker", tier)
                     else route(config.workflow, "worker", tier, args.primary, saved.get("writer")))
         model_source = ("active-session" if selected.get("mode") == "current-session" else
@@ -1180,6 +1246,7 @@ def worker_dispatch(args, root, binding, adapter, task, config):
     token = handoff_descriptor(identity, task, fingerprint, selected)
     descriptor = json.loads(base64.urlsafe_b64decode(token))
     descriptor["execution"] = decision
+    descriptor["facts"] = facts_binding
     token = base64.urlsafe_b64encode(json.dumps(descriptor, sort_keys=True).encode()).decode()
     saved = evidence(root, task, fingerprint)
     for key in ("validation", "review", "human_acceptance", "local_acceptance"):
@@ -1201,7 +1268,7 @@ def worker_dispatch(args, root, binding, adapter, task, config):
         report += ["--tier", str(tier)]
     report += (["--session-inherited"] if selected["model"] is None else
                ["--model", "ACTUAL_MODEL", "--effort", "ACTUAL_EFFORT"])
-    result = {"scope": fingerprint, "route": selected, "execution": decision,
+    result = {"scope": fingerprint, "route": selected, "execution": decision, **scout_diagnostics(config),
               "action": "work-in-current-session" if choice == "direct" else "delegate",
               "task": {"id": task.id, "title": task.title, "state": task.state, "tier": task.tier},
               "base": base, "handoff": token, "report_command": shlex.join(report),
@@ -1218,6 +1285,8 @@ def worker_dispatch(args, root, binding, adapter, task, config):
     if choice == "delegated" and selected["model"] is not None:
         result["managed_command"] = shlex.join(["agent-box", "workflow", "run", task.id,
                                                 "--handoff", token, "--brief", args.brief])
+        if getattr(args, "facts", None):
+            result["managed_command"] += " --facts " + shlex.quote(args.facts)
         if tier is not None:
             result["managed_command"] += f" --tier {tier}"
     if args.command == "run" and choice == "delegated":
@@ -1227,7 +1296,79 @@ def worker_dispatch(args, root, binding, adapter, task, config):
     return result
 
 
+def scout_diagnostics(config):
+    return {"scout_limit": config.workflow.scout_limit,
+            "scout_slots": "Managed runs enforce shared repository slots; native scouts are coordinator-counted. CLI processes cannot own native subagent leases."}
+
+
+def scout_dispatch(args, root, binding, adapter, task, config):
+    """Separate metadata per scout keeps concurrent reports out of task evidence."""
+    fingerprint = scope(root, "HEAD", tree(adapter, task), allow_dirty=True)
+    identity = delegation_identity(root, binding)
+    tier = delegation_tier(args, task, "scout")
+    if args.command == "prepare":
+        question = (getattr(args, "question", None) or "").strip()
+        if not question or len(question) > 500 or "\n" in question:
+            raise AgentBoxError("Scout --question must be one nonempty line of at most 500 characters")
+        prompt = assignment_handoff(root, task, "HEAD", read_brief(args.brief), "scout", question=question)
+        selected = route(config.workflow, "scout", tier, args.primary)
+        descriptor = json.loads(base64.urlsafe_b64decode(handoff_descriptor(identity, task, fingerprint, selected)))
+        descriptor.update(question=question, context_digest=hashlib.sha256(prompt.encode()).hexdigest())
+        token = base64.urlsafe_b64encode(json.dumps(descriptor, sort_keys=True).encode()).decode()
+        path = scout_metadata_path(root, descriptor)
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        atomic_write_text(path, json.dumps({"descriptor": descriptor, "status": "prepared"}), 0o600)
+        return {"scope": fingerprint, "route": selected, "handoff": token,
+                "task": {"id": task.id, "title": task.title, "state": task.state, "tier": task.tier},
+                "delegate_handoff": prompt, "context_policy": context_policy(),
+                "report_schema": report_schema("scout"), **scout_diagnostics(config),
+                "managed_command": shlex.join(["agent-box", "workflow", "run", task.id, "--role", "scout",
+                                                "--tier", str(tier), "--handoff", token, "--brief", args.brief]),
+                "report_command": f"agent-box workflow report {task.id} --role scout --tier {tier} --scope {fingerprint} --provider ACTUAL_PROVIDER --model ACTUAL_MODEL --effort ACTUAL_EFFORT --handoff DESCRIPTOR --file REPORT.json",
+                "instructions": "Only the coordinator dispatches distinct bounded questions; never duplicate scouts. Count active native scouts against scout_limit; preparation reserves no native slot. " + LAUNCH_CONTEXT}
+    if not getattr(args, "handoff", None):
+        raise AgentBoxError("Scout execution requires --handoff from prepare")
+    descriptor = read_handoff_descriptor(identity, task, fingerprint, args.handoff)
+    check_handoff_route(descriptor, "scout", tier)
+    if identity != {key: descriptor.get(key) for key in identity}:
+        raise AgentBoxError("Scout repository identity changed; prepare the current scope")
+    if args.command == "report" and args.scope != fingerprint:
+        raise AgentBoxError("Scout report scope is stale")
+    path = scout_metadata_path(root, descriptor)
+    with lock(root, "scout-report-" + path.stem):
+        try:
+            saved = json.loads(path.read_text())
+        except (OSError, ValueError):
+            raise AgentBoxError("Scout descriptor is stale or unknown") from None
+        if saved != {"descriptor": descriptor, "status": "prepared"}:
+            raise AgentBoxError("Scout descriptor is stale, already started/reported, or route/context mismatched")
+        if args.command == "run":
+            question = getattr(args, "question", None)
+            if question is not None and question != descriptor["question"]:
+                raise AgentBoxError("Scout question changed; use the prepared question")
+            prompt = assignment_handoff(root, task, "HEAD", read_brief(args.brief), "scout", question=descriptor["question"])
+            if hashlib.sha256(prompt.encode()).hexdigest() != descriptor["context_digest"]:
+                raise AgentBoxError("Scout brief or repository instructions changed; prepared handoff must match")
+        execution_lock = scout_slot(root, config.workflow.scout_limit) if args.command == "run" else nullcontext()
+        with execution_lock:
+            atomic_write_text(path, json.dumps({"descriptor": descriptor, "status": "consumed"}), 0o600)
+            output = (execute(config.workflow, descriptor["route"], "scout", root, prompt)
+                      if args.command == "run" else native_output(args, descriptor["route"], tier))
+            if scope(root, "HEAD", tree(adapter, adapter.get(task.id)), allow_dirty=True) != fingerprint:
+                raise AgentBoxError("Scout code or requirements changed; report is stale")
+        return {**output, "scope": fingerprint, **scout_diagnostics(config)}
+
+
+def scout_metadata_path(root, descriptor):
+    key = hashlib.sha256(str(descriptor.get("delegation")).encode()).hexdigest()
+    return WORKFLOW_STATE / "scouts" / repository_key(root) / (key + ".json")
+
+
 def dispatch(args):
+    if getattr(args, "facts", None) and getattr(args, "role", None) != "worker":
+        raise AgentBoxError("--facts is only available for delegated workers")
+    if getattr(args, "question", None) and getattr(args, "role", None) != "scout":
+        raise AgentBoxError("--question is only available for scouts")
     config = effective_config()
     if not config.workflow.enabled:
         raise AgentBoxError("Enable workflow in agent-box config first")
@@ -1269,13 +1410,11 @@ def dispatch(args):
     if args.command in ("prepare", "run", "report") and args.role == "worker":
         with lock(root, "review-budget"), lock(root, "work"):
             return worker_dispatch(args, root, binding, adapter, task, config)
-    scouting = getattr(args, "role", None) == "scout"
-    if scouting:
-        parent, info, current, base = task, {}, {}, "HEAD"
-    else:
-        parent, info, current, base = resolve(root, adapter, task)
+    if getattr(args, "role", None) == "scout":
+        return scout_dispatch(args, root, binding, adapter, task, config)
+    parent, info, current, base = resolve(root, adapter, task)
     tasks = tree(adapter, task)
-    fingerprint = scope(root, base, tasks, allow_dirty=scouting)
+    fingerprint = scope(root, base, tasks)
     # A subtask merges back into its parent branch, so that tip is part of what
     # the delegation was prepared against; a parent task integrates nowhere else.
     identity = delegation_identity(root, binding, current.get("branch") and info["branch"])
@@ -1401,7 +1540,7 @@ def dispatch(args):
             if role == "reviewer":
                 report_command.append("--fresh-context")
             report_command.extend(("--scope", fingerprint, "--handoff", "DESCRIPTOR", "--file", "REPORT.json"))
-            result = {"scope": fingerprint, "route": selected,
+            result = {"scope": fingerprint, "route": selected, **scout_diagnostics(config),
                     "task": {"id": task.id, "title": task.title, "state": task.state, "tier": task.tier},
                     "base": base,
                     "report_schema": report_schema(role),

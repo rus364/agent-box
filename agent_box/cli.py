@@ -368,6 +368,7 @@ def config_show() -> None:
     print(f"    merge mode                {config.workflow.merge_mode}")
     print(f"    cleanup local branches    {config.workflow.cleanup_local_branches}")
     print(f"    cleanup remote branches   {config.workflow.cleanup_remote_branches}")
+    print(f"    scout limit               {config.workflow.scout_limit}; managed shared slots, native coordinator-counted (no CLI lease)")
     print(f"    worker execution          {config.workflow.worker.execution}")
     print(f"    delegated routing         {config.workflow.routing}; weights {config.workflow.weights}")
     print(f"    review                    {config.workflow.review.policy}; files {config.workflow.review.max_files}; lines {config.workflow.review.max_lines}")

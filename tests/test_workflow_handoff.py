@@ -220,6 +220,127 @@ class WorkerHandoffTests(unittest.TestCase):
                                  "--provider", "claude", "--model", "m", "--effort", "high", "--file", str(self.report),
                                  "--scope", scope, "--handoff", handoff)
 
+    def test_prepared_scout_consumes_context_route_once_and_rejects_changes(self):
+        """Routing drift must not replace the scout whose evidence is being accepted."""
+        prepared = self.run_workflow("prepare", "1", "--role", "scout", "--question", "Where is the boundary?",
+                                     "--brief", str(self.review_brief), "--primary", "codex")
+        self.assertEqual(prepared["scout_limit"], self.config.workflow.scout_limit)
+        self.assertIn("coordinator-counted", prepared["scout_slots"])
+        command = ("run", "1", "--role", "scout", "--handoff", prepared["handoff"],
+                   "--brief", str(self.review_brief))
+        with patch.object(workflow, "execute") as execute, patch.object(workflow, "route") as route:
+            with self.assertRaisesRegex(AgentBoxError, "question changed"):
+                self.run_workflow(*command, "--question", "Another question?")
+            original = self.review_brief.read_text()
+            self.review_brief.write_text("Changed brief")
+            with self.assertRaisesRegex(AgentBoxError, "brief or repository instructions changed"):
+                self.run_workflow(*command)
+            self.review_brief.write_text(original)
+            with self.assertRaisesRegex(AgentBoxError, "route/context mismatched"):
+                self.run_workflow(*command[:5], forge(prepared["handoff"], route={**prepared["route"], "model": "other"}), *command[6:])
+            execute.return_value = {"report": {"status": "completed"}}
+            self.run_workflow(*command)
+            self.assertEqual(execute.call_args.args[1], prepared["route"])
+            self.assertEqual(execute.call_args.args[4], prepared["delegate_handoff"])
+            route.assert_not_called()
+            with self.assertRaisesRegex(AgentBoxError, "already started/reported"):
+                self.run_workflow(*command)
+        metadata = list((Path(self.directory.name) / "state" / "scouts").rglob("*.json"))
+        self.assertNotIn('"report"', metadata[0].read_text())
+
+    def test_scout_reports_reject_changed_code_before_acceptance(self):
+        """Read-only findings cannot be accepted for code different from the prepared scope."""
+        prepared = self.run_workflow("prepare", "1", "--role", "scout", "--question", "Where is the boundary?",
+                                     "--brief", str(self.review_brief))
+        (self.root / "new.py").write_text("changed = True")
+        with patch.object(workflow, "native_output") as output:
+            with self.assertRaisesRegex(AgentBoxError, "different scope"):
+                self.run_workflow("report", "1", "--role", "scout", "--handoff", prepared["handoff"],
+                                  "--scope", prepared["scope"], "--provider", "claude", "--model", "m",
+                                  "--effort", "high", "--file", str(self.report))
+            output.assert_not_called()
+
+    def test_facts_reject_wrong_task_extra_keys_and_nonworker_roles(self):
+        """Only explicitly selected, correctly scoped evidence may enter a delegated worker."""
+        fingerprint = workflow.scope(self.root, "main", [self.task])
+        path = Path(self.directory.name) / "facts.json"
+        value = {"task": "1", "scope": fingerprint, "facts": [{"text": "Fact", "sources": ["file.py:1"]}]}
+        cases = [({**value, "task": "2"}, "Facts task does not match"),
+                 ({**value, "transcript": "raw"}, "exactly task, scope and facts"),
+                 ({**value, "facts": [{"text": "Fact", "sources": []}]}, "sources must contain")]
+        with patch.object(workflow, "route") as route:
+            for invalid, diagnostic in cases:
+                path.write_text(json.dumps(invalid))
+                with self.assertRaisesRegex(AgentBoxError, diagnostic):
+                    self.run_workflow("prepare", "1", "--facts", str(path))
+            route.assert_not_called()
+        path.write_text(json.dumps(value))
+        with self.assertRaisesRegex(AgentBoxError, "requires delegated worker"):
+            self.run_workflow("prepare", "1", "--execution", "direct", "--facts", str(path))
+        for role in ("scout", "reviewer"):
+            with self.assertRaisesRegex(AgentBoxError, "only available for delegated workers"):
+                self.run_workflow("prepare", "1", "--role", role, "--facts", str(path))
+
+    def test_selected_worker_facts_are_bound_and_propagated_before_execution(self):
+        """Stale evidence must fail before routing or execution, and selected evidence reaches the worker."""
+        fingerprint = workflow.scope(self.root, "main", [self.task])
+        path = Path(self.directory.name) / "facts.json"
+        value = {"task": "1", "scope": fingerprint,
+                 "facts": [{"text": "Boundary exists", "sources": ["agent_box/workflow.py:100"],
+                            "limitations": "Source inspection only"}]}
+        path.write_text(json.dumps({**value, "scope": "stale"}))
+        with patch.object(workflow, "route") as route:
+            with self.assertRaisesRegex(AgentBoxError, "Facts scope does not match"):
+                self.run_workflow("prepare", "1", "--facts", str(path))
+            route.assert_not_called()
+        path.write_text(json.dumps(value))
+        prepared = self.run_workflow("prepare", "1", "--facts", str(path))
+        payload = json.loads(prepared["delegate_handoff"].split("Delegation handoff:\n")[1])
+        self.assertEqual(payload["selected_source_evidence"], value)
+        descriptor = json.loads(base64.urlsafe_b64decode(prepared["handoff"]))
+        self.assertEqual(descriptor["facts"]["count"], 1)
+        command = ("run", "1", "--handoff", prepared["handoff"], "--brief", str(self.review_brief))
+        with patch.object(workflow, "execute") as execute:
+            with self.assertRaisesRegex(AgentBoxError, "Worker facts changed"):
+                self.run_workflow(*command)
+            path.write_text(json.dumps(value) + "\n")
+            with self.assertRaisesRegex(AgentBoxError, "Worker facts changed"):
+                self.run_workflow(*command, "--facts", str(path))
+            execute.assert_not_called()
+            path.write_text(json.dumps(value))
+            execute.return_value = {"route": prepared["route"], "report": {"status": "completed"}}
+            self.run_workflow(*command, "--facts", str(path))
+            self.assertEqual(execute.call_args.args[4], prepared["delegate_handoff"])
+
+    def test_managed_scouts_share_limit_across_concurrent_runs(self):
+        """Two active CLI scouts exhaust two slots while distinct prepared work remains retryable."""
+        import threading
+        from concurrent.futures import ThreadPoolExecutor
+        self.config.workflow.scout_limit = 2
+        prepared = [self.run_workflow("prepare", "1", "--role", "scout", "--question", f"Question {i}?",
+                                      "--brief", str(self.review_brief)) for i in range(3)]
+        entered = threading.Barrier(3)
+        release = threading.Event()
+        def execute(*args, **kwargs):
+            entered.wait(timeout=10)
+            release.wait(timeout=10)
+            return {"report": {"status": "completed"}}
+        def run(item):
+            return self.run_workflow("run", "1", "--role", "scout", "--handoff", item["handoff"],
+                                     "--brief", str(self.review_brief))
+        with patch.object(workflow, "execute", side_effect=execute), ThreadPoolExecutor(2) as pool:
+            futures = [pool.submit(run, item) for item in prepared[:2]]
+            try:
+                entered.wait(timeout=10)
+                with self.assertRaisesRegex(AgentBoxError, "All 2 local scout slots are busy"):
+                    run(prepared[2])
+            finally:
+                release.set()
+            for future in futures:
+                future.result(timeout=10)
+        with patch.object(workflow, "execute", return_value={"report": {"status": "completed"}}):
+            run(prepared[2])
+
     def test_worker_and_scout_native_and_managed_receive_the_same_current_english_input(self):
         """Raw task history and previous assignments must not leak via managed composition."""
         self.task.description = "## Goal\nТекущая цель\n## Context\nPRIVATE_PARENT_HISTORY"
@@ -234,7 +355,8 @@ class WorkerHandoffTests(unittest.TestCase):
                     self.review_brief.write_text(
                         f"Goal: {marker}. Acceptance: preserve café. Validation: inspect only.\n", encoding="utf-8")
                     prepared = self.run_workflow("prepare", "1", "--role", role, "--primary", "codex",
-                                                 "--brief", str(self.review_brief))
+                                                 "--brief", str(self.review_brief),
+                                                 *(["--question", "Which implementation handles this boundary?"] if role == "scout" else []))
                     prompt = prepared["delegate_handoff"]
                     self.assertEqual(set(prepared["task"]), {"id", "title", "state", "tier"})
                     self.assertIn(f"workflow report 1 --role {role}", prepared["report_command"])
@@ -266,7 +388,7 @@ class WorkerHandoffTests(unittest.TestCase):
                     with patch.object(workflow, "run", return_value=report) as runner:
                         result = self.run_workflow("run", "1", "--role", role, "--primary", "codex",
                                                    "--brief", str(self.review_brief),
-                                                   *(["--handoff", prepared["handoff"]] if role == "worker" else []))
+                                                   *["--handoff", prepared["handoff"]])
                     self.assertEqual(runner.call_args.args[3], prompt)
                     self.assertEqual(result["diagnostics"], {"usage": None, "total_cost_usd": None})
         self.adapter.comments.assert_not_called()
@@ -918,7 +1040,7 @@ class WorkerHandoffTests(unittest.TestCase):
         payload = json.loads(base64.urlsafe_b64decode(handoff))
         self.assertEqual(set(payload),
                          {"repository", "binding", "branch", "head", "integration", "task", "scope", "route",
-                          "delegation", "execution"})
+                          "delegation", "execution", "facts"})
 
     def test_a_worker_cannot_widen_the_route_by_editing_local_state(self):
         handed = self.prepare()

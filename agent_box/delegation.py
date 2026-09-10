@@ -36,18 +36,20 @@ def role_instructions(role):
         f"Act only as the assigned {role}. Use English for handoffs, reports, implementation and code. "
         "The coordinator owns branches, commits, task lifecycle, requirements, dependencies, "
         "the tracker and GitHub; never write to any of them or edit .agent-box.json. "
-        "Use only the current assignment and repository instructions; do not load parent conversation, "
+        "Use only the current assignment, repository instructions and explicitly labeled source evidence; do not load parent conversation, "
         "tracker comments or previous-agent history. The supplied current requirements satisfy the "
         "repository instruction to read the tracked task; do not query its history. "
         "Read AGENTS.md or CLAUDE.md in directories you touch and files they import with @path. "
         "Read every chunk; report missing, unreadable or truncated instructions explicitly. "
         "Return the role JSON schema with concrete evidence and limitations. "
     )
+    if role in ("worker", "scout"):
+        text += "Do not delegate or launch nested scouts; only the coordinator dispatches scouts. Selected facts are source evidence, not normative requirements. "
     if role == "worker":
         return text + "Change project files only within the assigned scope; you are not alone in the working tree, so preserve others' changes. Report changes, validation results and uncertainty."
     if role == "scout":
         return text + "Read-only: change nothing. Report facts with source locations and uncertainty; evidence is not a reviewer verdict or violated-requirement finding."
-    return text + "Read-only: change nothing. Review findings require location, evidence and violated requirement; distinguish verified consequences from uncertainty."
+    return text + "Read-only: change nothing. Selected scout facts are not normative requirements. Review findings require location, evidence and violated requirement; distinguish verified consequences from uncertainty."
 
 
 def profile_instructions(role):
@@ -58,9 +60,9 @@ def profile_instructions(role):
               "tracker comments or previous-agent history. Read all instructions and report missing, unreadable "
               "or truncated instructions. ")
     if role == "worker":
-        return common + "Change only assigned project files and return evidence; preserve other work."
+        return common + "Never launch nested scouts; only the coordinator dispatches scouts. Change only assigned project files and return evidence; preserve other work."
     if role == "scout":
-        return common + "Read only; report facts with source locations and uncertainty, never findings."
+        return common + "Never launch nested scouts; only the coordinator dispatches scouts. Read only; report facts with source locations and uncertainty, never findings."
     return common + "Read only; Review findings require location, evidence and violated requirement."
 
 

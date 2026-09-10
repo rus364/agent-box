@@ -103,7 +103,7 @@ instructions and backend-neutral `context_policy`. The coordinator translates cu
 Goal/Acceptance/Validation faithfully, adds only necessary technical context, and keeps
 tracker text in its original language. Review includes labeled normative source
 evidence; worker/scout input does not repeat raw task descriptions or task trees.
-Prepare without a worker/scout brief can select a route but provides no delegate message.
+Delegated worker and scout preparation require a brief; scout preparation also requires a separate `--question "ONE QUESTION"` (one nonempty line, at most 500 characters).
 Never send the full prepare result, descriptor, parent transcript, tracker comments
 or previous-agent history to a delegate. Reports are English, with role-specific fields.
 
@@ -675,3 +675,32 @@ relative artifact reference, never raw output. Up to 20 artifacts are retained
 (about 55 MiB maximum); files older than seven days and excess oldest files are
 removed when the next failure is saved. Delete individual artifact files to
 remove them sooner; inactive state is not cleaned by a background service.
+
+
+Scouts answer distinct bounded unanswered questions that materially affect a decision
+or avoid substantial repeated reading. Quick lookups stay with the coordinator;
+duplicate scouts are prohibited. Only the coordinator launches scouts; workers and
+scouts must not launch nested scouts. Fresh read-only scouts may overlap up to the
+effective `scout_limit`, shown by prepare, inspect and config diagnostics. Managed
+runs enforce the shared repository slot lock. Native launches are coordinator-counted:
+CLI processes cannot safely own native subagent leases; prepare reserves no slot.
+
+Use `workflow prepare TASK --role scout --question "ONE QUESTION" --brief FILE`,
+then the returned native report command or `workflow run TASK --role scout
+--handoff DESCRIPTOR --brief FILE` (repeat the prepared tier). Run consumes the
+prepared route and question, without rescheduling. Changed context, scope, route,
+identity and already consumed descriptors refuse. Only descriptor metadata persists,
+never raw scout reports or conversations.
+
+Delegated worker prepare/run optionally accept `--facts FILE`, a coordinator-owned
+UTF-8 JSON object with exactly `task` (task ID string), `scope` (current scope digest)
+and `facts` (1–12 objects). Each fact has exactly `text` (nonempty, at most 1000
+characters), `sources` (1–6 nonempty path/source reference strings, at most 300
+characters each), and optional `limitations` (nonempty, at most 500 characters).
+The file is limited to 16384 bytes. Wrong keys/types, task or scope refuse before
+routing. Direct workers and other roles reject facts. Managed consumption requires
+the same file path and bytes. The descriptor/evidence bind digest, count and scope;
+worker `delegate_handoff.selected_source_evidence` carries the validated object.
+These selected facts reduce repeated reading/context without promising token savings.
+Never supply raw scout output, transcripts, comments or agent history. Facts do not
+change normative requirements and reviewer handoffs remain independent.

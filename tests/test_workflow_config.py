@@ -117,6 +117,7 @@ class WorkflowConfigTests(unittest.TestCase):
         self.assertIn('worker model scope        untiered', output.getvalue())
         self.assertIn('reviewer model scope      off', output.getvalue())
         self.assertIn('worker execution          auto', output.getvalue())
+        self.assertIn('native coordinator-counted (no CLI lease)', output.getvalue())
         self.assertEqual(output.getvalue().count('delegated routing'), 1)
         self.assertIn("worker override codex: {'model': 'worker-model', 'effort': 'high'}", output.getvalue())
 
