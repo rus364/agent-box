@@ -27,6 +27,8 @@ class VikunjaAdapter:
     def __init__(self, url, token, binding=None, client=None):
         self.client = client or api.VikunjaClient(url, token)
         self.binding = binding
+        # Browser links retain the binding identity when container transport rewrites the host.
+        self.server = (binding.server if binding else self.client.url).rstrip("/")
         # Views and buckets are read once per process, never persisted: a cached
         # ID in the repository would outlive the column it names.
         self._boards = {}
@@ -235,7 +237,7 @@ class VikunjaAdapter:
                     labels=[label["title"] for label in raw.get("labels") or []],
                     priority=raw.get("priority") or 0,
                     revision=self.client.revisions.get(f"/tasks/{raw['id']}", ""),
-                    url=f"{self.client.url}/tasks/{raw['id']}",
+                    url=f"{self.server}/tasks/{raw['id']}",
                     number=raw.get("index"))
 
     def get(self, task_id):
@@ -252,7 +254,7 @@ class VikunjaAdapter:
             raise TrackerError("Pass a visible task number, exact title or task URL")
         scope = set(self.subtree(project, recursive))
         if not title and text.startswith(("http://", "https://")):
-            link, server = urlsplit(text), urlsplit(self.client.url)
+            link, server = urlsplit(text), urlsplit(self.server)
             match = re.fullmatch(re.escape(server.path.rstrip("/")) + r"/tasks/([0-9]+)/?", link.path)
             if (link.scheme, link.netloc) != (server.scheme, server.netloc) or not match:
                 raise TrackerError("Use a task URL from the configured tracker")

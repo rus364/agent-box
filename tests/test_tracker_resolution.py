@@ -118,6 +118,18 @@ class ResolutionTests(unittest.TestCase):
                 self.resolve(reference)
         self.assertEqual(self.client.writes, [])
 
+    def test_browser_url_survives_container_transport_translation(self):
+        """Users paste public links, while the API may use a container host alias."""
+        self.binding = Binding('vikunja', 'http://localhost:3456/vikunja', '1', True)
+        self.client.url = 'http://host.containers.internal:3456/vikunja'
+        self.adapter = VikunjaAdapter(self.client.url, 'token', self.binding, self.client)
+        public = self.binding.server + '/tasks/319'
+        self.assertEqual(self.resolve(public).id, '319')
+        for found in (self.resolve('21'), self.adapter.get('319')):
+            for full in (True, False):
+                self.assertEqual(found.to_dict(full=full)['url'], public)
+        self.assertEqual(self.client.url, 'http://host.containers.internal:3456/vikunja')
+
     def test_explicit_title_disambiguates_numeric_titles(self):
         """A title resembling a number remains reachable without guessing."""
         self.client.tasks[322]['title'] = '21'
