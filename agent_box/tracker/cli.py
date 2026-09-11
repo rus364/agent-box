@@ -26,7 +26,7 @@ def emit(value):
 def parser():
     p = argparse.ArgumentParser(prog="agent-box tracker", description=(
         "Read and maintain tracker tasks. Output is JSON by default; no --json flag is needed. "
-        "Use status for account/binding/lifecycle and get TASK for a full task."))
+        "Use resolve for a user reference, then get ID for a full task."))
     p.add_argument("--provider", help="Override the configured provider")
     p.add_argument("--adoption", type=Path, help="Use a receipt's staging scope without changing the repository binding")
     sub = p.add_subparsers(dest="command", required=True)
@@ -37,6 +37,10 @@ def parser():
     cmd.add_argument("--recursive", action="store_true")
     projects = sub.add_parser("projects", help="List projects, optionally filtering their titles")
     projects.add_argument("query", nargs="?", default="")
+    cmd = sub.add_parser("resolve", help="Resolve a visible number, exact title or task URL to a canonical ID")
+    cmd.add_argument("reference", help="Visible number (21 or #21), exact title or task URL")
+    cmd.add_argument("--title", action="store_true", help="Treat the reference as an exact title, including numeric titles")
+    cmd.add_argument("--project", help="Narrow resolution to one project inside the binding")
     for name in ("search", "ready", "next"):
         description = {"search": "Find tasks; return compact summaries",
                        "ready": "List Ready tasks eligible for the current user",
@@ -58,7 +62,7 @@ def parser():
                        "tier": "Set the task's execution tier",
                        "relation": "Add or remove a task relation"}[name]
         cmd = sub.add_parser(name, help=description, description=description + "; output is JSON.")
-        cmd.add_argument("task", help="Task ID")
+        cmd.add_argument("task", help="Canonical task ID returned by resolve/get/search")
         if name == "claim":
             cmd.add_argument("--resume", action="store_true")
         elif name == "state":
@@ -125,7 +129,7 @@ def context(provider=None, require_binding=False, adoption=None):
 
 
 def dispatch(args):
-    if args.adoption and args.command not in {"audit", "status", "search", "get", "comments", "checklist",
+    if args.adoption and args.command not in {"audit", "status", "search", "resolve", "get", "comments", "checklist",
                                              "update", "tier", "relation", "comment", "check", "state"}:
         raise TrackerError("Staging adoption only reads and normalizes existing tasks")
     if args.command == "adopt":
@@ -185,6 +189,17 @@ def dispatch(args):
     if args.command == "projects":
         return [{"id": str(p["id"]), "title": p["title"], "parent": str(p.get("parent_project_id") or "")}
                 for p in adapter.projects() if args.query.casefold() in p["title"].casefold()]
+    if args.command == "resolve":
+        if binding is None:
+            raise TrackerError("Task resolution needs a repository binding; run ab-setup")
+        project = binding.project
+        recursive = binding.recursive
+        if args.project:
+            project = str(adapter.project(args.project)["id"])
+            if project not in adapter.subtree(binding.project, binding.recursive):
+                raise TrackerError("Resolution project is outside the repository binding")
+            recursive = False
+        return adapter.resolve(args.reference, project, recursive, title=args.title)
     if args.command in ("search", "ready", "next", "create"):
         project = args.project or (binding.project if binding else None)
         if not project:

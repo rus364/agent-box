@@ -1,6 +1,9 @@
 """Vikunja translates products and endpoints; the core owns workflow decisions."""
 from __future__ import annotations
 
+import re
+from urllib.parse import urlsplit
+
 from .core import Task, TrackerError, STATES, root_task
 from . import vikunja_api as api
 
@@ -232,14 +235,45 @@ class VikunjaAdapter:
                     labels=[label["title"] for label in raw.get("labels") or []],
                     priority=raw.get("priority") or 0,
                     revision=self.client.revisions.get(f"/tasks/{raw['id']}", ""),
-                    url=f"{self.client.url}/tasks/{raw['id']}")
+                    url=f"{self.client.url}/tasks/{raw['id']}",
+                    number=raw.get("index"))
 
     def get(self, task_id):
         try:
             task_id = str(int(task_id))
         except ValueError:
-            raise TrackerError("Use an exact numeric Vikunja task ID; search first") from None
+            raise TrackerError("Use a canonical numeric Vikunja task ID; run tracker resolve for user references") from None
         return self.normalize(self.client.get(f"/tasks/{task_id}?format=markdown&expand=buckets&expand=subtasks"))
+
+    def resolve(self, reference, project, recursive=False, *, title=False):
+        """User references resolve once; internal reads keep their canonical IDs."""
+        text = reference.strip()
+        if not text:
+            raise TrackerError("Pass a visible task number, exact title or task URL")
+        scope = set(self.subtree(project, recursive))
+        if not title and text.startswith(("http://", "https://")):
+            link, server = urlsplit(text), urlsplit(self.client.url)
+            match = re.fullmatch(re.escape(server.path.rstrip("/")) + r"/tasks/([0-9]+)/?", link.path)
+            if (link.scheme, link.netloc) != (server.scheme, server.netloc) or not match:
+                raise TrackerError("Use a task URL from the configured tracker")
+            task = self.get(match[1])
+            if task.project not in scope:
+                raise TrackerError("Task URL is outside the selected project scope")
+            return task
+        number = re.fullmatch(r"#?([0-9]+)", text) if not title else None
+        # Full-text search omits valid numbers and includes description matches.
+        tasks = self.search(project, recursive=recursive)
+        matches = [task for task in tasks if task.project in scope and (
+            task.number == int(number[1]) if number else task.title == text)]
+        if not matches:
+            raise TrackerError("No exact task match; specify a project, exact title or task URL", "not-found")
+        if len(matches) > 1:
+            projects = {str(p["id"]): p["title"] for p in self.projects()}
+            choices = "; ".join(
+                f"{projects.get(task.project, task.project)} (project {task.project}): "
+                f"#{task.number} {task.title} (ID {task.id}, {task.url})" for task in matches)
+            raise TrackerError(f"Ambiguous task reference: {choices}. Use --project or a task URL", "conflict")
+        return self.get(matches[0].id)
 
     def search(self, project, query="", recursive=False):
         return [self.normalize(raw) for raw in api.collect_tasks(

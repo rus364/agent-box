@@ -18,6 +18,9 @@ agent-box tracker projects
 agent-box tracker setup --project 12 --recursive
 agent-box tracker setup --project 12 --recursive --apply
 agent-box tracker ready
+agent-box tracker resolve "#21"
+agent-box tracker resolve "Exact task title"
+agent-box tracker resolve "#21" --project 42
 agent-box tracker get 123
 agent-box tracker claim 123
 agent-box tracker checklist 123
@@ -60,7 +63,22 @@ preserve other project overrides. Setup maintains checksum blocks in
 edited blocks, symlinks and ambiguous ownership.
 
 Search results are compact JSON; `get` includes the description, relationships
-and comments. Search titles/descriptions first, then read relevant history.
+and comments. Resolve the user reference before reading relevant history.
+
+`tracker resolve REFERENCE` selects by visible project number (`21` or quoted
+`"#21"`), exact title, or a task URL from the configured tracker. It searches the
+repository binding, including children when recursive. One exact match returns
+the task; duplicates report project names, numbers, titles and URLs for a user
+choice. `--project PROJECT` narrows to that single project inside the binding;
+`--title` treats even a numeric reference as a title. Missing matches fail without
+falling back to description text or global IDs. URLs outside the selected scope
+fail and are never redirected to adopted copies.
+
+Full and compact tasks expose `number` alongside canonical `id`, project and URL.
+Pass that `id` unchanged to `get`, mutations and workflow commands. Internal IDs,
+relations and branch names retain their existing meaning. Text search only finds
+candidates; a substring match does not establish the user's intended task.
+
 Comments are not included in Vikunja's server-side text search. Task IDs resolve
 directly; ambiguous project names require an exact path or ID.
 
