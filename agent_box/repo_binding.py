@@ -128,7 +128,7 @@ def update_block(original: str, body: str, name: str, path: Path):
 
 AGENT_RULES = """Read the tracked task before work; .agent-box.json binds this repository to its tracker project.
 Use agent-box tracker for task state, progress and dependencies; read related history when context is missing.
-Use ab-interview, ab-plan, ab-work, ab-review, ab-pr, and ab-land as needed. ab-setup maintains this binding and ab-adopt brings an existing project in line with the workflow.
+Use ab-interview, ab-plan, ab-work, ab-review, ab-pr, and ab-land as needed. ab-setup maintains this binding and ab-adopt brings an existing project in line with the workflow; ab-normalize processes unmarked tasks in a bound project.
 The coordinator owns branches, commits, lifecycle, dependencies, and GitHub actions. Delegate implementation sequentially; independent read-only scouts may run in parallel.
 A worker changes project files and reports; a fresh read-only reviewer returns findings. The coordinator records accepted evidence.
 Tracker comments are a human journal. Branch, base branch, and pull request come from Git and GitHub; lifecycle comes from the tracker's own fields, never from comment text.

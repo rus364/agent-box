@@ -248,3 +248,21 @@ rendered artifact even when workflow remains enabled.
 Loopback addresses become `host.containers.internal`. A DNS name resolving to
 the host retains its URL for TLS and virtual-host routing and receives a Podman
 host mapping. Remote URLs stay unchanged. Secrets never enter Podman argv.
+
+## Incremental normalization
+
+Use `ab-normalize` for unprocessed tasks in an already bound project. It selects
+candidates with `tracker search --exclude-label ab:normalized`; exclusion happens
+before CLI output, after the adapter has read all result pages. This limits agent
+context, not necessarily API traffic. Compact unfiltered searches remain available
+to discover links to previously processed tasks.
+
+`tracker normalized ID` adds the shared `ab:normalized` label only after edits,
+journal writes and verification finish. Adoption uses the same marker. It means
+processed, not Ready or Done: unresolved decisions can remain explicit in Backlog.
+Remove the label in the tracker UI or with `tracker normalized ID --undo` to request
+another pass. Other labels are preserved; edits do not automatically reset it.
+
+Priority uses the existing scale: 0 unset, 1 low, 2 medium, 3 high, 4 urgent,
+5 immediate. `tracker create --priority N` and `tracker update ID --priority N`
+store an assessment grounded in urgency, deadlines and consequences of delay.

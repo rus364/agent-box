@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 from urllib.parse import urlsplit
 
-from .core import Task, TrackerError, STATES, root_task
+from .core import NORMALIZED_LABEL, Task, TrackerError, STATES, root_task
 from . import vikunja_api as api
 
 # Column titles agent-box accepts for each lifecycle state. A per-repository
@@ -399,3 +399,23 @@ class VikunjaAdapter:
         if not any(old["id"] == label["id"] for old in raw.get("labels") or []):
             api.attach_label(self.client, task_id, label["id"])
         return self.get(task_id)
+
+
+    def set_normalized(self, task_id, normalized=True):
+        """The marker records completed processing, independently of task readiness."""
+        raw = self.client.get(f"/tasks/{int(task_id)}")
+        attached = [label for label in raw.get("labels") or [] if label["title"] == NORMALIZED_LABEL]
+        if normalized and not attached:
+            labels = self.client.paginate("/labels", {"q": NORMALIZED_LABEL})
+            matches = [label for label in labels if label["title"] == NORMALIZED_LABEL]
+            if len(matches) > 1:
+                raise TrackerError(f"Ambiguous label: {NORMALIZED_LABEL}", "conflict")
+            label = matches[0] if matches else self.client.post("/labels", {"title": NORMALIZED_LABEL})
+            api.attach_label(self.client, task_id, label["id"])
+        elif not normalized:
+            for label in attached:
+                self.client.delete(f"/tasks/{int(task_id)}/labels/{label['id']}")
+        task = self.get(task_id)
+        if (NORMALIZED_LABEL in task.labels) != normalized:
+            raise TrackerError("Normalization marker change was not confirmed", "conflict")
+        return task

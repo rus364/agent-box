@@ -8,7 +8,7 @@ Override the shared tree through `AGENT_BOX_AGENTS_DIR`.
 | Skill | Installed when |
 | --- | --- |
 | `ab-tracker` | Tracker or workflow enabled |
-| `ab-setup`, `ab-interview`, `ab-plan`, `ab-work`, `ab-review`, `ab-pr`, `ab-land` | Workflow enabled |
+| `ab-setup`, `ab-adopt`, `ab-normalize`, `ab-interview`, `ab-plan`, `ab-work`, `ab-review`, `ab-pr`, `ab-land` | Workflow enabled |
 
 Enable integrations and configure models in `agent-box config`. Save and apply,
 `config apply`, or `upgrade` installs/refreshes skills and native agent profiles.

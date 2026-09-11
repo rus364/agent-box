@@ -48,9 +48,10 @@ def parser():
         cmd = sub.add_parser(name, help=description, description=description + "; output is JSON.")
         if name == "search":
             cmd.add_argument("query", nargs="?", default="")
+            cmd.add_argument("--exclude-label", help="Exclude tasks carrying this exact label before output")
         cmd.add_argument("--project")
         cmd.add_argument("--recursive", action="store_true")
-    for name in ("get", "comments", "checklist", "claim", "update", "state", "check", "comment", "tier", "relation"):
+    for name in ("get", "comments", "checklist", "claim", "update", "state", "check", "comment", "tier", "relation", "normalized"):
         description = {"get": "Read a full task, including requirements, relations and comments",
                        "comments": "Read task comments",
                        "checklist": "Read checklist indices and text",
@@ -60,6 +61,7 @@ def parser():
                        "check": "Check or uncheck an exact checklist item",
                        "comment": "Append a human journal comment from a file or stdin",
                        "tier": "Set the task's execution tier",
+                       "normalized": "Mark completed normalization; --undo makes the task a candidate again",
                        "relation": "Add or remove a task relation"}[name]
         cmd = sub.add_parser(name, help=description, description=description + "; output is JSON.")
         cmd.add_argument("task", help="Canonical task ID returned by resolve/get/search")
@@ -73,6 +75,8 @@ def parser():
             cmd.add_argument("--undo", action="store_true")
         elif name == "comment":
             cmd.add_argument("--file", required=True, help="UTF-8 text file, or - for stdin")
+        elif name == "normalized":
+            cmd.add_argument("--undo", action="store_true")
         elif name == "tier":
             cmd.add_argument("tier", type=int, choices=(1, 2, 3))
         elif name == "relation":
@@ -132,7 +136,7 @@ def context(provider=None, require_binding=False, adoption=None):
 
 def dispatch(args):
     if args.adoption and args.command not in {"audit", "status", "search", "resolve", "get", "comments", "checklist",
-                                             "update", "tier", "relation", "comment", "check", "state"}:
+                                             "update", "tier", "relation", "comment", "check", "state", "normalized"}:
         raise TrackerError("Staging adoption only reads and normalizes existing tasks")
     if args.command == "adopt":
         from . import adoption
@@ -211,12 +215,14 @@ def dispatch(args):
                                   text_file(args.description_file), args.parent, priority=args.priority)
             return adapter.set_tier(task.id, args.tier) if args.tier else task
         tasks = adapter.search(project, getattr(args, "query", ""), args.recursive or bool(binding and binding.recursive))
+        if args.command == "search" and args.exclude_label:
+            tasks = [task for task in tasks if args.exclude_label not in task.labels]
         if args.command in ("ready", "next"):
             tasks = ready_tasks(tasks, adapter.get, str(adapter.identity()["id"]))
         results = [task.to_dict(full=False) for task in tasks]
         return (results[0] if results else None) if args.command == "next" else results
     task = adapter.get(args.task)
-    if args.adoption and args.command in {"update", "tier", "relation", "comment", "check", "state"}:
+    if args.adoption and args.command in {"update", "tier", "relation", "comment", "check", "state", "normalized"}:
         scope = set(adapter.subtree(binding.project, True))
         if task.project not in scope:
             raise TrackerError("Adoption can only change staging tasks", "conflict")
@@ -250,6 +256,8 @@ def dispatch(args):
         return adapter.update(task, {"description": set_checkbox(task.description, args.index, not args.undo, args.text)})
     if args.command == "comment":
         return adapter.comment(task.id, text_file(args.file))
+    if args.command == "normalized":
+        return adapter.set_normalized(task.id, not args.undo)
     if args.command == "tier":
         return adapter.set_tier(task.id, args.tier)
     if args.command == "relation":

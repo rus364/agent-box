@@ -459,7 +459,7 @@ AGENT_EFFORTS = {
     "codex": ("default", "low", "medium", "high", "xhigh", "max", "ultra"),
     "claude": ("default", "low", "medium", "high", "xhigh", "max"),
 }
-WORKFLOW_SKILLS = ("ab-setup", "ab-adopt", "ab-interview", "ab-plan", "ab-work", "ab-review", "ab-pr", "ab-land")
+WORKFLOW_SKILLS = ("ab-setup", "ab-adopt", "ab-normalize", "ab-interview", "ab-plan", "ab-work", "ab-review", "ab-pr", "ab-land")
 REVIEW_PRESETS = {"thorough": (2, 80), "balanced": (5, 200), "light": (10, 500)}
 
 
