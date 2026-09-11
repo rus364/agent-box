@@ -30,7 +30,7 @@ def host_tmux_env(environment: dict[str, str] | None = None) -> dict[str, str]:
 
 def tmux_argv(*args: str, host_root: Path | None = None) -> list[str]:
     if host_root is not None:
-        socket = "agent-box-host-" + hashlib.sha256(str(host_root.resolve()).encode()).hexdigest()[:24]
+        socket = "agent-box-host-" + hashlib.sha256(os.fsencode(host_root.resolve())).hexdigest()[:24]
         return ["tmux", "-f", str(HOST_TMUX_CONFIG), "-L", socket, *args]
     return ["tmux", "-f", str(TMUX_CONFIG_PATH), "-L", TMUX_SOCKET, *args]
 

@@ -1401,7 +1401,7 @@ def container_argv(
 
 def workspace_identity(workspace: Workspace) -> str:
     """Stable opaque identity for a resolved workspace root."""
-    return hashlib.sha256(str(workspace.host_root.resolve()).encode()).hexdigest()[:16]
+    return hashlib.sha256(os.fsencode(workspace.host_root.resolve())).hexdigest()[:16]
 
 
 def workspace_container_name(workspace: Workspace) -> str:

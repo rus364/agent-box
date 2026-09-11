@@ -258,6 +258,19 @@ class NativeHostSessionsTests(unittest.TestCase):
         os.write(attached[1], b'0\n')
         self.assertEqual(self.wait_client(attached), 0)
 
+    def test_posix_byte_paths_work_for_project_and_session_state(self):
+        """Normal filesystem bytes must survive identity hashing and tmux argv."""
+        project = self.root / os.fsdecode(b'project-\xff')
+        project.mkdir()
+        self.projects[0] = project
+        self.state = self.root / os.fsdecode(b'state-\xfe')
+        output = self.root / 'byte-path.json'
+        with mock.patch.object(runtime, 'HOST_SESSIONS_ROOT', self.state):
+            client = self.spawn(project, output=output, environment={'PATH': os.defpath, 'TERM': 'xterm'})
+            self.until(output.exists)
+            os.write(client[1], b'0\n')
+            self.assertEqual(self.wait_client(client), 0)
+
     def test_socket_discovery_survives_a_changed_tmux_tmpdir(self):
         """A later shell must find and stop the same project's existing server."""
         project = self.projects[0]
