@@ -446,6 +446,40 @@ def telegram_send_plain_report(
     return True
 
 
+def format_protocol_report(detail: str) -> str:
+    """Render known reports for notifications without changing the wire contract.
+
+    Validate with the protocol's own rules so unrelated JSON and reports with
+    unknown fields stay intact instead of losing content to partial rendering.
+    """
+    from .provider_runner import ProviderFailure, validate_report
+
+    try:
+        report = json.loads(detail)
+        role = "reviewer" if isinstance(report, dict) and "verdict" in report else "worker"
+        validate_report(report, role)
+    except (ValueError, RecursionError, ProviderFailure):
+        return detail
+    if role == "reviewer":
+        parts = [f"**Verdict:** {report['verdict']}", report["summary"]]
+        for index, finding in enumerate(report["findings"], 1):
+            location = _escape_markdown_inline(f"{finding['path']}:{finding['line']}")
+            parts.extend([
+                f"### Finding {index}",
+                f"**Severity:** {_escape_markdown_inline(finding['severity'])}",
+                f"**Location:** {location}", finding["message"],
+                "**Evidence:**", finding["evidence"],
+                "**Requirement:**", finding["requirement"],
+            ])
+        if not report["findings"]:
+            parts.append("No findings reported.")
+    else:
+        parts = [f"**Result:** {report['status']}", report["summary"]]
+        for index, evidence in enumerate(report["evidence"], 1):
+            parts.extend([f"### Evidence {index}", evidence])
+    return "\n\n".join(parts)
+
+
 def telegram_send_rich_report(
     agent: str, project: str, status: str, detail: str,
 ) -> bool:
@@ -456,6 +490,7 @@ def telegram_send_rich_report(
     ``last_assistant_message``. Neither is trusted markup: it is model output,
     so it goes through the same sanitizer and the same bounded delivery plan.
     """
+    detail = format_protocol_report(detail)
     safe_agent = _escape_markdown_inline(agent)
     safe_project = _escape_markdown_inline(project)
     safe_status = _escape_markdown_inline(status)

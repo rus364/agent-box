@@ -270,6 +270,109 @@ class NotifyLogicTests(unittest.TestCase):
             },
         })])
 
+    def test_agent_protocol_reports_become_complete_readable_notifications(self):
+        """Worker/scout results retain every evidence item through both hooks."""
+        for status in ("completed", "blocked", "needs-human"):
+            report = {"status": status, "summary": "Changed **notification display**.",
+                      "evidence": ["First proof.\nSecond line.", "Last proof."]}
+            detail = json.dumps(report)
+            for provider in ("Codex", "Claude"):
+                with self.subTest(status=status, provider=provider):
+                    if provider == "Codex":
+                        sent = self._codex_requests(detail)
+                    else:
+                        sent = self._claude_requests({
+                            "hook_event_name": "Stop", "cwd": "/work/infrado",
+                            "last_assistant_message": detail,
+                        })
+                    markdown = sent[0][1]["rich_message"]["markdown"]
+                    self.assertIn(f"**Result:** {status}", markdown)
+                    self.assertIn(report["summary"], markdown)
+                    self.assertIn("### Evidence 1\n\nFirst proof.\nSecond line.", markdown)
+                    self.assertIn("### Evidence 2\n\nLast proof.", markdown)
+                    self.assertLess(markdown.index("First proof"), markdown.index("Last proof"))
+                    self.assertNotIn('"status":', markdown)
+
+    def test_review_notifications_keep_all_findings_and_their_fields(self):
+        """A failed review must carry actionable evidence, not just its verdict."""
+        findings = [
+            {"severity": "high", "path": "agent_box/notify.py", "line": 0,
+             "message": "First issue.", "evidence": "First evidence.",
+             "requirement": "Keep **all fields**."},
+            {"severity": "medium", "path": "tests/test_notify.py", "line": 12,
+             "message": "Second issue.", "evidence": "Second evidence.\nMore evidence.",
+             "requirement": "Cover failures."},
+        ]
+        for verdict, items in (("PASS", []), ("INCONCLUSIVE", []),
+                               ("NEEDS_WORK", findings), ("INCONCLUSIVE", findings)):
+            with self.subTest(verdict=verdict, findings=len(items)):
+                sent = self._codex_requests(json.dumps({
+                    "verdict": verdict, "summary": "Review summary.", "findings": items,
+                }))
+                markdown = sent[0][1]["rich_message"]["markdown"]
+                self.assertIn(f"**Verdict:** {verdict}", markdown)
+                self.assertIn("Review summary.", markdown)
+                if not items:
+                    self.assertIn("No findings reported.", markdown)
+                for index, finding in enumerate(items, 1):
+                    self.assertIn(f"### Finding {index}", markdown)
+                    self.assertIn(f"**Severity:** {finding['severity']}", markdown)
+                    location = notify._escape_markdown_inline(f"{finding['path']}:{finding['line']}")
+                    self.assertIn(f"**Location:** {location}", markdown)
+                    for field in ("message", "evidence", "requirement"):
+                        self.assertIn(finding[field], markdown)
+
+    def test_unrecognized_json_and_invalid_reports_keep_the_original_message(self):
+        """Do not discard unknown fields or reinterpret examples as reports."""
+        report = {"status": "completed", "summary": "Summary.", "evidence": []}
+        samples = [
+            "Ordinary **Markdown**.", '{"status":', '["completed"]', 'null',
+            json.dumps({"status": "completed", "summary": "Summary."}),
+            json.dumps({**report, "extra": "Must survive."}),
+            json.dumps({**report, "status": "unknown"}),
+            json.dumps({**report, "evidence": [123]}),
+            json.dumps({"verdict": "NEEDS_WORK", "summary": "Summary.", "findings": []}),
+            json.dumps({"verdict": "PASS", "summary": "Summary.", "findings": [{}]}),
+            "```json\n" + json.dumps(report) + "\n```",
+        ]
+        for detail in samples:
+            with self.subTest(detail=detail):
+                sent = self._codex_requests(detail)
+                self.assertEqual(sent[0][1]["rich_message"]["markdown"],
+                                 "✅ **Codex · infrado**\nTurn finished\n\n" +
+                                 notify.sanitize_rich_markdown(detail))
+
+    def test_protocol_display_uses_existing_sanitizer_and_readable_plain_fallback(self):
+        """Formatting must not bypass markup safety or revert to JSON on failure."""
+        report = {"status": "blocked", "summary": "<b>Issue</b>",
+                  "evidence": ["tg://resolve and ![image](https://example.test/a.png)"]}
+        sent = self._codex_requests(json.dumps(report), responses=[b'{"ok": false}'])
+        rich = sent[0][1]["rich_message"]["markdown"]
+        self.assertNotIn("<b>Issue</b>", rich)
+        self.assertNotIn("tg://", rich)
+        self.assertNotIn("![image]", rich)
+        self.assertEqual(sent[1][0], "sendMessage")
+        plain = notify.html.unescape(sent[1][1]["text"])
+        self.assertIn("**Result:** blocked", plain)
+        self.assertIn(report["summary"], plain)
+        self.assertIn(report["evidence"][0], plain)
+        self.assertNotIn('"status":', plain)
+
+    def test_long_protocol_report_preserves_all_evidence_within_delivery_limits(self):
+        """Formatting must retain the tail when a complete report needs chunks."""
+        evidence = "x" * notify.TELEGRAM_RICH_TEXT_LIMIT
+        detail = json.dumps({"status": "completed", "summary": "Full report.",
+                             "evidence": [evidence, "Final proof."]})
+        sent = self._codex_requests(detail)
+        self.assertEqual([method for method, _body in sent], ["sendRichMessage"] * 2)
+        markdown = "".join(body["rich_message"]["markdown"] for _method, body in sent)
+        self.assertIn(evidence, markdown)
+        self.assertIn("### Evidence 2\n\nFinal proof.", markdown)
+        oversized = json.dumps({"status": "completed", "summary": "Full report.",
+                                "evidence": [evidence * notify.MAX_TELEGRAM_REPORT_MESSAGES]})
+        self.assertEqual(self._codex_requests(oversized)[0][1]["text"],
+                         self._codex_oversized_notice())
+
     def test_codex_sends_github_style_markdown_as_a_rich_message(self):
         detail = (
             "## Quality Audit — Standards axis\n\n"

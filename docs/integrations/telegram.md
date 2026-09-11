@@ -72,6 +72,16 @@ a session from Telegram.
 - **Codex**: turn completed, including the final assistant message.
 - **Claude**: waiting for input, permission required, completed, or failed.
 
+Completion notifications render agent-box JSON reports as readable Markdown:
+worker/scout results include the summary and every evidence item; reviews include
+the verdict, summary and every finding's severity, location, message, evidence
+and requirement. Empty review findings are stated explicitly. Text keeps its
+original language, with English section labels. This changes only Telegram
+presentation, not the agents' report protocol. Ordinary Markdown, unrelated JSON
+and invalid reports keep their original content. The formatted report uses the
+same markup sanitization, delivery limits and plain-text fallback as other
+completion messages; an oversized report produces an explicit delivery notice.
+
 When a Claude session already owns the official channel, duplicate *interaction*
 notifications are suppressed — the channel is already relaying those to the same
 chat — while lifecycle completion and failure signals keep coming.
