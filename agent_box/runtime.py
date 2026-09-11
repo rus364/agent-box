@@ -63,7 +63,7 @@ from .paths import (
     WORKFLOW_STATE,
     XDG_CACHE_HOME,
 )
-from .sessions import tmux_argv, tmux_session_exists, tmux_sessions
+from .sessions import host_tmux_env, tmux_argv, tmux_session_exists, tmux_sessions
 from .workspace import Workspace, resolve_workspace
 
 IMAGE = os.environ.get("AGENT_BOX_IMAGE", "localhost/agent-box:latest")
@@ -2350,17 +2350,17 @@ def running_workspace_container(workspace: Workspace) -> str:
     return name
 
 
-def choose_session(sessions: list[str], wanted: str | None) -> str:
+def choose_session(sessions: list[str], wanted: str | None, *, location: str = "this workspace's box") -> str:
     if not sessions:
-        raise AgentBoxError("this workspace's box has no detachable sessions")
+        raise AgentBoxError(f"{location} has no detachable sessions")
     if wanted is not None:
         if wanted not in sessions:
-            raise AgentBoxError(f"no session '{wanted}' in this workspace's box")
+            raise AgentBoxError(f"no session '{wanted}' in {location}")
         return wanted
     if len(sessions) == 1:
         return sessions[0]
     listing = "\n".join(f"  {name}" for name in sessions)
-    raise AgentBoxError("this workspace's box holds several sessions; name one:\n" + listing)
+    raise AgentBoxError(f"{location} holds several sessions; name one:\n" + listing)
 
 
 def attach_main(args: list[str]) -> int:
@@ -2714,10 +2714,8 @@ def host_tmux_launch(workspace: Workspace, agent: str, command: list[str],
     # The server must not retain credentials or source BASH_ENV from its first
     # launcher. The pane runner supplies the full, current per-launch env.
     server_env = {"PATH": os.defpath, "TERM": environment.get("TERM", "xterm-256color")}
-    if "TMUX_TMPDIR" in os.environ:
-        server_env["TMUX_TMPDIR"] = os.environ["TMUX_TMPDIR"]
     try:
-        rc = subprocess.call(wrapped, cwd=str(workspace.cwd), env=server_env)
+        rc = subprocess.call(wrapped, cwd=str(workspace.cwd), env=host_tmux_env(server_env))
         return session.finish(None, rc, host_root=root)
     finally:
         # A user can detach before the pane has consumed its environment.
@@ -2739,7 +2737,8 @@ def host_session_main(args: list[str], *, stop: bool = False) -> int:
         if not names:
             print("agent-box: no host sessions for this project", file=sys.stderr)
             return 0
-        result = subprocess.run(tmux_argv("kill-server", host_root=root), capture_output=True, text=True)
+        result = subprocess.run(tmux_argv("kill-server", host_root=root), capture_output=True, text=True,
+                                env=host_tmux_env())
         if result.returncode:
             raise AgentBoxError(f"could not stop host sessions: {result.stderr.strip()}")
         for name in names:
@@ -2748,6 +2747,7 @@ def host_session_main(args: list[str], *, stop: bool = False) -> int:
                 (root / f"{name}.env.json").unlink(missing_ok=True)
         print(f"agent-box: ended {len(names)} host session(s) for this project", file=sys.stderr)
         return 0
-    name = choose_session(names, args[0] if args else None)
-    rc = subprocess.call(tmux_argv("attach-session", "-d", "-t", "=" + name, host_root=root))
+    name = choose_session(names, args[0] if args else None, location="this project's host server")
+    rc = subprocess.call(tmux_argv("attach-session", "-d", "-t", "=" + name, host_root=root),
+                         env=host_tmux_env())
     return TmuxSession(name, root / f"{name}.status").finish(None, rc, host_root=root)

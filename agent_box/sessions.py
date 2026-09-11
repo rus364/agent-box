@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import subprocess
 import hashlib
+import os
 from pathlib import Path
 
 from .errors import AgentBoxError
@@ -18,6 +19,13 @@ TMUX_CONFIG_PATH = HOST_HOME / ".local/lib/agent-box/agent_box/tmux.conf"
 #: A private server socket, so a tmux the user starts by hand inside the box
 #: never shares a server with agent-box's own agent sessions.
 TMUX_SOCKET = "agent-box"
+
+
+def host_tmux_env(environment: dict[str, str] | None = None) -> dict[str, str]:
+    # All clients use tmux's default socket directory, even across different
+    # shells. An outer user tmux must not prevent attaching to our server.
+    source = os.environ if environment is None else environment
+    return {key: value for key, value in source.items() if key not in {"TMUX_TMPDIR", "TMUX"}}
 
 
 def tmux_argv(*args: str, host_root: Path | None = None) -> list[str]:
@@ -40,6 +48,7 @@ def tmux_sessions(container: str | None, *, host_root: Path | None = None) -> li
         result = subprocess.run(
             ["podman", "exec", container, *command] if container is not None else command,
             text=True, capture_output=True,
+            **({"env": host_tmux_env()} if host_root is not None else {}),
         )
     except OSError as exc:
         raise AgentBoxError(f"could not list workspace sessions: {exc}") from exc

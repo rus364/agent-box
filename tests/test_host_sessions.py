@@ -23,6 +23,18 @@ from test_runtime import IsolatedRuntimeTest
 
 
 class HostLaunchDecisionTests(IsolatedRuntimeTest):
+    def test_host_selection_errors_name_the_host(self):
+        """Host attach must not send the user looking for a workspace container."""
+        from agent_box.errors import AgentBoxError
+        with mock.patch.object(runtime.shutil, 'which', return_value='/usr/bin/tmux'), \
+             mock.patch.object(runtime.sys, 'stdin', mock.Mock(isatty=lambda: True)), \
+             mock.patch.object(runtime.sys, 'stdout', mock.Mock(isatty=lambda: True)), \
+             mock.patch.object(runtime, 'resolved_workspace', return_value=Workspace(Path('/tmp'), Path('/tmp'))):
+            for names, args in (([], []), (['one'], ['missing']), (['one', 'two'], [])):
+                with mock.patch.object(runtime, 'tmux_sessions', return_value=names), \
+                     self.assertRaisesRegex(AgentBoxError, 'host'):
+                    runtime.host_session_main(args)
+
     def test_batch_and_management_stay_direct_with_a_terminal(self):
         """A TTY alone does not make print/exec or CLI management interactive."""
         for agent, argv in (
@@ -97,7 +109,7 @@ class NativeHostSessionsTests(unittest.TestCase):
     def cleanup(self):
         for project in self.projects:
             subprocess.run(sessions.tmux_argv('kill-server', host_root=self.session_root(project)),
-                           capture_output=True)
+                           capture_output=True, env=sessions.host_tmux_env())
         for pid, fd in self.clients:
             try:
                 os.kill(pid, signal.SIGTERM)
@@ -189,7 +201,7 @@ class NativeHostSessionsTests(unittest.TestCase):
         attached = self.spawn(project, attach=True)
         self.until(lambda: subprocess.run(
             sessions.tmux_argv('list-clients', '-F', '#{client_pid}', host_root=self.session_root(project)),
-            capture_output=True, text=True).stdout.strip())
+            capture_output=True, text=True, env=sessions.host_tmux_env()).stdout.strip())
         os.write(attached[1], b'9\n')
         self.assertEqual(self.wait_client(attached), 9)
 
@@ -219,6 +231,35 @@ class NativeHostSessionsTests(unittest.TestCase):
         attached = self.spawn(project, attach=True)
         self.until(lambda: subprocess.run(
             sessions.tmux_argv('list-clients', '-F', '#{client_pid}', host_root=self.session_root(project)),
-            capture_output=True, text=True).stdout.strip())
+            capture_output=True, text=True, env=sessions.host_tmux_env()).stdout.strip())
         os.write(attached[1], b'0\n')
         self.assertEqual(self.wait_client(attached), 0)
+
+    def test_socket_discovery_survives_a_changed_tmux_tmpdir(self):
+        """A later shell must find and stop the same project's existing server."""
+        project = self.projects[0]
+        original, changed = self.root / 'tmp-a', self.root / 'tmp-b'
+        original.mkdir()
+        changed.mkdir()
+        output = self.root / 'tmpdir.json'
+        try:
+            with mock.patch.dict(os.environ, {'TMUX_TMPDIR': str(original)}):
+                client = self.spawn(project, output=output, environment={'PATH': os.defpath, 'TERM': 'xterm'})
+                self.until(output.exists)
+                os.write(client[1], b'\x1cd')
+                self.assertEqual(self.wait_client(client), 0)
+            with mock.patch.dict(os.environ, {'TMUX_TMPDIR': str(changed)}):
+                self.assertEqual(len(sessions.tmux_sessions(None, host_root=self.session_root(project))), 1)
+                attached = self.spawn(project, attach=True)
+                self.until(lambda: subprocess.run(
+                    sessions.tmux_argv('list-clients', '-F', '#{client_pid}', host_root=self.session_root(project)),
+                    capture_output=True, text=True, env=sessions.host_tmux_env()).stdout.strip())
+                os.write(attached[1], b'\x1cd')
+                self.assertEqual(self.wait_client(attached), 0)
+                with mock.patch.object(runtime, 'resolved_workspace', return_value=Workspace(project, project)):
+                    self.assertEqual(runtime.host_session_main([], stop=True), 0)
+            self.assertEqual(sessions.tmux_sessions(None, host_root=self.session_root(project)), [])
+        finally:
+            with mock.patch.dict(os.environ, {'TMUX_TMPDIR': str(original)}):
+                subprocess.run(sessions.tmux_argv('kill-server', host_root=self.session_root(project)),
+                               capture_output=True, env=sessions.host_tmux_env())
