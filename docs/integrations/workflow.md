@@ -483,6 +483,14 @@ false completes locally without publication. Local mode never publishes task
 branches. Publication checks the live default/base and fast-forward ancestry,
 freezes the destination and disables force, mirror, tag and submodule side pushes.
 Unknown or diverged remote heads and server rejection stop completion.
+After confirmation, publication updates only the remote-tracking ref selected by
+origin's fetch refspec, using its pre-publication value as a compare-and-swap
+guard. Effective fetch and push URLs must match after Git's URL rewrites; missing,
+excluded, ambiguous or non-tracking mappings and symbolic refs are skipped.
+`publication.tracking` reports `updated`, `skipped` (with a reason), or `failed`.
+A local tracking failure leaves publication successful and does not repeat the
+push or merge, block Done, or update another local branch. A later fetch can
+refresh the tracking ref.
 
 For a local parent, the coordinator can record the user's explicit acceptance
 of the inspected, validated result as an alternative to independent review:

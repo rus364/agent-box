@@ -587,9 +587,146 @@ class LocalPushTests(unittest.TestCase):
             result = self.operate("merge")
         self.assertEqual(result["publication"]["status"], "published")
         self.assertEqual(self.remote_head(), gw.head_sha(self.root))
+        self.assertEqual(gw.git(self.root, "rev-parse", "refs/remotes/origin/main"), self.remote_head())
+        self.assertEqual(result["publication"]["tracking"]["status"], "updated")
         refs = gw.git(Path(self.temporary.name) / "origin.git", "for-each-ref", "--format=%(refname)")
         self.assertEqual(refs, "refs/heads/main")
         github.assert_not_called()
+
+    def test_fetch_mapping_and_rewrites_select_only_corresponding_tracking_ref(self):
+        """A custom fetch mapping, including URL rewrites, is the tracking authority."""
+        self.config.workflow.auto_push = True
+        origin = str(Path(self.temporary.name) / "origin.git")
+        before = gw.git(self.root, "rev-parse", "refs/remotes/origin/main")
+        gw.git(self.root, "config", "remote.origin.url", "tracking-test:repo")
+        gw.git(self.root, "config", f"url.{origin}.insteadOf", "tracking-test:repo")
+        gw.git(self.root, "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/custom/*")
+        result = self.operate("merge")
+        self.assertEqual(result["publication"]["tracking"]["ref"], "refs/remotes/custom/main")
+        self.assertEqual(gw.git(self.root, "rev-parse", "refs/remotes/custom/main"), self.remote_head())
+        self.assertEqual(gw.git(self.root, "rev-parse", "refs/remotes/origin/main"), before)
+
+    def test_distinct_fetch_destination_does_not_receive_published_sha(self):
+        """Push-only URL rewriting must not claim the fetch repository was updated."""
+        self.config.workflow.auto_push = True
+        before = gw.git(self.root, "rev-parse", "refs/remotes/origin/main")
+        origin = str(Path(self.temporary.name) / "origin.git")
+        gw.git(self.root, "config", "remote.origin.url", "push-only:repo")
+        gw.git(self.root, "config", f"url.{origin}.pushInsteadOf", "push-only:repo")
+        result = self.operate("merge")
+        self.assertEqual(result["publication"]["status"], "published")
+        self.assertEqual(result["publication"]["tracking"]["status"], "skipped")
+        self.assertIn("destinations", result["publication"]["tracking"]["reason"])
+        self.assertEqual(gw.git(self.root, "rev-parse", "refs/remotes/origin/main"), before)
+        self.assertEqual(self.remote_head(), gw.head_sha(self.root))
+
+    def test_excluded_ambiguous_and_local_fetch_mappings_are_skipped(self):
+        """Negative, ambiguous and non-tracking mappings cannot widen local writes."""
+        self.config.workflow.auto_push = True
+        for spec in ("^refs/heads/main", "+refs/heads/main:refs/remotes/other/main",
+                     "+refs/heads/main:refs/heads/unrelated"):
+            with self.subTest(spec=spec):
+                gw.git(self.root, "config", "--add", "remote.origin.fetch", spec)
+                head = gw.head_sha(self.root)
+                gw.git(self.root, "switch", "main")
+                gw.git(self.root, "merge", "--ff-only", head)
+                before = gw.git(self.root, "for-each-ref")
+                result = gw.push_local_base(self.root, "main", head)
+                self.assertEqual(result["tracking"]["status"], "skipped")
+                self.assertEqual(gw.git(self.root, "for-each-ref"), before)
+                gw.git(self.root, "config", "--unset-all", "remote.origin.fetch")
+                gw.git(self.root, "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
+
+    def test_concurrent_tracking_change_survives_successful_publication(self):
+        """A concurrent fetch wins over the pre-push snapshot, even after push succeeds."""
+        self.config.workflow.auto_push = True
+        original = gw._sync_tracking
+        old = gw.git(self.root, "rev-parse", "refs/remotes/origin/main")
+        gw.git(self.root, "commit", "--allow-empty", "-m", "later task work")
+        concurrent = gw.head_sha(self.root)
+        gw.git(self.root, "reset", "--soft", "HEAD~1")
+
+        def race(root, base, url, head, snapshot):
+            gw.git(root, "update-ref", "refs/remotes/origin/main", concurrent, old)
+            return original(root, base, url, head, snapshot)
+
+        with patch.object(gw, "_sync_tracking", side_effect=race):
+            result = self.operate("merge")
+        self.assertEqual(result["publication"]["status"], "published")
+        self.assertEqual(result["publication"]["tracking"]["status"], "failed")
+        self.assertEqual(gw.git(self.root, "rev-parse", "refs/remotes/origin/main"), concurrent)
+        self.adapter.set_state.assert_called_once()
+
+    def test_symbolic_replacement_during_publication_is_preserved(self):
+        """OID CAS must not replace a new symref whose target still has the old OID."""
+        self.config.workflow.auto_push = True
+        original = gw._update_tracking_ref
+        gw.git(self.root, "branch", "unrelated", "main")
+        before = gw.local_branch_head(self.root, "unrelated")
+
+        def race(root, target, head, old):
+            gw.git(root, "symbolic-ref", target, "refs/heads/unrelated")
+            return original(root, target, head, old)
+
+        with patch.object(gw, "_update_tracking_ref", side_effect=race):
+            result = self.operate("merge")
+        self.assertEqual(result["publication"]["tracking"]["status"], "failed")
+        self.assertEqual(gw.git(self.root, "symbolic-ref", "refs/remotes/origin/main"), "refs/heads/unrelated")
+        self.assertEqual(gw.local_branch_head(self.root, "unrelated"), before)
+        self.assertFalse((self.root / ".git/refs/remotes/origin/main.lock").exists())
+        self.assertEqual(self.remote_head(), gw.head_sha(self.root))
+
+    def test_fetch_configuration_change_during_publication_skips_local_write(self):
+        """A new fetch mapping cannot inherit proof bound to the previous mapping."""
+        self.config.workflow.auto_push = True
+        original = gw._sync_tracking
+        before = gw.git(self.root, "rev-parse", "refs/remotes/origin/main")
+
+        def race(root, base, url, head, snapshot):
+            gw.git(root, "config", "remote.origin.fetch", "+refs/heads/main:refs/remotes/new/main")
+            return original(root, base, url, head, snapshot)
+
+        with patch.object(gw, "_sync_tracking", side_effect=race):
+            result = self.operate("merge")
+        self.assertEqual(result["publication"]["tracking"]["status"], "failed")
+        self.assertEqual(gw.git(self.root, "rev-parse", "refs/remotes/origin/main"), before)
+        self.assertEqual(gw.git(self.root, "for-each-ref", "refs/remotes/new"), "")
+
+    def test_fetch_mapping_shared_with_other_source_is_ambiguous(self):
+        """One destination shared by different source branches has no unique identity."""
+        self.config.workflow.auto_push = True
+        gw.git(self.root, "config", "--add", "remote.origin.fetch", "+refs/heads/other:refs/remotes/origin/main")
+        before = gw.git(self.root, "rev-parse", "refs/remotes/origin/main")
+        result = self.operate("merge")
+        self.assertEqual(result["publication"]["tracking"]["status"], "skipped")
+        self.assertIn("another branch", result["publication"]["tracking"]["reason"])
+        self.assertEqual(gw.git(self.root, "rev-parse", "refs/remotes/origin/main"), before)
+
+    def test_symbolic_tracking_ref_does_not_mutate_its_target(self):
+        """A symbolic tracking name is not permission to update another local branch."""
+        self.config.workflow.auto_push = True
+        gw.git(self.root, "branch", "unrelated", "main")
+        before = gw.local_branch_head(self.root, "unrelated")
+        gw.git(self.root, "symbolic-ref", "refs/remotes/origin/main", "refs/heads/unrelated")
+        result = self.operate("merge")
+        self.assertEqual(result["publication"]["tracking"]["status"], "skipped")
+        self.assertEqual(gw.local_branch_head(self.root, "unrelated"), before)
+        self.assertEqual(gw.git(self.root, "symbolic-ref", "refs/remotes/origin/main"), "refs/heads/unrelated")
+
+    def test_tracking_lock_failure_does_not_retry_push_or_block_done(self):
+        """Local ref lock failure is diagnostic, not a remote publication failure."""
+        self.config.workflow.auto_push = True
+        before = gw.git(self.root, "rev-parse", "refs/remotes/origin/main")
+        lock = self.root / ".git/refs/remotes/origin/main.lock"
+        lock.write_text("another process owns this lock\n")
+        with patch.object(gw, "git", wraps=gw.git) as git:
+            result = self.operate("merge")
+        self.assertEqual(result["publication"]["status"], "published")
+        self.assertEqual(result["publication"]["tracking"]["status"], "failed")
+        self.assertEqual(sum("push" in call.args[1:] for call in git.call_args_list), 1)
+        self.assertEqual(gw.git(self.root, "rev-parse", "refs/remotes/origin/main"), before)
+        self.assertEqual(self.remote_head(), gw.head_sha(self.root))
+        self.adapter.set_state.assert_called_once()
 
     def test_disabled_leaves_remote_unchanged(self):
         """An explicit opt-out completes locally without publishing."""

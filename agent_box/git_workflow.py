@@ -2,6 +2,7 @@
 
 import os
 import re
+import select
 import subprocess
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -319,6 +320,99 @@ def push_parent(root, branch, base):
     return {"branch": branch, "head": head, "pushed": True}
 
 
+def _tracking_target(root, base, url):
+    """Only an unambiguous fetch mapping may describe the published repository."""
+    fetch = git(root, "remote", "get-url", "--all", "origin").splitlines()
+    if fetch != [url] or effective_push_url(root) != url:
+        raise AgentBoxError("Fetch and push destinations differ or are ambiguous")
+    source = f"refs/heads/{base}"
+    specs = git(root, "config", "--get-all", "remote.origin.fetch").splitlines()
+    targets = set()
+    mappings = []
+    for spec in specs:
+        negative = spec.startswith("^")
+        spec = spec.lstrip("+") if not negative else spec[1:]
+        src, sep, dst = spec.partition(":")
+        if src.count("*") > 1 or (not negative and (not sep or src.count("*") != dst.count("*"))):
+            raise AgentBoxError("Unsupported fetch refspec; tracking update skipped")
+        if not negative:
+            mappings.append((src, dst))
+        pattern = re.escape(src).replace(r"\*", "(.*)")
+        match = re.fullmatch(pattern, source)
+        if not match:
+            continue
+        if negative:
+            raise AgentBoxError("Published branch is excluded by fetch refspec")
+        targets.add(dst.replace("*", match[1]) if "*" in src else dst)
+    if len(targets) != 1:
+        raise AgentBoxError("Published branch has no unique fetch mapping")
+    target = targets.pop()
+    for src, dst in mappings:
+        match = re.fullmatch(re.escape(dst).replace(r"\*", "(.*)"), target)
+        if match and (src.replace("*", match[1]) if "*" in dst else src) != source:
+            raise AgentBoxError("Fetch mapping shares the tracking ref with another branch")
+    if not target.startswith("refs/remotes/") or target.endswith("/HEAD"):
+        raise AgentBoxError("Fetch mapping is not a remote-tracking branch")
+    git(root, "check-ref-format", target)
+    return target
+
+
+def _tracking_snapshot(root, base, url):
+    target = _tracking_target(root, base, url)
+    refs = git(root, "for-each-ref", "--format=%(refname) %(objectname) %(symref)", target)
+    for line in refs.splitlines():
+        fields = line.split()
+        if fields[0] == target:
+            if len(fields) != 2:
+                raise AgentBoxError("Remote-tracking ref is symbolic")
+            return {"ref": target, "old": fields[1]}
+    return {"ref": target, "old": "0" * len(head_sha(root))}
+
+
+def _update_tracking_ref(root, target, head, old):
+    """Inspect symrefs under Git's ref lock: OID CAS alone resolves symbolic refs."""
+    with subprocess.Popen(["git", "update-ref", "--no-deref", "--stdin"], cwd=root,
+                          stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                          stderr=subprocess.DEVNULL, bufsize=0) as process:
+        try:
+            process.stdin.write(f"start\nupdate {target} {head} {old}\nprepare\n".encode())
+            output = b""
+            while not output.endswith(b"prepare: ok\n"):
+                if not select.select([process.stdout], [], [], 10)[0]:
+                    raise AgentBoxError("Tracking ref transaction timed out")
+                chunk = os.read(process.stdout.fileno(), 4096)
+                if not chunk:
+                    raise AgentBoxError("Tracking ref changed or could not be locked")
+                output += chunk
+            if _run(["git", "symbolic-ref", "-q", target], cwd=root).returncode != 1:
+                raise AgentBoxError("Remote-tracking ref is symbolic or unreadable")
+            process.communicate(b"commit\n", timeout=10)
+            if process.returncode:
+                raise AgentBoxError("Tracking ref transaction failed")
+        finally:
+            if process.poll() is None:
+                try:
+                    process.communicate(b"abort\n", timeout=10)
+                except (OSError, ValueError, subprocess.TimeoutExpired):
+                    process.terminate()
+                    try:
+                        process.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait()
+
+
+def _sync_tracking(root, base, url, head, snapshot):
+    try:
+        if _tracking_target(root, base, url) != snapshot["ref"]:
+            raise AgentBoxError("Fetch mapping changed during publication")
+        target = snapshot["ref"]
+        _update_tracking_ref(root, target, head, snapshot["old"])
+        return {"status": "updated", "ref": target, "head": head}
+    except (AgentBoxError, OSError, subprocess.TimeoutExpired):
+        return {"status": "failed", "reason": "Published successfully; local tracking update failed or its configuration/ref changed"}
+
+
 def push_local_base(root, base, accepted_head):
     """Publish only the accepted fast-forward result, with no mutable source ref."""
     require_clean(root)
@@ -328,6 +422,12 @@ def push_local_base(root, base, accepted_head):
     if _run(["git", "symbolic-ref", "-q", f"refs/heads/{base}"], cwd=root).returncode != 1:
         raise AgentBoxError("Cannot publish a symbolic or unreadable local base ref")
     url = push_destination(root)
+    try:
+        tracking = _tracking_snapshot(root, base, url)
+    except AgentBoxError as exc:
+        tracking = {"status": "skipped", "reason": str(exc)}
+    except (OSError, subprocess.TimeoutExpired):
+        tracking = {"status": "skipped", "reason": "Cannot inspect local remote-tracking ref"}
     state = _query_origin(root, base, url)
     if (state is None or state.default_branch != base or state.branch_symbolic or not state.branch_sha
             or state.default_branch_sha != state.branch_sha):
@@ -344,4 +444,6 @@ def push_local_base(root, base, accepted_head):
     if (published is None or published.default_branch != base or published.branch_symbolic
             or published.branch_sha != accepted_head or published.default_branch_sha != accepted_head):
         raise AgentBoxError("Origin does not confirm the exact published default/base head")
-    return {"branch": base, "head": accepted_head, "pushed": True}
+    if "status" not in tracking:
+        tracking = _sync_tracking(root, base, url, accepted_head, tracking)
+    return {"branch": base, "head": accepted_head, "pushed": True, "tracking": tracking}
