@@ -182,7 +182,7 @@ Podman, the installed host executable, your normal host git/gh credentials.
 containerized execution. Not valid with --mount, and not valid with
 shell/doctor, which are container-only. The opt-in agent browser lives in the
 workspace image, so --host sessions do not get it. Interactive host sessions
-use tmux when installed; otherwise they start directly. Use --host attach
+use tmux when installed (requires bash on PATH); otherwise they start directly. Use --host attach
 [session] to return, --host stop to end this project's host sessions, or
 AGENT_BOX_TMUX=0 to launch directly.
 

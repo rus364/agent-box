@@ -59,6 +59,10 @@ class HostLaunchDecisionTests(IsolatedRuntimeTest):
         for agent, argv in (
             ('claude', ['-p', 'hello']), ('claude', ['--print=hello']),
             ('claude', ['--version']), ('claude', ['plugin', 'list']),
+            ('claude', ['import', 'codex', '--dry-run']), ('claude', ['import', 'codex', '--yes']),
+            ('claude', ['--model', 'opus', 'import', 'codex', '--dry-run']),
+            ('claude', ['--effort', 'low', 'import', 'codex', '--dry-run']),
+            ('claude', ['--effort', 'low', 'import', 'codex', '--yes=digest']),
             ('codex', ['exec', 'hello']), ('codex', ['--model', 'foo', 'exec', 'hello']),
             ('codex', ['mcp', 'list']), ('codex', ['--help']),
         ):
@@ -110,6 +114,30 @@ class HostLaunchDecisionTests(IsolatedRuntimeTest):
                                          ['/bin/false'], {'TOKEN': 'private test value',
                                                          'BYTE_VALUE': os.fsdecode(b'\xff')}, '/usr/bin/tmux')
             self.assertFalse(list(Path(tmp).rglob('*.env.json')))
+
+    def test_host_recorder_uses_shell_from_the_callers_path(self):
+        """The sanitized server PATH must not hide an otherwise installed shell."""
+        with tempfile.TemporaryDirectory() as tmp, \
+             mock.patch.object(runtime, 'HOST_SESSIONS_ROOT', Path(tmp)), \
+             mock.patch.object(runtime.shutil, 'which', return_value='/custom/bin/bash'), \
+             mock.patch.object(runtime, 'tmux_sessions', return_value=[]), \
+             mock.patch.object(runtime, 'tmux_session_exists', return_value=False):
+            def launch(argv, **kwargs):
+                self.assertIn('/custom/bin/bash', argv)
+                return 1
+            with mock.patch.object(runtime.subprocess, 'call', side_effect=launch):
+                runtime.host_tmux_launch(Workspace(Path(tmp), Path(tmp)), 'codex',
+                                         ['/bin/false'], {'PATH': '/custom/bin'}, '/usr/bin/tmux')
+
+    def test_missing_host_recorder_shell_is_actionable_before_start(self):
+        """The optional wrapper must explain its dependency without starting work."""
+        from agent_box.errors import AgentBoxError
+        with mock.patch.object(runtime.shutil, 'which', return_value=None), \
+             mock.patch.object(runtime.subprocess, 'call') as launch, \
+             self.assertRaisesRegex(AgentBoxError, 'bash on PATH.*AGENT_BOX_TMUX=0'):
+            runtime.host_tmux_launch(Workspace(Path('/tmp'), Path('/tmp')), 'codex',
+                                     ['/bin/false'], {}, '/usr/bin/tmux')
+        self.assertEqual(launch.call_count, 0)
 
 
 @unittest.skipUnless(shutil.which('tmux'), 'native tmux is not installed')
@@ -267,6 +295,18 @@ class NativeHostSessionsTests(unittest.TestCase):
         output = self.root / 'byte-path.json'
         with mock.patch.object(runtime, 'HOST_SESSIONS_ROOT', self.state):
             client = self.spawn(project, output=output, environment={'PATH': os.defpath, 'TERM': 'xterm'})
+            self.until(output.exists)
+            os.write(client[1], b'0\n')
+            self.assertEqual(self.wait_client(client), 0)
+
+    def test_recorder_shell_survives_an_empty_sanitized_path(self):
+        """Use the caller's installed Bash even when the server PATH cannot find it."""
+        project = self.projects[0]
+        empty = self.root / 'empty-bin'
+        empty.mkdir()
+        output = self.root / 'shell-path.json'
+        with mock.patch.object(runtime.os, 'defpath', str(empty)):
+            client = self.spawn(project, output=output, environment={'TERM': 'xterm'})
             self.until(output.exists)
             os.write(client[1], b'0\n')
             self.assertEqual(self.wait_client(client), 0)

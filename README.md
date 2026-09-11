@@ -199,7 +199,7 @@ parent-branch push policy are shared with container mode. The
 workspace image, and agent-box never rewrites your host agent configuration to
 fake one.
 
-Interactive host sessions use an installed `tmux` with agent-box's private
+Interactive host sessions use an installed `tmux` and `bash` with agent-box's private
 configuration and one private server per project. They survive a closed
 terminal; detach with `Ctrl-\ d` and return with `agent-box --host attach`
 (optionally followed by a session name). Each launch receives its own current
@@ -208,6 +208,8 @@ agent-box host server, leaving other projects and your own tmux servers alone.
 Without tmux, the CLI starts directly with a short notice. `AGENT_BOX_TMUX=0`,
 pipes, redirects and noninteractive commands such as `claude -p` and `codex exec`
 also use direct execution. Agent-box never installs tmux at launch.
+Bash is resolved from the caller's PATH before starting tmux; if it is missing,
+install it or use `AGENT_BOX_TMUX=0` for direct execution.
 
 | Area | Host responsibility / agent-box behavior |
 | --- | --- |

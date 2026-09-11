@@ -1721,7 +1721,7 @@ class TmuxSession:
     status_path: Path
 
     def wrap(self, command: list[str], *, host_root: Path | None = None,
-             cwd: Path | None = None) -> list[str]:
+             cwd: Path | None = None, shell: str = "bash") -> list[str]:
         # tmux reports its own exit status, not the wrapped program's, and
         # returns 0 for a detach as well as for a finished session. The inner
         # shell records the real status in the workspace's runtime state --
@@ -1731,7 +1731,7 @@ class TmuxSession:
         recorder = 'status=$1; shift; "$@"; printf %s "$?" >"$status"'
         return tmux_argv(
             "new-session", "-s", self.name, *(["-c", str(cwd)] if cwd is not None else []), "--",
-            "bash", "-c", recorder, "agent-box-session", str(self.status_path), *command,
+            shell, "-c", recorder, "agent-box-session", str(self.status_path), *command,
             host_root=host_root,
         )
 
@@ -2674,8 +2674,17 @@ def host_interactive_invocation(agent: str, rest: list[str]) -> bool:
     """Keep batch and management commands direct even at a real terminal."""
     flags = rest[:rest.index("--")] if "--" in rest else rest
     if agent == "claude":
+        command = flags
+        if command[:1] == ["--model"]:
+            command = command[2:]
+        elif command and (command[0].startswith("--model=") or command[0] in {
+                "--dangerously-skip-permissions", "--allow-dangerously-skip-permissions"}):
+            command = command[1:]
+        if command[:1] == ["import"]:
+            return False
         return is_claude_session_invocation(rest) and not any(
-            arg in {"-p", "--print"} or arg.startswith("--print=") for arg in flags)
+            arg in {"-p", "--print", "--dry-run", "--yes"} or
+            arg.startswith(("--print=", "--yes=")) for arg in flags)
     if any(arg in {"--help", "-h", "--version", "-V"} for arg in flags):
         return False
     # Skip option values so a model/profile named 'exec' remains interactive.
@@ -2700,6 +2709,11 @@ def host_interactive_invocation(agent: str, rest: list[str]) -> bool:
 
 def host_tmux_launch(workspace: Workspace, agent: str, command: list[str],
                      environment: dict[str, str], executable: str) -> int:
+    shell = shutil.which("bash")
+    if shell is None:
+        raise AgentBoxError("host tmux requires bash on PATH; install it or use AGENT_BOX_TMUX=0")
+    shell = str(Path(shell).resolve())
+    executable = str(Path(executable).resolve())
     root = HOST_SESSIONS_ROOT / workspace_identity(workspace)
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
     existing = tmux_sessions(None, host_root=root)
@@ -2712,7 +2726,7 @@ def host_tmux_launch(workspace: Workspace, agent: str, command: list[str],
     # POSIX environment bytes may be represented by surrogate escapes.
     atomic_write_text(env_path, json.dumps(environment, ensure_ascii=True), 0o600)
     wrapped = session.wrap([sys.executable, str(HOST_SESSION_RUNNER), str(env_path), *command],
-                           host_root=root, cwd=workspace.cwd)
+                           host_root=root, cwd=workspace.cwd, shell=shell)
     wrapped[0] = executable
     # The server must not retain credentials or source BASH_ENV from its first
     # launcher. The pane runner supplies the full, current per-launch env.
