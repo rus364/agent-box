@@ -10,7 +10,7 @@ from ..atomicio import atomic_write_json, read_json
 from ..repo_binding import (BINDING_FILE, Binding, server_identity, setup_content,
                             write_binding, write_setup)
 from .audit import audit_project
-from .core import TrackerError
+from .core import TrackerError, relation_key
 from .registry import make_adapter
 
 
@@ -36,6 +36,14 @@ def load(path, root):
         if not isinstance(copies, dict) or any(not isinstance(k, str) or not isinstance(v, str)
                                                for k, v in copies.items()):
             raise ValueError("clone.projects must map source ID strings to new ID strings")
+        removals = receipt["clone"].get("relation_removals", [])
+        if not isinstance(removals, list):
+            raise ValueError("clone.relation_removals must be a list")
+        for edge in removals:
+            if (not isinstance(edge, list) or len(edge) != 3
+                    or any(not isinstance(value, str) or not value for value in edge)
+                    or edge != list(relation_key(*edge))):
+                raise ValueError("clone.relation_removals must contain canonical task/kind/other triples")
         for field in ("repository", "original_title", "staging_title", "backup_title", "parent"):
             if not isinstance(receipt[field], str):
                 raise ValueError(f"{field} must be a string")
@@ -71,6 +79,20 @@ def staging_context(path, root):
         raise TrackerError("Repository binding changed; inspect cutover before normalizing", "conflict")
     binding = replace(source, project=target)
     return make_adapter(binding), binding, root
+
+
+def relate(root, path, adapter, task, kind, other, remove=False):
+    """Persist exact edit intent before the API call so interrupted retries are safe."""
+    receipt, _, _ = load(path, root)
+    key = list(relation_key(task.id, kind, other))
+    removals = receipt["clone"].setdefault("relation_removals", [])
+    if remove and key not in removals:
+        removals.append(key)
+        save(path, receipt)
+    elif not remove and key in removals:
+        removals.remove(key)
+        save(path, receipt)
+    return adapter.relate(task.id, kind, other, remove)
 
 
 def start(root, project, path, provider=None, apply=False):

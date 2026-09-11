@@ -135,6 +135,18 @@ def requirements(tasks):
              "blockers": sorted(task.blockers), "labels": sorted(task.labels)} for task in tasks]
 
 
+def same_worker_requirements(current, prepared):
+    """Tracker reserialization of checkbox separators is progress, not changed work."""
+    def canonical(record):
+        body = record["description"]
+        for item in reversed(checkboxes(body)):
+            line = re.sub(r"(\[[ xX]\])[ \t]+", r"\1 ", item["line"], count=1)
+            offset = item["offset"]
+            body = body[:offset] + line + body[offset + len(item["line"]):]
+        return {**record, "description": body}
+    return [canonical(item) for item in current] == [canonical(item) for item in prepared]
+
+
 REVIEW_REQUIREMENT_SECTIONS = {
     "goal", "goals", "objective", "objectives",
     "acceptance", "acceptance criterion", "acceptance criteria",
@@ -1285,7 +1297,7 @@ def worker_dispatch(args, root, binding, adapter, task, config):
                                  ("integration", "the branch this work integrates into moved")):
             if identity[key] != descriptor[key]:
                 raise AgentBoxError(f"Since this delegation was prepared, {description}; reconcile before accepting the report")
-        if requirements(tasks) != previous["requirements"]:
+        if not same_worker_requirements(requirements(tasks), previous["requirements"]):
             raise AgentBoxError("Worker requirements changed; report is stale")
         selected = descriptor["route"]
         decision = descriptor["execution"]
@@ -1323,7 +1335,7 @@ def worker_dispatch(args, root, binding, adapter, task, config):
                 output = execute(config.workflow, selected, "worker", root, prompt)
                 if delegation_identity(root, binding, current.get("branch") and info["branch"]) != identity:
                     raise AgentBoxError("Worker branch changed, HEAD moved or integration changed; reconcile before accepting the report")
-                if requirements(tree(adapter, adapter.get(task.id))) != previous["requirements"]:
+                if not same_worker_requirements(requirements(tree(adapter, adapter.get(task.id))), previous["requirements"]):
                     raise AgentBoxError("Worker requirements changed during execution; report is stale")
                 read_delegation_input(root, descriptor)
             except BaseException:

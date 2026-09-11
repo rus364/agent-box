@@ -131,7 +131,10 @@ requirement to make a subproject per parent task.
 `ab-adopt` normalizes a native copy of an existing tree. Source tasks, comments,
 attachments, relations and project IDs remain available. It does not plan,
 decompose or implement tasks; unresolved requirements stay in Backlog for
-`ab-interview`, and future planning belongs to `ab-plan`.
+`ab-interview`, and future planning belongs to `ab-plan`. Adoption also analyzes
+relations across the complete tree, adds evidenced missing dependencies and
+corrects mistaken internal links. Similar topics alone do not establish a blocker;
+material ambiguity is discussed before changing links.
 
 ```bash
 agent-box tracker audit --project 12 --recursive
@@ -145,7 +148,11 @@ agent-box tracker adopt cutover --receipt /tmp/adoption.json --apply
 ```
 
 The receipt records the repository/server, source and new project IDs, intended
-names and previous binding; it contains no tracker snapshot or task lifecycle.
+names, previous binding and exact intentional internal relation removals; it
+contains no tracker snapshot or task lifecycle. Staging `relation ... --remove`
+records that intent before the API call, allowing safe retries and excluding only
+that edge from source-copy preservation checks. Adding it back clears the
+exception before the API call. Other missing internal edges still block cutover.
 Keep it until adoption finishes. The staging scope is temporary and does not
 change `.agent-box.json`. Ordinary staging commands refuse source/external task
 mutations and task creation. Audit reports structural errors separately from

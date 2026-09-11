@@ -73,6 +73,8 @@ def inspect(adapter, source, title, progress):
 
 
 def clone(adapter, source, title, progress, checkpoint, apply=False):
+    if apply and progress.get("relation_removals"):
+        raise TrackerError("Resume normalization or cutover after relation edits; do not rerun clone", "conflict")
     source = str(adapter.project(source)["id"])
     report = inspect(adapter, source, title, progress)
     copies = progress.setdefault("projects", {})
@@ -132,11 +134,12 @@ def clone(adapter, source, title, progress, checkpoint, apply=False):
                 current = adapter.client.get(f"/tasks/{target}")
                 if related not in {str(t["id"]) for t in (current.get("related_tasks") or {}).get(kind, [])}:
                     raise TrackerError(f"Clone relation {base} {kind} {other} was not confirmed", "conflict")
-    incomplete = copy_problems(adapter.client, report)
+    incomplete = copy_problems(adapter.client, report, progress.get("relation_removals", []))
     if apply and incomplete:
         raise TrackerError("; ".join(incomplete), "conflict")
     return {"project": copies.get(source), "projects": dict(copies), "incomplete": incomplete,
             "missing_projects": report["missing_projects"], "errors": report["errors"],
+            "relation_removals": progress.get("relation_removals", []),
             "external_relations": adapter.preserve_external_relations(report["external_relations"],
                                                                       apply and not report["errors"]),
             "dry_run": not apply,
@@ -145,12 +148,18 @@ def clone(adapter, source, title, progress, checkpoint, apply=False):
                       "Do not rerun clone after normalization; resume normalization by auditing the staging scope."]}
 
 
-def copy_problems(client, report):
+def copy_problems(client, report, relation_removals=()):
     """A saved project mapping alone cannot prove a failed copy finished.
 
 Check preserved data again before cutover; allow added journal comments and text
-normalization, but never silently lose source relations, files or assignments.
+normalization and explicitly requested internal relation removals, but never
+silently lose other source relations, files or assignments.
 """
+    removed = set()
+    for base, kind, other in relation_removals:
+        native = api.TASK_RELATION_KINDS[kind]
+        removed.add((base, native, other))
+        removed.add((other, api.RELATION_INVERSE[native], base))
     mapping, problems, targets = report["task_map"], [], {}
     for ident, target in mapping.items():
         original = report["source_tasks"][ident]
@@ -166,6 +175,7 @@ normalization, but never silently lose source relations, files or assignments.
     for base, kind, other in sorted(report["edges"]):
         if base in mapping and other in mapping:
             existing = (targets[mapping[base]].get("related_tasks") or {}).get(kind, [])
-            if mapping[other] not in {str(t["id"]) for t in existing}:
+            if ((mapping[base], kind, mapping[other]) not in removed
+                    and mapping[other] not in {str(t["id"]) for t in existing}):
                 problems.append(f"Clone is missing source relation {base} {kind} {other}")
     return problems

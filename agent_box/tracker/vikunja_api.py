@@ -1548,6 +1548,9 @@ def project_children(projects, parent_ref, recursive=False):
             for project in sorted(children, key=index.path_for)]
 
 
+TASK_RELATION_KINDS = {"parent": "parenttask", "child": "subtask", "blocks": "blocking",
+                  "blocked-by": "blocked", "related": "related", "duplicate": "duplicateof"}
+
 RELATION_INVERSE = {
     "subtask": "parenttask", "parenttask": "subtask", "blocking": "blocked",
     "blocked": "blocking", "related": "related", "duplicateof": "duplicates",

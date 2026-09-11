@@ -86,6 +86,16 @@ class NativeClient(FakeClient):
             return body
         return super().post(path, body)
 
+    def delete(self, path):
+        parts = path.strip('/').split('/')
+        if len(parts) != 5 or parts[0] != 'tasks' or parts[2] != 'relations':
+            raise AssertionError(path)
+        base, kind, other = int(parts[1]), parts[3], int(parts[4])
+        self.writes.append((path, None))
+        for left, edge, right in ((base, kind, other), (other, api.RELATION_INVERSE[kind], base)):
+            relations = self.tasks[left]['related_tasks']
+            relations[edge] = [t for t in relations.get(edge, []) if t['id'] != right]
+
     def patch(self, path, body, markdown=False):
         match = re.fullmatch(r'/projects/(\d+)', path)
         if match:
@@ -194,6 +204,99 @@ class StagingTests(unittest.TestCase):
         self.clone()
         self.assertEqual(self.client.duplicates, 2)
         self.assertTrue(adoption.cutover(self.root, self.receipt)['ok'])
+
+    def staging_relation(self, base, kind, other, remove=False):
+        context = adoption.staging_context(self.receipt, self.root)
+        args = ['--adoption', str(self.receipt), 'relation', str(base), kind, str(other)]
+        if remove:
+            args.append('--remove')
+        with patch.object(cli, 'context', return_value=context):
+            return cli.dispatch(cli.parser().parse_args(args))
+
+    def cloned_endpoints(self):
+        report = self.clone()
+        return [next(t['id'] for t in self.client.tasks.values() if t['project_id'] == int(report['projects'][p]))
+                for p in ('1', '2')]
+
+    def test_intentional_inverse_relation_removal_can_cut_over_without_touching_source(self):
+        """An evidenced correction must not be mistaken for an incomplete native copy."""
+        first, second = self.cloned_endpoints()
+        self.staging_relation(second, 'blocked-by', first, True)
+        self.assertEqual(json.loads(self.receipt.read_text())['clone']['relation_removals'],
+                         [[str(first), 'blocks', str(second)]])
+        preview = adoption.cutover(self.root, self.receipt)
+        self.assertTrue(preview['ok'])
+        self.assertEqual(preview['clone']['relation_removals'],
+                         [[str(first), 'blocks', str(second)]])
+        self.assertTrue(adoption.cutover(self.root, self.receipt, True)['complete'])
+        for ident, original in self.source.items():
+            self.assertEqual(self.client.tasks[ident], original)
+
+    def test_lost_relation_delete_response_can_resume_from_recorded_intent(self):
+        """The server may commit before transport fails; retry must not lose intent."""
+        first, second = self.cloned_endpoints()
+        delete = self.client.delete
+        def lose_response(path):
+            delete(path)
+            raise TrackerError('Lost delete response', 'transport')
+        with patch.object(self.client, 'delete', side_effect=lose_response):
+            with self.assertRaises(TrackerError):
+                self.staging_relation(first, 'blocks', second, True)
+        writes = list(self.client.writes)
+        self.staging_relation(second, 'blocked-by', first, True)
+        self.assertEqual(self.client.writes, writes)
+        self.assertTrue(adoption.cutover(self.root, self.receipt)['ok'])
+        with self.assertRaisesRegex(TrackerError, 'do not rerun clone'):
+            self.clone()
+
+    def test_readding_relation_clears_exception_and_unexplained_loss_blocks_again(self):
+        """A past correction cannot waive preservation of a subsequently restored edge."""
+        first, second = self.cloned_endpoints()
+        self.staging_relation(first, 'blocks', second, True)
+        self.staging_relation(second, 'blocked-by', first)
+        self.assertEqual(json.loads(self.receipt.read_text())['clone']['relation_removals'], [])
+        self.client.delete(f'/tasks/{first}/relations/blocking/{second}')
+        report = adoption.cutover(self.root, self.receipt)
+        self.assertFalse(report['ok'])
+        self.assertTrue(any('missing source relation' in e for e in report['errors']))
+
+    def test_removal_exception_does_not_cover_another_relation_kind(self):
+        """An intended blocker correction cannot hide loss of a separate related edge."""
+        self.client.tasks[5]['related_tasks']['related'] = [{'id': 6}]
+        self.client.tasks[6]['related_tasks']['related'] = [{'id': 5}]
+        first, second = self.cloned_endpoints()
+        self.staging_relation(first, 'blocks', second, True)
+        self.client.delete(f'/tasks/{first}/relations/related/{second}')
+        report = adoption.cutover(self.root, self.receipt)
+        self.assertFalse(report['ok'])
+        self.assertTrue(any('missing source relation 5 related 6' in e for e in report['errors']))
+
+    def test_relation_write_must_be_visible_before_success_is_reported(self):
+        """An API success response alone cannot prove the requested correction happened."""
+        first, second = self.cloned_endpoints()
+        with patch.object(self.client, 'delete', return_value={}):
+            with self.assertRaisesRegex(TrackerError, 'not confirmed'):
+                self.staging_relation(first, 'blocks', second, True)
+        self.assertIn({'id': second}, self.client.tasks[first]['related_tasks']['blocking'])
+
+    def test_failed_receipt_save_prevents_relation_mutation(self):
+        """An unrecorded deletion would be indistinguishable from copy data loss."""
+        first, second = self.cloned_endpoints()
+        before = list(self.client.writes)
+        with patch.object(adoption, 'save', side_effect=OSError('Read-only receipt')):
+            with self.assertRaises(OSError):
+                self.staging_relation(first, 'blocks', second, True)
+        self.assertEqual(self.client.writes, before)
+        self.assertTrue(adoption.cutover(self.root, self.receipt)['ok'])
+
+    def test_external_removal_cannot_record_an_internal_preservation_exception(self):
+        """Adoption's explicit edge repair does not widen the staging mutation scope."""
+        first, _ = self.cloned_endpoints()
+        before = self.receipt.read_bytes()
+        for base, other in ((5, first), (first, 7)):
+            with self.assertRaisesRegex(TrackerError, 'staging'):
+                self.staging_relation(base, 'related', other, True)
+        self.assertEqual(self.receipt.read_bytes(), before)
 
     def test_cutover_resumes_after_each_remote_write_and_binding_failure(self):
         for failure in (1, 2, 3):

@@ -1122,6 +1122,27 @@ class WorkerHandoffTests(unittest.TestCase):
         with self.assertRaisesRegex(AgentBoxError, "stale"):
             self.report_back((prepared["scope"], prepared["handoff"]))
 
+    def test_worker_report_tolerates_checkbox_separator_reserialization(self):
+        """Tracker checkbox progress may normalize separator spaces without changing acceptance."""
+        self.task.description = "## Acceptance\n- [ ]  requirement"
+        prepared = self.prepare()
+        self.task.description = "## Acceptance\n- [x] requirement"
+        result = self.report_back(prepared)
+        self.assertEqual(result['report']['status'], 'completed')
+
+    def test_worker_report_still_rejects_changed_words_and_fenced_examples(self):
+        """Only checkbox syntax whitespace is ignorable; requirement content stays bound."""
+        for before, after in (("## Acceptance\n- [ ]  requirement", "## Acceptance\n- [x] other"),
+                              ("## Acceptance\n```\n- [ ]  example\n```", "## Acceptance\n```\n- [ ] example\n```")):
+            with self.subTest(after=after):
+                self.task.description = before
+                prepared = self.prepare()
+                self.task.description = after
+                with self.assertRaisesRegex(AgentBoxError, 'requirements changed'):
+                    self.report_back(prepared)
+                self.task.description = before
+                self.report_back(prepared)
+
     def test_managed_worker_rechecks_requirements_after_execution(self):
         """A long-running worker cannot report against acceptance changed while it ran."""
         prepared = self.run_workflow("prepare", "1", "--primary", "codex")

@@ -261,6 +261,9 @@ def dispatch(args):
     if args.command == "tier":
         return adapter.set_tier(task.id, args.tier)
     if args.command == "relation":
+        if args.adoption:
+            from . import adoption
+            return adoption.relate(root, args.adoption, adapter, task, args.kind, args.other, args.remove)
         return adapter.relate(task.id, args.kind, args.other, args.remove)
     raise TrackerError("Unsupported tracker operation")
 

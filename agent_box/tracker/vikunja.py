@@ -354,11 +354,14 @@ class VikunjaAdapter:
         return self.client.post(f"/tasks/{int(task_id)}/comments?format=markdown", {"comment": text})
 
     def relate(self, task_id, kind, other, remove=False):
-        mapping = {"parent": "parenttask", "child": "subtask", "blocks": "blocking",
-                   "blocked-by": "blocked", "related": "related", "duplicate": "duplicateof"}
+        mapping = api.TASK_RELATION_KINDS
         if kind not in mapping or str(task_id) == str(other):
             raise TrackerError("Invalid relation")
         relation = mapping[kind]
+        raw = self.client.get(f"/tasks/{int(task_id)}")
+        present = str(other) in {str(t["id"]) for t in (raw.get("related_tasks") or {}).get(relation, [])}
+        if present == (not remove):
+            return self.get(task_id)
         if not remove and kind in ("parent", "child", "blocks", "blocked-by"):
             origin, target = (str(other), str(task_id)) if kind in ("child", "blocks") else (str(task_id), str(other))
             if kind in ("parent", "child"):
@@ -381,6 +384,10 @@ class VikunjaAdapter:
             self.client.delete(f"/tasks/{int(task_id)}/relations/{relation}/{int(other)}")
         else:
             self.client.post(f"/tasks/{int(task_id)}/relations", {"other_task_id": int(other), "relation_kind": relation})
+        raw = self.client.get(f"/tasks/{int(task_id)}")
+        present = str(other) in {str(t["id"]) for t in (raw.get("related_tasks") or {}).get(relation, [])}
+        if present != (not remove):
+            raise TrackerError("Relation change was not confirmed", "conflict")
         return self.get(task_id)
 
     def set_tier(self, task_id, tier):

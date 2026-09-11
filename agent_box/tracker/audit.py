@@ -28,7 +28,8 @@ NOTES = (
     "later re-import. Rewriting the text around it is fine; dropping it is not.",
     "Preserve meaning and language. Extract only evidenced acceptance and "
     "checklists. Unanswered decisions stay in Backlog for ab-interview; planning "
-    "and decomposition belong to ab-plan.",
+    "and decomposition belong to ab-plan. Repair evidenced internal relations "
+    "across the tree; a shared topic alone is not a dependency.",
 )
 
 

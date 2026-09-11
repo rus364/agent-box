@@ -19,6 +19,18 @@ class TrackerError(AgentBoxError):
         self.retryable = retryable
 
 
+def relation_key(task_id, kind, other):
+    """Use one portable orientation for an adoption's intended relation edit."""
+    if kind not in {"parent", "child", "blocks", "blocked-by", "related", "duplicate"} or task_id == other:
+        raise TrackerError("Invalid relation")
+    if kind in {"parent", "blocked-by"}:
+        task_id, other = other, task_id
+        kind = {"parent": "child", "blocked-by": "blocks"}[kind]
+    if kind == "related" and task_id > other:
+        task_id, other = other, task_id
+    return task_id, kind, other
+
+
 @dataclass
 class Task:
     id: str
