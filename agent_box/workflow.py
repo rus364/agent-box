@@ -672,16 +672,28 @@ def native_output(args, selected, tier):
             raise AgentBoxError("Confirm --fresh-context for independent current-session review")
         if args.fallback_reason:
             raise AgentBoxError("Current-session execution has no fallback route")
+        if selected.get("fast") is not None:
+            if getattr(args, "fast", None) != ("on" if selected["fast"] else "off"):
+                raise AgentBoxError("Reported fast differs from the prepared current session")
+            actual["fast"] = selected["fast"]
         actual.update(mode="current-session", session_inherited=args.session_inherited)
         if args.role == "reviewer":
             actual["fresh_context"] = True
         return {"route": actual, "report": validate_report(json.loads(Path(args.file).read_text()), args.role),
                 "diagnostics": {"usage": None, "total_cost_usd": None}}
     candidates = [selected, *selected["fallbacks"]]
+    reported_fast = getattr(args, "fast", None)
+    if reported_fast is None:
+        raise AgentBoxError("Report the native speed setting with --fast on or --fast off")
+    actual["fast"] = reported_fast == "on"
     match = next((i for i, candidate in enumerate(candidates)
                   if all(candidate.get(key) == value for key, value in actual.items())), None)
     if match is None:
-        raise AgentBoxError("Reported provider/model/effort is outside the configured route")
+        raise AgentBoxError("Reported provider/model/effort/fast is outside the configured route")
+    from .fast_mode import native_limitation
+    limitation = native_limitation(args.provider)
+    if limitation and actual["fast"]:
+        raise AgentBoxError(limitation)
     reason = (args.fallback_reason or "").strip()
     if match and not reason:
         raise AgentBoxError("A native fallback reason is required; explain why the preferred route could not run")
@@ -719,6 +731,7 @@ def route(config, role, tier, primary, writer=None):
                         available=[p for p in ("codex", "claude") if shutil.which(p)])
         atomic_write_text(path, json.dumps(counters) + "\n", 0o600)
     from .agent_profiles import available as native_available
+    from .fast_mode import native_limitation
     for candidate in [result, *result["fallbacks"]]:
         candidate["native_profile"] = f"ab-{role}-{tier}" if tier is not None else None
         candidate["native_profile_ready"] = (tier is not None and
@@ -726,8 +739,9 @@ def route(config, role, tier, primary, writer=None):
         # These are requirements for the coordinator's live tool, not discovered
         # capabilities. A missing installed profile says nothing about that tool.
         candidate["native_explicit_settings"] = (
-            {key: candidate[key] for key in ("provider", "model", "effort")}
-            if candidate["effort"] != "default" else None)
+            {key: candidate[key] for key in ("provider", "model", "effort", "fast")}
+            if candidate["effort"] != "default" and not (candidate["fast"] and native_limitation(candidate["provider"])) else None)
+        candidate["native_limitation"] = native_limitation(candidate["provider"])
     return result
 
 
@@ -738,8 +752,11 @@ def session_route(args, role):
     model, effort = args.session_model, args.session_effort
     if bool(model) != bool(effort) or model == "" or effort == "":
         raise AgentBoxError("Supply both --session-model and --session-effort from the active session, or omit both")
-    return {"mode": "current-session", "provider": args.primary, "model": model,
-            "effort": effort, "tier": None, "role": role, "fallbacks": []}
+    selected = {"mode": "current-session", "provider": args.primary, "model": model,
+                "effort": effort, "tier": None, "role": role, "fallbacks": []}
+    if getattr(args, "session_fast", None) is not None:
+        selected["fast"] = args.session_fast == "on"
+    return selected
 
 
 def execute(config, selected, role, root, prompt, read_paths=()):
@@ -749,7 +766,7 @@ def execute(config, selected, role, root, prompt, read_paths=()):
             diagnostics = {"usage": None, "total_cost_usd": None}
             report = run(candidate, role, root, prompt, timeout=config.timeout_seconds,
                          read_paths=read_paths, diagnostics=diagnostics)
-            return {"route": {k: candidate[k] for k in ("provider", "model", "effort", "tier")},
+            return {"route": {k: candidate[k] for k in ("provider", "model", "effort", "tier", "fast") if k in candidate},
                     "report": report, "failures": failures, "diagnostics": diagnostics}
         except ProviderFailure as exc:
             failures.append({"provider": candidate["provider"], "category": exc.category, **exc.diagnostic})
@@ -1103,6 +1120,7 @@ def parser():
         if name in ("prepare", "run", "review"):
             cmd.add_argument("--session-model", help="Verified active session model for untiered execution")
             cmd.add_argument("--session-effort", help="Verified active session effort for untiered execution")
+            cmd.add_argument("--session-fast", choices=("on", "off"), help="Verified session speed; required for managed session routes")
         if name in ("prepare", "run", "review"):
             cmd.add_argument("--brief", required=name == "run", help=(
                 "UTF-8 English Goal/Acceptance/Validation and technical context; required for delegation handoffs. Keep briefs outside the working tree"))
@@ -1112,6 +1130,7 @@ def parser():
             cmd.add_argument("--provider", required=True, choices=("codex", "claude"))
             cmd.add_argument("--model", help="Actual model used by the native delegate; required for explicit tiers")
             cmd.add_argument("--effort", help="Actual effort used by the native delegate; required for explicit tiers")
+            cmd.add_argument("--fast", choices=("on", "off"), help="Actual native speed setting; required for configured candidates")
             cmd.add_argument("--session-inherited", action="store_true", help="Affirm unchanged inherited session settings")
             cmd.add_argument("--fresh-context", action="store_true", help="Affirm independent fresh reviewer context")
             cmd.add_argument("--fallback-reason", help="Why a native fallback candidate was used")
@@ -1426,6 +1445,8 @@ def worker_dispatch(args, root, binding, adapter, task, config):
         report += ["--tier", str(tier)]
     report += (["--session-inherited"] if selected["model"] is None else
                ["--model", "ACTUAL_MODEL", "--effort", "ACTUAL_EFFORT"])
+    if selected.get("mode") != "current-session" or "fast" in selected:
+        report += ["--fast", "ACTUAL_ON_OR_OFF"]
     result = {"scope": fingerprint, "route": selected, "execution": decision, **scout_diagnostics(config),
               "action": "work-in-current-session" if choice == "direct" else "delegate",
               "task": {"id": task.id, "title": task.title, "state": task.state, "tier": task.tier},
@@ -1435,8 +1456,8 @@ def worker_dispatch(args, root, binding, adapter, task, config):
               "instructions": ("Implement in the active session without changing provider, model or effort. Read repository instructions and follow task acceptance. "
                                if choice == "direct" else
                                "Spawn a fresh worker with delegate_handoff as the complete initial message. "
-                               "Use an exact profile or explicit spawn parameters for provider/model/effort without an overriding custom agent. Profile readiness is not live capability proof; "
-                               "unknown or unsupported capabilities or effort=default require managed_command. " + LAUNCH_CONTEXT + " ") +
+                               "Use an exact profile or explicit spawn parameters for provider/model/effort/fast without an overriding custom agent. Profile readiness is not live capability proof; "
+                               "unknown or unsupported capabilities (including fast) or effort=default require managed_command; honor native_limitation. " + LAUNCH_CONTEXT + " ") +
                               "Return actual execution facts with report_command; permitted native fallback requires --fallback-reason TEXT."}
     if choice == "delegated" and selected["model"] is None:
         result["instructions"] += " Inherit the active session in a fresh native worker without a tier profile; unknown session settings cannot run managed."
@@ -1486,7 +1507,7 @@ def scout_dispatch(args, root, binding, adapter, task, config):
                 "report_schema": report_schema("scout"), **scout_diagnostics(config),
                 "managed_command": shlex.join(["agent-box", "workflow", "run", task.id, "--role", "scout",
                                                 "--tier", str(tier), "--handoff", token, "--brief", args.brief]),
-                "report_command": f"agent-box workflow report {task.id} --role scout --tier {tier} --scope {fingerprint} --provider ACTUAL_PROVIDER --model ACTUAL_MODEL --effort ACTUAL_EFFORT --handoff DESCRIPTOR --file REPORT.json",
+                "report_command": f"agent-box workflow report {task.id} --role scout --tier {tier} --scope {fingerprint} --provider ACTUAL_PROVIDER --model ACTUAL_MODEL --effort ACTUAL_EFFORT --fast ACTUAL_ON_OR_OFF --handoff DESCRIPTOR --file REPORT.json",
                 "instructions": "Only the coordinator dispatches distinct bounded questions; never duplicate scouts. Count active native scouts against scout_limit; preparation reserves no native slot. " + LAUNCH_CONTEXT}
     if not getattr(args, "handoff", None):
         raise AgentBoxError("Scout execution requires --handoff from prepare")
@@ -1709,6 +1730,8 @@ def dispatch(args):
                 report_command.append("--session-inherited")
             else:
                 report_command.extend(("--model", "ACTUAL_MODEL", "--effort", "ACTUAL_EFFORT"))
+            if selected.get("mode") != "current-session" or "fast" in selected:
+                report_command.extend(("--fast", "ACTUAL_ON_OR_OFF"))
             if role == "reviewer":
                 report_command.append("--fresh-context")
             report_command.extend(("--scope", fingerprint, "--handoff", "DESCRIPTOR", "--file", "REPORT.json"))

@@ -267,7 +267,7 @@ class LandingFreshnessTests(unittest.TestCase):
                 output.write_text(json.dumps(report))
                 self.dispatch(["report", "7", "--role", "reviewer", "--scope", prepared["scope"],
                                "--handoff", prepared["handoff"], "--file", str(output),
-                               "--provider", "claude", "--model", "m", "--effort", "high", "--fresh-context"])
+                               "--provider", "claude", "--model", "m", "--effort", "high", "--fast", "off", "--fresh-context"])
             else:
                 with patch.object(workflow, "preflight", return_value=None), \
                      patch.object(workflow, "execute", return_value={"report": report}) as reviewer:

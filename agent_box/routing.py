@@ -95,6 +95,7 @@ def select(config, role, tier, primary, state, usage=None, *, now=None, writer=N
     if not order:
         raise AgentBoxError(f"No allowed {role} model configured in {matrix}; no automatic tier downgrade")
     def entry(provider):
-        return {"provider": provider, "model": models[provider]["model"], "effort": models[provider]["effort"], "tier": tier}
+        return {"provider": provider, "model": models[provider]["model"], "effort": models[provider]["effort"],
+                "fast": models[provider].get("fast", False), "tier": tier}
     return {**entry(order[0]), "role": role, "reason": reason + (f"; models from {matrix}" if override else ""),
             "fallbacks": [entry(p) for p in order[1:]]}

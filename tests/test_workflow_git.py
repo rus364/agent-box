@@ -49,7 +49,7 @@ class WorkflowGitTests(unittest.TestCase):
             adapter = Mock()
             adapter.get.return_value = task
             adapter.identity.return_value = {"id": 1}
-            route = {"provider": "claude", "tier": 1, "role": "worker", "model": "exact-model", "effort": "high", "fallbacks": []}
+            route = {"fast": False, "provider": "claude", "tier": 1, "role": "worker", "model": "exact-model", "effort": "high", "fallbacks": []}
             info = {"branch": "ab/task", "base": "main", "writer": "codex"}
             report = Path(temporary) / "report.json"
             report.write_text(json.dumps({"status": "completed", "summary": "Implemented", "evidence": ["Changed code"]}))
@@ -62,7 +62,7 @@ class WorkflowGitTests(unittest.TestCase):
                  patch.object(workflow, "route", return_value=route), patch.object(workflow, "WORKFLOW_STATE", Path(temporary) / "state"):
                 prepared = workflow.dispatch(workflow.parser().parse_args(["prepare", "1", "--primary", "codex", "--execution", "delegated", "--reason", "Git fixture", "--brief", str(brief)]))
                 (root / "change.py").write_text("value = 1\n")
-                result = workflow.dispatch(workflow.parser().parse_args(["report", "1", "--role", "worker", "--primary", "codex", "--provider", "claude", "--model", "exact-model", "--effort", "high", "--file", str(report), "--scope", prepared["scope"], "--handoff", prepared["handoff"]]))
+                result = workflow.dispatch(workflow.parser().parse_args(["report", "1", "--role", "worker", "--primary", "codex", "--provider", "claude", "--model", "exact-model", "--effort", "high", "--fast", "off", "--file", str(report), "--scope", prepared["scope"], "--handoff", prepared["handoff"]]))
                 self.assertEqual(result["route"]["provider"], "claude")
                 # The writer is local evidence; nothing about it reaches the tracker.
                 self.assertEqual(workflow.read_evidence(root, task)["writer"], "claude")
@@ -71,7 +71,7 @@ class WorkflowGitTests(unittest.TestCase):
                 self.assertEqual(workflow.read_evidence(root, task)["writer"], "codex")
                 writer = workflow.read_evidence(root, task)["writer"]
                 from agent_box.routing import select
-                config.workflow.review.tiers["1"] = {provider: {"model": provider + "-model", "effort": "high"} for provider in ("codex", "claude")}
+                config.workflow.review.tiers["1"] = {provider: {"fast": False, "model": provider + "-model", "effort": "high"} for provider in ("codex", "claude")}
                 self.assertEqual(select(config.workflow, "reviewer", 1, "codex", {}, writer=writer)["provider"], "claude")
                 subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
                 subprocess.run(["git", "commit", "-m", "change"], cwd=root, check=True, capture_output=True)
@@ -80,7 +80,7 @@ class WorkflowGitTests(unittest.TestCase):
                 (root / "change.py").write_text("value = 2\n")
                 from agent_box.errors import AgentBoxError
                 with self.assertRaises(AgentBoxError):
-                    workflow.dispatch(workflow.parser().parse_args(["report", "1", "--role", "reviewer", "--primary", "codex", "--provider", "claude", "--model", "exact-model", "--effort", "high", "--file", str(report), "--scope", prepared["scope"], "--handoff", prepared["handoff"]]))
+                    workflow.dispatch(workflow.parser().parse_args(["report", "1", "--role", "reviewer", "--primary", "codex", "--provider", "claude", "--model", "exact-model", "--effort", "high", "--fast", "off", "--file", str(report), "--scope", prepared["scope"], "--handoff", prepared["handoff"]]))
 
     def test_origin_identity_follows_the_url_rewrite_a_push_would_follow(self):
         """`insteadOf` makes `remote.origin.url` and the real destination differ.

@@ -173,6 +173,7 @@ def failure_metadata(route, role):
     def identifier(value):
         return value if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_.:/-]{1,128}", value) else None
     return {**{key: identifier(route.get(key)) for key in ("provider", "model", "effort")},
+            "fast": route.get("fast") if type(route.get("fast")) is bool else None,
             "role": identifier(role), "exit_code": None, "duration_seconds": None,
             "response_source": None, "stdout_bytes": None, "stderr_bytes": None,
             "result_bytes": None, "usage": None, "total_cost_usd": None}
@@ -210,8 +211,8 @@ def save_failure(metadata, directory):
         os.close(fd)
 
 
-def preflight(route):
-    """Check local launch facts without guessing live model or account availability."""
+def check_settings(route):
+    """Reject known unsupported requests before preparation or launch."""
     if route.get("provider") not in ("codex", "claude"):
         raise ProviderFailure("Unsupported managed provider", "unsupported")
     if not route.get("model") or not route.get("effort"):
@@ -220,22 +221,42 @@ def preflight(route):
             "--session-model and --session-effort before dispatch",
             "unsupported",
         )
+    if route.get("mode") == "current-session" and "fast" not in route:
+        raise ProviderFailure("Managed session execution requires verified --session-fast on/off; otherwise use native inheritance", "unsupported")
+    from .fast_mode import configuration_error
+    error = configuration_error(route["provider"], route)
+    if error:
+        raise ProviderFailure(error, "unsupported")
+    if route["provider"] == "claude" and route.get("fast", False):
+        blocked = [name for name in ("CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY",
+                                    "CLAUDE_CODE_DISABLE_FAST_MODE") if os.environ.get(name) not in (None, "", "0", "false")]
+        if blocked:
+            raise ProviderFailure("Claude fast is unsupported with " + ", ".join(blocked), "unsupported")
+
+
+def preflight(route):
+    """Check local launch facts without guessing live model or account availability."""
+    check_settings(route)
     if not shutil.which(route["provider"]):
         raise ProviderFailure(f"Cannot find {route['provider']} CLI", "unavailable")
 
 
 def build_command(route, role, root, schema_path, result_path, read_paths=()):
+    check_settings(route)
     readonly = role != "worker"
     if route["provider"] == "codex":
         command = ["codex", "exec", "--ephemeral", "--ignore-user-config", "--json", "-C", str(root),
                    "--sandbox", "read-only" if readonly else "workspace-write", "--model", route["model"]]
         if route["effort"] != "default":
             command += ["-c", 'model_reasoning_effort=' + json.dumps(route["effort"])]
+        command += ["-c", 'service_tier=' + json.dumps("fast" if route.get("fast", False) else "default"),
+                    "-c", "features.fast_mode=" + str(route.get("fast", False)).lower()]
         command += [*([] if readonly else ["-c", "sandbox_workspace_write.network_access=true"]),
                     "--output-schema", str(schema_path), "-o", str(result_path), "-"]
         return command
     # Excluding Bash prevents a read-only reviewer from gaining shell write access.
-    command = ["claude", "-p", "--model", route["model"]]
+    command = ["claude", "-p", "--model", route["model"],
+               "--settings", json.dumps({"fastMode": route.get("fast", False)})]
     if route["effort"] != "default":
         command += ["--effort", route["effort"]]
     for path in read_paths:

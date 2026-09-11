@@ -22,9 +22,9 @@ class NativePreparationTests(unittest.TestCase):
             root = Path(directory)
             config = Config()
             config.workflow.enabled = True
-            config.workflow.review.tiers["1"]["codex"] = {"model": "review-model", "effort": "high"}
-            config.workflow.review.tiers["1"]["claude"] = {"model": "other-review", "effort": "medium"}
-            config.workflow.tiers["1"]["codex"] = {"model": "worker-model", "effort": "low"}
+            config.workflow.review.tiers["1"]["codex"] = {"fast": False, "model": "review-model", "effort": "high"}
+            config.workflow.review.tiers["1"]["claude"] = {"fast": False, "model": "other-review", "effort": "medium"}
+            config.workflow.tiers["1"]["codex"] = {"fast": False, "model": "worker-model", "effort": "low"}
             profile = root / "codex/agents/ab-reviewer-1.toml"
             with patch("agent_box.paths.CODEX_HOME", root / "codex"), \
                  patch("agent_box.paths.CLAUDE_HOME", root / "claude"), \
@@ -39,10 +39,10 @@ class NativePreparationTests(unittest.TestCase):
                             profile.write_text(profile.read_text().replace('"high"', '"low"'))
                         selected = workflow.route(config.workflow, "reviewer", 1, "claude", "claude")
                         self.assertEqual(selected["native_profile_ready"], ready)
-                        self.assertEqual(selected["native_explicit_settings"], {
+                        self.assertEqual(selected["native_explicit_settings"], {"fast": False,
                             "provider": "codex", "model": "review-model", "effort": "high"})
                         fallback = selected["fallbacks"][0]
-                        self.assertEqual(fallback["native_explicit_settings"], {
+                        self.assertEqual(fallback["native_explicit_settings"], {"fast": False,
                             "provider": "claude", "model": "other-review", "effort": "medium"})
                 config.workflow.review.tiers["1"]["codex"]["effort"] = "default"
                 selected = workflow.route(config.workflow, "reviewer", 1, "claude", "claude")
@@ -67,7 +67,7 @@ class ReviewerMatrixTests(unittest.TestCase):
         from agent_box import cli
         config = Config()
         config.workflow.tiers["1"]["codex"]["model"] = "worker-model"
-        config.workflow.review.tiers["1"]["codex"] = {"model": "review-model", "effort": "default"}
+        config.workflow.review.tiers["1"]["codex"] = {"fast": False, "model": "review-model", "effort": "default"}
         output = io.StringIO()
         with patch.object(cli, "effective_config", return_value=config), \
              patch.object(cli, "_statusline_note", return_value=""), \
@@ -102,14 +102,14 @@ class ReviewerMatrixTests(unittest.TestCase):
         self.assertEqual(set(config.workflow.review.tiers), {"1", "2", "3"})
         for tier in config.workflow.review.tiers.values():
             self.assertEqual(set(tier), {"codex", "claude"})
-            self.assertTrue(all(spec == {"model": "", "effort": "medium"} for spec in tier.values()))
+            self.assertTrue(all(spec == {"fast": False, "model": "", "effort": "medium"} for spec in tier.values()))
 
     def test_review_models_do_not_inherit_workers_and_round_trip_defaults(self):
         config = Config.from_dict({"workflow": {
             "tiers": {"2": {"claude": {"model": "worker"}}},
             "review": {"tiers": {"2": {
-                "claude": {"model": "reviewer", "effort": "default"},
-                "codex": {"model": "fallback", "effort": "high"}}}}}})
+                "claude": {"fast": False, "model": "reviewer", "effort": "default"},
+                "codex": {"fast": False, "model": "fallback", "effort": "high"}}}}}})
         config = Config.from_dict(config.to_dict())
         selected = routing.select(config.workflow, "reviewer", 2, "codex", {})
         self.assertEqual((selected["model"], selected["effort"]), ("reviewer", "default"))
@@ -122,7 +122,7 @@ class ReviewerMatrixTests(unittest.TestCase):
 
     def test_reviewer_effort_is_validated_by_provider(self):
         config = Config.from_dict({"workflow": {"review": {"tiers": {"3": {
-            "claude": {"model": "review", "effort": "ultra"}}}}}})
+            "claude": {"fast": False, "model": "review", "effort": "ultra"}}}}}})
         self.assertTrue(any("workflow.review.tiers.3.claude" in e
                             for e in config.workflow.validate()))
 
@@ -172,17 +172,17 @@ class NativeRouteTests(unittest.TestCase):
     def test_native_worker_saves_the_full_route(self):
         prepared = self.run_workflow("prepare", "1", "--primary", "codex")
         result = self.report_route(prepared)
-        expected = {"provider": "claude", "model": "m", "effort": "high", "tier": 1}
+        expected = {"fast": False, "provider": "claude", "model": "m", "effort": "high", "tier": 1}
         self.assertEqual(result["route"], expected)
         self.assertEqual(workflow.read_evidence(self.root, self.task)["worker"]["route"], expected)
 
     def test_managed_review_fallback_failures_are_kept_with_acceptance(self):
         self.config.workflow.review.policy = "always"
-        selected = {"provider": "claude", "model": "m", "effort": "high", "tier": 1,
+        selected = {"fast": False, "provider": "claude", "model": "m", "effort": "high", "tier": 1,
                     "role": "reviewer", "fallbacks": [
-                        {"provider": "codex", "model": "fallback", "effort": "medium", "tier": 1}]}
+                        {"fast": False, "provider": "codex", "model": "fallback", "effort": "medium", "tier": 1}]}
         failure = workflow.ProviderFailure("Invalid response", "invalid-report")
-        failure.diagnostic = {"model": "m", "effort": "high", "role": "reviewer",
+        failure.diagnostic = {"fast": False, "model": "m", "effort": "high", "role": "reviewer",
                               "stage": "json", "reason": "response is not valid JSON",
                               "artifact": "provider-failures/fixture.json", "exit_code": 0,
                               "duration_seconds": 1.25, "stdout_bytes": 7, "stderr_bytes": 0,
@@ -222,9 +222,9 @@ class NativeRouteTests(unittest.TestCase):
                     save.assert_not_called()
 
     def test_native_review_saves_full_route_and_requires_fallback_reason(self):
-        selected = {"provider": "claude", "model": "m", "effort": "high", "tier": 1,
+        selected = {"fast": False, "provider": "claude", "model": "m", "effort": "high", "tier": 1,
                     "role": "reviewer", "fallbacks": [
-                        {"provider": "codex", "model": "fallback", "effort": "medium", "tier": 1}]}
+                        {"fast": False, "provider": "codex", "model": "fallback", "effort": "medium", "tier": 1}]}
         with patch.object(workflow, "route", return_value=selected):
             prepared = self.run_workflow("prepare", "1", "--role", "reviewer", "--primary", "codex",
                                          "--brief", str(self.review_brief))

@@ -180,6 +180,9 @@ def label_for(key, path=()):
 def help_for(path):
     """Return complete help for every static and generated menu entry."""
     dotted = ".".join(path)
+    if path[0] == "workflow" and path[-1] == "fast":
+        return ("Request faster responses at higher provider usage/cost. Off by default and independent of effort. "
+                "Requires a supported exact model ID and account access. Claude uses managed CLI; native profiles cannot pin fast.")
     if dotted in HELP:
         return HELP[dotted]
     if len(path) == 3 and path[:2] == ("image", "tools"):

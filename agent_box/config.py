@@ -517,7 +517,8 @@ def model_candidates(data=None):
     result = {}
     for provider in AGENT_PROVIDERS:
         spec = _mapping(data.get(provider))
-        result[provider] = {"model": _str(spec, "model"), "effort": _str(spec, "effort") or "medium"}
+        result[provider] = {"model": _str(spec, "model"), "effort": _str(spec, "effort") or "medium",
+                            "fast": spec.get("fast", False)}
     return result
 
 
@@ -664,6 +665,10 @@ class WorkflowConfig:
             for provider, spec in models.items():
                 if spec.get("effort") not in AGENT_EFFORTS.get(provider, ()):
                     errors.append(f"{path}.{provider}: invalid effort")
+                from .fast_mode import configuration_error
+                error = configuration_error(provider, spec)
+                if error:
+                    errors.append(f"{path}.{provider}: {error}")
         return errors
 
     @classmethod

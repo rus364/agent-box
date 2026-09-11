@@ -153,7 +153,7 @@ class DerivedIdentityTests(unittest.TestCase):
 
 def selected_route(_config, role, tier, _primary, _writer=None):
     """What `workflow.route` would return: the delegation it was asked for."""
-    return {"provider": "claude", "model": "m", "effort": "high", "tier": tier, "role": role,
+    return {"fast": False, "provider": "claude", "model": "m", "effort": "high", "tier": tier, "role": role,
             "fallbacks": []}
 
 
@@ -203,6 +203,8 @@ class WorkerHandoffTests(unittest.TestCase):
 
     def run_workflow(self, *argv):
         args = workflow.parser().parse_args(list(argv))
+        if args.command == "report" and args.fast is None:
+            args.fast = "off"
         if args.command in ("prepare", "run") and args.role == "worker" and not getattr(args, "handoff", None):
             tier = workflow.delegation_tier(args, self.task, "worker")
             args.execution = args.execution or ("direct" if tier is None and not self.config.workflow.override_for("worker", tier) else "delegated")
@@ -783,7 +785,7 @@ class WorkerHandoffTests(unittest.TestCase):
                     self.assertIn(f"--scope {prepared['scope']}", prepared["report_command"])
                     self.assertIn("--handoff DESCRIPTOR --file REPORT.json", prepared["report_command"])
                     command = (prepared["report_command"].replace("ACTUAL_PROVIDER", "claude")
-                               .replace("ACTUAL_MODEL", "m").replace("ACTUAL_EFFORT", "high")
+                               .replace("ACTUAL_MODEL", "m").replace("ACTUAL_EFFORT", "high").replace("ACTUAL_ON_OR_OFF", "off")
                                .replace("DESCRIPTOR", prepared["handoff"]))
                     parsed = workflow.parser().parse_args(command.split()[2:])
                     self.assertEqual((parsed.command, parsed.role, parsed.scope),
@@ -821,7 +823,7 @@ class WorkerHandoffTests(unittest.TestCase):
         self.config.workflow.routing = "weighted"
         for provider, other in (("codex", "claude"), ("claude", "codex")):
             override.scope = "untiered"
-            override.models = {p: {"model": p + "-global", "effort": "high"} for p in (provider, other)}
+            override.models = {p: {"fast": False, "model": p + "-global", "effort": "high"} for p in (provider, other)}
             self.config.workflow.weights = {provider: 3, other: 1}
             with patch.object(workflow.shutil, "which", side_effect=lambda name: name), \
                  patch("agent_box.agent_profiles.available") as profile:
@@ -832,7 +834,7 @@ class WorkerHandoffTests(unittest.TestCase):
             self.assertIsNone(route["native_profile"])
             self.assertFalse(route["native_profile_ready"])
             self.assertEqual(route["native_explicit_settings"],
-                             {"provider": provider, "model": provider + "-global", "effort": "high"})
+                             {"fast": False, "provider": provider, "model": provider + "-global", "effort": "high"})
             override.scope = "off"
             override.models[provider]["model"] = "changed"
             argv = ["report", "1", "--role", "worker", "--scope", prepared["scope"],
@@ -844,7 +846,7 @@ class WorkerHandoffTests(unittest.TestCase):
                 self.run_workflow(*argv, "--provider", other, "--model", other + "-global", "--effort", "high")
             result = self.run_workflow(*argv, "--provider", other, "--model", other + "-global",
                                        "--effort", "high", "--fallback-reason", "Preferred provider unavailable")
-            self.assertEqual(result["route"], {"provider": other, "model": other + "-global", "effort": "high", "tier": None})
+            self.assertEqual(result["route"], {"fast": False, "provider": other, "model": other + "-global", "effort": "high", "tier": None})
             self.assertEqual(workflow.read_evidence(self.root, self.task)["worker"]["route"], result["route"])
             self.assertEqual(self.task.labels, [])
 
@@ -1166,7 +1168,7 @@ class WorkerHandoffTests(unittest.TestCase):
         self.config.workflow.weights = {"codex": 3, "claude": 1}
         override = self.config.workflow.worker.override
         override.scope = "untiered"
-        override.models = {p: {"model": p + "-global", "effort": "high"} for p in ("codex", "claude")}
+        override.models = {p: {"fast": False, "model": p + "-global", "effort": "high"} for p in ("codex", "claude")}
 
         def run(candidate, *args, **kwargs):
             if candidate["provider"] == "codex":
@@ -1181,7 +1183,7 @@ class WorkerHandoffTests(unittest.TestCase):
              patch.object(workflow, "run", side_effect=run) as execute:
             result = self.run_workflow("run", "1", "--primary", "codex", "--brief", str(self.review_brief))
         self.assertEqual(execute.call_count, 2)
-        self.assertEqual(result["route"], {"provider": "claude", "model": "claude-global", "effort": "high", "tier": None})
+        self.assertEqual(result["route"], {"fast": False, "provider": "claude", "model": "claude-global", "effort": "high", "tier": None})
         self.assertEqual(result["failures"], [{"provider": "codex", "category": "unavailable"}])
         self.assertEqual(workflow.read_evidence(self.root, self.task)["writer"], "claude")
 
@@ -1190,9 +1192,9 @@ class WorkerHandoffTests(unittest.TestCase):
         self.patches[5].stop()
         override = self.config.workflow.worker.override
         for provider in ("codex", "claude"):
-            override.models[provider] = {"model": provider + "-global", "effort": "default"}
+            override.models[provider] = {"fast": False, "model": provider + "-global", "effort": "default"}
             for tier in ("1", "2"):
-                self.config.workflow.tiers[tier][provider] = {"model": provider + "-tier", "effort": "high"}
+                self.config.workflow.tiers[tier][provider] = {"fast": False, "model": provider + "-tier", "effort": "high"}
             for scope, card, explicit, expected in (
                     ("off", None, None, "session"), ("off", 1, 2, "tier"),
                     ("untiered", 1, 2, "tier"), ("untiered", None, 2, "tier"),
@@ -1203,7 +1205,7 @@ class WorkerHandoffTests(unittest.TestCase):
                 for command in ("prepare", "run"):
                     workflow.evidence_path(self.root, self.task).unlink(missing_ok=True)
                     argv = [command, "1", "--primary", provider, "--brief", str(self.review_brief),
-                            "--session-model", provider + "-session", "--session-effort", "medium"]
+                            "--session-model", provider + "-session", "--session-effort", "medium", "--session-fast", "off"]
                     if explicit:
                         argv += ["--tier", str(explicit)]
                     with self.subTest(provider=provider, scope=scope, card=card, explicit=explicit, command=command), \
@@ -1234,8 +1236,8 @@ class WorkerHandoffTests(unittest.TestCase):
         self.task.labels = []
         self.config.workflow.review.override.scope = "untiered"
         self.config.workflow.review.override.models = {
-            "codex": {"model": "codex-global", "effort": "medium"},
-            "claude": {"model": "claude-global", "effort": "high"}}
+            "codex": {"fast": False, "model": "codex-global", "effort": "medium"},
+            "claude": {"fast": False, "model": "claude-global", "effort": "high"}}
         with patch.object(workflow.shutil, "which", side_effect=lambda name: name), \
              patch("agent_box.agent_profiles.available") as profile:
             prepared = self.run_workflow("prepare", "1", "--role", "reviewer", "--primary", "codex",
@@ -1245,7 +1247,7 @@ class WorkerHandoffTests(unittest.TestCase):
         self.assertEqual((route["provider"], route["model"], route["tier"]), ("claude", "claude-global", None))
         self.assertIsNone(route["native_profile"])
         self.assertFalse(route["native_profile_ready"])
-        self.assertEqual(route["native_explicit_settings"], {"provider": "claude", "model": "claude-global", "effort": "high"})
+        self.assertEqual(route["native_explicit_settings"], {"fast": False, "provider": "claude", "model": "claude-global", "effort": "high"})
         self.config.workflow.review.override.models["claude"]["model"] = "changed-after-prepare"
         self.report.write_text(json.dumps({"verdict": "PASS", "summary": "Reviewed", "findings": []}))
         argv = ["report", "1", "--role", "reviewer", "--scope", prepared["scope"],
@@ -1270,8 +1272,8 @@ class WorkerHandoffTests(unittest.TestCase):
         self.config.workflow.review.routing = "same-provider"
         override = self.config.workflow.review.override
         for provider in ("codex", "claude"):
-            override.models[provider] = {"model": provider + "-global", "effort": "default"}
-            self.config.workflow.review.tiers["2"][provider] = {"model": provider + "-tier", "effort": "high"}
+            override.models[provider] = {"fast": False, "model": provider + "-global", "effort": "default"}
+            self.config.workflow.review.tiers["2"][provider] = {"fast": False, "model": provider + "-tier", "effort": "high"}
         for command in ("run", "review"):
             for provider in ("codex", "claude"):
                 for scope, explicit, expected in (("off", False, "session"),
@@ -1279,7 +1281,7 @@ class WorkerHandoffTests(unittest.TestCase):
                         ("untiered", True, "tier"), ("all", True, "global")):
                     override.scope = scope
                     argv = [command, "1", "--primary", provider, "--brief", str(self.review_brief),
-                            "--session-model", provider + "-session", "--session-effort", "medium"]
+                            "--session-model", provider + "-session", "--session-effort", "medium", "--session-fast", "off"]
                     if command == "run":
                         argv += ["--role", "reviewer"]
                     if explicit:
@@ -1409,7 +1411,7 @@ class WorkerHandoffTests(unittest.TestCase):
         with patch.object(workflow, "route", side_effect=AssertionError("matrix consulted")), \
              patch.object(workflow, "run", return_value={"verdict": "PASS", "summary": "Reviewed", "findings": []}) as run:
             result = self.run_workflow("review", "1", "--primary", "codex",
-                                       "--session-model", "session-only", "--session-effort", "high",
+                                       "--session-model", "session-only", "--session-effort", "high", "--session-fast", "off",
                                        "--brief", str(self.review_brief))
         self.assertEqual(run.call_args.args[0]["model"], "session-only")
         self.assertEqual(run.call_args.args[0]["provider"], "codex")
@@ -2414,7 +2416,7 @@ class SubtaskWorkerHandoffTests(unittest.TestCase):
         scope_value, handoff = handed
         return workflow.dispatch(workflow.parser().parse_args(
             ["report", "2", "--role", "worker", "--primary", "codex", "--provider", "claude",
-             "--model", "m", "--effort", "high",
+             "--model", "m", "--effort", "high", "--fast", "off",
              "--file", str(self.report), "--scope", scope_value, "--handoff", handoff]))
 
     def test_a_subtask_worker_that_only_edited_files_is_still_accepted(self):
@@ -2638,7 +2640,7 @@ class DelegationContractTests(unittest.TestCase):
 
     def test_the_native_profile_states_the_same_contract_as_the_cli_prompt(self):
         from agent_box.agent_profiles import body
-        profile = body("claude", "worker", 1, {"model": "m", "effort": "high"})
+        profile = body("claude", "worker", 1, {"fast": False, "model": "m", "effort": "high"})
         self.assertTrue(self.contract(profile))
         self.assertIn("never write to any of them", profile)
 
@@ -2822,7 +2824,7 @@ class DelegationContextTests(unittest.TestCase):
     def test_claude_delegation_keeps_the_isolated_safe_mode_context(self):
         """Safe mode is why the instructions must travel; it stays deliberately on."""
         from agent_box.provider_runner import build_command
-        command = build_command({"provider": "claude", "model": "m", "effort": "high"},
+        command = build_command({"fast": False, "provider": "claude", "model": "m", "effort": "high"},
                                 "worker", Path("/tmp"), Path("/nonexistent"), Path("/tmp/out"))
         self.assertIn("--safe-mode", command)
 

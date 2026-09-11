@@ -394,6 +394,7 @@ def config_show() -> None:
         print(f"    worker/scout tier {tier}: {models}{suffix}")
     for tier, models in config.workflow.review.tiers.items():
         print(f"    reviewer tier {tier}: {models}")
+    print("    fast                      requested speed, not delivered service; Claude native needs verified inherited off, otherwise managed CLI")
     print(f"  Agent browser (containers)  {'on' if config.browser.enabled else 'off'}{_browser_note(config)}")
     forwarded = ", ".join(config.env.forward) or "(none)"
     print(f"  Forwarded env variables     {forwarded}")

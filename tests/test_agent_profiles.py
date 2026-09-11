@@ -27,8 +27,8 @@ class AgentProfileTests(unittest.TestCase):
                     elif role == "reviewer":
                         self.assertIn("Review findings require location, evidence and violated requirement", instructions)
 
-    def test_forced_parent_model_cannot_be_proven_by_an_exact_claude_profile(self):
-        """Claude can force the parent model even without SUBAGENT_MODEL being set."""
+    def test_claude_profile_cannot_pin_speed_or_override_forced_parent_model(self):
+        """Claude profiles lack independent speed control even without a forced parent model."""
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             config = Config()
@@ -38,7 +38,7 @@ class AgentProfileTests(unittest.TestCase):
             sync(config, root / "codex", root / "claude")
             with patch("agent_box.paths.CLAUDE_HOME", root / "claude"), \
                  patch.dict(os.environ, {}, clear=True):
-                self.assertTrue(available("claude", "worker", 1, spec))
+                self.assertFalse(available("claude", "worker", 1, spec))
                 with patch.dict(os.environ, {"CLAUDE_CODE_SUBAGENT_MODEL_FORCE": "1"}):
                     self.assertFalse(available("claude", "worker", 1, spec))
 
