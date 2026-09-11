@@ -1434,8 +1434,6 @@ def worker_dispatch(args, root, binding, adapter, task, config):
         report += ["--tier", str(tier)]
     report += (["--session-inherited"] if selected["model"] is None else
                ["--model", "ACTUAL_MODEL", "--effort", "ACTUAL_EFFORT"])
-    if any(candidate.get("fast") for candidate in [selected, *selected["fallbacks"]]):
-        report += ["--fast", "ACTUAL_ON_OR_OFF"]
     result = {"scope": fingerprint, "route": selected, "execution": decision, **scout_diagnostics(config),
               "action": "work-in-current-session" if choice == "direct" else "delegate",
               "task": {"id": task.id, "title": task.title, "state": task.state, "tier": task.tier},
@@ -1490,14 +1488,13 @@ def scout_dispatch(args, root, binding, adapter, task, config):
         except BaseException:
             cleanup_delegation_input(root, descriptor)
             raise
-        fast_report = " --fast ACTUAL_ON_OR_OFF" if any(candidate.get("fast") for candidate in [selected, *selected["fallbacks"]]) else ""
         return {"scope": fingerprint, "route": selected, "handoff": token,
                 "task": {"id": task.id, "title": task.title, "state": task.state, "tier": task.tier},
                 "delegate_handoff": bootstrap("scout", descriptor["input"]), "context_policy": context_policy(),
                 "report_schema": report_schema("scout"), **scout_diagnostics(config),
                 "managed_command": shlex.join(["agent-box", "workflow", "run", task.id, "--role", "scout",
                                                 "--tier", str(tier), "--handoff", token, "--brief", args.brief]),
-                "report_command": f"agent-box workflow report {task.id} --role scout --tier {tier} --scope {fingerprint} --provider ACTUAL_PROVIDER --model ACTUAL_MODEL --effort ACTUAL_EFFORT{fast_report} --handoff DESCRIPTOR --file REPORT.json",
+                "report_command": f"agent-box workflow report {task.id} --role scout --tier {tier} --scope {fingerprint} --provider ACTUAL_PROVIDER --model ACTUAL_MODEL --effort ACTUAL_EFFORT --handoff DESCRIPTOR --file REPORT.json",
                 "instructions": "Only the coordinator dispatches distinct bounded questions; never duplicate scouts. Count active native scouts against scout_limit; preparation reserves no native slot. " + LAUNCH_CONTEXT}
     if not getattr(args, "handoff", None):
         raise AgentBoxError("Scout execution requires --handoff from prepare")
@@ -1720,8 +1717,6 @@ def dispatch(args):
                 report_command.append("--session-inherited")
             else:
                 report_command.extend(("--model", "ACTUAL_MODEL", "--effort", "ACTUAL_EFFORT"))
-            if any(candidate.get("fast") for candidate in [selected, *selected["fallbacks"]]):
-                report_command.extend(("--fast", "ACTUAL_ON_OR_OFF"))
             if role == "reviewer":
                 report_command.append("--fresh-context")
             report_command.extend(("--scope", fingerprint, "--handoff", "DESCRIPTOR", "--file", "REPORT.json"))

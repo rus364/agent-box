@@ -742,7 +742,8 @@ Support checked 2026-09-11:
 - Native worker, scout and reviewer remain available when fast is false, with
   their original profiles and no speed assertion in the report. When true,
   verify fast through effective profile settings, explicit live tool parameters,
-  or verified inherited speed and report `--fast on`. Codex's priority service
+  or verified inherited speed. Append `--fast on` to the shared report command
+  only for the candidate that actually ran and requests fast. Codex's priority service
   tier represents Fast. Claude profiles cannot independently pin speed, but
   remain installed and usable with verified inherited fast. Profile presence
   alone does not prove fast; use managed CLI only when the requested fast cannot

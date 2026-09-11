@@ -147,6 +147,29 @@ class FastModeTests(unittest.TestCase):
         self.assertFalse(run.call_args_list[1].args[0]['fast'])
         self.assertFalse(result['route']['fast'])
 
+    def test_mixed_native_reports_require_speed_only_for_the_candidate_that_ran(self):
+        """A primary's speed policy must not constrain its fallback, or vice versa."""
+        for role in ('worker', 'scout', 'reviewer'):
+            for primary_fast in (False, True):
+                with self.subTest(role=role, primary_fast=primary_fast), tempfile.TemporaryDirectory() as directory:
+                    report = Path(directory) / 'report.json'
+                    payload = ({'verdict': 'PASS', 'summary': 'Reviewed', 'findings': []} if role == 'reviewer' else
+                               {'status': 'completed', 'summary': 'Done', 'evidence': []})
+                    report.write_text(json.dumps(payload))
+                    fallback = dict(provider='claude', model='claude-opus-5', effort='high', tier=1, fast=not primary_fast)
+                    selected = dict(provider='codex', model='gpt-6-astra', effort='high', tier=1,
+                                    fast=primary_fast, fallbacks=[fallback])
+                    for index, candidate in enumerate((selected, fallback)):
+                        args = argparse.Namespace(provider=candidate['provider'], model=candidate['model'], effort='high',
+                            fast=None, role=role, fresh_context=True, file=str(report),
+                            fallback_reason='Primary unavailable' if index else None)
+                        if candidate['fast']:
+                            with self.assertRaisesRegex(AgentBoxError, '--fast on'):
+                                workflow.native_output(args, selected, 1)
+                            args.fast = 'on'
+                        result = workflow.native_output(args, selected, 1)
+                        self.assertEqual(result['route']['fast'], candidate['fast'])
+
     def test_native_profiles_request_codex_fast_and_preserve_claude_with_inheritance_notice(self):
         """Claude profiles remain usable when fast is verified through session inheritance."""
         config = Config()

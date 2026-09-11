@@ -129,6 +129,27 @@ class NativeRouteTests(unittest.TestCase):
     setUp = handoff_tests.WorkerHandoffTests.setUp
     run_workflow = handoff_tests.WorkerHandoffTests.run_workflow
 
+    def test_mixed_speed_routes_do_not_put_candidate_specific_flags_in_shared_reports(self):
+        """A fast fallback must not impose speed assertions on a default-speed primary."""
+        for role in ('reviewer', 'scout', 'worker'):
+            for primary_fast in (False, True):
+                with self.subTest(role=role, primary_fast=primary_fast):
+                    selected = handoff_tests.selected_route(None, role, 1, 'codex')
+                    selected.update(model='claude-opus-5', fast=primary_fast, fallbacks=[{
+                        'provider': 'codex', 'model': 'gpt-6-astra', 'effort': 'high',
+                        'tier': 1, 'fast': not primary_fast}])
+                    extra = ['--question', 'Which file implements routing?'] if role == 'scout' else []
+                    with patch.object(workflow, 'route', return_value=selected):
+                        prepared = self.run_workflow('prepare', '1', '--role', role, '--primary', 'codex',
+                                                    '--brief', str(self.review_brief), *extra)
+                    self.assertNotIn('--fast ', prepared['report_command'])
+                    self.assertIn('candidate that ran requests fast', prepared['instructions'])
+                    if role == 'worker':
+                        self.run_workflow('report', '1', '--role', role, '--provider', 'claude',
+                            '--model', 'claude-opus-5', '--effort', 'high', '--file', str(self.report),
+                            '--scope', prepared['scope'], '--handoff', prepared['handoff'],
+                            *(['--fast', 'on'] if primary_fast else []))
+
     def test_missing_profile_does_not_require_cli_when_explicit_spawn_is_enforced(self):
         """Profile readiness is one option, not permission to reject exact tool settings."""
         selected = handoff_tests.selected_route(None, "worker", 1, "codex")

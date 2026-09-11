@@ -784,7 +784,7 @@ class WorkerHandoffTests(unittest.TestCase):
                     self.assertIn(f"--scope {prepared['scope']}", prepared["report_command"])
                     self.assertIn("--handoff DESCRIPTOR --file REPORT.json", prepared["report_command"])
                     command = (prepared["report_command"].replace("ACTUAL_PROVIDER", "claude")
-                               .replace("ACTUAL_MODEL", "m").replace("ACTUAL_EFFORT", "high").replace("ACTUAL_ON_OR_OFF", "off")
+                               .replace("ACTUAL_MODEL", "m").replace("ACTUAL_EFFORT", "high")
                                .replace("DESCRIPTOR", prepared["handoff"]))
                     parsed = workflow.parser().parse_args(command.split()[2:])
                     self.assertEqual((parsed.command, parsed.role, parsed.scope),
