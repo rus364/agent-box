@@ -39,11 +39,9 @@ class NativePreparationTests(unittest.TestCase):
                             profile.write_text(profile.read_text().replace('"high"', '"low"'))
                         selected = workflow.route(config.workflow, "reviewer", 1, "claude", "claude")
                         self.assertEqual(selected["native_profile_ready"], ready)
-                        self.assertEqual(selected["native_explicit_settings"], {"fast": False,
-                            "provider": "codex", "model": "review-model", "effort": "high"})
+                        self.assertEqual(selected["native_explicit_settings"], {"provider": "codex", "model": "review-model", "effort": "high"})
                         fallback = selected["fallbacks"][0]
-                        self.assertEqual(fallback["native_explicit_settings"], {"fast": False,
-                            "provider": "claude", "model": "other-review", "effort": "medium"})
+                        self.assertEqual(fallback["native_explicit_settings"], {"provider": "claude", "model": "other-review", "effort": "medium"})
                 config.workflow.review.tiers["1"]["codex"]["effort"] = "default"
                 selected = workflow.route(config.workflow, "reviewer", 1, "claude", "claude")
                 self.assertFalse(selected["native_profile_ready"])
@@ -148,6 +146,7 @@ class NativeRouteTests(unittest.TestCase):
         """Exact model/effort cannot make a reused reviewer independent."""
         prepared = self.run_workflow("prepare", "1", "--role", "reviewer", "--primary", "codex",
                                      "--brief", str(self.review_brief))
+        self.assertNotIn("--fast ", prepared["report_command"])
         self.report.write_text(json.dumps({"verdict": "PASS", "summary": "Fine", "findings": []}))
         with patch.object(workflow, "save_evidence") as save:
             with self.assertRaisesRegex(AgentBoxError, "fresh-context"):

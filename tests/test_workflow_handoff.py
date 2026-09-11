@@ -203,8 +203,6 @@ class WorkerHandoffTests(unittest.TestCase):
 
     def run_workflow(self, *argv):
         args = workflow.parser().parse_args(list(argv))
-        if args.command == "report" and args.fast is None:
-            args.fast = "off"
         if args.command in ("prepare", "run") and args.role == "worker" and not getattr(args, "handoff", None):
             tier = workflow.delegation_tier(args, self.task, "worker")
             args.execution = args.execution or ("direct" if tier is None and not self.config.workflow.override_for("worker", tier) else "delegated")
@@ -782,6 +780,7 @@ class WorkerHandoffTests(unittest.TestCase):
                     prompt = self.delegation_input(prepared).read_bytes().decode("utf-8")
                     self.assertEqual(set(prepared["task"]), {"id", "title", "state", "tier"})
                     self.assertIn(f"workflow report 1 --role {role}", prepared["report_command"])
+                    self.assertNotIn("--fast ", prepared["report_command"])
                     self.assertIn(f"--scope {prepared['scope']}", prepared["report_command"])
                     self.assertIn("--handoff DESCRIPTOR --file REPORT.json", prepared["report_command"])
                     command = (prepared["report_command"].replace("ACTUAL_PROVIDER", "claude")
@@ -834,7 +833,7 @@ class WorkerHandoffTests(unittest.TestCase):
             self.assertIsNone(route["native_profile"])
             self.assertFalse(route["native_profile_ready"])
             self.assertEqual(route["native_explicit_settings"],
-                             {"fast": False, "provider": provider, "model": provider + "-global", "effort": "high"})
+                             {"provider": provider, "model": provider + "-global", "effort": "high"})
             override.scope = "off"
             override.models[provider]["model"] = "changed"
             argv = ["report", "1", "--role", "worker", "--scope", prepared["scope"],
@@ -1205,7 +1204,7 @@ class WorkerHandoffTests(unittest.TestCase):
                 for command in ("prepare", "run"):
                     workflow.evidence_path(self.root, self.task).unlink(missing_ok=True)
                     argv = [command, "1", "--primary", provider, "--brief", str(self.review_brief),
-                            "--session-model", provider + "-session", "--session-effort", "medium", "--session-fast", "off"]
+                            "--session-model", provider + "-session", "--session-effort", "medium"]
                     if explicit:
                         argv += ["--tier", str(explicit)]
                     with self.subTest(provider=provider, scope=scope, card=card, explicit=explicit, command=command), \
@@ -1247,7 +1246,7 @@ class WorkerHandoffTests(unittest.TestCase):
         self.assertEqual((route["provider"], route["model"], route["tier"]), ("claude", "claude-global", None))
         self.assertIsNone(route["native_profile"])
         self.assertFalse(route["native_profile_ready"])
-        self.assertEqual(route["native_explicit_settings"], {"fast": False, "provider": "claude", "model": "claude-global", "effort": "high"})
+        self.assertEqual(route["native_explicit_settings"], {"provider": "claude", "model": "claude-global", "effort": "high"})
         self.config.workflow.review.override.models["claude"]["model"] = "changed-after-prepare"
         self.report.write_text(json.dumps({"verdict": "PASS", "summary": "Reviewed", "findings": []}))
         argv = ["report", "1", "--role", "reviewer", "--scope", prepared["scope"],
@@ -1281,7 +1280,7 @@ class WorkerHandoffTests(unittest.TestCase):
                         ("untiered", True, "tier"), ("all", True, "global")):
                     override.scope = scope
                     argv = [command, "1", "--primary", provider, "--brief", str(self.review_brief),
-                            "--session-model", provider + "-session", "--session-effort", "medium", "--session-fast", "off"]
+                            "--session-model", provider + "-session", "--session-effort", "medium"]
                     if command == "run":
                         argv += ["--role", "reviewer"]
                     if explicit:
@@ -1411,7 +1410,7 @@ class WorkerHandoffTests(unittest.TestCase):
         with patch.object(workflow, "route", side_effect=AssertionError("matrix consulted")), \
              patch.object(workflow, "run", return_value={"verdict": "PASS", "summary": "Reviewed", "findings": []}) as run:
             result = self.run_workflow("review", "1", "--primary", "codex",
-                                       "--session-model", "session-only", "--session-effort", "high", "--session-fast", "off",
+                                       "--session-model", "session-only", "--session-effort", "high",
                                        "--brief", str(self.review_brief))
         self.assertEqual(run.call_args.args[0]["model"], "session-only")
         self.assertEqual(run.call_args.args[0]["provider"], "codex")

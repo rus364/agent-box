@@ -17,8 +17,9 @@ def body(provider, role, tier, spec):
         fields = {"name": name, "description": f"Configured agent-box {role}, tier {tier}", "model": spec["model"],
                   "model_reasoning_effort": spec["effort"], "sandbox_mode": "workspace-write" if role == "worker" else "read-only",
                   "developer_instructions": instructions}
-        fields["service_tier"] = "fast" if spec.get("fast", False) else "default"
-        fields["features.fast_mode"] = spec.get("fast", False)
+        if spec.get("fast", False):
+            fields["service_tier"] = "fast"
+            fields["features.fast_mode"] = True
         if spec["effort"] == "default":
             fields.pop("model_reasoning_effort")
         return "\n".join(f"{key} = {json.dumps(value)}" for key, value in fields.items()) + "\n"
@@ -59,8 +60,7 @@ def sync(config, codex_home, claude_home):
                     messages.append(f"{path.name}: {error}; native profile disabled")
                     enabled = False
                 if enabled and provider == "claude" and spec.get("fast", False):
-                    messages.append(f"{path.name}: {native_limitation(provider)}")
-                    enabled = False
+                    messages.append(f"{path.name}: {native_limitation(provider, True)}")
                 if not enabled:
                     if intact:
                         path.unlink()
@@ -79,10 +79,16 @@ def available(provider, role, tier, spec):
     Project/custom agents can shadow this file and explicit spawn can work
     without it. Neither capability is discoverable from the host profile.
     """
+    import os
     from .paths import CODEX_HOME, CLAUDE_HOME
     # A native subagent may inherit the coordinator's effort when its profile
     # omits the field, so only the managed CLI can promise the configured default.
-    if spec["effort"] == "default" or native_limitation(provider):
+    if spec["effort"] == "default" or native_limitation(provider, spec.get("fast", False)):
+        return False
+    if provider == "claude" and (os.environ.get("CLAUDE_CODE_SAFE_MODE") or
+            os.environ.get("CLAUDE_CODE_SUBAGENT_MODEL_FORCE") or
+            os.environ.get("CLAUDE_CODE_SUBAGENT_MODEL", spec["model"]) != spec["model"] or
+            os.environ.get("CLAUDE_CODE_EFFORT_LEVEL", spec["effort"]) != spec["effort"]):
         return False
     home = CODEX_HOME if provider == "codex" else CLAUDE_HOME
     path = home / "agents" / (f"ab-{role}-{tier}" + (".toml" if provider == "codex" else ".md"))

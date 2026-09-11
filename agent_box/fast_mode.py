@@ -18,7 +18,7 @@ def configuration_error(provider, spec):
     return None
 
 
-def native_limitation(provider):
-    if provider == "claude":
-        return "Claude native profiles cannot independently pin fast on/off; use managed CLI unless inherited off is verified"
+def native_limitation(provider, fast=False):
+    if provider == "claude" and fast:
+        return "Claude native profiles inherit speed; verify inherited fast or use managed CLI to request it"
     return None

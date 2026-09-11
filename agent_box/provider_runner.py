@@ -221,8 +221,6 @@ def check_settings(route):
             "--session-model and --session-effort before dispatch",
             "unsupported",
         )
-    if route.get("mode") == "current-session" and "fast" not in route:
-        raise ProviderFailure("Managed session execution requires verified --session-fast on/off; otherwise use native inheritance", "unsupported")
     from .fast_mode import configuration_error
     error = configuration_error(route["provider"], route)
     if error:
@@ -249,14 +247,15 @@ def build_command(route, role, root, schema_path, result_path, read_paths=()):
                    "--sandbox", "read-only" if readonly else "workspace-write", "--model", route["model"]]
         if route["effort"] != "default":
             command += ["-c", 'model_reasoning_effort=' + json.dumps(route["effort"])]
-        command += ["-c", 'service_tier=' + json.dumps("fast" if route.get("fast", False) else "default"),
-                    "-c", "features.fast_mode=" + str(route.get("fast", False)).lower()]
+        if route.get("fast", False):
+            command += ["-c", 'service_tier="fast"', "-c", "features.fast_mode=true"]
         command += [*([] if readonly else ["-c", "sandbox_workspace_write.network_access=true"]),
                     "--output-schema", str(schema_path), "-o", str(result_path), "-"]
         return command
     # Excluding Bash prevents a read-only reviewer from gaining shell write access.
-    command = ["claude", "-p", "--model", route["model"],
-               "--settings", json.dumps({"fastMode": route.get("fast", False)})]
+    command = ["claude", "-p", "--model", route["model"]]
+    if route.get("fast", False):
+        command += ["--settings", '{"fastMode":true}']
     if route["effort"] != "default":
         command += ["--effort", route["effort"]]
     for path in read_paths:

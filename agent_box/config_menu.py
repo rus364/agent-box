@@ -68,8 +68,8 @@ HELP = {
     "workflow.timeout_seconds": "Maximum delegated agent runtime in seconds, from 30 through 86400.",
     "workflow.worker": "Worker execution preference and model source. Delegated provider routing is shared with scouts; reviewer settings stay independent.",
     "workflow.worker.execution": "Worker execution policy: auto requires the coordinator to choose with a reason; direct works in the active session; delegated launches a bounded worker assignment.",
-    "workflow.worker.override": "Optional global worker models for Codex and Claude. Replaces only model/effort candidates; reviewer and scout settings stay independent.",
-    "workflow.worker.override.scope": "Off uses session/tier models; untiered replaces only session models; all also replaces explicit tier models. Selects model/effort only, without changing execution, provider routing or task tier.",
+    "workflow.worker.override": "Optional global worker models for Codex and Claude. Replaces model/effort/fast candidates; reviewer and scout settings stay independent.",
+    "workflow.worker.override.scope": "Off uses session/tier models; untiered replaces only session models; all also replaces explicit tier models. Selects model/effort/fast, without changing execution, provider routing or task tier.",
     "workflow.worker.override.models": "Independent global worker candidates. Empty models disable candidates; provider policy and fallback use only these candidates, with no return to session/tier models.",
     "workflow.review": "Independent review routing, thresholds, provider selection, and reviewer candidates. Worker tier settings are never inherited.",
     "workflow.review.tiers": "Independent reviewer candidates for tiers 1-3. An empty model explicitly disables that provider candidate.",
@@ -181,8 +181,8 @@ def help_for(path):
     """Return complete help for every static and generated menu entry."""
     dotted = ".".join(path)
     if path[0] == "workflow" and path[-1] == "fast":
-        return ("Request faster responses at higher provider usage/cost. Off by default and independent of effort. "
-                "Requires a supported exact model ID and account access. Claude uses managed CLI; native profiles cannot pin fast.")
+        return ("Request faster responses at higher provider usage/cost. Off preserves provider/native defaults. Independent of effort. "
+                "On requires a supported exact model ID and account access. Claude native needs verified inherited fast; otherwise use managed CLI.")
     if dotted in HELP:
         return HELP[dotted]
     if len(path) == 3 and path[:2] == ("image", "tools"):
@@ -198,7 +198,7 @@ def help_for(path):
     if len(path) == 3 and path[:2] == ("workflow", "tiers"):
         return f"Worker and scout tier {path[-1]} candidates for Codex and Claude. Tier 0 is used only by scouts."
     if len(path) == 4 and path[:2] == ("workflow", "tiers"):
-        return f"{path[-1].title()} candidate for worker and scout tier {path[-2]}. Configure model and effort independently."
+        return f"{path[-1].title()} candidate for worker and scout tier {path[-2]}. Configure model, effort and fast independently."
     if len(path) == 5 and path[:2] == ("workflow", "tiers"):
         subject = f"{path[-2].title()} worker and scout candidate"
         return (f"Model for the {subject}. Choose a suggestion, enter any supported ID, or disable this candidate." if path[-1] == "model" else f"Reasoning effort for the {subject}. Default omits agent-box's effort override.")

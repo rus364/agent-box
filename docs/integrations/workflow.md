@@ -716,44 +716,47 @@ change normative requirements and reviewer handoffs remain independent.
 ## Fast mode
 
 `fast` is an independent boolean in each worker/scout tier, reviewer tier and
-worker/reviewer override candidate. Enable it through the existing candidate's
-**Fast** menu entry. Fallbacks keep their own setting. It changes neither model,
-effort, provider selection nor review policy. It requests speed at higher usage
-or cost; `fast: true` in a route records the request, not delivered service.
+worker/reviewer override candidate. It defaults to `false`: agent-box adds no
+speed override or native capability requirement, preserving existing provider
+and session behavior. This does not turn off fast already selected by the user
+in the provider. Enable a request through the candidate's **Fast** menu entry.
+Fallbacks keep their own request. It changes neither model, effort, provider
+selection nor review policy. `fast: true` records a higher-speed request at
+higher usage/cost, not delivered service.
 
 Support checked 2026-09-11:
 
 - Codex: exact IDs `gpt-6-astra`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`,
-  `gpt-5.6`, `gpt-5.5`, `gpt-5.4`. CLI and native profiles set `service_tier="fast"`
-  and `features.fast_mode=true`; off explicitly sets `default` and disables the
-  feature. Spark is a separate model, not this setting. Source:
-  [Codex speed](https://learn.chatgpt.com/docs/agent-configuration/speed) and
+  `gpt-5.6`, `gpt-5.5`, `gpt-5.4`. When requested, CLI and native profiles set
+  `service_tier="fast"` and `features.fast_mode=true`. False leaves the original
+  CLI/profile fields unchanged. Spark is a separate model, not this setting.
+  Sources: [Codex speed](https://learn.chatgpt.com/docs/agent-configuration/speed),
   [configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference).
-  Local Codex 0.154.0 catalog also advertises Fast for Astra/Sol/Terra/Luna/5.5.
-- Claude: exact IDs `claude-opus-5` and `claude-opus-4-8`, through managed
-  `claude -p --settings '{"fastMode":true}'`; off explicitly passes false.
-  Unverified aliases and other models are rejected to prevent an automatic
-  model switch. Requires provider/account access and usage credits or paid API
-  access; third-party cloud backends are unsupported. Source:
+  Local Codex 0.154.0 catalog advertises priority/Fast for Astra/Sol/Terra/Luna/5.5.
+- Claude: exact IDs `claude-opus-5` and `claude-opus-4-8`. Managed CLI requests
+  `claude -p --settings '{"fastMode":true}'`; false adds no settings override.
+  Unverified aliases and other models are rejected to prevent automatic model
+  switches. Requires account access and usage credits or paid API access;
+  third-party cloud backends are unsupported. Source:
   [Claude fast mode](https://code.claude.com/docs/en/fast-mode).
-- Claude native frontmatter cannot pin fast independently. Fast candidates get
-  no native profile; an intact previously owned profile is removed on apply.
-  Off candidates can use native only when the coordinator verifies that the
-  actual inherited setting is off; profile presence alone is insufficient.
-  Otherwise use the prepared managed command. Native reports must affirm
-  `--fast on|off` and match the prepared candidate. A live Codex tool must expose
-  the exact service tier or an effective installed profile; model/effort alone
-  cannot prove fast.
+- Native worker, scout and reviewer remain available when fast is false, with
+  their original profiles and no speed assertion in the report. When true,
+  verify fast through effective profile settings, explicit live tool parameters,
+  or verified inherited speed and report `--fast on`. Codex's priority service
+  tier represents Fast. Claude profiles cannot independently pin speed, but
+  remain installed and usable with verified inherited fast. Profile presence
+  alone does not prove fast; use managed CLI only when the requested fast cannot
+  be established natively. Model/effort and fresh-context checks still apply.
 
-Direct execution and native untiered session inheritance keep the current
-session's speed. To reproduce a session in managed CLI, supply verified
-`--session-model`, `--session-effort` and `--session-fast on|off`. Unknown session
-speed requires native inheritance. Ordinary interactive launcher commands keep
-provider-owned settings and user CLI arguments; workflow matrices do not change
-the coordinator's session. GitHub-hosted reviews have no independent fast
-control here; use local workflow review for configured speed.
+Direct execution, native session inheritance, and managed untiered session
+routes retain their previous behavior. Ordinary interactive launcher commands
+keep provider-owned settings and user CLI arguments; workflow matrices do not
+change the coordinator's session. GitHub-hosted reviews have no independent
+fast control here; use local workflow review for configured speed.
 
-The provider can deny or downgrade a request due to account access, limits,
-policy or CLI support. Tests prove configuration and request construction,
-not account entitlement or actual acceleration. No billing settings are changed,
-provider checks bypassed, or paid fast smoke runs performed by config/apply.
+Config apply validates candidates before creating native profiles; invalid fast
+combinations disable only intact owned profiles, preserving user edits. The
+provider can deny or downgrade a request due to access, limits, policy or CLI
+support. Tests prove configuration and request construction, not account
+entitlement or acceleration. Config/apply does not change billing settings,
+bypass provider checks or run paid fast inference.
