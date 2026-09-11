@@ -187,6 +187,9 @@ mean handing the container your entire host environment.
 
 ```bash
 agent-box --host claude
+agent-box --host codex
+agent-box --host attach       # return to a host session in this project
+agent-box --host stop         # end this project's agent-box host sessions
 ```
 
 Runs the installed CLI directly, with your normal host environment and
@@ -195,6 +198,28 @@ parent-branch push policy are shared with container mode. The
 [agent browser](docs/integrations/browser.md) is not: it is a capability of the
 workspace image, and agent-box never rewrites your host agent configuration to
 fake one.
+
+Interactive host sessions use an installed `tmux` with agent-box's private
+configuration and one private server per project. They survive a closed
+terminal; detach with `Ctrl-\ d` and return with `agent-box --host attach`
+(optionally followed by a session name). Each launch receives its own current
+environment and working directory. `--host stop` affects only that project's
+agent-box host server, leaving other projects and your own tmux servers alone.
+Without tmux, the CLI starts directly with a short notice. `AGENT_BOX_TMUX=0`,
+pipes, redirects and noninteractive commands such as `claude -p` and `codex exec`
+also use direct execution. Agent-box never installs tmux at launch.
+
+| Area | Host responsibility / agent-box behavior |
+| --- | --- |
+| CLI, tools and authentication | You install and authenticate them; normal host file and network access applies. |
+| Main CLI permissions | Native CLI settings and your explicit arguments; no added permission/sandbox bypass. |
+| Tracker, workflow, project settings | Shared policy and a per-session configuration snapshot. Managed delegates retain workflow's role-specific policy. |
+| Environment and Git/gh | Inherited host environment plus explicit env settings; container credential-forwarding switches do not restrict host access. |
+| Skills and owned integrations | Applied by `config` / `config apply`; launching does not rewrite user configuration. Existing host plugins remain under the CLI's configuration. |
+| Image, mounts, browser, shell/doctor | Container-only. Host tooling is not provisioned from the image. |
+
+Telegram control and notifications have their own integration contract; see
+[Telegram](docs/integrations/telegram.md).
 
 ## Configuration
 

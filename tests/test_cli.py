@@ -78,6 +78,24 @@ class ParseGlobalArgsTests(unittest.TestCase):
         self.assertEqual(rest, ["codex"])
 
 
+class HostSessionDispatchTests(unittest.TestCase):
+    def test_host_attach_and_stop_never_dispatch_to_container_commands(self):
+        """The explicit mode must survive CLI dispatch without touching Podman."""
+        from agent_box import cli, project_config, runtime
+        for command, args in (("attach", ["codex-123"]), ("stop", [])):
+            with unittest.mock.patch.object(project_config, "load", return_value={}), \
+                 unittest.mock.patch("sys.argv", ["agent-box", "--host", command, *args]), \
+                 unittest.mock.patch.object(runtime, "host_session_main", return_value=7) as host, \
+                 unittest.mock.patch.object(runtime, "attach_main") as attach, \
+                 unittest.mock.patch.object(runtime, "stop_main") as stop, \
+                 self.assertRaises(SystemExit) as result:
+                cli.main()
+            self.assertEqual(result.exception.code, 7)
+            host.assert_called_once_with(args, stop=command == "stop")
+            attach.assert_not_called()
+            stop.assert_not_called()
+
+
 
 
 class NotifyCodexDispatchTests(unittest.TestCase):

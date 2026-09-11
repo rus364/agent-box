@@ -20,6 +20,7 @@ import socket
 import subprocess
 import sys
 import time
+import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -50,6 +51,8 @@ from .paths import (
     CONTAINER_POLICY_RUNTIME_DIR,
     CONTAINER_WORKFLOW_STATE,
     HOST_HOME,
+    HOST_SESSIONS_ROOT,
+    HOST_SESSION_RUNNER,
     MANAGED_SKILLS_SOURCE,
     NOTIFY_CREDENTIALS,
     NOTIFY_STATE_ROOT,
@@ -1717,7 +1720,8 @@ class TmuxSession:
     name: str
     status_path: Path
 
-    def wrap(self, command: list[str]) -> list[str]:
+    def wrap(self, command: list[str], *, host_root: Path | None = None,
+             cwd: Path | None = None) -> list[str]:
         # tmux reports its own exit status, not the wrapped program's, and
         # returns 0 for a detach as well as for a finished session. The inner
         # shell records the real status in the workspace's runtime state --
@@ -1726,8 +1730,9 @@ class TmuxSession:
         # `finish` tells a detached session from a finished one.
         recorder = 'status=$1; shift; "$@"; printf %s "$?" >"$status"'
         return tmux_argv(
-            "new-session", "-s", self.name, "--",
+            "new-session", "-s", self.name, *(["-c", str(cwd)] if cwd is not None else []), "--",
             "bash", "-c", recorder, "agent-box-session", str(self.status_path), *command,
+            host_root=host_root,
         )
 
     def recorded_status(self) -> int | None:
@@ -1739,18 +1744,23 @@ class TmuxSession:
             self.status_path.unlink(missing_ok=True)
         return int(recorded) if recorded.isdigit() else None
 
-    def finish(self, container: str, rc: int) -> int:
+    def finish(self, container: str | None, rc: int, *, host_root: Path | None = None) -> int:
         """Translate the tmux client's exit into the launch's own exit."""
         recorded = self.recorded_status()
         if recorded is not None:
             return recorded
         if rc in {126, 127}:
-            warn("this workspace image has no tmux; run 'agent-box build'")
+            warn("tmux could not start on the host" if host_root is not None else
+                 "this workspace image has no tmux; run 'agent-box build'")
             return rc
-        if tmux_session_exists(container, self.name):
+        exists = (tmux_session_exists(container, self.name) if host_root is None else
+                  tmux_session_exists(container, self.name, host_root=host_root))
+        if exists:
+            location = "on the host" if host_root is not None else "in this workspace's box"
+            attach = "agent-box --host attach" if host_root is not None else "agent-box attach"
             print(
-                f"agent-box: session '{self.name}' is still running in this workspace's box; "
-                f"return to it with 'agent-box attach'",
+                f"agent-box: session '{self.name}' is still running {location}; "
+                f"return to it with '{attach}'",
                 file=sys.stderr,
             )
         return rc
@@ -2651,4 +2661,93 @@ def host_main(
     for key in [k for k in env if k.startswith(ENV_PREFIX)]:
         del env[key]
 
-    return subprocess.call([executable, *rest], cwd=str(workspace.container_cwd), env=env)
+    command = [executable, *rest]
+    if tmux_enabled(agent) and host_interactive_invocation(agent, rest):
+        tmux = shutil.which("tmux")
+        if tmux is not None:
+            return host_tmux_launch(workspace, agent, command, env, tmux)
+        warn("tmux not found; starting directly without detach/attach support")
+    return subprocess.call(command, cwd=str(workspace.cwd), env=env)
+
+
+def host_interactive_invocation(agent: str, rest: list[str]) -> bool:
+    """Keep batch and management commands direct even at a real terminal."""
+    flags = rest[:rest.index("--")] if "--" in rest else rest
+    if agent == "claude":
+        return is_claude_session_invocation(rest) and not any(
+            arg in {"-p", "--print"} or arg.startswith("--print=") for arg in flags)
+    # Skip option values so a model/profile named 'exec' remains interactive.
+    values = {"-c", "--config", "-m", "--model", "-p", "--profile", "-C", "--cd",
+              "-s", "--sandbox", "-a", "--ask-for-approval", "-i", "--image",
+              "--add-dir", "--enable", "--disable", "--oss-provider"}
+    commands = {"exec", "e", "review", "login", "logout", "mcp", "mcp-server",
+                "app-server", "app", "completion", "sandbox", "debug", "apply", "a",
+                "cloud", "features", "help"}
+    skip = False
+    for arg in flags:
+        if skip:
+            skip = False
+        elif arg in values:
+            skip = True
+        elif arg in {"--help", "-h", "--version", "-V"}:
+            return False
+        elif not arg.startswith("-"):
+            return arg not in commands
+    return True
+
+
+def host_tmux_launch(workspace: Workspace, agent: str, command: list[str],
+                     environment: dict[str, str], executable: str) -> int:
+    root = HOST_SESSIONS_ROOT / workspace_identity(workspace)
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    existing = tmux_sessions(None, host_root=root)
+    if existing:
+        print(f"agent-box: host sessions already running ({', '.join(existing)}); "
+              "return with 'agent-box --host attach'", file=sys.stderr)
+    name = f"{agent}-{uuid.uuid4().hex[:12]}"
+    session = TmuxSession(name, root / f"{name}.status")
+    env_path = root / f"{session.name}.env.json"
+    atomic_write_json(env_path, environment, 0o600)
+    wrapped = session.wrap([sys.executable, str(HOST_SESSION_RUNNER), str(env_path), *command],
+                           host_root=root, cwd=workspace.cwd)
+    wrapped[0] = executable
+    # The server must not retain credentials or source BASH_ENV from its first
+    # launcher. The pane runner supplies the full, current per-launch env.
+    server_env = {"PATH": os.defpath, "TERM": environment.get("TERM", "xterm-256color")}
+    if "TMUX_TMPDIR" in os.environ:
+        server_env["TMUX_TMPDIR"] = os.environ["TMUX_TMPDIR"]
+    try:
+        rc = subprocess.call(wrapped, cwd=str(workspace.cwd), env=server_env)
+        return session.finish(None, rc, host_root=root)
+    finally:
+        # A user can detach before the pane has consumed its environment.
+        if not tmux_session_exists(None, session.name, host_root=root):
+            env_path.unlink(missing_ok=True)
+
+
+def host_session_main(args: list[str], *, stop: bool = False) -> int:
+    command = "stop" if stop else "attach"
+    if (stop and args) or len(args) > 1:
+        raise AgentBoxError(f"usage: agent-box --host {command}" + ("" if stop else " [session]"))
+    if not shutil.which("tmux"):
+        raise AgentBoxError("tmux not found on the host")
+    if not stop and not (sys.stdin.isatty() and sys.stdout.isatty()):
+        raise AgentBoxError("agent-box --host attach needs a terminal")
+    root = HOST_SESSIONS_ROOT / workspace_identity(resolved_workspace())
+    names = tmux_sessions(None, host_root=root)
+    if stop:
+        if not names:
+            print("agent-box: no host sessions for this project", file=sys.stderr)
+            return 0
+        result = subprocess.run(tmux_argv("kill-server", host_root=root), capture_output=True, text=True)
+        if result.returncode:
+            raise AgentBoxError(f"could not stop host sessions: {result.stderr.strip()}")
+        for name in names:
+            if re.fullmatch(r"(?:claude|codex)-[0-9a-f]{12}", name):
+                (root / f"{name}.status").unlink(missing_ok=True)
+                (root / f"{name}.env.json").unlink(missing_ok=True)
+        print(f"agent-box: ended {len(names)} host session(s) for this project", file=sys.stderr)
+        return 0
+    name = choose_session(names, args[0] if args else None)
+    rc = subprocess.call(tmux_argv("attach-session", "-d", "-t", "=" + name, host_root=root))
+    return TmuxSession(name, root / f"{name}.status").finish(None, rc, host_root=root)

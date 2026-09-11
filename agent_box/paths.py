@@ -78,6 +78,9 @@ XDG_STATE_HOME = env_path("XDG_STATE_HOME", HOST_HOME / ".local/state")
 # snapshots, notification state).
 STATE_ROOT = env_path("AGENT_BOX_STATE_DIR", XDG_DATA_HOME / "agent-box")
 CONFIG_ROOT = env_path("AGENT_BOX_CONFIG_DIR", XDG_CONFIG_HOME / "agent-box")
+HOST_SESSIONS_ROOT = STATE_ROOT / "runtime/host-sessions"
+HOST_TMUX_CONFIG = Path(__file__).with_name("tmux.conf")
+HOST_SESSION_RUNNER = Path(__file__).with_name("host_session.py")
 
 BUILD_STATE = STATE_ROOT / "build"
 TOOLS_REFRESH_FILE = BUILD_STATE / "tools-refresh"

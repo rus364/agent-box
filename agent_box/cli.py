@@ -90,6 +90,8 @@ def usage_text() -> None:
   agent-box [--mount PATH[:ro]]... [--env NAME[=VALUE]]... [--host] [codex|claude|shell|doctor] [arguments...]
   agent-box attach [session]
   agent-box stop
+  agent-box --host attach [session]
+  agent-box --host stop
   agent-box config [--project|show|check|apply]
   agent-box usage <codex|claude|all>
   agent-box statusline
@@ -179,7 +181,10 @@ Podman, the installed host executable, your normal host git/gh credentials.
 'agent-box claude'/'agent-box codex' (without --host) keep meaning
 containerized execution. Not valid with --mount, and not valid with
 shell/doctor, which are container-only. The opt-in agent browser lives in the
-workspace image, so --host sessions do not get it.
+workspace image, so --host sessions do not get it. Interactive host sessions
+use tmux when installed; otherwise they start directly. Use --host attach
+[session] to return, --host stop to end this project's host sessions, or
+AGENT_BOX_TMUX=0 to launch directly.
 
 Examples:
   agent-box
@@ -550,8 +555,8 @@ def main() -> None:
             die("--mount is only valid before claude/codex/shell/doctor")
         if env_specs and args and args[0] in NON_RUNTIME:
             die("--env is only valid before claude/codex/shell/doctor")
-        if host and args and args[0] in NON_RUNTIME:
-            die("--host is only valid before claude/codex")
+        if host and args and args[0] in NON_RUNTIME - {"attach", "stop"}:
+            die("--host is only valid before claude/codex/attach/stop")
         if host and mounts:
             die("--host does not use --mount; there is no container to mount into")
         if args and args[0] == "usage":
@@ -587,6 +592,8 @@ def main() -> None:
             raise SystemExit(runtime.uninstall_main(args[1:]))
         if args and args[0] in {"attach", "stop"}:
             from . import runtime
+            if host:
+                raise SystemExit(runtime.host_session_main(args[1:], stop=args[0] == "stop"))
             if args[0] == "attach":
                 raise SystemExit(runtime.attach_main(args[1:]))
             raise SystemExit(runtime.stop_main(args[1:]))
