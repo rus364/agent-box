@@ -67,7 +67,9 @@ and comments. Resolve the user reference before reading relevant history.
 
 `tracker resolve REFERENCE` selects by visible project number (`21` or quoted
 `"#21"`), exact title, or a task URL from the configured tracker. It searches the
-repository binding, including children when recursive. One exact match returns
+repository binding, including children when recursive. Numbers use Vikunja’s
+`GET /api/v2/projects/{project}/tasks/by-index/{index}` for each scoped project.
+Only a missing-task response counts as absence; other API errors stop resolution. One exact match returns
 the task; duplicates report project names, numbers, titles and URLs for a user
 choice. `--project PROJECT` narrows to that single project inside the binding;
 `--title` treats even a numeric reference as a title. Missing matches fail without

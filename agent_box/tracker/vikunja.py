@@ -261,8 +261,21 @@ class VikunjaAdapter:
                 raise TrackerError("Task URL is outside the selected project scope")
             return task
         number = re.fullmatch(r"#?([0-9]+)", text) if not title else None
-        # Full-text search omits valid numbers and includes description matches.
-        tasks = self.search(project, recursive=recursive)
+        if number:
+            tasks = []
+            for project_id in sorted(scope):
+                try:
+                    raw = self.client.get(
+                        f"/projects/{project_id}/tasks/by-index/{int(number[1])}"
+                        "?format=markdown&expand=buckets&expand=subtasks")
+                except api.APIError as exc:
+                    # Only a missing task is absence; incomplete reads cannot prove uniqueness.
+                    if exc.status == 404 and exc.code == 4002:
+                        continue
+                    raise
+                tasks.append(self.normalize(raw))
+        else:
+            tasks = self.search(project, query=text, recursive=recursive)
         matches = [task for task in tasks if task.project in scope and (
             task.number == int(number[1]) if number else task.title == text)]
         if not matches:

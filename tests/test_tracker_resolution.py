@@ -4,15 +4,28 @@ from unittest.mock import patch
 
 from agent_box.repo_binding import Binding
 from agent_box.tracker import cli
+from agent_box.tracker import vikunja_api as api
 from agent_box.tracker.core import TrackerError
 from agent_box.tracker.vikunja import VikunjaAdapter
 from test_tracker_staging import NativeClient
 from test_tracker_lifecycle import task
 
 
+class IndexClient(NativeClient):
+    def get(self, path):
+        parts = path.split('?')[0].strip('/').split('/')
+        if len(parts) == 5 and parts[:1] == ['projects'] and parts[2:4] == ['tasks', 'by-index']:
+            self.reads.append(path)
+            for row in self.tasks.values():
+                if row['project_id'] == int(parts[1]) and row['index'] == int(parts[4]):
+                    return dict(row)
+            raise api.APIError(404, 'This task does not exist', 4002)
+        return super().get(path)
+
+
 class ResolutionTests(unittest.TestCase):
     def setUp(self):
-        self.client = NativeClient()
+        self.client = IndexClient()
         self.client.tasks = {
             319: task(319, 1, 10, 100, index=21, title="Reviewer problem"),
             21: task(21, 1, 10, 100, index=8, title="Other task", description="21:01 Reviewer problem"),
@@ -35,6 +48,27 @@ class ResolutionTests(unittest.TestCase):
                 for full in (True, False):
                     self.assertEqual(found.to_dict(full=full)['number'], 21)
                 self.assertEqual(self.adapter.get(found.id).id, '319')
+        self.assertEqual(self.client.writes, [])
+
+    def test_number_uses_native_index_lookup_without_listing_tasks(self):
+        """The provider resolves (project, index) without downloading all tasks."""
+        with patch.object(self.adapter, 'search', side_effect=AssertionError('Unexpected task listing')):
+            self.assertEqual(self.resolve('21').id, '319')
+        for project in (1, 2):
+            self.assertTrue(any(path.startswith(f'/projects/{project}/tasks/by-index/21?')
+                                for path in self.client.reads))
+
+    def test_partial_index_lookup_failure_cannot_claim_unique_match(self):
+        """An unreadable sibling could contain another #21, so errors propagate."""
+        original = self.client.get
+        for status, code in ((403, 0), (404, 1), (500, 0)):
+            def get(path):
+                if path.startswith('/projects/2/tasks/by-index/'):
+                    raise api.APIError(status, 'lookup failed', code)
+                return original(path)
+            with self.subTest(status=status), patch.object(self.client, 'get', side_effect=get):
+                with self.assertRaises(api.APIError):
+                    self.resolve('21')
         self.assertEqual(self.client.writes, [])
 
     def test_exact_title_does_not_match_description_or_partial_title(self):
