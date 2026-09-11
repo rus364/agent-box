@@ -23,6 +23,25 @@ from test_runtime import IsolatedRuntimeTest
 
 
 class HostLaunchDecisionTests(IsolatedRuntimeTest):
+    def test_current_codex_management_commands_preserve_direct_dispatch(self):
+        """Management commands verified from local CLI help must not create sessions."""
+        cases = [[name] for name in ('agents', 'plugin', 'remote-control', 'update', 'doctor',
+                                    'queue', 'archive', 'delete', 'migrate-rollouts', 'unarchive', 'exec-server')]
+        cases += [['--local-provider', 'ollama', 'doctor'], ['--remote', 'unix://example', 'doctor'],
+                  ['--remote-auth-token-env', 'TEST_NAME', 'doctor'], ['resume', '--help']]
+        with mock.patch.dict(os.environ, {'PATH': os.defpath}, clear=True), \
+             mock.patch.object(runtime, 'resolve_workspace', return_value=Workspace(Path('/tmp'), Path('/tmp'))), \
+             mock.patch.object(runtime, 'launch_config', return_value=Config()), \
+             mock.patch.object(runtime.shutil, 'which', return_value='/bin/codex'), \
+             mock.patch.object(runtime, 'tmux_enabled', return_value=True), \
+             mock.patch.object(runtime, 'host_tmux_launch') as wrapped, \
+             mock.patch.object(runtime.subprocess, 'call', return_value=0) as direct:
+            for args in cases:
+                with self.subTest(args=args):
+                    runtime.host_main('codex', args)
+                    self.assertEqual(wrapped.call_count, 0)
+                    self.assertEqual(direct.call_args.args[0], ['/bin/codex', *args])
+
     def test_host_selection_errors_name_the_host(self):
         """Host attach must not send the user looking for a workspace container."""
         from agent_box.errors import AgentBoxError

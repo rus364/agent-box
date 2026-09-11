@@ -2676,21 +2676,23 @@ def host_interactive_invocation(agent: str, rest: list[str]) -> bool:
     if agent == "claude":
         return is_claude_session_invocation(rest) and not any(
             arg in {"-p", "--print"} or arg.startswith("--print=") for arg in flags)
+    if any(arg in {"--help", "-h", "--version", "-V"} for arg in flags):
+        return False
     # Skip option values so a model/profile named 'exec' remains interactive.
     values = {"-c", "--config", "-m", "--model", "-p", "--profile", "-C", "--cd",
               "-s", "--sandbox", "-a", "--ask-for-approval", "-i", "--image",
-              "--add-dir", "--enable", "--disable", "--oss-provider"}
-    commands = {"exec", "e", "review", "login", "logout", "mcp", "mcp-server",
-                "app-server", "app", "completion", "sandbox", "debug", "apply", "a",
-                "cloud", "features", "help"}
+              "--add-dir", "--enable", "--disable", "--local-provider", "--remote",
+              "--remote-auth-token-env"}
+    commands = {"agents", "exec", "e", "review", "login", "logout", "mcp", "plugin",
+                "app-server", "remote-control", "completion", "update", "doctor", "sandbox",
+                "debug", "apply", "a", "queue", "archive", "delete", "migrate-rollouts",
+                "unarchive", "cloud", "exec-server", "features", "help"}
     skip = False
     for arg in flags:
         if skip:
             skip = False
         elif arg in values:
             skip = True
-        elif arg in {"--help", "-h", "--version", "-V"}:
-            return False
         elif not arg.startswith("-"):
             return arg not in commands
     return True
