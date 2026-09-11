@@ -2709,7 +2709,8 @@ def host_tmux_launch(workspace: Workspace, agent: str, command: list[str],
     name = f"{agent}-{uuid.uuid4().hex[:12]}"
     session = TmuxSession(name, root / f"{name}.status")
     env_path = root / f"{session.name}.env.json"
-    atomic_write_json(env_path, environment, 0o600)
+    # POSIX environment bytes may be represented by surrogate escapes.
+    atomic_write_text(env_path, json.dumps(environment, ensure_ascii=True), 0o600)
     wrapped = session.wrap([sys.executable, str(HOST_SESSION_RUNNER), str(env_path), *command],
                            host_root=root, cwd=workspace.cwd)
     wrapped[0] = executable

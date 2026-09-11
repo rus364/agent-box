@@ -101,12 +101,14 @@ class HostLaunchDecisionTests(IsolatedRuntimeTest):
                 payload = next(Path(tmp).rglob('*.env.json'))
                 self.assertEqual(payload.stat().st_mode & 0o777, 0o600)
                 self.assertEqual(json.loads(payload.read_text())['TOKEN'], 'private test value')
+                self.assertEqual(os.fsencode(json.loads(payload.read_text())['BYTE_VALUE']), b'\xff')
                 self.assertNotIn('private test value', str(argv))
                 self.assertNotIn('TOKEN', kwargs['env'])
                 return 1
             with mock.patch.object(runtime.subprocess, 'call', side_effect=launch):
                 runtime.host_tmux_launch(Workspace(Path(tmp), Path(tmp)), 'codex',
-                                         ['/bin/false'], {'TOKEN': 'private test value'}, '/usr/bin/tmux')
+                                         ['/bin/false'], {'TOKEN': 'private test value',
+                                                         'BYTE_VALUE': os.fsdecode(b'\xff')}, '/usr/bin/tmux')
             self.assertFalse(list(Path(tmp).rglob('*.env.json')))
 
 
@@ -207,10 +209,12 @@ class NativeHostSessionsTests(unittest.TestCase):
 
         second_output = self.root / 'second.json'
         second = self.spawn(project, output=second_output,
-                            environment={'PATH': os.defpath, 'TERM': 'xterm', 'VALUE': 'second secret'})
+                            environment={'PATH': os.defpath, 'TERM': 'xterm', 'VALUE': 'second secret',
+                                         os.fsdecode(b'KEY-\xff'): os.fsdecode(b'\xfe')})
         self.until(second_output.exists)
         actual = json.loads(second_output.read_text())
         self.assertEqual(actual['VALUE'], 'second secret')
+        self.assertEqual(os.fsencode(actual[os.fsdecode(b'KEY-\xff')]), b'\xfe')
         self.assertNotIn('OLD_ONLY', actual)
         self.assertIn('TMUX_PANE', actual)
         self.assertFalse(list(self.session_root(project).glob('*.env.json')))
