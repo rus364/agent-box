@@ -9,4 +9,6 @@ Read the task, relevant comments/relations and repository code first. Search old
 
 Identify unresolved decisions in dependency order. Ask one material question at a time in the user's language, with 2-4 concrete options and a recommendation when useful. Test uncertain assumptions against facts and concrete scenarios; do not manufacture disagreement or interrogate obvious work.
 
+Assess priority using ab-tracker’s evidence rules when preparing or creating tasks.
+
 Stop when remaining choices can safely be decided during implementation. Update the task's Goal, Context, Acceptance and Validation in its language; preserve unrelated text and summarize important decisions in a comment. Explain changed scope and relations. Keep the plan in the tracker, without a parallel repository task database. Already approved work does not need another approval ceremony.

@@ -88,6 +88,8 @@ def parser():
     cmd.add_argument("--title", required=True)
     cmd.add_argument("--description-file", required=True)
     cmd.add_argument("--parent")
+    cmd.add_argument("--priority", type=int, choices=range(6), default=0,
+                     help="0 unset, 1 low, 2 medium, 3 high, 4 urgent, 5 immediate")
     cmd.add_argument("--tier", type=int, choices=(1, 2, 3))
     cmd = sub.add_parser("setup", help="Preview repository binding; save with --apply")
     cmd.add_argument("--project", required=True)
@@ -206,7 +208,7 @@ def dispatch(args):
             raise TrackerError("Resolve a project first: pass --project or run ab-setup")
         if args.command == "create":
             task = adapter.create(str(adapter.project(project)["id"]), args.title,
-                                  text_file(args.description_file), args.parent)
+                                  text_file(args.description_file), args.parent, priority=args.priority)
             return adapter.set_tier(task.id, args.tier) if args.tier else task
         tasks = adapter.search(project, getattr(args, "query", ""), args.recursive or bool(binding and binding.recursive))
         if args.command in ("ready", "next"):
