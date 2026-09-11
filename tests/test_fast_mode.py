@@ -128,6 +128,27 @@ class FastModeTests(unittest.TestCase):
             self.assertEqual(data['service_tier'], 'fast' if fast else 'default')
             self.assertEqual(data['features']['fast_mode'], fast)
 
+    def test_apply_invalid_fast_removes_only_intact_owned_profiles(self):
+        """Hand-edited config must not install invalid fast before warnings are printed."""
+        for invalid in ({'model': 'unsupported-model', 'fast': True},
+                        {'model': 'gpt-6-astra', 'fast': 'true'}):
+            with self.subTest(invalid=invalid), tempfile.TemporaryDirectory() as directory:
+                config = Config()
+                config.workflow.enabled = True
+                spec = config.workflow.tiers['1']['codex']
+                spec.update(model='gpt-6-astra', fast=True)
+                codex, claude = Path(directory) / 'codex', Path(directory) / 'claude'
+                agent_profiles.sync(config, codex, claude)
+                profile = codex / 'agents/ab-worker-1.toml'
+                edited = codex / 'agents/ab-scout-1.toml'
+                edited.write_text(edited.read_text() + '# user edit\n')
+                spec.update(invalid)
+                messages = agent_profiles.sync(config, codex, claude)
+                self.assertFalse(profile.exists())
+                self.assertFalse(profile.with_name(profile.name + '.agent-box').exists())
+                self.assertTrue(edited.read_text().endswith('# user edit\n'))
+                self.assertTrue(any('ab-worker-1.toml' in m for m in messages))
+
     def test_native_report_requires_matching_speed_and_rejects_claude_fast(self):
         """Model/effort alone cannot attest the candidate's speed setting."""
         selected = dict(provider='codex', model='gpt-6-astra', effort='high', fast=True,

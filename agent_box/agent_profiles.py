@@ -5,7 +5,7 @@ from pathlib import Path
 
 from .atomicio import atomic_write_text
 from .delegation import profile_instructions
-from .fast_mode import native_limitation
+from .fast_mode import configuration_error, native_limitation
 
 ROLES = {"scout": (0, 1, 2), "worker": (1, 2, 3), "reviewer": (1, 2, 3)}
 
@@ -54,6 +54,10 @@ def sync(config, codex_home, claude_home):
                     messages.append(f"Preserved user-owned or edited agent profile: {path}")
                     continue
                 enabled = config.workflow.enabled and bool(spec["model"])
+                error = configuration_error(provider, spec)
+                if enabled and error:
+                    messages.append(f"{path.name}: {error}; native profile disabled")
+                    enabled = False
                 if enabled and provider == "claude" and spec.get("fast", False):
                     messages.append(f"{path.name}: {native_limitation(provider)}")
                     enabled = False
