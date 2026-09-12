@@ -130,7 +130,8 @@ separate measures, never exact tokens; compare identical scenarios and mandatory
 
 Configure worker/scout model IDs and effort in `workflow.tiers` (tiers 0-3),
 and independent reviewer settings in `workflow.review.tiers` (tiers 1-3), each
-with `codex` and `claude` entries containing `model`, `effort` and `fast` (default `false`). Both matrices
+with `codex` and `claude` entries containing `model`, `effort`, `fast` (default `false`)
+and `api_provider` (empty for the built-in API). Both matrices
 are available in the configuration menu and `config show`, and travel in the
 container's minimal workflow configuration. Empty reviewer models disable those
 candidates; they never inherit worker models. The

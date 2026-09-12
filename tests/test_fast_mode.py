@@ -37,7 +37,7 @@ class FastModeTests(unittest.TestCase):
                          patch.object(workflow.shutil, 'which', return_value='provider-cli'):
                         self.assertTrue(agent_profiles.available(provider, role, tier, spec))
                         config.workflow.review.routing = 'same-provider'
-                        routed = workflow.route(config.workflow, role, tier, provider, provider)
+                        routed = workflow.route(config, role, tier, provider, provider)
                         self.assertTrue(routed['native_profile_ready'])
                         self.assertNotIn('fast', routed['native_explicit_settings'])
                         self.assertIsNone(routed['native_limitation'])

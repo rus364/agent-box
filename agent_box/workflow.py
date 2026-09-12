@@ -661,6 +661,10 @@ def native_output(args, selected, tier):
     """
     actual = {"provider": args.provider, "model": args.model, "effort": args.effort, "tier": tier}
     if selected.get("mode") == "current-session":
+        if selected.get("managed_only"):
+            raise AgentBoxError("This API route requires managed CLI execution; native reports are not accepted")
+        if selected.get("api_provider", "") != os.environ.get("AGENT_BOX_API_PROVIDER", ""):
+            raise AgentBoxError("The active session API differs from the prepared current-session execution")
         if args.provider != selected["provider"]:
             raise AgentBoxError("Reported provider differs from the prepared current session")
         if selected["model"] is None:
@@ -673,6 +677,7 @@ def native_output(args, selected, tier):
         if args.fallback_reason:
             raise AgentBoxError("Current-session execution has no fallback route")
         actual.update(mode="current-session", session_inherited=args.session_inherited)
+        actual.update({k: selected[k] for k in ("api_provider", "api_fingerprint") if k in selected})
         if args.role == "reviewer":
             actual["fresh_context"] = True
         return {"route": actual, "report": validate_report(json.loads(Path(args.file).read_text()), args.role),
@@ -682,6 +687,9 @@ def native_output(args, selected, tier):
                   if all(candidate.get(key) == value for key, value in actual.items())), None)
     if match is None:
         raise AgentBoxError("Reported provider/model/effort is outside the configured route")
+    if (candidates[match].get("managed_only") or candidates[match].get("api_provider") or
+            os.environ.get("AGENT_BOX_API_PROVIDER")):
+        raise AgentBoxError("This API route requires managed CLI execution; native reports are not accepted")
     # False preserves provider/session behavior; only an opt-in constrains speed.
     actual["fast"] = candidates[match].get("fast", False)
     if actual["fast"] and getattr(args, "fast", None) != "on":
@@ -715,6 +723,7 @@ def reconcile_abandoned_managed(root, task, saved):
 
 
 def route(config, role, tier, primary, writer=None):
+    policy = config.workflow
     path = WORKFLOW_STATE / "routing.json"
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     with lock(WORKFLOW_STATE, "routing"):
@@ -722,13 +731,21 @@ def route(config, role, tier, primary, writer=None):
             counters = json.loads(path.read_text())
         except (OSError, ValueError):
             counters = {}
-        usage = {p: usage_snapshot(p, no_cache=True) for p in ("codex", "claude")} if role != "reviewer" and config.routing == "usage-aware" else {}
-        result = select(config, role, tier, primary, counters, usage, writer=writer,
+        override = policy.override_for(role, tier)
+        models = (override.models if override else
+                  (policy.review.tiers if role == "reviewer" else policy.tiers).get(str(tier), {}))
+        usage = {p: usage_snapshot(p, no_cache=True) for p in ("codex", "claude")
+                 if models.get(p, {}).get("model") and not models[p].get("api_provider")} if role != "reviewer" and policy.routing == "usage-aware" else {}
+        result = select(policy, role, tier, primary, counters, usage, writer=writer,
                         available=[p for p in ("codex", "claude") if shutil.which(p)])
+        for candidate in [result, *result["fallbacks"]]:
+            bind_api_route(candidate, config)
         atomic_write_text(path, json.dumps(counters) + "\n", 0o600)
     from .agent_profiles import available as native_available
     from .fast_mode import native_limitation
     for candidate in [result, *result["fallbacks"]]:
+        if candidate.get("managed_only"):
+            continue
         candidate["native_profile"] = f"ab-{role}-{tier}" if tier is not None else None
         candidate["native_profile_ready"] = (tier is not None and
                                              native_available(candidate["provider"], role, tier, candidate))
@@ -742,15 +759,34 @@ def route(config, role, tier, primary, writer=None):
     return result
 
 
-def session_route(args, role):
+def bind_api_route(candidate, config):
+    from .external_launch import route_identity
+    if candidate.get("api_provider"):
+        candidate.update(route_identity(config, candidate["api_provider"], candidate["provider"]))
+    if candidate.get("api_provider") or os.environ.get("AGENT_BOX_API_PROVIDER"):
+        candidate.update(managed_only=True, native_profile=None, native_profile_ready=False,
+                         native_explicit_settings=None,
+                         native_limitation="API selection requires a separate managed CLI process")
+
+
+def session_route(args, role, config=None, *, delegated=False):
     """Session settings are supplied facts or inherited, never tier defaults."""
     if not args.primary:
         raise AgentBoxError("Pass --primary with the active session provider for current-session execution")
     model, effort = args.session_model, args.session_effort
     if bool(model) != bool(effort) or model == "" or effort == "":
         raise AgentBoxError("Supply both --session-model and --session-effort from the active session, or omit both")
-    return {"mode": "current-session", "provider": args.primary, "model": model,
-            "effort": effort, "tier": None, "role": role, "fallbacks": []}
+    result = {"mode": "current-session", "provider": args.primary, "model": model,
+              "effort": effort, "tier": None, "role": role, "fallbacks": []}
+    api = os.environ.get("AGENT_BOX_API_PROVIDER")
+    if api:
+        from .external_launch import route_identity
+        result.update(route_identity(config or effective_config(), api, args.primary))
+        if delegated:
+            if model is None:
+                raise AgentBoxError("External session delegation needs verified --session-model and --session-effort, or a configured model override")
+            bind_api_route(result, config or effective_config())
+    return result
 
 
 def execute(config, selected, role, root, prompt, read_paths=()):
@@ -760,10 +796,12 @@ def execute(config, selected, role, root, prompt, read_paths=()):
             diagnostics = {"usage": None, "total_cost_usd": None}
             report = run(candidate, role, root, prompt, timeout=config.timeout_seconds,
                          read_paths=read_paths, diagnostics=diagnostics)
-            return {"route": {k: candidate[k] for k in ("provider", "model", "effort", "tier", "fast") if k in candidate},
+            return {"route": {k: candidate[k] for k in ("provider", "api_provider", "api_fingerprint", "model", "effort", "tier", "fast") if k in candidate},
                     "report": report, "failures": failures, "diagnostics": diagnostics}
         except ProviderFailure as exc:
-            failures.append({"provider": candidate["provider"], "category": exc.category, **exc.diagnostic})
+            failures.append({"provider": candidate["provider"],
+                             **({"api_provider": candidate["api_provider"]} if candidate.get("api_provider") else {}),
+                             "category": exc.category, **exc.diagnostic})
             if role == "reviewer" and exc.category not in (
                     "unavailable", "model-unavailable", "authentication", "quota", "timeout"):
                 raise AgentBoxError("Reviewer failure does not establish provider unavailability; "
@@ -787,6 +825,7 @@ def managed_review_route(selected):
             if index == 0 and exc.category != "unavailable":
                 raise AgentBoxError(f"Managed review preflight failed; correct the route before review: {exc}") from None
             failures.append({"provider": candidate.get("provider"), "category": exc.category,
+                             **({"api_provider": candidate["api_provider"]} if candidate.get("api_provider") else {}),
                              "stage": "preflight", "reason": str(exc)})
     if not candidates:
         raise AgentBoxError("No managed review route can start: " + json.dumps(failures))
@@ -1400,14 +1439,14 @@ def worker_dispatch(args, root, binding, adapter, task, config):
     if choice == "direct" and facts is not None:
         raise AgentBoxError("--facts requires delegated worker execution")
     if choice == "direct":
-        selected = session_route(args, "worker")
+        selected = session_route(args, "worker", config)
         selected["tier"] = tier
         model_source = "active-session"
         prompt = None
     else:
         prompt = assignment_handoff(root, task, base, read_brief(args.brief), "worker", facts=facts)
-        selected = (session_route(args, "worker") if tier is None and not config.workflow.override_for("worker", tier)
-                    else route(config.workflow, "worker", tier, args.primary, saved.get("writer")))
+        selected = (session_route(args, "worker", config, delegated=True) if tier is None and not config.workflow.override_for("worker", tier)
+                    else route(config, "worker", tier, args.primary, saved.get("writer")))
         model_source = ("active-session" if selected.get("mode") == "current-session" else
                         "workflow.worker.override.models" if config.workflow.override_for("worker", tier) else
                         f"workflow.tiers.{tier}")
@@ -1454,7 +1493,7 @@ def worker_dispatch(args, root, binding, adapter, task, config):
                                if choice == "direct" else
                                "Spawn a fresh worker with delegate_handoff as the complete initial message. "
                                "Use an exact profile or explicit spawn parameters for provider/model/effort/fast without an overriding custom agent. Profile readiness is not live capability proof; "
-                               "unknown or unsupported required capabilities or effort=default require managed_command; fast=false preserves native inheritance. Honor native_limitation only for a requested fast mode. " + LAUNCH_CONTEXT + " ") +
+                               "unknown or unsupported required capabilities or effort=default require managed_command; fast=false preserves native inheritance. Honor managed_only and native_limitation. " + LAUNCH_CONTEXT + " ") +
                               "Return actual execution facts with report_command; permitted native fallback requires --fallback-reason TEXT."}
     if choice == "delegated" and selected["model"] is None:
         result["instructions"] += " Inherit the active session in a fresh native worker without a tier profile; unknown session settings cannot run managed."
@@ -1487,7 +1526,7 @@ def scout_dispatch(args, root, binding, adapter, task, config):
         if not question or len(question) > 500 or "\n" in question:
             raise AgentBoxError("Scout --question must be one nonempty line of at most 500 characters")
         prompt = assignment_handoff(root, task, "HEAD", read_brief(args.brief), "scout", question=question)
-        selected = route(config.workflow, "scout", tier, args.primary)
+        selected = route(config, "scout", tier, args.primary)
         descriptor = json.loads(base64.urlsafe_b64decode(handoff_descriptor(identity, task, fingerprint, selected)))
         descriptor.update(question=question)
         token = bind_delegation_input(root, descriptor, prompt)
@@ -1703,8 +1742,8 @@ def dispatch(args):
         # The route the delegation was prepared with rides in the descriptor, so
         # the report is ingested at the role and tier it was actually run at.
         inherit_session = tier is None and not config.workflow.override_for(role, tier)
-        selected = (descriptor["route"] if descriptor else session_route(args, role) if inherit_session
-                    else route(config.workflow, role, tier, args.primary, saved.get("writer")))
+        selected = (descriptor["route"] if descriptor else session_route(args, role, config, delegated=True) if inherit_session
+                    else route(config, role, tier, args.primary, saved.get("writer")))
         review_round = (descriptor["delegation"] if role == "reviewer" and descriptor else
                         secrets.token_urlsafe(18) if role == "reviewer" else None)
         session_action = (selected.get("mode") == "current-session" and args.command != "report"
@@ -1770,7 +1809,7 @@ def dispatch(args):
                 "followup_task or resume an earlier reviewer. Pass delegate_handoff as the complete initial "
                 "message. A new prepare, scope, descriptor, or --fresh-context assertion does not itself "
                 "prove that a new reviewer instance ran.")
-            if selected.get("mode") == "current-session":
+            if selected.get("mode") == "current-session" and not selected.get("managed_only"):
                 result["action"] = "review-in-fresh-context"
                 result["instructions"] = (
                     "Launch an independent read-only reviewer in fresh context inheriting the active session's "
@@ -1803,6 +1842,12 @@ def dispatch(args):
                     result["instructions"] += ("Before delegating, supply --brief FILE with a compact English Goal/Acceptance/Validation, "
                                                "bounded scope, relevant paths, decisions and limitations. Translate the current requirements "
                                                "faithfully; do not paste task history or comments.")
+            if selected.get("managed_only"):
+                result["action"] = "managed-review"
+                result["managed_command"] = shlex.join([
+                    "agent-box", "workflow", "review", task.id, "--handoff", result["handoff"],
+                    "--brief", args.brief, "--fallback-reason", selected["native_limitation"],
+                    *(["--tier", str(tier)] if tier is not None else [])])
             return result
         if args.command == "report":
             if args.scope != fingerprint:

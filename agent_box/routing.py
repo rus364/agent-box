@@ -66,6 +66,8 @@ def select(config, role, tier, primary, state, usage=None, *, now=None, writer=N
         if config.routing == "current":
             allowed = [p for p in allowed if p == primary]
         for provider in list(allowed):
+            if models[provider].get("api_provider"):
+                continue
             windows = applicable_windows(usage.get(provider, {}), models[provider]["model"])
             if any(w["remaining"] <= 0 and w["reset_at"] > now for w in windows):
                 allowed.remove(provider)
@@ -75,6 +77,8 @@ def select(config, role, tier, primary, state, usage=None, *, now=None, writer=N
         scores = {}
         if config.routing == "usage-aware":
             for provider in allowed:
+                if models[provider].get("api_provider"):
+                    continue
                 snapshot = usage.get(provider, {})
                 weekly = [w for w in applicable_windows(snapshot, models[provider]["model"])
                           if w["seconds"] > 86400 and w["reset_at"] > now]
@@ -96,6 +100,7 @@ def select(config, role, tier, primary, state, usage=None, *, now=None, writer=N
         raise AgentBoxError(f"No allowed {role} model configured in {matrix}; no automatic tier downgrade")
     def entry(provider):
         return {"provider": provider, "model": models[provider]["model"], "effort": models[provider]["effort"],
+                **({"api_provider": models[provider]["api_provider"]} if models[provider].get("api_provider") else {}),
                 "fast": models[provider].get("fast", False), "tier": tier}
     return {**entry(order[0]), "role": role, "reason": reason + (f"; models from {matrix}" if override else ""),
             "fallbacks": [entry(p) for p in order[1:]]}

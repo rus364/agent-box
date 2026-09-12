@@ -38,13 +38,13 @@ class NativePreparationTests(unittest.TestCase):
                             sync(config, root / "codex", root / "claude")
                         elif state == "overridden":
                             profile.write_text(profile.read_text().replace('"high"', '"low"'))
-                        selected = workflow.route(config.workflow, "reviewer", 1, "claude", "claude")
+                        selected = workflow.route(config, "reviewer", 1, "claude", "claude")
                         self.assertEqual(selected["native_profile_ready"], ready)
                         self.assertEqual(selected["native_explicit_settings"], {"provider": "codex", "model": "review-model", "effort": "high"})
                         fallback = selected["fallbacks"][0]
                         self.assertEqual(fallback["native_explicit_settings"], {"provider": "claude", "model": "other-review", "effort": "medium"})
                 config.workflow.review.tiers["1"]["codex"]["effort"] = "default"
-                selected = workflow.route(config.workflow, "reviewer", 1, "claude", "claude")
+                selected = workflow.route(config, "reviewer", 1, "claude", "claude")
                 self.assertFalse(selected["native_profile_ready"])
                 self.assertIsNone(selected["native_explicit_settings"])
 

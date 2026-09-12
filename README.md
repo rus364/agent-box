@@ -266,6 +266,12 @@ explicit disable action stay at the top of the list. Existing custom values
 remain editable, Escape restores the previous value, and disabling a candidate
 affects only the selected role, tier, and provider.
 
+[External API providers](docs/integrations/external-providers.md) are named global
+connections with a private key and separate Codex/Claude URLs and model lists.
+Each candidate's **API provider** selects the built-in API or an enabled external
+connection. `agent-box [--host] ext NAME codex|claude` starts an explicit external
+session; there is no default CLI for external connections.
+
 Cancel writes nothing. Save and apply performs the selected changes, including
 optional PATH setup: restoring the `agent-box` symlink in the directory you
 chose, installing the skills your integrations need, linking them for Claude,
@@ -467,6 +473,7 @@ All off by default and independent of each other. See
 - **[Agent browser](docs/integrations/browser.md)** — a headless browser inside the box for agents to drive.
 - **[Telegram](docs/integrations/telegram.md)** — Anthropic's official control channel, plus one-way notifications.
 - **[Remote Control](docs/integrations/remote-control.md)** — optional native remote access for new Claude/Codex sessions, with ordinary-launch fallback.
+- **[External API providers](docs/integrations/external-providers.md)** — named API connections for either CLI and managed workflow roles.
 - **[Git and GitHub](docs/integrations/git.md)** — what of your Git and GitHub setup reaches a session.
 
 ## Usage and status line

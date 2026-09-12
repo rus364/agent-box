@@ -173,6 +173,7 @@ def failure_metadata(route, role):
     def identifier(value):
         return value if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_.:/-]{1,128}", value) else None
     return {**{key: identifier(route.get(key)) for key in ("provider", "model", "effort")},
+            **({"api_provider": identifier(route["api_provider"])} if route.get("api_provider") else {}),
             "fast": route.get("fast") if type(route.get("fast")) is bool else None,
             "role": identifier(role), "exit_code": None, "duration_seconds": None,
             "response_source": None, "stdout_bytes": None, "stderr_bytes": None,
@@ -237,8 +238,8 @@ def preflight(route):
     check_settings(route)
     if route.get("api_provider"):
         from .config import effective_config
-        from .external_launch import connection
-        connection(effective_config(), route["api_provider"], route["provider"])
+        from .external_launch import check_route
+        check_route(effective_config(), route)
     if not shutil.which(route["provider"]):
         raise ProviderFailure(f"Cannot find {route['provider']} CLI", "unavailable")
 
@@ -314,7 +315,10 @@ def run(route, role, root, prompt, *, timeout=3600, read_paths=(), diagnostics=N
         command = build_command(route, role, Path(root), schema, result, read_paths)
         if route.get("api_provider"):
             from .config import effective_config
-            command, env = prepare(command, route["api_provider"], route["provider"], effective_config(),
+            from .external_launch import check_route
+            api_config = effective_config()
+            check_route(api_config, route)
+            command, env = prepare(command, route["api_provider"], route["provider"], api_config,
                                    directory, env, model=route["model"])
         with (directory / "stdout").open("w+") as stdout, (directory / "stderr").open("w+") as stderr:
             try:

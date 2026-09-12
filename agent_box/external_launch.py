@@ -1,5 +1,7 @@
 """Per-process API selection; user configuration and RC supervisors keep their owners."""
 import json
+import hashlib
+from dataclasses import asdict
 import os
 from pathlib import Path
 import re
@@ -58,6 +60,19 @@ def connection(config, name, cli):
     if not spec.api_key.strip() or not endpoint.url:
         raise AgentBoxError(f'External provider {name} requires an API key and a {cli} URL')
     return spec, endpoint
+
+
+def route_identity(config, name, cli):
+    _, endpoint = connection(config, name, cli)
+    # Credentials stay private; rotation does not change the routed endpoint.
+    payload = json.dumps([name, cli, asdict(endpoint)], sort_keys=True).encode()
+    return {'api_provider': name, 'api_fingerprint': hashlib.sha256(payload).hexdigest()}
+
+
+def check_route(config, route):
+    identity = route_identity(config, route['api_provider'], route['provider'])
+    if route.get('api_fingerprint') and route['api_fingerprint'] != identity['api_fingerprint']:
+        raise AgentBoxError('External API definition changed after prepare; prepare a new route before execution')
 
 
 def invocation_model(cli, args):

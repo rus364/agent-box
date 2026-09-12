@@ -13,6 +13,8 @@ def configuration_error(provider, spec):
     fast = spec.get("fast", False)
     if type(fast) is not bool:
         return "fast must be a boolean"
+    if fast and spec.get("api_provider"):
+        return "Fast is not supported for external API candidates; turn fast off"
     if fast and spec.get("model") and spec["model"] not in MODELS.get(provider, ()):
         return "Fast requires a verified supported model ID: " + ", ".join(sorted(MODELS.get(provider, ())))
     return None

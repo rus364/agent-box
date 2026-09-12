@@ -46,9 +46,9 @@ The following also use the ordinary launch, preserving the original arguments:
 - Explicit `--remote`, resume/fork, worktree, `--add-dir` and unrecognized CLI options.
 - Missing ChatGPT login, unsupported app-server APIs, or startup/pairing failure.
 
-This keeps future custom-provider launches and their profiles independent of
-Remote Control. Calling a separate DeepSeek agent does not change the parent
-session's mode.
+[Named external API launches](external-providers.md) bypass this supervisor and
+reject explicit remote/profile/session-reuse options. Their ordinary TUI or
+managed CLI process does not acquire the RC slot or change the parent's mode.
 
 The server receives the launch's `-c` integration overrides, model and permission
 settings. It uses the same provider home, project directory, filesystem and

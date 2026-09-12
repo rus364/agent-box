@@ -20,6 +20,7 @@ def context_policy():
 
 
 LAUNCH_CONTEXT = (
+    "managed_only routes require managed CLI; native agents cannot switch API identity. "
     "Follow prepared provider order; prefer native when the live interface satisfies the route and context_policy. "
     "Append --fast on to report_command only if the candidate that ran requests fast and native fast is verified; otherwise omit --fast. "
     "Codex native requires fork_turns=none or a verified equivalent; omitted inheritance, all, "

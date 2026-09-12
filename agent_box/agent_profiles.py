@@ -54,7 +54,7 @@ def sync(config, codex_home, claude_home):
                 if path.is_symlink() or marker.is_symlink() or (path.exists() or marker.exists()) and not intact:
                     messages.append(f"Preserved user-owned or edited agent profile: {path}")
                     continue
-                enabled = config.workflow.enabled and bool(spec["model"])
+                enabled = config.workflow.enabled and bool(spec["model"]) and not spec.get("api_provider")
                 error = configuration_error(provider, spec)
                 if enabled and error:
                     messages.append(f"{path.name}: {error}; native profile disabled")
@@ -83,7 +83,8 @@ def available(provider, role, tier, spec):
     from .paths import CODEX_HOME, CLAUDE_HOME
     # A native subagent may inherit the coordinator's effort when its profile
     # omits the field, so only the managed CLI can promise the configured default.
-    if spec["effort"] == "default" or native_limitation(provider, spec.get("fast", False)):
+    if (spec.get("api_provider") or os.environ.get("AGENT_BOX_API_PROVIDER") or
+            spec["effort"] == "default" or native_limitation(provider, spec.get("fast", False))):
         return False
     if provider == "claude" and (os.environ.get("CLAUDE_CODE_SAFE_MODE") or
             os.environ.get("CLAUDE_CODE_SUBAGENT_MODEL_FORCE") or
