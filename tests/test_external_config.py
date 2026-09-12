@@ -66,6 +66,17 @@ class ExternalConfigTests(unittest.TestCase):
             project_config.validate({'external_providers': {'x': {'api_key': 'private-api-key'}}}, Path('.agent-box.json'))
         self.assertNotIn('private-api-key', str(raised.exception))
 
+    def test_endpoint_syntax_rejects_ambiguous_authorities_and_keeps_local_urls(self):
+        """Client URL parsers must not reinterpret a saved authority or userinfo."""
+        for url in [r'https://host\evil', 'https://@host', 'https://%20',
+                    'https://host?', 'https://host#', 'https://host\x7f', 'https://<host>']:
+            with self.subTest(url=url), self.assertRaises(AgentBoxError):
+                Config.from_dict({'external_providers': {'x': {'codex': {'url': url}}}})
+        for url in ['http://localhost:8000/v1', 'http://127.0.0.1:9',
+                    'http://[::1]:8000/v1', 'https://api.example/a%20b']:
+            config = Config.from_dict({'external_providers': {'x': {'codex': {'url': url}}}})
+            self.assertEqual(config.external_providers['x'].codex.url, url)
+
     def test_menu_creation_and_deletion_are_draft_only(self):
         """Adding/deleting a connection must respect cancel and confirmation."""
         import curses

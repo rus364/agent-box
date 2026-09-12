@@ -57,9 +57,14 @@ def parse_connections(data):
             if url:
                 try:
                     parsed = urlsplit(url)
-                    valid = (parsed.scheme in {"http", "https"} and parsed.hostname and not parsed.username
-                             and not parsed.password and not parsed.query and not parsed.fragment
-                             and not any(c.isspace() or ord(c) < 32 for c in url))
+                    # urlsplit separates components but does not validate URI syntax.
+                    host = parsed.hostname or ""
+                    valid = (parsed.scheme in {"http", "https"} and host
+                             and parsed.username is None and parsed.password is None
+                             and "?" not in url and "#" not in url and "\\" not in url
+                             and "%" not in host
+                             and not any(c.isspace() or ord(c) < 32 or ord(c) == 127 for c in url)
+                             and not any(c in host for c in '<>"{}|^`'))
                     parsed.port
                 except ValueError:
                     valid = False
