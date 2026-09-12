@@ -20,7 +20,7 @@ def context_policy():
 
 
 LAUNCH_CONTEXT = (
-    "Prefer native when the live interface satisfies the prepared route and context_policy. "
+    "Follow prepared provider order; prefer native when the live interface satisfies the route and context_policy. "
     "Append --fast on to report_command only if the candidate that ran requests fast and native fast is verified; otherwise omit --fast. "
     "Codex native requires fork_turns=none or a verified equivalent; omitted inheritance, all, "
     "and completed-agent reuse fail the contract. Claude native needs a verified fresh conversation "

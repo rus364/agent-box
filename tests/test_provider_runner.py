@@ -369,7 +369,7 @@ class FailureDiagnosticsTests(unittest.TestCase):
         """A final failure still points to every saved attempt after fallback exhaustion."""
         from types import SimpleNamespace
         from agent_box import workflow
-        first = self.fail_response(b"private-first")
+        first = self.fail_response(b"private-first", code=-9, timeout=True)
         second = self.fail_response(b"private-second", route={**self.route, "provider": "codex"})
         selected = {**self.route, "fallbacks": [{**self.route, "provider": "codex"}]}
         with patch.object(workflow, "run", side_effect=[first, second]):

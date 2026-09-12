@@ -687,6 +687,10 @@ def native_output(args, selected, tier):
     if actual["fast"] and getattr(args, "fast", None) != "on":
         raise AgentBoxError("The configured fast request requires verified native fast; report --fast on or use managed CLI")
     reason = (args.fallback_reason or "").strip()
+    if match and args.role == "reviewer":
+        raise AgentBoxError(
+            "Native reviewer fallback requires managed dispatch: workflow review TASK "
+            "--handoff DESCRIPTOR --brief FILE --fallback-reason REASON to continue this round")
     if match and not reason:
         raise AgentBoxError("A native fallback reason is required; explain why the preferred route could not run")
     if args.role == "reviewer" and not args.fresh_context:
@@ -760,6 +764,10 @@ def execute(config, selected, role, root, prompt, read_paths=()):
                     "report": report, "failures": failures, "diagnostics": diagnostics}
         except ProviderFailure as exc:
             failures.append({"provider": candidate["provider"], "category": exc.category, **exc.diagnostic})
+            if role == "reviewer" and exc.category not in (
+                    "unavailable", "model-unavailable", "authentication", "quota", "timeout"):
+                raise AgentBoxError("Reviewer failure does not establish provider unavailability; "
+                                    "no provider fallback: " + json.dumps(failures)) from None
             # A worker may have edited files before an error; never restart it blindly.
             if role == "worker" and exc.category not in ("unavailable", "model-unavailable"):
                 raise AgentBoxError(f"Worker failed ({exc.category}); reconcile files and task progress before retrying") from None
@@ -776,6 +784,8 @@ def managed_review_route(selected):
             preflight(candidate)
             candidates.append(candidate)
         except ProviderFailure as exc:
+            if exc.category != "unavailable":
+                raise AgentBoxError(f"Managed review preflight failed; correct the route before review: {exc}") from None
             failures.append({"provider": candidate.get("provider"), "category": exc.category,
                              "stage": "preflight", "reason": str(exc)})
     if not candidates:
@@ -1122,11 +1132,11 @@ def parser():
             cmd.add_argument("--fast", choices=("on", "off"), help="Verified native speed; on is required only when the candidate requests fast")
             cmd.add_argument("--session-inherited", action="store_true", help="Affirm unchanged inherited session settings")
             cmd.add_argument("--fresh-context", action="store_true", help="Affirm independent fresh reviewer context")
-            cmd.add_argument("--fallback-reason", help="Why a native fallback candidate was used")
+            cmd.add_argument("--fallback-reason", help="Native worker/scout fallback reason; reviewer fallback requires managed dispatch")
             cmd.add_argument("--handoff", help="Handoff descriptor returned by prepare")
         if name == "review":
             cmd.add_argument("--handoff", help="Run managed fallback once within this prepared pending review round")
-            cmd.add_argument("--fallback-reason", help="Why the prepared native review could not run")
+            cmd.add_argument("--fallback-reason", help="Why native cannot run the prepared reviewer; managed tries the same provider first")
         if name == "validate":
             cmd.add_argument("arguments", nargs=argparse.REMAINDER)
         if name == "pr":
@@ -1738,7 +1748,7 @@ def dispatch(args):
                                     "profile readiness describes only the installed profile, and explicit settings are requirements, "
                                     "not capability proof; unknown or unsupported capabilities and effort=default require managed CLI. "
                                     "Native uses prepare/spawn then report_command; managed uses run/review. Replace its ACTUAL values, "
-                                    "DESCRIPTOR and REPORT.json from the execution; add --fallback-reason REASON for fallback. "
+                                    "DESCRIPTOR and REPORT.json from the execution. "
                                     "Return the role JSON schema."}
             result["review_budget"] = budget
             descriptor = json.loads(base64.urlsafe_b64decode(result["handoff"]))
@@ -1776,10 +1786,12 @@ def dispatch(args):
                     "A new prepare or --fresh-context assertion is not proof that a new instance ran. "
                     "Return the role JSON schema; never invent execution facts or PASS.")
             result["instructions"] += (
-                " Prefer native when the live interface supports this route and role contract. "
-                "If native cannot run and model/effort are known, use workflow review TASK "
-                "--handoff DESCRIPTOR --brief FILE --fallback-reason REASON (repeat --tier if supplied) "
-                "for one managed dispatch in this pending round. Omit --handoff only for an independent new round.")
+                " Provider order precedes native preference. Native reports cannot select backup candidates. "
+                "Managed provider fallback requires observed CLI/model unavailability, authentication, quota "
+                "or configured timeout failure; other errors stop review. Speed, cost, preference and verdicts "
+                "never justify switching. If native cannot run, use the same provider through workflow review TASK "
+                "--handoff DESCRIPTOR --brief FILE --fallback-reason REASON (repeat --tier if supplied). "
+                "This continues the pending round once; omit --handoff only for a new round.")
             if selected.get("mode") == "current-session" and selected.get("model") is None:
                 result["instructions"] += (
                     " This inherited route cannot run managed without known session settings. Use native for this "

@@ -1,5 +1,6 @@
 """Reviewer settings and native route evidence must describe the actual delegate."""
 import json
+import base64
 import contextlib
 import io
 import unittest
@@ -201,9 +202,9 @@ class NativeRouteTests(unittest.TestCase):
         selected = {"fast": False, "provider": "claude", "model": "m", "effort": "high", "tier": 1,
                     "role": "reviewer", "fallbacks": [
                         {"fast": False, "provider": "codex", "model": "fallback", "effort": "medium", "tier": 1}]}
-        failure = workflow.ProviderFailure("Invalid response", "invalid-report")
+        failure = workflow.ProviderFailure("Quota exhausted", "quota")
         failure.diagnostic = {"fast": False, "model": "m", "effort": "high", "role": "reviewer",
-                              "stage": "json", "reason": "response is not valid JSON",
+                              "stage": "envelope", "reason": "provider error envelope",
                               "artifact": "provider-failures/fixture.json", "exit_code": 0,
                               "duration_seconds": 1.25, "stdout_bytes": 7, "stderr_bytes": 0,
                               "usage": None, "total_cost_usd": None, "response_source": "stdout"}
@@ -215,7 +216,7 @@ class NativeRouteTests(unittest.TestCase):
                                        "--brief", str(self.review_brief))
         saved = workflow.read_evidence(self.root, self.task)["review"]
         self.assertEqual(saved["route"], selected["fallbacks"][0])
-        self.assertEqual(saved["failures"], [{"provider": "claude", "category": "invalid-report",
+        self.assertEqual(saved["failures"], [{"provider": "claude", "category": "quota",
                                                **failure.diagnostic}])
         self.assertEqual(saved["failures"], result["failures"])
 
@@ -241,27 +242,38 @@ class NativeRouteTests(unittest.TestCase):
                         self.report_route(prepared, role=role, **change)
                     save.assert_not_called()
 
-    def test_native_review_saves_full_route_and_requires_fallback_reason(self):
+    def test_native_review_cannot_bypass_primary_and_managed_keeps_the_round(self):
+        """Prose cannot authorize a backup; the same round must still try the primary CLI."""
         selected = {"fast": False, "provider": "claude", "model": "m", "effort": "high", "tier": 1,
                     "role": "reviewer", "fallbacks": [
                         {"fast": False, "provider": "codex", "model": "fallback", "effort": "medium", "tier": 1}]}
+        self.config.workflow.review.max_rounds = 1
         with patch.object(workflow, "route", return_value=selected):
             prepared = self.run_workflow("prepare", "1", "--role", "reviewer", "--primary", "codex",
                                          "--brief", str(self.review_brief))
-        self.report.write_text(json.dumps({"verdict": "PASS", "summary": "Fine", "findings": []}))
-        for reason in (None, " "):
+        report = {"verdict": "PASS", "summary": "Fine", "findings": []}
+        self.report.write_text(json.dumps(report))
+        saved = workflow.read_evidence(self.root, self.task)
+        descriptor = json.loads(base64.urlsafe_b64decode(prepared["handoff"]))
+        input_path = Path(descriptor["input"]["path"])
+        original_input = input_path.read_text()
+        for reason in (None, " ", "Codex is faster", "Claude has no native tool", "Claude unavailable"):
             with self.subTest(reason=reason), patch.object(workflow, "save_evidence") as save:
-                with self.assertRaisesRegex(AgentBoxError, "fallback reason"):
+                with self.assertRaisesRegex(AgentBoxError, "Native reviewer fallback"):
                     self.report_route(prepared, role="reviewer", provider="codex",
                                       model="fallback", effort="medium", reason=reason)
                 save.assert_not_called()
-        result = self.report_route(prepared, role="reviewer", provider="codex", model="fallback",
-                                   effort="medium", reason="Claude unavailable")
-        self.assertEqual(result["route"], selected["fallbacks"][0])
-        saved = workflow.read_evidence(self.root, self.task)["review"]
-        self.assertEqual(saved["route"], selected["fallbacks"][0])
-        self.assertEqual(saved["fallback_reason"], "Claude unavailable")
-        self.assertTrue(saved["fresh_context"])
+            self.assertEqual(workflow.read_evidence(self.root, self.task), saved)
+            self.assertEqual(input_path.read_text(), original_input)
+        with patch.object(workflow, "run", return_value=report) as run:
+            result = self.run_workflow("review", "1", "--handoff", prepared["handoff"],
+                                       "--brief", str(self.review_brief), "--fallback-reason",
+                                       "Claude native interface unavailable; use its CLI")
+        self.assertEqual([call.args[0]["provider"] for call in run.call_args_list], ["claude"])
+        self.assertEqual(run.call_args.args[3], original_input)
+        self.assertEqual(result["route"]["provider"], "claude")
+        self.assertEqual(result["review_budget"]["used"], 1)
+        self.assertEqual(result["review_budget"]["remaining"], 0)
 
 
 if __name__ == "__main__":

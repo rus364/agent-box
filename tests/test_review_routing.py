@@ -126,13 +126,62 @@ class ReviewRoutingTests(unittest.TestCase):
         config = test_routing.RoutingTests().config()
         config.review.routing = "same-provider"
         for writer, other in (("codex", "claude"), ("claude", "codex")):
-            for category in ("unavailable", "model-unavailable", "auth", "timeout", "invalid-report"):
+            for category in ("unavailable", "model-unavailable", "authentication", "timeout"):
                 with self.subTest(writer=writer, category=category):
                     route = select(config, "reviewer", 2, other, {}, writer=writer)
                     with patch.object(workflow, "run", side_effect=ProviderFailure("test failure", category)) as run:
                         with self.assertRaisesRegex(AgentBoxError, "No provider produced a valid report"):
                             workflow.execute(config, route, "reviewer", Path("/unused"), "test")
                     self.assertEqual([call.args[0]["provider"] for call in run.call_args_list], [writer])
+
+    def test_cross_provider_requires_observed_unavailability_before_fallback(self):
+        """Only availability failures permit another provider, never an unknown or malformed response."""
+        config = test_routing.RoutingTests().config()
+        allowed = ("unavailable", "model-unavailable", "authentication", "quota", "timeout")
+        for writer in ("codex", "claude"):
+            selected = select(config, "reviewer", 2, writer, {}, writer=writer)
+            primary = selected["provider"]
+            for category in (*allowed, "invalid-report", "provider-error", "unsupported"):
+                for fallback in (False, True):
+                    route = {**selected, "fallbacks": selected["fallbacks"] if fallback else []}
+                    with self.subTest(writer=writer, category=category, fallback=fallback), \
+                         patch.object(workflow, "run", side_effect=[ProviderFailure("Failure", category),
+                             {"verdict": "PASS", "summary": "Checked", "findings": []}]) as run:
+                        if category in allowed and fallback:
+                            result = workflow.execute(config, route, "reviewer", Path("/unused"), "test")
+                            self.assertEqual(result["route"]["provider"], writer)
+                            self.assertEqual(result["failures"], [{"provider": primary, "category": category}])
+                        else:
+                            with self.assertRaises(AgentBoxError):
+                                workflow.execute(config, route, "reviewer", Path("/unused"), "test")
+                        expected = [primary, writer] if category in allowed and fallback else [primary]
+                        self.assertEqual([call.args[0]["provider"] for call in run.call_args_list], expected)
+
+    def test_review_verdict_never_triggers_provider_fallback(self):
+        """A negative or inconclusive verdict must reach the coordinator without verdict shopping."""
+        config = test_routing.RoutingTests().config()
+        route = select(config, "reviewer", 2, "codex", {}, writer="codex")
+        for verdict in ("PASS", "NEEDS_WORK", "INCONCLUSIVE"):
+            report = {"verdict": verdict, "summary": "Checked", "findings": [] if verdict != "NEEDS_WORK" else [{
+                "severity": "high", "path": "file.py", "line": 1, "message": "Incorrect", "evidence": "Example",
+                "requirement": "Preserve behavior"}]}
+            with self.subTest(verdict=verdict), patch.object(workflow, "run", return_value=report) as run:
+                result = workflow.execute(config, route, "reviewer", Path("/unused"), "test")
+            self.assertEqual(result["report"], report)
+            self.assertEqual(run.call_count, 1)
+
+    def test_managed_preflight_does_not_hide_unsupported_primary_settings(self):
+        """A configuration error is not proof that the preferred service is unavailable."""
+        config = test_routing.RoutingTests().config()
+        route = select(config, "reviewer", 2, "codex", {}, writer="codex")
+        with patch.object(workflow, "preflight", side_effect=ProviderFailure("Unsupported fast", "unsupported")) as check:
+            with self.assertRaisesRegex(AgentBoxError, "correct the route"):
+                workflow.managed_review_route(route)
+        self.assertEqual(check.call_count, 1)
+        with patch.object(workflow, "preflight", side_effect=[ProviderFailure("Missing CLI", "unavailable"), None]):
+            selected, failures = workflow.managed_review_route(route)
+        self.assertEqual(selected["provider"], "codex")
+        self.assertEqual(failures[0]["category"], "unavailable")
 
     def test_review_routing_does_not_change_worker_or_scout_selection(self):
         """Reviewer policy must leave worker scheduling and fallback candidates intact."""

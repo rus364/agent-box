@@ -1253,7 +1253,7 @@ class WorkerHandoffTests(unittest.TestCase):
                 "--handoff", prepared["handoff"], "--file", str(self.report)]
         with self.assertRaisesRegex(AgentBoxError, "outside the configured route"):
             self.run_workflow(*argv, "--provider", "claude", "--model", "changed-after-prepare", "--effort", "high", "--fresh-context")
-        with self.assertRaisesRegex(AgentBoxError, "fallback reason"):
+        with self.assertRaisesRegex(AgentBoxError, "Native reviewer fallback"):
             self.run_workflow(*argv, "--provider", "codex", "--model", "codex-global", "--effort", "medium", "--fresh-context")
         with self.assertRaisesRegex(AgentBoxError, "fresh-context"):
             self.run_workflow(*argv, "--provider", "claude", "--model", "claude-global", "--effort", "high")

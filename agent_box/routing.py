@@ -60,7 +60,7 @@ def select(config, role, tier, primary, state, usage=None, *, now=None, writer=N
         else:
             other = "claude" if writer == "codex" else "codex"
             order = [p for p in ([other, writer] if config.fallback else [other]) if p in allowed]
-            reason = "Prefer a fresh reviewer from the other writer provider"
+            reason = "Use the other writer provider first; fallback requires unavailability"
     else:
         allowed = [p for p in allowed if config.weights[p] > 0]
         if config.routing == "current":

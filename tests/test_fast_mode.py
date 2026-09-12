@@ -167,6 +167,10 @@ class FastModeTests(unittest.TestCase):
                             with self.assertRaisesRegex(AgentBoxError, '--fast on'):
                                 workflow.native_output(args, selected, 1)
                             args.fast = 'on'
+                        if role == 'reviewer' and index:
+                            with self.assertRaisesRegex(AgentBoxError, 'Native reviewer fallback'):
+                                workflow.native_output(args, selected, 1)
+                            continue
                         result = workflow.native_output(args, selected, 1)
                         self.assertEqual(result['route']['fast'], candidate['fast'])
 

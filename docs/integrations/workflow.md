@@ -114,7 +114,8 @@ verdict require a new instance. Untiered direct coordinator work is not a delega
 Codex native explicitly passes `fork_turns="none"` or a verified equivalent; omitted
 inheritance, `all` and reuse of completed agents violate the contract. Claude native
 requires a verified equivalent through the available interface; unknown support uses
-managed fallback. Prefer native when route and context requirements are supported.
+managed execution. Prefer native when route and context requirements are supported;
+reviewer provider order takes precedence over native preference.
 Capabilities and actual calls are evidence, not independent attestation of hidden
 context; a missing full-context receipt alone does not prohibit native.
 
@@ -168,7 +169,8 @@ and validation/review acceptance. Delegated-to-direct transition is rejected.
 
 Every `prepare` result also returns `report_command`, an exact role/tier/scope
 template for native result ingestion. Replace the ACTUAL route values, descriptor
-and report path with observed execution facts; fallback also supplies its reason.
+and report path with observed execution facts; native worker/scout fallback also
+supplies its reason. Reviewer provider fallback requires managed dispatch.
 
 Without an applicable global reviewer override, untiered review uses the active session provider/model/effort in an independent
 fresh read-only context, even when explicit-tier review routing prefers another
@@ -226,9 +228,9 @@ remove server-side lag.
 
 Set `workflow.review.routing` in `agent-box config` under workflow / review:
 
-- **cross-provider** (default): prefer the other **actual writer** provider, then
-  a fresh context from the writer provider when `workflow.fallback` is enabled
-  (the default). With fallback disabled, only the other provider is allowed.
+- **cross-provider** (default): use the other **actual writer** provider first.
+  Use a fresh context from the writer provider only when the other is unavailable
+  and `workflow.fallback` is enabled (the default). With fallback disabled, only the other provider is allowed.
 - **same-provider**: use only the actual writer provider in fresh context.
   An unavailable writer executable, empty reviewer model or provider failure
   stops review without calling the other provider, even with fallback enabled.
@@ -236,6 +238,15 @@ Set `workflow.review.routing` in `agent-box config` under workflow / review:
 For explicit tiers, both modes use `workflow.review.tiers` unless the global override applies. Worker weights and usage do not
 select reviewers. Routing changes neither review policy nor worker/scout routing.
 All attempts preserve the selected tier and configured reviewer model/effort.
+
+Reviewer provider order precedes native preference. If native cannot run the
+selected provider, use its managed CLI in the same prepared round. Native reports
+cannot select fallback candidates on the strength of a free-text reason. Managed
+execution advances only after observed CLI/model unavailability, authentication,
+quota or expiration of `timeout_seconds`. Unknown errors, unsupported settings
+and invalid reports stop review for diagnosis. Speed, cost, preference, silence
+before timeout and review verdicts never justify switching provider. Missing CLIs
+and explicitly empty models may exclude candidates during route preparation.
 
 ### Worker execution and model source
 
@@ -382,11 +393,12 @@ without inventing independent acceptance. No extra review stage or finding quota
 
 Explicit-tier native handoffs use `prepare --brief FILE`, then `report --file FILE --scope DIGEST --handoff
 DESCRIPTOR --provider ACTUAL_PROVIDER --model ACTUAL_MODEL --effort ACTUAL_EFFORT`
-for the returned structured report. Supply `--fallback-reason REASON` when using
-a fallback candidate, and `--fresh-context` for every native reviewer; unknown
+for the returned structured report. Supply `--fallback-reason REASON` for native worker/scout
+fallback candidates, and `--fresh-context` for every native reviewer. Native reviewer
+reports must match the selected primary candidate; unknown
 model or effort is a reason to use managed CLI,
 never to guess report fields. Report ingestion checks role/tier and exact
-provider/model/effort against the prepared candidates before changing acceptance.
+provider/model/effort against the allowed prepared route before changing acceptance.
 Accepted worker/reviewer evidence records the full route and any native fallback
 reason or managed provider failures. These are coordinator-supplied execution
 facts, not provider attestation. Evidence is
@@ -418,8 +430,9 @@ first; their refusal publishes no handoff, reserves nothing and runs no provider
 Preflight checks local executables and supported routes, without guessing live model,
 account or native tool availability. A failed budget write dispatches nothing and allocates no attempt;
 after durable reservation, packaging/execution failures still consume it.
-Prefer native when the live interface supports the configured route and common role
-contract. If native cannot run after `prepare`, use the returned descriptor:
+Choose the reviewer provider first, then prefer native when the live interface
+supports that route and common role contract. If native cannot run after `prepare`,
+use the returned descriptor to try the same provider through managed CLI:
 
 ```bash
 agent-box workflow review TASK --handoff DESCRIPTOR --brief FILE --fallback-reason REASON
