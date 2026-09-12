@@ -67,11 +67,13 @@ def invocation_model(cli, args):
                 'app-server', 'remote-control', 'completion', 'update', 'doctor', 'sandbox',
                 'debug', 'apply', 'a', 'resume', 'fork', 'queue', 'archive', 'delete',
                 'migrate-rollouts', 'unarchive', 'cloud', 'exec-server', 'features', 'help',
-                'attach', 'logs', 'stop', 'rm', 'import', 'install'}
+                'attach', 'logs', 'stop', 'rm', 'import', 'install', 'auto-mode', 'gateway',
+                'plugins', 'project', 'respawn', 'setup-token', 'kill', 'ultrareview', 'upgrade'}
     blocked = ({'--remote', '--remote-auth-token-env', '--oss', '--local-provider', '--profile', '-p'}
                if cli == 'codex' else
                {'--remote-control', '--rc', '--cloud', '--teleport', '--settings', '--setting-sources',
-                '--resume', '-r', '--continue', '-c', '--fork-session', '--background', '--bg'})
+                '--resume', '-r', '--continue', '-c', '--fork-session', '--from-pr', '--session-id',
+                '--environment', '--tmux', '--background', '--bg'})
     values = {'--model', '-m', '--config', '-c', '--image', '-i', '--cd', '-C', '--sandbox', '-s',
               '--ask-for-approval', '-a', '--add-dir', '--enable', '--disable', '--effort',
               '--mcp-config', '--agent', '--agents', '--permission-mode', '--tools', '--allowedTools',
@@ -83,7 +85,9 @@ def invocation_model(cli, args):
         if arg == '--':
             break
         key, equal, value = arg.partition('=')
-        if key in blocked or (cli == 'codex' and arg.startswith('-p') and not arg.startswith('--')):
+        compact = ('-p',) if cli == 'codex' else ('-r', '-c')
+        if (key in blocked or (arg.startswith(compact) and not arg.startswith('--'))
+                or key.startswith('--remote-control')):
             raise AgentBoxError('ext cannot override API/profile/Remote Control or resume another session')
         if cli == 'codex' and arg.startswith('-c') and arg != '-c' and not arg.startswith('--'):
             key, equal, value = '-c', '=', arg[2:]

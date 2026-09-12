@@ -77,6 +77,9 @@ class ExternalProcessTests(unittest.TestCase):
                           ('codex', ['--config', 'model_providers.x.base_url="https://bad"']),
                           ('codex', ['--config', '"model_providers"."x".base_url="https://bad"']),
                           ('claude', ['--settings', '{"disableRemoteControl":false}']),
+                          ('claude', ['-rfoo']), ('claude', ['--from-pr', '123']),
+                          ('claude', ['--session-id', 'a-session']), ('claude', ['--tmux']),
+                          ('claude', ['--environment', 'cloud-env']), ('claude', ['respawn', 'id']),
                           ('claude', ['--rc']), ('claude', ['--bg']), ('claude', ['auth', 'login'])]:
             with self.subTest(cli=cli, args=args), self.assertRaises(AgentBoxError):
                 ext.selected_model(config, 'deepseek', cli, args)
@@ -129,6 +132,7 @@ class ExternalRuntimeTests(IsolatedRuntimeTest):
                      patch.object(runtime, 'image_exists', return_value=True), \
                      patch.object(runtime, 'claude_channel_args', return_value=([], [])), \
                      patch.object(runtime, 'codex_runtime_overrides', return_value=[]), \
+                     patch.object(runtime, 'is_host_local', return_value=False), \
                      patch.object(runtime, 'launch_in_workspace_container', return_value=0) as container, \
                      patch.object(runtime.subprocess, 'call', return_value=0) as call:
                     if host:
@@ -168,3 +172,28 @@ class ExternalRuntimeTests(IsolatedRuntimeTest):
             runtime.host_main('codex', ['--remote', 'unix:///parent'], api_provider='deepseek')
         snapshot.assert_not_called()
         call.assert_not_called()
+
+    def test_container_snapshots_map_host_apis_without_changing_host_definitions(self):
+        """A shared provider definition must reach the host service in either launch mode."""
+        config = external_config()
+        spec = config.external_providers['deepseek']
+        spec.codex.url = 'http://127.0.0.1:8123/v1'
+        spec.claude.url = 'http://localhost:8124/anthropic'
+        with tempfile.TemporaryDirectory() as tmp:
+            for container in (True, False):
+                runtime.sync_tracker_runtime(config, Path(tmp), policy=True, container=container)
+                data = json.loads((Path(tmp) / 'config.json').read_text())
+                loaded = Config.from_dict(data)
+                for cli in ('codex', 'claude'):
+                    with tempfile.TemporaryDirectory() as invocation:
+                        command, env = ext.prepare([cli], 'deepseek', cli, loaded, invocation, {})
+                        target = ('host.containers.internal' if container else
+                                  '127.0.0.1' if cli == 'codex' else 'localhost')
+                        self.assertIn(target, str(command) if cli == 'codex' else env['ANTHROPIC_BASE_URL'])
+        self.assertEqual(spec.codex.url, 'http://127.0.0.1:8123/v1')
+        self.assertEqual(spec.claude.url, 'http://localhost:8124/anthropic')
+        spec.codex.url = 'https://api.internal/v1'
+        spec.claude.url = ''
+        with patch.object(runtime, 'is_host_local', return_value=True):
+            self.assertEqual(runtime.tracker_host_args(config), ['--add-host=api.internal:host-gateway'])
+            self.assertEqual(runtime.container_tracker_url(spec.codex.url), spec.codex.url)

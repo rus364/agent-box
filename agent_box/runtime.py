@@ -803,7 +803,7 @@ def container_tracker_url(raw: str) -> str:
     return urllib.parse.urlunsplit(parts._replace(netloc=netloc))
 
 
-def sync_tracker_runtime(config: Config, directory: Path | None = None, *, policy=False) -> None:
+def sync_tracker_runtime(config: Config, directory: Path | None = None, *, policy=False, container=True) -> None:
     """Render only explicitly enabled capabilities; directory mounts see atomic updates."""
     config = getattr(config, "_project_base", config)
     directory = TRACKER_RUNTIME_DIR if directory is None else directory
@@ -819,6 +819,11 @@ def sync_tracker_runtime(config: Config, directory: Path | None = None, *, polic
     tracker = config.tracker.to_dict()
     if not config.tracker.enabled:
         tracker["connections"] = {}
+    external = {name: spec.to_dict() for name, spec in config.external_providers.items() if spec.enabled}
+    if container:
+        for spec in external.values():
+            for cli in ("codex", "claude"):
+                spec[cli]["url"] = container_tracker_url(spec[cli]["url"])
     rendered = {
         "tracker": tracker,
         "tracker_urls": {name: container_tracker_url(connection.url)
@@ -832,9 +837,8 @@ def sync_tracker_runtime(config: Config, directory: Path | None = None, *, polic
         "github": config.github.to_dict(),
         "browser": config.browser.to_dict(),
         "image": config.image.to_dict(),
-        "external_providers": {name: spec.to_dict() for name, spec in config.external_providers.items()
-                               if spec.enabled},
-        "container": True,
+        "external_providers": external,
+        "container": container,
     }
     atomic_write_json(directory / "config.json", rendered, 0o600)
 
@@ -849,12 +853,8 @@ def session_runtime(config, *, container=True, runtime_state=None):
     else:
         root = TRACKER_RUNTIME_DIR if config.tracker.enabled or config.workflow.enabled else POLICY_RUNTIME_DIR
     directory = root / "sessions" / uuid.uuid4().hex
-    sync_tracker_runtime(config, directory, policy=True)
+    sync_tracker_runtime(config, directory, policy=True, container=container)
     path = directory / "config.json"
-    if not container:
-        data = json.loads(path.read_text())
-        data["container"] = False
-        atomic_write_json(path, data, 0o600)
     return path
 
 
@@ -927,9 +927,10 @@ def tracker_host_args(config: Config) -> list[str]:
     container lifetime as the mounts it addresses, and changing it therefore
     rebuilds the box rather than silently diverging from the running one.
     """
-    if not config.tracker.enabled:
-        return []
-    hosts = {tracker_host_alias(connection.url) for connection in config.tracker.connections.values()}
+    urls = [connection.url for connection in config.tracker.connections.values()] if config.tracker.enabled else []
+    urls += [getattr(spec, cli).url for spec in config.external_providers.values() if spec.enabled
+             for cli in ("codex", "claude")]
+    hosts = {tracker_host_alias(url) for url in urls}
     return [f"--add-host={host}:{CONTAINER_HOST_GATEWAY}" for host in sorted(hosts) if host]
 
 
