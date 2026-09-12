@@ -149,6 +149,17 @@ class RenderTests(unittest.TestCase):
             " │ 88/59 · 2h29m/4d15h │ 91/17 · 2h11m/4d9h",
         )
 
+    def test_render_disables_credential_refresh(self):
+        """Repeated status-line callbacks must not rotate account tokens."""
+        with mock.patch.object(usage, "usage_snapshot", return_value={"windows": []}) as snapshot:
+            self._render_without_usage_stubs()
+        self.assertIn(mock.call("claude", allow_refresh=False), snapshot.call_args_list)
+
+    def _render_without_usage_stubs(self):
+        with mock.patch.object(statusline, "git_branch", return_value="main"), \
+                mock.patch.object(statusline, "worktree_dirty", return_value=False):
+            return statusline.render(self.PAYLOAD, now="09:41")
+
     def test_colored_line_carries_the_same_text(self):
         colored = self._render(self.PAYLOAD, {})
         self.assertIn("\x1b[", colored)

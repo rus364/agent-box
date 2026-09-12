@@ -109,7 +109,7 @@ def render(payload: str, *, now: str | None = None) -> str:
     obj = usage_module.parse_payload(payload)
     cwd = payload_cwd(obj)
     try:
-        claude = usage_module.claude_usage_from_payload(obj) or usage_module.claude_usage()
+        claude = usage_module.claude_usage_from_payload(obj) or usage_module.claude_usage(allow_refresh=False)
     except Exception:
         claude = usage_module.PLACEHOLDER_USAGE
     try:

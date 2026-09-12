@@ -13,6 +13,7 @@ from typing import Any
 from .atomicio import atomic_write_json, read_json
 from .errors import AgentBoxError
 from .paths import CLAUDE_HOME, CODEX_HOME, XDG_CACHE_HOME, env_path
+from . import usage_auth
 
 PLACEHOLDER_USAGE = "—/— · —/—"
 #: Where Claude usage is cached, whether it arrived over OAuth or in a
@@ -52,10 +53,28 @@ def colorize(text: str, color: str) -> str:
     return f"\x1b[{color}m{text}{COLOR_OFF}"
 
 
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        # Bearer tokens and refresh bodies must stay at the selected endpoint.
+        return None
+
+
 def http_json(url: str, *, headers: dict[str, str] | None = None, data: bytes | None = None, timeout: float = 15) -> Any:
     request = urllib.request.Request(url, data=data, headers=headers or {})
-    with urllib.request.urlopen(request, timeout=timeout) as response:
+    with urllib.request.build_opener(NoRedirect).open(request, timeout=timeout) as response:
         return json.load(response)
+
+
+def refresh_request(url, body):
+    try:
+        return http_json(url, headers={"Content-Type": "application/json", "User-Agent": "claude-cli (external, cli)"},
+                         data=json.dumps(body).encode(), timeout=5)
+    except urllib.error.HTTPError as exc:
+        raise AgentBoxError(f"Claude token refresh failed: HTTP {exc.code}; sign in with Claude if authorization was rejected") from None
+    except OSError:
+        raise AgentBoxError("Claude token refresh failed: network error") from None
+    except ValueError:
+        raise AgentBoxError("Claude token refresh returned an invalid response") from None
 
 
 def cache_fresh(path: Path, ttl: int) -> bool:
@@ -202,8 +221,8 @@ def claude_usage_from_payload(obj: dict[str, Any]) -> str:
     return format_claude_usage(normalized)
 
 
-def claude_usage() -> str:
-    return format_snapshot(usage_snapshot("claude"))
+def claude_usage(*, allow_refresh=True) -> str:
+    return format_snapshot(usage_snapshot("claude", allow_refresh=allow_refresh))
 
 
 def usage_windows(provider, data, observed_at):
@@ -214,6 +233,8 @@ def usage_windows(provider, data, observed_at):
         return windows
     if provider == "codex":
         rates = data.get("rate_limit") or {}
+        if not isinstance(rates, dict):
+            return windows
         candidates = [(w, []) for w in (rates.get("primary_window"), rates.get("secondary_window"))]
         for raw, models in candidates:
             if not isinstance(raw, dict):
@@ -243,7 +264,7 @@ def usage_windows(provider, data, observed_at):
     return windows
 
 
-def usage_snapshot(provider, no_cache=False):
+def usage_snapshot(provider, no_cache=False, *, allow_refresh=True):
     """A failed refresh may retain evidence of exhaustion, never claim freshness."""
     if provider not in ("codex", "claude"):
         raise AgentBoxError("Unknown usage provider")
@@ -261,18 +282,44 @@ def usage_snapshot(provider, no_cache=False):
     try:
         if provider == "codex":
             auth = env_path("CODEX_AUTH_PATH", CODEX_HOME / "auth.json")
-            tokens = read_json(auth)["tokens"]
+            try:
+                credentials = read_json(auth)
+            except FileNotFoundError:
+                raise AgentBoxError("Codex credentials missing; sign in with Codex") from None
+            except OSError:
+                raise AgentBoxError("Codex credentials unreadable") from None
+            except ValueError:
+                raise AgentBoxError("Codex credentials malformed") from None
+            tokens = credentials.get("tokens") if isinstance(credentials, dict) else None
+            if not isinstance(tokens, dict) or not isinstance(tokens.get("access_token"), str) or not tokens["access_token"]:
+                raise AgentBoxError("Codex OAuth access token missing; sign in with Codex")
             headers = {"Authorization": "Bearer " + tokens["access_token"]}
             if tokens.get("account_id"):
                 headers["chatgpt-account-id"] = str(tokens["account_id"])
             url = os.environ.get("CODEX_USAGE_URL", "https://chatgpt.com/backend-api/wham/usage")
         else:
             auth = env_path("CLAUDE_CREDENTIALS_PATH", CLAUDE_HOME / ".credentials.json")
-            token = read_json(auth)["claudeAiOauth"]["accessToken"]
+            oauth = usage_auth.credentials(auth)["claudeAiOauth"]
+            renewed = False
+            if allow_refresh and usage_auth.expired(oauth):
+                if os.environ.get("CLAUDE_CODE_CUSTOM_OAUTH_URL"):
+                    raise AgentBoxError("Claude token refresh unavailable for a custom OAuth endpoint")
+                oauth = usage_auth.refresh(auth, oauth, refresh_request)
+                renewed = True
+            token = oauth["accessToken"]
             headers = {"Authorization": "Bearer " + token, "anthropic-beta": "oauth-2025-04-20",
                        "Content-Type": "application/json", "User-Agent": "claude-cli (external, cli)"}
             url = os.environ.get("CLAUDE_CODE_CUSTOM_OAUTH_URL", "https://api.anthropic.com").rstrip("/") + "/api/oauth/usage"
-        data = http_json(url, headers=headers)
+        try:
+            data = http_json(url, headers=headers)
+        except urllib.error.HTTPError as exc:
+            if (provider != "claude" or exc.code != 401 or not allow_refresh or renewed
+                    or os.environ.get("CLAUDE_CODE_CUSTOM_OAUTH_URL")):
+                raise
+            oauth = usage_auth.refresh(auth, oauth, refresh_request, force=True)
+            headers["Authorization"] = "Bearer " + oauth["accessToken"]
+            data = http_json(url, headers=headers)
+        now = time.time()
         windows = usage_windows(provider, data, now)
         if not windows:
             raise AgentBoxError("No recognizable usage windows")
@@ -281,10 +328,22 @@ def usage_snapshot(provider, no_cache=False):
         except OSError:
             pass  # A read-only cache does not invalidate a successful live observation.
         return {"provider": provider, "fresh": True, "source": "live", "observed_at": now, "windows": windows}
-    except (OSError, ValueError, KeyError, TypeError, AgentBoxError):
+    except (OSError, ValueError, KeyError, TypeError, AgentBoxError) as exc:
+        if isinstance(exc, AgentBoxError):
+            error = str(exc)
+        elif isinstance(exc, urllib.error.HTTPError):
+            error = f"Usage request failed: HTTP {exc.code}"
+        elif isinstance(exc, FileNotFoundError):
+            error = "Credentials missing; sign in with the provider"
+        elif isinstance(exc, PermissionError):
+            error = "Credentials unreadable"
+        elif isinstance(exc, OSError):
+            error = "Usage request failed: network or file I/O error"
+        else:
+            error = "Invalid usage response"
         return {"provider": provider, "fresh": False, "source": "cache" if cached else "unavailable",
                 "observed_at": observed, "windows": usage_windows(provider, cached, observed),
-                "error": "Fresh usage unavailable; check provider authentication and connectivity"}
+                "error": f"{provider}: {error}"}
 
 
 def format_snapshot(snapshot):

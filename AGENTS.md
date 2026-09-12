@@ -53,6 +53,10 @@ apply`), `agent-box upgrade` and `agent-box uninstall` may write into
 agent reads configuration and changes nothing the user owns. `runtime.apply_config`
 is the single place that applies.
 
+On-demand Claude usage may renew and atomically save its OAuth credentials;
+this is authentication maintenance, not integration application. Status-line
+reads never renew tokens. Coordinate credential writes with Claude's locks.
+
 **Adding to a user's file is not removing from it.** agent-box may append its
 marked block to `~/.bashrc`; it removes one only under `--purge`, and only when
 the contents between the markers still match, character for character, the

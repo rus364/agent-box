@@ -62,6 +62,21 @@ class RoutingTests(unittest.TestCase):
         self.assertEqual(result["provider"], "claude")
         self.assertIn("static", result["reason"])
 
+    def test_usage_error_falls_back_to_weights_without_excluding_provider(self):
+        """An unavailable budget is unknown, not an exhausted subscription."""
+        r = importlib.import_module("agent_box.routing")
+        c = self.config()
+        c.routing = "usage-aware"
+        snapshots = {
+            "codex": {"fresh": True, "windows": [
+                {"seconds": 604800, "remaining": 90, "reset_at": 604900}]},
+            "claude": {"fresh": False, "error": "claude: HTTP 401", "windows": []},
+        }
+        state = {}
+        results = [r.select(c, "worker", 2, "codex", state, snapshots, now=1000) for _ in range(4)]
+        self.assertEqual([item["provider"] for item in results].count("claude"), 1)
+        self.assertTrue(all("static weights" in item["reason"] for item in results))
+
 
 if __name__ == "__main__":
     unittest.main()

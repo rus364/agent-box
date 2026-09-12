@@ -473,6 +473,7 @@ All off by default and independent of each other. See
 agent-box usage codex
 agent-box usage claude
 agent-box usage all
+agent-box usage all --no-cache
 ```
 
 ```text
@@ -483,6 +484,12 @@ Segments are unlabeled: Claude first, Codex second, each in its own muted hue
 (terracotta and steel blue; the status line adds violet for context).
 Single-provider invocations print plain — the colours exist only to separate
 segments from each other.
+
+`--no-cache` always requests live usage. Claude tokens are renewed on demand
+only after expiry or HTTP 401, at most once per call; there is no background
+refresh. Status-line reads never renew credentials. A busy credential lock or
+failed renewal returns an error; usage-aware routing keeps its static-weight
+fallback when fresh comparable usage is unavailable.
 
 Claude Code can also use:
 
