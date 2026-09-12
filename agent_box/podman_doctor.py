@@ -72,9 +72,12 @@ def diagnose() -> list[str]:
             lines.append(f"podman run/storage:  OK ({image}; network disabled)")
         finally:
             # A timed-out client can leave the created container running.
-            cleanup = _run("rm", "--force", "--ignore", "--time", "1", name)
-            if cleanup.returncode:
-                lines.append(f"podman cleanup:      FAILED ({name}; {cleanup.stderr.strip()})")
+            try:
+                cleanup = _run("rm", "--force", "--ignore", "--time", "1", name)
+                if cleanup.returncode:
+                    raise ValueError(cleanup.stderr.strip() or f"exit {cleanup.returncode}")
+            except (OSError, subprocess.TimeoutExpired, ValueError) as exc:
+                lines.append(f"podman cleanup:      FAILED ({name}; {exc})")
     except (OSError, subprocess.TimeoutExpired, ValueError, KeyError, TypeError) as exc:
         lines.append(f"podman {stage}: FAILED ({exc})")
     return lines

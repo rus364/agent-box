@@ -76,3 +76,17 @@ class PodmanDoctorTests(unittest.TestCase):
         text, _ = self.check([result(), result(output=INFO), result(), result(125, error="storage locked")])
         self.assertIn("local image: FAILED", text)
         self.assertNotIn("SKIPPED", text)
+
+    def test_cleanup_timeout_does_not_relabel_a_successful_run(self):
+        text, _ = self.check([result(), result(output=INFO), result(), result(), result(),
+                              subprocess.TimeoutExpired("podman rm", 20)])
+        self.assertIn("run/storage:  OK", text)
+        self.assertIn("cleanup:      FAILED (agent-box-doctor-", text)
+        self.assertNotIn("run/storage: FAILED", text)
+
+    def test_cleanup_failure_preserves_the_original_run_failure(self):
+        text, _ = self.check([result(), result(output=INFO), result(), result(),
+                              result(125, error="runtime failed"), result(125, error="storage locked")])
+        self.assertIn("run/storage: FAILED (runtime failed)", text)
+        self.assertIn("cleanup:      FAILED (agent-box-doctor-", text)
+        self.assertIn("storage locked", text)
