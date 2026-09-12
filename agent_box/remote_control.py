@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import tomllib
 from pathlib import Path
 
 from .errors import AgentBoxError
@@ -22,6 +23,16 @@ from .paths import CODEX_REMOTE_LOCK, SESSION_TEMP_ROOT, expand_user
 
 START_TIMEOUT = 10
 MAX_REPLY = 8 * 1024 * 1024
+PERMISSION_CONFIG = {"approval_policy", "approvals_reviewer", "sandbox_mode", "default_permissions",
+                     "permissions", "network", "sandbox_workspace_write"}
+
+
+def permission_config(value: str) -> bool:
+    # Parse only the key: Codex also accepts bare string values that are not TOML.
+    try:
+        return bool(PERMISSION_CONFIG.intersection(tomllib.loads(value.partition("=")[0] + "=0")))
+    except tomllib.TOMLDecodeError:
+        return False
 
 
 class Unavailable(Exception):
@@ -111,7 +122,11 @@ def codex_commands(command: list[str]) -> tuple[list[str], list[str], Path]:
             cwd = expand_user(value)
             if not cwd.is_absolute():
                 cwd = Path.cwd() / cwd
-        else:
+        elif not (key in {"-s", "--sandbox", "-a", "--ask-for-approval", "--full-auto",
+                           "--dangerously-bypass-approvals-and-sandbox"}
+                  or key in {"-c", "--config"} and permission_config(value)):
+            # Remote resume restores server-owned permissions; explicit TUI
+            # overrides make Codex reject opening any existing remote thread.
             client.extend(consumed)
         if key in {"-c", "--config"}:
             config += ["-c", value]
@@ -150,13 +165,25 @@ def codex_slot():
         os.close(fd)
 
 
-def stop(process: subprocess.Popen) -> None:
-    if process.poll() is None:
-        process.terminate()
-        try:
+def stop(process: subprocess.Popen, *, group: bool = False) -> None:
+    try:
+        if group:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(process.pid, signal.SIGTERM)
+        elif process.poll() is None:
+            process.terminate()
+        if process.poll() is None:
             process.wait(timeout=3)
-        except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired:
+        if not group:
             process.kill()
+    finally:
+        # npm's launcher can die before its Rust child. Only servers we start
+        # in a private session may be cleaned up as a group, never the TUI.
+        if group:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(process.pid, signal.SIGKILL)
+        if process.poll() is None:
             process.wait()
 
 
@@ -284,7 +311,8 @@ def preflight(server: list[str], cwd: Path, log) -> None:
     """Ask Codex for effective layered config/auth without enrolling in RC."""
     env = dict(os.environ, CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED="1")
     process = subprocess.Popen([*server, "--stdio"], cwd=cwd, env=env,
-                               stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log)
+                               stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log,
+                               start_new_session=True)
     try:
         def write(data):
             process.stdin.write(data)
@@ -308,7 +336,7 @@ def preflight(server: list[str], cwd: Path, log) -> None:
         if not isinstance(account, dict) or account.get("type") != "chatgpt":
             raise Unavailable("Codex Remote Control requires ChatGPT login")
     finally:
-        stop(process)
+        stop(process, group=True)
         process.stdin.close()
         process.stdout.close()
 
@@ -329,6 +357,33 @@ def wait_for_client(command: list[str], server: subprocess.Popen | None = None) 
         return process.returncode
     finally:
         stop(process)
+
+
+def paired_client(rpc: Rpc, status: dict) -> bool:
+    environment = status.get("environmentId")
+    if not isinstance(environment, str) or not environment:
+        return False
+    try:
+        clients = rpc.call("remoteControl/client/list", {"environmentId": environment, "limit": 1}).get("data")
+    except Unavailable:
+        return False
+    return (isinstance(clients, list) and any(isinstance(client, dict)
+            and isinstance(client.get("clientId"), str) and client["clientId"] for client in clients))
+
+
+def pairing_notice(rpc: Rpc, status: dict) -> None:
+    if paired_client(rpc, status):
+        print("agent-box: Codex Remote Control has a paired device; open this conversation in the app", file=sys.stderr)
+        return
+    pairing = rpc.call("remoteControl/pairing/start", {"manualCode": True})
+    code = pairing.get("manualPairingCode")
+    if not isinstance(code, str) or not code or len(code) > 256 or not code.isprintable():
+        raise Unavailable("Codex did not provide a manual pairing code")
+    print("\n--- Codex Remote Control ---\n"
+          f"Pairing code: {code}\n"
+          "Use this code in the app if this device needs pairing.\n"
+          "Keep this session running while pairing.\n"
+          "----------------------------\n", file=sys.stderr)
 
 
 def run_codex(command: list[str]) -> int:
@@ -359,18 +414,14 @@ def run_codex(command: list[str]) -> int:
                         status = rpc.call("remoteControl/status/read", {})
                         if status.get("status") not in {"connecting", "connected"}:
                             raise Unavailable("Codex Remote Control is unavailable for this account/configuration")
-                        pairing = rpc.call("remoteControl/pairing/start", {"manualCode": True})
-                        code = pairing.get("manualPairingCode")
-                        if not isinstance(code, str) or not code or len(code) > 256 or not code.isprintable():
-                            raise Unavailable("Codex did not provide a manual pairing code")
-                        print(f"agent-box: Codex Remote Control pairing code: {code}", file=sys.stderr)
+                        pairing_notice(rpc, status)
                     args, tail = options(client)
                     client = [client[0], *args, "--remote", f"unix://{endpoint}", *tail]
-                    print("agent-box: Remote Control requested; pair in the Codex app while this session is running", file=sys.stderr)
+                    print("agent-box: send the first message in the TUI, then open the same conversation in the app", file=sys.stderr)
                     client_started = True
                     return wait_for_client(client, process)
                 finally:
-                    stop(process)
+                    stop(process, group=True)
     except (Unavailable, OSError, ValueError, KeyError) as exc:
         if client_started:
             raise

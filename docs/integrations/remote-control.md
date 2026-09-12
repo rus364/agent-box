@@ -25,18 +25,30 @@ Explicit native `--remote-control` arguments remain the user's responsibility.
 ## Codex
 
 agent-box checks the effective Codex configuration and ChatGPT authentication,
-starts a private app-server alongside the terminal, and prints a short-lived
-manual pairing code for the Codex app. Keep the terminal session running while
-pairing. The code is printed before the terminal UI starts; it remains in the
+starts a private app-server alongside the terminal, and checks the server's
+registered clients. If a paired device is confirmed, no new code is requested.
+Otherwise a separated block offers a short-lived manual pairing code for the
+Codex app; an unavailable client list does not mean pairing was lost.
+Keep the terminal session running while pairing. The code is printed before the terminal UI starts; it remains in the
 terminal/tmux scrollback. Restart the session to obtain a new code if it expires.
 The terminal connects to that server over a private Unix socket. No public port
 is opened and the shared Codex daemon is not started, stopped or reconfigured.
+
+Send the first message in the TUI, then open **that same conversation** on the
+phone. Both clients can display its messages. Creating a new conversation on
+the phone creates a separate thread; the TUI does not automatically switch to
+it. Use `/resume` in the running TUI to select that conversation. The first turn
+also makes a new thread available in saved history. agent-box supplies permission
+settings to the server only: explicit TUI permission overrides cause Codex
+0.154.0 to reject resuming remote tasks. Changing permissions in the TUI can
+still trigger that native restriction.
 
 Only **one agent-box Codex Remote Control session per shared `CODEX_HOME`** is
 allowed, including across workspace containers and host mode. Another launch
 prints a notice and starts normally. Detaching tmux retains the server and its
 slot; exiting releases them. A server crash ends its terminal without replaying
-the prompt. A forced supervisor kill can leave the server holding the slot until
+the prompt. A normal exit stops the private server process group, including its
+npm launcher and a server that exceeds the graceful shutdown timeout. A forced supervisor kill can leave the server holding the slot until
 that server exits; no other session automatically kills it. Separately managed
 native Remote Control daemons do not participate in this lock.
 

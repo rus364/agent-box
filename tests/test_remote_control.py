@@ -120,9 +120,49 @@ class RemoteControlTests(unittest.TestCase):
                 run.assert_called_once_with(command)
                 self.assertIn('ordinary launch', output.getvalue())
 
+    def test_remote_resume_keeps_permissions_on_server_only(self):
+        """Codex rejects remote resume if permission flags remain on its TUI."""
+        for args in (['--sandbox', 'read-only', '-a', 'never'], ['--full-auto'],
+                     ['--dangerously-bypass-approvals-and-sandbox'],
+                     ['-c', 'approval_policy=never', '--config', '"sandbox_mode"="read-only"'],
+                     ['-c', 'permissions.custom.allow=["read"]', '-c', 'network.proxy="local"'],
+                     ['-c', 'sandbox_workspace_write.network_access=true']):
+            with self.subTest(args=args):
+                server, client, _ = rc.codex_commands(['codex', *args, '--model', 'chosen', 'prompt'])
+                self.assertEqual(client[1:4], ['--model', 'chosen', 'prompt'])
+                self.assertEqual(client[4:], ['--cd', str(Path.cwd())])
+                self.assertIn('-c', server)
+        server, client, _ = rc.codex_commands(['codex', '-c', 'tui.theme="dark"', '--', '-a'])
+        self.assertIn('tui.theme="dark"', client)
+        self.assertEqual(client[-2:], ['--', '-a'])
+
+    def test_pairing_uses_registered_clients_not_connected_transport(self):
+        """Transport connection alone does not prove a phone has paired."""
+        for data, paired in (([{'clientId': 'phone'}], True), ([], False),
+                             ([{}], False), (None, False)):
+            rpc = mock.Mock()
+            rpc.call.side_effect = [{'data': data}, {'manualPairingCode': 'TEST-CODE'}]
+            with self.subTest(data=data), contextlib.redirect_stderr(io.StringIO()) as output:
+                rc.pairing_notice(rpc, {'status': 'connected', 'environmentId': 'env'})
+                self.assertEqual('Pairing code:' in output.getvalue(), not paired)
+                rpc.call.assert_any_call('remoteControl/client/list', {'environmentId': 'env', 'limit': 1})
+                self.assertEqual(rpc.call.call_count, 1 if paired else 2)
+
+    def test_unknown_pairing_still_offers_a_separated_code(self):
+        """An unavailable client list must not claim the phone is unpaired."""
+        for status in ({'status': 'connecting'}, {'status': 'connected', 'environmentId': 'env'}):
+            rpc = mock.Mock()
+            rpc.call.side_effect = ([rc.Unavailable('unsupported')] if 'environmentId' in status else []) + [
+                {'manualPairingCode': 'TEST-CODE'}]
+            with self.subTest(status=status), contextlib.redirect_stderr(io.StringIO()) as output:
+                rc.pairing_notice(rpc, status)
+                self.assertIn('--- Codex Remote Control ---\nPairing code: TEST-CODE\n', output.getvalue())
+                self.assertIn('if this device needs pairing.', output.getvalue())
+                self.assertTrue(output.getvalue().endswith('----------------------------\n\n'))
+
 
 FAKE_CODEX = r'''
-import base64, hashlib, json, os, signal, socket, sys, time
+import base64, hashlib, json, os, signal, socket, subprocess, sys, time
 from pathlib import Path
 home = Path(os.environ['CODEX_HOME'])
 args = sys.argv[1:]
@@ -135,7 +175,9 @@ def response(message):
     if method == 'initialize': result = {'userAgent':'fake'}
     elif method == 'config/read': result = {'config': {'model_provider':os.environ.get('RC_TEST_PROVIDER', 'openai')}}
     elif method == 'account/read': result = {'account': {'type':os.environ.get('RC_TEST_ACCOUNT', 'chatgpt')}}
-    elif method == 'remoteControl/status/read': result = {'status':'connected'}
+    elif method == 'remoteControl/status/read': result = {'status':'connected', 'environmentId':'test-env'}
+    elif method == 'remoteControl/client/list':
+        result = {'data': [{'clientId':'test-phone'}] if os.environ.get('RC_TEST_PAIRED') else []}
     elif method == 'remoteControl/pairing/start':
         if os.environ.get('RC_TEST_PAIR_FAIL'): return {'id':message['id'], 'error':{'message':'secret-not-for-output'}}
         result = {'manualPairingCode':'TEST-CODE'}
@@ -148,6 +190,10 @@ if 'app-server' in args:
             result = response(json.loads(line))
             if result is not None: print(json.dumps(result), flush=True)
     else:
+        if os.environ.get('RC_TEST_STUBBORN'):
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)
+            child = subprocess.Popen([sys.executable, '-c', 'import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(60)'])
+            event('descendant', child=child.pid)
         path = args[args.index('--listen') + 1].removeprefix('unix://')
         event('server', path=path)
         with socket.socket(socket.AF_UNIX) as server:
@@ -295,6 +341,15 @@ class CodexLifecycleTests(unittest.TestCase):
         self.assertIn(b'ordinary launch', stderr)
         self.assertNotIn(b'secret-not-for-output', stderr)
 
+    def test_paired_device_needs_no_new_code_to_launch_remotely(self):
+        """An existing pairing remains usable even if issuing new codes fails."""
+        process = self.launch(RC_TEST_PAIRED='1', RC_TEST_PAIR_FAIL='1')
+        self.assertEqual(process.wait(timeout=10), 23)
+        self.assertTrue(self.wait_event('client')['remote'])
+        output = process.stderr.read()
+        self.assertIn(b'has a paired device', output)
+        self.assertNotIn(b'Pairing code:', output)
+
     def test_server_death_ends_only_its_terminal_without_replaying_prompt(self):
         """Restarting the original command after a live server crash could duplicate work."""
         process = self.launch('do work', RC_TEST_WAIT='1')
@@ -304,3 +359,29 @@ class CodexLifecycleTests(unittest.TestCase):
         self.assertEqual(process.wait(timeout=10), 1)
         self.assert_gone(client['pid'])
         self.assertEqual(len([e for e in self.events() if e['kind'] == 'client']), 1)
+
+    def test_timeout_stops_server_group_without_touching_another_session(self):
+        """Killing only an npm-style parent leaves the real server holding the box."""
+        other = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'], start_new_session=True)
+        self.addCleanup(other.wait)
+        self.addCleanup(other.kill)
+        process = self.launch(RC_TEST_STUBBORN='1')
+        descendant = self.wait_event('descendant')['child']
+        try:
+            self.assertEqual(process.wait(timeout=10), 23)
+            server = self.wait_event('server')
+            self.assert_gone(server['pid'])
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline:
+                stat_path = Path(f'/proc/{descendant}/stat')
+                if not stat_path.exists() or stat_path.read_text().split()[2] == 'Z':
+                    break
+                time.sleep(.02)
+            else:
+                self.fail('Server descendant remained running after supervisor exit')
+            self.assertIsNone(other.poll())
+            self.assertFalse(Path(server['path']).parent.exists())
+            self.assertEqual(self.launch().wait(timeout=10), 23)
+        finally:
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(descendant, signal.SIGKILL)
