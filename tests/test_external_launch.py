@@ -78,8 +78,12 @@ class ExternalProcessTests(unittest.TestCase):
                           ('codex', ['--config', '"model_providers"."x".base_url="https://bad"']),
                           ('claude', ['--settings', '{"disableRemoteControl":false}']),
                           ('claude', ['-rfoo']), ('claude', ['--from-pr', '123']),
+                          ('claude', ['-prfoo']), ('claude', ['-pc']),
                           ('claude', ['--session-id', 'a-session']), ('claude', ['--tmux']),
                           ('claude', ['--environment', 'cloud-env']), ('claude', ['respawn', 'id']),
+                          ('claude', ['--name', 'x', 'auth', '--help']),
+                          ('claude', ['--future-value-option', 'x', 'auth']),
+                          ('codex', ['exec', '--model', 'x', 'resume', 'old-id']),
                           ('claude', ['--rc']), ('claude', ['--bg']), ('claude', ['auth', 'login'])]:
             with self.subTest(cli=cli, args=args), self.assertRaises(AgentBoxError):
                 ext.selected_model(config, 'deepseek', cli, args)
@@ -91,6 +95,20 @@ class ExternalProcessTests(unittest.TestCase):
         config.external_providers['deepseek'].enabled = False
         with self.assertRaisesRegex(AgentBoxError, 'disabled'):
             ext.selected_model(config, 'deepseek', 'codex', [])
+
+    def test_fresh_batch_commands_and_print_prompts_remain_supported(self):
+        """Batch work is a new API process, and print prompt text is not a CLI subcommand."""
+        config = external_config()
+        for cli, args in [('codex', ['exec', '--json', 'auth']), ('codex', ['review', '--base', 'main']),
+                          ('codex', ['exec', 'review', 'resume']),
+                          ('claude', ['-p', 'resume']), ('claude', ['-p', 'auth']),
+                          ('claude', ['-pnresume', 'auth']),
+                          ('claude', ['--name', 'auth', '-p', 'hello']), ('claude', ['--', 'auth'])]:
+            with self.subTest(cli=cli, args=args), tempfile.TemporaryDirectory() as tmp:
+                command, _ = ext.prepare([cli, *args], 'deepseek', cli, config, tmp, {})
+                if cli == 'codex':
+                    self.assertIn('model="external-small"', command)
+                    self.assertNotIn('--model', command)
 
     def test_managed_runner_uses_shared_api_preparation_and_keeps_report_protocol(self):
         """Managed calls need the same auth boundary without an interactive RC wrapper."""

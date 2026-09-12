@@ -63,28 +63,40 @@ def connection(config, name, cli):
 def invocation_model(cli, args):
     """Reject endpoint/RC/session-management overrides before any launch side effects."""
     model = None
-    commands = {'agents', 'exec', 'e', 'review', 'login', 'logout', 'auth', 'mcp', 'plugin',
+    commands = ({'agents', 'login', 'logout', 'mcp', 'plugin',
                 'app-server', 'remote-control', 'completion', 'update', 'doctor', 'sandbox',
                 'debug', 'apply', 'a', 'resume', 'fork', 'queue', 'archive', 'delete',
-                'migrate-rollouts', 'unarchive', 'cloud', 'exec-server', 'features', 'help',
+                'migrate-rollouts', 'unarchive', 'cloud', 'exec-server', 'features', 'help'}
+                if cli == 'codex' else {'agents', 'auth', 'mcp', 'plugin', 'doctor',
                 'attach', 'logs', 'stop', 'rm', 'import', 'install', 'auto-mode', 'gateway',
-                'plugins', 'project', 'respawn', 'setup-token', 'kill', 'ultrareview', 'upgrade'}
+                'plugins', 'project', 'respawn', 'setup-token', 'kill', 'ultrareview', 'upgrade', 'update'})
     blocked = ({'--remote', '--remote-auth-token-env', '--oss', '--local-provider', '--profile', '-p'}
                if cli == 'codex' else
                {'--remote-control', '--rc', '--cloud', '--teleport', '--settings', '--setting-sources',
                 '--resume', '-r', '--continue', '-c', '--fork-session', '--from-pr', '--session-id',
                 '--environment', '--tmux', '--background', '--bg'})
-    values = {'--model', '-m', '--config', '-c', '--image', '-i', '--cd', '-C', '--sandbox', '-s',
+    values = ({'--model', '-m', '--config', '-c', '--image', '-i', '--cd', '-C', '--sandbox', '-s',
+              '--output-schema', '--output-last-message', '-o', '--base', '--commit', '--title',
               '--ask-for-approval', '-a', '--add-dir', '--enable', '--disable', '--effort',
+              } if cli == 'codex' else {'--model', '--effort', '--name', '-n', '--add-dir',
               '--mcp-config', '--agent', '--agents', '--permission-mode', '--tools', '--allowedTools',
               '--allowed-tools', '--disallowedTools', '--disallowed-tools', '--append-system-prompt',
-              '--system-prompt', '--output-format', '--input-format', '--json-schema', '--max-turns'}
-    index, positional = 0, False
+              '--system-prompt', '--output-format', '--input-format', '--json-schema', '--max-turns'})
+    index, subcommand, print_mode, positionals = 0, None, False, []
     while index < len(args):
         arg = args[index]
         if arg == '--':
             break
         key, equal, value = arg.partition('=')
+        if cli == 'claude' and arg.startswith('-') and not arg.startswith('--'):
+            for flag in arg[1:]:
+                if flag in 'rc':
+                    raise AgentBoxError('ext cannot resume another session')
+                if flag == 'p':
+                    print_mode = True
+                # These consume the rest as a value, not as more short flags.
+                if flag in 'dnw' or flag not in 'phv':
+                    break
         compact = ('-p',) if cli == 'codex' else ('-r', '-c')
         if (key in blocked or (arg.startswith(compact) and not arg.startswith('--'))
                 or key.startswith('--remote-control')):
@@ -100,6 +112,8 @@ def invocation_model(cli, args):
             value = args[index]
         if key in {'--model', '-m'}:
             model = value
+        if cli == 'claude' and key in {'-p', '--print'}:
+            print_mode = True
         if cli == 'codex' and key in {'-c', '--config'}:
             field = value.partition('=')[0].strip()
             try:
@@ -112,11 +126,21 @@ def invocation_model(cli, args):
                 raise AgentBoxError('ext owns API/model catalog and Remote Control settings; use --model for the model')
         if key in {'--enable', '--disable'} and 'remote' in value:
             raise AgentBoxError('ext cannot override Remote Control features')
-        if not arg.startswith('-') and not positional:
-            if arg in commands:
-                raise AgentBoxError('ext starts a new CLI session; service, authentication and resume commands are unsupported')
-            positional = True
+        if not arg.startswith('-'):
+            if cli == 'codex' and subcommand is None and not positionals and arg in {'exec', 'e', 'review'}:
+                subcommand = arg
+                commands = {'resume'} if arg in {'exec', 'e'} else set()
+            elif cli == 'codex' and subcommand in {'exec', 'e'} and not positionals and arg == 'review':
+                subcommand, commands = 'review', set()
+            else:
+                # Check every unconsumed positional: an unknown value-taking option
+                # must not hide a following management command.
+                positionals.append(arg)
+                if cli == 'codex' and arg in commands:
+                    raise AgentBoxError('ext cannot run service, authentication or resume commands')
         index += 1
+    if cli == 'claude' and not print_mode and any(arg in commands for arg in positionals):
+        raise AgentBoxError('ext cannot run service, authentication or resume commands')
     return model
 
 
@@ -164,13 +188,12 @@ def prepare(command, name, cli, config, directory, environment, *, model=None):
         table = ('name="agent-box external", base_url=' + json.dumps(endpoint.url) +
                  ', env_key=' + json.dumps(API_ENV) + ', wire_api="responses", '
                  'requires_openai_auth=false, supports_websockets=false')
-        overrides = ['model_provider="agent_box_external"',
+        overrides = ['model=' + json.dumps(model), 'model_provider="agent_box_external"',
                      'model_providers.agent_box_external={' + table + '}',
                      'forced_login_method="api"', 'model_catalog_json=' + json.dumps(str(path)),
                      'web_search="disabled"']
         # Global -c options precede a possible managed exec subcommand.
-        return [command[0], *[arg for value in overrides for arg in ('-c', value)],
-                *before, *([] if model_option(before, cli) else ['--model', model]), *tail], env
+        return [command[0], *[arg for value in overrides for arg in ('-c', value)], *before, *tail], env
     clean = {k: '' for k in _AUTH_NAMES | {k for k in original if k.startswith('ANTHROPIC_')}}
     clean.update({'ANTHROPIC_API_KEY': spec.api_key, 'ANTHROPIC_BASE_URL': endpoint.url,
                   'ANTHROPIC_MODEL': model, 'ANTHROPIC_DEFAULT_MODEL': model})
