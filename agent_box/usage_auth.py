@@ -12,6 +12,12 @@ from .errors import AgentBoxError
 
 CLAUDE_TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
 CLAUDE_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+# Claude Code 2.1.267 permits only these custom OAuth origins for renewal.
+CLAUDE_CUSTOM_ORIGINS = frozenset({
+    "https://beacon.claude-ai.staging.ant.dev",
+    "https://claude.fedstart.com",
+    "https://claude-staging.fedstart.com",
+})
 
 
 def credentials(path: Path) -> dict:
@@ -69,46 +75,51 @@ def credential_lock(path: Path, lifetime: float):
 
 def refresh(path: Path, previous: dict, request, *, force: bool = False) -> dict:
     """Re-read under Claude's locks and replace only the unchanged OAuth entry."""
-    if path.is_symlink():
-        raise AgentBoxError("Claude credential symlink cannot be refreshed")
-    with credential_lock(path.parent / ".oauth_refresh.lock", 45) as verify_refresh, \
-            credential_lock(path.parent / ".storage-write.lock", 10) as verify_storage:
-        current = credentials(path)
-        oauth = current["claudeAiOauth"]
-        if oauth != previous or (not force and not expired(oauth)):
-            return oauth
-        token = oauth.get("refreshToken")
-        if not isinstance(token, str) or not token:
-            raise AgentBoxError("Claude refresh token missing; sign in with Claude")
-        body = {"grant_type": "refresh_token", "refresh_token": token,
-                "client_id": oauth.get("clientId") or os.environ.get("CLAUDE_CODE_OAUTH_CLIENT_ID") or CLAUDE_CLIENT_ID}
-        scopes = oauth.get("scopes")
-        if isinstance(scopes, list) and scopes and all(isinstance(s, str) for s in scopes):
-            body["scope"] = " ".join(scopes)
-        custom = os.environ.get("CLAUDE_CODE_CUSTOM_OAUTH_URL")
-        token_url = custom.rstrip("/") + "/v1/oauth/token" if custom else CLAUDE_TOKEN_URL
-        result = request(token_url, body)
-        if not isinstance(result, dict):
-            raise AgentBoxError("Claude token refresh returned an invalid response")
-        access = result.get("access_token")
-        replacement = result.get("refresh_token", token)
-        seconds = result.get("expires_in")
-        if (not isinstance(access, str) or not access or not isinstance(replacement, str) or not replacement
-                or type(seconds) not in (int, float) or not math.isfinite(seconds) or seconds <= 0):
-            raise AgentBoxError("Claude token refresh returned an invalid response")
-        updated = {**oauth, "accessToken": access, "refreshToken": replacement,
-                   "expiresAt": int(time.time() * 1000 + seconds * 1000)}
-        if isinstance(result.get("scope"), str):
-            updated["scopes"] = result["scope"].split()
-        refresh_seconds = result.get("refresh_token_expires_in")
-        if type(refresh_seconds) in (int, float) and math.isfinite(refresh_seconds) and refresh_seconds > 0:
-            updated["refreshTokenExpiresAt"] = int(time.time() * 1000 + refresh_seconds * 1000)
-        verify_refresh()
-        verify_storage()
-        current = credentials(path)
-        if current["claudeAiOauth"] != oauth:
-            return current["claudeAiOauth"]
+    try:
         if path.is_symlink():
             raise AgentBoxError("Claude credential symlink cannot be refreshed")
-        atomic_write_json(path, {**current, "claudeAiOauth": updated}, 0o600)
-        return updated
+        with credential_lock(path.parent / ".oauth_refresh.lock", 45) as verify_refresh, \
+                credential_lock(path.parent / ".storage-write.lock", 10) as verify_storage:
+            current = credentials(path)
+            oauth = current["claudeAiOauth"]
+            if oauth != previous or (not force and not expired(oauth)):
+                return oauth
+            token = oauth.get("refreshToken")
+            if not isinstance(token, str) or not token:
+                raise AgentBoxError("Claude refresh token missing; sign in with Claude")
+            body = {"grant_type": "refresh_token", "refresh_token": token,
+                    "client_id": oauth.get("clientId") or os.environ.get("CLAUDE_CODE_OAUTH_CLIENT_ID") or CLAUDE_CLIENT_ID}
+            scopes = oauth.get("scopes")
+            if isinstance(scopes, list) and scopes and all(isinstance(s, str) for s in scopes):
+                body["scope"] = " ".join(scopes)
+            custom = os.environ.get("CLAUDE_CODE_CUSTOM_OAUTH_URL")
+            if custom and custom.rstrip("/") not in CLAUDE_CUSTOM_ORIGINS:
+                raise AgentBoxError("Claude token refresh refused: custom OAuth origin is not approved by Claude")
+            token_url = custom.rstrip("/") + "/v1/oauth/token" if custom else CLAUDE_TOKEN_URL
+            result = request(token_url, body)
+            if not isinstance(result, dict):
+                raise AgentBoxError("Claude token refresh returned an invalid response")
+            access = result.get("access_token")
+            replacement = result.get("refresh_token", token)
+            seconds = result.get("expires_in")
+            if (not isinstance(access, str) or not access or not isinstance(replacement, str) or not replacement
+                    or type(seconds) not in (int, float) or not math.isfinite(seconds) or seconds <= 0):
+                raise AgentBoxError("Claude token refresh returned an invalid response")
+            updated = {**oauth, "accessToken": access, "refreshToken": replacement,
+                       "expiresAt": int(time.time() * 1000 + seconds * 1000)}
+            if isinstance(result.get("scope"), str):
+                updated["scopes"] = result["scope"].split()
+            refresh_seconds = result.get("refresh_token_expires_in")
+            if type(refresh_seconds) in (int, float) and math.isfinite(refresh_seconds) and refresh_seconds > 0:
+                updated["refreshTokenExpiresAt"] = int(time.time() * 1000 + refresh_seconds * 1000)
+            verify_refresh()
+            verify_storage()
+            current = credentials(path)
+            if current["claudeAiOauth"] != oauth:
+                return current["claudeAiOauth"]
+            if path.is_symlink():
+                raise AgentBoxError("Claude credential symlink cannot be refreshed")
+            atomic_write_json(path, {**current, "claudeAiOauth": updated}, 0o600)
+            return updated
+    except OSError:
+        raise AgentBoxError("Claude credentials could not be updated; check file permissions and locks") from None

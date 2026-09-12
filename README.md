@@ -490,6 +490,8 @@ only after expiry or HTTP 401, at most once per call; there is no background
 refresh. Status-line reads never renew credentials. A busy credential lock or
 failed renewal returns an error; usage-aware routing keeps its static-weight
 fallback when fresh comparable usage is unavailable.
+Renewal honors Claude's approved custom OAuth origins; an arbitrary usage
+endpoint override never receives a refresh token.
 
 Claude Code can also use:
 

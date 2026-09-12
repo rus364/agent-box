@@ -288,24 +288,24 @@ class UsageAuthTests(unittest.TestCase):
     def test_custom_oauth_credentials_never_go_to_default_refresh_endpoint(self):
         """Custom-server refresh credentials must not be sent to the default server."""
         self.expire()
-        with mock.patch.dict(os.environ, {'CLAUDE_CODE_CUSTOM_OAUTH_URL': 'https://example.invalid/'}), \
+        with mock.patch.dict(os.environ, {'CLAUDE_CODE_CUSTOM_OAUTH_URL': 'https://claude.fedstart.com/'}), \
                 mock.patch.object(usage, 'http_json', side_effect=[self.renewal, self.live, self.live]) as http:
             self.assertTrue(self.snapshot()['fresh'])
             self.assertTrue(self.snapshot()['fresh'])
         self.assertEqual([c.args[0] for c in http.call_args_list], [
-            'https://example.invalid/v1/oauth/token',
-            'https://example.invalid/api/oauth/usage',
-            'https://example.invalid/api/oauth/usage'])
+            'https://claude.fedstart.com/v1/oauth/token',
+            'https://claude.fedstart.com/api/oauth/usage',
+            'https://claude.fedstart.com/api/oauth/usage'])
 
     def test_custom_endpoint_401_uses_its_own_token_endpoint(self):
         """Server rejection must recover on the configured server, without a default-server fallback."""
-        with mock.patch.dict(os.environ, {'CLAUDE_CODE_CUSTOM_OAUTH_URL': 'https://example.invalid'}), \
+        with mock.patch.dict(os.environ, {'CLAUDE_CODE_CUSTOM_OAUTH_URL': 'https://claude.fedstart.com'}), \
                 mock.patch.object(usage, 'http_json', side_effect=[self.rejected(), self.renewal, self.live]) as http:
             self.assertTrue(self.snapshot()['fresh'])
         self.assertEqual([c.args[0] for c in http.call_args_list], [
-            'https://example.invalid/api/oauth/usage',
-            'https://example.invalid/v1/oauth/token',
-            'https://example.invalid/api/oauth/usage'])
+            'https://claude.fedstart.com/api/oauth/usage',
+            'https://claude.fedstart.com/v1/oauth/token',
+            'https://claude.fedstart.com/api/oauth/usage'])
 
     def test_renewal_uses_the_credentials_client_or_configured_claude_client(self):
         """Refresh grants must identify the client that owns the credentials."""
@@ -319,6 +319,35 @@ class UsageAuthTests(unittest.TestCase):
                 self.assertTrue(self.snapshot()['fresh'])
             self.assertEqual(json.loads(http.call_args_list[0].kwargs['data'])['client_id'],
                              stored or 'configured-client')
+
+    def test_unapproved_custom_origin_never_receives_refresh_credentials(self):
+        """An access-token override must not also expose reusable refresh credentials."""
+        for renewing in (False, True):
+            if renewing:
+                self.expire()
+            with self.subTest(renewing=renewing), \
+                    mock.patch.dict(os.environ, {'CLAUDE_CODE_CUSTOM_OAUTH_URL': 'https://example.invalid'}), \
+                    mock.patch.object(usage, 'http_json', side_effect=self.rejected()) as http:
+                result = self.snapshot()
+            self.assertFalse(result['fresh'])
+            self.assertIn('not approved', result['error'])
+            self.assertEqual(http.call_count, 0 if renewing else 1)
+            self.assertTrue(all(c.kwargs.get('data') is None for c in http.call_args_list))
+
+    def test_credential_lock_and_save_errors_are_distinct_from_network_errors(self):
+        """Local storage failures need file diagnostics without exposing exception details."""
+        self.expire()
+        before = self.auth.read_bytes()
+        for operation in ('credential_lock', 'atomic_write_json'):
+            with self.subTest(operation=operation), \
+                    mock.patch.object(usage_auth, operation, side_effect=OSError('SECRET')), \
+                    mock.patch.object(usage, 'http_json', return_value=self.renewal):
+                result = self.snapshot()
+            self.assertFalse(result['fresh'])
+            self.assertIn('credentials could not be updated', result['error'])
+            self.assertNotIn('network', result['error'])
+            self.assertNotIn('SECRET', result['error'])
+            self.assertEqual(self.auth.read_bytes(), before)
 
     def test_diagnostics_never_include_network_or_response_secrets(self):
         """Exceptions may contain credentials or URLs unsuitable for public diagnostics."""

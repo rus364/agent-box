@@ -336,7 +336,7 @@ def usage_snapshot(provider, no_cache=False, *, allow_refresh=True):
         elif isinstance(exc, PermissionError):
             error = "Credentials unreadable"
         elif isinstance(exc, (OSError, http.client.HTTPException)):
-            error = "Usage request failed: network or file I/O error"
+            error = "Usage request failed: network error"
         else:
             error = "Invalid usage response"
         return {"provider": provider, "fresh": False, "source": "cache" if cached else "unavailable",
