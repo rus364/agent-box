@@ -29,8 +29,9 @@ starts a private app-server alongside the terminal, and checks the server's
 registered clients. If a paired device is confirmed, no new code is requested.
 Otherwise a separated block offers a short-lived manual pairing code for the
 Codex app; an unavailable client list does not mean pairing was lost.
-Keep the terminal session running while pairing. The code is printed before the terminal UI starts; it remains in the
-terminal/tmux scrollback. Restart the session to obtain a new code if it expires.
+Keep the terminal session running while pairing. The code is printed before the
+terminal UI starts; it remains in the terminal/tmux scrollback. Restart the
+session to obtain a new code if it expires.
 The terminal connects to that server over a private Unix socket. No public port
 is opened and the shared Codex daemon is not started, stopped or reconfigured.
 
@@ -44,17 +45,18 @@ permission overrides, including agent-box's container permission flag. Removing
 that flag changes new-thread permissions: the TUI sends its own settings over
 the server defaults. agent-box therefore preserves the requested permissions.
 Starting a conversation in the TUI and opening that same conversation on the
-phone avoids this resume restriction. An empty server-created thread cannot
-bootstrap remote resume either: Codex requires a saved rollout first.
+phone avoids this resume restriction. Opening a separate phone-created thread
+through `/resume` with these flags remains unsupported in this Codex version.
 
 Only **one agent-box Codex Remote Control session per shared `CODEX_HOME`** is
 allowed, including across workspace containers and host mode. Another launch
 prints a notice and starts normally. Detaching tmux retains the server and its
 slot; exiting releases them. A server crash ends its terminal without replaying
 the prompt. A normal exit stops the private server process group, including its
-npm launcher and a server that exceeds the graceful shutdown timeout. A forced supervisor kill can leave the server holding the slot until
-that server exits; no other session automatically kills it. Separately managed
-native Remote Control daemons do not participate in this lock.
+npm launcher and a server that exceeds the graceful shutdown timeout. A forced
+supervisor kill can leave the server holding the slot until that server exits;
+no other session automatically kills it. Separately managed native Remote
+Control daemons do not participate in this lock.
 
 The following also use the ordinary launch, preserving the original arguments:
 
