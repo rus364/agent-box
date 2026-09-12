@@ -466,6 +466,7 @@ All off by default and independent of each other. See
 - **[Workflow](docs/integrations/workflow.md)** — sequential tracked work, configurable provider/model routing, fresh review and parent GitHub PRs.
 - **[Agent browser](docs/integrations/browser.md)** — a headless browser inside the box for agents to drive.
 - **[Telegram](docs/integrations/telegram.md)** — Anthropic's official control channel, plus one-way notifications.
+- **[Remote Control](docs/integrations/remote-control.md)** — optional native remote access for new Claude/Codex sessions, with ordinary-launch fallback.
 - **[Git and GitHub](docs/integrations/git.md)** — what of your Git and GitHub setup reaches a session.
 
 ## Usage and status line

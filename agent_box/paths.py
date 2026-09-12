@@ -97,6 +97,9 @@ CONFIG_ROOT = env_path("AGENT_BOX_CONFIG_DIR", XDG_CONFIG_HOME / "agent-box")
 HOST_SESSIONS_ROOT = STATE_ROOT / "runtime/host-sessions"
 HOST_TMUX_CONFIG = Path(__file__).with_name("tmux.conf")
 HOST_SESSION_RUNNER = Path(__file__).with_name("host_session.py")
+LOCAL_LAUNCHER = Path(__file__).resolve().parent.parent / "agent-box"
+# Unix sockets need a short path; ignore caller-controlled TMPDIR.
+SESSION_TEMP_ROOT = Path("/tmp")
 
 BUILD_STATE = STATE_ROOT / "build"
 TOOLS_REFRESH_FILE = BUILD_STATE / "tools-refresh"
@@ -121,6 +124,8 @@ CHANNEL_LOCK = STATE_ROOT / "runtime/telegram-channel.json"
 
 CLAUDE_HOME = env_path("CLAUDE_CONFIG_DIR", HOST_HOME / ".claude")
 CODEX_HOME = env_path("CODEX_HOME", HOST_HOME / ".codex")
+# Shared with host and other boxes that mount this same provider home.
+CODEX_REMOTE_LOCK = CODEX_HOME / ".agent-box-remote-control.lock"
 CODEX_PLUGIN_CACHE = CODEX_HOME / "plugins/cache"
 
 # The shared agent tree. ``skills/`` under it is the canonical location both

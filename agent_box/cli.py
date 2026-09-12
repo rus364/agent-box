@@ -539,6 +539,12 @@ HOST_ONLY_AGENTS = {"claude", "codex"}
 
 
 def main() -> None:
+    if sys.argv[1:2] == ["_session"]:
+        from . import remote_control
+        try:
+            raise SystemExit(remote_control.main(sys.argv[2:]))
+        except (AgentBoxError, OSError) as exc:
+            die(str(exc))
     from . import project_config
     try:
         project_config.load()

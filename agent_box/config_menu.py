@@ -28,6 +28,9 @@ HELP = {
     "claude": "Claude host integration settings. Changes are applied only after Save and apply.",
     "claude.telegram_channel": "Start Claude with Anthropic's official Telegram channel plugin. This requires its host-side setup and exposes the session through that channel.",
     "claude.statusline": "Keep Claude's status line pointed at agent-box. An existing user-owned status line is never overwritten.",
+    "claude.remote_control": "Request Remote Control for new interactive Claude sessions, including --host. Off preserves native behavior. Resume and explicit settings use the ordinary launch. Requires eligible Claude login.",
+    "codex": "Codex interactive session settings, including --host.",
+    "codex.remote_control": "Request Remote Control through a private app-server; one agent-box RC session per CODEX_HOME. Unsupported launches keep the ordinary CLI. Off leaves native behavior unchanged.",
     "notifications": "Outbound Telegram completion notifications. The bot token and chat ID stay disabled until this section is enabled and fully configured.",
     "notifications.enabled": "Send outbound completion notifications through Telegram when a bot token and chat ID are configured.",
     "notifications.telegram_token": "Telegram bot token used only for outbound notifications. The value is masked in the menu and saved in the protected config file.",
@@ -112,7 +115,7 @@ MENU_GROUPS = {
         ("Tracked work", ("workflow", "tracker")),
         ("Workspace", ("image", "browser", "env")),
         ("Host access", ("providers", "github", "git")),
-        ("Host integrations", ("claude", "skills", "notifications")),
+        ("Host integrations", ("claude", "codex", "skills", "notifications")),
     ),
     ("workflow",): (
         ("Workflow", ("enabled",)),

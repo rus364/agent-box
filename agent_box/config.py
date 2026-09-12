@@ -66,6 +66,8 @@ def _is_env_name(name: str) -> bool:
 
 @dataclass
 class ClaudeConfig:
+    #: Remote access is opt-in and applies to new interactive launches only.
+    remote_control: bool = False
     #: Start `agent-box claude` with --channels plugin:telegram@claude-plugins-official.
     telegram_channel: bool = False
     #: Keep Claude's ``statusLine`` pointed at ``agent-box statusline``.
@@ -79,14 +81,29 @@ class ClaudeConfig:
     statusline: bool = True
 
     def to_dict(self) -> dict[str, Any]:
-        return {"telegram_channel": self.telegram_channel, "statusline": self.statusline}
+        return {"telegram_channel": self.telegram_channel, "statusline": self.statusline,
+                "remote_control": self.remote_control}
 
     @classmethod
     def from_dict(cls, data: Any) -> "ClaudeConfig":
         return cls(
+            remote_control=_bool(data, "remote_control", False),
             telegram_channel=_bool(data, "telegram_channel", False),
             statusline=_bool(data, "statusline", True),
         )
+
+
+@dataclass
+class CodexConfig:
+    #: Remote access is opt-in; a session never switches the shared daemon.
+    remote_control: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"remote_control": self.remote_control}
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "CodexConfig":
+        return cls(remote_control=_bool(data, "remote_control", False))
 
 
 @dataclass
@@ -696,6 +713,7 @@ class WorkflowConfig:
 @dataclass
 class Config:
     claude: ClaudeConfig = field(default_factory=ClaudeConfig)
+    codex: CodexConfig = field(default_factory=CodexConfig)
     notifications: NotificationsConfig = field(default_factory=NotificationsConfig)
     github: GitHubConfig = field(default_factory=GitHubConfig)
     git: GitConfig = field(default_factory=GitConfig)
@@ -712,6 +730,7 @@ class Config:
         return {
             "version": VERSION,
             "claude": self.claude.to_dict(),
+            "codex": self.codex.to_dict(),
             "notifications": self.notifications.to_dict(),
             "github": self.github.to_dict(),
             "git": self.git.to_dict(),
@@ -731,6 +750,7 @@ class Config:
             return cls()
         return cls(
             claude=ClaudeConfig.from_dict(data.get("claude")),
+            codex=CodexConfig.from_dict(data.get("codex")),
             notifications=NotificationsConfig.from_dict(data.get("notifications")),
             github=GitHubConfig.from_dict(data.get("github")),
             git=GitConfig.from_dict(data.get("git")),

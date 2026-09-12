@@ -570,6 +570,26 @@ class ClaudeNotifyHookLifecycleTests(IsolatedRuntimeTest):
 
 class HostModeTests(IsolatedRuntimeTest):
 
+    def test_interactive_host_launch_captures_remote_mode_for_the_new_session(self):
+        for agent in ("claude", "codex"):
+            for enabled in (False, True):
+                config = Config()
+                getattr(config, agent).remote_control = enabled
+                with self.subTest(agent=agent, enabled=enabled), tempfile.TemporaryDirectory() as tmp, \
+                     mock.patch.object(runtime.shutil, "which", return_value=f"/usr/bin/{agent}"), \
+                     mock.patch.object(runtime, "resolve_workspace", return_value=Workspace(Path(tmp), Path(tmp))), \
+                     mock.patch.object(runtime, "launch_config", return_value=config), \
+                     mock.patch.object(runtime, "tmux_enabled", return_value=False), \
+                     mock.patch.object(runtime.sys.stdin, "isatty", return_value=True), \
+                     mock.patch.object(runtime.sys.stdout, "isatty", return_value=True), \
+                     mock.patch.object(runtime.subprocess, "call", return_value=0) as call:
+                    runtime.host_main(agent, ["--model", "example"])
+                    command = [f"/usr/bin/{agent}", "--model", "example"]
+                    if enabled:
+                        self.assertEqual(call.call_args.args[0][2:], ["_session", agent, *command])
+                    else:
+                        self.assertEqual(call.call_args.args[0], command)
+
     def test_host_session_metadata_wins_over_user_assignments_without_dropping_custom_env(self):
         """The child must read the generated session snapshot, not an env.set substitute."""
         from agent_box.config import effective_config

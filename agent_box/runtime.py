@@ -56,6 +56,7 @@ from .paths import (
     HOST_HOME,
     HOST_SESSIONS_ROOT,
     HOST_SESSION_RUNNER,
+    LOCAL_LAUNCHER,
     MANAGED_SKILLS_SOURCE,
     NOTIFY_CREDENTIALS,
     NOTIFY_STATE_ROOT,
@@ -2366,6 +2367,8 @@ def runtime_main(
                 command = ["claude", *rest]
         else:
             command = codex_command(rest, config, browser_dir)
+        if remote_control_invocation(agent, rest):
+            command = remote_control_command(command, agent, config, container=True)
         spec = workspace_container_spec(workspace, extra_mounts, script_dir, config)
         invocation, process_env = invocation_env(config, agent)
         # Channel/workflow values are invocation policy, not box identity.
@@ -2722,12 +2725,31 @@ def host_main(
         del env[key]
 
     command = [executable, *rest]
+    if remote_control_invocation(agent, rest):
+        command = remote_control_command(command, agent, config, container=False)
     if tmux_enabled(agent) and host_interactive_invocation(agent, rest):
         tmux = shutil.which("tmux")
         if tmux is not None:
             return host_tmux_launch(workspace, agent, command, env, tmux)
         warn("tmux not found; starting directly without detach/attach support")
     return subprocess.call(command, cwd=str(workspace.cwd), env=env)
+
+
+def remote_control_command(command: list[str], agent: str, config: Config, *, container: bool) -> list[str]:
+    if not getattr(config, agent).remote_control:
+        return command
+    launcher = CONTAINER_LAUNCHER_ROOT / "agent-box" if container else LOCAL_LAUNCHER
+    return ["python3" if container else sys.executable, str(launcher), "_session",
+            agent, *command]
+
+
+def remote_control_invocation(agent: str, rest: list[str]) -> bool:
+    if agent not in {"claude", "codex"} or not (sys.stdin.isatty() and sys.stdout.isatty()):
+        return False
+    flags = rest[:rest.index("--")] if "--" in rest else rest
+    if agent == "claude" and any(arg in _CLAUDE_BACKGROUND_FLAGS for arg in flags):
+        return False
+    return host_interactive_invocation(agent, rest)
 
 
 def host_interactive_invocation(agent: str, rest: list[str]) -> bool:
