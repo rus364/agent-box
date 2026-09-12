@@ -15,7 +15,6 @@ import subprocess
 import sys
 import tempfile
 import time
-import tomllib
 from pathlib import Path
 
 from .errors import AgentBoxError
@@ -23,16 +22,6 @@ from .paths import CODEX_REMOTE_LOCK, SESSION_TEMP_ROOT, expand_user
 
 START_TIMEOUT = 10
 MAX_REPLY = 8 * 1024 * 1024
-PERMISSION_CONFIG = {"approval_policy", "approvals_reviewer", "sandbox_mode", "default_permissions",
-                     "permissions", "network", "sandbox_workspace_write"}
-
-
-def permission_config(value: str) -> bool:
-    # Parse only the key: Codex also accepts bare string values that are not TOML.
-    try:
-        return bool(PERMISSION_CONFIG.intersection(tomllib.loads(value.partition("=")[0] + "=0")))
-    except tomllib.TOMLDecodeError:
-        return False
 
 
 class Unavailable(Exception):
@@ -122,11 +111,9 @@ def codex_commands(command: list[str]) -> tuple[list[str], list[str], Path]:
             cwd = expand_user(value)
             if not cwd.is_absolute():
                 cwd = Path.cwd() / cwd
-        elif not (key in {"-s", "--sandbox", "-a", "--ask-for-approval", "--full-auto",
-                           "--dangerously-bypass-approvals-and-sandbox"}
-                  or key in {"-c", "--config"} and permission_config(value)):
-            # Remote resume restores server-owned permissions; explicit TUI
-            # overrides make Codex reject opening any existing remote thread.
+        else:
+            # Remote thread/start sends TUI permissions over server defaults.
+            # Dropping these flags would silently change new-thread permissions.
             client.extend(consumed)
         if key in {"-c", "--config"}:
             config += ["-c", value]

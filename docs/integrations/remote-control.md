@@ -37,11 +37,15 @@ is opened and the shared Codex daemon is not started, stopped or reconfigured.
 Send the first message in the TUI, then open **that same conversation** on the
 phone. Both clients can display its messages. Creating a new conversation on
 the phone creates a separate thread; the TUI does not automatically switch to
-it. Use `/resume` in the running TUI to select that conversation. The first turn
-also makes a new thread available in saved history. agent-box supplies permission
-settings to the server only: explicit TUI permission overrides cause Codex
-0.154.0 to reject resuming remote tasks. Changing permissions in the TUI can
-still trigger that native restriction.
+it. The first turn also makes a new thread available in saved history.
+
+Codex 0.154.0 rejects `/resume` of a remote thread when the TUI has explicit
+permission overrides, including agent-box's container permission flag. Removing
+that flag changes new-thread permissions: the TUI sends its own settings over
+the server defaults. agent-box therefore preserves the requested permissions.
+Starting a conversation in the TUI and opening that same conversation on the
+phone avoids this resume restriction. An empty server-created thread cannot
+bootstrap remote resume either: Codex requires a saved rollout first.
 
 Only **one agent-box Codex Remote Control session per shared `CODEX_HOME`** is
 allowed, including across workspace containers and host mode. Another launch

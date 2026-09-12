@@ -120,8 +120,8 @@ class RemoteControlTests(unittest.TestCase):
                 run.assert_called_once_with(command)
                 self.assertIn('ordinary launch', output.getvalue())
 
-    def test_remote_resume_keeps_permissions_on_server_only(self):
-        """Codex rejects remote resume if permission flags remain on its TUI."""
+    def test_new_remote_threads_keep_explicit_permissions_on_both_clients(self):
+        """TUI thread/start overrides server defaults, so it must retain requested rights."""
         for args in (['--sandbox', 'read-only', '-a', 'never'], ['--full-auto'],
                      ['--dangerously-bypass-approvals-and-sandbox'],
                      ['-c', 'approval_policy=never', '--config', '"sandbox_mode"="read-only"'],
@@ -129,8 +129,8 @@ class RemoteControlTests(unittest.TestCase):
                      ['-c', 'sandbox_workspace_write.network_access=true']):
             with self.subTest(args=args):
                 server, client, _ = rc.codex_commands(['codex', *args, '--model', 'chosen', 'prompt'])
-                self.assertEqual(client[1:4], ['--model', 'chosen', 'prompt'])
-                self.assertEqual(client[4:], ['--cd', str(Path.cwd())])
+                self.assertEqual(client[1:1 + len(args)], args)
+                self.assertEqual(client[1 + len(args):], ['--model', 'chosen', 'prompt', '--cd', str(Path.cwd())])
                 self.assertIn('-c', server)
         server, client, _ = rc.codex_commands(['codex', '-c', 'tui.theme="dark"', '--', '-a'])
         self.assertIn('tui.theme="dark"', client)
