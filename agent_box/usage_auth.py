@@ -14,8 +14,6 @@ CLAUDE_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 
 
 def credentials(path: Path) -> dict:
-    if path.is_symlink():
-        raise AgentBoxError("Claude credential symlink cannot be refreshed")
     try:
         data = read_json(path)
     except FileNotFoundError:
@@ -70,6 +68,8 @@ def credential_lock(path: Path, lifetime: float):
 
 def refresh(path: Path, previous: dict, request, *, force: bool = False) -> dict:
     """Re-read under Claude's locks and replace only the unchanged OAuth entry."""
+    if path.is_symlink():
+        raise AgentBoxError("Claude credential symlink cannot be refreshed")
     with credential_lock(path.parent / ".oauth_refresh.lock", 45) as verify_refresh, \
             credential_lock(path.parent / ".storage-write.lock", 10) as verify_storage:
         current = credentials(path)
@@ -105,5 +105,7 @@ def refresh(path: Path, previous: dict, request, *, force: bool = False) -> dict
         current = credentials(path)
         if current["claudeAiOauth"] != oauth:
             return current["claudeAiOauth"]
+        if path.is_symlink():
+            raise AgentBoxError("Claude credential symlink cannot be refreshed")
         atomic_write_json(path, {**current, "claudeAiOauth": updated}, 0o600)
         return updated

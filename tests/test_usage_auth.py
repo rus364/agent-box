@@ -58,6 +58,41 @@ class UsageAuthTests(unittest.TestCase):
         self.assertIsNone(http.call_args.kwargs.get('data'))
         self.assertEqual(self.auth.read_bytes(), before)
 
+    def test_valid_symlink_credentials_are_reused_without_refresh(self):
+        """A read-only usage request must preserve working user-owned links."""
+        target = self.root / 'credentials-target.json'
+        self.auth.rename(target)
+        self.auth.symlink_to(target)
+        before = target.read_bytes()
+        with mock.patch.object(usage, 'http_json', return_value=self.live) as http:
+            self.assertTrue(self.snapshot()['fresh'])
+        self.assertEqual(http.call_count, 1)
+        self.assertIsNone(http.call_args.kwargs.get('data'))
+        self.assertTrue(self.auth.is_symlink())
+        self.assertEqual(target.read_bytes(), before)
+
+    def test_refresh_never_replaces_a_credential_symlink(self):
+        """Renewal must preserve links present initially or created during HTTP."""
+        self.expire()
+        target = self.root / 'credentials-target.json'
+        before = self.auth.read_bytes()
+        def link():
+            self.auth.rename(target)
+            self.auth.symlink_to(target)
+        def response(*args):
+            link()
+            return self.renewal
+        with self.assertRaisesRegex(AgentBoxError, 'symlink cannot be refreshed'):
+            usage_auth.refresh(self.auth, self.oauth, response)
+        self.assertTrue(self.auth.is_symlink())
+        self.assertEqual(target.read_bytes(), before)
+        with mock.patch.object(usage, 'http_json') as http:
+            result = self.snapshot()
+        self.assertFalse(result['fresh'])
+        http.assert_not_called()
+        self.assertTrue(self.auth.is_symlink())
+        self.assertEqual(target.read_bytes(), before)
+
     def test_expired_token_refreshes_once_and_next_call_reuses_it(self):
         """Persist rotated tokens so repeated explicit reads do not refresh again."""
         self.expire()
