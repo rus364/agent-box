@@ -15,6 +15,7 @@ import ipaddress
 import json
 import os
 import re
+import shlex
 import shutil
 import socket
 import subprocess
@@ -47,6 +48,7 @@ from .paths import (
     CODEX_HOME,
     CODEX_PLUGIN_CACHE,
     CONFIG_ROOT,
+    CONTAINER_LAUNCHER_ROOT,
     CONTAINER_NOTIFY_CREDENTIALS,
     CONTAINER_TRACKER_RUNTIME_DIR,
     CONTAINER_POLICY_RUNTIME_DIR,
@@ -77,7 +79,7 @@ WORKSPACE_CONTAINER_WORKSPACE_LABEL = "io.agent-box.workspace"
 WORKSPACE_CONTAINER_BASE_CONFIG_LABEL = "io.agent-box.base-config-hash"
 WORKSPACE_CONTAINER_EXTRA_MOUNTS_LABEL = "io.agent-box.extra-mounts-hash"
 WORKSPACE_CONTAINER_SCHEMA_LABEL = "io.agent-box.schema"
-KEEPER_PATH = HOST_HOME / ".local/lib/agent-box/agent_box/keeper.sh"
+KEEPER_PATH = CONTAINER_LAUNCHER_ROOT / "agent_box/keeper.sh"
 #: Only these run as a person's live session; ``doctor`` is a diagnostic
 #: script whose output belongs on the caller's stdout.
 TMUX_AGENTS = frozenset({"claude", "codex", "shell"})
@@ -1184,7 +1186,12 @@ def build_mounts(
         # never another workspace's writable runtime state.
         pairs.append((runtime_state.root, runtime_state.root, False))
     if (script_dir / "agent_box").is_dir():
-        pairs.append((script_dir / "agent_box", HOST_HOME / ".local/lib/agent-box/agent_box", True))
+        pairs.append((script_dir / "agent_box", CONTAINER_LAUNCHER_ROOT / "agent_box", True))
+    # PATH launches use the library root as their build context, including
+    # when that root becomes the source for another level of nesting.
+    for name in ("agent-box", "Containerfile", ".containerignore"):
+        if (script_dir / name).is_file():
+            pairs.append((script_dir / name, CONTAINER_LAUNCHER_ROOT / name, True))
     # The container never sees config.json. The legacy disposable argv helper
     # may request a derived two-key credential file; persistent workspace
     # boxes deliberately pass ``mount_notifications=False`` and use per-exec
@@ -2011,6 +2018,7 @@ printf "%-20s %s\n" "gh account:" "$(gh api user --jq .login 2>/dev/null || echo
 has_group() { case ",${AGENT_BOX_TOOLS:-}," in *",$1,"*) return 0;; *) return 1;; esac; }
 
 printf "%-20s %s\n" "tool groups:" "${AGENT_BOX_TOOLS:-(none)}"
+python3 ''' + shlex.quote(str(KEEPER_PATH.with_name("podman_doctor.py"))) + r'''
 if has_group analysis; then
   printf "%-20s %s\n" "shellcheck:" "$(shellcheck --version | sed -n 's/^version: //p')"
   printf "%-20s %s\n" "jscpd:" "$(jscpd --version 2>/dev/null || echo MISSING)"
@@ -2345,6 +2353,7 @@ def runtime_main(
                 f"{BROWSER_ENABLED_ENV}={'1' if config.browser.enabled else '0'}",
                 f"{CLAUDE_SKILL_LINKS_ENV}={'1' if config.skills.claude_links else '0'}",
                 f"{IMAGE_TOOLS_ENV}={','.join(config.image.enabled_groups())}",
+                f"AGENT_BOX_IMAGE={IMAGE}",
             ]
             command = ["bash", "-c", DOCTOR_SCRIPT]
         elif agent == "claude":

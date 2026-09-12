@@ -35,6 +35,7 @@ def passwd_home(uid: int | None = None) -> Path:
 
 # The real, passwd-derived home. ``$HOME`` never overrides this.
 HOST_HOME = passwd_home()
+CONTAINER_LAUNCHER_ROOT = HOST_HOME / ".local/lib/agent-box"
 
 
 def env_path(name: str, default: Path) -> Path:

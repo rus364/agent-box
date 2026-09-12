@@ -197,3 +197,60 @@ class NestedRuntimeTests(IsolatedRuntimeTest):
         self.assertTrue(first.startswith("--mount=type=volume,source=agent-box-podman-"))
         self.assertIn(f"target={runtime.HOST_HOME}/.local/share/containers", first)
         self.assertNotIn("/var/lib/containers", first)
+
+
+class NestedLauncherBundleTests(IsolatedRuntimeTest):
+    def test_path_bundle_is_a_complete_source_for_launch_and_further_nesting(self):
+        """A working checkout hid missing files in the separately mounted PATH package."""
+        import shutil
+        import subprocess
+        source = Path(__file__).resolve().parent.parent
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            home.mkdir()
+            library = home / ".local/lib/agent-box"
+            workspace = Workspace(Path(tmp), Path(tmp))
+            with mock.patch.object(runtime, "HOST_HOME", home), \
+                 mock.patch.object(runtime, "CONTAINER_LAUNCHER_ROOT", library), \
+                 mock.patch.object(runtime, "agent_tree_mounts", return_value=[]), \
+                 mock.patch.object(runtime, "tracker_mounts", return_value=[]):
+                flags = runtime.build_mounts(workspace, [], source, Config())
+            for flag in flags[1::2]:
+                fields = dict(part.split("=", 1) for part in flag.split(","))
+                destination = Path(fields["dst"])
+                if destination == home / ".local/bin/agent-box" or library in destination.parents:
+                    self.assertEqual(fields.get("ro"), "true")
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    origin = Path(fields["src"])
+                    if origin.is_dir():
+                        shutil.copytree(origin, destination, ignore=shutil.ignore_patterns("__pycache__"))
+                    else:
+                        shutil.copy2(origin, destination)
+            for name in ("agent-box", "Containerfile", ".containerignore", "agent_box/nested_podman.py"):
+                self.assertTrue((library / name).is_file(), name)
+            # The actual PATH launcher must reach workspace resolution using
+            # its own library root, without a checkout in cwd or PYTHONPATH.
+            code = '''
+import runpy, sys
+from unittest.mock import patch
+sys.path.insert(0, sys.argv[2])
+from agent_box import runtime
+class ReachedWorkspace(Exception): pass
+sys.argv = [sys.argv[1]]
+with patch('agent_box.project_config.load', return_value={}), patch.object(runtime.shutil, 'which', return_value='/bin/tool'), patch.object(runtime, 'resolve_workspace', side_effect=ReachedWorkspace):
+    try:
+        runpy.run_path(sys.argv[0], run_name='__main__')
+    except ReachedWorkspace:
+        print('workspace resolution reached')
+'''
+            result = subprocess.run(["python3", "-c", code, str(home / ".local/bin/agent-box"),
+                                     str(library)], cwd=tmp, text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("workspace resolution reached", result.stdout)
+            with mock.patch.object(runtime, "HOST_HOME", home), \
+                 mock.patch.object(runtime, "CONTAINER_LAUNCHER_ROOT", library), \
+                 mock.patch.object(runtime, "agent_tree_mounts", return_value=[]), \
+                 mock.patch.object(runtime, "tracker_mounts", return_value=[]):
+                nested = runtime.build_mounts(workspace, [], library, Config())
+            self.assertIn(f"type=bind,src={library / 'agent-box'},dst={home / '.local/bin/agent-box'},ro=true", nested)
+            self.assertIn(f"type=bind,src={library / 'Containerfile'},dst={library / 'Containerfile'},ro=true", nested)

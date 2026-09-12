@@ -75,6 +75,11 @@ does not disable those policies or change host sysctls automatically.
 
 ## Developing agent-box inside agent-box
 
+The `agent-box` command on PATH includes its build context and can build an
+image or launch the next workspace from any project directory. After updating
+agent-box, recreate an existing workspace from its parent environment to pick
+up changed mounts; keep active work in mind before running `agent-box stop`.
+
 Keep the outer shell open and run the checkout's commands inside it:
 
 ```sh
@@ -96,3 +101,20 @@ Run `sh tests/smoke_nested_podman.sh` inside an enabled workspace to check a
 real build, multiple-UID ownership, `run`/`exec`, networking, a published HTTP
 port, a bind mount and named-volume reuse. It downloads Alpine packages and
 removes only the uniquely named resources it creates.
+
+## Doctor
+
+`agent-box doctor` checks Podman inside the workspace when the `podman` group
+is enabled. It reports the version, rootless mode, storage driver/path, OCI
+runtime, cgroup manager/version and network backend, then tests a user namespace.
+Each Podman command has a 20-second timeout.
+
+If the configured local agent-box image (`AGENT_BOX_IMAGE`, default
+`localhost/agent-box:latest`), `docker.io/library/alpine:3.23` or
+`docker.io/library/busybox:latest` image exists, doctor runs a shell with an
+explicit entrypoint, no network and `--pull=never`, and verifies a writable
+container filesystem. It removes only its uniquely named probe container.
+Without one of those images it reports `SKIPPED`; it never downloads an image.
+Errors are reported as `FAILED`, independently of CLI availability. This
+does not test pull, build, networking, ports or persistent volumes; use the
+separate smoke script above for those checks.
