@@ -175,6 +175,20 @@ class ExternalModelTests(unittest.TestCase):
         with self.assertRaises(AgentBoxError):
             Config.from_dict({'external_providers': {'test': {'codex': {'models': ['model']}}}})
 
+    def test_claude_model_alias_collisions_fail_independently_of_order(self):
+        """Two definitions of one launched model must not silently compete in the picker."""
+        entries = [('v4', {'context_window': 1048576, 'effort': 'high'}),
+                   ('v4[1m]', {'effort': 'low', 'env': {'OPTION': 'private-value'}})]
+        for ordered in (entries, entries[::-1]):
+            with self.subTest(order=[model for model, _ in ordered]):
+                with self.assertRaisesRegex(AgentBoxError, 'duplicate launched Claude model') as raised:
+                    Config.from_dict({'external_providers': {'test': {'claude': {'models': dict(ordered)}}}})
+                self.assertNotIn('private-value', str(raised.exception))
+        for context in (0, 200000):
+            models = {'v4': {'context_window': context}, 'v4[1m]': {}}
+            loaded = Config.from_dict({'external_providers': {'test': {'claude': {'models': models}}}})
+            self.assertEqual(set(loaded.external_providers['test'].claude.models), set(models))
+
     def test_claude_environment_effort_is_validated_at_load_with_typed_priority(self):
         """A configured default must work without requiring an explicit effort to repair it."""
         for source in ('endpoint', 'model'):

@@ -12,7 +12,7 @@ import tomllib
 
 from .atomicio import atomic_write_json
 from .errors import AgentBoxError
-from .external_config import model_effort_error, model_settings, valid_model, valid_name
+from .external_config import claude_model, model_effort_error, model_settings, valid_model, valid_name
 from .paths import SESSION_TEMP_ROOT
 
 API_ENV = 'AGENT_BOX_EXTERNAL_API_KEY'
@@ -229,10 +229,6 @@ def catalog(models):
         'input_modalities': spec['input_modalities'], 'experimental_supported_tools': [], 'supports_search_tool': False,
         **spec['metadata'],
     } for i, (model, spec) in enumerate(models.items())]}
-
-
-def claude_model(model, spec):
-    return model + '[1m]' if spec['context_window'] == 1048576 and not model.endswith('[1m]') else model
 
 
 def prepare(command, name, cli, config, directory, environment, *, model=None):

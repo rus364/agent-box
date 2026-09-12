@@ -48,6 +48,10 @@ def model_settings(models, model, cli):
     return models.get(model, models.get(model.removesuffix('[1m]'), model_defaults(cli)))
 
 
+def claude_model(model, spec):
+    return model + '[1m]' if spec['context_window'] == 1048576 and not model.endswith('[1m]') else model
+
+
 def model_effort_error(endpoint, model, cli, effort):
     spec = model_settings(endpoint.models, model, cli)
     if effort in (None, 'default'):
@@ -63,6 +67,7 @@ def parse_models(raw, cli, path):
     if not isinstance(raw, dict):
         raise AgentBoxError(f'Invalid external provider configuration: {path} must map model IDs to settings')
     result = {}
+    launched_models = set()
     for model, values in raw.items():
         defaults = model_defaults(cli)
         def invalid():
@@ -84,6 +89,11 @@ def parse_models(raw, cli, path):
             invalid()
         if cli == 'claude' and (context not in (0, 200000, 1048576) or model.endswith('[1m]') and context == 200000):
             invalid()
+        if cli == 'claude':
+            launched = claude_model(model, spec)
+            if launched in launched_models:
+                raise AgentBoxError(f'Invalid external provider configuration: {path}; duplicate launched Claude model')
+            launched_models.add(launched)
         spec['env'] = parse_env(spec['env'], path + '.env', cli)
         if cli == 'codex':
             modalities = spec['input_modalities']

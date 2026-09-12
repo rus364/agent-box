@@ -51,8 +51,9 @@ API/profile/catalog and Remote Control ownership remain with agent-box.
 
 Claude accepts model IDs with `[1m]`. Setting `context_window` to `1048576`
 adds that suffix automatically; `200000` uses the ordinary context and `0`
-leaves it unspecified. Arbitrary context sizes cannot be expressed through
-this Claude CLI syntax. The compact threshold becomes
+leaves it unspecified. Two entries that resolve to the same suffixed ID are
+rejected; separate ordinary-context and `[1m]` entries remain valid.
+Arbitrary context sizes cannot be expressed through this Claude CLI syntax. The compact threshold becomes
 `CLAUDE_CODE_AUTO_COMPACT_WINDOW`, and default effort becomes
 `CLAUDE_CODE_EFFORT_LEVEL`. Claude's picker receives IDs and display labels;
 its native effort UI is controlled by Claude Code. Agent-box uses
