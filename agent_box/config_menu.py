@@ -11,7 +11,7 @@ from pathlib import Path
 
 from .config import AGENT_EFFORTS, IMAGE_TOOL_GROUP_HELP, Config, REVIEW_PRESETS, TRACKER_PROVIDERS, TrackerConnection
 from .errors import AgentBoxError
-from .external_config import API_EFFORTS, ExternalProvider, model_defaults, valid_model, valid_name, validate_connections
+from .external_config import API_EFFORTS, ExternalProvider, model_defaults, model_settings, valid_model, valid_name, validate_connections
 from .model_catalog import load_model_catalogs
 
 CHOICES = {
@@ -879,7 +879,8 @@ def edit(config, *, project=None):
                     options = AGENT_EFFORTS[path[-1]]
                     api = data.get('api_provider')
                     if api:
-                        model = draft['external_providers'].get(api, {}).get(path[-1], {}).get('models', {}).get(data.get('model'), {})
+                        models = draft['external_providers'].get(api, {}).get(path[-1], {}).get('models', {})
+                        model = model_settings(models, data.get('model', ''), path[-1])
                         options = tuple(dict.fromkeys(['default', *(model.get('supported_efforts') or API_EFFORTS[path[-1]][1:]), value]))
                 if path[:1] == ('external_providers',):
                     if len(path) == 5 and name == 'effort':

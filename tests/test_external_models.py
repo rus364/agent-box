@@ -150,6 +150,48 @@ class ExternalModelTests(unittest.TestCase):
         with self.assertRaises(AgentBoxError):
             Config.from_dict({'external_providers': {'test': {'codex': {'models': ['model']}}}})
 
+    def test_claude_environment_effort_is_validated_at_load_with_typed_priority(self):
+        """A configured default must work without requiring an explicit effort to repair it."""
+        for source in ('endpoint', 'model'):
+            for effort in ('medium', 'ultra', 'private-value'):
+                data = rich_config().to_dict()
+                endpoint = data['external_providers']['deepseek']['claude']
+                model = endpoint['models']['v4-pro']
+                model['effort'] = 'default'
+                target = endpoint if source == 'endpoint' else model
+                target['env']['CLAUDE_CODE_EFFORT_LEVEL'] = effort
+                with self.subTest(source=source, effort=effort), self.assertRaises(AgentBoxError) as raised:
+                    Config.from_dict(data)
+                self.assertNotIn('private-value', str(raised.exception))
+        data = rich_config().to_dict()
+        endpoint = data['external_providers']['deepseek']['claude']
+        endpoint['env']['CLAUDE_CODE_EFFORT_LEVEL'] = 'medium'
+        # v4-pro's typed high wins; v4-flash has unknown supported levels.
+        loaded = Config.from_dict(data)
+        with tempfile.TemporaryDirectory() as temp:
+            _, env = ext.prepare(['claude'], 'deepseek', 'claude', loaded, temp, {})
+            self.assertEqual(env['CLAUDE_CODE_EFFORT_LEVEL'], 'high')
+        endpoint['models']['v4-pro']['effort'] = 'ultra'
+        with self.assertRaises(AgentBoxError):
+            Config.from_dict(data)
+
+    def test_suffixed_workflow_model_uses_the_same_effort_choices_as_launch(self):
+        """A manually entered [1m] ID must not lose the configured model's effort metadata."""
+        config = rich_config()
+        config.workflow.tiers['1']['claude'].update(api_provider='deepseek', model='v4-pro[1m]', effort='default')
+        path = ('workflow', 'tiers', '1', 'claude')
+        keys = []
+        for index, part in enumerate(path):
+            keys += [*menu_tests.select(part, path[:index]), '\n']
+        keys += [*menu_tests.select('effort', path), '\n', curses.KEY_DOWN, '\n']
+        keys += ['\x1b'] * len(path) + [curses.KEY_END, curses.KEY_UP, '\n']
+        edited, screen = menu_tests.ConfigMenuTests().edit(config, keys)
+        self.assertEqual(edited.config.workflow.tiers['1']['claude']['effort'], 'low')
+        frames = [frame for frame in screen.frames if 'workflow.tiers.1.claude.effort' in frame]
+        self.assertTrue(frames)
+        self.assertNotIn('medium', '\n'.join(frames))
+        self.assertNotIn('xhigh', '\n'.join(frames))
+
     def test_model_tuning_invalidates_prepared_routes_but_key_rotation_does_not(self):
         """A prepared route binds capabilities/defaults/env along with the endpoint."""
         config = rich_config()

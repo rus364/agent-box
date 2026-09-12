@@ -213,7 +213,9 @@ lock remained held; no RC descendant process was observed. These checks do not
 prove compatibility with a live commercial API or phone-paired Remote Control.
 
 Model-settings smoke on the same CLI versions verified Codex `model/list`
-returns the configured display name, image modality and low/high/max efforts.
+returns the configured display name, image modality and low/high/max efforts;
+`config/read` confirms explicit `-c model_reasoning_effort="max"` overrides the
+model's `high` default in the effective session config.
 Claude `-p` completed against a loopback Messages stub, reported its `[1m]`
 context as 1,000,000 tokens, stripped the suffix in the API request and sent
 explicit `max` effort. The unknown synthetic model warning was expected.

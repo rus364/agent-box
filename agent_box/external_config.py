@@ -7,7 +7,7 @@ from urllib.parse import urlsplit
 from .errors import AgentBoxError
 
 EFFORTS = ('default', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra')
-API_EFFORTS = {'codex': EFFORTS, 'claude': ('default', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra')}
+API_EFFORTS = {'codex': EFFORTS, 'claude': ('default', 'low', 'medium', 'high', 'xhigh', 'max')}
 
 
 def valid_model(model, cli):
@@ -24,7 +24,7 @@ def model_defaults(cli):
     return values
 
 
-def parse_env(value, path):
+def parse_env(value, path, cli):
     # API identity and integration paths belong to the launcher, not model tuning.
     reserved = {'HOME', 'CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'CLAUDECODE',
                 'OPENAI_API_KEY', 'OPENAI_BASE_URL', 'OPENAI_ORG_ID', 'OPENAI_ORGANIZATION',
@@ -39,15 +39,17 @@ def parse_env(value, path):
                                    'CLAUDE_CODE_USE_', 'CLAUDE_CODE_API_KEY_'))
                 or 'REMOTE_CONTROL' in key):
             raise AgentBoxError(f'Invalid external provider configuration: {path}; invalid or launcher-owned variable')
+        if cli == 'claude' and key == 'CLAUDE_CODE_EFFORT_LEVEL' and item not in API_EFFORTS['claude'][1:]:
+            raise AgentBoxError(f'Invalid external provider configuration: {path}; invalid Claude effort level')
     return dict(value)
 
 
-def model_settings(endpoint, model, cli):
-    return endpoint.models.get(model, endpoint.models.get(model.removesuffix('[1m]'), model_defaults(cli)))
+def model_settings(models, model, cli):
+    return models.get(model, models.get(model.removesuffix('[1m]'), model_defaults(cli)))
 
 
 def model_effort_error(endpoint, model, cli, effort):
-    spec = model_settings(endpoint, model, cli)
+    spec = model_settings(endpoint.models, model, cli)
     if effort in (None, 'default'):
         effort = spec['effort']
         if effort == 'default' and cli == 'claude':
@@ -82,7 +84,7 @@ def parse_models(raw, cli, path):
             invalid()
         if cli == 'claude' and (context not in (0, 200000, 1048576) or model.endswith('[1m]') and context == 200000):
             invalid()
-        spec['env'] = parse_env(spec['env'], path + '.env')
+        spec['env'] = parse_env(spec['env'], path + '.env', cli)
         if cli == 'codex':
             modalities = spec['input_modalities']
             if not modalities or any(m not in ('text', 'image') for m in modalities) or len(set(modalities)) != len(modalities):
@@ -171,8 +173,12 @@ def parse_connections(data):
             default = endpoint.get('default_model', '')
             if not isinstance(default, str) or default and default not in models:
                 invalid(f'{path}.{cli}.default_model must name a configured model')
-            env = parse_env(endpoint.get('env', {}), f'{path}.{cli}.env')
-            setattr(spec, cli, Endpoint(url, models, default, env))
+            env = parse_env(endpoint.get('env', {}), f'{path}.{cli}.env', cli)
+            parsed_endpoint = Endpoint(url, models, default, env)
+            for model in models:
+                if model_effort_error(parsed_endpoint, model, cli, 'default'):
+                    invalid(f'{path}.{cli}.models: default effort is not supported')
+            setattr(spec, cli, parsed_endpoint)
         result[name] = spec
     return result
 

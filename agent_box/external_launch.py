@@ -256,7 +256,7 @@ def prepare(command, name, cli, config, directory, environment, *, model=None):
     model = model or selected_model(config, name, cli, command[1:])
     if not valid_model(model, cli):
         raise AgentBoxError('Invalid external model ID')
-    settings = model_settings(endpoint, model, cli)
+    settings = model_settings(endpoint.models, model, cli)
     effort = explicit_effort(command[1:], cli)
     custom_env = {**endpoint.env, **settings['env']}
     if cli == 'claude':
