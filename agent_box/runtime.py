@@ -250,7 +250,8 @@ def build_image(script_dir: Path, refresh: bool, no_cache: bool,
         token = now.strftime("%Y%m%dT%H%M%S.") + f"{time.time_ns() % 1_000_000_000:09d}Z\n"
         atomic_write_text(TOOLS_REFRESH_FILE, token)
     args = [
-        "podman", "build", "--format=oci", "--pull=always", "--layers",
+        "podman", "build", "--format=oci",
+        "--pull=always" if no_cache else "--pull=missing", "--layers",
         "--build-arg", f"USER_NAME={identity.name}",
         "--build-arg", f"USER_UID={identity.uid}",
         "--build-arg", f"USER_GID={identity.gid}",

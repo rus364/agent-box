@@ -435,6 +435,19 @@ agent-box update     # refresh frequently updated tools
 agent-box rebuild    # rebuild without cache
 ```
 
+The image uses Ubuntu 26.04 LTS. `build` and `update` reuse the local base;
+`rebuild` pulls the base and disables layer reuse. `update` refreshes Codex,
+Claude, Node.js 22, mise, uv,
+Bun and enabled Kubernetes tools. Pinned Playwright/Chromium and jscpd stay
+above the refresh boundary and are reused when their inputs are unchanged.
+Changing the base, earlier instructions or build arguments can rebuild them.
+
+APT package archives and npm downloads use persistent, builder-owned cache
+mounts (`agent-box-apt` and `agent-box-npm`), outside the resulting image and
+separate from runtime workspace caches. Installs still check current versions.
+`rebuild` bypasses cached layers but retains these download caches; it does not
+purge Podman storage. A cold or pruned builder downloads packages again.
+
 Changing a group takes effect on the next `agent-box build`. The image records
 what it was built with, so `agent-box config show`, `agent-box doctor` and any
 launch will tell you when the running image no longer matches your
@@ -621,7 +634,7 @@ yours.
 - Workspace containers are transient. Detached tmux sessions survive terminal loss, but not a host reboot or a forced container kill.
 - `~/.agents` is exposed as a whole tree, not only `skills/`; it is read-only except for the read-write `skills/` subtree and its external symlink targets.
 - The agent browser is amd64/arm64 only, because those are the architectures Playwright publishes Chromium builds for.
-- `agent-box update` re-downloads the browser layer, because it sits below the tools-refresh marker that Node.js also sits below. A plain `agent-box build` keeps it cached.
+- `agent-box update` reuses the pinned browser layer when the local base and earlier build inputs are unchanged. `rebuild` reinstalls it.
 - The official Claude Telegram plugin is outside agent-box's control and may need compatibility updates when its internals change.
 - There is no remote equivalent of `--mount`, and Telegram cannot create a new workspace box by itself.
 

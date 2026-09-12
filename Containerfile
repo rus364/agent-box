@@ -1,4 +1,4 @@
-FROM docker.io/library/ubuntu:24.04
+FROM docker.io/library/ubuntu:26.04
 
 ARG DEBIAN_FRONTEND=noninteractive
 # The container user mirrors the *building* host's real Unix identity
@@ -62,7 +62,9 @@ ENV LANG=C.UTF-8 \
 # This layer is intentionally first and changes rarely.
 #
 
-RUN set -eux; \
+RUN --mount=type=cache,id=agent-box-apt,target=/var/cache/apt,sharing=locked \
+    set -eux; \
+    rm -f /etc/apt/apt.conf.d/docker-clean; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
         bash \
@@ -123,31 +125,22 @@ RUN set -eux; \
         \
         iproute2 \
         iputils-ping \
-        dnsutils \
+        bind9-dnsutils \
         netcat-openbsd \
         socat; \
     ln -sf /usr/bin/fdfind /usr/local/bin/fd; \
     git lfs install --system; \
-    apt-get clean; \
     rm -rf /var/lib/apt/lists/*
 
 #
 # GitHub CLI
 #
-# From GitHub's own apt repository, not Ubuntu's archive. Ubuntu 24.04 ships
-# gh 2.45.0 and does not move it, which is old enough to break tools that
-# drive `gh` rather than merely run it: Claude Code's /install-github-app
-# probes `gh auth status -a`, a flag added in 2.57.0, and reports a perfectly
-# good login as "GitHub CLI not authenticated" when the flag is missing.
-#
-# A pinned release tarball -- the pattern the optional groups use for yq,
-# kubectl and helm -- was the alternative. It is right for those, which are
-# not in the base image and whose versions a project cares about, but `gh` is
-# base tooling that every agent reaches for, and pinning it would only move
-# this same staleness onto a line someone has to remember to bump.
+# GitHub's signed repository keeps gh current on rebuilds. Check the active
+# account flag used by Claude's /install-github-app, not just its version.
 #
 
-RUN set -eux; \
+RUN --mount=type=cache,id=agent-box-apt,target=/var/cache/apt,sharing=locked \
+    set -eux; \
     install -m 0755 -d /etc/apt/keyrings; \
     curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
         -o /etc/apt/keyrings/githubcli-archive-keyring.gpg; \
@@ -157,7 +150,6 @@ RUN set -eux; \
         > /etc/apt/sources.list.d/github-cli.list; \
     apt-get update; \
     apt-get install -y --no-install-recommends gh; \
-    apt-get clean; \
     rm -rf /var/lib/apt/lists/*; \
     gh auth status --help | grep -q -- '--active'
 
@@ -168,13 +160,13 @@ RUN set -eux; \
 # writing one. jscpd joins it from npm further down.
 #
 
-RUN set -eux; \
+RUN --mount=type=cache,id=agent-box-apt,target=/var/cache/apt,sharing=locked \
+    set -eux; \
     if [ "${TOOLS_ANALYSIS}" != "1" ]; then echo "agent-box: analysis tools skipped"; exit 0; fi; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
         shellcheck \
         sqlite3; \
-    apt-get clean; \
     rm -rf /var/lib/apt/lists/*
 
 #
@@ -185,7 +177,8 @@ RUN set -eux; \
 # when this group is present -- see runtime.kvm_args.
 #
 
-RUN set -eux; \
+RUN --mount=type=cache,id=agent-box-apt,target=/var/cache/apt,sharing=locked \
+    set -eux; \
     if [ "${TOOLS_VIRTUALIZATION}" != "1" ]; then echo "agent-box: virtualization skipped"; exit 0; fi; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
@@ -195,7 +188,6 @@ RUN set -eux; \
         qemu-block-extra \
         ovmf \
         qemu-efi-aarch64; \
-    apt-get clean; \
     rm -rf /var/lib/apt/lists/*
 
 #
@@ -203,7 +195,7 @@ RUN set -eux; \
 # Container user
 # ---------------------------------------------------------------------------
 #
-# Ubuntu 24.04 may already contain UID/GID 1000 (usually user "ubuntu").
+# Ubuntu images may already contain UID/GID 1000 (usually user "ubuntu").
 #
 # Therefore:
 #   - reuse an existing GID;
@@ -266,69 +258,13 @@ RUN set -eux; \
     chown -R "${USER_UID}:${USER_GID}" "${USER_HOME}"
 
 #
-# ---------------------------------------------------------------------------
-# Frequently updated tools
-# ---------------------------------------------------------------------------
-#
-# agent-box update changes this ARG.
-# Everything above stays in the build cache while this layer and later layers
-# are rebuilt.
-#
-
-ARG TOOLS_REFRESH=initial
-
-#
-# mise
-#
-# mise is not the foundation of the image. It is available for project-specific
-# toolchains declared through mise.toml, .mise.toml, .tool-versions, and similar
-# project files.
-#
-
-RUN set -eux; \
-    echo "tools-refresh=${TOOLS_REFRESH}"; \
-    install -d -m 0755 /etc/apt/keyrings; \
-    curl -fsSL \
-        https://mise.jdx.dev/gpg-key.pub \
-        -o /tmp/mise-key.pub; \
-    gpg \
-        --batch \
-        --yes \
-        --dearmor \
-        --output /etc/apt/keyrings/mise-archive-keyring.gpg \
-        /tmp/mise-key.pub; \
-    rm -f /tmp/mise-key.pub; \
-    chmod 0644 /etc/apt/keyrings/mise-archive-keyring.gpg; \
-    echo \
-        'deb [signed-by=/etc/apt/keyrings/mise-archive-keyring.gpg] https://mise.jdx.dev/deb stable main' \
-        > /etc/apt/sources.list.d/mise.list; \
-    apt-get update; \
-    apt-get install -y --no-install-recommends mise; \
-    apt-get clean; \
-    rm -rf /var/lib/apt/lists/*
-
-#
-# uv
-#
-# Ubuntu 24.04 provides Python 3.12 as the system Python.
-# uv can install other Python versions for individual projects when needed.
-#
-
-RUN set -eux; \
-    curl -LsSf \
-        https://astral.sh/uv/install.sh \
-        -o /tmp/uv-install.sh; \
-    env UV_UNMANAGED_INSTALL=/usr/local/bin \
-        sh /tmp/uv-install.sh; \
-    rm -f /tmp/uv-install.sh
-
-#
 # Node.js 22
 #
 # Both coding agents support the Node.js version used by this image.
 #
 
-RUN set -eux; \
+RUN --mount=type=cache,id=agent-box-apt,target=/var/cache/apt,sharing=locked \
+    set -eux; \
     curl -fsSL \
         https://deb.nodesource.com/setup_22.x \
         -o /tmp/nodesource-setup.sh; \
@@ -336,7 +272,6 @@ RUN set -eux; \
     rm -f /tmp/nodesource-setup.sh; \
     apt-get update; \
     apt-get install -y --no-install-recommends nodejs; \
-    apt-get clean; \
     rm -rf /var/lib/apt/lists/*
 
 #
@@ -347,11 +282,8 @@ RUN set -eux; \
 # that lives entirely inside the workspace box. No sidecar, no HTTP service,
 # no host browser and no X11/Wayland socket -- see README.
 #
-# Placed here, immediately after Node.js and before the frequently changing
-# agent packages, so that adding or reordering anything below it does not
-# re-download the browser. It cannot move above `ARG TOOLS_REFRESH` without
-# also moving Node.js there, so `agent-box update` does rebuild this layer;
-# a plain cached `agent-box build` does not.
+# Node.js and pinned browser assets precede TOOLS_REFRESH so updates reuse
+# Chromium. Node.js is refreshed separately below without reinstalling MCP.
 #
 # The version is pinned rather than tracking @latest because @playwright/mcp
 # pins an exact `playwright` dependency, and the browser binaries downloaded
@@ -371,7 +303,9 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
 # `playwright/cli.js` is not listed in that package's "exports", so the bin
 # entry is read from its manifest by absolute path instead.
 
-RUN set -eux; \
+RUN --mount=type=cache,id=agent-box-apt,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,id=agent-box-npm,target=/root/.npm \
+    set -eux; \
     if [ "${TOOLS_BROWSER}" != "1" ]; then echo "agent-box: browser skipped"; exit 0; fi; \
     arch="$(dpkg --print-architecture)"; \
     case "${arch}" in \
@@ -385,11 +319,9 @@ RUN set -eux; \
             ;; \
     esac; \
     npm install --global "@playwright/mcp@${PLAYWRIGHT_MCP_VERSION}"; \
-    npm cache clean --force; \
     playwright_dir="$(node -e 'const p = require("path"); console.log(p.dirname(require.resolve("playwright/package.json", {paths: ["/usr/lib/node_modules/@playwright/mcp"]})))')"; \
     printf '%s\n' "${playwright_dir}" > /usr/local/lib/agent-box-playwright-dir; \
     node "${playwright_dir}/$(node -p "require('${playwright_dir}/package.json').bin.playwright")" install --with-deps chromium; \
-    apt-get clean; \
     rm -rf /var/lib/apt/lists/*; \
     chmod -R a+rX /opt/ms-playwright
 
@@ -439,6 +371,76 @@ RUN set -eux; \
     } > /usr/local/bin/agent-box-browser-smoke; \
     chmod 0755 /usr/local/bin/agent-box-browser-smoke
 
+# Pinned analysis package shares the stable Node.js/browser cache.
+RUN --mount=type=cache,id=agent-box-npm,target=/root/.npm \
+    set -eux; \
+    if [ "${TOOLS_ANALYSIS}" != "1" ]; then echo "agent-box: jscpd skipped"; exit 0; fi; \
+    npm install --global jscpd@5.0.16
+
+#
+# ---------------------------------------------------------------------------
+# Frequently updated tools
+# ---------------------------------------------------------------------------
+#
+# agent-box update changes this ARG.
+# Stable layers above are reused with an unchanged local base and build args.
+# Downloads below use builder-owned caches, separate from the final image.
+#
+
+ARG TOOLS_REFRESH=initial
+
+#
+# mise
+#
+# mise is not the foundation of the image. It is available for project-specific
+# toolchains declared through mise.toml, .mise.toml, .tool-versions, and similar
+# project files.
+#
+
+RUN --mount=type=cache,id=agent-box-apt,target=/var/cache/apt,sharing=locked \
+    set -eux; \
+    echo "tools-refresh=${TOOLS_REFRESH}"; \
+    install -d -m 0755 /etc/apt/keyrings; \
+    curl -fsSL \
+        https://mise.jdx.dev/gpg-key.pub \
+        -o /tmp/mise-key.pub; \
+    gpg \
+        --batch \
+        --yes \
+        --dearmor \
+        --output /etc/apt/keyrings/mise-archive-keyring.gpg \
+        /tmp/mise-key.pub; \
+    rm -f /tmp/mise-key.pub; \
+    chmod 0644 /etc/apt/keyrings/mise-archive-keyring.gpg; \
+    echo \
+        'deb [signed-by=/etc/apt/keyrings/mise-archive-keyring.gpg] https://mise.jdx.dev/deb stable main' \
+        > /etc/apt/sources.list.d/mise.list; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends mise; \
+    rm -rf /var/lib/apt/lists/*
+
+#
+# uv
+#
+# Ubuntu 26.04 provides Python 3.14 as the system Python.
+# uv can install other Python versions for individual projects when needed.
+#
+
+RUN set -eux; \
+    curl -LsSf \
+        https://astral.sh/uv/install.sh \
+        -o /tmp/uv-install.sh; \
+    env UV_UNMANAGED_INSTALL=/usr/local/bin \
+        sh /tmp/uv-install.sh; \
+    rm -f /tmp/uv-install.sh
+
+# Refresh Node.js without invalidating the pinned browser installation.
+RUN --mount=type=cache,id=agent-box-apt,target=/var/cache/apt,sharing=locked \
+    set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends nodejs; \
+    rm -rf /var/lib/apt/lists/*
+
 #
 # Bun
 #
@@ -461,16 +463,11 @@ RUN set -eux; \
 # Coding agents and agent-facing analysis tools
 #
 
-RUN set -eux; \
+RUN --mount=type=cache,id=agent-box-npm,target=/root/.npm \
+    set -eux; \
     npm install --global \
         @openai/codex@latest \
-        @anthropic-ai/claude-code@latest; \
-    npm cache clean --force
-
-RUN set -eux; \
-    if [ "${TOOLS_ANALYSIS}" != "1" ]; then echo "agent-box: jscpd skipped"; exit 0; fi; \
-    npm install --global jscpd@5.0.16; \
-    npm cache clean --force
+        @anthropic-ai/claude-code@latest
 
 #
 # yq v4 (Mike Farah)

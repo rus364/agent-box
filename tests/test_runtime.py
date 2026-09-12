@@ -77,6 +77,28 @@ class IsolatedRuntimeFixtureTests(unittest.TestCase):
                         self.assertIs(runtime.XDG_CACHE_HOME, fake_host_cache)
 
 
+class BuildCacheTests(IsolatedRuntimeTest):
+    def test_build_update_rebuild_have_distinct_refresh_and_base_policies(self):
+        """An ordinary update must not invalidate stable layers via a new base."""
+        from agent_box.identity import HostIdentity
+
+        identity = HostIdentity(name="tester", uid=1234, gid=1234, home="/home/tester")
+        with mock.patch.object(runtime.subprocess, "call", return_value=0) as call:
+            tokens = []
+            for refresh, no_cache in ((False, False), (True, False), (False, False), (True, True)):
+                self.assertEqual(runtime.build_image(Path("/source"), refresh, no_cache,
+                                                    identity=identity, config=Config()), 0)
+                argv = call.call_args.args[0]
+                self.assertIn("--layers", argv)
+                self.assertIn("--pull=always" if no_cache else "--pull=missing", argv)
+                self.assertEqual("--no-cache" in argv, no_cache)
+                tokens.append(runtime.TOOLS_REFRESH_FILE.read_text().strip())
+                self.assertIn(f"TOOLS_REFRESH={tokens[-1]}", argv)
+            self.assertNotEqual(tokens[0], tokens[1])
+            self.assertEqual(tokens[1], tokens[2])
+            self.assertNotEqual(tokens[2], tokens[3])
+
+
 class ContainerStatePreparationTests(IsolatedRuntimeTest):
     """A new box prepares bind sources before mount argv rendering."""
 

@@ -191,6 +191,29 @@ class BrowserToolingTests(unittest.TestCase):
             text.index("@anthropic-ai/claude-code@latest"),
         )
 
+    def test_update_keeps_pinned_downloads_above_refresh(self):
+        """Refreshing agents must not download unchanged Chromium or jscpd."""
+        text = containerfile_text()
+        refresh = text.index("ARG TOOLS_REFRESH=")
+        for pinned in ("install --with-deps chromium", "jscpd@5.0.16"):
+            self.assertLess(text.index(pinned), refresh)
+        self.assertLess(text.index("apt-get install -y --no-install-recommends nodejs"),
+                        text.index("install --with-deps chromium"))
+        self.assertIn("apt-get install -y --no-install-recommends nodejs", text[refresh:])
+
+    def test_package_download_cache_survives_layer_refresh(self):
+        """Build caches must survive installs without entering image layers."""
+        text = containerfile_text()
+        self.assertNotIn("npm cache clean", text)
+        self.assertNotIn("apt-get clean", text)
+        instructions = re.split(r"\n(?=[A-Z]+ )", text)
+        for instruction in instructions:
+            if "npm install --global" in instruction:
+                self.assertIn("type=cache,id=agent-box-npm,target=/root/.npm", instruction)
+            if "apt-get update;" in instruction or "install --with-deps chromium" in instruction:
+                self.assertIn("type=cache,id=agent-box-apt,target=/var/cache/apt,sharing=locked", instruction)
+        self.assertIn("rm -f /etc/apt/apt.conf.d/docker-clean", text)
+
     def test_runtime_agrees_with_the_image_on_names(self):
         from agent_box import runtime
         text = containerfile_text()
