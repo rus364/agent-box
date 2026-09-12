@@ -49,8 +49,8 @@ class ProjectConfigTests(unittest.TestCase):
         """Sparse project scope/execution choices supersede global settings without sharing candidates."""
         override = self.config.workflow.worker.override
         override.scope = "all"
-        override.models['codex'] = {"fast": False, 'model': 'global-codex', 'effort': 'high'}
-        override.models['claude'] = {"fast": False, 'model': 'global-claude', 'effort': 'medium'}
+        override.models['codex'] = {"api_provider": "", "fast": False, 'model': 'global-codex', 'effort': 'high'}
+        override.models['claude'] = {"api_provider": "", "fast": False, 'model': 'global-claude', 'effort': 'medium'}
         original = self.config.to_dict()
         data = {'workflow': {'worker': {'execution': 'delegated', 'override': {'scope': 'untiered',
                 'models': {'codex': {'model': ''}, 'claude': {'effort': 'default'}}}}}}
@@ -65,8 +65,8 @@ class ProjectConfigTests(unittest.TestCase):
         chosen = rendered.workflow.worker.override
         self.assertEqual(chosen.scope, "untiered")
         self.assertEqual(rendered.workflow.worker.execution, "delegated")
-        self.assertEqual(chosen.models['codex'], {"fast": False, 'model': '', 'effort': 'high'})
-        self.assertEqual(chosen.models['claude'], {"fast": False, 'model': 'global-claude', 'effort': 'default'})
+        self.assertEqual(chosen.models['codex'], {"api_provider": "", "fast": False, 'model': '', 'effort': 'high'})
+        self.assertEqual(chosen.models['claude'], {"api_provider": "", "fast": False, 'model': 'global-claude', 'effort': 'default'})
         self.assertEqual(rendered.workflow.review, self.config.workflow.review)
         self.assertEqual(self.config.to_dict(), original)
         disabled = project_config.apply(self.config, {'workflow': {'worker': {'override': {'scope': 'off'}}}})

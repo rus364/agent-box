@@ -933,7 +933,9 @@ def tracker_host_args(config: Config) -> list[str]:
 
 
 def tracker_warnings(config: Config) -> list[str]:
-    problems = config.workflow.validate() if config.workflow.enabled else []
+    from .external_config import validate_connections
+    problems = validate_connections(config)
+    problems += config.workflow.validate() if config.workflow.enabled else []
     if config.tracker.enabled:
         if not config.tracker.connection().usable:
             problems.append("Tracker is enabled but its default connection needs a server URL and token")

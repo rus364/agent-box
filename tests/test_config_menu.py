@@ -75,7 +75,7 @@ class ConfigMenuTests(unittest.TestCase):
             data = result.config.to_dict()
             for key in path:
                 data = data[key]
-            self.assertEqual(data, {'model': model, 'effort': 'medium', 'fast': True})
+            self.assertEqual(data, {'model': model, 'effort': 'medium', 'fast': True, 'api_provider': ''})
             self.assertFalse(matrix[path[-2]][path[-1]]['fast'])
 
     def test_purpose_order_does_not_follow_configuration_serialization(self):
@@ -84,7 +84,7 @@ class ConfigMenuTests(unittest.TestCase):
         data.pop('version')
         data.pop('install')
         expected = {
-            (): ['workflow', 'tracker', 'image', 'browser', 'env', 'providers',
+            (): ['workflow', 'tracker', 'image', 'browser', 'env', 'external_providers', 'providers',
                  'github', 'git', 'claude', 'codex', 'skills', 'notifications'],
             ('workflow',): ['enabled', 'worker', 'tiers', 'routing', 'weights', 'fallback',
                            'reserve_percent', 'smoothing_hours', 'review', 'merge_mode',
@@ -236,7 +236,7 @@ class ConfigMenuTests(unittest.TestCase):
                                                    curses.KEY_END, curses.KEY_UP, "\n"])
                     override = result.config.workflow.review.override
                     self.assertEqual(override.scope, "all")
-                    self.assertEqual(override.models[provider], {"fast": False, "model": expected, "effort": "default"})
+                    self.assertEqual(override.models[provider], {"api_provider": "", "fast": False, "model": expected, "effort": "default"})
                     self.assertEqual(result.config.workflow.review.tiers, config.workflow.review.tiers)
                     self.assertEqual(result.config.workflow.tiers, config.workflow.tiers)
         self.assertEqual(config.workflow.review.override.scope, "off")
@@ -265,7 +265,7 @@ class ConfigMenuTests(unittest.TestCase):
                     self.assertEqual(result.config.workflow.review, config.workflow.review)
                     override = result.config.workflow.worker.override
                     self.assertEqual(override.scope, "all")
-                    self.assertEqual(override.models[provider], {"fast": False, "model": expected, "effort": "default"})
+                    self.assertEqual(override.models[provider], {"api_provider": "", "fast": False, "model": expected, "effort": "default"})
                     self.assertEqual(result.config.workflow.review.tiers, config.workflow.review.tiers)
                     self.assertEqual(result.config.workflow.tiers, config.workflow.tiers)
         self.assertEqual(config.workflow.worker.override.scope, "off")
@@ -510,7 +510,7 @@ class ConfigMenuTests(unittest.TestCase):
                         result, _ = self.edit(config, [*prefix, *editing, *suffix])
                         matrix = result.config.workflow.review.tiers if reviewer else result.config.workflow.tiers
                         candidate = matrix["1" if reviewer else "0"][provider]
-                        self.assertEqual(candidate, {"fast": False, "model": expected, "effort": "medium"})
+                        self.assertEqual(candidate, {"api_provider": "", "fast": False, "model": expected, "effort": "medium"})
                         other = result.config.workflow.tiers if reviewer else result.config.workflow.review.tiers
                         self.assertTrue(all(not c["model"] for tier in other.values() for c in tier.values()))
 

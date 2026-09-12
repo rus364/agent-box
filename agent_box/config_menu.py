@@ -11,6 +11,7 @@ from pathlib import Path
 
 from .config import AGENT_EFFORTS, IMAGE_TOOL_GROUP_HELP, Config, REVIEW_PRESETS, TRACKER_PROVIDERS, TrackerConnection
 from .errors import AgentBoxError
+from .external_config import ExternalProvider, valid_name, validate_connections
 from .model_catalog import load_model_catalogs
 
 CHOICES = {
@@ -41,6 +42,7 @@ HELP = {
     "git": "Configure how much host Git configuration is copied into workspace boxes.",
     "git.identity": "Copy only user.name and user.email for commit attribution. This exposes no Git credential settings.",
     "git.full_config": "Copy the complete host Git configuration, which may include credential helpers, headers, URL rewrites, and included files.",
+    "external_providers": "Named external APIs. Enable explicitly to expose their keys to agent-box sessions. Each CLI has its own URL and model list; no default CLI.",
     "providers": "Control which provider-related environment variables are forwarded from the host.",
     "providers.api_keys": "Forward known Claude and Codex API-key variables by name. Disabled by default because these values are credentials.",
     "providers.transport": "Forward provider endpoint, proxy, CA, Bedrock, and Vertex transport variables. Proxy URLs may themselves contain credentials.",
@@ -107,6 +109,7 @@ LABELS = {
     "telegram_chat_id": "Telegram chat ID",
     "scope": "Model override scope",
     "execution": "Worker execution",
+    "external_providers": "External API providers", "api_provider": "API provider", "api_key": "API key",
 }
 
 # Presentation follows the user's decisions, not dataclass serialization order.
@@ -114,7 +117,7 @@ MENU_GROUPS = {
     (): (
         ("Tracked work", ("workflow", "tracker")),
         ("Workspace", ("image", "browser", "env")),
-        ("Host access", ("providers", "github", "git")),
+        ("Host access", ("external_providers", "providers", "github", "git")),
         ("Host integrations", ("claude", "codex", "skills", "notifications")),
     ),
     ("workflow",): (
@@ -188,6 +191,13 @@ def help_for(path):
                 "On requires a supported exact model ID and account access. Claude native needs verified inherited fast; otherwise use managed CLI.")
     if dotted in HELP:
         return HELP[dotted]
+    if path[-1:] == ("api_provider",):
+        return "Choose the built-in API or an enabled external API for this CLI. External routes use a separate managed process; changing API leaves the model editable."
+    if path[:1] == ("external_providers",):
+        return {"enabled": "Expose this API connection to agent-box sessions. Off by default.",
+                "api_key": "Stored in the protected global config; masked in displays and excluded from command arguments.",
+                "url": "HTTP(S) API base URL for this CLI, without credentials, query or fragment. Codex requires Responses API; Claude requires Anthropic Messages API.",
+                "models": "JSON list of model IDs offered for this CLI. The workflow picker also accepts a manual ID."}.get(path[-1], HELP["external_providers"])
     if len(path) == 3 and path[:2] == ("image", "tools"):
         return f"{IMAGE_TOOL_GROUP_HELP.get(path[-1], path[-1])}. Rebuild the workspace image to install or remove this group; browsing and saving this selection do not rebuild it."
     if len(path) == 3 and path[:2] == ("tracker", "connections"):
@@ -218,7 +228,7 @@ def help_for(path):
 
 
 def validate(config):
-    errors = config.workflow.validate()
+    errors = config.workflow.validate() + validate_connections(config)
     if config.claude.telegram_channel:
         from .channel import missing_requirements
         errors.extend(missing_requirements())
@@ -239,7 +249,7 @@ class EditResult:
 
 
 def secret(path):
-    return "token" in path[-1] or path[0] == "env"
+    return "token" in path[-1] or path[-1] == "api_key" or path[0] == "env"
 
 
 def parse_value(text, current):
@@ -583,7 +593,11 @@ def edit(config, *, project=None):
 
     def model_value(screen, path, current):
         provider = path[-2]
-        suggestions = list(model_suggestions[provider])
+        candidate = draft
+        for part in path[:-1]:
+            candidate = candidate[part]
+        api = candidate.get("api_provider", "")
+        suggestions = list(draft["external_providers"].get(api, {}).get(provider, {}).get("models", [])) if api else list(model_suggestions[provider])
         if current and current not in suggestions:
             suggestions.insert(0, current)
         rows = ["Enter a custom model ID...", "Disable this candidate (empty model)"]
@@ -640,6 +654,10 @@ def edit(config, *, project=None):
         while True:
             keys = menu_keys(data, path)
             extras = [("Review preset", "preset", ACTION_HELP["preset"])] if path == ("workflow", "review") else []
+            if path == ("external_providers",) and not project_mode:
+                extras = [("Add provider", "add_provider", "Create a disabled provider with separate Codex/Claude endpoints.")]
+            elif len(path) == 2 and path[0] == "external_providers" and not project_mode:
+                extras = [("Delete provider", "delete_provider", "Remove this definition from the draft. Existing workflow references remain visible and must be changed before use.")]
             if not path:
                 extras = [(path_row(), "path", path_row() + ". " + ACTION_HELP["path"]), ("Save and apply", "save", ACTION_HELP["save"]), ("Cancel", "cancel", ACTION_HELP["cancel"])]
                 if project_mode:
@@ -733,6 +751,23 @@ def edit(config, *, project=None):
             elif key in (" ", "\n", "\r", curses.KEY_RIGHT):
                 if selected >= len(keys):
                     _, action, _ = extras[selected - len(keys)]
+                    if action == "add_provider":
+                        name = input_value(screen, "Provider name (lowercase letters, digits, _ or -)", "", False)
+                        if name is not None:
+                            if not valid_name(name):
+                                notice = "Use [a-z][a-z0-9_-]{0,47}"
+                            elif name in data:
+                                notice = "Provider already exists"
+                            else:
+                                data[name] = ExternalProvider().to_dict()
+                                menu(screen, data[name], (*path, name))
+                        continue
+                    if action == "delete_provider":
+                        chosen = choose(screen, ["Keep provider", "Delete provider"], "Delete " + path[1], 0)
+                        if chosen == 1:
+                            del draft["external_providers"][path[1]]
+                            return None
+                        continue
                     if action == "global":
                         notice = "Global only"
                     if action == "cancel":
@@ -756,7 +791,11 @@ def edit(config, *, project=None):
                                 record((*path, "max_lines"), data["max_lines"])
                             notice = "Review thresholds updated in the draft"
                     elif action == "save":
-                        result = drafted()
+                        try:
+                            result = drafted()
+                        except AgentBoxError as exc:
+                            notice = str(exc)
+                            continue
                         if project_mode:
                             try:
                                 validate_project(overrides, Path(".agent-box.json"))
@@ -778,6 +817,11 @@ def edit(config, *, project=None):
                     continue
                 accepted = False
                 options = CHOICES.get(".".join(full))
+                if name == "api_provider" and _candidate_field(full):
+                    options = ["", *[name for name, spec in draft["external_providers"].items()
+                                     if spec["enabled"] and spec[path[-1]]["url"]]]
+                    if value not in options:
+                        options.append(value)
                 if name == "effort" and _candidate_field(full):
                     options = AGENT_EFFORTS[path[-1]]
                 if isinstance(value, bool):
@@ -793,7 +837,7 @@ def edit(config, *, project=None):
                         data[name] = options[(options.index(value) + 1) % len(options)] if value in options else options[0]
                         accepted = True
                     else:
-                        picked = choose(screen, list(options), ".".join(full), options.index(value) if value in options else 0, help_for(full))
+                        picked = choose(screen, [option or "Built-in API" for option in options], ".".join(full), options.index(value) if value in options else 0, help_for(full))
                         if picked is not None:
                             data[name] = options[picked]
                             accepted = True

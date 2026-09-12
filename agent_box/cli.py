@@ -363,6 +363,12 @@ def config_show() -> None:
     print(f"  Git full config copy        {'on' if config.git.full_config else 'off'}")
     print(f"  Provider API keys           {'on' if config.providers.api_keys else 'off'}")
     print(f"  Provider transport/proxy    {'on' if config.providers.transport else 'off'}")
+    print("  External API providers")
+    for name, spec in config.external_providers.items():
+        print(f"    {name}: {'on' if spec.enabled else 'off'}; key {'<configured>' if spec.api_key else '<empty>'}")
+        for agent in ("codex", "claude"):
+            endpoint = getattr(spec, agent)
+            print(f"      {agent}: {endpoint.url or '(not set)'}; models {', '.join(endpoint.models) or '(none)'}")
     print(f"  Share skills with Claude    {'on' if config.skills.claude_links else 'off'}")
     print(f"  Image tool groups           {', '.join(config.image.enabled_groups()) or '(base only)'}"
           f"{_image_note(config)}")

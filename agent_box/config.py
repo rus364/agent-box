@@ -31,6 +31,7 @@ from typing import Any
 
 from .atomicio import atomic_write_json, read_json
 from .paths import CONFIG_FILE
+from .external_config import ExternalProvider, parse_connections, valid_name
 
 VERSION = 1
 SECRET_MODE = stat.S_IRUSR | stat.S_IWUSR
@@ -538,7 +539,7 @@ def model_candidates(data=None):
     for provider in AGENT_PROVIDERS:
         spec = _mapping(data.get(provider))
         result[provider] = {"model": _str(spec, "model"), "effort": _str(spec, "effort") or "medium",
-                            "fast": spec.get("fast", False)}
+                            "fast": spec.get("fast", False), "api_provider": spec.get("api_provider", "")}
     return result
 
 
@@ -683,6 +684,8 @@ class WorkflowConfig:
                           for name, settings in (("worker", self.worker), ("review", self.review)))
         for path, models in candidates:
             for provider, spec in models.items():
+                if spec.get("api_provider", "") != "" and not valid_name(spec.get("api_provider")):
+                    errors.append(f"{path}.{provider}: invalid API provider name")
                 if spec.get("effort") not in AGENT_EFFORTS.get(provider, ()):
                     errors.append(f"{path}.{provider}: invalid effort")
                 from .fast_mode import configuration_error
@@ -718,6 +721,7 @@ class Config:
     github: GitHubConfig = field(default_factory=GitHubConfig)
     git: GitConfig = field(default_factory=GitConfig)
     providers: ProvidersConfig = field(default_factory=ProvidersConfig)
+    external_providers: dict[str, ExternalProvider] = field(default_factory=dict)
     env: EnvConfig = field(default_factory=EnvConfig)
     skills: SkillsConfig = field(default_factory=SkillsConfig)
     install: InstallConfig = field(default_factory=InstallConfig)
@@ -735,6 +739,7 @@ class Config:
             "github": self.github.to_dict(),
             "git": self.git.to_dict(),
             "providers": self.providers.to_dict(),
+            "external_providers": {name: spec.to_dict() for name, spec in self.external_providers.items()},
             "env": self.env.to_dict(),
             "skills": self.skills.to_dict(),
             "install": self.install.to_dict(),
@@ -755,6 +760,7 @@ class Config:
             github=GitHubConfig.from_dict(data.get("github")),
             git=GitConfig.from_dict(data.get("git")),
             providers=ProvidersConfig.from_dict(data.get("providers")),
+            external_providers=parse_connections(data.get("external_providers")),
             env=EnvConfig.from_dict(data.get("env")),
             skills=SkillsConfig.from_dict(data.get("skills")),
             install=InstallConfig.from_dict(data.get("install")),

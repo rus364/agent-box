@@ -50,7 +50,7 @@ def validate(data, path):
             return
         for key, item in value.items():
             full = (*parts, key)
-            if full in CREDENTIAL_FIELDS or (len(full) == 4 and full[:2] == ("tracker", "connections") and full[-1] == "token"):
+            if full == ("external_providers",) or full in CREDENTIAL_FIELDS or (len(full) == 4 and full[:2] == ("tracker", "connections") and full[-1] == "token"):
                 raise AgentBoxError(f"PROJECT_CREDENTIALS_FORBIDDEN: {path}: {'.'.join(full)}; stop, notify the user, and do not commit this file")
             credentials(item, full)
 
