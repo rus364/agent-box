@@ -87,12 +87,14 @@ class UsageAuthTests(unittest.TestCase):
         self.assertEqual(http.call_count, 3)
 
     def test_401_after_expiry_refresh_does_not_rotate_twice(self):
+        """Rejecting a newly renewed token must end the call, not start a refresh loop."""
         self.expire()
         with mock.patch.object(usage, 'http_json', side_effect=[self.renewal, self.rejected()]) as http:
             self.assertFalse(self.snapshot()['fresh'])
         self.assertEqual(http.call_count, 2)
 
     def test_non_auth_http_errors_never_refresh(self):
+        """Rate limits and server failures cannot be repaired by rotating credentials."""
         for status in (403, 429, 500):
             with self.subTest(status=status), mock.patch.object(usage, 'http_json', side_effect=self.rejected(status)) as http:
                 result = self.snapshot()
@@ -100,6 +102,7 @@ class UsageAuthTests(unittest.TestCase):
                 self.assertEqual(http.call_count, 1)
 
     def test_failed_refresh_preserves_credentials_and_stale_cache(self):
+        """An authorization failure must not destroy credentials or claim cached data is fresh."""
         self.expire()
         before = self.auth.read_bytes()
         self.cache.write_text(json.dumps(self.live))
@@ -112,6 +115,7 @@ class UsageAuthTests(unittest.TestCase):
         self.assertEqual(self.auth.read_bytes(), before)
 
     def test_bad_refresh_response_never_overwrites_credentials(self):
+        """Malformed renewal data must not replace a recoverable account login."""
         self.expire()
         before = self.auth.read_bytes()
         for response in ({}, [], {**self.renewal, 'expires_in': float('nan')},
@@ -123,6 +127,7 @@ class UsageAuthTests(unittest.TestCase):
                 self.assertEqual(self.auth.read_bytes(), before)
 
     def test_reread_adopts_another_process_token_without_refresh(self):
+        """A sibling renewal must prevent a redundant rotation of its refresh token."""
         self.expire()
         new = {**self.oauth, 'accessToken': 'sibling', 'expiresAt': (time.time() + 3600) * 1000}
         self.save(new)
@@ -131,6 +136,7 @@ class UsageAuthTests(unittest.TestCase):
         request.assert_not_called()
 
     def test_login_during_refresh_is_preserved(self):
+        """An in-flight renewal must not undo a newer account login."""
         self.expire()
         new = {**self.oauth, 'accessToken': 'sibling', 'refreshToken': 'sibling-refresh'}
         def response(*args):
@@ -141,6 +147,7 @@ class UsageAuthTests(unittest.TestCase):
         self.assertEqual(read_json(self.auth)['claudeAiOauth'], new)
 
     def test_logout_during_refresh_is_not_undone(self):
+        """A completed logout must not be resurrected by an earlier request."""
         self.expire()
         def response(*args):
             self.auth.unlink()
@@ -150,6 +157,7 @@ class UsageAuthTests(unittest.TestCase):
         self.assertFalse(self.auth.exists())
 
     def test_unrelated_write_during_refresh_is_preserved(self):
+        """Renewing one OAuth entry must preserve other credential-store changes."""
         self.expire()
         def response(*args):
             data = read_json(self.auth)
@@ -160,6 +168,7 @@ class UsageAuthTests(unittest.TestCase):
         self.assertEqual(read_json(self.auth)['unrelated'], 'new settings')
 
     def test_contended_refresh_lock_never_posts_or_removes_foreign_lock(self):
+        """A concurrent refresher owns both the rotation and its lock directory."""
         self.expire()
         path = self.root / '.oauth_refresh.lock'
         path.mkdir()
@@ -170,6 +179,7 @@ class UsageAuthTests(unittest.TestCase):
         self.assertTrue(path.is_dir())
 
     def test_contended_storage_lock_never_overwrites_credentials(self):
+        """Do not rotate a token when its replacement cannot be saved under the write lock."""
         self.expire()
         before = self.auth.read_bytes()
         (self.root / '.storage-write.lock').mkdir()
@@ -180,6 +190,7 @@ class UsageAuthTests(unittest.TestCase):
         self.assertEqual(self.auth.read_bytes(), before)
 
     def test_lost_refresh_lock_prevents_writing_or_removing_replacement(self):
+        """A replaced lock invalidates our right to persist credentials or remove that lock."""
         self.expire()
         path = self.root / '.oauth_refresh.lock'
         before = self.auth.read_bytes()
@@ -193,6 +204,7 @@ class UsageAuthTests(unittest.TestCase):
         self.assertEqual(self.auth.read_bytes(), before)
 
     def test_statusline_read_never_refreshes_an_expired_or_rejected_token(self):
+        """Frequent display callbacks must not trigger account-token rotation."""
         self.expire()
         with mock.patch.object(usage, 'http_json', side_effect=self.rejected()) as http:
             usage.claude_usage(allow_refresh=False)
@@ -201,6 +213,7 @@ class UsageAuthTests(unittest.TestCase):
         self.assertEqual(read_json(self.auth)['claudeAiOauth'], self.oauth)
 
     def test_fresh_cache_never_requires_credentials(self):
+        """A permitted cached display should work without accessing account credentials."""
         self.cache.write_text(json.dumps(self.live))
         self.auth.unlink()
         with mock.patch.object(usage, 'http_json') as http:
@@ -208,6 +221,7 @@ class UsageAuthTests(unittest.TestCase):
         http.assert_not_called()
 
     def test_expired_lock_lease_does_not_persist_refresh(self):
+        """A stalled request must not write after Claude may reclaim its lease."""
         self.expire()
         before = self.auth.read_bytes()
         with mock.patch.object(usage_auth.time, 'monotonic', side_effect=[0, 0, 46]):
@@ -216,6 +230,7 @@ class UsageAuthTests(unittest.TestCase):
         self.assertEqual(self.auth.read_bytes(), before)
 
     def test_malformed_credentials_are_reported_without_network_or_secrets(self):
+        """Invalid local credentials must fail before HTTP without echoing their contents."""
         for text in ('SECRET', '[]', '{"claudeAiOauth": null}'):
             self.auth.write_text(text)
             with mock.patch.object(usage, 'http_json') as http:
@@ -225,6 +240,7 @@ class UsageAuthTests(unittest.TestCase):
             http.assert_not_called()
 
     def test_missing_refresh_token_returns_actionable_error(self):
+        """A login that cannot renew needs an explicit sign-in diagnostic."""
         self.expire()
         del self.oauth['refreshToken']
         self.save(self.oauth)
@@ -234,6 +250,7 @@ class UsageAuthTests(unittest.TestCase):
         http.assert_not_called()
 
     def test_custom_oauth_credentials_never_go_to_default_refresh_endpoint(self):
+        """Custom-server refresh credentials must not be sent to the default server."""
         self.expire()
         with mock.patch.dict(os.environ, {'CLAUDE_CODE_CUSTOM_OAUTH_URL': 'https://example.invalid'}), \
                 mock.patch.object(usage, 'http_json') as http:
@@ -242,6 +259,7 @@ class UsageAuthTests(unittest.TestCase):
         http.assert_not_called()
 
     def test_diagnostics_never_include_network_or_response_secrets(self):
+        """Exceptions may contain credentials or URLs unsuitable for public diagnostics."""
         for exc in (OSError('SECRET'), ValueError('SECRET'), self.rejected(500)):
             with self.subTest(exc=type(exc)), mock.patch.object(usage, 'http_json', side_effect=exc):
                 result = self.snapshot()
@@ -249,5 +267,6 @@ class UsageAuthTests(unittest.TestCase):
                 self.assertNotIn('SECRET', json.dumps(result))
 
     def test_redirects_are_refused_before_credentials_can_leave_endpoint(self):
+        """An endpoint redirect must not forward bearer credentials to another destination."""
         handler = usage.NoRedirect()
         self.assertIsNone(handler.redirect_request(None, None, 307, '', {}, 'https://elsewhere.invalid'))
