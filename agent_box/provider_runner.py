@@ -227,8 +227,10 @@ def check_settings(route):
     if error:
         raise ProviderFailure(error, "unsupported")
     if route["provider"] == "claude" and route.get("fast", False):
+        from .external_launch import builtin_environment
+        environment = builtin_environment(os.environ)
         blocked = [name for name in ("CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY",
-                                    "CLAUDE_CODE_DISABLE_FAST_MODE") if os.environ.get(name) not in (None, "", "0", "false")]
+                                    "CLAUDE_CODE_DISABLE_FAST_MODE") if environment.get(name) not in (None, "", "0", "false")]
         if blocked:
             raise ProviderFailure("Claude fast is unsupported with " + ", ".join(blocked), "unsupported")
 

@@ -18,6 +18,8 @@ from .paths import SESSION_TEMP_ROOT
 API_ENV = 'AGENT_BOX_EXTERNAL_API_KEY'
 BASELINE_ENV = 'AGENT_BOX_API_BASELINE'
 PROVIDER_ENV = 'AGENT_BOX_API_PROVIDER'
+FINGERPRINT_ENV = 'AGENT_BOX_API_FINGERPRINT'
+CLI_ENV = 'AGENT_BOX_API_CLI'
 _AUTH_NAMES = {
     'OPENAI_API_KEY', 'OPENAI_BASE_URL', 'OPENAI_ORG_ID', 'OPENAI_ORGANIZATION',
     'OPENAI_PROJECT_ID', 'CODEX_API_KEY', API_ENV,
@@ -37,6 +39,8 @@ def builtin_environment(environment):
     env = dict(environment)
     baseline = env.pop(BASELINE_ENV, None)
     env.pop(PROVIDER_ENV, None)
+    env.pop(FINGERPRINT_ENV, None)
+    env.pop(CLI_ENV, None)
     if baseline:
         try:
             original = json.loads(Path(baseline).read_text())
@@ -73,6 +77,15 @@ def check_route(config, route):
     identity = route_identity(config, route['api_provider'], route['provider'])
     if route.get('api_fingerprint') and route['api_fingerprint'] != identity['api_fingerprint']:
         raise AgentBoxError('External API definition changed after prepare; prepare a new route before execution')
+
+
+def session_identity(cli):
+    name = os.environ.get(PROVIDER_ENV, '')
+    fingerprint = os.environ.get(FINGERPRINT_ENV, '')
+    if (not valid_name(name) or re.fullmatch(r'[0-9a-f]{64}', fingerprint) is None
+            or os.environ.get(CLI_ENV) != cli):
+        raise AgentBoxError('Active external API identity is missing or differs from the CLI; restart through agent-box ext')
+    return {'api_provider': name, 'api_fingerprint': fingerprint}
 
 
 def invocation_model(cli, args):
@@ -191,7 +204,8 @@ def prepare(command, name, cli, config, directory, environment, *, model=None):
     baseline = directory / 'api-baseline.json'
     atomic_write_json(baseline, {k: v for k, v in original.items() if auth_name(k)}, 0o600)
     env = {k: v for k, v in original.items() if not auth_name(k)}
-    env.update({PROVIDER_ENV: name, BASELINE_ENV: str(baseline)})
+    env.update({PROVIDER_ENV: name, BASELINE_ENV: str(baseline), CLI_ENV: cli,
+                FINGERPRINT_ENV: route_identity(config, name, cli)['api_fingerprint']})
     models = list(dict.fromkeys([*endpoint.models, model]))
     args = list(command[1:])
     boundary = args.index('--') if '--' in args else len(args)

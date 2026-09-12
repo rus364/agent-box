@@ -665,6 +665,10 @@ def native_output(args, selected, tier):
             raise AgentBoxError("This API route requires managed CLI execution; native reports are not accepted")
         if selected.get("api_provider", "") != os.environ.get("AGENT_BOX_API_PROVIDER", ""):
             raise AgentBoxError("The active session API differs from the prepared current-session execution")
+        if selected.get("api_provider"):
+            from .external_launch import session_identity
+            if session_identity(args.provider)["api_fingerprint"] != selected.get("api_fingerprint"):
+                raise AgentBoxError("The active session API differs from the prepared current-session execution")
         if args.provider != selected["provider"]:
             raise AgentBoxError("Reported provider differs from the prepared current session")
         if selected["model"] is None:
@@ -780,12 +784,14 @@ def session_route(args, role, config=None, *, delegated=False):
               "effort": effort, "tier": None, "role": role, "fallbacks": []}
     api = os.environ.get("AGENT_BOX_API_PROVIDER")
     if api:
-        from .external_launch import route_identity
-        result.update(route_identity(config or effective_config(), api, args.primary))
+        from .external_launch import check_route, session_identity
+        result.update(session_identity(args.primary))
         if delegated:
             if model is None:
                 raise AgentBoxError("External session delegation needs verified --session-model and --session-effort, or a configured model override")
-            bind_api_route(result, config or effective_config())
+            config = config or effective_config()
+            check_route(config, result)
+            bind_api_route(result, config)
     return result
 
 

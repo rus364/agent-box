@@ -84,7 +84,10 @@ class ExternalRoutingTests(unittest.TestCase):
         """A native child would inherit its parent's external endpoint despite the built-in ID."""
         config = external_config()
         spec = {'provider': 'codex', 'model': 'native-model', 'effort': 'high', 'tier': 1, 'fallbacks': []}
-        with patch.dict(os.environ, {'AGENT_BOX_API_PROVIDER': 'deepseek'}):
+        identity = external_launch.route_identity(config, 'deepseek', 'codex')
+        with patch.dict(os.environ, {'AGENT_BOX_API_PROVIDER': 'deepseek',
+                                   'AGENT_BOX_API_CLI': 'codex',
+                                   'AGENT_BOX_API_FINGERPRINT': identity['api_fingerprint']}):
             workflow.bind_api_route(spec, config)
             self.assertTrue(spec['managed_only'])
             self.assertNotIn('api_provider', spec)
@@ -99,6 +102,44 @@ class ExternalRoutingTests(unittest.TestCase):
                 workflow.session_route(args, 'worker', config, delegated=True)
             args.session_model, args.session_effort = 'external-small', 'high'
             self.assertTrue(workflow.session_route(args, 'worker', config, delegated=True)['managed_only'])
+
+    def test_active_api_identity_survives_config_edits_and_rejects_other_sessions(self):
+        """Direct work uses the launched endpoint; fresh managed work cannot silently substitute it."""
+        config = external_config()
+        original = external_launch.route_identity(config, 'deepseek', 'codex')
+        with tempfile.TemporaryDirectory() as tmp:
+            _, env = external_launch.prepare(['codex'], 'deepseek', 'codex', config, tmp, {})
+            report = Path(tmp) / 'report.json'
+            report.write_text(json.dumps({'status': 'completed', 'summary': 'Done', 'evidence': []}))
+            args = SimpleNamespace(primary='codex', session_model='external-small', session_effort='high',
+                                   provider='codex', model='external-small', effort='high', role='worker',
+                                   fallback_reason=None, session_inherited=False, file=str(report))
+            config.external_providers['deepseek'].codex.url = 'https://changed.example/v1'
+            with patch.dict(os.environ, env, clear=True):
+                direct = workflow.session_route(args, 'worker', config)
+                self.assertEqual(direct['api_fingerprint'], original['api_fingerprint'])
+                self.assertEqual(workflow.native_output(args, direct, None)['route']['api_fingerprint'],
+                                 original['api_fingerprint'])
+                with self.assertRaisesRegex(AgentBoxError, 'definition changed'):
+                    workflow.session_route(args, 'worker', config, delegated=True)
+                with patch.dict(os.environ, {external_launch.FINGERPRINT_ENV: '0' * 64}):
+                    with self.assertRaisesRegex(AgentBoxError, 'active session API differs'):
+                        workflow.native_output(args, direct, None)
+                with patch.dict(os.environ, {external_launch.CLI_ENV: 'claude'}):
+                    with self.assertRaisesRegex(AgentBoxError, 'differs from the CLI'):
+                        workflow.session_route(args, 'worker', config)
+            self.assertFalse(any(k in external_launch.builtin_environment(env) for k in
+                                 (external_launch.PROVIDER_ENV, external_launch.FINGERPRINT_ENV, external_launch.CLI_ENV)))
+
+    def test_reverse_claude_fast_checks_the_restored_cloud_environment(self):
+        """Preflight must check the same provider environment that the managed process receives."""
+        with tempfile.TemporaryDirectory() as tmp:
+            _, env = external_launch.prepare(['codex'], 'deepseek', 'codex', external_config(), tmp,
+                                              {'CLAUDE_CODE_USE_BEDROCK': '1'})
+            with patch.dict(os.environ, env, clear=True), \
+                 self.assertRaisesRegex(provider_runner.ProviderFailure, 'CLAUDE_CODE_USE_BEDROCK'):
+                provider_runner.check_settings({'provider': 'claude', 'model': 'claude-opus-5',
+                                                'effort': 'high', 'fast': True})
 
     def test_owned_native_profiles_are_removed_for_external_candidates(self):
         """Applying a configured API must not leave an owned profile pointing at a built-in endpoint."""
