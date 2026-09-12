@@ -268,7 +268,9 @@ class EditResult:
 
 
 def secret(path):
-    return "token" in path[-1] or path[-1] == "api_key" or path[0] == "env" or json_field(path)
+    return ("token" in path[-1] and path[-1] != 'auto_compact_token_limit'
+            or path[-1] == "api_key" or path[0] == "env"
+            or json_field(path) and path[-1] == 'env')
 
 
 def parse_value(text, current):

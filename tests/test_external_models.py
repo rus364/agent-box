@@ -255,3 +255,33 @@ class ExternalModelTests(unittest.TestCase):
         edited, _ = menu_tests.ConfigMenuTests().edit(config, delete)
         self.assertNotIn('metadata', edited.config.external_providers['deepseek'].codex.models)
         self.assertEqual(edited.config.external_providers['deepseek'].codex.default_model, '')
+
+    def test_advanced_metadata_editor_is_readable_while_environment_stays_masked(self):
+        """Non-secret metadata needs visible JSON editing; env values must stay private."""
+        config = rich_config()
+        config.external_providers['deepseek'].codex.models['v4-pro']['env']['MODEL_OPTION'] = 'env-secret-value'
+        data = config.to_dict()
+        path = ('external_providers', 'deepseek', 'codex', 'models', 'v4-pro')
+        keys = []
+        for index, part in enumerate(path):
+            rows = config_menu.menu_keys(data, path[:index])
+            keys += [curses.KEY_HOME, *[curses.KEY_DOWN] * rows.index(part), '\n']
+            data = data[part]
+        rows = config_menu.menu_keys(data, path)
+        updated = {'default_verbosity': 'high'}
+        keys += [curses.KEY_HOME, *[curses.KEY_DOWN] * rows.index('auto_compact_token_limit'), '\n',
+                 '\x15', *'524288', '\n',
+                 curses.KEY_HOME, *[curses.KEY_DOWN] * rows.index('metadata'), '\n',
+                 '\x15', *json.dumps(updated), '\n',
+                 curses.KEY_HOME, *[curses.KEY_DOWN] * rows.index('env'), '\n', '\x1b',
+                 *['\x1b'] * len(path), curses.KEY_END, curses.KEY_UP, '\n']
+        edited, screen = menu_tests.ConfigMenuTests().edit(config, keys)
+        drawn = '\n'.join(screen.drawn)
+        self.assertIn(json.dumps(data['metadata']), drawn)
+        self.assertIn(json.dumps(updated), drawn)
+        self.assertIn('786432', drawn)
+        self.assertIn('524288', drawn)
+        self.assertNotIn('env-secret-value', drawn)
+        self.assertEqual(edited.config.external_providers['deepseek'].codex.models['v4-pro']['metadata'], updated)
+        self.assertEqual(edited.config.external_providers['deepseek'].codex.models['v4-pro']['auto_compact_token_limit'], 524288)
+        self.assertNotEqual(config.external_providers['deepseek'].codex.models['v4-pro']['metadata'], updated)
