@@ -60,6 +60,7 @@ its native effort UI is controlled by Claude Code. Agent-box uses
 `supported_efforts` for its workflow picker and launch validation.
 
 Endpoint `env` applies to that CLI only; model `env` overrides matching names.
+`ANTHROPIC_CUSTOM_HEADERS` is reserved because custom headers can override authentication.
 Typed effort/compact values and explicit effort then take priority. These are
 per-process values, stored in protected config/snapshots, masked in the menu,
 and absent from argv and `config show`. They cannot override API credentials,

@@ -175,6 +175,20 @@ class ExternalModelTests(unittest.TestCase):
         with self.assertRaises(AgentBoxError):
             Config.from_dict({'external_providers': {'test': {'codex': {'models': ['model']}}}})
 
+    def test_custom_headers_cannot_replace_the_configured_api_credentials(self):
+        """Claude custom headers can carry auth, so neither env level may set them."""
+        for cli in ('codex', 'claude'):
+            for source in ('endpoint', 'model'):
+                for header in ('Authorization: Bearer private-value', 'x-api-key: private-value'):
+                    data = rich_config().to_dict()
+                    endpoint = data['external_providers']['deepseek'][cli]
+                    target = endpoint if source == 'endpoint' else next(iter(endpoint['models'].values()))
+                    target['env']['ANTHROPIC_CUSTOM_HEADERS'] = header
+                    with self.subTest(cli=cli, source=source, header=header.split(':')[0]):
+                        with self.assertRaises(AgentBoxError) as raised:
+                            Config.from_dict(data)
+                        self.assertNotIn('private-value', str(raised.exception))
+
     def test_claude_model_alias_collisions_fail_independently_of_order(self):
         """Two definitions of one launched model must not silently compete in the picker."""
         entries = [('v4', {'context_window': 1048576, 'effort': 'high'}),
