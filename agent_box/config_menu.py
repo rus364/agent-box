@@ -186,7 +186,9 @@ def label_for(key, path=()):
 
 
 def json_field(path):
-    return path == ('env', 'set') or path[:1] == ('external_providers',) and path[-1] in ('env', 'metadata')
+    return (path == ('env', 'set') or path[:1] == ('external_providers',)
+            and (len(path) == 4 and path[-1] == 'env'
+                 or len(path) == 6 and path[3] == 'models' and path[-1] in ('env', 'metadata')))
 
 
 def help_for(path):

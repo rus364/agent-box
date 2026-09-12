@@ -760,6 +760,8 @@ def route(config, role, tier, primary, writer=None):
              **({"fast": True} if candidate["fast"] else {})}
             if candidate["effort"] != "default" else None)
         candidate["native_limitation"] = native_limitation(candidate["provider"], candidate["fast"])
+    from .external_launch import check_model_effort
+    check_model_effort(config, result)
     return result
 
 

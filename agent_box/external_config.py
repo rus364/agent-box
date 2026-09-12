@@ -42,6 +42,21 @@ def parse_env(value, path):
     return dict(value)
 
 
+def model_settings(endpoint, model, cli):
+    return endpoint.models.get(model, endpoint.models.get(model.removesuffix('[1m]'), model_defaults(cli)))
+
+
+def model_effort_error(endpoint, model, cli, effort):
+    spec = model_settings(endpoint, model, cli)
+    if effort in (None, 'default'):
+        effort = spec['effort']
+        if effort == 'default' and cli == 'claude':
+            effort = {**endpoint.env, **spec['env']}.get('CLAUDE_CODE_EFFORT_LEVEL', 'default')
+    if spec['supported_efforts'] and effort not in (None, 'default') and effort not in spec['supported_efforts']:
+        return f'Requested effort is not supported by configured {cli} model {model}; choose default or a supported level'
+    return None
+
+
 def parse_models(raw, cli, path):
     if not isinstance(raw, dict):
         raise AgentBoxError(f'Invalid external provider configuration: {path} must map model IDs to settings')
@@ -167,4 +182,11 @@ def validate_connections(config):
     for name, spec in config.external_providers.items():
         if spec.enabled and (not spec.api_key.strip() or not (spec.codex.url or spec.claude.url)):
             errors.append(f"external_providers.{name}: enabled provider requires an API key and a CLI URL")
+    for path, models in config.workflow.candidate_groups():
+        for cli, candidate in models.items():
+            connection = config.external_providers.get(candidate.get('api_provider'))
+            if connection and candidate.get('model'):
+                error = model_effort_error(getattr(connection, cli), candidate['model'], cli, candidate['effort'])
+                if error:
+                    errors.append(f'{path}.{cli}: {error}')
     return errors

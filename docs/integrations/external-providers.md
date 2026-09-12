@@ -62,11 +62,17 @@ Endpoint `env` applies to that CLI only; model `env` overrides matching names.
 Typed effort/compact values and explicit effort then take priority. These are
 per-process values, stored in protected config/snapshots, masked in the menu,
 and absent from argv and `config show`. They cannot override API credentials,
-endpoint/model selection, integration homes, agent-box identity or Remote
+endpoint/main model selection, integration homes, agent-box identity or Remote
 Control. Nested external launches and managed built-in fallbacks restore the
 original environment before applying their own settings. Global env remains
 independent. Native `/model` switches do not re-run agent-box: restart with
 `--model` to apply another model's env or Claude effort/compact defaults.
+
+Claude subagent/small-model env variables, such as `CLAUDE_CODE_SUBAGENT_MODEL`
+and `ANTHROPIC_SMALL_FAST_MODEL`, remain user-controlled. They select auxiliary
+models on the same API; the main model's capabilities/defaults are not applied
+to those models. They are restored at the same process boundary as other env
+values. Managed workflow routes describe the main CLI model.
 
 For example, this global definition illustrates DeepSeek V4 Pro settings.
 Confirm IDs and capabilities against the provider's current documentation;

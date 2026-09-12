@@ -240,8 +240,13 @@ def preflight(route):
     check_settings(route)
     if route.get("api_provider"):
         from .config import effective_config
-        from .external_launch import check_route
-        check_route(effective_config(), route)
+        from .external_launch import check_model_effort, check_route
+        config = effective_config()
+        check_route(config, route)
+        try:
+            check_model_effort(config, route)
+        except AgentBoxError as exc:
+            raise ProviderFailure(str(exc), 'unsupported') from None
     if not shutil.which(route["provider"]):
         raise ProviderFailure(f"Cannot find {route['provider']} CLI", "unavailable")
 
@@ -317,9 +322,13 @@ def run(route, role, root, prompt, *, timeout=3600, read_paths=(), diagnostics=N
         command = build_command(route, role, Path(root), schema, result, read_paths)
         if route.get("api_provider"):
             from .config import effective_config
-            from .external_launch import check_route
+            from .external_launch import check_model_effort, check_route
             api_config = effective_config()
             check_route(api_config, route)
+            try:
+                check_model_effort(api_config, route)
+            except AgentBoxError as exc:
+                raise ProviderFailure(str(exc), 'unsupported') from None
             command, env = prepare(command, route["api_provider"], route["provider"], api_config,
                                    directory, env, model=route["model"])
         with (directory / "stdout").open("w+") as stdout, (directory / "stderr").open("w+") as stderr:

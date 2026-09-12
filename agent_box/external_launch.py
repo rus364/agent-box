@@ -12,7 +12,7 @@ import tomllib
 
 from .atomicio import atomic_write_json
 from .errors import AgentBoxError
-from .external_config import model_defaults, valid_model, valid_name
+from .external_config import model_effort_error, model_settings, valid_model, valid_name
 from .paths import SESSION_TEMP_ROOT
 
 API_ENV = 'AGENT_BOX_EXTERNAL_API_KEY'
@@ -78,6 +78,14 @@ def check_route(config, route):
     identity = route_identity(config, route['api_provider'], route['provider'])
     if route.get('api_fingerprint') and route['api_fingerprint'] != identity['api_fingerprint']:
         raise AgentBoxError('External API definition changed after prepare; prepare a new route before execution')
+
+
+def check_model_effort(config, route):
+    if route.get('api_provider') and route.get('model'):
+        _, endpoint = connection(config, route['api_provider'], route['provider'])
+        error = model_effort_error(endpoint, route['model'], route['provider'], route.get('effort'))
+        if error:
+            raise AgentBoxError(error)
 
 
 def session_identity(cli):
@@ -204,10 +212,6 @@ def catalog(models):
     } for i, (model, spec) in enumerate(models.items())]}
 
 
-def model_settings(endpoint, model, cli):
-    return endpoint.models.get(model, endpoint.models.get(model.removesuffix('[1m]'), model_defaults(cli)))
-
-
 def claude_model(model, spec):
     return model + '[1m]' if spec['context_window'] == 1048576 and not model.endswith('[1m]') else model
 
@@ -264,8 +268,9 @@ def prepare(command, name, cli, config, directory, environment, *, model=None):
             custom_env['CLAUDE_CODE_AUTO_COMPACT_WINDOW'] = str(settings['auto_compact_token_limit'])
     else:
         effort = effort or settings['effort']
-    if settings['supported_efforts'] and effort not in (None, 'default') and effort not in settings['supported_efforts']:
-        raise AgentBoxError('Requested effort is not supported by the configured external model')
+    error = model_effort_error(endpoint, model, cli, effort)
+    if error:
+        raise AgentBoxError(error)
     original = builtin_environment(environment)
     directory = Path(directory)
     baseline = directory / 'api-baseline.json'

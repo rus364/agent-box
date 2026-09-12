@@ -676,13 +676,7 @@ class WorkflowConfig:
             value = getattr(self.review, name)
             if not isinstance(value, int) or value < 1:
                 errors.append(f"workflow.review.{name} must be a positive integer")
-        candidates = [(f"{path}.{tier}", models)
-                      for path, tiers in (("workflow.tiers", self.tiers),
-                                          ("workflow.review.tiers", self.review.tiers))
-                      for tier, models in tiers.items()]
-        candidates.extend((f"workflow.{name}.override.models", settings.override.models)
-                          for name, settings in (("worker", self.worker), ("review", self.review)))
-        for path, models in candidates:
+        for path, models in self.candidate_groups():
             for provider, spec in models.items():
                 if spec.get("api_provider", "") != "" and not valid_name(spec.get("api_provider")):
                     errors.append(f"{path}.{provider}: invalid API provider name")
@@ -695,6 +689,15 @@ class WorkflowConfig:
                 if error:
                     errors.append(f"{path}.{provider}: {error}")
         return errors
+
+    def candidate_groups(self):
+        candidates = [(f"{path}.{tier}", models)
+                      for path, tiers in (("workflow.tiers", self.tiers),
+                                          ("workflow.review.tiers", self.review.tiers))
+                      for tier, models in tiers.items()]
+        candidates.extend((f"workflow.{name}.override.models", settings.override.models)
+                          for name, settings in (("worker", self.worker), ("review", self.review)))
+        return candidates
 
     @classmethod
     def from_dict(cls, data):

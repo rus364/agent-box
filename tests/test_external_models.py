@@ -7,10 +7,10 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from agent_box import config_menu, external_launch as ext, provider_runner, runtime
+from agent_box import config_menu, external_launch as ext, provider_runner, runtime, workflow
 from agent_box.config import Config, load_config, save_config
 from agent_box.errors import AgentBoxError
-from agent_box.external_config import model_defaults
+from agent_box.external_config import model_defaults, validate_connections
 import test_config_menu as menu_tests
 from test_external_config import external_config
 
@@ -94,15 +94,42 @@ class ExternalModelTests(unittest.TestCase):
     def test_model_environment_is_restored_across_external_and_builtin_children(self):
         """Endpoint tuning must not contaminate a nested API or its built-in fallback."""
         config = rich_config()
+        config.external_providers['deepseek'].claude.env['CLAUDE_CODE_SUBAGENT_MODEL'] = 'auxiliary-model'
         original = {'MODEL_OPTION': 'parent', 'CLAUDE_CODE_AUTO_COMPACT_WINDOW': '100', 'OPENAI_API_KEY': 'parent-key'}
         with tempfile.TemporaryDirectory() as one, tempfile.TemporaryDirectory() as two:
             _, first = ext.prepare(['claude'], 'deepseek', 'claude', config, one, original)
             self.assertEqual(first['MODEL_OPTION'], 'model')
+            self.assertEqual(first['CLAUDE_CODE_SUBAGENT_MODEL'], 'auxiliary-model')
             self.assertEqual(ext.builtin_environment(first), original)
             _, second = ext.prepare(['codex', '--model', 'manual'], 'deepseek', 'codex', config, two, first)
             self.assertEqual(second['MODEL_OPTION'], 'endpoint')
             self.assertEqual(second['CLAUDE_CODE_AUTO_COMPACT_WINDOW'], '100')
             self.assertEqual(ext.builtin_environment(second), original)
+
+    def test_unsupported_workflow_effort_is_rejected_before_preparation_or_process(self):
+        """A picker change must not save an incompatible inherited effort or spend a review run."""
+        config = rich_config()
+        candidate = dict(model='v4-pro', effort='medium', fast=False, api_provider='deepseek')
+        config.workflow.tiers['1']['codex'] = candidate
+        errors = validate_connections(config)
+        self.assertTrue(any('workflow.tiers.1.codex' in error and 'not supported' in error for error in errors))
+        route = {'provider': 'codex', **candidate, **ext.route_identity(config, 'deepseek', 'codex')}
+        with patch('agent_box.config.effective_config', return_value=config), \
+                patch.object(provider_runner.subprocess, 'Popen') as process:
+            for operation in (lambda: provider_runner.preflight(route),
+                              lambda: provider_runner.run(route, 'reviewer', Path.cwd(), 'test')):
+                with self.assertRaises(provider_runner.ProviderFailure) as failure:
+                    operation()
+                self.assertEqual(failure.exception.category, 'unsupported')
+            process.assert_not_called()
+        with tempfile.TemporaryDirectory() as temp, patch.object(workflow, 'WORKFLOW_STATE', Path(temp)), \
+                patch.object(workflow.shutil, 'which', return_value='/bin/codex'):
+            with self.assertRaisesRegex(AgentBoxError, 'not supported'):
+                workflow.route(config, 'worker', 1, 'codex')
+            candidate['effort'] = 'default'
+            self.assertEqual(validate_connections(config), [])
+            selected = workflow.route(config, 'worker', 1, 'codex')
+            self.assertEqual(selected['effort'], 'default')
 
     def test_invalid_model_metadata_and_owned_environment_fail_privately(self):
         """Bad tuning must be rejected at load time without echoing supplied values."""
@@ -165,14 +192,14 @@ class ExternalModelTests(unittest.TestCase):
             rows = config_menu.menu_keys(data, path[:index])
             keys += [curses.KEY_HOME, *[curses.KEY_DOWN] * rows.index(part), '\n']
             data = data[part]
-        add = [*keys, curses.KEY_END, '\n', *'api', '\n', '\n', *'Nice model', '\n',
+        add = [*keys, curses.KEY_END, '\n', *'metadata', '\n', '\n', *'Nice model', '\n',
                curses.KEY_END, curses.KEY_UP, '\n']
         save = ['\x1b'] * 5 + [curses.KEY_END, curses.KEY_UP, '\n']
         edited, screen = menu_tests.ConfigMenuTests().edit(config, [*add, *save])
         endpoint = edited.config.external_providers['deepseek'].codex
-        self.assertEqual(endpoint.default_model, 'api')
-        self.assertEqual(endpoint.models['api']['display_name'], 'Nice model')
-        self.assertNotIn('api', config.external_providers['deepseek'].codex.models)
+        self.assertEqual(endpoint.default_model, 'metadata')
+        self.assertEqual(endpoint.models['metadata']['display_name'], 'Nice model')
+        self.assertNotIn('metadata', config.external_providers['deepseek'].codex.models)
         self.assertNotIn('Deepseek', '\n'.join(screen.drawn))
         self.assertEqual(config_menu.label_for('api'), 'API')
         cancelled, _ = menu_tests.ConfigMenuTests().edit(config, [*add, *['\x1b'] * 6])
@@ -180,9 +207,9 @@ class ExternalModelTests(unittest.TestCase):
         # The dynamic model has no entry in Config() defaults; reset still knows its schema.
         reset = [*add, curses.KEY_HOME, 'R', *save]
         edited, _ = menu_tests.ConfigMenuTests().edit(config, reset)
-        self.assertEqual(edited.config.external_providers['deepseek'].codex.models['api'], model_defaults('codex'))
+        self.assertEqual(edited.config.external_providers['deepseek'].codex.models['metadata'], model_defaults('codex'))
         delete = [*add, curses.KEY_END, '\n', curses.KEY_DOWN, '\n',
                   *['\x1b'] * 4, curses.KEY_END, curses.KEY_UP, '\n']
         edited, _ = menu_tests.ConfigMenuTests().edit(config, delete)
-        self.assertNotIn('api', edited.config.external_providers['deepseek'].codex.models)
+        self.assertNotIn('metadata', edited.config.external_providers['deepseek'].codex.models)
         self.assertEqual(edited.config.external_providers['deepseek'].codex.default_model, '')
