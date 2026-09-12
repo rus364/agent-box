@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import http.client
 import os
 import time
 import urllib.error
@@ -71,7 +72,7 @@ def refresh_request(url, body):
                          data=json.dumps(body).encode(), timeout=5)
     except urllib.error.HTTPError as exc:
         raise AgentBoxError(f"Claude token refresh failed: HTTP {exc.code}; sign in with Claude if authorization was rejected") from None
-    except OSError:
+    except (OSError, http.client.HTTPException):
         raise AgentBoxError("Claude token refresh failed: network error") from None
     except ValueError:
         raise AgentBoxError("Claude token refresh returned an invalid response") from None
@@ -328,7 +329,7 @@ def usage_snapshot(provider, no_cache=False, *, allow_refresh=True):
         except OSError:
             pass  # A read-only cache does not invalidate a successful live observation.
         return {"provider": provider, "fresh": True, "source": "live", "observed_at": now, "windows": windows}
-    except (OSError, ValueError, KeyError, TypeError, AgentBoxError) as exc:
+    except (OSError, http.client.HTTPException, ValueError, KeyError, TypeError, AgentBoxError) as exc:
         if isinstance(exc, AgentBoxError):
             error = str(exc)
         elif isinstance(exc, urllib.error.HTTPError):
@@ -337,7 +338,7 @@ def usage_snapshot(provider, no_cache=False, *, allow_refresh=True):
             error = "Credentials missing; sign in with the provider"
         elif isinstance(exc, PermissionError):
             error = "Credentials unreadable"
-        elif isinstance(exc, OSError):
+        elif isinstance(exc, (OSError, http.client.HTTPException)):
             error = "Usage request failed: network or file I/O error"
         else:
             error = "Invalid usage response"

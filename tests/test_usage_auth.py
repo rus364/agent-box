@@ -1,5 +1,6 @@
 """Usage refresh must neither rotate valid credentials nor corrupt a CLI login."""
 import json
+import http.client
 import os
 import tempfile
 import time
@@ -265,6 +266,27 @@ class UsageAuthTests(unittest.TestCase):
                 result = self.snapshot()
                 self.assertFalse(result['fresh'])
                 self.assertNotIn('SECRET', json.dumps(result))
+
+    def test_truncated_http_bodies_preserve_failure_and_routing_fallback(self):
+        """Partial responses must neither escape routing nor expose response bytes."""
+        from agent_box.routing import select
+        from test_routing import RoutingTests
+        config = RoutingTests().config()
+        config.routing = 'usage-aware'
+        for renewing in (False, True):
+            if renewing:
+                self.expire()
+            before = self.auth.read_bytes()
+            for exc in (http.client.IncompleteRead(b'SECRET', 10), http.client.BadStatusLine('SECRET')):
+                with self.subTest(renewing=renewing, exception=type(exc).__name__), \
+                        mock.patch.object(usage, 'http_json', side_effect=exc):
+                    result = self.snapshot()
+                self.assertFalse(result['fresh'])
+                self.assertIn('network', result['error'])
+                self.assertNotIn('SECRET', json.dumps(result))
+                self.assertEqual(self.auth.read_bytes(), before)
+                route = select(config, 'worker', 2, 'codex', {}, {'claude': result})
+                self.assertIn('static weights', route['reason'])
 
     def test_redirects_are_refused_before_credentials_can_leave_endpoint(self):
         """An endpoint redirect must not forward bearer credentials to another destination."""
