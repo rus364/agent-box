@@ -93,6 +93,24 @@ python3 tests/run_suite.py
 The inner invocation inherits the rendered image-group settings from the
 outer session, including `podman`. Its image build and workspace use the
 inner engine. They do not update or recreate the physical host's workspace.
+The launcher keeps its build markers, workspace records and generated policy
+in a writable `~/.local/share/agent-box-launcher-<namespace>` directory inside
+the container. The directory is stable for that container's lifetime and is
+removed with it. Notification state and explicitly forwarded workflow state
+keep their shared mounts. An explicit `AGENT_BOX_STATE_DIR` still takes
+precedence, including for isolated tests.
+
+For a small development check, once the inner engine has an agent-box image:
+
+```sh
+agent-box selftest
+agent-box shell -c 'id; agent-box selftest'
+```
+
+This checks a real launch through PATH. Without an inner image, launching
+builds one first; that can download packages. The outer engine's image store
+is not exposed to the workspace.
+
 The test runner redirects state and integration paths. Tests of configuration
 application must retain that isolation: agent configuration directories mounted
 from the physical host are still host-owned files.

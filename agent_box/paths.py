@@ -75,9 +75,24 @@ XDG_DATA_HOME = env_path("XDG_DATA_HOME", HOST_HOME / ".local/share")
 XDG_CACHE_HOME = env_path("XDG_CACHE_HOME", HOST_HOME / ".cache")
 XDG_STATE_HOME = env_path("XDG_STATE_HOME", HOST_HOME / ".local/state")
 
-# agent-box's own persistent state (build markers, per-workspace git/gh
-# snapshots, notification state).
-STATE_ROOT = env_path("AGENT_BOX_STATE_DIR", XDG_DATA_HOME / "agent-box")
+def launcher_state_root(shared: Path) -> Path:
+    """Keep nested builds and workspace records outside their parent's mounts.
+
+    Podman creates missing bind parents as root. Even a writable parent would
+    reuse the outer workspace records and read-only policy mount. A namespace
+    suffix keeps the local directory stable for this box without aliasing a
+    mounted parent launcher directory. Explicit test/user overrides still win.
+    """
+    if os.environ.get("AGENT_BOX_STATE_DIR", "").strip() or not Path("/run/.containerenv").is_file():
+        return shared
+    namespace = Path("/proc/self/ns/mnt").stat().st_ino
+    return HOST_HOME / ".local/share" / f"agent-box-launcher-{namespace}"
+
+
+# Notification hooks keep the existing shared mount; launcher state is local
+# to the container. Forwarded workflow state retains its explicit path below.
+_SHARED_STATE_ROOT = env_path("AGENT_BOX_STATE_DIR", XDG_DATA_HOME / "agent-box")
+STATE_ROOT = launcher_state_root(_SHARED_STATE_ROOT)
 CONFIG_ROOT = env_path("AGENT_BOX_CONFIG_DIR", XDG_CONFIG_HOME / "agent-box")
 HOST_SESSIONS_ROOT = STATE_ROOT / "runtime/host-sessions"
 HOST_TMUX_CONFIG = Path(__file__).with_name("tmux.conf")
@@ -88,14 +103,14 @@ TOOLS_REFRESH_FILE = BUILD_STATE / "tools-refresh"
 
 # The one agent-box configuration file (see agent_box.config).
 CONFIG_FILE = CONFIG_ROOT / "config.json"
-NOTIFY_STATE_ROOT = STATE_ROOT / "notify"
+NOTIFY_STATE_ROOT = _SHARED_STATE_ROOT / "notify"
 # The only credential the container ever sees for notifications: a generated
 # two-key file (bot token + chat id), written solely when notifications are
 # usable and mounted read-only. Deliberately NOT the main config file, which
 # also describes host-integration switches the container has no business
 # reading -- and which would otherwise carry the bot token into every
 # container even with notifications turned off. See agent_box.notify.
-NOTIFY_CREDENTIALS = STATE_ROOT / "runtime/notify.json"
+NOTIFY_CREDENTIALS = _SHARED_STATE_ROOT / "runtime/notify.json"
 # Where the container looks for it: agent-box inside the container gets no
 # AGENT_BOX_STATE_DIR/XDG_DATA_HOME, so it resolves the default location.
 CONTAINER_NOTIFY_CREDENTIALS = HOST_HOME / ".local/share/agent-box/runtime/notify.json"

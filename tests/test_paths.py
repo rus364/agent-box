@@ -7,12 +7,14 @@ current working directory. This previously caused agent-box to write real
 state (synced Claude skills) into whatever directory it was invoked from.
 """
 import os
+import runpy
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
 from agent_box.paths import env_path
+from agent_box import paths
 
 
 class EnvPathTests(unittest.TestCase):
@@ -80,6 +82,38 @@ class ModuleLevelPathDefaultsTests(unittest.TestCase):
                         importlib.reload(paths_module)  # restore real environment
             finally:
                 os.chdir(old_cwd)
+
+
+class NestedLauncherStateTests(unittest.TestCase):
+    def load_paths(self, namespace, overrides=None, container=True):
+        environment = {"XDG_DATA_HOME": "/shared/data", "AGENT_BOX_WORKFLOW_STATE": "/shared/workflow"}
+        environment.update(overrides or {})
+        with mock.patch.dict(os.environ, environment, clear=True), \
+             mock.patch.object(Path, "is_file", return_value=container), \
+             mock.patch.object(Path, "stat", return_value=mock.Mock(st_ino=namespace)):
+            return runpy.run_path(str(Path(paths.__file__)))
+
+    def test_container_build_and_runtime_avoid_shared_mounts_but_hooks_keep_them(self):
+        """Creating a root-owned bind parent or a read-only policy mount must not block a nested launch."""
+        values = self.load_paths(123)
+        root = values["STATE_ROOT"]
+        self.assertEqual(root, values["HOST_HOME"] / ".local/share/agent-box-launcher-123")
+        for key in ("BUILD_STATE", "HOST_SESSIONS_ROOT", "TRACKER_RUNTIME_DIR", "POLICY_RUNTIME_DIR"):
+            self.assertTrue(values[key].is_relative_to(root), key)
+        self.assertEqual(values["NOTIFY_STATE_ROOT"], Path("/shared/data/agent-box/notify"))
+        self.assertEqual(values["NOTIFY_CREDENTIALS"], Path("/shared/data/agent-box/runtime/notify.json"))
+        self.assertEqual(values["WORKFLOW_STATE"], Path("/shared/workflow"))
+
+    def test_namespace_is_stable_within_a_box_and_distinct_from_its_parent(self):
+        """The same workspace path must not alias a mounted outer lifecycle directory."""
+        self.assertEqual(self.load_paths(123)["STATE_ROOT"], self.load_paths(123)["STATE_ROOT"])
+        self.assertNotEqual(self.load_paths(123)["STATE_ROOT"], self.load_paths(456)["STATE_ROOT"])
+
+    def test_host_defaults_and_explicit_test_isolation_are_preserved(self):
+        self.assertEqual(self.load_paths(123, container=False)["STATE_ROOT"], Path("/shared/data/agent-box"))
+        values = self.load_paths(123, {"AGENT_BOX_STATE_DIR": "/isolated"})
+        self.assertEqual(values["STATE_ROOT"], Path("/isolated"))
+        self.assertEqual(values["NOTIFY_STATE_ROOT"], Path("/isolated/notify"))
 
 
 if __name__ == "__main__":
