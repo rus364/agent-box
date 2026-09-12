@@ -101,13 +101,13 @@ class ReviewerMatrixTests(unittest.TestCase):
         self.assertEqual(set(config.workflow.review.tiers), {"1", "2", "3"})
         for tier in config.workflow.review.tiers.values():
             self.assertEqual(set(tier), {"codex", "claude"})
-            self.assertTrue(all(spec == {"fast": False, "model": "", "effort": "medium"} for spec in tier.values()))
+            self.assertTrue(all(spec == {"api_provider": "", "fast": False, "model": "", "effort": "medium"} for spec in tier.values()))
 
     def test_review_models_do_not_inherit_workers_and_round_trip_defaults(self):
         config = Config.from_dict({"workflow": {
             "tiers": {"2": {"claude": {"model": "worker"}}},
             "review": {"tiers": {"2": {
-                "claude": {"fast": False, "model": "reviewer", "effort": "default"},
+                "claude": {"api_provider": "", "fast": False, "model": "reviewer", "effort": "default"},
                 "codex": {"fast": False, "model": "fallback", "effort": "high"}}}}}})
         config = Config.from_dict(config.to_dict())
         selected = routing.select(config.workflow, "reviewer", 2, "codex", {})

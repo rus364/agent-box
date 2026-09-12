@@ -74,12 +74,8 @@ def parse_connections(data):
 
 
 def validate_connections(config):
-    try:
-        specs = parse_connections({name: spec.to_dict() for name, spec in config.external_providers.items()})
-    except AgentBoxError as exc:
-        return [str(exc)]
     errors = []
-    for name, spec in specs.items():
+    for name, spec in config.external_providers.items():
         if spec.enabled and (not spec.api_key.strip() or not (spec.codex.url or spec.claude.url)):
             errors.append(f"external_providers.{name}: enabled provider requires an API key and a CLI URL")
     return errors

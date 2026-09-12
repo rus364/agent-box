@@ -346,6 +346,11 @@ def edit(config, *, project=None):
             if part not in value:
                 # Connection rows are editable defaults, but a section copy
                 # must not create accounts that the global map does not hold.
+                if path[:1] == ('external_providers',) and len(path) >= 2:
+                    value = ExternalProvider().to_dict()
+                    for part in path[2:]:
+                        value = value[part]
+                    break
                 if path[:2] == ('tracker', 'connections') and len(path) >= 3:
                     value = TrackerConnection().to_dict()
                     for part in path[3:]:
@@ -604,7 +609,7 @@ def edit(config, *, project=None):
         rows += [model + (" (current)" if model == current else "") for model in suggestions]
         # The two escape hatches stay above the list, visible even with many
         # suggested models. An unset candidate opens on a useful suggestion.
-        index = suggestions.index(current) + 2 if current else 2
+        index = suggestions.index(current) + 2 if current else 2 if suggestions else 0
         about = f"Current model: {current or '(disabled)'}. Suggestions come from the CLI or bundled fallback; availability depends on your provider account."
         details = [
             "Type or edit any provider-supported model ID. Esc cancels editing. " + about,
@@ -673,7 +678,7 @@ def edit(config, *, project=None):
                 elif secret(full):
                     shown = "<configured>" if value else "<empty>"
                 elif isinstance(value, str):
-                    shown = value or "(not set)"
+                    shown = value or ("Built-in API" if key == "api_provider" else "(not set)")
                 else:
                     shown = json.dumps(value, ensure_ascii=False)
                 if project_mode:

@@ -108,3 +108,33 @@ class ExternalConfigTests(unittest.TestCase):
                 self.assertEqual(value['model'], 'external-small')
                 self.assertEqual(config.workflow.tiers['0']['codex']['api_provider'], '')
                 self.assertNotIn('private-api-key', '\n'.join(screen.drawn))
+
+    def test_empty_or_deleted_provider_still_allows_manual_model_entry(self):
+        """An absent catalog must open on manual entry rather than lose the draft."""
+        import curses
+        path = ('workflow', 'tiers', '0', 'codex')
+        for deleted in (False, True):
+            config = external_config()
+            config.external_providers['deepseek'].codex.models = []
+            if deleted:
+                del config.external_providers['deepseek']
+            config.workflow.tiers['0']['codex']['api_provider'] = 'deepseek'
+            keys = []
+            for index, part in enumerate(path):
+                keys += [*menu_tests.select(part, path[:index]), '\n']
+            keys += [*menu_tests.select('model', path), '\n', '\n', *'manual-model', '\n']
+            keys += ['\x1b'] * len(path) + [curses.KEY_END, curses.KEY_UP, '\n']
+            edited, _ = menu_tests.ConfigMenuTests().edit(config, keys)
+            self.assertEqual(edited.config.workflow.tiers['0']['codex']['model'], 'manual-model')
+            self.assertEqual(edited.config.workflow.tiers['0']['codex']['api_provider'], 'deepseek')
+
+    def test_reset_clears_only_the_selected_external_key_in_the_draft(self):
+        """Dynamic fields need real defaults, just like fixed connection fields."""
+        import curses
+        config = external_config()
+        config.external_providers['deepseek'].enabled = False
+        keys = [*menu_tests.select('external_providers'), '\n', '\n', curses.KEY_DOWN, 'R',
+                '\x1b', '\x1b', curses.KEY_END, curses.KEY_UP, '\n']
+        edited, _ = menu_tests.ConfigMenuTests().edit(config, keys)
+        self.assertEqual(edited.config.external_providers['deepseek'].api_key, '')
+        self.assertEqual(config.external_providers['deepseek'].api_key, 'private-api-key')
