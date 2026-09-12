@@ -10,8 +10,9 @@ much smaller feature: "something happened in a container you left running".
 
 Claude delivers events through hooks installed in its ``settings.json``
 (``agent-box notify claude``), Codex through its ``notify`` program setting
-(``agent-box notify codex``). Both run *inside* the container. The main
-config file is never mounted; persistent workspace boxes receive notification
+(``agent-box notify codex``). Both are installed globally by config apply and
+work on the host and in containers. The agent-box config file is never mounted;
+persistent workspace boxes receive notification
 credentials only through the relevant exec environment.
 """
 from __future__ import annotations

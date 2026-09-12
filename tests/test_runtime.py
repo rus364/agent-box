@@ -367,7 +367,7 @@ class CodexRuntimeOverridesTests(IsolatedRuntimeTest):
         warn.assert_called_once()
         self.assertIn("could not parse Codex config", warn.call_args.args[0])
 
-    def test_notification_and_mcp_overrides_compose(self):
+    def test_notifications_use_global_config_without_a_launch_override(self):
         with tempfile.TemporaryDirectory() as tmp:
             codex_home = Path(tmp) / "alternative-codex-home"
             codex_home.mkdir()
@@ -382,7 +382,6 @@ class CodexRuntimeOverridesTests(IsolatedRuntimeTest):
                 command = runtime.codex_command(["exec", "hello"], config)
         self.assertEqual(command, [
             "codex",
-            "-c", 'notify=["agent-box","notify","codex"]',
             "-c", "mcp_servers.node_repl.enabled=false",
             "--dangerously-bypass-approvals-and-sandbox",
             "exec", "hello",
@@ -448,6 +447,16 @@ class ClaudeNotifyHookLifecycleTests(IsolatedRuntimeTest):
         return Config(notifications=NotificationsConfig(
             enabled=True, telegram_token="token", telegram_chat_id="chat",
         ))
+
+    def test_apply_and_disable_reconcile_codex_alongside_claude(self):
+        """Both providers must gain and lose notifications at the apply boundary."""
+        import tomllib
+        with mock.patch.object(runtime, "apply_path_symlink", return_value=[]):
+            runtime.apply_config(self._notifying())
+            path = runtime.CODEX_HOME / "config.toml"
+            self.assertEqual(tomllib.loads(path.read_text())["notify"], ["agent-box", "notify", "codex"])
+            runtime.apply_config(Config())
+            self.assertNotIn("notify", tomllib.loads(path.read_text()))
 
     def test_apply_installs_the_managed_hooks_and_disturbs_nothing_else(self):
         with tempfile.TemporaryDirectory() as tmp:

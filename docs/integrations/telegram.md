@@ -2,8 +2,8 @@
 
 Two unrelated things share a name here. **Control** is driving a live Claude
 session from your phone, and agent-box does not implement it — Anthropic's
-official plugin does. **Notifications** are one-way pings when something happens
-in a box you walked away from, and those are agent-box's.
+official plugin does. **Notifications** are one-way pings from a host or container
+session, and those are agent-box's.
 
 Both are off by default.
 
@@ -71,6 +71,28 @@ a session from Telegram.
 
 - **Codex**: turn completed, including the final assistant message.
 - **Claude**: waiting for input, permission required, completed, or failed.
+
+Saving `agent-box config` or running `agent-box config apply` installs both
+integrations globally. Codex uses this root setting in its user
+`~/.codex/config.toml` (or the configured Codex home):
+
+```toml
+notify = ["agent-box", "notify", "codex"]
+```
+
+This covers ordinary `codex`, `agent-box --host codex`, and container launches
+that load that user configuration. The host needs `agent-box` on `PATH` and the
+rendered notification credentials described below. Launching never installs
+the setting or passes a notification override. `notify` only delivers
+`agent-turn-complete`; it needs no `/hooks` trust and does not deliver approval
+requests. Managed Codex delegates use `--ignore-user-config` and do not inherit
+this integration; separate delegate notifications are not enabled here.
+
+agent-box prepends a marked block without rewriting the rest of the TOML.
+An existing different `notify` is preserved with a warning. Disabling
+notifications or uninstalling removes only the exact unchanged leading block;
+moved or edited blocks and manually configured settings remain user-owned.
+The JSON formatter and Telegram sender are shared with Claude's existing hooks.
 
 Completion notifications render agent-box JSON reports as readable Markdown:
 worker/scout results include the summary and every evidence item; reviews include

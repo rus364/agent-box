@@ -106,6 +106,18 @@ class UninstallTestCase(unittest.TestCase):
             return runtime.uninstall_main(list(args))
 
 class UninstallTests(UninstallTestCase):
+    def test_codex_notify_removal_preserves_other_settings(self):
+        """Uninstall removes its global command without erasing Codex preferences."""
+        from agent_box import codex_settings
+        self._installed_state()
+        path = runtime.CODEX_HOME / "config.toml"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        original = '# user\nmodel = "example"\n'
+        path.write_text(original)
+        codex_settings.reconcile_notify(path, True)
+        self.assertEqual(self._uninstall(), 0)
+        self.assertEqual(path.read_text(), original)
+
     def test_the_status_line_is_removed(self):
         settings = self._installed_state()
         self._uninstall()

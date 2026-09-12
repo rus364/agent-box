@@ -197,8 +197,6 @@ def codex_command(
     without ever writing to the user's ``~/.codex/config.toml``.
     """
     command = ["codex"]
-    if config.notifications.usable:
-        command += ["-c", 'notify=["agent-box","notify","codex"]']
     for override in browser_codex_overrides(browser_session_dir):
         command += ["-c", override]
     for override in codex_runtime_overrides():
@@ -2474,6 +2472,8 @@ def apply_config(config: Config) -> list[str]:
     ensure_state_dirs()
     report.extend(apply_path_symlink(config))
     notify_module.sync_credentials(config, path=NOTIFY_CREDENTIALS)
+    from . import codex_settings
+    report.extend(codex_settings.reconcile_notify(CODEX_HOME / "config.toml", config.notifications.enabled))
     sync_tracker_runtime(config)
 
     wanted = managed_skills(config)
@@ -2566,6 +2566,9 @@ def uninstall_main(args: list[str]) -> int:
             settings, notifications=False, statusline=False):
         done.append(f"removed the agent-box status line and notification hooks from {settings}")
 
+
+    from . import codex_settings
+    done.extend(codex_settings.reconcile_notify(CODEX_HOME / "config.toml", False))
 
     disabled = Config()
     disabled.skills.claude_links = False

@@ -223,7 +223,7 @@ class CodexBrowserInjectionTests(IsolatedRuntimeTest):
         )
         command = runtime.codex_command(["exec", "hi"], config, Path("/state/b/codex-1"))
         overrides = [command[i + 1] for i, arg in enumerate(command) if arg == "-c"]
-        self.assertIn('notify=["agent-box","notify","codex"]', overrides)
+        self.assertFalse(any(o.startswith("notify=") for o in overrides))
         self.assertTrue(any(o.startswith("mcp_servers.agent_box_browser=") for o in overrides))
 
 
