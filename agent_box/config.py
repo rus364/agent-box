@@ -31,7 +31,7 @@ from typing import Any
 
 from .atomicio import atomic_write_json, read_json
 from .paths import CONFIG_FILE
-from .external_config import ExternalProvider, parse_connections, valid_name
+from .external_config import API_EFFORTS, ExternalProvider, parse_connections, valid_name
 
 VERSION = 1
 SECRET_MODE = stat.S_IRUSR | stat.S_IWUSR
@@ -478,7 +478,7 @@ TRACKER_PROVIDERS = ("vikunja", "jira", "linear", "github")
 AGENT_PROVIDERS = ("codex", "claude")
 AGENT_EFFORTS = {
     "codex": ("default", "low", "medium", "high", "xhigh", "max", "ultra"),
-    "claude": ("default", "low", "medium", "high", "xhigh", "max"),
+    "claude": API_EFFORTS['claude'],
 }
 WORKFLOW_SKILLS = ("ab-setup", "ab-adopt", "ab-normalize", "ab-interview", "ab-plan", "ab-work", "ab-review", "ab-pr", "ab-land")
 REVIEW_PRESETS = {"thorough": (2, 80), "balanced": (5, 200), "light": (10, 500)}
@@ -680,7 +680,6 @@ class WorkflowConfig:
             for provider, spec in models.items():
                 if spec.get("api_provider", "") != "" and not valid_name(spec.get("api_provider")):
                     errors.append(f"{path}.{provider}: invalid API provider name")
-                from .external_config import API_EFFORTS
                 efforts = API_EFFORTS if spec.get('api_provider') else AGENT_EFFORTS
                 if spec.get("effort") not in efforts.get(provider, ()):
                     errors.append(f"{path}.{provider}: invalid effort")

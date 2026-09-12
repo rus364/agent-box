@@ -198,7 +198,12 @@ def invocation_settings(cli, args, *, managed=False):
 
 def selected_model(config, name, cli, args):
     _, endpoint = connection(config, name, cli)
-    return choose_model(endpoint, cli, invocation_settings(cli, args)[0])
+    model, effort = invocation_settings(cli, args)
+    model = choose_model(endpoint, cli, model)
+    error = model_effort_error(endpoint, model, cli, effort)
+    if error:
+        raise AgentBoxError(error)
+    return model
 
 
 def choose_model(endpoint, cli, model):
