@@ -686,7 +686,9 @@ class WorkflowConfig:
             for provider, spec in models.items():
                 if spec.get("api_provider", "") != "" and not valid_name(spec.get("api_provider")):
                     errors.append(f"{path}.{provider}: invalid API provider name")
-                if spec.get("effort") not in AGENT_EFFORTS.get(provider, ()):
+                from .external_config import API_EFFORTS
+                efforts = API_EFFORTS if spec.get('api_provider') else AGENT_EFFORTS
+                if spec.get("effort") not in efforts.get(provider, ()):
                     errors.append(f"{path}.{provider}: invalid effort")
                 from .fast_mode import configuration_error
                 error = configuration_error(provider, spec)

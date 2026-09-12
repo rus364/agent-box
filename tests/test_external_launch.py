@@ -89,7 +89,7 @@ class ExternalProcessTests(unittest.TestCase):
                 ext.selected_model(config, 'deepseek', cli, args)
         self.assertEqual(ext.selected_model(config, 'deepseek', 'codex', ['-mother']), 'other')
         self.assertEqual(ext.selected_model(config, 'deepseek', 'claude', []), 'external-small')
-        config.external_providers['deepseek'].claude.models = []
+        config.external_providers['deepseek'].claude.models = {}
         with self.assertRaisesRegex(AgentBoxError, 'requires a model ID'):
             ext.selected_model(config, 'deepseek', 'claude', [])
         config.external_providers['deepseek'].enabled = False

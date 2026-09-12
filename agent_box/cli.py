@@ -370,6 +370,16 @@ def config_show() -> None:
         for agent in ("codex", "claude"):
             endpoint = getattr(spec, agent)
             print(f"      {agent}: {endpoint.url or '(not set)'}; models {', '.join(endpoint.models) or '(none)'}")
+            print(f"        default {endpoint.default_model or '(first configured)'}; env {len(endpoint.env)} configured")
+            for model, settings in endpoint.models.items():
+                details = (f"effort {settings['effort']}; levels {','.join(settings['supported_efforts']) or '(unknown)'}; "
+                           f"context {settings['context_window'] or '(CLI default)'}; "
+                           f"compact {settings['auto_compact_token_limit'] or '(CLI default)'}; env {len(settings['env'])} configured")
+                if agent == 'codex':
+                    details += (f"; input {','.join(settings['input_modalities'])}; "
+                                f"parallel {settings['supports_parallel_tool_calls']}; summaries {settings['supports_reasoning_summaries']}; "
+                                f"metadata {len(settings['metadata'])} fields")
+                print(f"        {model}: {details}")
     print(f"  Share skills with Claude    {'on' if config.skills.claude_links else 'off'}")
     print(f"  Image tool groups           {', '.join(config.image.enabled_groups()) or '(base only)'}"
           f"{_image_note(config)}")

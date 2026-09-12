@@ -2,8 +2,9 @@
 
 Open `agent-box config` → **External API providers** → **Add provider**.
 Choose a name such as `deepseek`, enter the API key, and configure the URL and
-model IDs under Codex, Claude, or both. Each CLI has its own endpoint and model
-list; there is one key per named connection and no default CLI. Enable the
+models under Codex, Claude, or both. Under **Models**, use **Add model**, edit
+its fields, then **Use as default**. Each CLI has its own endpoint and model
+settings; there is one key per named connection and no default CLI. Enable the
 connection and save. New connections start disabled.
 
 Keys live in the global protected `config.json` (mode `0600`), are masked in the
@@ -21,14 +22,102 @@ agent-box --host ext deepseek codex exec 'Inspect this repository'
 agent-box --host ext deepseek claude -p 'Inspect this repository'
 ```
 
-The first configured model for the selected CLI starts the session unless
-`--model` selects another ID. An empty list requires an explicit model. The
-list supplies external model suggestions; manual IDs remain available. Codex
+The selected CLI's `default_model` starts the session unless `--model` selects
+another ID. An empty default uses the first entry; choose a default explicitly
+to make selection independent of JSON object ordering. Empty models require an
+explicit ID. Configured models supply workflow suggestions; manual IDs remain available. Codex
 gets a separate model catalog and Claude gets a replacement model picker whose
 Default points at the selected external model. These catalogs are configured
-lists, not live model discovery. Their generic capabilities are conservative
-and text-only; they do not claim a provider-specific context window or vision
-support.
+definitions, not live model discovery. A manual, unconfigured model has unknown
+context and conservative text-only Codex capabilities.
+
+## Model settings
+
+`models` is an object keyed by the model ID. Each entry accepts `display_name`,
+`effort` (default: `default`), `supported_efforts` (default: empty/unknown),
+`context_window`, `auto_compact_token_limit` (both default: `0`, CLI default),
+and `env` (a JSON object of strings). A declared effort list constrains launch
+requests. Explicit CLI/workflow effort wins over the model default. Set
+workflow effort to `default` to use the model's settings.
+
+Codex entries also accept `input_modalities` (`text`, `image`),
+`supports_parallel_tool_calls`, `supports_reasoning_summaries`, and `metadata`.
+The latter supplies additional native catalog fields, such as `base_instructions`,
+`support_verbosity`, `default_verbosity`, or `truncation_policy`. It cannot
+override fields owned by the typed editor. Use fields supported by your installed
+Codex; unknown native metadata is passed through, not interpreted by agent-box.
+Additional session config can use ordinary permitted Codex `-c` arguments;
+API/profile/catalog and Remote Control ownership remain with agent-box.
+
+Claude accepts model IDs with `[1m]`. Setting `context_window` to `1048576`
+adds that suffix automatically; `200000` uses the ordinary context and `0`
+leaves it unspecified. Arbitrary context sizes cannot be expressed through
+this Claude CLI syntax. The compact threshold becomes
+`CLAUDE_CODE_AUTO_COMPACT_WINDOW`, and default effort becomes
+`CLAUDE_CODE_EFFORT_LEVEL`. Claude's picker receives IDs and display labels;
+its native effort UI is controlled by Claude Code. Agent-box uses
+`supported_efforts` for its workflow picker and launch validation.
+
+Endpoint `env` applies to that CLI only; model `env` overrides matching names.
+Typed effort/compact values and explicit effort then take priority. These are
+per-process values, stored in protected config/snapshots, masked in the menu,
+and absent from argv and `config show`. They cannot override API credentials,
+endpoint/model selection, integration homes, agent-box identity or Remote
+Control. Nested external launches and managed built-in fallbacks restore the
+original environment before applying their own settings. Global env remains
+independent. Native `/model` switches do not re-run agent-box: restart with
+`--model` to apply another model's env or Claude effort/compact defaults.
+
+For example, this global definition illustrates DeepSeek V4 Pro settings.
+Confirm IDs and capabilities against the provider's current documentation;
+agent-box does not ship a fixed DeepSeek registry. The empty key and disabled
+connection must be configured before use.
+
+```json
+{
+  "external_providers": {
+    "deepseek": {
+      "enabled": false,
+      "api_key": "",
+      "codex": {
+        "url": "https://api.deepseek.com",
+        "default_model": "deepseek-v4-pro",
+        "models": {
+          "deepseek-v4-pro": {
+            "display_name": "DeepSeek V4 Pro",
+            "effort": "high",
+            "supported_efforts": ["low", "high", "max"],
+            "context_window": 1048576,
+            "auto_compact_token_limit": 786432,
+            "input_modalities": ["text"],
+            "supports_parallel_tool_calls": true,
+            "supports_reasoning_summaries": true,
+            "metadata": {"support_verbosity": true, "default_verbosity": "low"}
+          }
+        }
+      },
+      "claude": {
+        "url": "https://api.deepseek.com/anthropic",
+        "default_model": "deepseek-v4-pro",
+        "env": {"API_TIMEOUT_MS": "600000"},
+        "models": {
+          "deepseek-v4-pro": {
+            "display_name": "DeepSeek V4 Pro",
+            "effort": "max",
+            "supported_efforts": ["low", "high", "max"],
+            "context_window": 1048576,
+            "auto_compact_token_limit": 786432
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+See the provider's [Codex catalog example](https://api-docs.deepseek.com/quick_start/agent_integrations/codex/),
+[Claude Code integration](https://api-docs.deepseek.com/quick_start/agent_integrations/claude_code/),
+and the [Codex configuration reference](https://developers.openai.com/codex/config-reference).
 
 `--host` runs the installed CLI directly. Inside an existing workspace box it
 runs directly in that box. The ordinary launch uses the existing workspace
@@ -116,3 +205,11 @@ Local probes used Codex 0.154.0 and Claude Code 2.1.269 with temporary provider
 homes, fake keys and synthetic HTTP APIs. Codex TUI/exec worked while the RC
 lock remained held; no RC descendant process was observed. These checks do not
 prove compatibility with a live commercial API or phone-paired Remote Control.
+
+Model-settings smoke on the same CLI versions verified Codex `model/list`
+returns the configured display name, image modality and low/high/max efforts.
+Claude `-p` completed against a loopback Messages stub, reported its `[1m]`
+context as 1,000,000 tokens, stripped the suffix in the API request and sent
+explicit `max` effort. The unknown synthetic model warning was expected.
+Unit tests verify catalog context/compact fields and env restoration; this smoke
+does not prove automatic compaction at the threshold or live DeepSeek behavior.

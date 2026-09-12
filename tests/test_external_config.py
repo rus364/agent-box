@@ -16,8 +16,8 @@ import test_config_menu as menu_tests
 def external_config():
     return Config.from_dict({'external_providers': {'deepseek': {
         'enabled': True, 'api_key': 'private-api-key',
-        'codex': {'url': 'https://api.example/v1', 'models': ['external-small', 'external-large']},
-        'claude': {'url': 'https://api.example/anthropic', 'models': ['external-small']}}}})
+        'codex': {'url': 'https://api.example/v1', 'models': {'external-small': {}, 'external-large': {}}},
+        'claude': {'url': 'https://api.example/anthropic', 'models': {'external-small': {}}}}}})
 
 
 class ExternalConfigTests(unittest.TestCase):
@@ -126,7 +126,7 @@ class ExternalConfigTests(unittest.TestCase):
         path = ('workflow', 'tiers', '0', 'codex')
         for deleted in (False, True):
             config = external_config()
-            config.external_providers['deepseek'].codex.models = []
+            config.external_providers['deepseek'].codex.models = {}
             if deleted:
                 del config.external_providers['deepseek']
             config.workflow.tiers['0']['codex']['api_provider'] = 'deepseek'

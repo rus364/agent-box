@@ -11,7 +11,7 @@ from pathlib import Path
 
 from .config import AGENT_EFFORTS, IMAGE_TOOL_GROUP_HELP, Config, REVIEW_PRESETS, TRACKER_PROVIDERS, TrackerConnection
 from .errors import AgentBoxError
-from .external_config import ExternalProvider, valid_name, validate_connections
+from .external_config import API_EFFORTS, ExternalProvider, model_defaults, valid_model, valid_name, validate_connections
 from .model_catalog import load_model_catalogs
 
 CHOICES = {
@@ -178,9 +178,15 @@ def clipped(text, width):
 
 
 def label_for(key, path=()):
+    if path == ('external_providers',) or path[:1] == ('external_providers',) and path[-1:] == ('models',):
+        return key
     if key == "override" and path in (("workflow", "worker"), ("workflow", "review")):
         return "Global worker override" if path[-1] == "worker" else "Global reviewer override"
-    return LABELS.get(key, f"Tier {key}" if key.isdigit() else key.replace("_", " ").capitalize())
+    return LABELS.get(key, f"Tier {key}" if key.isdigit() else key.replace("_", " ").capitalize()).replace('Api', 'API')
+
+
+def json_field(path):
+    return path == ('env', 'set') or path[:1] == ('external_providers',) and path[-1] in ('env', 'metadata')
 
 
 def help_for(path):
@@ -197,7 +203,18 @@ def help_for(path):
         return {"enabled": "Expose this API connection to agent-box sessions. Off by default.",
                 "api_key": "Stored in the protected global config; masked in displays and excluded from command arguments.",
                 "url": "HTTP(S) API base URL for this CLI, without credentials, query or fragment. Codex requires Responses API; Claude requires Anthropic Messages API.",
-                "models": "JSON list of model IDs offered for this CLI. The workflow picker also accepts a manual ID."}.get(path[-1], HELP["external_providers"])
+                "models": "Model settings keyed by ID. Add a model, edit its fields, or select a default. Manual workflow IDs remain available.",
+                "default_model": "Configured model used without --model; empty uses the first entry. Explicit selection is stable across file ordering.",
+                "display_name": "Optional model picker label; the model ID sent to the API stays unchanged.",
+                "effort": "Model reasoning default; default leaves the CLI/provider choice. Explicit CLI/workflow effort takes priority.",
+                "supported_efforts": "JSON array of supported effort names. Empty means unknown; declared levels constrain explicit requests.",
+                "context_window": "Tokens; 0 leaves the CLI default. Claude accepts 200000 or 1048576; 1048576 adds [1m] to its launch model.",
+                "auto_compact_token_limit": "Compaction threshold in tokens; 0 leaves the CLI default. Must be below a configured context window.",
+                "input_modalities": "Codex input types: JSON array containing text and/or image.",
+                "supports_parallel_tool_calls": "Advertise parallel tool calls in the Codex model catalog.",
+                "supports_reasoning_summaries": "Advertise reasoning summaries in the Codex model catalog.",
+                "metadata": "Additional native Codex model metadata as JSON. Typed model fields cannot be overridden here; fields must be supported by your CLI.",
+                "env": "JSON object of per-process environment strings. Model values override endpoint values; typed effort/compact fields and explicit effort take priority. API/auth/RC ownership cannot be overridden. Values are masked and never placed in argv."}.get(path[-1], HELP["external_providers"])
     if len(path) == 3 and path[:2] == ("image", "tools"):
         return f"{IMAGE_TOOL_GROUP_HELP.get(path[-1], path[-1])}. Rebuild the workspace image to install or remove this group; browsing and saving this selection do not rebuild it."
     if len(path) == 3 and path[:2] == ("tracker", "connections"):
@@ -249,7 +266,7 @@ class EditResult:
 
 
 def secret(path):
-    return "token" in path[-1] or path[-1] == "api_key" or path[0] == "env"
+    return "token" in path[-1] or path[-1] == "api_key" or path[0] == "env" or json_field(path)
 
 
 def parse_value(text, current):
@@ -347,8 +364,9 @@ def edit(config, *, project=None):
                 # Connection rows are editable defaults, but a section copy
                 # must not create accounts that the global map does not hold.
                 if path[:1] == ('external_providers',) and len(path) >= 2:
-                    value = ExternalProvider().to_dict()
-                    for part in path[2:]:
+                    model_path = len(path) >= 5 and path[3] == 'models'
+                    value = model_defaults(path[2]) if model_path else ExternalProvider().to_dict()
+                    for part in path[5:] if model_path else path[2:]:
                         value = value[part]
                     break
                 if path[:2] == ('tracker', 'connections') and len(path) >= 3:
@@ -663,6 +681,12 @@ def edit(config, *, project=None):
                 extras = [("Add provider", "add_provider", "Create a disabled provider with separate Codex/Claude endpoints.")]
             elif len(path) == 2 and path[0] == "external_providers" and not project_mode:
                 extras = [("Delete provider", "delete_provider", "Remove this definition from the draft. Existing workflow references remain visible and must be changed before use.")]
+            elif path[:1] == ('external_providers',) and not project_mode:
+                if len(path) == 4 and path[-1] == 'models':
+                    extras = [('Add model', 'add_model', 'Create a model with editable settings for this CLI.')]
+                elif len(path) == 5 and path[3] == 'models':
+                    extras = [('Use as default', 'default_model', 'Select this model for launches without --model.'),
+                              ('Delete model', 'delete_model', 'Remove this model and clear its default selection if needed.')]
             if not path:
                 extras = [(path_row(), "path", path_row() + ". " + ACTION_HELP["path"]), ("Save and apply", "save", ACTION_HELP["save"]), ("Cancel", "cancel", ACTION_HELP["cancel"])]
                 if project_mode:
@@ -671,7 +695,7 @@ def edit(config, *, project=None):
             rows = []
             for key, label in zip(keys, labels):
                 value, full = data[key], (*path, key)
-                if isinstance(value, dict) and full != ("env", "set"):
+                if isinstance(value, dict) and not json_field(full):
                     shown = ">"
                 elif isinstance(value, bool):
                     shown = "[x]" if value else "[ ]"
@@ -756,6 +780,28 @@ def edit(config, *, project=None):
             elif key in (" ", "\n", "\r", curses.KEY_RIGHT):
                 if selected >= len(keys):
                     _, action, _ = extras[selected - len(keys)]
+                    if action == 'add_model':
+                        model = input_value(screen, 'Model ID ([1m] suffix allowed for Claude)', '', False)
+                        if model is not None:
+                            if not valid_model(model, path[2]):
+                                notice = 'Invalid model ID for this CLI'
+                            elif model in data:
+                                notice = 'Model already exists'
+                            else:
+                                data[model] = model_defaults(path[2])
+                                menu(screen, data[model], (*path, model))
+                        continue
+                    if action in ('default_model', 'delete_model'):
+                        endpoint = draft['external_providers'][path[1]][path[2]]
+                        if action == 'default_model':
+                            endpoint['default_model'] = path[4]
+                            notice = 'Default model updated in draft'
+                        elif choose(screen, ['Keep model', 'Delete model'], 'Delete ' + path[4], 0) == 1:
+                            del endpoint['models'][path[4]]
+                            if endpoint['default_model'] == path[4]:
+                                endpoint['default_model'] = ''
+                            return None
+                        continue
                     if action == "add_provider":
                         name = input_value(screen, "Provider name (lowercase letters, digits, _ or -)", "", False)
                         if name is not None:
@@ -829,6 +875,15 @@ def edit(config, *, project=None):
                         options.append(value)
                 if name == "effort" and _candidate_field(full):
                     options = AGENT_EFFORTS[path[-1]]
+                    api = data.get('api_provider')
+                    if api:
+                        model = draft['external_providers'].get(api, {}).get(path[-1], {}).get('models', {}).get(data.get('model'), {})
+                        options = tuple(dict.fromkeys(['default', *(model.get('supported_efforts') or API_EFFORTS[path[-1]][1:]), value]))
+                if path[:1] == ('external_providers',):
+                    if len(path) == 5 and name == 'effort':
+                        options = tuple(dict.fromkeys(['default', *(data['supported_efforts'] or API_EFFORTS[path[2]][1:]), value]))
+                    elif len(path) == 3 and name == 'default_model':
+                        options = ['', *data['models']]
                 if isinstance(value, bool):
                     data[name] = not value
                     accepted = True
@@ -842,11 +897,11 @@ def edit(config, *, project=None):
                         data[name] = options[(options.index(value) + 1) % len(options)] if value in options else options[0]
                         accepted = True
                     else:
-                        picked = choose(screen, [option or "Built-in API" for option in options], ".".join(full), options.index(value) if value in options else 0, help_for(full))
+                        picked = choose(screen, [option or ('First configured model' if name == 'default_model' else "Built-in API") for option in options], ".".join(full), options.index(value) if value in options else 0, help_for(full))
                         if picked is not None:
                             data[name] = options[picked]
                             accepted = True
-                elif isinstance(value, dict) and full != ("env", "set"):
+                elif isinstance(value, dict) and not json_field(full):
                     menu(screen, value, full)
                 else:
                     initial = json.dumps(value) if isinstance(value, (dict, list)) else str(value)

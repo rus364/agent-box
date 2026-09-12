@@ -12,7 +12,7 @@ import tomllib
 
 from .atomicio import atomic_write_json
 from .errors import AgentBoxError
-from .external_config import valid_name
+from .external_config import model_defaults, valid_model, valid_name
 from .paths import SESSION_TEMP_ROOT
 
 API_ENV = 'AGENT_BOX_EXTERNAL_API_KEY'
@@ -45,12 +45,13 @@ def builtin_environment(environment):
         try:
             original = json.loads(Path(baseline).read_text())
             if (not isinstance(original, dict) or
-                    any(not auth_name(k) or not isinstance(v, str) for k, v in original.items())):
+                    any(not isinstance(k, str) or re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', k) is None
+                        or v is not None and not isinstance(v, str) for k, v in original.items())):
                 raise ValueError
         except (OSError, ValueError, TypeError):
             raise AgentBoxError('Cannot restore the parent API environment; restart through agent-box ext') from None
-        env = {k: v for k, v in env.items() if not auth_name(k)}
-        env.update(original)
+        env = {k: v for k, v in env.items() if not auth_name(k) and k not in original}
+        env.update({k: v for k, v in original.items() if v is not None})
     return env
 
 
@@ -88,6 +89,17 @@ def session_identity(cli):
     return {'api_provider': name, 'api_fingerprint': fingerprint}
 
 
+def value_options(cli):
+    return ({'--model', '-m', '--config', '-c', '--image', '-i', '--cd', '-C', '--sandbox', '-s',
+             '--output-schema', '--output-last-message', '-o', '--base', '--commit', '--title',
+             '--ask-for-approval', '-a', '--add-dir', '--enable', '--disable', '--effort'}
+            if cli == 'codex' else {'--model', '--effort', '--name', '-n', '--add-dir',
+             '--mcp-config', '--agent', '--agents', '--permission-mode', '--tools', '--allowedTools',
+             '--allowed-tools', '--disallowedTools', '--disallowed-tools', '--append-system-prompt',
+             '--system-prompt', '--output-format', '--input-format', '--json-schema', '--max-turns',
+             '--settings'})
+
+
 def invocation_model(cli, args):
     """Reject endpoint/RC/session-management overrides before any launch side effects."""
     model = None
@@ -103,13 +115,7 @@ def invocation_model(cli, args):
                {'--remote-control', '--rc', '--cloud', '--teleport', '--settings', '--setting-sources',
                 '--resume', '-r', '--continue', '-c', '--fork-session', '--from-pr', '--session-id',
                 '--environment', '--tmux', '--background', '--bg'})
-    values = ({'--model', '-m', '--config', '-c', '--image', '-i', '--cd', '-C', '--sandbox', '-s',
-              '--output-schema', '--output-last-message', '-o', '--base', '--commit', '--title',
-              '--ask-for-approval', '-a', '--add-dir', '--enable', '--disable', '--effort',
-              } if cli == 'codex' else {'--model', '--effort', '--name', '-n', '--add-dir',
-              '--mcp-config', '--agent', '--agents', '--permission-mode', '--tools', '--allowedTools',
-              '--allowed-tools', '--disallowedTools', '--disallowed-tools', '--append-system-prompt',
-              '--system-prompt', '--output-format', '--input-format', '--json-schema', '--max-turns'})
+    values = value_options(cli)
     index, subcommand, print_mode, positionals = 0, None, False, []
     while index < len(args):
         arg = args[index]
@@ -174,39 +180,102 @@ def invocation_model(cli, args):
 
 def selected_model(config, name, cli, args):
     _, endpoint = connection(config, name, cli)
-    model = invocation_model(cli, args) or next(iter(endpoint.models), None)
-    if not model or re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:/-]*', model) is None:
+    model = invocation_model(cli, args) or endpoint.default_model or next(iter(endpoint.models), None)
+    if not valid_model(model, cli):
         raise AgentBoxError('External launch requires a model ID: configure models or pass --model ID')
     return model
 
 
 def catalog(models):
-    # Conservative generic capabilities; endpoint-specific context limits remain unknown.
     return {'models': [{
-        'slug': model, 'display_name': model, 'description': 'Configured external model',
-        'default_reasoning_level': None, 'supported_reasoning_levels': [],
+        'slug': model, 'display_name': spec['display_name'] or model, 'description': 'Configured external model',
+        'default_reasoning_level': None if spec['effort'] == 'default' else spec['effort'],
+        'supported_reasoning_levels': [{'effort': e, 'description': e} for e in spec['supported_efforts']],
         'shell_type': 'shell_command', 'visibility': 'list', 'supported_in_api': True, 'priority': i,
         'base_instructions': 'Follow the user request and repository instructions. Use tools when needed and verify changes.',
-        'supports_reasoning_summaries': False, 'support_verbosity': False, 'default_verbosity': None,
+        'supports_reasoning_summaries': spec['supports_reasoning_summaries'], 'support_verbosity': False, 'default_verbosity': None,
         'apply_patch_tool_type': 'freeform', 'web_search_tool_type': 'text',
         'truncation_policy': {'mode': 'tokens', 'limit': 10000},
-        'supports_parallel_tool_calls': False, 'context_window': None, 'auto_compact_token_limit': None,
-        'input_modalities': ['text'], 'experimental_supported_tools': [], 'supports_search_tool': False,
-    } for i, model in enumerate(models)]}
+        'supports_parallel_tool_calls': spec['supports_parallel_tool_calls'],
+        'context_window': spec['context_window'] or None,
+        'auto_compact_token_limit': spec['auto_compact_token_limit'] or None,
+        'input_modalities': spec['input_modalities'], 'experimental_supported_tools': [], 'supports_search_tool': False,
+        **spec['metadata'],
+    } for i, (model, spec) in enumerate(models.items())]}
+
+
+def model_settings(endpoint, model, cli):
+    return endpoint.models.get(model, endpoint.models.get(model.removesuffix('[1m]'), model_defaults(cli)))
+
+
+def claude_model(model, spec):
+    return model + '[1m]' if spec['context_window'] == 1048576 and not model.endswith('[1m]') else model
+
+
+def explicit_effort(args, cli):
+    """Read only CLI options; a prompt after -- cannot change launch defaults."""
+    effort = None
+    index = 0
+    while index < len(args) and args[index] != '--':
+        arg = args[index]
+        key, equal, value = arg.partition('=')
+        if cli == 'codex' and arg.startswith('-c') and not arg.startswith('--') and arg != '-c':
+            key, equal, value = '-c', '=', arg[2:]
+        flags = ('--effort',) if cli == 'claude' else ('-c', '--config')
+        if key in value_options(cli) and not equal:
+            index += 1
+            if index == len(args):
+                raise AgentBoxError('External CLI option needs a value')
+            value = args[index]
+        if key in flags:
+            if cli == 'claude':
+                effort = value
+            else:
+                field, _, setting = value.partition('=')
+                try:
+                    parsed = tomllib.loads(field + '=0')
+                except ValueError:
+                    raise AgentBoxError('Invalid external CLI configuration override') from None
+                if 'model_reasoning_effort' in parsed:
+                    try:
+                        effort = tomllib.loads(value)['model_reasoning_effort']
+                    except ValueError:
+                        # Codex accepts a bare string when TOML value parsing fails.
+                        effort = setting.strip()
+        index += 1
+    return effort
 
 
 def prepare(command, name, cli, config, directory, environment, *, model=None):
     """Shared by the interactive wrapper and managed exec/-p; secrets stay in env/files."""
     spec, endpoint = connection(config, name, cli)
     model = model or selected_model(config, name, cli, command[1:])
+    if not valid_model(model, cli):
+        raise AgentBoxError('Invalid external model ID')
+    settings = model_settings(endpoint, model, cli)
+    effort = explicit_effort(command[1:], cli)
+    custom_env = {**endpoint.env, **settings['env']}
+    if cli == 'claude':
+        if effort is None:
+            effort = settings['effort'] if settings['effort'] != 'default' else custom_env.get('CLAUDE_CODE_EFFORT_LEVEL')
+        if effort and effort != 'default':
+            custom_env['CLAUDE_CODE_EFFORT_LEVEL'] = effort
+        if settings['auto_compact_token_limit']:
+            custom_env['CLAUDE_CODE_AUTO_COMPACT_WINDOW'] = str(settings['auto_compact_token_limit'])
+    else:
+        effort = effort or settings['effort']
+    if settings['supported_efforts'] and effort not in (None, 'default') and effort not in settings['supported_efforts']:
+        raise AgentBoxError('Requested effort is not supported by the configured external model')
     original = builtin_environment(environment)
     directory = Path(directory)
     baseline = directory / 'api-baseline.json'
-    atomic_write_json(baseline, {k: v for k, v in original.items() if auth_name(k)}, 0o600)
+    atomic_write_json(baseline, {**{k: v for k, v in original.items() if auth_name(k)},
+                                 **{k: original.get(k) for k in custom_env}}, 0o600)
     env = {k: v for k, v in original.items() if not auth_name(k)}
     env.update({PROVIDER_ENV: name, BASELINE_ENV: str(baseline), CLI_ENV: cli,
                 FINGERPRINT_ENV: route_identity(config, name, cli)['api_fingerprint']})
-    models = list(dict.fromkeys([*endpoint.models, model]))
+    env.update(custom_env)
+    models = {**endpoint.models, model: settings}
     args = list(command[1:])
     boundary = args.index('--') if '--' in args else len(args)
     before, tail = args[:boundary], args[boundary:]
@@ -221,17 +290,30 @@ def prepare(command, name, cli, config, directory, environment, *, model=None):
                      'model_providers.agent_box_external={' + table + '}',
                      'forced_login_method="api"', 'model_catalog_json=' + json.dumps(str(path)),
                      'web_search="disabled"']
+        if settings['effort'] != 'default':
+            overrides.append('model_reasoning_effort=' + json.dumps(settings['effort']))
         # Global -c options precede a possible managed exec subcommand.
         return [command[0], *[arg for value in overrides for arg in ('-c', value)], *before, *tail], env
+    model = claude_model(model, settings)
+    # An explicit ID still needs the configured context suffix in the CLI option.
+    for i, arg in enumerate(before):
+        if arg == '--model' and i + 1 < len(before):
+            before[i + 1] = model
+        elif arg.startswith('--model='):
+            before[i] = '--model=' + model
     clean = {k: '' for k in _AUTH_NAMES | {k for k in original if k.startswith('ANTHROPIC_')}}
+    clean.update(custom_env)
     clean.update({'ANTHROPIC_API_KEY': spec.api_key, 'ANTHROPIC_BASE_URL': endpoint.url,
                   'ANTHROPIC_MODEL': model, 'ANTHROPIC_DEFAULT_MODEL': model})
     for family in ('OPUS', 'SONNET', 'HAIKU', 'FABLE'):
         clean['ANTHROPIC_DEFAULT_' + family + '_MODEL'] = model
     env.update(clean)
+    picker_models = {claude_model(m, s): s for m, s in models.items()}
     settings = {'env': clean, 'apiKeyHelper': '', 'model': model,
                 'disableRemoteControl': True, 'remoteControlAtStartup': False,
-                'modelPicker': {'replaceBuiltInOptions': True, 'options': [{'model': m} for m in models]}}
+                'modelPicker': {'replaceBuiltInOptions': True, 'options': [
+                    {'model': m, **({'label': s['display_name']} if s['display_name'] else {})}
+                    for m, s in picker_models.items()]}}
     # Managed fast settings use the same single --settings argument.
     if '--settings' in before:
         i = before.index('--settings')
