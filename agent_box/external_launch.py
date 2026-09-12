@@ -108,9 +108,9 @@ def value_options(cli):
              '--settings'})
 
 
-def invocation_model(cli, args):
-    """Reject endpoint/RC/session-management overrides before any launch side effects."""
-    model = None
+def invocation_settings(cli, args, *, managed=False):
+    """Read model/effort and enforce launch ownership in one argument walk."""
+    model, effort = None, None
     commands = ({'agents', 'login', 'logout', 'mcp', 'plugin',
                 'app-server', 'remote-control', 'completion', 'update', 'doctor', 'sandbox',
                 'debug', 'apply', 'a', 'resume', 'fork', 'queue', 'archive', 'delete',
@@ -123,6 +123,8 @@ def invocation_model(cli, args):
                {'--remote-control', '--rc', '--cloud', '--teleport', '--settings', '--setting-sources',
                 '--resume', '-r', '--continue', '-c', '--fork-session', '--from-pr', '--session-id',
                 '--environment', '--tmux', '--background', '--bg'})
+    if managed:
+        blocked.discard('--settings')
     values = value_options(cli)
     index, subcommand, print_mode, positionals = 0, None, False, []
     while index < len(args):
@@ -154,6 +156,8 @@ def invocation_model(cli, args):
             value = args[index]
         if key in {'--model', '-m'}:
             model = value
+        if cli == 'claude' and key == '--effort':
+            effort = value
         if cli == 'claude' and key in {'-p', '--print'}:
             print_mode = True
         if cli == 'codex' and key in {'-c', '--config'}:
@@ -166,6 +170,12 @@ def invocation_model(cli, args):
                                        'forced_login_method', 'chatgpt_base_url', 'profiles', 'profile'}
                     or 'remote' in field or root == 'features'):
                 raise AgentBoxError('ext owns API/model catalog and Remote Control settings; use --model for the model')
+            if root == 'model_reasoning_effort':
+                try:
+                    effort = tomllib.loads(value)['model_reasoning_effort']
+                except ValueError:
+                    # Codex accepts a bare string when TOML value parsing fails.
+                    effort = value.partition('=')[2].strip()
         if key in {'--enable', '--disable'} and 'remote' in value:
             raise AgentBoxError('ext cannot override Remote Control features')
         if not arg.startswith('-'):
@@ -183,12 +193,16 @@ def invocation_model(cli, args):
         index += 1
     if cli == 'claude' and not print_mode and any(arg in commands for arg in positionals):
         raise AgentBoxError('ext cannot run service, authentication or resume commands')
-    return model
+    return model, effort
 
 
 def selected_model(config, name, cli, args):
     _, endpoint = connection(config, name, cli)
-    model = invocation_model(cli, args) or endpoint.default_model or next(iter(endpoint.models), None)
+    return choose_model(endpoint, cli, invocation_settings(cli, args)[0])
+
+
+def choose_model(endpoint, cli, model):
+    model = model or endpoint.default_model or next(iter(endpoint.models), None)
     if not valid_model(model, cli):
         raise AgentBoxError('External launch requires a model ID: configure models or pass --model ID')
     return model
@@ -216,48 +230,12 @@ def claude_model(model, spec):
     return model + '[1m]' if spec['context_window'] == 1048576 and not model.endswith('[1m]') else model
 
 
-def explicit_effort(args, cli):
-    """Read only CLI options; a prompt after -- cannot change launch defaults."""
-    effort = None
-    index = 0
-    while index < len(args) and args[index] != '--':
-        arg = args[index]
-        key, equal, value = arg.partition('=')
-        if cli == 'codex' and arg.startswith('-c') and not arg.startswith('--') and arg != '-c':
-            key, equal, value = '-c', '=', arg[2:]
-        flags = ('--effort',) if cli == 'claude' else ('-c', '--config')
-        if key in value_options(cli) and not equal:
-            index += 1
-            if index == len(args):
-                raise AgentBoxError('External CLI option needs a value')
-            value = args[index]
-        if key in flags:
-            if cli == 'claude':
-                effort = value
-            else:
-                field, _, setting = value.partition('=')
-                try:
-                    parsed = tomllib.loads(field + '=0')
-                except ValueError:
-                    raise AgentBoxError('Invalid external CLI configuration override') from None
-                if 'model_reasoning_effort' in parsed:
-                    try:
-                        effort = tomllib.loads(value)['model_reasoning_effort']
-                    except ValueError:
-                        # Codex accepts a bare string when TOML value parsing fails.
-                        effort = setting.strip()
-        index += 1
-    return effort
-
-
 def prepare(command, name, cli, config, directory, environment, *, model=None):
     """Shared by the interactive wrapper and managed exec/-p; secrets stay in env/files."""
     spec, endpoint = connection(config, name, cli)
-    model = model or selected_model(config, name, cli, command[1:])
-    if not valid_model(model, cli):
-        raise AgentBoxError('Invalid external model ID')
+    explicit_model, effort = invocation_settings(cli, command[1:], managed=model is not None)
+    model = choose_model(endpoint, cli, model or explicit_model)
     settings = model_settings(endpoint.models, model, cli)
-    effort = explicit_effort(command[1:], cli)
     custom_env = {**endpoint.env, **settings['env']}
     if cli == 'claude':
         if effort is None:

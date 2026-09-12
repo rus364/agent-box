@@ -219,5 +219,8 @@ model's `high` default in the effective session config.
 Claude `-p` completed against a loopback Messages stub, reported its `[1m]`
 context as 1,000,000 tokens, stripped the suffix in the API request and sent
 explicit `max` effort. The unknown synthetic model warning was expected.
+An additional interactive PTY run with a temporary home opened Claude's
+`/model` picker: it displayed the configured label and only the default/custom
+options, confirming the rendered settings and replacement picker were accepted.
 Unit tests verify catalog context/compact fields and env restoration; this smoke
 does not prove automatic compaction at the threshold or live DeepSeek behavior.
