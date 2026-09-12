@@ -172,7 +172,9 @@ class BrowserToolingTests(unittest.TestCase):
             'install -d -o "${USER_UID}" -g "${USER_GID}" -m 0755 "${USER_HOME}/.config"', text)
 
     def test_no_capability_is_added_for_the_browser(self):
+        """Browser tooling must not acquire capabilities granted to another opt-in group."""
         text = containerfile_text()
+        text = text[text.index("# Playwright MCP + headless Chromium"):text.index("# Bun")]
         self.assertNotIn("--cap-add", text)
         self.assertNotIn("setcap", text)
         self.assertNotIn("chrome-sandbox", text)

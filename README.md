@@ -425,6 +425,7 @@ A base set everyone gets, plus optional groups you choose in `agent-box config`.
 | `kubernetes` | on | kubectl, Helm, yq |
 | `virtualization` | off | QEMU x86-64 + aarch64, OVMF; also gates `/dev/kvm` passthrough |
 | `browser` | off | Playwright MCP + headless Chromium (see [agent browser](docs/integrations/browser.md)) |
+| `podman` | off | Nested rootless Podman, userspace networking and image builds (see [nested Podman](docs/nested-podman.md)) |
 
 Anything else your projects need belongs in the project, through `mise` — a
 per-project toolchain is not an image everyone shares.
@@ -517,13 +518,19 @@ Workspace resolution is intentionally simple:
 2. Outside Git: the current directory.
 3. `AGENT_BOX_WORKSPACE_ROOT` overrides both, when you deliberately want a broader tree.
 
-Every workspace box runs with:
+By default, every workspace box runs with:
 
 ```text
 --userns=keep-id
 --cap-drop=all
 --security-opt=no-new-privileges
 ```
+
+The opt-in `podman` image group retains these flags and adds `SETUID`/`SETGID`,
+`/dev/net/tun`, unmasked `/proc` paths and two seccomp syscall allowances for
+nested namespace setup. It does not enable privileged mode or expose a host
+container-engine socket. See [nested Podman](docs/nested-podman.md) for the
+scope and limitations.
 
 The container user mirrors the host user's real passwd identity, so files
 created inside the workspace map back to you rather than to root. Only the

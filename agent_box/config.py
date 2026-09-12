@@ -371,6 +371,8 @@ IMAGE_TOOL_GROUPS: dict[str, bool] = {
     "virtualization": False,
     # Playwright MCP + headless Chromium; the browser integration needs it
     "browser": False,
+    # Nested rootless Podman; gates ID capabilities, TUN and namespace setup
+    "podman": False,
 }
 
 
@@ -380,6 +382,7 @@ IMAGE_TOOL_GROUP_HELP: dict[str, str] = {
     "kubernetes": "Kubernetes (kubectl, Helm, yq)",
     "virtualization": "Virtualization (QEMU x86-64/arm64, KVM passthrough; large)",
     "browser": "Headless browser (Playwright MCP + Chromium; large)",
+    "podman": "Nested Podman (rootless builds/containers; extra namespace permissions)",
 }
 
 

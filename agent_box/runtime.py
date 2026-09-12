@@ -32,6 +32,7 @@ import urllib.parse
 from . import channel as channel_module
 from . import claude_settings
 from . import notify as notify_module
+from . import nested_podman
 from .atomicio import atomic_write_json, atomic_write_text, read_json
 from .config import ENV_PREFIX, WORKFLOW_SKILLS, Config, load_config, effective_config, session_tracker
 from .errors import AgentBoxError
@@ -238,13 +239,20 @@ def tool_build_args(config: Config) -> list[str]:
     return args
 
 
+def runtime_config_base() -> Config:
+    """Nested launches use the session snapshot; the host config is not mounted."""
+    if os.environ.get("AGENT_BOX_RUNTIME_CONFIG"):
+        return effective_config(environ={}, include_project=False)
+    return load_config()
+
+
 def build_image(script_dir: Path, refresh: bool, no_cache: bool,
                 identity: HostIdentity | None = None,
                 config: Config | None = None) -> int:
     ensure_state_dirs()
     ensure_refresh_token()
     identity = identity or detect_host_identity()
-    config = effective_config(load_config()) if config is None else config
+    config = effective_config(runtime_config_base()) if config is None else config
     if refresh:
         now = datetime.now(timezone.utc)
         token = now.strftime("%Y%m%dT%H%M%S.") + f"{time.time_ns() % 1_000_000_000:09d}Z\n"
@@ -258,12 +266,50 @@ def build_image(script_dir: Path, refresh: bool, no_cache: bool,
         "--build-arg", f"USER_HOME={identity.home}",
         "--build-arg", f"TOOLS_REFRESH={TOOLS_REFRESH_FILE.read_text().strip()}",
         *tool_build_args(config),
+        *nested_podman_build_args(config, identity),
         "--tag", IMAGE, "--file", str(script_dir / "Containerfile"),
     ]
     if no_cache:
         args.append("--no-cache")
     args.append(str(script_dir))
     return subprocess.call(args)
+
+
+def nested_podman_build_args(config: Config, identity: HostIdentity) -> list[str]:
+    if not config.image.tools.get("podman"):
+        return []
+    try:
+        mappings = nested_podman.host_info()["idMappings"]
+        args = []
+        for kind in ("uid", "gid"):
+            ranges = nested_podman.subid_ranges(mappings[kind + "map"], getattr(identity, kind))
+            args += ["--build-arg", f"PODMAN_{kind.upper()}_RANGES={json.dumps(ranges, separators=(',', ':'))}"]
+        return args
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise AgentBoxError(f"Cannot configure nested Podman IDs: {exc}") from exc
+
+
+def nested_podman_args(config: Config, workspace: Workspace) -> list[str]:
+    if not config.image.tools.get("podman"):
+        return []
+    try:
+        if not os.access("/dev/net/tun", os.R_OK | os.W_OK):
+            raise ValueError("/dev/net/tun must be readable and writable for userspace networking")
+        host = nested_podman.host_info()
+        profile = nested_podman.seccomp_profile(read_json(Path(host["security"]["seccompProfilePath"])))
+        text = json.dumps(profile, sort_keys=True) + "\n"
+        # A changed host profile changes the workspace identity. Never overwrite
+        # a profile an existing container was created with.
+        digest = hashlib.sha256(text.encode()).hexdigest()
+        path = STATE_ROOT / "runtime/nested-podman" / f"seccomp-{digest}.json"
+        if not path.exists():
+            atomic_write_text(path, text)
+        return ["--cap-add=SETUID", "--cap-add=SETGID", "--device=/dev/net/tun",
+                "--security-opt=unmask=/proc/*", f"--security-opt=seccomp={path}",
+                f"--mount=type=volume,source=agent-box-podman-{workspace_identity(workspace)},"
+                f"target={HOST_HOME}/.local/share/containers"]
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise AgentBoxError(f"Cannot configure nested Podman: {exc}") from exc
 
 
 def image_tool_groups() -> list[str] | None:
@@ -806,7 +852,7 @@ def session_runtime(config, *, container=True, runtime_state=None):
 
 
 def launch_config(env_specs=None, *, container=True):
-    base = load_config()
+    base = runtime_config_base()
     policy = base.env.overlay(env_specs)
     environment = ({name: os.environ[name] for name in policy.forward if name in os.environ}
                    if container else dict(os.environ))
@@ -1319,11 +1365,12 @@ def container_lifetime_args(
     consulted, so a poisoned ``$HOME`` cannot move the container's home,
     PATH, or any bind mount.
     """
-    config = effective_config(load_config()) if config is None else config
+    config = effective_config(runtime_config_base()) if config is None else config
     home = HOST_HOME
     args = [
         "--userns=keep-id", *kvm_args(config),
         "--cap-drop=all", "--security-opt=no-new-privileges", "--hostname=agent-box", "--tz=local",
+        *nested_podman_args(config, workspace),
         f"--env=HOME={home}",
         f"--env=PATH={CONTAINER_RUNTIME_PATH}",
         f"--env=CODEX_HOME={CODEX_HOME}",
@@ -1369,7 +1416,7 @@ def base_podman_args(
     Keeping this helper preserves a single source for visibility/hardening and
     avoids changing callers that only inspect the old command construction.
     """
-    config = effective_config(load_config()) if config is None else config
+    config = effective_config(runtime_config_base()) if config is None else config
     runtime_state = legacy_runtime_state(workspace)
     prepare_container_lifetime_state(
         config, mount_notifications=mount_notifications, runtime_state=runtime_state,

@@ -40,7 +40,10 @@ ARG TOOLS_ANALYSIS=1
 ARG TOOLS_KUBERNETES=1
 ARG TOOLS_VIRTUALIZATION=0
 ARG TOOLS_BROWSER=0
-# The canonical, comma-separated set the four flags above add up to. Passed
+ARG TOOLS_PODMAN=0
+ARG PODMAN_UID_RANGES=[]
+ARG PODMAN_GID_RANGES=[]
+# The canonical, comma-separated set the flags above add up to. Passed
 # whole rather than derived here, so the label and the configuration cannot
 # disagree about spelling or order. Applied as a label at the very end of the
 # file, where changing it cannot invalidate a single build layer.
@@ -256,6 +259,28 @@ RUN set -eux; \
         "${USER_HOME}/.local/share/uv" \
         "${USER_HOME}/.local/share/mise"; \
     chown -R "${USER_UID}:${USER_GID}" "${USER_HOME}"
+
+#
+# Nested Podman (group: podman)
+#
+# File capabilities avoid setuid-root helpers and keep no-new-privileges usable.
+# A dedicated workspace volume lets inner native overlay work without FUSE.
+COPY agent_box/nested_podman.py /tmp/agent-box-nested-podman.py
+RUN --mount=type=cache,id=agent-box-apt,target=/var/cache/apt,sharing=locked \
+    set -eux; \
+    if [ "${TOOLS_PODMAN}" = "1" ]; then \
+        apt-get update; \
+        apt-get install -y --no-install-recommends \
+            podman crun slirp4netns uidmap libcap2-bin catatonit aardvark-dns nftables; \
+        chmod 0755 /usr/bin/newuidmap /usr/bin/newgidmap; \
+        setcap cap_setuid=ep /usr/bin/newuidmap; \
+        setcap cap_setgid=ep /usr/bin/newgidmap; \
+        python3 /tmp/agent-box-nested-podman.py \
+            --user "${USER_NAME}" --uid "${USER_UID}" --gid "${USER_GID}" \
+            --home "${USER_HOME}" --uid-ranges "${PODMAN_UID_RANGES}" --gid-ranges "${PODMAN_GID_RANGES}"; \
+        rm -rf /var/lib/apt/lists/*; \
+    fi; \
+    rm /tmp/agent-box-nested-podman.py
 
 #
 # Node.js 22
@@ -606,6 +631,14 @@ RUN set -eux; \
     playwright-mcp --version; \
     test -d /opt/ms-playwright; \
     agent-box-browser-smoke
+
+RUN set -eux; \
+    if [ "${TOOLS_PODMAN}" != "1" ]; then exit 0; fi; \
+    podman --version; \
+    crun --version; \
+    slirp4netns --version; \
+    getcap /usr/bin/newuidmap | grep -q 'cap_setuid=ep'; \
+    getcap /usr/bin/newgidmap | grep -q 'cap_setgid=ep'
 
 #
 # ---------------------------------------------------------------------------
