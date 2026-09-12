@@ -14,7 +14,7 @@ from pathlib import Path
 from unittest import mock
 
 from agent_box.paths import env_path
-from agent_box import paths
+from agent_box import paths, runtime
 
 
 class EnvPathTests(unittest.TestCase):
@@ -114,6 +114,32 @@ class NestedLauncherStateTests(unittest.TestCase):
         values = self.load_paths(123, {"AGENT_BOX_STATE_DIR": "/isolated"})
         self.assertEqual(values["STATE_ROOT"], Path("/isolated"))
         self.assertEqual(values["NOTIFY_STATE_ROOT"], Path("/isolated/notify"))
+
+    @unittest.skipIf(os.geteuid() == 0, "DAC denial requires an unprivileged test user")
+    def test_state_creation_succeeds_beside_an_unwritable_shared_mount_parent(self):
+        """The old build path must fail while the selected private path initializes normally."""
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            shared = home / ".local/share/agent-box"
+            (shared / "notify").mkdir(parents=True)
+            with mock.patch.object(paths.pwd, "getpwuid", return_value=mock.Mock(pw_dir=str(home))):
+                values = self.load_paths(123, {"XDG_DATA_HOME": str(home / ".local/share"),
+                                               "XDG_CACHE_HOME": str(home / ".cache")})
+            names = ("STATE_ROOT", "BUILD_STATE", "NOTIFY_STATE_ROOT", "CODEX_HOME",
+                     "CLAUDE_HOME", "XDG_CACHE_HOME")
+            shared.chmod(0o555)
+            try:
+                with mock.patch.multiple(runtime, **{name: values[name] for name in names}):
+                    with mock.patch.object(runtime, "BUILD_STATE", shared / "build"):
+                        with self.assertRaises(PermissionError):
+                            runtime.ensure_state_dirs()
+                    runtime.ensure_state_dirs()
+                self.assertTrue(values["BUILD_STATE"].is_dir())
+                self.assertTrue((values["STATE_ROOT"] / "runtime/workspaces").is_dir())
+                self.assertFalse((shared / "build").exists())
+                self.assertEqual(shared.stat().st_mode & 0o777, 0o555)
+            finally:
+                shared.chmod(0o755)
 
 
 if __name__ == "__main__":
