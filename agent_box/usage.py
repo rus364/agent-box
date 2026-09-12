@@ -303,8 +303,6 @@ def usage_snapshot(provider, no_cache=False, *, allow_refresh=True):
             oauth = usage_auth.credentials(auth)["claudeAiOauth"]
             renewed = False
             if allow_refresh and usage_auth.expired(oauth):
-                if os.environ.get("CLAUDE_CODE_CUSTOM_OAUTH_URL"):
-                    raise AgentBoxError("Claude token refresh unavailable for a custom OAuth endpoint")
                 oauth = usage_auth.refresh(auth, oauth, refresh_request)
                 renewed = True
             token = oauth["accessToken"]
@@ -314,8 +312,7 @@ def usage_snapshot(provider, no_cache=False, *, allow_refresh=True):
         try:
             data = http_json(url, headers=headers)
         except urllib.error.HTTPError as exc:
-            if (provider != "claude" or exc.code != 401 or not allow_refresh or renewed
-                    or os.environ.get("CLAUDE_CODE_CUSTOM_OAUTH_URL")):
+            if provider != "claude" or exc.code != 401 or not allow_refresh or renewed:
                 raise
             oauth = usage_auth.refresh(auth, oauth, refresh_request, force=True)
             headers["Authorization"] = "Bearer " + oauth["accessToken"]

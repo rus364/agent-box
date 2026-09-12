@@ -288,11 +288,37 @@ class UsageAuthTests(unittest.TestCase):
     def test_custom_oauth_credentials_never_go_to_default_refresh_endpoint(self):
         """Custom-server refresh credentials must not be sent to the default server."""
         self.expire()
+        with mock.patch.dict(os.environ, {'CLAUDE_CODE_CUSTOM_OAUTH_URL': 'https://example.invalid/'}), \
+                mock.patch.object(usage, 'http_json', side_effect=[self.renewal, self.live, self.live]) as http:
+            self.assertTrue(self.snapshot()['fresh'])
+            self.assertTrue(self.snapshot()['fresh'])
+        self.assertEqual([c.args[0] for c in http.call_args_list], [
+            'https://example.invalid/v1/oauth/token',
+            'https://example.invalid/api/oauth/usage',
+            'https://example.invalid/api/oauth/usage'])
+
+    def test_custom_endpoint_401_uses_its_own_token_endpoint(self):
+        """Server rejection must recover on the configured server, without a default-server fallback."""
         with mock.patch.dict(os.environ, {'CLAUDE_CODE_CUSTOM_OAUTH_URL': 'https://example.invalid'}), \
-                mock.patch.object(usage, 'http_json') as http:
-            result = self.snapshot()
-        self.assertIn('custom OAuth endpoint', result['error'])
-        http.assert_not_called()
+                mock.patch.object(usage, 'http_json', side_effect=[self.rejected(), self.renewal, self.live]) as http:
+            self.assertTrue(self.snapshot()['fresh'])
+        self.assertEqual([c.args[0] for c in http.call_args_list], [
+            'https://example.invalid/api/oauth/usage',
+            'https://example.invalid/v1/oauth/token',
+            'https://example.invalid/api/oauth/usage'])
+
+    def test_renewal_uses_the_credentials_client_or_configured_claude_client(self):
+        """Refresh grants must identify the client that owns the credentials."""
+        for stored in (None, 'stored-client'):
+            self.expire()
+            if stored:
+                self.oauth['clientId'] = stored
+                self.save(self.oauth)
+            with mock.patch.dict(os.environ, {'CLAUDE_CODE_OAUTH_CLIENT_ID': 'configured-client'}), \
+                    mock.patch.object(usage, 'http_json', side_effect=[self.renewal, self.live]) as http:
+                self.assertTrue(self.snapshot()['fresh'])
+            self.assertEqual(json.loads(http.call_args_list[0].kwargs['data'])['client_id'],
+                             stored or 'configured-client')
 
     def test_diagnostics_never_include_network_or_response_secrets(self):
         """Exceptions may contain credentials or URLs unsuitable for public diagnostics."""

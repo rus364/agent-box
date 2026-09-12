@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+import os
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -80,11 +81,13 @@ def refresh(path: Path, previous: dict, request, *, force: bool = False) -> dict
         if not isinstance(token, str) or not token:
             raise AgentBoxError("Claude refresh token missing; sign in with Claude")
         body = {"grant_type": "refresh_token", "refresh_token": token,
-                "client_id": oauth.get("clientId") or CLAUDE_CLIENT_ID}
+                "client_id": oauth.get("clientId") or os.environ.get("CLAUDE_CODE_OAUTH_CLIENT_ID") or CLAUDE_CLIENT_ID}
         scopes = oauth.get("scopes")
         if isinstance(scopes, list) and scopes and all(isinstance(s, str) for s in scopes):
             body["scope"] = " ".join(scopes)
-        result = request(CLAUDE_TOKEN_URL, body)
+        custom = os.environ.get("CLAUDE_CODE_CUSTOM_OAUTH_URL")
+        token_url = custom.rstrip("/") + "/v1/oauth/token" if custom else CLAUDE_TOKEN_URL
+        result = request(token_url, body)
         if not isinstance(result, dict):
             raise AgentBoxError("Claude token refresh returned an invalid response")
         access = result.get("access_token")
