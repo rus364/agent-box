@@ -827,6 +827,8 @@ def sync_tracker_runtime(config: Config, directory: Path | None = None, *, polic
         "global_tracker_urls": getattr(config, "_global_tracker_urls", {
             name: connection.url for name, connection in config.tracker.connections.items()}),
         "workflow": config.workflow.to_dict(),
+        "claude": {"remote_control": config.claude.remote_control},
+        "codex": config.codex.to_dict(),
         "github": config.github.to_dict(),
         "browser": config.browser.to_dict(),
         "image": config.image.to_dict(),

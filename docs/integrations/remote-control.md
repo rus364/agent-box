@@ -43,12 +43,12 @@ native Remote Control daemons do not participate in this lock.
 The following also use the ordinary launch, preserving the original arguments:
 
 - Named profiles (`-p` / `--profile`), custom providers, OSS/local-provider mode.
-- Explicit `--remote`, resume/fork, worktree and unrecognized CLI options.
+- Explicit `--remote`, resume/fork, worktree, `--add-dir` and unrecognized CLI options.
 - Missing ChatGPT login, unsupported app-server APIs, or startup/pairing failure.
 
 This keeps future custom-provider launches and their profiles independent of
 Remote Control. Calling a separate DeepSeek agent does not change the parent
-session's mode. Supporting custom-provider configuration itself belongs to #60.
+session's mode.
 
 The server receives the launch's `-c` integration overrides, model and permission
 settings. It uses the same provider home, project directory, filesystem and
@@ -58,8 +58,6 @@ Codex's remote TUI mode does not load locally configured runtime environments;
 turn this checkbox off when that feature is needed. Remote TUI behavior is not
 guaranteed to match every embedded CLI feature.
 
-Tested with stock Codex 0.154.0 and Claude Code 2.1.269. Process, socket, lock,
-configuration and failure behavior have isolated tests; native checks used
-throwaway homes without credentials. Authenticated phone pairing has not been
-verified end to end. CLI upgrades can introduce further native restrictions;
-known startup failures fall back to the ordinary launch with a notice.
+Account policy, service availability and CLI upgrades can introduce further
+native restrictions. Known startup failures fall back to the ordinary launch
+with a notice.

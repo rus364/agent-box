@@ -81,17 +81,17 @@ def codex_commands(command: list[str]) -> tuple[list[str], list[str], Path]:
     client, config, typed = [], [], []
     cwd = Path.cwd()
     takes_value = {"-c", "--config", "-m", "--model", "-C", "--cd", "-s", "--sandbox",
-                   "-a", "--ask-for-approval", "-i", "--image", "--add-dir", "--enable", "--disable"}
+                   "-a", "--ask-for-approval", "-i", "--image", "--enable", "--disable"}
     switches = {"--search", "--full-auto", "--dangerously-bypass-approvals-and-sandbox",
                 "--no-alt-screen"}
     incompatible = {"-p", "--profile", "--remote", "--remote-auth-token-env", "--oss",
-                    "--local-provider", "--worktree", "-w"}
+                    "--local-provider", "--worktree", "-w", "--add-dir"}
     index = 0
     while index < len(args):
         arg = args[index]
         key, equal, value = arg.partition("=")
         if key in incompatible or any(arg.startswith(short) and arg != short for short in ("-p", "-w")):
-            raise Unavailable("this Codex profile/provider/remote/worktree option needs the native launcher")
+            raise Unavailable("this Codex profile/provider/remote/workspace option needs the native launcher")
         if not arg.startswith("-"):
             if arg in {"resume", "fork"}:
                 raise Unavailable("resumed/forked Codex sessions retain native launch behavior")
@@ -316,6 +316,8 @@ def preflight(server: list[str], cwd: Path, log) -> None:
 def wait_for_client(command: list[str], server: subprocess.Popen | None = None) -> int:
     process = subprocess.Popen(command)
     try:
+        if server is None:
+            return process.wait()
         while process.poll() is None:
             if server is not None and server.poll() is not None:
                 print("agent-box: Codex app-server stopped; ending its terminal session", file=sys.stderr)

@@ -18,6 +18,21 @@ from agent_box.paths import LOCAL_LAUNCHER
 
 
 class RemoteControlTests(unittest.TestCase):
+    def test_nested_launch_snapshot_preserves_remote_choices_without_other_host_integrations(self):
+        """A new nested launcher must see its captured opt-in settings."""
+        config = Config()
+        config.claude.remote_control = True
+        config.codex.remote_control = True
+        config.claude.telegram_channel = True
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            runtime.sync_tracker_runtime(config, directory, policy=True)
+            data = json.loads((directory / 'config.json').read_text())
+            loaded = Config.from_dict(data)
+            self.assertTrue(loaded.claude.remote_control)
+            self.assertTrue(loaded.codex.remote_control)
+            self.assertEqual(data['claude'], {'remote_control': True})
+
     def test_off_preserves_exact_native_command_for_both_launch_modes(self):
         """Disabled RC must not impose server limitations on profiles or arguments."""
         config = Config.from_dict(Config().to_dict())
@@ -97,7 +112,7 @@ class RemoteControlTests(unittest.TestCase):
     def test_incompatible_codex_options_keep_original_launch(self):
         """Profiles and unsupported CLI features must remain available without RC."""
         for args in (['-p', 'provider'], ['--profile=work'], ['--remote', 'unix:///user'],
-                     ['--oss'], ['--future-flag'], ['resume', 'id'], ['--worktree']):
+                     ['--oss'], ['--future-flag'], ['resume', 'id'], ['--worktree'], ['--add-dir', '/data']):
             with self.subTest(args=args), mock.patch.object(rc, 'wait_for_client', return_value=23) as run, \
                  contextlib.redirect_stderr(io.StringIO()) as output:
                 command = ['codex', *args]
