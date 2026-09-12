@@ -235,6 +235,10 @@ def check_settings(route):
 def preflight(route):
     """Check local launch facts without guessing live model or account availability."""
     check_settings(route)
+    if route.get("api_provider"):
+        from .config import effective_config
+        from .external_launch import connection
+        connection(effective_config(), route["api_provider"], route["provider"])
     if not shutil.which(route["provider"]):
         raise ProviderFailure(f"Cannot find {route['provider']} CLI", "unavailable")
 
@@ -294,7 +298,8 @@ def codex_usage(path):
 
 
 def run(route, role, root, prompt, *, timeout=3600, read_paths=(), diagnostics=None):
-    env = os.environ.copy()
+    from .external_launch import builtin_environment, prepare
+    env = builtin_environment(os.environ)
     for key in ("CLAUDE_CODE_SUBAGENT_MODEL", "CLAUDE_CODE_EFFORT_LEVEL", "CLAUDECODE"):
         env.pop(key, None)
     from .notify import SUPPRESS_NOTIFY_ENV
@@ -307,6 +312,10 @@ def run(route, role, root, prompt, *, timeout=3600, read_paths=(), diagnostics=N
         schema, result = directory / "schema.json", directory / "result.json"
         schema.write_text(json.dumps(report_schema(role), ensure_ascii=False), encoding="utf-8")
         command = build_command(route, role, Path(root), schema, result, read_paths)
+        if route.get("api_provider"):
+            from .config import effective_config
+            command, env = prepare(command, route["api_provider"], route["provider"], effective_config(),
+                                   directory, env, model=route["model"])
         with (directory / "stdout").open("w+") as stdout, (directory / "stderr").open("w+") as stderr:
             try:
                 try:

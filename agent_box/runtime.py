@@ -832,6 +832,8 @@ def sync_tracker_runtime(config: Config, directory: Path | None = None, *, polic
         "github": config.github.to_dict(),
         "browser": config.browser.to_dict(),
         "image": config.image.to_dict(),
+        "external_providers": {name: spec.to_dict() for name, spec in config.external_providers.items()
+                               if spec.enabled},
         "container": True,
     }
     atomic_write_json(directory / "config.json", rendered, 0o600)
@@ -2276,6 +2278,7 @@ def claude_channel_args(
 def runtime_main(
     args: list[str], script_dir: Path, extra_mount_specs: list[str] | None = None,
     env_specs: list[tuple[str, str | None]] | None = None,
+    *, api_provider: str = "",
 ) -> None:
     from .mounts import MountError, parse_mount_arg, plan_mounts
 
@@ -2302,6 +2305,9 @@ def runtime_main(
     ensure_state_dirs()
     ensure_refresh_token()
     config = launch_config(env_specs)
+    if api_provider:
+        from .external_launch import selected_model
+        selected_model(config, api_provider, args[0], args[1:])
 
     if not image_exists():
         print("agent-box: image not found; building it...", file=sys.stderr)
@@ -2371,7 +2377,9 @@ def runtime_main(
                 command = ["claude", *rest]
         else:
             command = codex_command(rest, config, browser_dir)
-        if remote_control_invocation(agent, rest):
+        if api_provider:
+            command = external_command(command, agent, api_provider, container=True)
+        elif remote_control_invocation(agent, rest):
             command = remote_control_command(command, agent, config, container=True)
         spec = workspace_container_spec(workspace, extra_mounts, script_dir, config)
         invocation, process_env = invocation_env(config, agent)
@@ -2699,6 +2707,7 @@ def uninstall_main(args: list[str]) -> int:
 def host_main(
     agent: str, rest: list[str],
     env_specs: list[tuple[str, str | None]] | None = None,
+    *, api_provider: str = "",
 ) -> int:
     """``agent-box --host claude|codex``: run the installed host executable
     directly, no Podman.
@@ -2714,8 +2723,11 @@ def host_main(
         raise AgentBoxError(str(exc)) from exc
 
     config = launch_config(env_specs, container=False)
+    from .external_launch import builtin_environment, selected_model
+    if api_provider:
+        selected_model(config, api_provider, agent, rest)
     # As in container mode: a launch applies nothing to the user's own files.
-    env = dict(os.environ)
+    env = builtin_environment(os.environ)
     # ``env.set`` states what a session should have; a host session is still a
     # session. ``env.forward`` has nothing to do here -- host mode already
     # runs in the very shell those names would have been forwarded from, so
@@ -2729,7 +2741,9 @@ def host_main(
         del env[key]
 
     command = [executable, *rest]
-    if remote_control_invocation(agent, rest):
+    if api_provider:
+        command = external_command(command, agent, api_provider, container=False)
+    elif remote_control_invocation(agent, rest):
         command = remote_control_command(command, agent, config, container=False)
     if tmux_enabled(agent) and host_interactive_invocation(agent, rest):
         tmux = shutil.which("tmux")
@@ -2737,6 +2751,11 @@ def host_main(
             return host_tmux_launch(workspace, agent, command, env, tmux)
         warn("tmux not found; starting directly without detach/attach support")
     return subprocess.call(command, cwd=str(workspace.cwd), env=env)
+
+
+def external_command(command: list[str], agent: str, name: str, *, container: bool) -> list[str]:
+    launcher = CONTAINER_LAUNCHER_ROOT / "agent-box" if container else LOCAL_LAUNCHER
+    return ["python3" if container else sys.executable, str(launcher), "_external", name, agent, *command]
 
 
 def remote_control_command(command: list[str], agent: str, config: Config, *, container: bool) -> list[str]:

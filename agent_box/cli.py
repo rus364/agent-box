@@ -88,6 +88,7 @@ def parse_global_args(argv: list[str]) -> tuple[list[str], bool, list[str], list
 def usage_text() -> None:
     print('''Usage:
   agent-box [--mount PATH[:ro]]... [--env NAME[=VALUE]]... [--host] [codex|claude|shell|doctor] [arguments...]
+  agent-box [--host] ext NAME codex|claude [arguments...]
   agent-box attach [session]
   agent-box stop
   agent-box --host attach [session]
@@ -545,6 +546,12 @@ HOST_ONLY_AGENTS = {"claude", "codex"}
 
 
 def main() -> None:
+    if sys.argv[1:2] == ["_external"]:
+        from . import external_launch
+        try:
+            raise SystemExit(external_launch.main(sys.argv[2:]))
+        except (AgentBoxError, OSError) as exc:
+            die(str(exc))
     if sys.argv[1:2] == ["_session"]:
         from . import remote_control
         try:
@@ -609,6 +616,15 @@ def main() -> None:
             if args[0] == "attach":
                 raise SystemExit(runtime.attach_main(args[1:]))
             raise SystemExit(runtime.stop_main(args[1:]))
+        if args and args[0] == "ext":
+            if len(args) < 3 or args[2] not in HOST_ONLY_AGENTS:
+                die("usage: agent-box [--host] ext NAME codex|claude [CLI args]")
+            from . import runtime
+            name, agent, *rest = args[1:]
+            if host:
+                raise SystemExit(runtime.host_main(agent, rest, parsed_env, api_provider=name))
+            runtime.runtime_main([agent, *rest], script_dir, mounts, parsed_env, api_provider=name)
+            return
         if host:
             agent = args[0] if args else None
             if agent not in HOST_ONLY_AGENTS:
