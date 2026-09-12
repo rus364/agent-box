@@ -779,12 +779,12 @@ def execute(config, selected, role, root, prompt, read_paths=()):
 def managed_review_route(selected):
     """Do not spend a round when none of its configured CLI routes can start."""
     candidates, failures = [], []
-    for candidate in [selected, *selected["fallbacks"]]:
+    for index, candidate in enumerate([selected, *selected["fallbacks"]]):
         try:
             preflight(candidate)
             candidates.append(candidate)
         except ProviderFailure as exc:
-            if exc.category != "unavailable":
+            if index == 0 and exc.category != "unavailable":
                 raise AgentBoxError(f"Managed review preflight failed; correct the route before review: {exc}") from None
             failures.append({"provider": candidate.get("provider"), "category": exc.category,
                              "stage": "preflight", "reason": str(exc)})

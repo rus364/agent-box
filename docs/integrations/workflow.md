@@ -243,8 +243,8 @@ Reviewer provider order precedes native preference. If native cannot run the
 selected provider, use its managed CLI in the same prepared round. Native reports
 cannot select fallback candidates on the strength of a free-text reason. Managed
 execution advances only after observed CLI/model unavailability, authentication,
-quota or expiration of `timeout_seconds`. Unknown errors, unsupported settings
-and invalid reports stop review for diagnosis. Speed, cost, preference, silence
+quota or expiration of `timeout_seconds`. Unknown errors, unsupported primary settings
+and invalid reports stop review for diagnosis. Unusable backups do not block the primary. Speed, cost, preference, silence
 before timeout and review verdicts never justify switching provider. Missing CLIs
 and explicitly empty models may exclude candidates during route preparation.
 

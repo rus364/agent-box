@@ -1,5 +1,6 @@
 """Review provider policy must bound every attempt, including failed ones."""
 import tempfile
+import os
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -126,11 +127,12 @@ class ReviewRoutingTests(unittest.TestCase):
         config = test_routing.RoutingTests().config()
         config.review.routing = "same-provider"
         for writer, other in (("codex", "claude"), ("claude", "codex")):
-            for category in ("unavailable", "model-unavailable", "authentication", "timeout"):
+            for category in ("unavailable", "model-unavailable", "authentication", "quota", "timeout",
+                             "invalid-report", "provider-error", "unsupported"):
                 with self.subTest(writer=writer, category=category):
                     route = select(config, "reviewer", 2, other, {}, writer=writer)
                     with patch.object(workflow, "run", side_effect=ProviderFailure("test failure", category)) as run:
-                        with self.assertRaisesRegex(AgentBoxError, "No provider produced a valid report"):
+                        with self.assertRaises(AgentBoxError):
                             workflow.execute(config, route, "reviewer", Path("/unused"), "test")
                     self.assertEqual([call.args[0]["provider"] for call in run.call_args_list], [writer])
 
@@ -182,6 +184,25 @@ class ReviewRoutingTests(unittest.TestCase):
             selected, failures = workflow.managed_review_route(route)
         self.assertEqual(selected["provider"], "codex")
         self.assertEqual(failures[0]["category"], "unavailable")
+
+    def test_unsupported_backup_preserves_primary_and_preflight_diagnostics(self):
+        """An unusable backup must not prevent an available primary from reviewing."""
+        config = test_routing.RoutingTests().config()
+        route = select(config, "reviewer", 2, "claude", {}, writer="claude")
+        route["fallbacks"][0].update(model="claude-opus-5", effort="high", fast=True)
+        with patch.dict(os.environ, {"CLAUDE_CODE_DISABLE_FAST_MODE": "1"}), \
+             patch.object(workflow.shutil, "which", return_value="cli"), \
+             patch.object(workflow, "run", return_value={"verdict": "PASS", "summary": "Checked", "findings": []}) as run:
+            selected, failures = workflow.managed_review_route(route)
+            workflow.execute(config, selected, "reviewer", Path("/unused"), "test")
+            self.assertEqual([call.args[0]["provider"] for call in run.call_args_list], ["codex"])
+            self.assertEqual(selected["fallbacks"], [])
+            self.assertEqual([(f["provider"], f["category"]) for f in failures], [("claude", "unsupported")])
+            with patch.object(workflow.shutil, "which", side_effect=lambda p: None if p == "codex" else "cli"):
+                with self.assertRaises(AgentBoxError) as caught:
+                    workflow.managed_review_route(route)
+            for fact in ('"provider": "codex"', '"unavailable"', '"provider": "claude"', '"unsupported"'):
+                self.assertIn(fact, str(caught.exception))
 
     def test_review_routing_does_not_change_worker_or_scout_selection(self):
         """Reviewer policy must leave worker scheduling and fallback candidates intact."""
