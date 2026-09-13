@@ -167,6 +167,17 @@ class ExternalProcessTests(unittest.TestCase):
         with self.assertRaisesRegex(AgentBoxError, 'Cannot restore'):
             ext.builtin_environment(first)
 
+    def test_native_option_values_and_keys_survive_the_toml_parser(self):
+        """Codex parses -c as TOML, so a rendered option has to survive TOML.
+
+        DEL in a value and a non-BMP character in a key both used to render
+        through JSON escaping that TOML rejects, which killed the launch
+        before Codex started.
+        """
+        options = {"🚀": "del\x7fhere", "web_search": ["live", {"emoji": "🚀"}],
+                   "retries": 3, "stream": True}
+        self.assertEqual(tomllib.loads("x=" + ext.toml_value(options))["x"], options)
+
     def test_remote_control_ownership_is_decided_by_the_root_key(self):
         """The launch owns config keys, not the names nested under them.
 

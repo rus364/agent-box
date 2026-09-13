@@ -12,7 +12,8 @@ import tomllib
 
 from .atomicio import atomic_write_json
 from .errors import AgentBoxError
-from .external_config import CODEX_OWNED_CONFIG, claude_model, codex_options, model_effort_error, model_settings, valid_model, valid_name
+from .external_config import (CODEX_OWNED_CONFIG, claude_model, codex_options, model_effort_error,
+                              model_settings, toml_string, valid_model, valid_name)
 from .paths import SESSION_TEMP_ROOT
 
 API_ENV = 'AGENT_BOX_EXTERNAL_API_KEY'
@@ -35,10 +36,18 @@ def auth_name(name):
 
 
 def toml_value(value):
+    """One native Codex option, in the TOML Codex parses it as.
+
+    Strings -- the keys of a table included -- go through the project's TOML
+    escaper: JSON's escaping is not TOML's, and a value Codex cannot parse is
+    a launch that dies before the CLI starts.
+    """
     if isinstance(value, dict):
-        return '{' + ', '.join(json.dumps(k) + '=' + toml_value(v) for k, v in value.items()) + '}'
+        return '{' + ', '.join(toml_string(k) + '=' + toml_value(v) for k, v in value.items()) + '}'
     if isinstance(value, list):
         return '[' + ', '.join(toml_value(v) for v in value) + ']'
+    if isinstance(value, str):
+        return toml_string(value)
     return json.dumps(value, ensure_ascii=False, allow_nan=False)
 
 

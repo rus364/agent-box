@@ -3,13 +3,14 @@ import contextlib
 import io
 from pathlib import Path
 import tempfile
+import tomllib
 import unittest
 from unittest.mock import patch
 
 from agent_box import cli, config_menu, project_config
 from agent_box.config import Config, load_config, save_config
 from agent_box.errors import AgentBoxError
-from agent_box.external_config import validate_connections
+from agent_box.external_config import codex_options, toml_string, validate_connections
 import test_config_menu as menu_tests
 
 
@@ -18,6 +19,31 @@ def external_config():
         'enabled': True, 'api_key': 'private-api-key',
         'codex': {'url': 'https://api.example/v1', 'models': {'external-small': {}, 'external-large': {}}},
         'claude': {'url': 'https://api.example/anthropic', 'models': {'external-small': {}}}}}})
+
+
+class ExternalTomlRenderingTests(unittest.TestCase):
+    def test_strings_render_as_toml_a_codex_override_can_carry(self):
+        """JSON's escaping is not TOML's, and Codex parses -c values as TOML.
+
+        json.dumps writes a non-BMP character as a surrogate pair, which TOML
+        rejects, and leaves DEL literal when told not to escape non-ASCII,
+        which a basic string forbids. Either one is a value Codex cannot read,
+        so the launch dies before the CLI starts.
+        """
+        for value in ("🚀 node", "del\x7fhere", 'quo"te', "back\\slash", "tab\there", "nl\nhere"):
+            with self.subTest(value=value):
+                self.assertEqual(tomllib.loads("x=" + toml_string(value)), {"x": value})
+
+    def test_text_toml_cannot_spell_is_refused_where_it_enters(self):
+        """A lone surrogate has no TOML string, and no argv either.
+
+        Only a JSON source can carry one into an option; refusing it with the
+        field named beats writing invalid UTF-8 into the command Codex parses.
+        """
+        for options in ({"web_search": "\ud83d"}, {"\ud83d": "live"}):
+            with self.subTest(options=options), \
+                 self.assertRaisesRegex(AgentBoxError, r"Invalid Codex options: TOML cannot carry"):
+                codex_options(options, "Codex options")
 
 
 class ExternalConfigTests(unittest.TestCase):

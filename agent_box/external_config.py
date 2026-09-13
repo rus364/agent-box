@@ -13,6 +13,44 @@ CODEX_OWNED_CONFIG = {'model', 'model_provider', 'model_providers', 'model_catal
                       'profiles', 'profile'}
 
 
+def toml_string(value: str) -> str:
+    r"""A TOML basic string for text agent-box writes into a ``-c`` value.
+
+    Codex parses the value portion of ``-c`` as TOML, and ``json.dumps`` is not
+    quite that escaper: it writes a non-BMP character as a UTF-16 surrogate
+    pair -- two escapes for one emoji -- and TOML rejects a surrogate escape
+    because a surrogate is not a Unicode scalar value. It also leaves DEL
+    literal when told not to escape non-ASCII, which a basic string forbids.
+    Control characters are escaped here and everything else is literal, which
+    TOML allows.
+    """
+    escaped = []
+    for char in value:
+        if char in '\\"':
+            escaped.append("\\" + char)
+        elif char == "\n":
+            escaped.append("\\n")
+        elif char == "\r":
+            escaped.append("\\r")
+        elif char == "\t":
+            escaped.append("\\t")
+        elif char < " " or char == "\x7f":
+            escaped.append(f"\\u{ord(char):04X}")
+        else:
+            escaped.append(char)
+    return '"' + "".join(escaped) + '"'
+
+
+def has_toml_spelling(value: str) -> bool:
+    """Whether TOML can carry this text at all.
+
+    Only a JSON source can put a lone surrogate in a name or an option -- a
+    TOML document cannot hold one -- and no TOML string can spell it: writing
+    it would put invalid UTF-8 in the argv Codex parses.
+    """
+    return not any(0xD800 <= ord(char) <= 0xDFFF for char in value)
+
+
 def codex_options(raw, path, *, provider=False):
     """Codex validates native option semantics; agent-box retains API/auth ownership."""
     reserved = ({'base_url', 'env_key', 'experimental_bearer_token', 'requires_openai_auth', 'auth'}
@@ -23,10 +61,18 @@ def codex_options(raw, path, *, provider=False):
         if isinstance(value, list):
             return all(valid(v) for v in value)
         return type(value) in (str, bool, int, float)
+    def spelled(value):
+        if isinstance(value, dict):
+            return all(spelled(k) and spelled(v) for k, v in value.items())
+        if isinstance(value, list):
+            return all(spelled(v) for v in value)
+        return not isinstance(value, str) or has_toml_spelling(value)
     if (not isinstance(raw, dict) or not valid(raw) or any(k in reserved for k in raw)
             or not provider and (any('remote' in k for k in raw)
                 or isinstance(raw.get('features'), dict) and any('remote' in k for k in raw['features']))):
         raise AgentBoxError(f'Invalid {path}: expected native options without launcher-owned API/auth/Remote Control fields')
+    if not spelled(raw):
+        raise AgentBoxError(f'Invalid {path}: TOML cannot carry these characters, and Codex parses -c values as TOML')
     try:
         json.dumps(raw, allow_nan=False)
     except (TypeError, ValueError):
