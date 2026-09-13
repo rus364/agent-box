@@ -283,7 +283,7 @@ options, confirming the rendered settings and replacement picker were accepted.
 Unit tests verify catalog context/compact fields and env restoration; this smoke
 does not prove automatic compaction at the threshold or live DeepSeek behavior.
 
-Task 73 smoke used installed Codex 0.154.0 with temporary fake ChatGPT credentials
+[Task 371](http://pm.infrado.org:3456/tasks/371) smoke used installed Codex 0.154.0 with temporary fake ChatGPT credentials
 and a loopback HTTP endpoint. The saved auth file stayed byte-identical; the
 Responses request carried the configured query parameter, environment-backed
 header and native `web_search` tool. The stub deliberately returned HTTP 400
