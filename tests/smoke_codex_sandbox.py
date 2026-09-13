@@ -10,10 +10,19 @@ import tempfile
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--codex", default="codex", help="Codex executable to check")
+    parser.add_argument("--podman", required=True, choices=("on", "off"),
+                        help="Expected workspace Podman group state")
     args = parser.parse_args()
     codex = shutil.which(args.codex)
     if not codex:
         parser.error("Codex executable not found")
+    status = dict(line.split(":", 1) for line in Path("/proc/self/status").read_text().splitlines())
+    ambient = int(status["CapAmb"], 16)
+    expected = (1 << 6) | (1 << 7) if args.podman == "on" else 0
+    if os.getuid() == 0 or ambient != expected:
+        parser.error(f"Expected non-root with CapAmb={expected:016x}; "
+                     f"got UID={os.getuid()}, CapAmb={ambient:016x}")
+    print(f"Podman {args.podman}: inherited CapAmb={ambient:016x}")
     with tempfile.TemporaryDirectory(prefix="agent-box-sandbox-smoke-") as directory:
         root = Path(directory)
         workspace = root / "workspace"
@@ -27,8 +36,6 @@ def main():
         settings.write_text('# Smoke-owned settings must remain intact.\n')
         original_settings = settings.read_bytes()
         env = {**os.environ, "CODEX_HOME": str(codex_home)}
-        capabilities = [line for line in Path("/proc/self/status").read_text().splitlines()
-                        if line.startswith("Cap")]
         for mode in ("read-only", "workspace-write"):
             # A project command reads both source and out-of-tree review evidence,
             # then checks writable roots and the protected Git metadata directory.
@@ -58,9 +65,7 @@ for target, allowed in CASES:
                 raise RuntimeError(f"{mode}: {result.stdout}\n{result.stderr}")
             assert settings.read_bytes() == original_settings
             print(f"{mode}: source/evidence reads and write boundaries passed")
-        assert capabilities == [line for line in Path("/proc/self/status").read_text().splitlines()
-                                if line.startswith("Cap")]
-        print("Parent capabilities and Codex settings preserved; no API calls")
+        print("Temporary Codex settings preserved; no API calls")
 
 
 if __name__ == "__main__":

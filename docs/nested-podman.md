@@ -91,7 +91,9 @@ Codex manually inside a running workspace can replace this file attribute too.
 Sandbox restrictions still apply: read-only commands cannot create Podman state,
 and nested Podman operations can require execution outside Codex's command sandbox
 under the session's approval policy. The workspace itself remains rootless.
-Run `python3 tests/smoke_codex_sandbox.py` in enabled and disabled workspaces for
+Run `python3 tests/smoke_codex_sandbox.py --podman on` in an enabled workspace,
+and use `--podman off` in a disabled one. The smoke checks the expected ambient
+capabilities before testing the sandbox. It verifies
 offline source/evidence reads, read-only/workspace-write boundaries and unchanged
 temporary CLI settings. Run the separate nested Podman smoke for actual build/run
 support; a sandbox smoke does not invoke a model or prove a provider review.
