@@ -207,7 +207,8 @@ class WorkerHandoffTests(unittest.TestCase):
 
     def run_workflow(self, *argv):
         args = workflow.parser().parse_args(list(argv))
-        if args.command in ("prepare", "run") and args.role == "worker" and not getattr(args, "handoff", None):
+        if (args.command in ("prepare", "run") and args.role == "worker"
+                and not getattr(args, "handoff", None) and not getattr(args, "abort", False)):
             tier = workflow.delegation_tier(args, self.task, "worker")
             args.execution = args.execution or ("direct" if tier is None and not self.config.workflow.override_for("worker", tier) else "delegated")
             args.reason = args.reason or "Bounded fixture assignment"
@@ -1051,6 +1052,99 @@ class WorkerHandoffTests(unittest.TestCase):
         workflow.save_evidence(self.root, self.task, saved)
         self.assertEqual(self.run_workflow("finish", "1")["state"], "Review")
         self.assertEqual(workflow.read_evidence(self.root, self.task)["execution"]["status"], "failed")
+
+    def test_a_cancelled_order_allows_a_fresh_assignment(self):
+        """Committing before the report leaves no reportable order, so cancelling is explicit.
+
+        The prepared descriptor is reportable only at the HEAD it was prepared
+        at: report refuses the moved HEAD, prepare refuses a second active order
+        and finish refuses the task. Cancelling records why and the cancelled
+        descriptor stays refused instead of silently becoming reportable.
+        """
+        prepared = self.run_workflow("prepare", "1", "--primary", "codex")
+        (self.root / "change.py").write_text("value = 1\n")
+        gw.git(self.root, "add", ".")
+        gw.git(self.root, "commit", "-m", "committed under the delegation")
+        with self.assertRaisesRegex(AgentBoxError, "HEAD moved"):
+            self.report_back((prepared["scope"], prepared["handoff"]))
+        with self.assertRaisesRegex(AgentBoxError, "already exists"):
+            self.run_workflow("prepare", "1", "--primary", "codex")
+        cancelled = self.run_workflow("prepare", "1", "--abort", "--reason", "Committed before the report")
+        self.assertEqual(cancelled["execution"],
+                         {"status": "aborted", "reason": "Committed before the report"})
+        saved = workflow.read_evidence(self.root, self.task)["execution"]
+        self.assertEqual((saved["status"], saved["reason"]),
+                         ("aborted", "Committed before the report"))
+        with self.assertRaisesRegex(AgentBoxError, "cancelled"):
+            self.report_back((prepared["scope"], prepared["handoff"]))
+        fresh = self.run_workflow("prepare", "1", "--primary", "codex")
+        self.assertNotEqual(fresh["handoff"], prepared["handoff"])
+        self.report_back((fresh["scope"], fresh["handoff"]))
+
+    def test_a_cancelled_order_does_not_block_completion(self):
+        """Cancelling is the coordinator's exit when completion is what still has to happen."""
+        self.task.description = "## Acceptance\n- [x] requirement"
+        self.run_workflow("prepare", "1", "--primary", "codex")
+        saved = workflow.read_evidence(self.root, self.task)
+        saved.update(validation={"exit": 0}, review={"verdict": "PASS"})
+        workflow.save_evidence(self.root, self.task, saved)
+        with self.assertRaisesRegex(AgentBoxError, "worker execution is prepared"):
+            self.run_workflow("finish", "1")
+        self.adapter.set_state.assert_not_called()
+        self.run_workflow("prepare", "1", "--abort", "--reason", "Report became impossible")
+        self.assertEqual(self.run_workflow("finish", "1")["state"], "Review")
+        self.adapter.set_state.assert_called_with(self.task, "Review")
+        self.assertEqual(workflow.read_evidence(self.root, self.task)["execution"]["status"], "aborted")
+
+    def test_cancelling_needs_an_open_prepared_order_and_a_reason(self):
+        """The escape hatch must not double as a silent way to drop an order."""
+        with self.assertRaisesRegex(AgentBoxError, "No prepared worker execution"):
+            self.run_workflow("prepare", "1", "--abort", "--reason", "Nothing to cancel")
+        self.run_workflow("prepare", "1", "--primary", "codex")
+        args = workflow.parser().parse_args(["prepare", "1", "--abort"])
+        with self.assertRaisesRegex(AgentBoxError, "--reason"):
+            workflow.dispatch(args)
+        with self.assertRaisesRegex(AgentBoxError, "--execution"):
+            self.run_workflow("prepare", "1", "--abort", "--reason", "Wrong shape", "--execution", "direct")
+
+    def test_cancelling_a_delegated_order_removes_its_prepared_input(self):
+        """A cancelled order leaves no read-only package behind, as failure paths do not either."""
+        prepared = self.run_workflow("prepare", "1", "--primary", "codex", "--execution", "delegated",
+                                     "--reason", "Separate assignment", "--brief", str(self.review_brief))
+        path = self.delegation_input(prepared)
+        self.assertTrue(path.is_file())
+        self.run_workflow("prepare", "1", "--abort", "--reason", "Assignment withdrawn")
+        self.assertFalse(path.parent.exists())
+
+    def test_validate_refuses_a_moved_order_before_running_the_command(self):
+        """No validation run may be spent while no report can be accepted at this scope."""
+        prepared = self.run_workflow("prepare", "1", "--primary", "codex")
+        (self.root / "change.py").write_text("value = 1\n")
+        gw.git(self.root, "add", ".")
+        gw.git(self.root, "commit", "-m", "committed under the delegation")
+        marker = Path(self.directory.name) / "validated"
+        with self.assertRaises(AgentBoxError) as error:
+            self.run_workflow("validate", "1", "--", "touch", str(marker))
+        self.assertFalse(marker.exists())
+        message = str(error.exception)
+        head = json.loads(base64.urlsafe_b64decode(prepared["handoff"]))["head"]
+        self.assertIn("no validation was run", message)
+        self.assertIn(f"git reset --mixed {head}", message)
+        self.assertIn("agent-box workflow prepare 1 --abort", message)
+        self.assertIsNone(workflow.read_evidence(self.root, self.task).get("validation"))
+
+    def test_validate_warns_that_an_open_order_cannot_survive_the_record(self):
+        """Recording validation before the report is accepted loses it at ingestion."""
+        self.run_workflow("prepare", "1", "--primary", "codex")
+        result = self.run_workflow("validate", "1", "--", "true")
+        self.assertEqual(result["validation"]["exit"], 0)
+        self.assertIn("clears the validation and review recorded for this scope", result["warning"])
+        self.assertIn("Submit the report before validating", result["warning"])
+
+    def test_instructions_state_the_report_before_commit_order(self):
+        """The ordering that keeps a report acceptable is stated where it is decided."""
+        prepared = self.run_workflow("prepare", "1", "--primary", "codex")
+        self.assertIn("Report before committing", prepared["instructions"])
 
     def test_worker_publication_retires_native_and_managed_review_rounds(self):
         """Late verdicts cannot restore PASS after new work, and attempts stay spent."""

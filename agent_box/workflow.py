@@ -942,6 +942,60 @@ def reconcile_abandoned_managed(root, task, saved):
     return execution
 
 
+def abort_worker_execution(root, task, execution, reason):
+    """Cancel an order no report can satisfy, before it costs a review round.
+
+    A report is accepted only at the identity the order was prepared at, so a
+    coordinator who commits first has no command that can clear it: report
+    refuses, prepare refuses a second active execution, and finish is the only
+    place the deadlock surfaces. Cancelling is explicit and recorded, and the
+    cancelled descriptor stays refused because its status is no longer prepared.
+    """
+    status = (execution or {}).get("status", "none")
+    if status != "prepared":
+        raise AgentBoxError(f"No prepared worker execution is waiting for a report (status: {status}); "
+                            "nothing to cancel")
+    reason = reason.strip()
+    if not reason or len(reason) > 500 or "\n" in reason:
+        raise AgentBoxError("Cancelling a prepared worker execution requires one compact --reason line "
+                            "of at most 500 characters")
+    saved = read_evidence(root, task)
+    saved["execution"] = {"descriptor": execution["descriptor"], "status": "aborted", "reason": reason}
+    save_evidence(root, task, saved)
+    cleanup_delegation_input(root, execution["descriptor"])
+    return {"task": task.id, "execution": {"status": "aborted", "reason": reason},
+            "next": f"Prepare a fresh assignment with agent-box workflow prepare {task.id}"}
+
+
+def check_open_worker_execution(root, task, identity):
+    """A prepared order is reportable at one identity; validating another wastes the run.
+
+    Ingesting the report clears the validation and review recorded for the
+    scope, and the report is bound to the branch, HEAD and integration tip the
+    order was prepared at. Both facts are free to check here and expensive to
+    discover at finish, so validation refuses a moved order and warns about a
+    pending report it is about to invalidate.
+    """
+    execution = read_evidence(root, task).get("execution")
+    if not execution or execution.get("status") != "prepared":
+        return None
+    descriptor = execution["descriptor"]
+    moved = [(key, label) for key, label in (("head", "HEAD"), ("branch", "the task branch"),
+                                             ("integration", "the integration branch"))
+             if identity[key] != descriptor[key]]
+    if moved:
+        restore = (f"Restore the prepared commit with git reset --mixed {descriptor['head']} and submit the "
+                   "report command prepare returned" if any(key == "head" for key, _ in moved) else
+                   "Restore the prepared branch and integration tip and submit the report command prepare returned")
+        raise AgentBoxError(
+            "A prepared worker execution is still open, but " + " and ".join(label for _, label in moved) +
+            " moved since it was prepared; no validation was run. " + restore +
+            f", or cancel the order with agent-box workflow prepare {task.id} --abort --reason TEXT")
+    return ("A prepared worker execution is still open at this scope; its report is accepted only at the prepared "
+            "HEAD, and accepting it clears the validation and review recorded for this scope. "
+            "Submit the report before validating.")
+
+
 def route(config, role, tier, primary, writer=None):
     policy = config.workflow
     path = WORKFLOW_STATE / "routing.json"
@@ -1355,7 +1409,7 @@ def parser():
     for name in ("begin", "inspect", "approve", "prepare", "run", "review", "review-result", "review-budget", "validate", "report", "finish", "pr", "land", "writer"):
         description = {
             "inspect": "Read branch, acceptance availability, review budget and next step; works before begin or with uncommitted files",
-            "prepare": "Choose direct/delegated worker execution before routing; auto requires --execution and --reason. Prepare on a clean task branch",
+            "prepare": "Choose direct/delegated worker execution before routing; auto requires --execution and --reason. Prepare on a clean task branch; --abort cancels a prepared order with --reason",
             "review": "Apply review policy to the clean task scope and dispatch a required review",
             "review-result": "Read a private completed result or retry reconciliation without a model call or attempt",
         }.get(name)
@@ -1378,6 +1432,8 @@ def parser():
         if name in ("prepare", "run"):
             cmd.add_argument("--execution", choices=("direct", "delegated"), help="Worker choice; required with --reason in auto policy")
             cmd.add_argument("--reason", help="Compact reason for the worker execution choice")
+        if name == "prepare":
+            cmd.add_argument("--abort", action="store_true", help="Cancel the prepared worker execution; requires --reason and records why no report can be accepted")
         if name in ("prepare", "run"):
             cmd.add_argument("--facts", help="Bounded coordinator-selected facts JSON; delegated workers only; reuse the same file for run")
             cmd.add_argument("--question", help="One compact scout question, separate from the brief; required at scout prepare")
@@ -1569,6 +1625,10 @@ def worker_dispatch(args, root, binding, adapter, task, config):
     identity = delegation_identity(root, binding, current.get("branch") and info["branch"])
     saved = read_evidence(root, task)
     previous = reconcile_abandoned_managed(root, task, saved)
+    if getattr(args, "abort", False):
+        if getattr(args, "execution", None):
+            raise AgentBoxError("Cancelling a prepared worker execution takes --reason, not --execution")
+        return abort_worker_execution(root, task, previous, getattr(args, "reason", "") or "")
     handed = getattr(args, "handoff", None)
     if args.command == "report" or handed:
         if not handed:
@@ -1576,6 +1636,9 @@ def worker_dispatch(args, root, binding, adapter, task, config):
         fingerprint = args.scope if args.command == "report" else scope(root, base, tasks)
         descriptor = read_handoff_descriptor(identity, task, fingerprint, handed)
         check_handoff_route(descriptor, "worker", delegation_tier(args, task, "worker"))
+        if previous and previous.get("status") == "aborted" and previous.get("descriptor") == descriptor:
+            raise AgentBoxError("This worker execution was cancelled (" + previous.get("reason", "no reason recorded") +
+                                "); prepare a new assignment before reporting")
         if (not previous or previous.get("descriptor") != descriptor
                 or previous.get("status") != "prepared"):
             raise AgentBoxError("Worker descriptor is stale, already started/reported, or execution/route mismatched")
@@ -1725,6 +1788,8 @@ def worker_dispatch(args, root, binding, adapter, task, config):
                                "Spawn a fresh worker with delegate_handoff as the complete initial message. "
                                "Use an exact profile or explicit spawn parameters for provider/model/effort/fast without an overriding custom agent. Profile readiness is not live capability proof; "
                                "unknown or unsupported required capabilities or effort=default require managed_command; fast=false preserves native inheritance. Honor managed_only and native_limitation. " + LAUNCH_CONTEXT + " ") +
+                              "Report before committing: the report is accepted only at the prepared HEAD, and accepting it clears "
+                              "the validation and review recorded for this scope. " +
                               "Return actual execution facts with report_command; permitted native fallback requires --fallback-reason TEXT."}
     if choice == "delegated" and selected["model"] is None:
         result["instructions"] += " Inherit the active session in a fresh native worker without a tier profile; unknown session settings cannot run managed."
@@ -1825,6 +1890,8 @@ def dispatch(args):
         raise AgentBoxError("--facts is only available for delegated workers")
     if getattr(args, "question", None) and getattr(args, "role", None) != "scout":
         raise AgentBoxError("--question is only available for scouts")
+    if getattr(args, "abort", False) and getattr(args, "role", None) != "worker":
+        raise AgentBoxError("--abort is only available for worker execution")
     config = effective_config()
     if not config.workflow.enabled:
         raise AgentBoxError("Enable workflow in agent-box config first")
@@ -1918,6 +1985,7 @@ def dispatch(args):
             command = command[1:]
         if not command:
             raise AgentBoxError("Pass the project validation command after --")
+        warning = check_open_worker_execution(root, task, identity)
         with lock(root, "work"):
             result = subprocess.run(command, cwd=root, stdout=sys.stderr,
                                     timeout=config.workflow.timeout_seconds)
@@ -1929,7 +1997,7 @@ def dispatch(args):
             saved = evidence(root, task, fingerprint)
             saved["validation"] = {"command": command, "exit": 0}
             save_evidence(root, task, saved)
-        return saved
+        return {**saved, **({"warning": warning} if warning else {})}
     if args.command in ("prepare", "run", "review"):
         # Worker and scout commands returned through their dedicated state machines.
         role = "reviewer"

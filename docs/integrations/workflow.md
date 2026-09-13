@@ -360,11 +360,19 @@ findings. A worker failure after possible side effects requires reconciliation.
 agent-box workflow begin TASK --primary codex
 agent-box workflow prepare TASK --role worker --primary codex --execution delegated --reason "Bounded implementation" --brief /tmp/brief.md
 agent-box workflow run TASK --handoff DESCRIPTOR --brief /tmp/brief.md
-# The primary checks evidence and commits the resulting work.
+# The primary ingests the report, then checks evidence and commits the resulting work.
 agent-box workflow validate TASK -- python3 -m unittest discover -s tests
 agent-box workflow review TASK --primary codex --brief /tmp/review-brief.md
 agent-box workflow finish TASK
 ```
+
+The report is accepted only at the HEAD, branch and integration tip the order was
+prepared at, and ingesting it clears the validation and review recorded for the
+scope, so `report` precedes the commit and both precede `validate`. A prepared
+order whose HEAD moved cannot be reported: `workflow validate` refuses it before
+running the command and names both exits. `agent-box workflow prepare TASK --abort
+--reason TEXT` cancels the order, leaves the cancelled descriptor refused and lets
+`prepare` start a new assignment.
 
 The review brief is ephemeral per-round English input with a faithful current
 Goal/Acceptance/Validation translation, changes/reasons, technical risks,
