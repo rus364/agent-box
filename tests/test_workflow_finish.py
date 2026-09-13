@@ -1,4 +1,5 @@
 """Completion retries retain acceptance of the work that actually advanced Git."""
+import tempfile
 import unittest
 from contextlib import contextmanager
 from dataclasses import replace
@@ -71,8 +72,11 @@ class ChildFinishTests(unittest.TestCase):
 
     def test_active_child_execution_blocks_integration_despite_validation(self):
         """Child completion must not merge or close work with an outstanding worker."""
-        prepared = self.dispatch(["prepare", "8", "--primary", "codex", "--execution", "direct",
-                                  "--reason", "Inspect child work"])
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".md") as brief:
+            brief.write("Inspect child work")
+            brief.flush()
+            prepared = self.dispatch(["prepare", "8", "--primary", "codex",
+                                      "--reason", "Inspect child work", "--brief", brief.name])
         self.dispatch(["validate", "8", "--", "true"])
         parent_head = gw.local_branch_head(self.root, "ab/7-parent")
         saved = workflow.read_evidence(self.root, self.child)

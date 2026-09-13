@@ -209,8 +209,6 @@ class WorkerHandoffTests(unittest.TestCase):
         args = workflow.parser().parse_args(list(argv))
         if (args.command in ("prepare", "run") and args.role == "worker"
                 and not getattr(args, "handoff", None) and not getattr(args, "abort", False)):
-            tier = workflow.delegation_tier(args, self.task, "worker")
-            args.execution = args.execution or ("direct" if tier is None and not self.config.workflow.override_for("worker", tier) else "delegated")
             args.reason = args.reason or "Bounded fixture assignment"
             args.brief = args.brief or str(self.review_brief)
         return workflow.dispatch(args)
@@ -441,16 +439,6 @@ class WorkerHandoffTests(unittest.TestCase):
         self.assertFalse(list(workflow.WORKFLOW_STATE.rglob("handoff.txt")))
         prepared = self.run_workflow("prepare", "1")
         self.assertTrue(self.delegation_input(prepared).is_file())
-
-    def test_direct_worker_never_creates_a_delegation_package(self):
-        """Current-session implementation needs no native bootstrap or managed input artifact."""
-        with patch.object(workflow, "bind_delegation_input") as write:
-            prepared = self.run_workflow("prepare", "1", "--primary", "codex", "--execution", "direct")
-        write.assert_not_called()
-        self.assertIsNone(prepared["delegate_handoff"])
-        descriptor = json.loads(base64.urlsafe_b64decode(prepared["handoff"]))
-        self.assertNotIn("input", descriptor)
-        self.assertFalse((workflow.WORKFLOW_STATE / "delegation-inputs").exists())
 
     def test_worker_artifact_digest_is_checked_independently_of_file_identity(self):
         """Metadata checks alone must not admit bytes that differ from the published digest."""
@@ -704,8 +692,6 @@ class WorkerHandoffTests(unittest.TestCase):
                     self.run_workflow("prepare", "1", "--facts", str(path))
             route.assert_not_called()
         path.write_text(json.dumps(value))
-        with self.assertRaisesRegex(AgentBoxError, "requires delegated worker"):
-            self.run_workflow("prepare", "1", "--execution", "direct", "--facts", str(path))
         for role in ("scout", "reviewer"):
             with self.assertRaisesRegex(AgentBoxError, "only available for delegated workers"):
                 self.run_workflow("prepare", "1", "--role", role, "--facts", str(path))
@@ -861,24 +847,26 @@ class WorkerHandoffTests(unittest.TestCase):
             self.assertEqual(workflow.read_evidence(self.root, self.task)["worker"]["route"], result["route"])
             self.assertEqual(self.task.labels, [])
 
-    def test_auto_requires_an_explicit_choice_and_reason_before_routing(self):
+    def test_auto_requires_a_reason_for_either_choice_before_routing(self):
         """Auto is a coordinator decision, never inferred from a model or tier."""
-        for flags in ([], ["--execution", "direct"], ["--reason", "Small edit"]):
-            with self.subTest(flags=flags), patch.object(workflow, "route") as route:
-                with self.assertRaisesRegex(AgentBoxError, "Auto worker execution requires"):
-                    workflow.dispatch(workflow.parser().parse_args(["prepare", "1", "--primary", "codex", *flags]))
+        for argv in (["prepare", "1", "--primary", "codex", "--brief", str(self.review_brief)],
+                     ["writer", "1", "--provider", "codex"]):
+            with self.subTest(command=argv[0]), patch.object(workflow, "route") as route:
+                with self.assertRaisesRegex(AgentBoxError, "Auto worker execution requires --reason"):
+                    workflow.dispatch(workflow.parser().parse_args(argv))
                 route.assert_not_called()
         self.assertEqual(workflow.read_evidence(self.root, self.task), {})
 
     def test_forced_policy_rejects_contradiction_and_needs_no_auto_reason(self):
         """Forced execution is authoritative before any provider selection."""
-        for policy, contrary in (("direct", "delegated"), ("delegated", "direct")):
+        prepare = ["prepare", "1", "--primary", "codex", "--brief", str(self.review_brief)]
+        writer = ["writer", "1", "--provider", "codex"]
+        for policy, contrary, allowed in (("direct", prepare, writer), ("delegated", writer, prepare)):
             workflow.evidence_path(self.root, self.task).unlink(missing_ok=True)
             self.config.workflow.worker.execution = policy
-            with self.assertRaisesRegex(AgentBoxError, "rejects --execution"):
-                self.run_workflow("prepare", "1", "--primary", "codex", "--execution", contrary)
-            args = workflow.parser().parse_args(["prepare", "1", "--primary", "codex", "--brief", str(self.review_brief)])
-            result = workflow.dispatch(args)
+            with self.assertRaisesRegex(AgentBoxError, f"policy {policy} rejects"):
+                workflow.dispatch(workflow.parser().parse_args(contrary))
+            result = workflow.dispatch(workflow.parser().parse_args(allowed))
             self.assertEqual(result["execution"]["choice"], policy)
             self.assertTrue(result["execution"]["reason"])
 
@@ -894,41 +882,47 @@ class WorkerHandoffTests(unittest.TestCase):
                 self.report_back((prepared["scope"], token))
             self.assertEqual(workflow.evidence_path(self.root, self.task).read_bytes(), before)
 
-    def test_direct_bypasses_tiers_and_override_and_binds_session(self):
-        """A tier and global override must not switch the coordinator's active model."""
-        self.config.workflow.worker.override.scope = "all"
-        with patch.object(workflow, "route", side_effect=AssertionError("routed direct work")):
-            result = self.run_workflow("prepare", "1", "--primary", "codex", "--execution", "direct",
-                                       "--session-model", "session", "--session-effort", "high")
-        self.assertEqual(result["action"], "work-in-current-session")
-        self.assertEqual(result["route"]["model"], "session")
-        self.assertEqual(result["execution"]["model_source"], "active-session")
+    def test_direct_work_survives_requirement_edits_and_early_commits(self):
+        """The coordinator's own edits carry no order that task-text edits or a commit could strand.
 
-    def test_direct_still_rejects_the_scout_only_tier(self):
-        """Bypassing model routing must not bypass the worker/scout role boundary."""
-        self.task.labels = []
-        with patch.object(workflow, "route", side_effect=AssertionError("routed direct work")):
-            with self.assertRaisesRegex(AgentBoxError, "Tier 0 is reserved for scouts"):
-                self.run_workflow("prepare", "1", "--primary", "codex", "--execution", "direct",
-                                  "--tier", "0")
+        Binding direct work to the requirements and HEAD of a start point refused
+        the coordinator who clarified the task or committed before reporting,
+        although validation and review on the committed scope were the acceptance.
+        """
+        self.config.workflow.review.policy = "always"
+        recorded = self.run_workflow("writer", "1", "--provider", "codex", "--reason", "Small bounded edit")
+        self.assertEqual(recorded["execution"], {"policy": "auto", "choice": "direct",
+                                                 "reason": "Small bounded edit", "model_source": "active-session"})
+        (self.root / "change.py").write_text("value = 1\n")
+        self.task.description += "\n- [ ] clarified requirement"
+        self.run_workflow("writer", "1", "--provider", "codex", "--reason", "Small bounded edit")
+        gw.git(self.root, "add", ".")
+        gw.git(self.root, "commit", "-m", "direct work")
+        self.assertEqual(self.run_workflow("validate", "1", "--", "true")["validation"]["exit"], 0)
+        review = self.run_workflow("prepare", "1", "--role", "reviewer", "--primary", "codex",
+                                   "--brief", str(self.review_brief))
+        self.assertTrue(review["delegate_handoff"])
+        self.assertEqual(workflow.read_evidence(self.root, self.task)["validation"]["exit"], 0)
+        self.assertEqual(self.run_workflow("inspect", "1")["execution"],
+                         {**recorded["execution"], "status": "direct"})
+        self.assertEqual(workflow.read_evidence(self.root, self.task)["writer"], "codex")
 
-    def test_escalation_requires_clean_checkpoint_and_retires_old_descriptor(self):
-        """Escalation preserves dirty edits and only replaces a direct assignment at a clean checkpoint."""
-        direct = self.run_workflow("prepare", "1", "--primary", "codex", "--execution", "direct")
+    def test_escalation_to_delegation_needs_a_clean_checkpoint(self):
+        """Escalation preserves dirty edits; a prepared delegation then cannot be taken back as direct work."""
+        self.run_workflow("writer", "1", "--provider", "codex", "--reason", "Small bounded edit")
         before = workflow.evidence_path(self.root, self.task).read_bytes()
         (self.root / "change.py").write_text("value = 1\n")
         with patch.object(workflow, "route") as route:
-            with self.assertRaisesRegex(AgentBoxError, "Cannot escalate direct to delegated with a dirty worktree"):
-                self.run_workflow("prepare", "1", "--primary", "codex", "--execution", "delegated")
+            with self.assertRaises(AgentBoxError):
+                self.run_workflow("prepare", "1", "--primary", "codex")
             route.assert_not_called()
         self.assertEqual(workflow.evidence_path(self.root, self.task).read_bytes(), before)
+        self.assertEqual((self.root / "change.py").read_text(), "value = 1\n")
         gw.git(self.root, "add", ".")
         gw.git(self.root, "commit", "-m", "coordinator checkpoint")
-        delegated = self.run_workflow("prepare", "1", "--primary", "codex", "--execution", "delegated")
-        with self.assertRaisesRegex(AgentBoxError, "stale"):
-            self.report_back((direct["scope"], direct["handoff"]))
-        with self.assertRaisesRegex(AgentBoxError, "cannot transition"):
-            self.run_workflow("prepare", "1", "--primary", "codex", "--execution", "direct")
+        delegated = self.run_workflow("prepare", "1", "--primary", "codex")
+        with self.assertRaisesRegex(AgentBoxError, "still prepared"):
+            self.run_workflow("writer", "1", "--provider", "codex", "--reason", "Take it back")
         with self.assertRaisesRegex(AgentBoxError, "active worker"):
             self.run_workflow("prepare", "1", "--primary", "codex")
         self.report_back((delegated["scope"], delegated["handoff"]))
@@ -941,9 +935,9 @@ class WorkerHandoffTests(unittest.TestCase):
         self.config.workflow.worker.execution = "direct"
         saved = workflow.read_evidence(self.root, self.task)
         before = workflow.evidence_path(self.root, self.task).read_bytes()
-        with self.assertRaisesRegex(AgentBoxError, "cannot transition"):
-            self.run_workflow("prepare", "1", "--primary", "codex", "--execution", "direct")
-        with self.assertRaisesRegex(AgentBoxError, "active worker"):
+        with self.assertRaisesRegex(AgentBoxError, "still prepared"):
+            self.run_workflow("writer", "1", "--provider", "codex")
+        with self.assertRaisesRegex(AgentBoxError, "rejects delegated work"):
             self.run_workflow("prepare", "1", "--primary", "codex")
         self.assertEqual(workflow.evidence_path(self.root, self.task).read_bytes(), before)
         self.assertEqual(saved["execution"]["descriptor"]["execution"], prepared["execution"])
@@ -956,11 +950,9 @@ class WorkerHandoffTests(unittest.TestCase):
         gw.git(self.root, "add", ".")
         gw.git(self.root, "commit", "-m", "coordinator accepts completed work")
         self.config.workflow.worker.execution = "direct"
-        direct = self.run_workflow("prepare", "1", "--primary", "codex", "--execution", "direct")
+        direct = self.run_workflow("writer", "1", "--provider", "codex")
         self.assertEqual(direct["execution"]["policy"], "direct")
-        self.assertEqual(direct["action"], "work-in-current-session")
-        self.run_workflow("report", "1", "--scope", direct["scope"], "--handoff", direct["handoff"],
-                          "--provider", "codex", "--session-inherited", "--file", str(self.report))
+        self.assertEqual(direct["execution"]["choice"], "direct")
         self.config.workflow.worker.execution = "delegated"
         delegated = self.run_workflow("prepare", "1", "--primary", "codex")
         self.assertEqual(delegated["execution"]["policy"], "delegated")
@@ -1104,12 +1096,10 @@ class WorkerHandoffTests(unittest.TestCase):
         args = workflow.parser().parse_args(["prepare", "1", "--abort"])
         with self.assertRaisesRegex(AgentBoxError, "--reason"):
             workflow.dispatch(args)
-        with self.assertRaisesRegex(AgentBoxError, "--execution"):
-            self.run_workflow("prepare", "1", "--abort", "--reason", "Wrong shape", "--execution", "direct")
 
     def test_cancelling_a_delegated_order_removes_its_prepared_input(self):
         """A cancelled order leaves no read-only package behind, as failure paths do not either."""
-        prepared = self.run_workflow("prepare", "1", "--primary", "codex", "--execution", "delegated",
+        prepared = self.run_workflow("prepare", "1", "--primary", "codex",
                                      "--reason", "Separate assignment", "--brief", str(self.review_brief))
         path = self.delegation_input(prepared)
         self.assertTrue(path.is_file())
@@ -1150,40 +1140,39 @@ class WorkerHandoffTests(unittest.TestCase):
         """Late verdicts cannot restore PASS after new work, and attempts stay spent."""
         self.config.workflow.review.policy = "always"
         for backend in ("native", "managed"):
-            for choice in ("direct", "delegated"):
-                with self.subTest(backend=backend, choice=choice):
-                    workflow.evidence_path(self.root, self.task).unlink(missing_ok=True)
-                    self.run_workflow("review-budget", "1", "--limit", "10", "--reason", "More attempts approved")
-                    prepared = self.run_workflow("prepare", "1", "--role", "reviewer", "--primary", "codex",
-                                                 "--brief", str(self.review_brief))
-                    before = workflow.read_review_state(self.root, BINDING, self.task)
+            with self.subTest(backend=backend):
+                workflow.evidence_path(self.root, self.task).unlink(missing_ok=True)
+                self.run_workflow("review-budget", "1", "--limit", "10", "--reason", "More attempts approved")
+                prepared = self.run_workflow("prepare", "1", "--role", "reviewer", "--primary", "codex",
+                                             "--brief", str(self.review_brief))
+                before = workflow.read_review_state(self.root, BINDING, self.task)
 
-                    def publish(*args, **kwargs):
-                        saved = workflow.read_evidence(self.root, self.task)
-                        saved.update(validation={"exit": 0}, review={"verdict": "PASS"},
-                                     human_acceptance={"reason": "Approved"}, local_acceptance={"accepted": True})
-                        workflow.save_evidence(self.root, self.task, saved)
-                        self.run_workflow("prepare", "1", "--primary", "codex", "--execution", choice)
-                        self.assertEqual(workflow.read_review_state(self.root, BINDING, self.task),
-                                         {key: value for key, value in before.items()
-                                          if key not in ("pending", "pending_backend")})
-                        saved = workflow.read_evidence(self.root, self.task)
-                        for key in ("validation", "review", "human_acceptance", "local_acceptance"):
-                            self.assertNotIn(key, saved)
-                        return {"verdict": "PASS", "summary": "Late review", "findings": []}
+                def publish(*args, **kwargs):
+                    saved = workflow.read_evidence(self.root, self.task)
+                    saved.update(validation={"exit": 0}, review={"verdict": "PASS"},
+                                 human_acceptance={"reason": "Approved"}, local_acceptance={"accepted": True})
+                    workflow.save_evidence(self.root, self.task, saved)
+                    self.run_workflow("prepare", "1", "--primary", "codex")
+                    self.assertEqual(workflow.read_review_state(self.root, BINDING, self.task),
+                                     {key: value for key, value in before.items()
+                                      if key not in ("pending", "pending_backend")})
+                    saved = workflow.read_evidence(self.root, self.task)
+                    for key in ("validation", "review", "human_acceptance", "local_acceptance"):
+                        self.assertNotIn(key, saved)
+                    return {"verdict": "PASS", "summary": "Late review", "findings": []}
 
-                    if backend == "native":
-                        self.report.write_text(json.dumps(publish()))
-                        result = self.run_workflow("report", "1", "--role", "reviewer", "--provider", "claude",
-                                              "--model", "m", "--effort", "high", "--fresh-context",
-                                              "--scope", prepared["scope"], "--handoff", prepared["handoff"],
-                                              "--file", str(self.report))
-                    else:
-                        with patch.object(workflow, "run", side_effect=publish):
-                            result = self.managed_fallback(prepared)
-                    self.assertEqual(result["reconciliation"]["status"], "superseded")
-                    self.assertTrue(Path(result["result_path"]).exists())
-                    self.assertNotIn("review", workflow.read_evidence(self.root, self.task))
+                if backend == "native":
+                    self.report.write_text(json.dumps(publish()))
+                    result = self.run_workflow("report", "1", "--role", "reviewer", "--provider", "claude",
+                                               "--model", "m", "--effort", "high", "--fresh-context",
+                                               "--scope", prepared["scope"], "--handoff", prepared["handoff"],
+                                               "--file", str(self.report))
+                else:
+                    with patch.object(workflow, "run", side_effect=publish):
+                        result = self.managed_fallback(prepared)
+                self.assertEqual(result["reconciliation"]["status"], "superseded")
+                self.assertTrue(Path(result["result_path"]).exists())
+                self.assertNotIn("review", workflow.read_evidence(self.root, self.task))
 
     def test_managed_failure_preserves_dirty_edits_and_refuses_retry(self):
         """A failed provider's edits require coordinator inspection and a clean checkpoint."""
@@ -1319,12 +1308,10 @@ class WorkerHandoffTests(unittest.TestCase):
                         result = self.run_workflow(*argv)
                     route = result["route"]
                     self.assertEqual((route["model"], route["tier"]), (provider + "-" + expected, card or explicit))
-                    if command == "prepare" or expected == "session":
+                    if command == "prepare":
                         run.assert_not_called()
                     else:
                         self.assertEqual(run.call_args.args[0]["model"], route["model"])
-                    if expected == "session":
-                        self.assertEqual(result["action"], "work-in-current-session")
                     if expected == "global":
                         self.assertEqual(route["effort"], "default")
                         if command == "prepare":
@@ -1405,52 +1392,6 @@ class WorkerHandoffTests(unittest.TestCase):
                         self.assertNotIn("--effort", cmd)
                         self.assertFalse(any("model_reasoning_effort=" in arg for arg in cmd))
                     self.assertEqual(result["report"]["verdict"], "PASS")
-
-    def test_untiered_worker_preserves_session_without_launch_or_fabricated_receipt(self):
-        """No tier means keep the active model, even when matrices cannot select it."""
-        self.task.labels = ["product"]
-        fingerprint = workflow.scope(self.root, "main", [self.task])
-        workflow.save_evidence(self.root, self.task, {
-            "scope": fingerprint, "validation": {"exit": 0}, "review": {"verdict": "PASS"}})
-        brief = Path(self.directory.name) / "brief.md"
-        brief.write_text("Implement acceptance")
-        with patch.object(workflow, "route", side_effect=AssertionError("matrix consulted")), \
-             patch.object(workflow, "run", side_effect=AssertionError("provider launched")):
-            for command in ("prepare", "run"):
-                workflow.evidence_path(self.root, self.task).unlink(missing_ok=True)
-                extra = ["--brief", str(brief)] if command == "run" else []
-                result = self.run_workflow(command, "1", "--primary", "codex", *extra)
-                self.assertEqual(result["action"], "work-in-current-session")
-                self.assertEqual((result["route"]["model"], result["route"]["effort"]), (None, None))
-                self.assertNotIn("report", result)
-                self.assertNotIn("native_profile", result["route"])
-        saved = workflow.read_evidence(self.root, self.task)
-        self.assertEqual(saved["writer"], "codex")
-        self.assertNotIn("validation", saved)
-        self.assertNotIn("review", saved)
-        self.assertNotIn("worker", saved)
-        self.assertEqual(self.task.labels, ["product"])
-        self.adapter.update.assert_not_called()
-        self.adapter.set_state.assert_not_called()
-
-    def test_untiered_worker_instructions_keep_direct_work_with_or_without_brief(self):
-        """A supplied brief must not turn current-session instructions into a delegate launch."""
-        self.task.labels = []
-        for command, with_brief in (("prepare", False), ("prepare", True), ("run", True)):
-            with self.subTest(command=command, with_brief=with_brief):
-                workflow.evidence_path(self.root, self.task).unlink(missing_ok=True)
-                extra = ["--brief", str(self.review_brief)] if with_brief else []
-                result = self.run_workflow(command, "1", "--primary", "codex", *extra)
-                self.assertEqual(result["action"], "work-in-current-session")
-                self.assertIn("Implement in the active session", result["instructions"])
-                self.assertIn("Read repository instructions and follow task acceptance", result["instructions"])
-                self.assertNotIn("delegate_handoff", result["instructions"])
-                self.assertNotIn("Before delegating", result["instructions"])
-                self.assertNotIn("fork_turns", result["instructions"])
-                self.assertEqual(result["context_policy"], workflow.context_policy())
-                self.assertIn("--session-inherited", result["report_command"])
-                self.assertTrue(result["handoff"])
-                self.assertIsNone(result["delegate_handoff"])
 
     def test_untiered_worker_still_requires_owned_doing_task(self):
         """Session inheritance cannot bypass ownership before editing code."""
@@ -1534,7 +1475,7 @@ class WorkerHandoffTests(unittest.TestCase):
         for flags in (["--session-model", "session-only"], ["--session-effort", "high"]):
             with self.subTest(flags=flags), self.assertRaisesRegex(AgentBoxError, "Supply both"):
                 self.run_workflow("prepare", "1", "--primary", "codex", *flags)
-        args = workflow.parser().parse_args(["prepare", "1", "--execution", "direct", "--reason", "Session fixture"])
+        args = workflow.parser().parse_args(["prepare", "1", "--reason", "Session fixture", "--brief", str(self.review_brief)])
         args.primary = None
         with self.assertRaisesRegex(AgentBoxError, "active session provider"):
             workflow.dispatch(args)
@@ -2517,7 +2458,7 @@ class SubtaskWorkerHandoffTests(unittest.TestCase):
             self.addCleanup(item.stop)
 
     def prepare(self):
-        prepared = workflow.dispatch(workflow.parser().parse_args(["prepare", "2", "--primary", "codex", "--execution", "delegated", "--reason", "Subtask fixture", "--brief", str(self.report)]))
+        prepared = workflow.dispatch(workflow.parser().parse_args(["prepare", "2", "--primary", "codex", "--reason", "Subtask fixture", "--brief", str(self.report)]))
         return prepared["scope"], prepared["handoff"]
 
     def report_back(self, handed):

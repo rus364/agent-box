@@ -17,9 +17,12 @@ from test_workflow_handoff import BINDING, repository, selected_route
 
 
 def completed_worker(case, task):
-    """Retire acceptance through an actual current-session assignment and report."""
-    prepared = case.dispatch(["prepare", task.id, "--primary", "codex",
-                              "--execution", "direct", "--reason", "Inspect current work"])
+    """Retire acceptance through an actual delegated assignment and report."""
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".md") as brief:
+        brief.write("Inspect current work")
+        brief.flush()
+        prepared = case.dispatch(["prepare", task.id, "--primary", "codex",
+                                  "--reason", "Inspect current work", "--brief", brief.name])
     with tempfile.NamedTemporaryFile(mode="w", suffix=".json") as report:
         report.write('{"status":"completed","summary":"Inspected current work","evidence":[]}')
         report.flush()

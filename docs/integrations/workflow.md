@@ -143,18 +143,24 @@ for facts, scouting and structuring; task difficulty remains 1-3, represented in
 Vikunja by one `ab:tier:1`, `ab:tier:2` or `ab:tier:3` label. A user-set task tier
 wins over a coordinator suggestion. Each subtask may have its own explicit tier. Without a task tier, no assessment or label is required for readiness, audit, claim, validation, review or completion; malformed/conflicting explicit labels remain invalid. An explicit `--tier` invocation override selects configured routing when the card has no tier and never changes its labels.
 
-Worker execution is decided before provider/model routing. In auto policy, use
-`agent-box workflow prepare TASK --primary PROVIDER --execution direct --reason "Small bounded edit"`
-or `agent-box workflow prepare TASK --primary PROVIDER --execution delegated --reason "Separate implementation assignment" --brief /tmp/brief.md`.
-Forced direct/delegated policies determine the choice and reject contradictory flags.
-The reason is one non-empty line of at most 500 characters. Direct returns
-`action: work-in-current-session`, preserving the active provider/model/effort even
-when the task has a tier or a global worker override. Supply verified
-`--session-model MODEL --session-effort EFFORT` together, or inherit unknown settings.
-Direct never consults routing counters, tier matrices or profiles.
+Worker execution is decided before provider/model routing. Direct work is the
+coordinator's own edit in the active session and creates no order, descriptor or
+report: edit, commit, record
+`agent-box workflow writer TASK --provider ACTUAL --reason "Small bounded edit"`,
+then continue to `validate` and review. Editing the task text or committing
+before recording blocks nothing; validation and review of the committed scope
+are the acceptance. Direct keeps the active provider/model/effort even when the
+task has a tier or a global worker override, and never consults routing counters,
+tier matrices or profiles. Delegation is prepared with
+`agent-box workflow prepare TASK --primary PROVIDER --reason "Separate implementation assignment" --brief /tmp/brief.md`;
+for an untiered delegation supply verified `--session-model MODEL --session-effort EFFORT`
+together, or inherit unknown settings. In auto policy both commands require the
+reason, one non-empty line of at most 500 characters; forced direct/delegated
+policies supply it and refuse the other command.
 
-The durable descriptor binds policy, effective choice, reason, task scope and route.
-`workflow inspect TASK` exposes this execution evidence and its model source:
+A delegation's durable descriptor binds policy, effective choice, reason, task scope
+and route. `workflow inspect TASK` exposes the latest execution evidence, the direct
+record or the descriptor, and its model source:
 `active-session`, `workflow.worker.override.models`, or `workflow.tiers.N`.
 Later configuration changes cannot reschedule prepared work. Native delegation
 uses the complete bounded `delegate_handoff`; managed execution uses the returned
@@ -162,11 +168,11 @@ uses the complete bounded `delegate_handoff`; managed execution uses the returne
 (repeat a supplied `--tier`). It consumes the same assignment and route once.
 Never replace an active delegated worker; late, repeated or mismatched reports fail.
 
-Auto permits only direct-to-delegated escalation. Before edits or after a coordinator
-checkpoint commit, repeat prepare with `--execution delegated --reason TEXT --brief FILE`.
-Dirty escalation fails with: `Cannot escalate direct to delegated with a dirty worktree; commit a coordinator checkpoint, then retry. No files were changed`.
-It never stashes, resets or adopts dirty files. Escalation retires the direct descriptor
-and validation/review acceptance. Delegated-to-direct transition is rejected.
+Direct work escalates to delegation at a clean checkpoint: commit the edits, then
+prepare. Preparation on a dirty tree fails without changing files; it never
+stashes, resets or adopts them, and it retires validation/review acceptance.
+While a delegation is prepared, `workflow writer` refuses direct work until the
+report is ingested or the order is cancelled.
 
 Every `prepare` result also returns `report_command`, an exact role/tier/scope
 template for native result ingestion. Replace the ACTUAL route values, descriptor
@@ -358,7 +364,7 @@ findings. A worker failure after possible side effects requires reconciliation.
 
 ```bash
 agent-box workflow begin TASK --primary codex
-agent-box workflow prepare TASK --role worker --primary codex --execution delegated --reason "Bounded implementation" --brief /tmp/brief.md
+agent-box workflow prepare TASK --role worker --primary codex --reason "Bounded implementation" --brief /tmp/brief.md
 agent-box workflow run TASK --handoff DESCRIPTOR --brief /tmp/brief.md
 # The primary ingests the report, then checks evidence and commits the resulting work.
 agent-box workflow validate TASK -- python3 -m unittest discover -s tests
@@ -366,8 +372,8 @@ agent-box workflow review TASK --primary codex --brief /tmp/review-brief.md
 agent-box workflow finish TASK
 ```
 
-The report is accepted only at the HEAD, branch and integration tip the order was
-prepared at, and ingesting it clears the validation and review recorded for the
+A delegated worker's report is accepted only at the HEAD, branch, integration tip
+and requirements the order was prepared at, and ingesting it clears the validation and review recorded for the
 scope, so `report` precedes the commit and both precede `validate`. A prepared
 order whose HEAD moved cannot be reported: `workflow validate` refuses it before
 running the command and names both exits. `agent-box workflow prepare TASK --abort

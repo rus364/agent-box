@@ -762,9 +762,10 @@ def inspect(root, binding, adapter, task, config):
               "head": head, "scope": None, "configuration": configuration_summary(config),
               "acceptance": {"available": not unavailable, "reasons": unavailable},
               "review": review, "validation": None,
-              "execution": ({**execution["descriptor"]["execution"], "status": execution["status"],
-                             "scope": execution["descriptor"]["scope"], "route": execution["descriptor"]["route"]}
-                            if execution else None),
+              "execution": (None if not execution else
+                            {**execution["execution"], "status": execution["status"]} if "execution" in execution else
+                            {**execution["descriptor"]["execution"], "status": execution["status"],
+                             "scope": execution["descriptor"]["scope"], "route": execution["descriptor"]["route"]}),
               "execution_policy": config.workflow.worker.execution}
     if unavailable:
         if changes:
@@ -1409,7 +1410,8 @@ def parser():
     for name in ("begin", "inspect", "approve", "prepare", "run", "review", "review-result", "review-budget", "validate", "report", "finish", "pr", "land", "writer"):
         description = {
             "inspect": "Read branch, acceptance availability, review budget and next step; works before begin or with uncommitted files",
-            "prepare": "Choose direct/delegated worker execution before routing; auto requires --execution and --reason. Prepare on a clean task branch; --abort cancels a prepared order with --reason",
+            "prepare": "Prepare a delegated worker, scout or reviewer on a clean task branch; auto worker policy requires --reason. --abort cancels a prepared worker order with --reason",
+            "writer": "Record the coordinator's own direct work and provider; auto policy requires --reason. No preparation or report",
             "review": "Apply review policy to the clean task scope and dispatch a required review",
             "review-result": "Read a private completed result or retry reconciliation without a model call or attempt",
         }.get(name)
@@ -1421,6 +1423,7 @@ def parser():
             cmd.add_argument("--reconcile", action="store_true", help="Apply a still-pending result to its original scope")
         if name == "writer":
             cmd.add_argument("--provider", choices=("codex", "claude"), required=True)
+            cmd.add_argument("--reason", help="Compact reason for choosing direct work; required in auto policy")
         if name == "review-budget":
             cmd.add_argument("--limit", type=int, required=True, help="Absolute task review attempt ceiling, including attempts already used")
             cmd.add_argument("--reason", required=True, help="The user's explicit budget decision")
@@ -1430,8 +1433,7 @@ def parser():
             cmd.add_argument("--scope", required=True, help="Exact scope returned by workflow inspect")
             cmd.add_argument("--reason", required=True, help="The user's explicit acceptance, recorded by the coordinator")
         if name in ("prepare", "run"):
-            cmd.add_argument("--execution", choices=("direct", "delegated"), help="Worker choice; required with --reason in auto policy")
-            cmd.add_argument("--reason", help="Compact reason for the worker execution choice")
+            cmd.add_argument("--reason", help="Compact reason for delegating the worker; required in auto policy")
         if name == "prepare":
             cmd.add_argument("--abort", action="store_true", help="Cancel the prepared worker execution; requires --reason and records why no report can be accepted")
         if name in ("prepare", "run"):
@@ -1614,6 +1616,46 @@ def finish_child(root, config, adapter, task, parent, info, branch, tasks):
     return result
 
 
+def execution_reason(policy, reason, choice):
+    """Auto makes the coordinator state why; a forced policy is its own reason."""
+    reason = (reason or "").strip()
+    if policy == "auto":
+        if not reason:
+            raise AgentBoxError(f"Auto worker execution requires --reason TEXT for {choice} work")
+    elif policy != choice:
+        raise AgentBoxError(f"Worker execution policy {policy} rejects {choice} work")
+    reason = reason or f"Configured {policy} policy"
+    if len(reason) > 500 or "\n" in reason:
+        raise AgentBoxError("Execution reason must be one compact line of at most 500 characters")
+    return reason
+
+
+def record_direct_writer(args, root, adapter, task, config):
+    """Direct work is the coordinator's own edit, so it records a decision, not an order.
+
+    A report binds a delegate to the requirements, HEAD and scope it was given;
+    the coordinator in the same session is the author and reads the current
+    requirements, so the binding protected nothing and blocked edits to the task
+    text and commits before a report. Validation and review on the committed
+    scope remain the acceptance.
+    """
+    if task.state != "Doing" or task.assignees != [str(adapter.identity()["id"])]:
+        raise AgentBoxError("Writer recording requires the current user’s Doing task")
+    policy = config.workflow.worker.execution
+    reason = execution_reason(policy, args.reason, "direct")
+    with lock(root, "review-budget"), lock(root, "work"):
+        saved = read_evidence(root, task)
+        previous = reconcile_abandoned_managed(root, task, saved)
+        if previous and previous["status"] == "prepared":
+            raise AgentBoxError("A delegated worker execution is still prepared; report it or cancel it with "
+                                f"agent-box workflow prepare {task.id} --abort --reason TEXT before direct work")
+        decision = {"policy": policy, "choice": "direct", "reason": reason, "model_source": "active-session"}
+        saved["writer"] = args.provider
+        saved["execution"] = {"status": "direct", "execution": decision}
+        save_evidence(root, task, saved)
+    return {"task": task.id, "writer": args.provider, "execution": decision}
+
+
 def worker_dispatch(args, root, binding, adapter, task, config):
     """Bind scheduling before routing; an outstanding worker cannot be replaced."""
     check_worker_assignment(adapter, task)
@@ -1626,8 +1668,6 @@ def worker_dispatch(args, root, binding, adapter, task, config):
     saved = read_evidence(root, task)
     previous = reconcile_abandoned_managed(root, task, saved)
     if getattr(args, "abort", False):
-        if getattr(args, "execution", None):
-            raise AgentBoxError("Cancelling a prepared worker execution takes --reason, not --execution")
         return abort_worker_execution(root, task, previous, getattr(args, "reason", "") or "")
     handed = getattr(args, "handoff", None)
     if args.command == "report" or handed:
@@ -1642,8 +1682,8 @@ def worker_dispatch(args, root, binding, adapter, task, config):
         if (not previous or previous.get("descriptor") != descriptor
                 or previous.get("status") != "prepared"):
             raise AgentBoxError("Worker descriptor is stale, already started/reported, or execution/route mismatched")
-        if getattr(args, "execution", None) or getattr(args, "reason", None):
-            raise AgentBoxError("Prepared execution is bound; omit --execution and --reason")
+        if getattr(args, "reason", None):
+            raise AgentBoxError("Prepared execution is bound; omit --reason")
         for key, description in (("branch", "the branch changed"), ("head", "HEAD moved"),
                                  ("integration", "the branch this work integrates into moved")):
             if identity[key] != descriptor[key]:
@@ -1652,23 +1692,19 @@ def worker_dispatch(args, root, binding, adapter, task, config):
             raise AgentBoxError("Worker requirements changed; report is stale")
         selected = descriptor["route"]
         decision = descriptor["execution"]
-        prompt = None
-        if decision["choice"] == "delegated":
+        try:
+            prompt = read_delegation_input(root, descriptor)
+        except (AgentBoxError, OSError):
+            # Retire before cleanup: a replaced or unknown package must be
+            # preserved without stranding the task behind a prepared worker.
+            previous["status"] = "failed"
             try:
-                prompt = read_delegation_input(root, descriptor)
-            except (AgentBoxError, OSError):
-                # Retire before cleanup: a replaced or unknown package must be
-                # preserved without stranding the task behind a prepared worker.
-                previous["status"] = "failed"
-                try:
-                    save_evidence(root, task, saved)
-                finally:
-                    cleanup_delegation_input(root, descriptor)
-                raise
+                save_evidence(root, task, saved)
+            finally:
+                cleanup_delegation_input(root, descriptor)
+            raise
         if args.command == "report":
             output = native_output(args, selected, selected["tier"])
-        elif decision["choice"] == "direct":
-            raise AgentBoxError("Direct execution works in the current session; use the prepared report command")
         else:
             if selected["model"] is None or selected["effort"] is None:
                 raise AgentBoxError("Prepared inherited worker requires native execution; managed execution needs verified session model and effort at prepare")
@@ -1704,62 +1740,33 @@ def worker_dispatch(args, root, binding, adapter, task, config):
         save_evidence(root, task, saved)
         cleanup_delegation_input(root, descriptor)
         return {**output, "scope": fingerprint, "execution": decision}
-    active = previous and previous["status"] in ("prepared", "managed")
-    policy = previous["descriptor"]["execution"]["policy"] if active else config.workflow.worker.execution
-    choice = getattr(args, "execution", None)
-    reason = (getattr(args, "reason", None) or "").strip()
-    if policy == "auto":
-        if choice is None or not reason:
-            raise AgentBoxError("Auto worker execution requires --execution direct|delegated and --reason TEXT")
-    else:
-        if choice is not None and choice != policy:
-            raise AgentBoxError(f"Worker execution policy {policy} rejects --execution {choice}")
-        choice, reason = policy, reason or f"Configured {policy} policy"
-    if len(reason) > 500 or "\n" in reason:
-        raise AgentBoxError("Execution reason must be one compact line of at most 500 characters")
-    if active:
-        old = previous["descriptor"]["execution"]
-        if old["choice"] == "delegated" and choice == "direct":
-            raise AgentBoxError("Worker execution cannot transition from delegated to direct")
-        escalating = old["choice"] == "direct" and choice == "delegated" and policy == "auto"
-        if not escalating:
-            raise AgentBoxError("An active worker execution already exists; use its descriptor, do not replace it")
-        if escalating and not gw._worktree_clean(root):
-            raise AgentBoxError("Cannot escalate direct to delegated with a dirty worktree; commit a coordinator checkpoint, then retry. No files were changed")
+    policy = config.workflow.worker.execution
+    reason = execution_reason(policy, getattr(args, "reason", None), "delegated")
+    if previous and previous["status"] in ("prepared", "managed"):
+        raise AgentBoxError("An active worker execution already exists; use its descriptor, do not replace it")
     fingerprint = scope(root, base, tasks)
     tier = delegation_tier(args, task, "worker")
     validate_role_tier("worker", tier)
     facts, facts_binding = read_facts(getattr(args, "facts", None), task, fingerprint)
-    if choice == "direct" and facts is not None:
-        raise AgentBoxError("--facts requires delegated worker execution")
-    if choice == "direct":
-        selected = session_route(args, "worker", config)
-        selected["tier"] = tier
-        model_source = "active-session"
-        prompt = None
-    else:
-        prompt = assignment_handoff(root, task, base, read_brief(args.brief), "worker", facts=facts)
-        selected = (session_route(args, "worker", config, delegated=True) if tier is None and not config.workflow.override_for("worker", tier)
-                    else route(config, "worker", tier, args.primary, saved.get("writer")))
-        model_source = ("active-session" if selected.get("mode") == "current-session" else
-                        "workflow.worker.override.models" if config.workflow.override_for("worker", tier) else
-                        f"workflow.tiers.{tier}")
-    if args.command == "run" and choice == "delegated" and selected["model"] is None:
+    prompt = assignment_handoff(root, task, base, read_brief(args.brief), "worker", facts=facts)
+    selected = (session_route(args, "worker", config, delegated=True) if tier is None and not config.workflow.override_for("worker", tier)
+                else route(config, "worker", tier, args.primary, saved.get("writer")))
+    model_source = ("active-session" if selected.get("mode") == "current-session" else
+                    "workflow.worker.override.models" if config.workflow.override_for("worker", tier) else
+                    f"workflow.tiers.{tier}")
+    if args.command == "run" and selected["model"] is None:
         raise AgentBoxError("Managed worker needs verified --session-model and --session-effort; use prepare for native inheritance")
-    decision = {"policy": policy, "choice": choice, "reason": reason, "model_source": model_source}
+    decision = {"policy": policy, "choice": "delegated", "reason": reason, "model_source": model_source}
     token = handoff_descriptor(identity, task, fingerprint, selected)
     descriptor = json.loads(base64.urlsafe_b64decode(token))
     descriptor["execution"] = decision
     descriptor["facts"] = facts_binding
-    token = (bind_delegation_input(root, descriptor, prompt) if choice == "delegated" else
-             base64.urlsafe_b64encode(json.dumps(descriptor, sort_keys=True).encode()).decode())
+    token = bind_delegation_input(root, descriptor, prompt)
     saved = evidence(root, task, fingerprint)
     for key in ("validation", "review", "human_acceptance", "local_acceptance"):
         saved.pop(key, None)
     saved["execution"] = {"descriptor": descriptor, "requirements": requirements(tasks),
                           "status": "prepared"}
-    if choice == "direct":
-        saved["writer"] = selected["provider"]
     # Dispatch holds review-budget through publication. Retire the round first
     # so even a failed evidence write cannot leave a late verdict admissible.
     try:
@@ -1778,31 +1785,29 @@ def worker_dispatch(args, root, binding, adapter, task, config):
     report += (["--session-inherited"] if selected["model"] is None else
                ["--model", "ACTUAL_MODEL", "--effort", "ACTUAL_EFFORT"])
     result = {"scope": fingerprint, "route": selected, "execution": decision, **scout_diagnostics(config),
-              "action": "work-in-current-session" if choice == "direct" else "delegate",
+              "action": "delegate",
               "task": {"id": task.id, "title": task.title, "state": task.state, "tier": task.tier},
               "base": base, "handoff": token, "report_command": shlex.join(report),
               "report_schema": report_schema("worker"), "context_policy": context_policy(),
-              "delegate_handoff": bootstrap("worker", descriptor["input"]) if choice == "delegated" else None,
-              "instructions": ("Implement in the active session without changing provider, model or effort. Read repository instructions and follow task acceptance. "
-                               if choice == "direct" else
-                               "Spawn a fresh worker with delegate_handoff as the complete initial message. "
-                               "Use an exact profile or explicit spawn parameters for provider/model/effort/fast without an overriding custom agent. Profile readiness is not live capability proof; "
-                               "unknown or unsupported required capabilities or effort=default require managed_command; fast=false preserves native inheritance. Honor managed_only and native_limitation. " + LAUNCH_CONTEXT + " ") +
+              "delegate_handoff": bootstrap("worker", descriptor["input"]),
+              "instructions": "Spawn a fresh worker with delegate_handoff as the complete initial message. "
+                              "Use an exact profile or explicit spawn parameters for provider/model/effort/fast without an overriding custom agent. Profile readiness is not live capability proof; "
+                              "unknown or unsupported required capabilities or effort=default require managed_command; fast=false preserves native inheritance. Honor managed_only and native_limitation. " + LAUNCH_CONTEXT + " "
                               "Report before committing: the report is accepted only at the prepared HEAD, and accepting it clears "
-                              "the validation and review recorded for this scope. " +
+                              "the validation and review recorded for this scope. "
                               "Return actual execution facts with report_command; permitted native fallback requires --fallback-reason TEXT."}
-    if choice == "delegated" and selected["model"] is None:
+    if selected["model"] is None:
         result["instructions"] += " Inherit the active session in a fresh native worker without a tier profile; unknown session settings cannot run managed."
-    if choice == "delegated" and selected["model"] is not None:
+    else:
         result["managed_command"] = shlex.join(["agent-box", "workflow", "run", task.id,
                                                 "--handoff", token, "--brief", args.brief])
         if getattr(args, "facts", None):
             result["managed_command"] += " --facts " + shlex.quote(args.facts)
         if tier is not None:
             result["managed_command"] += f" --tier {tier}"
-    if args.command == "run" and choice == "delegated":
+    if args.command == "run":
         args.handoff = token
-        args.execution = args.reason = None
+        args.reason = None
         return worker_dispatch(args, root, binding, adapter, task, config)
     return result
 
@@ -1923,13 +1928,7 @@ def dispatch(args):
             save_review_state(root, binding, task, state)
             return {"task": task.id, "review_budget": review_budget_summary(state, config.workflow.review.max_rounds)}
     if args.command == "writer":
-        if task.state != "Doing" or task.assignees != [str(adapter.identity()["id"])]:
-            raise AgentBoxError("Writer recording requires the current user’s Doing task")
-        with lock(root, "review-budget"):
-            saved = read_evidence(root, task)
-            saved["writer"] = args.provider
-            save_evidence(root, task, saved)
-        return {"task": task.id, "writer": args.provider}
+        return record_direct_writer(args, root, adapter, task, config)
     if args.command == "begin":
         with lock(root, "review-budget"), lock(root, "work"):
             return {**begin(root, adapter, task, args.resume), "configuration": configuration_summary(config)}
@@ -2121,12 +2120,11 @@ def dispatch(args):
                     " This inherited route cannot run managed without known session settings. Use native for this "
                     "reserved round; before a future round, verified active settings may be supplied with "
                     "--session-model MODEL --session-effort EFFORT. Never infer them from a tier or profile.")
-            if result.get("action") != "work-in-current-session":
-                result["instructions"] += " " + LAUNCH_CONTEXT
-                if result["delegate_handoff"] is None:
-                    result["instructions"] += ("Before delegating, supply --brief FILE with a compact English Goal/Acceptance/Validation, "
-                                               "bounded scope, relevant paths, decisions and limitations. Translate the current requirements "
-                                               "faithfully; do not paste task history or comments.")
+            result["instructions"] += " " + LAUNCH_CONTEXT
+            if result["delegate_handoff"] is None:
+                result["instructions"] += ("Before delegating, supply --brief FILE with a compact English Goal/Acceptance/Validation, "
+                                           "bounded scope, relevant paths, decisions and limitations. Translate the current requirements "
+                                           "faithfully; do not paste task history or comments.")
             if selected.get("managed_only"):
                 result["action"] = "managed-review"
                 result["managed_command"] = shlex.join([
