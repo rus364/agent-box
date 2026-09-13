@@ -232,8 +232,6 @@ environment restored. Prepared routes expose CLI, API name, model and an
 endpoint/catalog fingerprint; keys and key fingerprints are absent. Changed
 endpoints, deleted/disabled definitions and missing credentials fail before
 execution. Changing a prepared endpoint or catalog requires fresh preparation.
-Direct work records the API identity captured when the active session launched,
-even if the saved connection is later edited.
 
 `managed_only` routes return a managed command and refuse native reports. Owned
 native profiles are removed for external candidates when configuration is
