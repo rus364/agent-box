@@ -71,6 +71,23 @@ class AgentProfileTests(unittest.TestCase):
         self.assertEqual(tomllib.loads(body("codex", "worker", 1, spec))["model"],
                          "🚀 del\x7fmodel")
 
+    def test_a_model_without_a_toml_spelling_is_reported_not_written(self):
+        """A lone surrogate cannot reach a UTF-8 file at all.
+
+        A tier model arrives from JSON without a charset check, and the profile
+        write is strict UTF-8: the profile has to be reported as uninstalled
+        instead of raising out of `config apply`.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            codex, claude = Path(directory) / "codex", Path(directory) / "claude"
+            config = Config()
+            config.workflow.enabled = True
+            config.workflow.tiers["1"]["codex"] = {"model": "\ud83d", "effort": "high"}
+            messages = sync(config, codex, claude)
+        self.assertTrue(any("ab-worker-1.toml" in message and "TOML spelling" in message
+                            for message in messages), messages)
+        self.assertFalse((codex / "agents/ab-worker-1.toml").exists())
+
     def test_exact_models_are_installed_and_locally_edited_profiles_survive_disable(self):
         with tempfile.TemporaryDirectory() as directory:
             codex, claude = Path(directory) / "codex", Path(directory) / "claude"

@@ -5,7 +5,7 @@ from pathlib import Path
 
 from .atomicio import atomic_write_text
 from .delegation import profile_instructions
-from .external_config import toml_string
+from .external_config import has_toml_spelling, toml_string
 from .fast_mode import configuration_error, native_limitation
 
 ROLES = {"scout": (0, 1, 2), "worker": (1, 2, 3), "reviewer": (1, 2, 3)}
@@ -76,6 +76,12 @@ def sync(config, codex_home, claude_home):
                     if intact:
                         path.unlink()
                         marker.unlink()
+                    continue
+                if provider == "codex" and not has_toml_spelling(spec["model"]):
+                    # A lone surrogate has no TOML spelling and cannot be
+                    # written to a UTF-8 file at all: report it as a profile
+                    # that stays uninstalled rather than raise from the write.
+                    messages.append(f"{path.name}: the model has no TOML spelling; native profile not installed")
                     continue
                 directory.mkdir(parents=True, exist_ok=True)
                 content = content_for(provider, role, tier, spec)
