@@ -31,6 +31,59 @@ Default points at the selected external model. These catalogs are configured
 definitions, not live model discovery. A manual, unconfigured model has unknown
 context and conservative text-only Codex capabilities.
 
+## Native Codex options
+
+The Codex endpoint has two JSON objects with native Codex option names:
+
+- `provider_options` extends `model_providers.<id>`: query parameters, headers,
+  retries, timeouts and transport options.
+- `config` supplies session settings such as `web_search` and reasoning behavior.
+
+Both are editable in the configuration menu. For example, under a named
+connection's `codex` endpoint:
+
+```json
+{
+  "provider_options": {
+    "query_params": {"api-version": "YOUR_API_VERSION"},
+    "http_headers": {"X-Tenant": "YOUR_TENANT"},
+    "stream_idle_timeout_ms": 300000
+  },
+  "config": {
+    "web_search": "live"
+  }
+}
+```
+
+`query_params` adds URL parameters; `http_headers` sends HTTP headers. Session
+settings are interpreted by Codex, not appended to the URL. Use only options
+supported by the installed CLI and endpoint. Agent-box passes their native
+values without maintaining a second catalog of supported provider settings.
+Nested JSON objects represent native TOML tables; do not use dotted JSON keys.
+
+The URL, API key, selected model/catalog and credential store remain owned by
+agent-box. Native options cannot replace API/auth fields or enable Remote
+Control. Header values are moved into private per-process environment variables;
+`env_http_headers` may reference names supplied through endpoint `env` instead.
+Authentication headers cannot override the connection's API key. Use non-secret
+query parameters and session settings: these appear in CLI arguments. Put
+secrets in the API-key field, endpoint `env`, or header settings.
+
+Defaults are applied first, then endpoint `config`, then an explicit model's
+configured effort, then explicit CLI `-c`/workflow effort. Search defaults to
+`disabled`; use `config: {"web_search": "live"}` or the CLI's `--search` when the
+endpoint supports the native Responses search tool. A provider's website search
+feature alone does not establish API support. This setting cannot translate a
+provider-specific search protocol. Native `/model` changes do not restart the
+session or reapply endpoint settings.
+
+See the [Codex configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference)
+and the provider's integration guide, for example
+[Kimi with Codex](https://platform.kimi.ai/docs/guide/codex-kimi) or
+[Kimi with Claude Code](https://platform.kimi.ai/docs/guide/claude-code-kimi).
+Claude retains its native per-process `env` settings; the Codex option objects
+are specific to Codex.
+
 ## Model settings
 
 `models` is an object keyed by the model ID. Each entry accepts `display_name`,
@@ -143,9 +196,11 @@ would otherwise look like an option or command.
 ## Workflow
 
 In each Codex/Claude candidate under worker/scout tiers, reviewer tiers, or
-worker/reviewer model overrides, select **API provider**, then the model and
-effort. **Built-in API** retains the ordinary provider. An empty model disables
-that candidate. For example, a project may select this global connection:
+worker/reviewer model overrides, open **Model**. The single list includes
+built-in models and configured models from enabled API connections, labeled
+with their API. Selecting a row saves API and model together; project overrides
+pin both, and resetting the model restores inheritance for both. Custom IDs can
+be entered for any enabled API. An empty model disables that candidate. For example, a project may select this global connection:
 
 ```json
 {
@@ -203,7 +258,8 @@ No external proxy or custom CLI build is required by agent-box.
 subscription and external APIs. Start another `ext` process or use a managed
 workflow candidate to change API identity.
 
-External launches bypass agent-box Remote Control, do not start an RC
+External Codex launches use its ephemeral credential store, so they neither read
+nor delete the saved subscription login. External launches bypass agent-box Remote Control, do not start an RC
 app-server or acquire its slot, and reject explicit remote/session-reuse flags.
 Claude's external session settings also disable native RC startup. A normal
 session and an external process can coexist without changing the parent's
@@ -226,3 +282,11 @@ An additional interactive PTY run with a temporary home opened Claude's
 options, confirming the rendered settings and replacement picker were accepted.
 Unit tests verify catalog context/compact fields and env restoration; this smoke
 does not prove automatic compaction at the threshold or live DeepSeek behavior.
+
+Task 73 smoke used installed Codex 0.154.0 with temporary fake ChatGPT credentials
+and a loopback HTTP endpoint. The saved auth file stayed byte-identical; the
+Responses request carried the configured query parameter, environment-backed
+header and native `web_search` tool. The stub deliberately returned HTTP 400
+after capturing the request. An isolated PTY launch also stayed running without
+the login failure and preserved the same auth file. This proves startup/auth separation and request
+construction, not a model response, a completed search, or live provider support.

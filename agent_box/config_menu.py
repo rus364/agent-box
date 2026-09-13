@@ -145,7 +145,8 @@ MENU_GROUPS = {
 
 def menu_keys(data, path=()):
     ordered = [key for _, keys in MENU_GROUPS.get(path, ()) for key in keys if key in data]
-    return ordered + [key for key in data if key not in ordered]
+    return [key for key in ordered + [key for key in data if key not in ordered]
+            if not (key == 'api_provider' and _candidate_field((*path, key)))]
 
 
 def character_width(character):
@@ -187,7 +188,7 @@ def label_for(key, path=()):
 
 def json_field(path):
     return (path == ('env', 'set') or path[:1] == ('external_providers',)
-            and (len(path) == 4 and path[-1] == 'env'
+            and (len(path) == 4 and path[-1] in ('env', 'provider_options', 'config')
                  or len(path) == 6 and path[3] == 'models' and path[-1] in ('env', 'metadata')))
 
 
@@ -216,6 +217,8 @@ def help_for(path):
                 "supports_parallel_tool_calls": "Advertise parallel tool calls in the Codex model catalog.",
                 "supports_reasoning_summaries": "Advertise reasoning summaries in the Codex model catalog.",
                 "metadata": "Additional native Codex model metadata as JSON. Typed model fields cannot be overridden here; fields must be supported by your CLI.",
+                "provider_options": "Native Codex model-provider JSON: query_params, http_headers, env_http_headers, retries, timeouts, transport. URL/auth fields belong to agent-box. Header values travel through environment variables; use non-secret query parameters.",
+                "config": "Native Codex session JSON, for example {\"web_search\":\"live\"}. CLI overrides win; model effort defaults apply next. API/auth/catalog/Remote Control fields belong to agent-box. Use env or header settings for secrets, never literal secrets here.",
                 "env": "JSON object of per-process environment strings. Model values override endpoint values; typed effort/compact fields and explicit effort take priority. API/auth/RC ownership cannot be overridden. Values are masked and never placed in argv."}.get(path[-1], HELP["external_providers"])
     if len(path) == 3 and path[:2] == ("image", "tools"):
         return f"{IMAGE_TOOL_GROUP_HELP.get(path[-1], path[-1])}. Rebuild the workspace image to install or remove this group; browsing and saving this selection do not rebuild it."
@@ -270,7 +273,7 @@ class EditResult:
 def secret(path):
     return ("token" in path[-1] and path[-1] != 'auto_compact_token_limit'
             or path[-1] == "api_key" or path[0] == "env"
-            or json_field(path) and path[-1] == 'env')
+            or json_field(path) and path[-1] in ('env', 'provider_options'))
 
 
 def parse_value(text, current):
@@ -624,28 +627,34 @@ def edit(config, *, project=None):
         for part in path[:-1]:
             candidate = candidate[part]
         api = candidate.get("api_provider", "")
-        suggestions = list(draft["external_providers"].get(api, {}).get(provider, {}).get("models", [])) if api else list(model_suggestions[provider])
-        if current and current not in suggestions:
-            suggestions.insert(0, current)
-        rows = ["Enter a custom model ID...", "Disable this candidate (empty model)"]
-        rows += [model + (" (current)" if model == current else "") for model in suggestions]
-        # The two escape hatches stay above the list, visible even with many
-        # suggested models. An unset candidate opens on a useful suggestion.
-        index = suggestions.index(current) + 2 if current else 2 if suggestions else 0
-        about = f"Current model: {current or '(disabled)'}. Suggestions come from the CLI or bundled fallback; availability depends on your provider account."
-        details = [
-            "Type or edit any provider-supported model ID. Esc cancels editing. " + about,
-            "Clear the model to exclude this provider from this tier. Other tiers and roles are unchanged. " + about,
-            *[f"Use {model} for this candidate. " + about for model in suggestions],
-        ]
-        picked = choose(screen, rows, provider.title() + " model", index, details=details)
+        available = {name: spec[provider] for name, spec in draft['external_providers'].items()
+                     if spec['enabled'] and spec[provider]['url']}
+        suggestions = [('', model, model + ' [Built-in API]') for model in model_suggestions[provider]]
+        suggestions += [(name, model, (settings['display_name'] or model) + f' [{name}: {model}]')
+                        for name, endpoint in available.items() for model, settings in endpoint['models'].items()]
+        identities = [(name, model) for name, model, _ in suggestions]
+        if current and (api, current) not in identities:
+            suggestions.insert(0, (api, current, current + f' [{api or "Built-in API"}]'))
+        custom = [name for name in ['', *available] if name != api]
+        rows = [f'Enter a custom model ID... [{api or "Built-in API"}]', 'Disable this candidate (empty model)']
+        rows += [f'Enter a custom model ID... [{name or "Built-in API"}]' for name in custom]
+        offset = len(rows)
+        rows += [label + (' (current)' if (name, model) == (api, current) else '')
+                 for name, model, label in suggestions]
+        index = next((i + offset for i, (name, model, _) in enumerate(suggestions)
+                      if (name, model) == (api, current)), offset if suggestions and not api else 0)
+        about = 'Select API and model together. Configured external models are not live discovery; availability depends on the provider account.'
+        picked = choose(screen, rows, provider.title() + ' model', index, explanation=about)
         if picked is None:
             return None
         if picked == 1:
-            return ""
-        if picked == 0:
-            return input_value(screen, " / ".join(label_for(part, path[:index]) for index, part in enumerate(path)), current, False)
-        return suggestions[picked - 2]
+            return '', ''
+        if picked < offset:
+            target = api if picked == 0 else custom[picked - 2]
+            changed = input_value(screen, f'{provider} / {target or "Built-in API"} / model',
+                                  current if target == api else '', False)
+            return None if changed is None else (target if changed else '', changed)
+        return suggestions[picked - offset][:2]
 
     def path_pending():
         """Would saving now leave the shell unable to find agent-box?"""
@@ -706,7 +715,9 @@ def edit(config, *, project=None):
                 elif secret(full):
                     shown = "<configured>" if value else "<empty>"
                 elif isinstance(value, str):
-                    shown = value or ("Built-in API" if key == "api_provider" else "(not set)")
+                    shown = value or "(not set)"
+                    if _model_path(full) and value:
+                        shown += f" [{data.get('api_provider') or 'Built-in API'}]"
                 else:
                     shown = json.dumps(value, ensure_ascii=False)
                 if project_mode:
@@ -761,6 +772,8 @@ def edit(config, *, project=None):
                     notice = "Global only"
                 elif project_mode and key in ("r", "R"):
                     data[keys[selected]] = remove_override(full)
+                    if _model_path(full):
+                        data['api_provider'] = remove_override((*path, 'api_provider'))
                     notice = "Reset to default: override removed; inheriting global values"
                 elif key in ("r", "R") or project_mode:
                     value = default_value(full, global_values if project_mode else defaults)
@@ -779,6 +792,11 @@ def edit(config, *, project=None):
                             data[keys[selected]] = current
                         else:
                             data[keys[selected]] = value
+                        if _model_path(full):
+                            api_path = (*path, 'api_provider')
+                            data['api_provider'] = default_value(api_path, global_values if project_mode else defaults)
+                            if project_mode:
+                                record(api_path, data['api_provider'])
                         notice = ("Copy current global: current values copied as explicit project overrides" if project_mode
                                   else "Reset to default: built-in program values restored in draft")
             elif key in (" ", "\n", "\r", curses.KEY_RIGHT):
@@ -872,11 +890,6 @@ def edit(config, *, project=None):
                     continue
                 accepted = False
                 options = CHOICES.get(".".join(full))
-                if name == "api_provider" and _candidate_field(full):
-                    options = ["", *[name for name, spec in draft["external_providers"].items()
-                                     if spec["enabled"] and spec[path[-1]]["url"]]]
-                    if value not in options:
-                        options.append(value)
                 if name == "effort" and _candidate_field(full):
                     options = AGENT_EFFORTS[path[-1]]
                     api = data.get('api_provider')
@@ -895,7 +908,10 @@ def edit(config, *, project=None):
                 elif _model_path(full):
                     changed = model_value(screen, full, value)
                     if changed is not None:
-                        data[name], notice = changed, "Draft updated; save to keep changes"
+                        data['api_provider'], data[name] = changed
+                        if project_mode:
+                            record((*path, 'api_provider'), data['api_provider'])
+                        notice = "Draft updated; save to keep changes"
                         accepted = True
                 elif options:
                     if key == " ":

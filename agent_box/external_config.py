@@ -8,6 +8,36 @@ from .errors import AgentBoxError
 
 EFFORTS = ('default', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra')
 API_EFFORTS = {'codex': EFFORTS, 'claude': ('default', 'low', 'medium', 'high', 'xhigh', 'max')}
+CODEX_OWNED_CONFIG = {'model', 'model_provider', 'model_providers', 'model_catalog_json',
+                      'forced_login_method', 'cli_auth_credentials_store', 'chatgpt_base_url',
+                      'profiles', 'profile'}
+
+
+def codex_options(raw, path, *, provider=False):
+    """Codex validates native option semantics; agent-box retains API/auth ownership."""
+    reserved = ({'base_url', 'env_key', 'experimental_bearer_token', 'requires_openai_auth', 'auth'}
+                if provider else CODEX_OWNED_CONFIG)
+    def valid(value):
+        if isinstance(value, dict):
+            return all(isinstance(k, str) and k and valid(v) for k, v in value.items())
+        if isinstance(value, list):
+            return all(valid(v) for v in value)
+        return type(value) in (str, bool, int, float)
+    if (not isinstance(raw, dict) or not valid(raw) or any(k in reserved for k in raw)
+            or not provider and (any('remote' in k for k in raw)
+                or isinstance(raw.get('features'), dict) and any('remote' in k for k in raw['features']))):
+        raise AgentBoxError(f'Invalid {path}: expected native options without launcher-owned API/auth/Remote Control fields')
+    try:
+        json.dumps(raw, allow_nan=False)
+    except (TypeError, ValueError):
+        raise AgentBoxError(f'Invalid {path}: expected finite JSON values') from None
+    if provider:
+        for field in ('http_headers', 'env_http_headers'):
+            headers = raw.get(field, {})
+            if (not isinstance(headers, dict) or any(not isinstance(v, str) or
+                    k.lower() in {'authorization', 'proxy-authorization', 'x-api-key'} for k, v in headers.items())):
+                raise AgentBoxError(f'Invalid {path}.{field}: expected string headers without authentication overrides')
+    return dict(raw)
 
 
 def valid_model(model, cli):
@@ -59,6 +89,8 @@ def model_effort_error(endpoint, model, cli, effort):
         effort = spec['effort']
         if effort == 'default' and cli == 'claude':
             effort = {**endpoint.env, **spec['env']}.get('CLAUDE_CODE_EFFORT_LEVEL', 'default')
+        elif effort == 'default' and cli == 'codex':
+            effort = endpoint.config.get('model_reasoning_effort', 'default')
     if spec['supported_efforts'] and effort not in (None, 'default') and effort not in spec['supported_efforts']:
         return f'Requested effort is not supported by configured {cli} model {model}; choose default or a supported level'
     return None
@@ -127,10 +159,16 @@ class Endpoint:
 
 
 @dataclass
+class CodexEndpoint(Endpoint):
+    provider_options: dict = field(default_factory=dict)
+    config: dict = field(default_factory=dict)
+
+
+@dataclass
 class ExternalProvider:
     enabled: bool = False
     api_key: str = ""
-    codex: Endpoint = field(default_factory=Endpoint)
+    codex: CodexEndpoint = field(default_factory=CodexEndpoint)
     claude: Endpoint = field(default_factory=Endpoint)
 
     def to_dict(self):
@@ -159,7 +197,8 @@ def parse_connections(data):
             setattr(spec, key, value)
         for cli in ("codex", "claude"):
             endpoint = raw.get(cli, {})
-            if not isinstance(endpoint, dict) or set(endpoint) - {"url", "models", "default_model", "env"}:
+            allowed = {'url', 'models', 'default_model', 'env'} | ({'provider_options', 'config'} if cli == 'codex' else set())
+            if not isinstance(endpoint, dict) or set(endpoint) - allowed:
                 invalid(f"{path}.{cli}")
             url = endpoint.get("url", "")
             if not isinstance(url, str):
@@ -185,7 +224,10 @@ def parse_connections(data):
             if not isinstance(default, str) or default and default not in models:
                 invalid(f'{path}.{cli}.default_model must name a configured model')
             env = parse_env(endpoint.get('env', {}), f'{path}.{cli}.env', cli)
-            parsed_endpoint = Endpoint(url, models, default, env)
+            parsed_endpoint = (CodexEndpoint(url, models, default, env,
+                               codex_options(endpoint.get('provider_options', {}), f'{path}.codex.provider_options', provider=True),
+                               codex_options(endpoint.get('config', {}), f'{path}.codex.config'))
+                               if cli == 'codex' else Endpoint(url, models, default, env))
             for model in models:
                 if model_effort_error(parsed_endpoint, model, cli, 'default'):
                     invalid(f'{path}.{cli}.models: default effort is not supported')

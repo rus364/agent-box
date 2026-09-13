@@ -436,7 +436,7 @@ class ConfigMenuTests(unittest.TestCase):
         finish = [*['\x1b'] * 4, curses.KEY_END, curses.KEY_UP, "\n"]
         kept, screen = self.edit(config, [*prefix, "\n", *finish])
         self.assertEqual(kept.config.workflow.tiers["0"]["codex"]["model"], "private-model")
-        self.assertIn("private-model (current)", screen.drawn)
+        self.assertIn("private-model [Built-in API] (current)", screen.drawn)
 
         custom, _ = self.edit(config, [*prefix, curses.KEY_HOME,
                                        "\n", "\x15", *"manual-model", "\n", *finish])
@@ -459,8 +459,8 @@ class ConfigMenuTests(unittest.TestCase):
                 keys = [*prefix, "\x1b", "\n", "\n", *["\x1b"] * 5]
                 result, screen = self.edit(config, keys, project=project, catalogs=catalogs)
                 self.assertIsNone(result)
-                self.assertIn("private-model (current)", screen.drawn)
-                self.assertIn(catalogs[provider][0], screen.drawn)
+                self.assertIn("private-model [Built-in API] (current)", screen.drawn)
+                self.assertIn(catalogs[provider][0] + " [Built-in API]", screen.drawn)
 
     def test_default_terminal_colors_and_short_escape_delay_are_restored(self):
         import curses
@@ -854,7 +854,7 @@ class ProjectMenuTests(unittest.TestCase):
                     *['\x1b'] * 5, curses.KEY_END, curses.KEY_UP, '\n']
             result, _ = self.edit(config, keys, project={})
             self.assertEqual(result.project['workflow']['review']['override']['models']['codex'],
-                             {'model': expected, 'effort': 'default'})
+                             {'api_provider': '', 'model': expected, 'effort': 'default'})
             self.assertEqual(result.config.workflow.review.override.scope, "off")
 
     def test_project_save_and_cancel_do_not_apply_or_configure_path(self):

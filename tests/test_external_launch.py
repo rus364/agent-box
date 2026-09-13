@@ -2,6 +2,7 @@
 import json
 from pathlib import Path
 import tempfile
+import tomllib
 import unittest
 from unittest.mock import patch, Mock
 
@@ -14,6 +15,64 @@ from test_runtime import IsolatedRuntimeTest
 
 
 class ExternalProcessTests(unittest.TestCase):
+    def test_native_options_preserve_auth_and_keep_header_values_out_of_argv(self):
+        """Native search/transport settings must work without touching subscription auth."""
+        raw = external_config().to_dict()
+        endpoint = raw['external_providers']['deepseek']['codex']
+        endpoint['provider_options'] = {'query_params': {'api-version': 'test'},
+                                        'http_headers': {'X-Tenant': 'private-header'},
+                                        'stream_idle_timeout_ms': 12345}
+        endpoint['config'] = {'web_search': 'live', 'model_reasoning_effort': 'high'}
+        config = Config.from_dict(raw)
+        for suffix in ([], ['exec', '--json']):
+            with self.subTest(suffix=suffix), tempfile.TemporaryDirectory() as temp:
+                command, env = ext.prepare(['codex', *suffix, '-c', 'web_search="disabled"'],
+                                           'deepseek', 'codex', config, temp, {})
+                options = {}
+                for index, arg in enumerate(command[:-1]):
+                    if arg == '-c':
+                        options.update(tomllib.loads(command[index + 1]))
+                self.assertEqual(options['web_search'], 'disabled')
+                self.assertEqual(options['cli_auth_credentials_store'], 'ephemeral')
+                self.assertNotIn('forced_login_method', options)
+                provider = options['model_providers']['agent_box_external']
+                self.assertEqual(provider['query_params'], {'api-version': 'test'})
+                self.assertEqual(provider['stream_idle_timeout_ms'], 12345)
+                self.assertEqual(env[provider['env_http_headers']['X-Tenant']], 'private-header')
+                self.assertNotIn('private-header', str(command))
+                self.assertEqual(ext.builtin_environment(env), {})
+
+    def test_native_options_cannot_replace_auth_or_restore_persistent_credentials(self):
+        """Pass-through flexibility must not reintroduce logout or change the selected API."""
+        for field, value in [('config', {'cli_auth_credentials_store': 'file'}),
+                             ('config', {'model_provider': 'openai'}),
+                             ('provider_options', {'base_url': 'https://other.invalid'}),
+                             ('provider_options', {'requires_openai_auth': True}),
+                             ('provider_options', {'http_headers': {'Authorization': 'secret'}}),
+                             ('config', {'web_search': None})]:
+            with self.subTest(field=field, value=value), self.assertRaises(AgentBoxError):
+                raw = external_config().to_dict()
+                raw['external_providers']['deepseek']['codex'][field] = value
+                Config.from_dict(raw)
+        with self.assertRaises(AgentBoxError):
+            ext.selected_model(external_config(), 'deepseek', 'codex',
+                               ['-c', 'cli_auth_credentials_store="file"'])
+
+    def test_native_effort_default_still_obeys_declared_model_support(self):
+        """A native config default must not bypass the model's supported effort list."""
+        raw = external_config().to_dict()
+        endpoint = raw['external_providers']['deepseek']['codex']
+        endpoint['config'] = {'model_reasoning_effort': 'high'}
+        endpoint['models']['external-small']['supported_efforts'] = ['low']
+        with self.assertRaisesRegex(AgentBoxError, 'default effort is not supported'):
+            Config.from_dict(raw)
+        endpoint['models']['external-small']['effort'] = 'low'
+        config = Config.from_dict(raw)
+        with tempfile.TemporaryDirectory() as temp:
+            command, _ = ext.prepare(['codex'], 'deepseek', 'codex', config, temp, {})
+        efforts = [arg for arg in command if arg.startswith('model_reasoning_effort=')]
+        self.assertEqual(efforts[-1], 'model_reasoning_effort="low"')
+
     def test_cli_requires_an_explicit_cli_and_dispatches_host_selection(self):
         """No saved or default CLI may silently decide how an external API is called."""
         with patch.object(cli_module.sys, 'argv', ['agent-box', '--host', 'ext', 'deepseek', 'claude', '--model', 'x']), \

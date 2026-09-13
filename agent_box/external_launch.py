@@ -12,7 +12,7 @@ import tomllib
 
 from .atomicio import atomic_write_json
 from .errors import AgentBoxError
-from .external_config import claude_model, model_effort_error, model_settings, valid_model, valid_name
+from .external_config import CODEX_OWNED_CONFIG, claude_model, codex_options, model_effort_error, model_settings, valid_model, valid_name
 from .paths import SESSION_TEMP_ROOT
 
 API_ENV = 'AGENT_BOX_EXTERNAL_API_KEY'
@@ -31,7 +31,15 @@ _AUTH_NAMES = {
 
 
 def auth_name(name):
-    return name in _AUTH_NAMES or name.startswith('ANTHROPIC_')
+    return name in _AUTH_NAMES or name.startswith(('ANTHROPIC_', 'AGENT_BOX_EXTERNAL_HEADER_'))
+
+
+def toml_value(value):
+    if isinstance(value, dict):
+        return '{' + ', '.join(json.dumps(k) + '=' + toml_value(v) for k, v in value.items()) + '}'
+    if isinstance(value, list):
+        return '[' + ', '.join(toml_value(v) for v in value) + ']'
+    return json.dumps(value, ensure_ascii=False, allow_nan=False)
 
 
 def builtin_environment(environment):
@@ -166,10 +174,14 @@ def invocation_settings(cli, args, *, managed=False):
                 root = next(iter(tomllib.loads(field + '=0')))
             except (ValueError, StopIteration):
                 raise AgentBoxError('Invalid external CLI configuration override') from None
-            if (root in {'model', 'model_provider', 'model_providers', 'model_catalog_json',
-                                       'forced_login_method', 'chatgpt_base_url', 'profiles', 'profile'}
-                    or 'remote' in field or root == 'features'):
+            if (root in CODEX_OWNED_CONFIG
+                    or 'remote' in field):
                 raise AgentBoxError('ext owns API/model catalog and Remote Control settings; use --model for the model')
+            if root == 'features':
+                try:
+                    codex_options(tomllib.loads(value), 'Codex override')
+                except ValueError:
+                    raise AgentBoxError('Invalid Codex feature override; use native TOML values') from None
             if root == 'model_reasoning_effort':
                 try:
                     effort = tomllib.loads(value)['model_reasoning_effort']
@@ -267,13 +279,24 @@ def prepare(command, name, cli, config, directory, environment, *, model=None):
         env[API_ENV] = spec.api_key
         path = directory / 'models.json'
         atomic_write_json(path, catalog(models), 0o600)
-        table = ('name="agent-box external", base_url=' + json.dumps(endpoint.url) +
-                 ', env_key=' + json.dumps(API_ENV) + ', wire_api="responses", '
-                 'requires_openai_auth=false, supports_websockets=false')
-        overrides = ['model=' + json.dumps(model), 'model_provider="agent_box_external"',
-                     'model_providers.agent_box_external={' + table + '}',
-                     'forced_login_method="api"', 'model_catalog_json=' + json.dumps(str(path)),
-                     'web_search="disabled"']
+        table = {'name': name, 'wire_api': 'responses', 'supports_websockets': False,
+                 **endpoint.provider_options, 'base_url': endpoint.url,
+                 'env_key': API_ENV, 'requires_openai_auth': False}
+        headers = dict(table.get('env_http_headers', {}))
+        for index, (header, value) in enumerate(table.pop('http_headers', {}).items()):
+            variable = f'AGENT_BOX_EXTERNAL_HEADER_{index}'
+            env[variable] = value
+            headers[header] = variable
+        if headers:
+            table['env_http_headers'] = headers
+        options = {'web_search': 'disabled', **endpoint.config,
+                   'model': model, 'model_provider': 'agent_box_external',
+                   'model_providers': {'agent_box_external': table},
+                   # An external API must never read/delete the subscription login.
+                   'cli_auth_credentials_store': 'ephemeral',
+                   'model_catalog_json': str(path)}
+        overrides = [(key if re.fullmatch(r'[A-Za-z0-9_-]+', key) else json.dumps(key))
+                     + '=' + toml_value(value) for key, value in options.items()]
         if settings['effort'] != 'default':
             overrides.append('model_reasoning_effort=' + json.dumps(settings['effort']))
         # Global -c options precede a possible managed exec subcommand.

@@ -21,6 +21,33 @@ def external_config():
 
 
 class ExternalConfigTests(unittest.TestCase):
+    def test_unified_picker_pins_api_with_duplicate_model_ids_and_resets_both(self):
+        """A project model must not silently move to another API after global changes."""
+        import curses
+        config = external_config()
+        model = menu_tests.BUNDLED_MODELS['codex'][0]
+        config.external_providers['deepseek'].codex.models = {model: config.external_providers['deepseek'].codex.models['external-small']}
+        path = ('workflow', 'tiers', '0', 'codex')
+        prefix = []
+        for index, part in enumerate(path):
+            prefix += [*menu_tests.select(part, path[:index]), '\n']
+        prefix += menu_tests.select('model', path)
+        save = ['\x1b'] * len(path) + [curses.KEY_END, curses.KEY_UP, '\n']
+        keys = [*prefix, '\n', curses.KEY_END, '\n', *save]
+        edited, screen = menu_tests.ConfigMenuTests().edit(config, keys, project={})
+        candidate = edited.project['workflow']['tiers']['0']['codex']
+        self.assertEqual(candidate, {'model': model, 'api_provider': 'deepseek'})
+        self.assertIn(model + ' [Built-in API]', screen.drawn)
+        self.assertIn(model + f' [deepseek: {model}]', screen.drawn)
+        self.assertNotIn('api_provider', config_menu.menu_keys(candidate, path))
+        reset, _ = menu_tests.ConfigMenuTests().edit(config, [*prefix, 'r', *save], project=edited.project)
+        self.assertEqual(reset.project, {})
+        copied, _ = menu_tests.ConfigMenuTests().edit(config, [*prefix, 'g', *save], project=edited.project)
+        self.assertEqual(copied.project['workflow']['tiers']['0']['codex'],
+                         {key: config.workflow.tiers['0']['codex'][key] for key in ('model', 'api_provider')})
+        cancelled, _ = menu_tests.ConfigMenuTests().edit(config, [*prefix, '\n', curses.KEY_END, '\x1b', *save], project={})
+        self.assertEqual(cancelled.project, {})
+
     def test_global_key_roundtrip_is_private_and_never_printed(self):
         """Stored API keys need the same protected file boundary as tracker tokens."""
         config = external_config()
@@ -108,8 +135,8 @@ class ExternalConfigTests(unittest.TestCase):
                 keys = []
                 for index, part in enumerate(path):
                     keys += [*menu_tests.select(part, path[:index]), '\n']
-                keys += [*menu_tests.select('api_provider', path), '\n', curses.KEY_DOWN, '\n',
-                         *menu_tests.select('model', path), '\n', '\n']
+                keys += [*menu_tests.select('model', path), '\n', curses.KEY_END,
+                         *([curses.KEY_UP] if path[-1] == 'codex' else []), '\n']
                 keys += ['\x1b'] * len(path) + [curses.KEY_END, curses.KEY_UP, '\n']
                 edited, screen = menu_tests.ConfigMenuTests().edit(config, keys)
                 value = edited.config.to_dict()

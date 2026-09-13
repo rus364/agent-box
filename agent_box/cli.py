@@ -371,6 +371,8 @@ def config_show() -> None:
             endpoint = getattr(spec, agent)
             print(f"      {agent}: {endpoint.url or '(not set)'}; models {', '.join(endpoint.models) or '(none)'}")
             print(f"        default {endpoint.default_model or '(first configured)'}; env {len(endpoint.env)} configured")
+            if agent == 'codex':
+                print(f"        provider options {len(endpoint.provider_options)} fields; config {len(endpoint.config)} fields")
             for model, settings in endpoint.models.items():
                 details = (f"effort {settings['effort']}; levels {','.join(settings['supported_efforts']) or '(unknown)'}; "
                            f"context {settings['context_window'] or '(CLI default)'}; "
