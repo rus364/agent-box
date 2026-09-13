@@ -115,6 +115,23 @@ class HostLaunchDecisionTests(IsolatedRuntimeTest):
                                                          'BYTE_VALUE': os.fsdecode(b'\xff')}, '/usr/bin/tmux')
             self.assertFalse(list(Path(tmp).rglob('*.env.json')))
 
+    def test_client_gets_the_launch_locale_but_no_secrets(self):
+        """tmux renders through the client's locale; nothing else joins the sanitized env."""
+        with tempfile.TemporaryDirectory() as tmp, \
+             mock.patch.object(runtime, 'HOST_SESSIONS_ROOT', Path(tmp)), \
+             mock.patch.object(runtime, 'tmux_sessions', return_value=[]), \
+             mock.patch.object(runtime, 'tmux_session_exists', return_value=False):
+            environment = {'TOKEN': 'private test value', 'LANG': 'ru_RU.UTF-8',
+                           'LC_CTYPE': 'ru_RU.UTF-8', 'LC_ALL': 'ru_RU.UTF-8'}
+            with mock.patch.object(runtime.subprocess, 'call', return_value=1) as launch:
+                runtime.host_tmux_launch(Workspace(Path(tmp), Path(tmp)), 'codex',
+                                         ['/bin/false'], environment, '/usr/bin/tmux')
+        client_env = launch.call_args.kwargs['env']
+        for key in ('LANG', 'LC_CTYPE', 'LC_ALL'):
+            self.assertEqual(client_env[key], 'ru_RU.UTF-8')
+        self.assertNotIn('TOKEN', client_env)
+        self.assertEqual(client_env['PATH'], os.defpath)
+
     def test_host_recorder_uses_shell_from_the_callers_path(self):
         """The sanitized server PATH must not hide an otherwise installed shell."""
         with tempfile.TemporaryDirectory() as tmp, \
@@ -172,7 +189,7 @@ class NativeHostSessionsTests(unittest.TestCase):
     def session_root(self, project):
         return self.state / runtime.workspace_identity(Workspace(project, project))
 
-    def spawn(self, project, *, output=None, environment=None, attach=False):
+    def spawn(self, project, *, output=None, environment=None, attach=False, argv=None):
         pid, fd = pty.fork()
         if pid == 0:
             try:
@@ -183,12 +200,13 @@ class NativeHostSessionsTests(unittest.TestCase):
                     runtime.resolve_workspace = lambda: Workspace(project, project)
                     rc = runtime.host_session_main([])
                 else:
-                    script = ('import json,os,sys; from pathlib import Path; '
-                              'Path(sys.argv[1]).write_text(json.dumps(dict(os.environ))); '
-                              'print("ready",flush=True); sys.exit(int(input()))')
+                    if argv is None:
+                        script = ('import json,os,sys; from pathlib import Path; '
+                                  'Path(sys.argv[1]).write_text(json.dumps(dict(os.environ))); '
+                                  'print("ready",flush=True); sys.exit(int(input()))')
+                        argv = [sys.executable, '-c', script, str(output)]
                     rc = runtime.host_tmux_launch(
-                        Workspace(project, project), 'codex',
-                        [sys.executable, '-c', script, str(output)], environment, shutil.which('tmux'))
+                        Workspace(project, project), 'codex', argv, environment, shutil.which('tmux'))
                 os._exit(rc)
             except BaseException:
                 import traceback
@@ -285,6 +303,33 @@ class NativeHostSessionsTests(unittest.TestCase):
             capture_output=True, text=True, env=sessions.host_tmux_env()).stdout.strip())
         os.write(attached[1], b'0\n')
         self.assertEqual(self.wait_client(attached), 0)
+
+    def test_non_latin_pane_text_reaches_a_utf8_client_verbatim(self):
+        """A client that declares a UTF-8 locale must see the pane's text, not underscores.
+
+        tmux picks UTF-8 from the *client's* locale and draws "_" for every
+        other character, so the sanitized launch environment has to carry it.
+        """
+        project = self.projects[0]
+        argv = [sys.executable, '-c',
+                'import sys; print("Привет мир", flush=True); sys.stdin.read(1)']
+        client = self.spawn(project, argv=argv, environment={
+            'PATH': os.defpath, 'TERM': 'xterm',
+            'LANG': 'C.UTF-8', 'LC_ALL': 'C.UTF-8', 'LC_CTYPE': 'C.UTF-8'})
+        _, fd = client
+        seen = b''
+        deadline = time.monotonic() + 10
+        target = 'Привет мир'.encode()
+        while time.monotonic() < deadline and target not in seen and b'_____' not in seen:
+            ready, _, _ = select.select([fd], [], [], 0.05)
+            if ready:
+                try:
+                    seen += os.read(fd, 65536)
+                except OSError:
+                    break
+        self.assertIn(target, seen)
+        os.write(fd, b'\n')
+        self.assertEqual(self.wait_client(client), 0)
 
     def test_posix_byte_paths_work_for_project_and_session_state(self):
         """Normal filesystem bytes must survive identity hashing and tmux argv."""

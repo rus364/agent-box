@@ -2860,8 +2860,14 @@ def host_tmux_launch(workspace: Workspace, agent: str, command: list[str],
                            host_root=root, cwd=workspace.cwd, shell=shell)
     wrapped[0] = executable
     # The server must not retain credentials or source BASH_ENV from its first
-    # launcher. The pane runner supplies the full, current per-launch env.
+    # launcher. The pane runner supplies the full, current per-launch env. The
+    # locale is no credential and cannot be dropped: tmux reads UTF-8 support
+    # from the *client's* locale and draws "_" for every other character, and
+    # the first client is also the server.
     server_env = {"PATH": os.defpath, "TERM": environment.get("TERM", "xterm-256color")}
+    for key in ("LANG", "LC_ALL", "LC_CTYPE"):
+        if locale_value := environment.get(key):
+            server_env[key] = locale_value
     try:
         rc = subprocess.call(wrapped, cwd=str(workspace.cwd), env=host_tmux_env(server_env))
         return session.finish(None, rc, host_root=root)
