@@ -38,7 +38,7 @@ from .delegation import bootstrap, context_policy, LAUNCH_CONTEXT, render_handof
 from .errors import AgentBoxError
 from . import git_workflow as gw
 from .paths import WORKFLOW_STATE
-from .provider_runner import ProviderFailure, preflight, run, validate_report, report_schema
+from .provider_runner import ProviderFailure, preflight, report_json, run, validate_report, report_schema
 from .repo_binding import Binding, repository_root, server_identity
 from .routing import select, validate_role_tier
 from .tracker.core import claim, checkboxes, root_task, completion_reasons, blocking_reasons
@@ -900,7 +900,7 @@ def native_output(args, selected, tier):
         actual.update({k: selected[k] for k in ("api_provider", "api_fingerprint") if k in selected})
         if args.role == "reviewer":
             actual["fresh_context"] = True
-        return {"route": actual, "report": validate_report(json.loads(Path(args.file).read_text()), args.role),
+        return {"route": actual, "report": validate_report(report_json(Path(args.file).read_text(), "report file is not valid JSON"), args.role),
                 "diagnostics": {"usage": None, "total_cost_usd": None}}
     candidates = [selected, *selected["fallbacks"]]
     match = next((i for i, candidate in enumerate(candidates)
@@ -923,7 +923,7 @@ def native_output(args, selected, tier):
         raise AgentBoxError("A native fallback reason is required; explain why the preferred route could not run")
     if args.role == "reviewer" and not args.fresh_context:
         raise AgentBoxError("Confirm --fresh-context for independent native review")
-    report = validate_report(json.loads(Path(args.file).read_text()), args.role)
+    report = validate_report(report_json(Path(args.file).read_text(), "report file is not valid JSON"), args.role)
     output = {"route": actual, "report": report, "diagnostics": {"usage": None, "total_cost_usd": None}}
     if args.role == "reviewer":
         output["fresh_context"] = True
@@ -2071,7 +2071,7 @@ def dispatch(args):
                                     "not capability proof; unknown or unsupported capabilities and effort=default require managed CLI. "
                                     "Native uses prepare/spawn then report_command; managed uses run/review. Replace its ACTUAL values, "
                                     "DESCRIPTOR and REPORT.json from the execution. "
-                                    "Return the role JSON schema."}
+                                    "The delegate's whole final message is the role JSON object; REPORT.json holds it unchanged."}
             result["review_budget"] = budget
             descriptor = json.loads(base64.urlsafe_b64decode(result["handoff"]))
             descriptor["review_scope"] = review_scope(root, base, tasks, config)
@@ -2108,7 +2108,7 @@ def dispatch(args):
                     "with the prepared provider and exact model/effort when known; otherwise omit model/effort and affirm "
                     "--session-inherited only when settings were preserved. Reviewer reports also require --fresh-context. "
                     "A new prepare or --fresh-context assertion is not proof that a new instance ran. "
-                    "Return the role JSON schema; never invent execution facts or PASS.")
+                    "The reviewer's whole final message is the role JSON object; never invent execution facts or PASS.")
             result["instructions"] += (
                 " Provider order precedes native preference. Native reports cannot select backup candidates. "
                 "Managed provider fallback requires observed CLI/model unavailability, authentication, quota "

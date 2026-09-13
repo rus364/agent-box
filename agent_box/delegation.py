@@ -43,7 +43,8 @@ def role_instructions(role):
         "repository instruction to read the tracked task; do not query its history. "
         "Read AGENTS.md or CLAUDE.md in directories you touch and files they import with @path. "
         "Read every chunk; report missing, unreadable or truncated instructions explicitly. "
-        "Return the role JSON schema with concrete evidence and limitations. "
+        "Your final message is the report: one JSON object matching report_schema, with concrete evidence "
+        "and limitations, and no prose or Markdown around it. "
     )
     if role in ("worker", "scout"):
         text += "Do not delegate or launch nested scouts; only the coordinator dispatches scouts. Selected facts are source evidence, not normative requirements. "

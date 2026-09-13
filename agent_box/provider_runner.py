@@ -120,6 +120,32 @@ def response_metadata(result):
     return {"usage": safe or None, "total_cost_usd": number(result.get("total_cost_usd"))}
 
 
+FENCED_JSON = re.compile(r"^ {0,3}```json[ \t]*\n(.*?)\n {0,3}```[ \t]*$", re.MULTILINE | re.DOTALL)
+
+
+def report_json(text, reason="response is not valid JSON"):
+    """Read a whole JSON response or the single fenced json block beside prose.
+
+    External APIs do not always honour an output schema, and a model that wraps a
+    valid report in narration has still done the paid work. Exactly one fenced
+    block is unambiguous; anything else is refused, and the extracted object
+    still passes validate_report, so no verdict is read from the prose itself.
+    """
+    try:
+        return json.loads(text)
+    except (ValueError, TypeError, RecursionError):
+        pass
+    blocks = FENCED_JSON.findall(text) if isinstance(text, str) else []
+    if len(blocks) > 1:
+        invalid("json", "response has more than one fenced JSON block")
+    if not blocks:
+        invalid("json", reason)
+    try:
+        return json.loads(blocks[0])
+    except (ValueError, RecursionError):
+        invalid("json", "fenced JSON block is not valid JSON")
+
+
 def parse_result(provider, returncode, output, stderr, *, metadata=None):
     metadata = metadata if metadata is not None else {}
     try:
@@ -127,7 +153,7 @@ def parse_result(provider, returncode, output, stderr, *, metadata=None):
     except (ValueError, TypeError, RecursionError):
         result = None
         if not returncode:
-            invalid("json", "response is not valid JSON")
+            result = report_json(output)
     if isinstance(result, dict):
         metadata.update(response_metadata(result))
     envelope = result if isinstance(result, dict) else {}
@@ -157,10 +183,7 @@ def parse_result(provider, returncode, output, stderr, *, metadata=None):
             metadata["response_source"] = "stdout.result"
             result = result["result"]
             if isinstance(result, str):
-                try:
-                    result = json.loads(result)
-                except (ValueError, RecursionError):
-                    invalid("json", "result string is not valid JSON")
+                result = report_json(result, "result string is not valid JSON")
             if not isinstance(result, dict):
                 invalid("envelope", "result must contain a JSON object")
         elif result.get("type") == "result" or "subtype" in result:

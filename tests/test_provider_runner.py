@@ -94,6 +94,24 @@ class ProviderRunnerTests(unittest.TestCase):
         self.assertNotIn("CLAUDE_CODE_EFFORT_LEVEL", popen.call_args.kwargs["env"])
         self.assertNotIn("--effort", popen.call_args.args[0])
 
+    def test_native_report_file_uses_the_same_extraction_and_refusals(self):
+        """A coordinator may save a native reply verbatim; both backends share one report contract."""
+        import argparse
+        from agent_box import workflow
+        report = {"status": "completed", "summary": "Done", "evidence": []}
+        block = "```json\n" + json.dumps(report) + "\n```"
+        selected = {"provider": "claude", "model": "m", "effort": "high", "fast": False, "tier": 1, "fallbacks": []}
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {}, clear=True):
+            path = Path(directory) / "report.json"
+            args = argparse.Namespace(provider="claude", model="m", effort="high", fast=None, role="worker",
+                                      fallback_reason=None, fresh_context=False, file=str(path))
+            path.write_text("Changed the parser.\n" + block)
+            self.assertEqual(workflow.native_output(args, selected, 1)["report"], report)
+            path.write_text(block + "\n" + block)
+            with self.assertRaises(workflow.AgentBoxError) as caught:
+                workflow.native_output(args, selected, 1)
+        self.assertIn("more than one fenced JSON block", str(caught.exception))
+
 
 class FailureDiagnosticsTests(unittest.TestCase):
     """Lost outputs must be inspectable offline without entering public evidence."""
@@ -237,8 +255,9 @@ class FailureDiagnosticsTests(unittest.TestCase):
         self.assertEqual(base64.b64decode(data["streams"]["stdout"]["base64"]), b"secret-stdout\xff")
         self.assertNotIn("private prompt", artifact.read_text())
 
-    def test_parse_and_envelope_failures_remain_distinct_without_salvage(self):
-        """Null structured outputs and Markdown results cannot silently become PASS."""
+    def test_parse_and_envelope_failures_remain_distinct_and_ambiguous_prose_is_refused(self):
+        """Null outputs, unfenced prose and ambiguous Markdown cannot silently become PASS."""
+        block = "```json\n" + json.dumps(self.report) + "\n```"
         cases = [(b"not json", "json", "response is not valid JSON"),
                  (b"[]", "envelope", "response must be a JSON object"),
                  (b"null", "envelope", "response must be a JSON object"),
@@ -247,6 +266,17 @@ class FailureDiagnosticsTests(unittest.TestCase):
                  (b'{"structured_output":[]}', "envelope", "structured_output must be an object"),
                  (b'{"result":42}', "envelope", "result must contain a JSON object"),
                  (b'{"result":"```json secret ```"}', "json", "result string is not valid JSON"),
+                 (json.dumps({"result": "Verdict below.\n" + json.dumps(self.report)}).encode(),
+                  "json", "result string is not valid JSON"),
+                 (json.dumps({"result": f"First:\n{block}\nSecond:\n{block}"}).encode(),
+                  "json", "response has more than one fenced JSON block"),
+                 (json.dumps({"result": "Done.\n```json\n{\"verdict\": PASS}\n```"}).encode(),
+                  "json", "fenced JSON block is not valid JSON"),
+                 (json.dumps({"result": "Done.\n```json\n[]\n```"}).encode(),
+                  "envelope", "result must contain a JSON object"),
+                 (json.dumps({"result": "Done.\n```json\n" + json.dumps(
+                     {**self.report, "findings": [{"severity": "high"}]}) + "\n```"}).encode(),
+                  "schema", "findings[0].path must be a nonblank string"),
                  (b'{"type":"result","subtype":"success"}', "envelope", "Claude envelope has no structured_output or result")]
         for output, stage, reason in cases:
             with self.subTest(reason=reason):
@@ -254,6 +284,20 @@ class FailureDiagnosticsTests(unittest.TestCase):
                 self.assertEqual(failure.category, "invalid-report")
                 self.assertEqual(failure.diagnostic["stage"], stage)
                 self.assertEqual(failure.diagnostic["reason"], reason)
+
+    def test_one_fenced_report_beside_prose_is_accepted_for_both_providers(self):
+        """Task 388: a paid review wrapped its valid PASS in narration and lost the round.
+
+        The single fenced block is unambiguous and still passes the schema, so the
+        verdict comes from the model's object, never from the surrounding text.
+        """
+        prose = ("I have completed the review. **Artifacts read:** manifest.json, full.diff.\n\n"
+                 "**Limitations:** the sandbox is read-only.\n\n```json\n"
+                 + json.dumps(self.report) + "\n```\n")
+        self.assertEqual(self.run_response(json.dumps({"result": prose}).encode()), self.report)
+        self.assertEqual(self.run_response(b"codex events", route={**self.route, "provider": "codex"},
+                                           result=prose.encode()), self.report)
+        self.assertFalse((self.state / "provider-failures").exists())
 
     def test_successful_direct_structured_and_string_reports_create_no_artifacts(self):
         """Established successful formats retain their exact reports."""
