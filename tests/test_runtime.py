@@ -1,11 +1,12 @@
 import json
 import os
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 from unittest import mock
 
-from agent_box import claude_settings, notify, runtime
+from agent_box import claude_settings, external_launch, notify, runtime
 from agent_box.config import Config, NotificationsConfig, TrackerConnection
 from agent_box.errors import AgentBoxError
 from agent_box.mounts import MountSpec
@@ -324,6 +325,11 @@ class CodexRuntimeOverridesTests(IsolatedRuntimeTest):
     def test_suppresses_chatgpt_desktop_mcp_loaded_by_enabled_plugin(self):
         """Plugin MCPs need their plugin-scoped override or Codex treats the
         override as a new, invalid top-level MCP configuration.
+
+        A plugin id carries an ``@``, which TOML forbids in a bare key and
+        Codex does not unquote, so the path is an inline table: as a dotted
+        path it was rejected by the external launch's own value check, and
+        every external Codex launch on such a host died before Codex started.
         """
         with tempfile.TemporaryDirectory() as tmp:
             codex_home = Path(tmp) / "codex-home"
@@ -352,8 +358,56 @@ class CodexRuntimeOverridesTests(IsolatedRuntimeTest):
                 overrides = runtime.codex_runtime_overrides()
 
         self.assertEqual(overrides, [
-            "plugins.computer-use@openai-bundled.mcp_servers.cua_repl.enabled=false",
+            'plugins={"computer-use@openai-bundled"={mcp_servers={cua_repl={enabled=false}}}}',
         ])
+
+    def test_suppresses_desktop_mcp_whose_name_codex_cannot_read_unquoted(self):
+        """A quoted segment would name a server that does not exist.
+
+        Codex splits a ``-c`` key on dots and never unquotes a segment, so
+        quoting the name -- valid TOML, and what this used to emit -- aborts
+        the launch with "invalid transport" instead of disabling the server.
+        """
+        overrides, _contents = self._overrides_for(
+            '[mcp_servers."desktop repl"]\n'
+            'command = "/usr/lib/chatgpt/resources/something/bin/server"\n'
+        )
+        self.assertEqual(overrides, ['mcp_servers={"desktop repl"={enabled=false}}'])
+
+    def test_generated_overrides_are_values_the_launch_path_can_parse(self):
+        """agent-box must be able to read the ``-c`` values it writes itself.
+
+        Codex needs a plugin id verbatim, the launch's value check needs TOML;
+        when the two disagreed, the check rejected agent-box's own MCP
+        overrides and the launch failed before Codex was reached.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            codex_home = Path(tmp) / "codex-home"
+            plugin = codex_home / "plugins/cache/openai-bundled/computer-use/1.0.0"
+            (plugin / ".codex-plugin").mkdir(parents=True)
+            (codex_home / "config.toml").write_text(
+                "[mcp_servers.node_repl]\n"
+                'command = "/usr/lib/chatgpt/resources/cua_node/bin/node_repl"\n'
+                '[plugins."computer-use@openai-bundled"]\n'
+                "enabled = true\n"
+            )
+            (plugin / ".codex-plugin/plugin.json").write_text(json.dumps({
+                "name": "computer-use", "version": "1.0.0", "mcpServers": "./.mcp.json",
+            }))
+            (plugin / ".mcp.json").write_text(json.dumps({"mcpServers": {
+                "cua_repl": {"command": "/usr/lib/chatgpt/resources/cua_node/bin/node"},
+            }}))
+
+            with mock.patch.object(runtime, "CODEX_HOME", codex_home), \
+                 mock.patch.object(runtime, "CODEX_PLUGIN_CACHE", codex_home / "plugins/cache"):
+                command = runtime.codex_command(["exec", "hello"], Config())
+
+        values = [command[index + 1] for index, arg in enumerate(command) if arg == "-c"]
+        self.assertEqual(len(values), 2)
+        for value in values:
+            with self.subTest(value=value):
+                tomllib.loads(value)
+        external_launch.invocation_settings("codex", command[1:])
 
     def test_leaves_command_name_and_normal_absolute_path_mcps_enabled(self):
         overrides, _contents = self._overrides_for(

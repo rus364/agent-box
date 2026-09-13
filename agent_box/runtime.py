@@ -110,6 +110,33 @@ def _uses_chatgpt_desktop_resources(server: object) -> bool:
     )
 
 
+#: One ``-c`` config path segment Codex accepts without quoting.
+CODEX_BARE_KEY = re.compile(r"[A-Za-z0-9_-]+")
+
+
+def codex_disable(path: list[str]) -> str:
+    """One ``-c`` override setting the last ``path`` segment to false.
+
+    Codex splits a ``-c`` key on dots itself and never unquotes a segment, so
+    a path carrying a character TOML forbids in a bare key cannot be spelled
+    the obvious way: ``mcp_servers."node_repl".enabled=false`` sends Codex
+    looking for a server named ``"node_repl"`` and aborts the launch with
+    "invalid transport", while ``plugins."id@market"…`` is ignored outright.
+    Such a path is written as an inline table instead, which Codex merges into
+    the table it already has and which agent-box's own launch validation can
+    parse as TOML -- a value it must parse, because the plugin ids it filters
+    always carry an ``@``.
+    """
+    if all(CODEX_BARE_KEY.fullmatch(part) for part in path):
+        return ".".join(path) + "=false"
+    table = "false"
+    for part in reversed(path[1:]):
+        key = part if CODEX_BARE_KEY.fullmatch(part) else json.dumps(part)
+        table = f"{{{key}={table}}}"
+    root = path[0] if CODEX_BARE_KEY.fullmatch(path[0]) else json.dumps(path[0])
+    return f"{root}={table}"
+
+
 def _plugin_mcp_overrides(config: dict) -> list[str]:
     plugins = config.get("plugins")
     if not isinstance(plugins, dict):
@@ -145,14 +172,9 @@ def _plugin_mcp_overrides(config: dict) -> list[str]:
             for server_name, server in plugin_servers.items():
                 if not isinstance(server_name, str) or not _uses_chatgpt_desktop_resources(server):
                     continue
-                if not re.fullmatch(r"[A-Za-z0-9_@-]+", plugin_id) or not re.fullmatch(
-                    r"[A-Za-z0-9_-]+", server_name,
-                ):
-                    warn(f"could not disable desktop MCP '{server_name}' from plugin '{plugin_id}'")
-                    continue
-                overrides.append(
-                    f"plugins.{plugin_id}.mcp_servers.{server_name}.enabled=false"
-                )
+                overrides.append(codex_disable(
+                    ["plugins", plugin_id, "mcp_servers", server_name, "enabled"]
+                ))
     return overrides
 
 
@@ -182,8 +204,7 @@ def codex_runtime_overrides() -> list[str]:
             continue
         if not _uses_chatgpt_desktop_resources(server):
             continue
-        key = name if name.replace("_", "").replace("-", "").isalnum() else json.dumps(name)
-        overrides.append(f"mcp_servers.{key}.enabled=false")
+        overrides.append(codex_disable(["mcp_servers", name, "enabled"]))
     overrides.extend(_plugin_mcp_overrides(data))
     return sorted(set(overrides))
 
@@ -1809,6 +1830,16 @@ class TmuxSession:
         """Translate the tmux client's exit into the launch's own exit."""
         recorded = self.recorded_status()
         if recorded is not None:
+            if recorded:
+                # The pane dies with its session and the terminal is restored,
+                # so a command that fails before anyone can read it -- an
+                # agent-box error raised before the CLI starts included --
+                # leaves an exit code and nothing else on screen.
+                print(
+                    f"agent-box: session '{self.name}' exited with status {recorded}; what it "
+                    "printed went with the terminal -- rerun with AGENT_BOX_TMUX=0 to see it",
+                    file=sys.stderr,
+                )
             return recorded
         if rc in {126, 127}:
             warn("tmux could not start on the host" if host_root is not None else
