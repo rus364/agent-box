@@ -46,6 +46,26 @@ class ExternalTomlRenderingTests(unittest.TestCase):
                 codex_options(options, "Codex options")
 
 
+    def test_a_connection_string_utf8_cannot_carry_is_refused_where_it_enters(self):
+        """A lone surrogate reaches argv and the environment, which encode UTF-8.
+
+        Only a hand-written JSON escape produces one, so the connection is
+        refused with the field named instead of failing at spawn.
+        """
+        for connection, field in (
+            ({"api_key": "\ud83d"}, "external_providers.x.api_key"),
+            ({"codex": {"url": "https://api.example/\ud83d"}}, "external_providers.x.codex.url"),
+            ({"codex": {"env": {"API_TIMEOUT_MS": "\ud83d"}}},
+             "external_providers.x.codex.env.API_TIMEOUT_MS"),
+            ({"codex": {"models": {"m\ud83d": {"display_name": "x"}}}},
+             "external_providers.x.codex.models"),
+        ):
+            with self.subTest(field=field), self.assertRaises(AgentBoxError) as raised:
+                Config.from_dict({"external_providers": {"x": connection}})
+            self.assertIn(field, str(raised.exception))
+            self.assertIn("a lone surrogate has no UTF-8 form", str(raised.exception))
+
+
 class ExternalConfigTests(unittest.TestCase):
     def test_unified_picker_pins_api_with_duplicate_model_ids_and_resets_both(self):
         """A project model must not silently move to another API after global changes."""

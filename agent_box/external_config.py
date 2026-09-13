@@ -51,6 +51,31 @@ def has_toml_spelling(value: str) -> bool:
     return not any(0xD800 <= ord(char) <= 0xDFFF for char in value)
 
 
+def unspelled_path(value, where):
+    """Where the first text UTF-8 cannot carry sits, or None.
+
+    Only a hand-written JSON ``\\uXXXX`` escape produces a lone surrogate, and
+    it reaches argv, the environment and TOML alike with no representation in
+    any of them. The offending key is reported through ``ascii``: text no
+    encoding can carry is text no terminal can print either.
+    """
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if isinstance(key, str) and not has_toml_spelling(key):
+                return f"{where}.{ascii(key)}"
+            found = unspelled_path(item, f"{where}.{key}")
+            if found:
+                return found
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            found = unspelled_path(item, f"{where}[{index}]")
+            if found:
+                return found
+    elif isinstance(value, str) and not has_toml_spelling(value):
+        return where
+    return None
+
+
 def codex_options(raw, path, *, provider=False):
     """Codex validates native option semantics; agent-box retains API/auth ownership."""
     reserved = ({'base_url', 'env_key', 'experimental_bearer_token', 'requires_openai_auth', 'auth'}
@@ -61,32 +86,11 @@ def codex_options(raw, path, *, provider=False):
         if isinstance(value, list):
             return all(valid(v) for v in value)
         return type(value) in (str, bool, int, float)
-    def unspellable(value, where):
-        """Where the first text TOML cannot spell sits, or None.
-
-        The offending key is reported through ``ascii``: text TOML cannot
-        carry is text a terminal cannot print either.
-        """
-        if isinstance(value, dict):
-            for key, item in value.items():
-                if not has_toml_spelling(key):
-                    return f"{where}.{ascii(key)}"
-                found = unspellable(item, f"{where}.{key}")
-                if found:
-                    return found
-        elif isinstance(value, list):
-            for index, item in enumerate(value):
-                found = unspellable(item, f"{where}[{index}]")
-                if found:
-                    return found
-        elif isinstance(value, str) and not has_toml_spelling(value):
-            return where
-        return None
     if (not isinstance(raw, dict) or not valid(raw) or any(k in reserved for k in raw)
             or not provider and (any('remote' in k for k in raw)
                 or isinstance(raw.get('features'), dict) and any('remote' in k for k in raw['features']))):
         raise AgentBoxError(f'Invalid {path}: expected native options without launcher-owned API/auth/Remote Control fields')
-    bad_path = unspellable(raw, path)
+    bad_path = unspelled_path(raw, path)
     if bad_path:
         raise AgentBoxError(f'Invalid {bad_path}: TOML cannot carry these characters, '
                             'and Codex parses -c values as TOML')
@@ -252,6 +256,9 @@ def parse_connections(data):
         path = f"external_providers.{name}"
         if not isinstance(raw, dict) or set(raw) - {"enabled", "api_key", "codex", "claude"}:
             invalid(path)
+        unspelled = unspelled_path(raw, path)
+        if unspelled:
+            invalid(f"{unspelled}: a lone surrogate has no UTF-8 form")
         spec = ExternalProvider()
         for key, kind in (("enabled", bool), ("api_key", str)):
             value = raw.get(key, getattr(spec, key))
