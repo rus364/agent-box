@@ -693,6 +693,13 @@ from the provider verdict: `saved`, `error` and `blocked` may be retried; `stale
 with the saved-result summary. A receipt is operational evidence, not an
 unforgeable credential; editing workflow state is not a recovery procedure.
 
+Uncommitted/untracked files temporarily block application; remove or preserve them
+outside the checkout, then reconcile the same round. If the first budget-index
+write failed, the command discovers the receipt by its task/round identity and
+checks its private `.seal` before restoring the index. An unavailable budget stays
+unknown and prevents application; it is never reset. A missing or modified receipt
+or recovery seal refuses acceptance.
+
 Ordinary related links and labels do not invalidate validation/review content.
 Descriptions, titles, hierarchy and blockers remain in that scope. Review labels
 still trigger live review policy, tier selects the route, and reconciliation checks

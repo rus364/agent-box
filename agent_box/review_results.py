@@ -50,18 +50,34 @@ def read_file(path):
         raise AgentBoxError("Review result is missing, replaced or invalid; no acceptance recorded") from exc
 
 
+def result_id(binding, task, round_id):
+    return hashlib.sha256(json.dumps([binding, task, round_id]).encode()).hexdigest()
+
+
+def seal_file(path, seal):
+    """Keep the content identity beside the receipt before publishing its budget index."""
+    target = path.with_suffix(".seal")
+    value = {"owner": OWNER, "id": path.stem, "receipt": {"id": path.stem, **seal}}
+    if target.exists() or target.is_symlink():
+        previous, _ = read_file(target)
+        if previous != value:
+            raise AgentBoxError("Review result recovery seal differs; leaving it untouched")
+    else:
+        atomic_write_text(target, json.dumps(value, sort_keys=True) + "\n", 0o400)
+
+
 def save(state, root, repository, value):
     """Persist before reconciliation; only verified owned receipts are pruned."""
     target = directory(state, repository)
     if target.resolve().is_relative_to(Path(root).resolve()):
         raise AgentBoxError("Review results must be outside the repository")
-    ident = hashlib.sha256(json.dumps([value["descriptor"]["binding"], value["descriptor"]["task"],
-                                     value["descriptor"]["delegation"]]).encode()).hexdigest()
+    ident = result_id(value["descriptor"]["binding"], value["descriptor"]["task"], value["descriptor"]["delegation"])
     path = target / (ident + ".json")
     if path.exists() or path.is_symlink():
         previous, seal = read_file(path)
         if any(previous.get(key) != item for key, item in value.items()):
             raise AgentBoxError("This round already has a different saved result")
+        seal_file(path, seal)
         return {"id": ident, **seal}
     now = time.time()
     raw = json.dumps({**value, "owner": OWNER, "id": ident, "created_at": now},
@@ -74,21 +90,54 @@ def save(state, root, repository, value):
         if len(candidate.stem) != 64:
             continue
         try:
-            record, _ = read_file(candidate)
+            record, candidate_seal = read_file(candidate)
             created = float(record["created_at"])
-            owned.append((created, candidate, candidate.stat().st_size))
+            companion = candidate.with_suffix(".seal")
+            extra = 0
+            if companion.exists() or companion.is_symlink():
+                sealed, _ = read_file(companion)
+                if sealed.get("receipt") != {"id": candidate.stem, **candidate_seal}:
+                    continue
+                extra = companion.stat().st_size
+            owned.append((created, candidate, candidate.stat().st_size + extra))
         except (AgentBoxError, KeyError, TypeError, ValueError):
             continue
-    count, total = 1, size
+    count, total = 1, size + 512
     for created, candidate, length in sorted(owned, reverse=True):
         if now - created > MAX_AGE or count >= MAX_FILES or total + length > MAX_TOTAL_BYTES:
             candidate.unlink()
+            candidate.with_suffix(".seal").unlink(missing_ok=True)
         else:
             count += 1
             total += length
     atomic_write_text(path, raw, 0o400)
     _, seal = read_file(path)
+    seal_file(path, seal)
     return {"id": ident, **seal}
+
+
+def find(state, repository, binding, task, round_id=None):
+    """Recover a receipt whose first index write failed; never guess a budget or route."""
+    target = directory(state, repository)
+    paths = ([target / (result_id(binding, task, round_id) + ".json")] if round_id else
+             sorted(target.glob("*.json"), key=lambda path: path.lstat().st_mtime, reverse=True))
+    for path in paths:
+        if not path.exists() and not path.is_symlink():
+            continue
+        try:
+            sealed, _ = read_file(path.with_suffix(".seal"))
+            receipt = sealed["receipt"]
+            value, actual_path = read(state, repository, receipt)
+            descriptor = value["descriptor"]
+            if (actual_path != path or descriptor["repository"] != repository
+                    or descriptor["binding"] != binding or descriptor["task"] != task
+                    or (round_id is not None and descriptor["delegation"] != round_id)):
+                continue
+            return receipt, value, path
+        except (AgentBoxError, KeyError, TypeError):
+            if round_id:
+                raise AgentBoxError("Saved review result or recovery seal is missing or changed") from None
+    return None
 
 
 def read(state, repository, receipt):

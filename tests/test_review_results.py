@@ -285,3 +285,76 @@ class ReviewResultTests(unittest.TestCase):
         with patch.object(review_results.time, "time", return_value=10**12):
             with self.assertRaisesRegex(AgentBoxError, "expired"):
                 self.retry(result)
+
+    def test_dirty_tree_blocks_only_application_and_can_reconcile_the_same_round(self):
+        """A report file in the checkout does not change the committed review scope."""
+        prepared = self.prepare()
+        untracked = self.root / "REPORT.json"
+        untracked.write_text(json.dumps(self.response()))
+        result = self.native(prepared)
+        self.assertEqual(result["reconciliation"]["status"], "blocked")
+        self.assertEqual(result["reconciliation"]["changes"], ["working_tree"])
+        untracked.unlink()
+        with patch.object(workflow, "run") as run, patch.object(workflow, "reserve_review") as reserve:
+            recovered = self.retry(result)
+        self.assertEqual(recovered["reconciliation"]["status"], "applied")
+        self.assertEqual(recovered["review_budget"]["used"], 1)
+        run.assert_not_called()
+        reserve.assert_not_called()
+
+    def test_unindexed_managed_receipt_recovers_after_index_write_or_read_failure(self):
+        """Publishing a response and its index can fail separately without requiring redispatch."""
+        for failure in ("write", "read"):
+            with self.subTest(failure=failure):
+                returned = False
+                def provider(*args, **kwargs):
+                    nonlocal returned
+                    returned = True
+                    return self.response()
+                function = "save_review_state" if failure == "write" else "read_review_state"
+                original = getattr(workflow, function)
+                def unavailable(*args, **kwargs):
+                    if returned:
+                        raise OSError("temporary index failure")
+                    return original(*args, **kwargs)
+                with patch.object(workflow, function, side_effect=unavailable), \
+                     patch.object(workflow, "run", side_effect=provider):
+                    result = self.review()
+                self.assertEqual(result["reconciliation"]["status"], "error")
+                self.assertTrue(Path(result["result_path"]).exists())
+                if failure == "read":
+                    self.assertIsNone(result["review_budget"])
+                state = workflow.read_review_state(self.root, BINDING, self.task)
+                self.assertFalse(any(item["round"] == result["round"] for item in state.get("results", [])))
+                discovered = self.run_workflow("review-result", "1")
+                self.assertEqual(discovered["round"], result["round"])
+                with patch.object(workflow, "run") as run, patch.object(workflow, "reserve_review") as reserve:
+                    recovered = self.retry(discovered)
+                self.assertEqual(recovered["reconciliation"]["status"], "applied")
+                self.assertEqual(recovered["review_budget"]["used"], state["used"])
+                run.assert_not_called()
+                reserve.assert_not_called()
+
+    def test_unindexed_receipt_replacement_is_rejected_by_its_private_seal(self):
+        """Recovery must not adopt bytes replaced before the first budget index was saved."""
+        returned = False
+        original = workflow.save_review_state
+        def provider(*args, **kwargs):
+            nonlocal returned
+            returned = True
+            return self.response()
+        def unavailable(*args, **kwargs):
+            if returned:
+                raise OSError("temporary index failure")
+            return original(*args, **kwargs)
+        with patch.object(workflow, "save_review_state", side_effect=unavailable), \
+             patch.object(workflow, "run", side_effect=provider):
+            result = self.review()
+        path = Path(result["result_path"])
+        raw = path.read_bytes()
+        path.unlink()
+        path.write_bytes(raw)
+        path.chmod(0o400)
+        with self.assertRaisesRegex(AgentBoxError, "seal.*changed"):
+            self.retry(result)
+        self.assertNotIn("review", workflow.read_evidence(self.root, self.task))
