@@ -131,10 +131,21 @@ def codex_disable(path: list[str]) -> str:
         return ".".join(path) + "=false"
     table = "false"
     for part in reversed(path[1:]):
-        key = part if CODEX_BARE_KEY.fullmatch(part) else json.dumps(part)
+        key = part if CODEX_BARE_KEY.fullmatch(part) else _toml_string(part)
         table = f"{{{key}={table}}}"
-    root = path[0] if CODEX_BARE_KEY.fullmatch(path[0]) else json.dumps(path[0])
+    root = path[0] if CODEX_BARE_KEY.fullmatch(path[0]) else _toml_string(path[0])
     return f"{root}={table}"
+
+
+def _has_toml_spelling(value: str) -> bool:
+    """Whether TOML can carry this text at all.
+
+    Only a malformed JSON manifest can put a lone surrogate in a plugin id or
+    a server name, and no TOML string can hold one: writing it would put
+    invalid UTF-8 in the argv Codex parses, which is the failed launch this
+    filtering exists to avoid.
+    """
+    return not any(0xD800 <= ord(char) <= 0xDFFF for char in value)
 
 
 def _plugin_mcp_overrides(config: dict) -> list[str]:
@@ -171,6 +182,10 @@ def _plugin_mcp_overrides(config: dict) -> list[str]:
                 continue
             for server_name, server in plugin_servers.items():
                 if not isinstance(server_name, str) or not _uses_chatgpt_desktop_resources(server):
+                    continue
+                if not _has_toml_spelling(plugin_id) or not _has_toml_spelling(server_name):
+                    warn(f"could not disable desktop MCP of plugin '{plugin_id}': "
+                         f"'{server_name}' has no TOML spelling")
                     continue
                 overrides.append(codex_disable(
                     ["plugins", plugin_id, "mcp_servers", server_name, "enabled"]
@@ -1036,12 +1051,28 @@ def browser_mcp_args(session_dir: Path) -> list[str]:
 def _toml_string(value: str) -> str:
     r"""A TOML basic string for a ``codex -c`` override.
 
-    ``json.dumps`` is exactly the right escaper here: every escape a JSON
-    string can produce (``\"``, ``\\``, ``\n``, ``\uXXXX``) is also a valid
-    TOML basic-string escape, and Codex parses the value portion of ``-c`` as
-    TOML.
+    Codex parses the value portion of ``-c`` as TOML, and ``json.dumps`` is
+    not quite that escaper: it writes a non-BMP character as a UTF-16
+    surrogate pair -- two escapes for one emoji -- and TOML rejects a
+    surrogate escape, because a surrogate is not a Unicode scalar value.
+    Control characters are escaped here, DEL included, and everything else is
+    literal, which TOML allows.
     """
-    return json.dumps(value)
+    escaped = []
+    for char in value:
+        if char in '\\"':
+            escaped.append("\\" + char)
+        elif char == "\n":
+            escaped.append("\\n")
+        elif char == "\r":
+            escaped.append("\\r")
+        elif char == "\t":
+            escaped.append("\\t")
+        elif char < " " or char == "\x7f":
+            escaped.append(f"\\u{ord(char):04X}")
+        else:
+            escaped.append(char)
+    return '"' + "".join(escaped) + '"'
 
 
 def browser_codex_overrides(session_dir: Path | None) -> list[str]:

@@ -388,6 +388,8 @@ class CodexRuntimeOverridesTests(IsolatedRuntimeTest):
             (codex_home / "config.toml").write_text(
                 "[mcp_servers.node_repl]\n"
                 'command = "/usr/lib/chatgpt/resources/cua_node/bin/node_repl"\n'
+                '[mcp_servers."🚀 node"]\n'
+                'command = "/usr/lib/chatgpt/resources/cua_node/bin/node_repl"\n'
                 '[plugins."computer-use@openai-bundled"]\n'
                 "enabled = true\n"
             )
@@ -396,6 +398,7 @@ class CodexRuntimeOverridesTests(IsolatedRuntimeTest):
             }))
             (plugin / ".mcp.json").write_text(json.dumps({"mcpServers": {
                 "cua_repl": {"command": "/usr/lib/chatgpt/resources/cua_node/bin/node"},
+                "🚀 repl": {"command": "/usr/lib/chatgpt/resources/cua_node/bin/node"},
             }}))
 
             with mock.patch.object(runtime, "CODEX_HOME", codex_home), \
@@ -403,11 +406,65 @@ class CodexRuntimeOverridesTests(IsolatedRuntimeTest):
                 command = runtime.codex_command(["exec", "hello"], Config())
 
         values = [command[index + 1] for index, arg in enumerate(command) if arg == "-c"]
-        self.assertEqual(len(values), 2)
+        self.assertEqual(len(values), 4)
         for value in values:
             with self.subTest(value=value):
                 tomllib.loads(value)
         external_launch.invocation_settings("codex", command[1:])
+
+    def test_quoted_names_keep_the_control_characters_and_astral_planes_parseable(self):
+        """An escaper for TOML is not an escaper for JSON.
+
+        ``json.dumps`` writes a non-BMP character as a surrogate pair and TOML
+        rejects a surrogate escape, while its non-ASCII mode leaves DEL
+        literal, which a TOML basic string forbids. Either way the generated
+        ``-c`` stops being a value Codex -- or agent-box itself -- can parse.
+        """
+        for spelling, name in (
+            ('"🚀 node"', "🚀 node"),
+            ('"del\\u007Fhere"', "del\x7fhere"),
+            ('"quo\\"te"', 'quo"te'),
+            ('"back\\\\slash"', "back\\slash"),
+        ):
+            with self.subTest(name=name):
+                overrides, _contents = self._overrides_for(
+                    f"[mcp_servers.{spelling}]\n"
+                    'command = "/usr/lib/chatgpt/resources/something/bin/server"\n'
+                )
+                self.assertEqual(len(overrides), 1)
+                self.assertEqual(
+                    tomllib.loads(overrides[0]),
+                    {"mcp_servers": {name: {"enabled": False}}},
+                )
+
+    def test_a_name_without_a_toml_spelling_is_reported_instead_of_emitted(self):
+        """A lone surrogate has no TOML string, and no argv either.
+
+        Only a malformed plugin manifest can carry one; writing it would put
+        invalid UTF-8 in the command Codex parses and fail the whole launch,
+        which is worse than leaving that one desktop MCP enabled.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            codex_home = Path(tmp) / "codex-home"
+            plugin = codex_home / "plugins/cache/openai-bundled/computer-use/1.0.0"
+            (plugin / ".codex-plugin").mkdir(parents=True)
+            (codex_home / "config.toml").write_text(
+                '[plugins."computer-use@openai-bundled"]\nenabled = true\n'
+            )
+            (plugin / ".codex-plugin/plugin.json").write_text(json.dumps({
+                "name": "computer-use", "version": "1.0.0", "mcpServers": "./.mcp.json",
+            }))
+            (plugin / ".mcp.json").write_text(json.dumps({"mcpServers": {
+                "\ud83d": {"command": "/usr/lib/chatgpt/resources/cua_node/bin/node"},
+            }}))
+
+            with mock.patch.object(runtime, "CODEX_HOME", codex_home), \
+                 mock.patch.object(runtime, "CODEX_PLUGIN_CACHE", codex_home / "plugins/cache"), \
+                 mock.patch.object(runtime, "warn") as warn:
+                overrides = runtime.codex_runtime_overrides()
+
+        self.assertEqual(overrides, [])
+        self.assertIn("no TOML spelling", warn.call_args[0][0])
 
     def test_leaves_command_name_and_normal_absolute_path_mcps_enabled(self):
         overrides, _contents = self._overrides_for(
