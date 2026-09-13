@@ -55,7 +55,10 @@ def result_id(binding, task, round_id):
 
 
 def seal_file(path, seal):
-    """Keep the content identity beside the receipt before publishing its budget index."""
+    """Retain response identity across index failure; the descriptor binds only input bytes.
+
+    This detects single-file replacement, not an owner rewriting the whole state.
+    """
     target = path.with_suffix(".seal")
     value = {"owner": OWNER, "id": path.stem, "receipt": {"id": path.stem, **seal}}
     if target.exists() or target.is_symlink():

@@ -151,25 +151,24 @@ def same_worker_requirements(current, prepared):
 
 
 def scope_requirements(records):
-    """Links and labels are metadata; hierarchy and blockers constrain integration.
+    """Ordinary links/labels are metadata; tier, hierarchy and blockers affect acceptance.
 
     Review-label and tier consumers still evaluate live policy and routing. The
     full description stays normative here, including constraints outside headings.
     """
-    return [{key: value for key, value in item.items() if key not in ("related", "labels")}
+    return [{**{key: value for key, value in item.items() if key not in ("related", "labels")},
+             "labels": [label for label in item.get("labels", []) if label.startswith("ab:tier:")]}
             for item in records]
 
 
 def review_scope(root, base, tasks, config):
-    components = {"head": gw.head_sha(root), "base": gw.base_commit(root, base),
-                  "branch": gw.current_branch(root), "base_branch": base}
+    components = {"head": gw.head_sha(root), "base": gw.base_commit(root, base)}
     for task in scope_requirements(requirements(tasks)):
         for key, value in task.items():
             components[f"task:{task['id']}.{key}"] = hashlib.sha256(
                 json.dumps(value, sort_keys=True).encode()).hexdigest()
-    return {"components": components,
-            "conditions": {"execution_policy": config.workflow.worker.execution,
-                           "tiers": {task.id: task.tier for task in tasks}}}
+    return {"components": components, "base_branch": base,
+            "conditions": {"execution_policy": config.workflow.worker.execution}}
 
 
 REVIEW_REQUIREMENT_SECTIONS = {
@@ -558,7 +557,13 @@ def review_result(root, binding, adapter, task, config, round_id=None, *, reconc
                     stage = "tracker read"
                     current_task = adapter.get(task.id)
                     stage = "scope read"
-                    _, _, _, base = resolve(root, adapter, current_task)
+                    parent, info, child, base = resolve(root, adapter, current_task)
+                    branch = info["branch"] if current_task.id == parent.id else child["branch"]
+                    if gw.current_branch(root) != branch:
+                        record.update(status="blocked", changes=["branch"],
+                                      reason="Switch to the task branch before reconciliation")
+                        save_review_state(root, binding, task, state)
+                        return review_result_summary(task, config, state, record, value, path)
                     tasks = tree(adapter, current_task)
                     current = review_scope(root, base, tasks, config)
                     prepared = descriptor["review_scope"]

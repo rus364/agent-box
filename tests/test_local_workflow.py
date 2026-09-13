@@ -437,6 +437,14 @@ class LocalLandTests(unittest.TestCase):
         review.assert_not_called()
         scope.assert_not_called()
 
+    def test_reconcile_rejects_tier_escalation_after_local_acceptance(self):
+        """A stronger routing tier is significant even when code and ordinary metadata are stable."""
+        accepted = self.failed_tracker_merge()
+        self.parent.labels = ["ab:tier:3"]
+        with self.assertRaisesRegex(AgentBoxError, "requirements.*changed"):
+            self.operate("reconcile", saved=accepted)
+        self.adapter.set_state.assert_not_called()
+
     def test_reconcile_applies_current_review_policy_to_original_diff(self):
         """After merge the base diff is empty, but auto review still covers original work."""
         self.saved["review"] = {"verdict": "SKIPPED"}

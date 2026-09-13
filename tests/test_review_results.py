@@ -173,7 +173,7 @@ class ReviewResultTests(unittest.TestCase):
                     self.retry(result)
                 self.assertNotIn("review", workflow.read_evidence(self.root, self.task))
 
-    def test_execution_policy_and_tier_are_conditions_not_fabricated_route_changes(self):
+    def test_execution_policy_is_a_condition_not_a_fabricated_route_change(self):
         """Restoring execution conditions reuses the exact route and original response."""
         def provider(*args, **kwargs):
             self.config.workflow.worker.execution = "direct"
@@ -391,3 +391,66 @@ class ReviewResultTests(unittest.TestCase):
         self.assertEqual(read_args.round, "-round")
         untracked.unlink()
         self.assertEqual(workflow.dispatch(args)["reconciliation"]["status"], "applied")
+
+    def test_wrong_branch_or_detached_head_blocks_then_reuses_the_same_response(self):
+        """Checkout selection is an application condition, not a change to the task's code."""
+        for checkout in ("main", "--detach"):
+            with self.subTest(checkout=checkout):
+                prepared = self.prepare()
+                gw.git(self.root, "switch", checkout)
+                result = self.native(prepared)
+                self.assertEqual(result["reconciliation"]["status"], "blocked")
+                self.assertEqual(result["reconciliation"]["changes"], ["branch"])
+                gw.git(self.root, "switch", "ab/1-task")
+                with patch.object(workflow, "run") as run, patch.object(workflow, "reserve_review") as reserve:
+                    self.assertEqual(self.retry(result)["reconciliation"]["status"], "applied")
+                run.assert_not_called()
+                reserve.assert_not_called()
+
+    def test_wrong_checkout_does_not_hide_a_real_task_ref_change(self):
+        """Returning to the task branch must still detect its moved commit before acceptance."""
+        prepared = self.prepare()
+        original = gw.head_sha(self.root)
+        gw.git(self.root, "commit", "--allow-empty", "-m", "new task head")
+        gw.git(self.root, "switch", "main")
+        result = self.native(prepared)
+        self.assertEqual(result["reconciliation"]["status"], "blocked")
+        gw.git(self.root, "switch", "ab/1-task")
+        result = self.retry(result)
+        self.assertEqual(result["reconciliation"]["status"], "stale")
+        self.assertIn("head", result["reconciliation"]["changes"])
+        gw.git(self.root, "reset", "--hard", original)
+        self.assertEqual(self.retry(result)["reconciliation"]["status"], "stale")
+
+    def test_tier_escalation_after_applied_pass_requires_new_acceptance(self):
+        """Routing-significant tier labels must not inherit a lower-tier result after escalation."""
+        self.task.description = "## Acceptance\n- [x] requirement"
+        self.run_workflow("validate", "1", "--", "true")
+        with patch.object(workflow, "run", return_value=self.response()):
+            result = self.review()
+        self.assertEqual(result["reconciliation"]["status"], "applied")
+        self.task.labels = ["ab:tier:3"]
+        current = workflow.scope(self.root, "main", [self.task])
+        self.assertNotEqual(current, result["scope"])
+        self.assertNotIn("review", workflow.evidence(self.root, self.task, current))
+        with self.assertRaisesRegex(AgentBoxError, "validate.*exact scope"):
+            self.run_workflow("finish", "1")
+        self.adapter.set_state.assert_not_called()
+
+    def test_unindexed_response_edits_are_detected_when_input_and_owner_checks_pass(self):
+        """Input integrity cannot substitute for the missing index's response-byte identity."""
+        prepared = self.prepare()
+        with patch.object(workflow, "save_review_state", side_effect=OSError("index unavailable")):
+            result = self.native(prepared)
+        path = Path(result["result_path"])
+        value = json.loads(path.read_text())
+        value["output"]["report"]["summary"] = "replaced response"
+        path.unlink()
+        path.write_text(json.dumps(value))
+        path.chmod(0o400)
+        # The simpler owner/mode/id and input checks all pass for this substituted response.
+        self.assertEqual(review_results.read_file(path)[0]["output"]["report"]["summary"], "replaced response")
+        self.assertTrue(workflow.read_delegation_input(self.root, value["descriptor"]))
+        with self.assertRaisesRegex(AgentBoxError, "seal.*changed"):
+            self.retry(result)
+        self.assertNotIn("review", workflow.read_evidence(self.root, self.task))
