@@ -390,6 +390,8 @@ class CodexRuntimeOverridesTests(IsolatedRuntimeTest):
                 'command = "/usr/lib/chatgpt/resources/cua_node/bin/node_repl"\n'
                 '[mcp_servers."🚀 node"]\n'
                 'command = "/usr/lib/chatgpt/resources/cua_node/bin/node_repl"\n'
+                "[mcp_servers.remote_dev]\n"
+                'command = "/usr/lib/chatgpt/resources/cua_node/bin/node_repl"\n'
                 '[plugins."computer-use@openai-bundled"]\n'
                 "enabled = true\n"
             )
@@ -406,7 +408,7 @@ class CodexRuntimeOverridesTests(IsolatedRuntimeTest):
                 command = runtime.codex_command(["exec", "hello"], Config())
 
         values = [command[index + 1] for index, arg in enumerate(command) if arg == "-c"]
-        self.assertEqual(len(values), 4)
+        self.assertEqual(len(values), 5)
         for value in values:
             with self.subTest(value=value):
                 tomllib.loads(value)

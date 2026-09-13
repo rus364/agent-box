@@ -167,6 +167,26 @@ class ExternalProcessTests(unittest.TestCase):
         with self.assertRaisesRegex(AgentBoxError, 'Cannot restore'):
             ext.builtin_environment(first)
 
+    def test_remote_control_ownership_is_decided_by_the_root_key(self):
+        """The launch owns config keys, not the names nested under them.
+
+        `mcp_servers.remote_dev.enabled=false` is agent-box's own override for
+        a desktop MCP whose name merely contains 'remote'; refusing it by
+        substring killed the launch it had just been generated for. Codex's
+        Remote Control settings stay refused, at the root or under `features`.
+        """
+        config = external_config()
+        self.assertEqual(
+            ext.selected_model(config, 'deepseek', 'codex',
+                               ['-c', 'mcp_servers.remote_dev.enabled=false']),
+            'external-small',
+        )
+        for args in (['-c', 'remote_models=false'],
+                     ['-c', 'features.remote_control=false'],
+                     ['-c', 'features={"remote_plugin"=false}']):
+            with self.subTest(args=args), self.assertRaises(AgentBoxError):
+                ext.selected_model(config, 'deepseek', 'codex', args)
+
     def test_model_selection_is_explicit_or_from_that_cli_and_conflicts_fail(self):
         """Service/profile flags could reconnect the API process to the parent's RC server."""
         config = external_config()

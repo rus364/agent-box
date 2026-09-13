@@ -197,8 +197,11 @@ def invocation_settings(cli, args, *, managed=False):
                 root = next(iter(tomllib.loads(field + '=0')))
             except (ValueError, StopIteration):
                 raise AgentBoxError('Invalid external CLI configuration override') from None
-            if (root in CODEX_OWNED_CONFIG
-                    or 'remote' in field):
+            # The root key only: a later segment can be a name the user chose,
+            # and a desktop MCP called `remote_dev` is not a Remote Control
+            # setting. Remote Control keys Codex keeps under `features` are
+            # refused as native options just below.
+            if root in CODEX_OWNED_CONFIG or 'remote' in root:
                 raise AgentBoxError('ext owns API/model catalog and Remote Control settings; use --model for the model')
             if root == 'features':
                 try:
