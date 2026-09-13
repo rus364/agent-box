@@ -529,7 +529,7 @@ class LocalLandTests(unittest.TestCase):
         brief.write_text("Changes/reasons: integrated implementation. Risks: recovered history. Validation: true passed; no live proof.\n")
         with patch.object(workflow, "route", side_effect=selected_route), \
              patch.object(workflow.shutil, "which", return_value="provider-cli"), \
-             patch.object(workflow, "execute", return_value={"report": report}) as reviewer:
+             patch.object(workflow, "execute", return_value={"report": report, "route": {"provider": "claude", "model": "m", "effort": "high", "tier": 1}}) as reviewer:
             self.dispatch(["review", "7", "--primary", "codex", "--brief", str(brief)])
         reviewer.assert_called_once()
         self.assertIn("review the complete implementation", reviewer.call_args.args[-1])

@@ -110,7 +110,7 @@ class FailureDiagnosticsTests(unittest.TestCase):
         self.route = {"provider": "claude", "model": "haiku", "effort": "low", "tier": 1}
         self.report = {"verdict": "PASS", "summary": "Checked", "findings": []}
 
-    def run_response(self, output, *, stderr=b"", code=0, route=None, result=None, timeout=False, diagnostics=None):
+    def run_response(self, output, *, stderr=b"", code=0, route=None, result=None, timeout=False, diagnostics=None, on_completed=None):
         def popen(command, **kwargs):
             kwargs["stdout"].buffer.write(output)
             kwargs["stderr"].buffer.write(stderr)
@@ -122,7 +122,26 @@ class FailureDiagnosticsTests(unittest.TestCase):
             return process
         with patch.object(self.r.subprocess, "Popen", side_effect=popen), \
              patch.object(self.r.os, "killpg"):
-            return self.r.run(route or self.route, "reviewer", self.root, "private prompt", diagnostics=diagnostics)
+            return self.r.run(route or self.route, "reviewer", self.root, "private prompt",
+                              diagnostics=diagnostics, on_completed=on_completed)
+
+    def test_completion_hook_runs_with_diagnostics_before_temporary_files_are_removed(self):
+        """Workflow must save a successful response before the provider's temporary context exits."""
+        diagnostics = {}
+        active = []
+        original = self.r.tempfile.TemporaryDirectory
+        def temporary(*args, **kwargs):
+            directory = original(*args, **kwargs)
+            active.append(Path(directory.name))
+            return directory
+        def completed(report):
+            self.assertEqual(report, self.report)
+            self.assertTrue((active[-1] / "stdout").is_file())
+            self.assertEqual(diagnostics["usage"]["input_tokens"], 17)
+        envelope = {"structured_output": self.report, "usage": {"input_tokens": 17}}
+        with patch.object(self.r.tempfile, "TemporaryDirectory", side_effect=temporary):
+            self.run_response(json.dumps(envelope).encode(), diagnostics=diagnostics, on_completed=completed)
+        self.assertFalse(active[-1].exists())
 
     def test_success_usage_survives_the_runner_and_workflow_without_artifacts(self):
         """All observed Codex turn counters must survive aggregation into workflow output."""

@@ -674,7 +674,36 @@ pins and reports unsupported configurations. `wait_seconds` bounds waiting.
 Silence or a stale review never means acceptance; allowed fallback uses local
 fresh review. GitHub approvals and required checks still follow repository policy.
 
-## Failed managed attempts
+## Saved review results and failed attempts
+
+Completed native and managed reviews save a private immutable receipt before
+input cleanup or applicability checks. `workflow review-result TASK --round ROUND`
+reads its summary without tracker access; `result_path` contains the original
+report, findings, route, scope/head/base, fallback failures and available usage/cost.
+Unknown counters remain null. Public output contains the verdict and finding count,
+not private report text. `workflow inspect` names the last received result.
+
+`workflow review-result TASK --round ROUND --reconcile` retries application after
+tracker/evidence errors without dispatching a model or spending an attempt. It
+preserves route and freshness facts; applied rounds do not apply twice. Changed
+code/requirements and superseded rounds retain their reports but cannot accept
+new work, even after old refs are restored. Check `reconciliation.status` separately
+from the provider verdict: `saved`, `error` and `blocked` may be retried; `stale`,
+`superseded` and `invalid_input` cannot be accepted. CLI application failures exit 2
+with the saved-result summary. A receipt is operational evidence, not an
+unforgeable credential; editing workflow state is not a recovery procedure.
+
+Ordinary related links and labels do not invalidate validation/review content.
+Descriptions, titles, hierarchy and blockers remain in that scope. Review labels
+still trigger live review policy, tier selects the route, and reconciliation checks
+current tier, execution policy, lifecycle and ownership. Completion gates continue
+checking dependencies and hierarchy independently.
+
+Receipts use `WORKFLOW_STATE/review-results`, outside the checkout, with 0700
+directories and 0400 files. Per checkout, retention is 20 receipts, 32 MiB total,
+8 MiB each and seven days. Saving prunes only verified owned files; unknown files
+and symlinks stay untouched. No background cleanup or automatic paid rerun occurs.
+Read the full report locally and journal only necessary findings/evidence.
 
 Managed provider failures record the configured provider/model/effort/role,
 exit code, elapsed seconds, response source, stream byte sizes, numeric usage

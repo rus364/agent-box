@@ -270,7 +270,7 @@ class LandingFreshnessTests(unittest.TestCase):
                                "--provider", "claude", "--model", "m", "--effort", "high", "--fast", "off", "--fresh-context"])
             else:
                 with patch.object(workflow, "preflight", return_value=None), \
-                     patch.object(workflow, "execute", return_value={"report": report}) as reviewer:
+                     patch.object(workflow, "execute", return_value={"report": report, "route": {"provider": "claude", "model": "m", "effort": "high", "tier": 1}}) as reviewer:
                     self.dispatch(["review", "7", "--primary", "codex", "--brief", str(brief)])
                 reviewer.assert_called_once()
                 if integrated:
@@ -471,8 +471,7 @@ class LandingFreshnessTests(unittest.TestCase):
         from agent_box.errors import AgentBoxError
         original = self.parent
         for phase in ("find", "view", "threads"):
-            for change in ({"title": "New goal"}, {"description": "- [x] Different acceptance"},
-                           {"labels": ["sensitive"]}):
+            for change in ({"title": "New goal"}, {"description": "- [x] Different acceptance"}):
                 self.parent = original
                 with self.subTest(phase=phase, change=change):
                     with self.assertRaisesRegex(AgentBoxError, "validation"):
@@ -589,7 +588,7 @@ class LandingFreshnessTests(unittest.TestCase):
         from agent_box.errors import AgentBoxError
         original = self.parent
         self.child = replace(self.child, state="Doing")
-        for change in ({"title": "Changed goal"}, {"labels": ["sensitive"]}, {"children": ["8"]},
+        for change in ({"title": "Changed goal"}, {"children": ["8"]},
                        {"assignees": ["2"]}, {"blockers": ["8"]},
                        {"description": "## Acceptance\n- [x] Different requirement"}):
             self.parent = original

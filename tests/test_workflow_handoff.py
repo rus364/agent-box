@@ -79,7 +79,11 @@ def managed_runner(provider):
 
     def call(*args, **kwargs):
         signature.bind(*args, **kwargs)
-        return provider(*args, **kwargs)
+        on_completed = kwargs.pop("on_completed", None)
+        report = provider(*args, **kwargs)
+        if on_completed:
+            on_completed(report)
+        return report
 
     return call
 
@@ -614,12 +618,19 @@ class WorkerHandoffTests(unittest.TestCase):
                     with patch.object(workflow, "run", side_effect=managed_runner(provider)) as runner:
                         if outcome == "success":
                             self.consume_read_only(prepared, managed=True)
+                        elif role == "reviewer" and outcome != "failure":
+                            result = self.consume_read_only(prepared, managed=True)
+                            self.assertEqual(result["reconciliation"]["status"], "invalid_input")
+                            self.assertTrue(Path(result["result_path"]).exists())
+                            self.assertNotIn("review", workflow.read_evidence(self.root, self.task))
                         else:
                             with self.assertRaises(AgentBoxError):
                                 self.consume_read_only(prepared, managed=True)
                             self.assertNotIn("review", workflow.read_evidence(self.root, self.task))
                         self.assertEqual(runner.call_count, 1)
-                    if outcome in ("replaced-package", "unknown-file"):
+                    if role == "reviewer" and outcome == "symlink":
+                        self.assertTrue(path.is_symlink())
+                    elif outcome in ("replaced-package", "unknown-file"):
                         self.assertEqual(path.read_bytes(), raw)
                         if outcome == "unknown-file":
                             self.assertEqual((path.parent / "user-notes.txt").read_text(), "keep")
@@ -1069,15 +1080,15 @@ class WorkerHandoffTests(unittest.TestCase):
 
                     if backend == "native":
                         self.report.write_text(json.dumps(publish()))
-                        with self.assertRaisesRegex(AgentBoxError, "stale"):
-                            self.run_workflow("report", "1", "--role", "reviewer", "--provider", "claude",
+                        result = self.run_workflow("report", "1", "--role", "reviewer", "--provider", "claude",
                                               "--model", "m", "--effort", "high", "--fresh-context",
                                               "--scope", prepared["scope"], "--handoff", prepared["handoff"],
                                               "--file", str(self.report))
                     else:
                         with patch.object(workflow, "run", side_effect=publish):
-                            with self.assertRaisesRegex(AgentBoxError, "stale"):
-                                self.managed_fallback(prepared)
+                            result = self.managed_fallback(prepared)
+                    self.assertEqual(result["reconciliation"]["status"], "superseded")
+                    self.assertTrue(Path(result["result_path"]).exists())
                     self.assertNotIn("review", workflow.read_evidence(self.root, self.task))
 
     def test_managed_failure_preserves_dirty_edits_and_refuses_retry(self):
@@ -1746,8 +1757,9 @@ class WorkerHandoffTests(unittest.TestCase):
                 "--scope", prepared["scope"], "--handoff", prepared["handoff"],
                 "--file", str(report), "--fresh-context")
 
-        with self.assertRaisesRegex(AgentBoxError, "Review round is stale"):
-            report_round(first)
+        retired = report_round(first)
+        self.assertEqual(retired["reconciliation"]["status"], "superseded")
+        self.assertTrue(Path(retired["result_path"]).exists())
         self.assertNotIn("review", workflow.read_evidence(self.root, self.task))
         self.assertTrue(workflow.review_blockers(
             self.config.workflow.review, [self.task], [], 0,
@@ -1777,9 +1789,10 @@ class WorkerHandoffTests(unittest.TestCase):
                 "--brief", str(self.review_brief)))
             return {"verdict": "PASS", "summary": "Older managed round", "findings": []}
 
-        with patch.object(workflow, "run", side_effect=managed_runner(provider)), \
-             self.assertRaisesRegex(AgentBoxError, "Review round is stale"):
-            self.run_workflow("review", "1", "--primary", "codex", "--brief", str(self.review_brief))
+        with patch.object(workflow, "run", side_effect=managed_runner(provider)):
+            result = self.run_workflow("review", "1", "--primary", "codex", "--brief", str(self.review_brief))
+        self.assertEqual(result["reconciliation"]["status"], "superseded")
+        self.assertTrue(Path(result["result_path"]).exists())
         self.assertNotIn("review", workflow.read_evidence(self.root, self.task))
         prepared = pending[0]
         self.report.write_text(json.dumps({"verdict": "PASS", "summary": "Latest native", "findings": []}))
@@ -1789,7 +1802,8 @@ class WorkerHandoffTests(unittest.TestCase):
             "--scope", prepared["scope"], "--handoff", prepared["handoff"],
             "--file", str(self.report), "--fresh-context")
         self.assertEqual(result["review_budget"]["used"], 2)
-        self.assertEqual(workflow.read_evidence(self.root, self.task)["review"]["summary"], "Latest native")
+        private = json.loads(Path(result["result_path"]).read_text())
+        self.assertEqual(private["output"]["report"]["summary"], "Latest native")
 
     def test_managed_reviewer_reads_ephemeral_evidence_before_cleanup(self):
         self.config.workflow.review.policy = "always"
@@ -1828,12 +1842,13 @@ class WorkerHandoffTests(unittest.TestCase):
         self.assertTrue(all(not path.exists() for path in artifact_paths))
         self.assertTrue((pending_path / "manifest.json").is_file())
         self.report.write_text(json.dumps({"verdict": "INCONCLUSIVE", "summary": "Older native", "findings": []}))
-        with self.assertRaisesRegex(AgentBoxError, "Review round is stale"):
-            self.run_workflow(
+        retired = self.run_workflow(
                 "report", "1", "--role", "reviewer", "--primary", "codex",
                 "--provider", "claude", "--model", "m", "--effort", "high",
                 "--scope", pending["scope"], "--handoff", pending["handoff"],
                 "--file", str(self.report), "--fresh-context")
+        self.assertEqual(retired["reconciliation"]["status"], "superseded")
+        self.assertTrue(Path(retired["result_path"]).exists())
         self.assertFalse(pending_path.exists())
         self.assertEqual(workflow.read_evidence(self.root, self.task)["review"]["verdict"], "PASS")
         self.assertEqual(workflow.read_review_budget(self.root, BINDING, self.task, 3)["used"], 2)

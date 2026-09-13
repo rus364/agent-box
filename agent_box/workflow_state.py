@@ -10,7 +10,7 @@ from .paths import WORKFLOW_STATE
 
 
 @contextmanager
-def lock(scope, purpose):
+def lock(scope, purpose, *, blocking=False):
     key = hashlib.sha256(str(Path(scope).resolve()).encode()).hexdigest()[:24]
     directory = WORKFLOW_STATE / "locks"
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -18,7 +18,7 @@ def lock(scope, purpose):
     fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
     try:
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(fd, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
         except BlockingIOError:
             raise AgentBoxError(f"Another local {purpose} operation owns {scope}") from None
         yield

@@ -305,7 +305,7 @@ def codex_usage(path):
     return response_metadata({"usage": totals or None})
 
 
-def run(route, role, root, prompt, *, timeout=3600, read_paths=(), diagnostics=None):
+def run(route, role, root, prompt, *, timeout=3600, read_paths=(), diagnostics=None, on_completed=None):
     from .external_launch import builtin_environment, prepare
     env = builtin_environment(os.environ)
     for key in ("CLAUDE_CODE_SUBAGENT_MODEL", "CLAUDE_CODE_EFFORT_LEVEL", "CLAUDECODE"):
@@ -367,6 +367,8 @@ def run(route, role, root, prompt, *, timeout=3600, read_paths=(), diagnostics=N
                     metadata.update(codex_usage(directory / "stdout"))
                 if diagnostics is not None:
                     diagnostics.update({key: metadata[key] for key in ("usage", "total_cost_usd")})
+                if on_completed is not None:
+                    on_completed(report)
                 return report
             except ProviderFailure as exc:
                 stdout.flush()

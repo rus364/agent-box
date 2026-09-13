@@ -30,6 +30,7 @@ import subprocess
 import sys
 from pathlib import Path
 from contextlib import nullcontext
+from types import SimpleNamespace
 
 from .atomicio import atomic_write_text
 from .config import effective_config, effective_config_source
@@ -44,6 +45,7 @@ from .tracker.core import claim, checkboxes, root_task, completion_reasons, bloc
 from .tracker.registry import make_adapter
 from .usage import usage_snapshot
 from .workflow_state import lock, scout_slot
+from . import review_results
 
 INSTRUCTION_FILES = ("AGENTS.md", "CLAUDE.md")
 REVIEW_HANDOFF_MAX_BYTES = 32768
@@ -144,7 +146,30 @@ def same_worker_requirements(current, prepared):
             offset = item["offset"]
             body = body[:offset] + line + body[offset + len(item["line"]):]
         return {**record, "description": body}
-    return [canonical(item) for item in current] == [canonical(item) for item in prepared]
+    return scope_requirements([canonical(item) for item in current]) == scope_requirements(
+        [canonical(item) for item in prepared])
+
+
+def scope_requirements(records):
+    """Links and labels are metadata; hierarchy and blockers constrain integration.
+
+    Review-label and tier consumers still evaluate live policy and routing. The
+    full description stays normative here, including constraints outside headings.
+    """
+    return [{key: value for key, value in item.items() if key not in ("related", "labels")}
+            for item in records]
+
+
+def review_scope(root, base, tasks, config):
+    components = {"head": gw.head_sha(root), "base": gw.base_commit(root, base),
+                  "branch": gw.current_branch(root), "base_branch": base}
+    for task in scope_requirements(requirements(tasks)):
+        for key, value in task.items():
+            components[f"task:{task['id']}.{key}"] = hashlib.sha256(
+                json.dumps(value, sort_keys=True).encode()).hexdigest()
+    return {"components": components,
+            "conditions": {"execution_policy": config.workflow.worker.execution,
+                           "tiers": {task.id: task.tier for task in tasks}}}
 
 
 REVIEW_REQUIREMENT_SECTIONS = {
@@ -271,7 +296,7 @@ def read_facts(path, task, fingerprint):
 
 
 def scope_fingerprint(head, base, task_requirements, *, working_diff=None):
-    content = {"head": head, "base": base, "tasks": task_requirements}
+    content = {"head": head, "base": base, "tasks": scope_requirements(task_requirements)}
     if working_diff is not None:
         content["working_diff"] = working_diff
     return hashlib.sha256(json.dumps(content, sort_keys=True).encode()).hexdigest()
@@ -371,6 +396,14 @@ def read_review_state(root, binding, task):
                          or not isinstance(value.get("ceiling_reason"), str)
                          or not value["ceiling_reason"].strip()))):
             raise ValueError("invalid budget structure")
+        results = value.get("results", [])
+        if (not isinstance(results, list) or len(results) > review_results.MAX_FILES
+                or any(not isinstance(item, dict) or not isinstance(item.get("round"), str)
+                       or not isinstance(item.get("receipt"), dict)
+                       or item.get("status") not in ("saved", "error", "blocked", "applied", "stale", "superseded", "invalid_input")
+                       or not isinstance(item.get("changes"), list) or not isinstance(item.get("reason"), str)
+                       for item in results)):
+            raise ValueError("invalid review result index")
     except FileNotFoundError:
         value = {"used": 0}
     except (OSError, ValueError) as exc:
@@ -432,6 +465,144 @@ def claim_managed_review(root, binding, task, round_id, fingerprint):
         save_evidence(root, task, saved)
         state["pending_backend"] = "managed"
         save_review_state(root, binding, task, state)
+
+
+def store_review_result(root, binding, task, descriptor, output, backend):
+    """A response becomes durable before any tracker read or input cleanup."""
+    with lock(root, "review-result", blocking=True):
+        receipt = review_results.save(WORKFLOW_STATE, root, repository_key(root), {
+            "descriptor": descriptor, "output": output, "backend": backend})
+    with lock(root, "review-budget", blocking=True):
+        state = read_review_state(root, binding, task)
+        records = state.setdefault("results", [])
+        round_id = descriptor["delegation"]
+        previous = next((item for item in records if item["round"] == round_id), None)
+        if previous:
+            raise AgentBoxError("Review round is stale or already reported; use workflow review-result --reconcile")
+        records.append({"round": round_id, "receipt": receipt, "status": "saved",
+                        "changes": [], "reason": "Provider response saved; applicability not checked"})
+        state["results"] = records[-review_results.MAX_FILES:]
+        save_review_state(root, binding, task, state)
+        return round_id
+
+
+def review_result(root, binding, adapter, task, config, round_id=None, *, reconcile=False):
+    """Retry only application of the latest receipt; terminal decisions never revive."""
+    with lock(root, "review-budget"):
+        state = read_review_state(root, binding, task)
+        records = state.get("results", [])
+        record = next((item for item in reversed(records)
+                       if round_id is None or item["round"] == round_id), None)
+        if record is None:
+            raise AgentBoxError("No saved review result; inspect provider failure diagnostics before a new dispatch")
+        value, path = review_results.read(WORKFLOW_STATE, repository_key(root), record["receipt"])
+        descriptor, output = value["descriptor"], value["output"]
+        if descriptor["task"] != task.id or descriptor["delegation"] != record["round"]:
+            raise AgentBoxError("Review result identity differs from its reserved round")
+        if reconcile and record["status"] not in ("stale", "superseded", "applied", "invalid_input"):
+            stage = "input verification and cleanup"
+            try:
+                if not record.get("input_checked"):
+                    try:
+                        read_delegation_input(root, descriptor)
+                    except (AgentBoxError, OSError):
+                        record.update(status="invalid_input", changes=["canonical_input"],
+                                      reason="Canonical input changed after dispatch; result retained without acceptance")
+                        save_review_state(root, binding, task, state)
+                        return review_result_summary(task, config, state, record, value, path)
+                    record["input_checked"] = True
+                    save_review_state(root, binding, task, state)
+                cleanup_delegation_input(root, descriptor)
+                if (state.get("pending") != record["round"]
+                        or state["used"] != descriptor["review_attempt"]):
+                    record.update(status="superseded", changes=["round"],
+                                  reason="A newer or completed round prevents acceptance")
+                elif state.get("pending_backend") != value["backend"]:
+                    record.update(status="superseded", changes=["backend"],
+                                  reason="The reserved backend differs from the completed response")
+                else:
+                    stage = "tracker read"
+                    current_task = adapter.get(task.id)
+                    stage = "scope read"
+                    _, _, _, base = resolve(root, adapter, current_task)
+                    tasks = tree(adapter, current_task)
+                    current = review_scope(root, base, tasks, config)
+                    prepared = descriptor["review_scope"]
+                    changed = sorted(key for key in current["components"].keys() | prepared["components"].keys()
+                                     if current["components"].get(key) != prepared["components"].get(key))
+                    if gw.worktree_changes(root):
+                        changed.append("working_tree")
+                    if changed:
+                        record.update(status="stale", changes=changed,
+                                      reason="Code or requirements changed; historical verdict cannot accept this scope")
+                    else:
+                        conditions = sorted(key for key in current["conditions"]
+                                            if current["conditions"][key] != prepared["conditions"][key])
+                        if current_task.state not in ("Doing", "Review"):
+                            conditions.append("lifecycle")
+                        if current_task.assignees != [str(adapter.identity()["id"])]:
+                            conditions.append("ownership")
+                        if conditions:
+                            record.update(status="blocked", changes=conditions,
+                                          reason="Current workflow conditions prevent application")
+                        else:
+                            stage = "evidence write"
+                            saved = evidence(root, task, descriptor["scope"])
+                            accepted = {"verdict": output["report"]["verdict"], **{key: output[key] for key in (
+                                "route", "fallback_reason", "failures", "fresh_context") if key in output},
+                                "result": record["receipt"]["id"], "round": record["round"]}
+                            # If the evidence write succeeded before a state-write failure,
+                            # retry finalizes that transaction without applying it twice.
+                            if saved.get("review") != accepted:
+                                saved.pop("human_acceptance", None)
+                                saved["review"] = accepted
+                                save_evidence(root, task, saved)
+                            record.update(status="applied", changes=[], reason="Result applied to its original scope")
+                            state.pop("pending", None)
+                            state.pop("pending_backend", None)
+            except (AgentBoxError, OSError, ValueError) as exc:
+                # Error text can include tracker/provider payloads; retain only its type publicly.
+                record.update(status="error", changes=[], reason=stage + " failed: " + type(exc).__name__,
+                              diagnostic=str(exc)[:2048])
+            try:
+                save_review_state(root, binding, task, state)
+            except OSError:
+                record.update(status="error", changes=[], reason="Reconciliation state write failed: OSError")
+        return review_result_summary(task, config, state, record, value, path)
+
+
+def review_result_summary(task, config, state, record, value, path):
+    descriptor, output = value["descriptor"], value["output"]
+    result = {"task": task.id, "round": record["round"], "scope": descriptor["scope"],
+              "provider_response": "completed", "verdict": output["report"]["verdict"],
+              "report": {"verdict": output["report"]["verdict"],
+                         "finding_count": len(output["report"]["findings"])},
+              "result_path": str(path), "route": output["route"],
+              "diagnostics": output.get("diagnostics", {"usage": None, "total_cost_usd": None}),
+              "reconciliation": {key: record[key] for key in ("status", "changes", "reason")},
+              "review_budget": review_budget_summary(state, config.workflow.review.max_rounds)}
+    result.update({key: output[key] for key in ("failures", "fallback_reason", "fresh_context") if key in output})
+    if record["status"] in ("saved", "error", "blocked"):
+        result["next_step"] = f"agent-box workflow review-result {task.id} --round {record['round']} --reconcile"
+    return result
+
+
+def native_review_result(args, root, binding, adapter, config):
+    task = SimpleNamespace(id=args.task)
+    identity = delegation_identity(root, binding)
+    descriptor = read_handoff_descriptor(identity, task, args.scope, args.handoff or "")
+    tier = descriptor["route"]["tier"]
+    check_handoff_route(descriptor, "reviewer", args.tier if args.tier is not None else tier)
+    with lock(root, "review-budget"):
+        state = read_review_state(root, binding, task)
+        if state.get("pending") == descriptor["delegation"] and state.get("pending_backend") == "managed":
+            raise AgentBoxError("This round moved to managed execution; its native report is stale")
+        if any(item["round"] == descriptor["delegation"] for item in state.get("results", [])):
+            raise AgentBoxError("Review round is stale or already reported; use workflow review-result --reconcile")
+    read_delegation_input(root, descriptor)
+    output = native_output(args, descriptor["route"], tier)
+    round_id = store_review_result(root, binding, task, descriptor, output, "native")
+    return review_result(root, binding, adapter, task, config, round_id, reconcile=True)
 
 
 def diff_stats(root, base):
@@ -537,11 +708,16 @@ def inspect(root, binding, adapter, task, config):
     if changes:
         unavailable.append(gw.dirty_tree_reason(changes))
     execution = read_evidence(root, task).get("execution")
+    review_state = read_review_state(root, binding, task)
     review = {"policy": config.workflow.review.policy,
-              "budget": read_review_budget(root, binding, task, config.workflow.review.max_rounds),
+              "budget": review_budget_summary(review_state, config.workflow.review.max_rounds),
               "max_files": config.workflow.review.max_files, "max_lines": config.workflow.review.max_lines,
               "files": None, "lines": None, "required": None, "reasons": [],
               "independent_verdict": None, "human_accepted": None}
+    if review_state.get("results"):
+        latest = review_state["results"][-1]
+        review["last_result"] = {key: latest[key] for key in ("round", "status", "changes", "reason")}
+        review["result_command"] = f"agent-box workflow review-result {task.id} --round {latest['round']}"
     result = {"task": task.id, **info, "task_branch": expected, "current_branch": branch,
               "head": head, "scope": None, "configuration": configuration_summary(config),
               "acceptance": {"available": not unavailable, "reasons": unavailable},
@@ -797,15 +973,18 @@ def session_route(args, role, config=None, *, delegated=False):
     return result
 
 
-def execute(config, selected, role, root, prompt, read_paths=()):
+def execute(config, selected, role, root, prompt, read_paths=(), on_completed=None):
     failures = []
     for candidate in [selected, *selected["fallbacks"]]:
         try:
             diagnostics = {"usage": None, "total_cost_usd": None}
+            def completed(report):
+                return {"route": {k: candidate[k] for k in ("provider", "api_provider", "api_fingerprint", "model", "effort", "tier", "fast") if k in candidate},
+                        "report": report, "failures": list(failures), "diagnostics": dict(diagnostics)}
             report = run(candidate, role, root, prompt, timeout=config.timeout_seconds,
-                         read_paths=read_paths, diagnostics=diagnostics)
-            return {"route": {k: candidate[k] for k in ("provider", "api_provider", "api_fingerprint", "model", "effort", "tier", "fast") if k in candidate},
-                    "report": report, "failures": failures, "diagnostics": diagnostics}
+                         read_paths=read_paths, diagnostics=diagnostics,
+                         **({"on_completed": lambda report: on_completed(completed(report))} if on_completed else {}))
+            return completed(report)
         except ProviderFailure as exc:
             failures.append({"provider": candidate["provider"],
                              **({"api_provider": candidate["api_provider"]} if candidate.get("api_provider") else {}),
@@ -1133,15 +1312,19 @@ def begin(root, adapter, task, resume):
 def parser():
     p = argparse.ArgumentParser(prog="agent-box workflow")
     sub = p.add_subparsers(dest="command", required=True)
-    for name in ("begin", "inspect", "approve", "prepare", "run", "review", "review-budget", "validate", "report", "finish", "pr", "land", "writer"):
+    for name in ("begin", "inspect", "approve", "prepare", "run", "review", "review-result", "review-budget", "validate", "report", "finish", "pr", "land", "writer"):
         description = {
             "inspect": "Read branch, acceptance availability, review budget and next step; works before begin or with uncommitted files",
             "prepare": "Choose direct/delegated worker execution before routing; auto requires --execution and --reason. Prepare on a clean task branch",
             "review": "Apply review policy to the clean task scope and dispatch a required review",
+            "review-result": "Read a private completed result or retry reconciliation without a model call or attempt",
         }.get(name)
         cmd = sub.add_parser(name, **({"help": description, "description": description} if description else {}))
         cmd.add_argument("task")
         cmd.add_argument("--primary", choices=("codex", "claude"), default=os.environ.get("AGENT_BOX_PRIMARY_PROVIDER"))
+        if name == "review-result":
+            cmd.add_argument("--round", help="Saved round identifier; defaults to the last received result")
+            cmd.add_argument("--reconcile", action="store_true", help="Apply a still-pending result to its original scope")
         if name == "writer":
             cmd.add_argument("--provider", choices=("codex", "claude"), required=True)
         if name == "review-budget":
@@ -1611,6 +1794,11 @@ def dispatch(args):
     root = repository_root()
     binding = Binding.load(root)
     adapter = make_adapter(binding)
+    if args.command == "review-result":
+        return review_result(root, binding, adapter, SimpleNamespace(id=args.task), config,
+                             args.round, reconcile=args.reconcile)
+    if args.command == "report" and args.role == "reviewer":
+        return native_review_result(args, root, binding, adapter, config)
     if args.command == "finish":
         return finish(root, config, adapter, args.task)
     if args.command in ("pr", "land"):
@@ -1660,26 +1848,6 @@ def dispatch(args):
         check_handoff_route(descriptor, "reviewer", delegation_tier(args, task, "reviewer"))
         if not (args.fallback_reason or "").strip():
             raise AgentBoxError("Pass --fallback-reason explaining why the prepared native review could not run")
-    if args.command == "report":
-        if not args.handoff:
-            raise AgentBoxError("Pass --handoff with the descriptor prepare returned for this delegation")
-        descriptor = read_handoff_descriptor(identity, task, args.scope, args.handoff)
-        check_handoff_route(descriptor, args.role, delegation_tier(args, task, args.role))
-        with lock(root, "review-budget") if args.role == "reviewer" else nullcontext():
-            if args.role == "reviewer":
-                state = read_review_state(root, binding, task)
-                if (state.get("pending") == descriptor["delegation"]
-                        and state.get("pending_backend") == "managed"):
-                    raise AgentBoxError("This round moved to managed execution; its native report is stale")
-            if state.get("pending") != descriptor["delegation"]:
-                path = delegation_input_path(root, descriptor)
-                if path.exists():
-                    read_delegation_input(root, descriptor)
-                    cleanup_delegation_input(root, descriptor)
-                raise AgentBoxError("Review round is stale or already reported; only the latest pending round can report")
-            read_delegation_input(root, descriptor)
-            output = native_output(args, descriptor["route"], delegation_tier(args, task, args.role))
-            cleanup_delegation_input(root, descriptor)
     saved = evidence(root, task, fingerprint)
     if args.command == "approve":
         if config.workflow.merge_mode != "local" or task.id != parent.id:
@@ -1799,6 +1967,8 @@ def dispatch(args):
                                     "Return the role JSON schema."}
             result["review_budget"] = budget
             descriptor = json.loads(base64.urlsafe_b64decode(result["handoff"]))
+            descriptor["review_scope"] = review_scope(root, base, tasks, config)
+            descriptor["review_attempt"] = budget["used"]
             try:
                 prompt = reviewer_handoff(
                     root, base, tasks, brief, saved, review_context, task.id, fingerprint,
@@ -1864,6 +2034,16 @@ def dispatch(args):
             execution_lock = lock(root, "review")
             selected, preflight_failures = managed_review_route(selected)
             managed_started = False
+            output = None
+            result_saved = False
+            def completed(value):
+                nonlocal output, result_saved
+                output = value
+                output["failures"] = preflight_failures + output.get("failures", [])
+                if reuse_review:
+                    output["fallback_reason"] = args.fallback_reason.strip()
+                store_review_result(root, binding, task, descriptor, output, "managed")
+                result_saved = True
             try:
                 with execution_lock:
                     if scope(root, base, tree(adapter, adapter.get(task.id))) != fingerprint:
@@ -1875,8 +2055,8 @@ def dispatch(args):
                         prompt = read_delegation_input(root, descriptor)
                         claim_managed_review(root, binding, task, review_round, fingerprint)
                     else:
-                        reserve_review(root, binding, task, config.workflow.review.max_rounds,
-                                       review_round, fingerprint, managed=True)
+                        budget = reserve_review(root, binding, task, config.workflow.review.max_rounds,
+                                                review_round, fingerprint, managed=True)
                     managed_started = True
                     saved = evidence(root, task, fingerprint)
                     if not reuse_review:
@@ -1885,49 +2065,34 @@ def dispatch(args):
                             review_round)
                         descriptor = json.loads(base64.urlsafe_b64decode(handoff_descriptor(
                             identity, task, fingerprint, selected, delegation=review_round)))
+                        descriptor["review_scope"] = review_scope(root, base, tasks, config)
+                        descriptor["review_attempt"] = budget["used"]
                         bind_delegation_input(root, descriptor, prompt)
                         prompt = read_delegation_input(root, descriptor)
                     output = execute(
                         config.workflow, selected, role, root, prompt,
                         read_paths=([review_evidence_path(
                             root, task.id, fingerprint, review_round)]
-                                    if role == "reviewer" else ()))
-                    read_delegation_input(root, descriptor)
-                    output["failures"] = preflight_failures + output.get("failures", [])
-                    if reuse_review:
-                        output["fallback_reason"] = args.fallback_reason.strip()
+                                    if role == "reviewer" else ()), on_completed=completed)
+                    if not result_saved:
+                        completed(output)
             finally:
-                if managed_started:
+                if managed_started and output is None:
                     if descriptor and "input" in descriptor:
                         cleanup_delegation_input(root, descriptor)
                     else:
                         cleanup_review_evidence(review_evidence_path(
                             root, task.id, fingerprint, review_round))
-        with lock(root, "review-budget"):
-            state = read_review_state(root, binding, task)
-            if state.get("pending") != review_round:
-                raise AgentBoxError("Review round is stale or already reported; only the latest pending round can report")
-            if args.command == "report" and state.get("pending_backend") != "native":
-                raise AgentBoxError("This round moved to managed execution; its native report is stale")
-            if scope(root, base, tree(adapter, adapter.get(task.id))) != fingerprint:
-                raise AgentBoxError("Code or requirements changed during review; report is stale")
-            saved = evidence(root, task, fingerprint)
-            saved.pop("human_acceptance", None)
-            saved["review"] = {**output["report"], **{
-                key: output[key] for key in ("route", "fallback_reason", "failures", "fresh_context") if key in output}}
-            save_evidence(root, task, saved)
-            state.pop("pending", None)
-            state.pop("pending_backend", None)
-            save_review_state(root, binding, task, state)
-        result = {**output, "scope": fingerprint}
-        result["review_budget"] = read_review_budget(root, binding, task, config.workflow.review.max_rounds)
-        return result
+        return review_result(root, binding, adapter, task, config, review_round, reconcile=True)
     raise AgentBoxError("Unknown workflow command")
 
 
 def main(argv):
     try:
-        print(json.dumps(dispatch(parser().parse_args(argv)), ensure_ascii=False, indent=2))
+        result = dispatch(parser().parse_args(argv))
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        if result.get("reconciliation", {}).get("status") in ("error", "blocked", "stale", "superseded", "invalid_input"):
+            return 2
         return 0
     except (AgentBoxError, OSError, ValueError, subprocess.TimeoutExpired) as exc:
         print(json.dumps({"error": str(exc)}))
