@@ -148,6 +148,10 @@ For an already running server, apply the setting from `agent-box shell` with
 Only real terminals are wrapped — pipes, redirects, CI and `claude -p` write
 straight to stdout. `AGENT_BOX_TMUX=0` disables tmux for one launch.
 
+A wrapped session that fails reports its exit status and nothing else: the pane
+is destroyed with the session, so whatever the command printed before it died
+goes with it. Rerun with `AGENT_BOX_TMUX=0` to read it on the terminal.
+
 ### Extra mounts
 
 The project root is the only workspace path mounted automatically:

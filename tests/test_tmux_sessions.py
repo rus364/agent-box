@@ -1,3 +1,5 @@
+import contextlib
+import io
 import os
 import tempfile
 import unittest
@@ -73,6 +75,25 @@ class TmuxSessionCommandTests(unittest.TestCase):
         self.assertEqual(session.finish("box", 0), 7)
         # Reading consumes it: nothing is left to mislead a later launch.
         self.assertFalse(session.status_path.exists())
+
+    def test_failed_session_says_its_output_went_with_the_terminal(self):
+        """A pane dies with its session, so a failure to read is unrecoverable.
+
+        Reporting only the exit status is how a dead external Codex launch
+        looked like a bare '[exited]' with the reason already gone.
+        """
+        session = runtime.tmux_session("codex", self.state)
+        session.status_path.write_text("1\n")
+        with contextlib.redirect_stderr(io.StringIO()) as stderr:
+            self.assertEqual(session.finish("box", 0), 1)
+        self.assertIn("AGENT_BOX_TMUX=0", stderr.getvalue())
+
+    def test_a_clean_session_end_is_reported_only_by_its_status(self):
+        session = runtime.tmux_session("claude", self.state)
+        session.status_path.write_text("0\n")
+        with contextlib.redirect_stderr(io.StringIO()) as stderr:
+            self.assertEqual(session.finish("box", 0), 0)
+        self.assertEqual(stderr.getvalue(), "")
 
     def test_detached_session_reports_zero_and_says_how_to_return(self):
         session = runtime.tmux_session("claude", self.state)
