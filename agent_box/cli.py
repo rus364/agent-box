@@ -19,6 +19,7 @@ from .config import (
     load_config,
     parse_env_spec,
     save_config,
+    session_snapshot_only,
 )
 from .errors import AgentBoxError
 from .paths import CLAUDE_HOME
@@ -131,6 +132,11 @@ Configuration:
                             by doing this, so it is only needed after editing
                             config.json by hand. Starting an agent never
                             applies configuration by itself.
+                            Inside a workspace box the saved file is not
+                            mounted, so this applies the rendered session
+                            configuration instead: skills and profiles only,
+                            leaving notifications, hooks, status line,
+                            credentials, PATH and Claude links alone.
 
 Installation:
   agent-box upgrade         Fetch and move this checkout to the newest release
@@ -478,6 +484,10 @@ def path_status(config) -> list[str]:
 
 
 def config_interactive(project=False) -> None:
+    if not project and session_snapshot_only():
+        die("refusing to edit the saved configuration: this session reads the rendered "
+            f"configuration {effective_config_source()['path']} and does not mount the file; "
+            "run 'agent-box config' on the host")
     from . import config_menu, runtime
     from . import project_config
     path = project_config.project_path() if project else None
@@ -512,15 +522,27 @@ def config_apply() -> None:
     it ``install`` only ever competed with the word for cloning the
     repository. ``agent-box upgrade`` applies afterwards on its own, which
     leaves hand-editing ``config.json`` as the one reason to run this.
+
+    Inside a workspace box the saved file is not mounted, so the command
+    applies what the rendered session snapshot describes -- the shipped
+    skills and the configured agent profiles -- and leaves the host-only
+    sections alone; see :func:`agent_box.runtime.apply_config`.
     """
     from . import runtime
-    config = load_config()
-    for line in runtime.apply_config(config):
+    session = session_snapshot_only()
+    config = effective_config() if session else load_config()
+    if session:
+        print(f"agent-box: applying the rendered session configuration "
+              f"{effective_config_source()['path']}: skills and profiles only; "
+              "notifications, hooks, status line, credentials, PATH and Claude "
+              "links are host-only and untouched")
+    for line in runtime.apply_config(config, session=session):
         print(f"agent-box: {line}")
     for problem in runtime.tracker_warnings(config):
         print(f"agent-box: warning: {problem}", file=sys.stderr)
-    for line in path_status(config):
-        print(f"agent-box: {line}")
+    if not session:
+        for line in path_status(config):
+            print(f"agent-box: {line}")
 
 
 def config_command(args: list[str]) -> None:

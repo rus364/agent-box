@@ -15,14 +15,27 @@ exactly one answer.
 import contextlib
 import io
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
-from agent_box import claude_settings, cli, runtime
+from agent_box import claude_settings, cli, config as config_module, runtime
 from agent_box.config import Config, TrackerConnection
 from agent_box.workspace import Workspace
+
+
+def _tree(root: Path):
+    """Every file and symlink under root, for an exact before/after comparison."""
+    entries = {}
+    for path in sorted(root.rglob("*")):
+        name = str(path.relative_to(root))
+        if path.is_symlink():
+            entries[name] = ("link", os.readlink(path))
+        elif path.is_file():
+            entries[name] = ("file", path.read_bytes())
+    return entries
 
 
 class ApplyConfigTests(unittest.TestCase):
@@ -57,6 +70,16 @@ class ApplyConfigTests(unittest.TestCase):
         config = Config()
         config.tracker.enabled = True
         config.tracker.connections["vikunja"] = TrackerConnection("https://tasks.example.com", "tk")
+        return config
+
+    def _fully_enabled(self):
+        """A saved configuration whose apply leaves every kind of artifact behind."""
+        config = self._enabled()
+        config.notifications.enabled = True
+        config.notifications.telegram_token = "123456:token"
+        config.notifications.telegram_chat_id = "42"
+        config.workflow.enabled = True
+        config.workflow.tiers["1"]["codex"]["model"] = "chosen-model"
         return config
 
     def test_it_installs_the_skills_the_configuration_enables(self):
@@ -123,6 +146,91 @@ class ApplyConfigTests(unittest.TestCase):
              contextlib.redirect_stderr(errors):
             cli.config_apply()
         self.assertIn("warning", errors.getvalue())
+
+    def test_config_apply_in_a_session_refreshes_skills_and_leaves_host_sections_alone(self):
+        """The 2026-09-13 incident: applying from a box must not remove host integrations."""
+        config = self._fully_enabled()
+        with contextlib.redirect_stderr(io.StringIO()):
+            runtime.apply_config(config)
+        # Every kind of artifact the incident lost, present before the session apply.
+        self.assertTrue((self.shared / "ab-tracker/SKILL.md").is_file())
+        self.assertTrue((self.shared / "ab-tracker/.agent-box-managed.json").is_file())
+        self.assertTrue((self.claude / "skills/ab-tracker").is_symlink())
+        self.assertTrue((self.claude / "settings.json").is_file())
+        self.assertTrue((self.root / "home/.codex/config.toml").is_file())
+        self.assertTrue((self.root / "home/.codex/agents/ab-worker-1.toml").is_file())
+        (self.shipped / "ab-tracker/SKILL.md").write_text("# vikunja v2\n")
+        snapshot = self.root / "session/config.json"
+        snapshot.parent.mkdir(parents=True)
+        snapshot.write_text(json.dumps(config.to_dict()))
+        before = _tree(self.root)
+        saved = self.root / "host/config.json"  # never mounted inside a session box
+        output = io.StringIO()
+        with mock.patch.dict(os.environ, {"AGENT_BOX_RUNTIME_CONFIG": str(snapshot)}), \
+             mock.patch.object(config_module, "CONFIG_FILE", saved), \
+             contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(output):
+            cli.config_apply()
+        self.assertEqual((self.shared / "ab-tracker/SKILL.md").read_text(), "# vikunja v2\n")
+        after = _tree(self.root)
+        changed = {name for name in set(before) | set(after) if before.get(name) != after.get(name)}
+        # Only the refreshed skill moved: notifications, hooks, status line,
+        # credentials, PATH and Claude links stayed exactly as the host left them.
+        self.assertEqual(changed, {
+            "home/.agents/skills/ab-tracker/SKILL.md",
+            "home/.agents/skills/ab-tracker/.agent-box-managed.json",
+        })
+        self.assertIn(f"applying the rendered session configuration {snapshot}", output.getvalue())
+        self.assertIn("host-only and untouched", output.getvalue())
+
+    def test_interactive_config_refuses_in_the_same_session(self):
+        """The menu edits the saved file, which a session box does not mount."""
+        snapshot = self.root / "session/config.json"
+        snapshot.parent.mkdir(parents=True)
+        snapshot.write_text(json.dumps(self._enabled().to_dict()))
+        saved = self.root / "host/config.json"
+        errors = io.StringIO()
+        with mock.patch.dict(os.environ, {"AGENT_BOX_RUNTIME_CONFIG": str(snapshot)}), \
+             mock.patch.object(config_module, "CONFIG_FILE", saved), \
+             mock.patch("agent_box.config_menu.edit", side_effect=AssertionError("menu opened")), \
+             mock.patch.object(runtime, "apply_config", side_effect=AssertionError("session apply")), \
+             contextlib.redirect_stderr(errors), self.assertRaises(SystemExit):
+            cli.config_interactive()
+        self.assertIn("refusing to edit", errors.getvalue())
+
+    def test_interactive_config_still_opens_when_the_saved_file_is_present(self):
+        """A host session on the real host has the file; the menu must still open."""
+        config = self._enabled()
+        saved = self.root / "host/config.json"
+        saved.parent.mkdir(parents=True)
+        saved.write_text(json.dumps(config.to_dict()))
+        snapshot = self.root / "session/config.json"
+        snapshot.parent.mkdir(parents=True)
+        snapshot.write_text(json.dumps(config.to_dict()))
+        output = io.StringIO()
+        with mock.patch.dict(os.environ, {"AGENT_BOX_RUNTIME_CONFIG": str(snapshot)}), \
+             mock.patch.object(config_module, "CONFIG_FILE", saved), \
+             mock.patch("agent_box.config_menu.edit", return_value=None), \
+             contextlib.redirect_stdout(output):
+            cli.config_interactive()
+        self.assertIn("Configuration unchanged.", output.getvalue())
+
+    def test_config_apply_still_applies_when_the_saved_file_is_present(self):
+        """A host session on the real host keeps applying: the file is mounted there."""
+        config = self._enabled()
+        saved = self.root / "host/config.json"
+        saved.parent.mkdir(parents=True)
+        saved.write_text(json.dumps(config.to_dict()))
+        snapshot = self.root / "session/config.json"
+        snapshot.parent.mkdir(parents=True)
+        snapshot.write_text(json.dumps(config.to_dict()))
+        output = io.StringIO()
+        with mock.patch.dict(os.environ, {"AGENT_BOX_RUNTIME_CONFIG": str(snapshot)}), \
+             mock.patch.object(config_module, "CONFIG_FILE", saved), \
+             contextlib.redirect_stdout(output):
+            cli.config_apply()
+        self.assertTrue((self.shared / "ab-tracker/SKILL.md").is_file())
+        self.assertIn("skills installed", output.getvalue())
+        self.assertNotIn("rendered session configuration", output.getvalue())
 
     def test_apply_is_the_only_config_verb_that_writes(self):
         """`config show` and `config check` are questions, not actions."""

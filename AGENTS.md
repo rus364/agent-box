@@ -156,6 +156,11 @@ Test modules import each other by bare name, so keep discovery.
   `env $(env | grep -o '^AGENT_BOX_[A-Z_]*' | sed 's/^/-u/') python3 tests/run_suite.py`.
 - The image label `io.agent-box.tools` records the built tool groups. A missing
   label means *unknown*, not *empty* — never report it as drift.
+- Inside a workspace box the saved configuration is not mounted: `config apply`
+  then applies only the skills and profiles the rendered session snapshot
+  describes and leaves host-only sections (notifications, hooks, status line,
+  credentials, PATH, Claude links) alone; the global `agent-box config` menu
+  refuses because it edits a file that is not there.
 - `agent_box/skills/` contains short owned `ab-*` skills. Maintain them directly
   and keep their command/role contracts consistent with the Python helpers.
 - `.gitignore` ignores `/skills/` at the repo root only — `agent_box/skills/` is

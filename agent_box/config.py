@@ -851,3 +851,13 @@ def effective_config_source() -> dict[str, str]:
     if runtime_file:
         return {"kind": "runtime", "path": str(Path(runtime_file))}
     return {"kind": "host" if CONFIG_FILE.is_file() else "defaults", "path": str(CONFIG_FILE)}
+
+
+def session_snapshot_only() -> bool:
+    """Whether the only configuration readable here is a rendered session snapshot.
+
+    A workspace box does not mount the saved file; the snapshot carries only
+    the sections that cross into a box (tracker, workflow), so reading the
+    missing path as "no integrations" is how the 2026-09-13 wipe happened.
+    """
+    return bool(os.environ.get("AGENT_BOX_RUNTIME_CONFIG")) and not CONFIG_FILE.is_file()

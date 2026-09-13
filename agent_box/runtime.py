@@ -2544,7 +2544,7 @@ def apply_path_symlink(config: Config) -> list[str]:
         return [f"warning: {exc}"]
 
 
-def apply_config(config: Config) -> list[str]:
+def apply_config(config: Config, *, session=False) -> list[str]:
     """Make the host match the configuration, and say what that took.
 
     The one place anything agent-box owns *outside its own directories* is
@@ -2562,17 +2562,24 @@ def apply_config(config: Config) -> list[str]:
     ``agent-box upgrade`` ends by calling it and ``agent-box config apply``
     exists for a hand-edited file.
 
+    ``session`` applies only what a rendered session snapshot describes --
+    the shipped skills and the configured agent profiles. The host-only
+    writers (PATH symlink, notification credentials and hooks, status line,
+    Claude skill links, runtime render) are skipped: the snapshot does not
+    carry those sections, so reconciling them would remove host state.
+
     Returns the human-facing lines describing what happened, so every caller
     renders the same report instead of each narrating its own.
     """
     report: list[str] = []
 
     ensure_state_dirs()
-    report.extend(apply_path_symlink(config))
-    notify_module.sync_credentials(config, path=NOTIFY_CREDENTIALS)
-    from . import codex_settings
-    report.extend(codex_settings.reconcile_notify(CODEX_HOME / "config.toml", config.notifications.enabled))
-    sync_tracker_runtime(config)
+    if not session:
+        report.extend(apply_path_symlink(config))
+        notify_module.sync_credentials(config, path=NOTIFY_CREDENTIALS)
+        from . import codex_settings
+        report.extend(codex_settings.reconcile_notify(CODEX_HOME / "config.toml", config.notifications.enabled))
+        sync_tracker_runtime(config)
 
     wanted = managed_skills(config)
     sync_managed_skills(config)
@@ -2581,18 +2588,19 @@ def apply_config(config: Config) -> list[str]:
     report.append(
         f"skills installed in {AGENT_SKILLS_DIR}: {', '.join(sorted(wanted)) or 'none'}")
 
-    claude_skill_links(config)
-    report.append(
-        f"shared skills linked into {CLAUDE_HOME / 'skills'}: "
-        f"{'yes' if config.skills.claude_links else 'no'}")
+    if not session:
+        claude_skill_links(config)
+        report.append(
+            f"shared skills linked into {CLAUDE_HOME / 'skills'}: "
+            f"{'yes' if config.skills.claude_links else 'no'}")
 
-    settings = CLAUDE_HOME / "settings.json"
-    statusline = claude_settings.statusline_intent(config.claude.statusline)
-    claude_settings.reconcile_claude_settings(
-        settings, notifications=config.notifications.enabled, statusline=statusline)
-    report.append(
-        f"reconciled {settings}"
-        + ("" if statusline is not None else " (status line left untouched)"))
+        settings = CLAUDE_HOME / "settings.json"
+        statusline = claude_settings.statusline_intent(config.claude.statusline)
+        claude_settings.reconcile_claude_settings(
+            settings, notifications=config.notifications.enabled, statusline=statusline)
+        report.append(
+            f"reconciled {settings}"
+            + ("" if statusline is not None else " (status line left untouched)"))
     return report
 
 

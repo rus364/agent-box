@@ -286,6 +286,13 @@ questions — which is what you want after editing `config.json` by hand.
 `agent-box upgrade` applies on its own once it has moved the checkout, so a
 newer agent-box never leaves you with its older skills installed.
 
+Inside a workspace box the saved file is deliberately not mounted, so
+`agent-box config apply` applies the rendered session configuration instead:
+the shipped skills and the configured agent profiles — which is also the way a
+skill edited in this checkout reaches the box. Notifications, hooks, the status
+line, credentials, PATH and Claude's skill links are host-only and stay as they
+are; the interactive menu, which edits the saved file, refuses in a box.
+
 **Starting an agent applies nothing.** `agent-box claude` and `agent-box codex`
 read your configuration but never install a skill, write a symlink or rewrite
 `settings.json` on the way past. A launch is safe to run without wondering what
