@@ -677,13 +677,13 @@ fresh review. GitHub approvals and required checks still follow repository polic
 ## Saved review results and failed attempts
 
 Completed native and managed reviews save a private immutable receipt before
-input cleanup or applicability checks. `workflow review-result TASK --round ROUND`
+input cleanup or applicability checks. `workflow review-result TASK --round=ROUND`
 reads its summary without tracker access; `result_path` contains the original
 report, findings, route, scope/head/base, fallback failures and available usage/cost.
 Unknown counters remain null. Public output contains the verdict and finding count,
 not private report text. `workflow inspect` names the last received result.
 
-`workflow review-result TASK --round ROUND --reconcile` retries application after
+`workflow review-result TASK --round=ROUND --reconcile` retries application after
 tracker/evidence errors without dispatching a model or spending an attempt. It
 preserves route and freshness facts; applied rounds do not apply twice. Changed
 code/requirements and superseded rounds retain their reports but cannot accept

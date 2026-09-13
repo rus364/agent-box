@@ -32,7 +32,7 @@ def _acceptance_reasons(config, tasks, accepted):
 
 
 def _recovery_reasons(config, tasks, saved, base, task_head):
-    from .workflow import requirements
+    from .workflow import requirements, scope_requirements
 
     accepted = saved.get("local_acceptance", {})
     recovery = ("Switch to the task branch, run fresh validation with workflow validate "
@@ -45,7 +45,7 @@ def _recovery_reasons(config, tasks, saved, base, task_head):
         reasons.append("Accepted task head has changed; " + recovery)
     if accepted.get("base") != base:
         reasons.append("Accepted base identity has changed; " + recovery)
-    if accepted.get("requirements") != requirements(tasks):
+    if scope_requirements(accepted.get("requirements") or []) != scope_requirements(requirements(tasks)):
         reasons.append("Accepted task requirements have changed; " + recovery)
     reasons += _acceptance_reasons(config, tasks, accepted)
     return reasons

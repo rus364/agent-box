@@ -426,6 +426,17 @@ class LocalLandTests(unittest.TestCase):
         self.adapter.set_state.assert_not_called()
         self.assertEqual(self.parent.state, "Review")
 
+    def test_reconcile_reuses_local_acceptance_after_informational_metadata_edits(self):
+        """Related links and ordinary labels cannot demand another review after a tracker outage."""
+        accepted = self.failed_tracker_merge()
+        self.parent.related.append("99")
+        self.parent.labels.append("ordinary")
+        with patch.object(workflow, "execute") as review, patch.object(workflow, "scope") as scope:
+            result = self.operate("reconcile", saved=accepted)
+        self.assertEqual(result["state"], "Done")
+        review.assert_not_called()
+        scope.assert_not_called()
+
     def test_reconcile_applies_current_review_policy_to_original_diff(self):
         """After merge the base diff is empty, but auto review still covers original work."""
         self.saved["review"] = {"verdict": "SKIPPED"}

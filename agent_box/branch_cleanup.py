@@ -232,7 +232,7 @@ def _cleanup_branch(root, config, task, *, branch=None, base=None, expected_head
 def _accepted_local_head(root, config, task, tasks, base):
     """The disposable landing snapshot pins acceptance after Git refs disappear."""
     from .local_workflow import _acceptance_reasons
-    from .workflow import read_evidence, requirements, scope_fingerprint
+    from .workflow import read_evidence, requirements, scope_fingerprint, scope_requirements
 
     saved = read_evidence(root, task)
     accepted = saved.get("local_acceptance")
@@ -244,7 +244,8 @@ def _accepted_local_head(root, config, task, tasks, base):
         raise AgentBoxError("Local parent acceptance evidence has no exact commit identity; preserving descendant refs")
     task_requirements = requirements(tasks)
     fingerprint = scope_fingerprint(accepted["head"], accepted["base_head"], task_requirements)
-    if (accepted.get("base") != base or accepted.get("requirements") != task_requirements
+    if (accepted.get("base") != base
+            or scope_requirements(accepted.get("requirements") or []) != scope_requirements(task_requirements)
             or accepted.get("scope") != fingerprint or saved.get("scope") != fingerprint):
         raise AgentBoxError("Local parent acceptance evidence is stale or inconsistent with the task/base scope; "
                             "preserving descendant refs")

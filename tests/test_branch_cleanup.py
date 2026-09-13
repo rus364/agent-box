@@ -501,6 +501,15 @@ class CleanupTests(unittest.TestCase):
         for root in (self.root, self.origin):
             self.assertEqual(gw.local_branch_head(root, branch), self.head)
 
+    def test_informational_metadata_keeps_absent_parent_cleanup_proof(self):
+        """Ordinary links and labels cannot invalidate an accepted integration snapshot."""
+        self.land_with_occupied_child()
+        self.task.related.append('99')
+        self.task.labels.append('ordinary')
+        result = self.descendant_outcomes(self.dispatch_land('cleanup')['cleanup'])['8']
+        for kind in ('local', 'remote'):
+            self.assertEqual(result[kind]['status'], 'deleted')
+
     def test_descendant_new_work_outside_accepted_parent_is_preserved(self):
         """Even later base work is outside a supplied accepted parent result."""
         self.integrated()

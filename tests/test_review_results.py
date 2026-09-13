@@ -2,6 +2,7 @@
 import json
 import base64
 import os
+import shlex
 from pathlib import Path
 import unittest
 from unittest.mock import patch
@@ -26,7 +27,7 @@ class ReviewResultTests(unittest.TestCase):
         return {"verdict": verdict, "summary": "private-completed-marker", "findings": findings}
 
     def retry(self, result):
-        return self.run_workflow("review-result", "1", "--round", result["round"], "--reconcile")
+        return self.run_workflow("review-result", "1", "--round=" + result["round"], "--reconcile")
 
     def prepare(self):
         return self.run_workflow("prepare", "1", "--role", "reviewer", "--primary", "codex",
@@ -358,3 +359,35 @@ class ReviewResultTests(unittest.TestCase):
         with self.assertRaisesRegex(AgentBoxError, "seal.*changed"):
             self.retry(result)
         self.assertNotIn("review", workflow.read_evidence(self.root, self.task))
+
+    def test_saved_native_response_refuses_paid_fallback_after_index_or_cleanup_error(self):
+        """A completed native response cannot become another dispatch after application failure."""
+        for failure in ("save_review_state", "cleanup_delegation_input"):
+            with self.subTest(failure=failure):
+                prepared = self.prepare()
+                with patch.object(workflow, failure, side_effect=OSError("temporary failure")):
+                    result = self.native(prepared)
+                self.assertEqual(result["reconciliation"]["status"], "error")
+                with patch.object(workflow, "execute") as execute, \
+                     patch.object(workflow, "reserve_review") as reserve:
+                    with self.assertRaisesRegex(AgentBoxError, "already has a saved result"):
+                        self.run_workflow("review", "1", "--handoff", prepared["handoff"],
+                            "--brief", str(self.review_brief), "--fallback-reason", "Native unavailable")
+                execute.assert_not_called()
+                reserve.assert_not_called()
+                self.assertEqual(self.retry(result)["reconciliation"]["status"], "applied")
+
+    def test_generated_recovery_commands_accept_rounds_starting_with_a_dash(self):
+        """URL-safe random IDs can begin with '-' and must not be parsed as CLI options."""
+        with patch.object(workflow.secrets, "token_urlsafe", return_value="-round"):
+            prepared = self.prepare()
+        untracked = self.root / "REPORT.json"
+        untracked.write_text("temporary")
+        result = self.native(prepared)
+        args = workflow.parser().parse_args(shlex.split(result["next_step"])[2:])
+        self.assertEqual(args.round, "-round")
+        inspected = self.run_workflow("inspect", "1")
+        read_args = workflow.parser().parse_args(shlex.split(inspected["review"]["result_command"])[2:])
+        self.assertEqual(read_args.round, "-round")
+        untracked.unlink()
+        self.assertEqual(workflow.dispatch(args)["reconciliation"]["status"], "applied")

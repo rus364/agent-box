@@ -459,6 +459,11 @@ def claim_managed_review(root, binding, task, round_id, fingerprint):
             raise AgentBoxError("Review round is stale or already reported; only the latest pending round can run")
         if state.get("pending_backend") != "native":
             raise AgentBoxError("This review round already started managed execution; start a new review")
+        identity = [binding.provider, server_identity(binding.server), binding.project, binding.recursive]
+        if (any(item["round"] == round_id for item in state.get("results", []))
+                or review_results.find(WORKFLOW_STATE, repository_key(root), identity, task.id, round_id)):
+            raise AgentBoxError(
+                f"This round already has a saved result; use workflow review-result {task.id} --round={round_id} --reconcile")
         saved = evidence(root, task, fingerprint)
         for key in ("human_acceptance", "local_acceptance", "review"):
             saved.pop(key, None)
@@ -613,7 +618,7 @@ def review_result_summary(task, config, state, record, value, path):
                                     if state is not None else None)}
     result.update({key: output[key] for key in ("failures", "fallback_reason", "fresh_context") if key in output})
     if record["status"] in ("saved", "error", "blocked"):
-        result["next_step"] = f"agent-box workflow review-result {task.id} --round {record['round']} --reconcile"
+        result["next_step"] = f"agent-box workflow review-result {task.id} --round={record['round']} --reconcile"
     return result
 
 
@@ -747,7 +752,7 @@ def inspect(root, binding, adapter, task, config):
     if review_state.get("results"):
         latest = review_state["results"][-1]
         review["last_result"] = {key: latest[key] for key in ("round", "status", "changes", "reason")}
-        review["result_command"] = f"agent-box workflow review-result {task.id} --round {latest['round']}"
+        review["result_command"] = f"agent-box workflow review-result {task.id} --round={latest['round']}"
     result = {"task": task.id, **info, "task_branch": expected, "current_branch": branch,
               "head": head, "scope": None, "configuration": configuration_summary(config),
               "acceptance": {"available": not unavailable, "reasons": unavailable},
@@ -1491,7 +1496,7 @@ def finish_child(root, config, adapter, task, parent, info, branch, tasks):
                 reasons.append("Accepted child head has changed")
             if accepted.get("base") != base:
                 reasons.append("Accepted parent branch has changed")
-            if accepted.get("requirements") != requirements(tasks):
+            if scope_requirements(accepted.get("requirements") or []) != scope_requirements(requirements(tasks)):
                 reasons.append("Accepted child requirements have changed")
             original_scope = scope_fingerprint(head, accepted["base_head"], requirements(tasks))
             if accepted["scope"] != saved.get("scope") or accepted["scope"] != original_scope:

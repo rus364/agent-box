@@ -93,6 +93,17 @@ class ChildFinishTests(unittest.TestCase):
         self.assertFalse(any(call.args[1] == "merge" for call in git.call_args_list))
         scope.assert_not_called()
 
+    def test_integrated_child_metadata_edits_reuse_original_acceptance(self):
+        """A child keeps its accepted content when only links and ordinary labels change."""
+        self.interrupted_finish()
+        self.child.related.append("99")
+        self.child.labels.append("ordinary")
+        with patch.object(workflow, "scope") as scope, patch.object(workflow, "execute") as review:
+            result = self.dispatch(["finish", "8"])
+        self.assertEqual(result["state"], "Done")
+        scope.assert_not_called()
+        review.assert_not_called()
+
     def test_retry_rejects_changed_requirements_and_changed_integrated_head(self):
         """Ancestry of a different task revision cannot reuse the old acceptance."""
         self.interrupted_finish()
