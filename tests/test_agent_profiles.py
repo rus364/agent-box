@@ -60,6 +60,17 @@ class AgentProfileTests(unittest.TestCase):
                 self.assertFalse((home / f"agents/ab-reviewer-2.{suffix}").exists())
                 self.assertTrue((home / f"agents/ab-worker-2.{suffix}").exists())
 
+    def test_profile_toml_carries_what_toml_can_spell(self):
+        """A profile is TOML Codex parses, so its fields need the TOML escaper.
+
+        A tier model is not restricted to TOML's safe characters; json.dumps
+        wrote a non-BMP one as a surrogate pair, which TOML rejects, and left
+        DEL literal, which a basic string forbids.
+        """
+        spec = {"model": "🚀 del\x7fmodel", "effort": "low", "fast": False}
+        self.assertEqual(tomllib.loads(body("codex", "worker", 1, spec))["model"],
+                         "🚀 del\x7fmodel")
+
     def test_exact_models_are_installed_and_locally_edited_profiles_survive_disable(self):
         with tempfile.TemporaryDirectory() as directory:
             codex, claude = Path(directory) / "codex", Path(directory) / "claude"

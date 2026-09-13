@@ -5,9 +5,20 @@ from pathlib import Path
 
 from .atomicio import atomic_write_text
 from .delegation import profile_instructions
+from .external_config import toml_string
 from .fast_mode import configuration_error, native_limitation
 
 ROLES = {"scout": (0, 1, 2), "worker": (1, 2, 3), "reviewer": (1, 2, 3)}
+
+
+def _codex_field(value):
+    """One profile field as TOML text.
+
+    Strings need the project's TOML escaper: a tier model is not restricted to
+    TOML's safe characters, and ``json.dumps`` writes a non-BMP one as a
+    surrogate pair, which TOML rejects.
+    """
+    return toml_string(value) if isinstance(value, str) else json.dumps(value)
 
 
 def body(provider, role, tier, spec):
@@ -22,7 +33,7 @@ def body(provider, role, tier, spec):
             fields["features.fast_mode"] = True
         if spec["effort"] == "default":
             fields.pop("model_reasoning_effort")
-        return "\n".join(f"{key} = {json.dumps(value)}" for key, value in fields.items()) + "\n"
+        return "\n".join(f"{key} = {_codex_field(value)}" for key, value in fields.items()) + "\n"
     tools = "Read, Grep, Glob, Bash, Edit, Write" if role == "worker" else "Read, Grep, Glob"
     effort = "" if spec["effort"] == "default" else f"effort: {json.dumps(spec['effort'])}\n"
     return (f"---\nname: {name}\ndescription: Configured agent-box {role}, tier {tier}\n"
