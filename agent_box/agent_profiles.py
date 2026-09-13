@@ -77,14 +77,16 @@ def sync(config, codex_home, claude_home):
                         path.unlink()
                         marker.unlink()
                     continue
-                if provider == "codex" and not has_toml_spelling(spec["model"]):
-                    # A lone surrogate has no TOML spelling and cannot be
-                    # written to a UTF-8 file at all: report it as a profile
-                    # that stays uninstalled rather than raise from the write.
-                    messages.append(f"{path.name}: the model has no TOML spelling; native profile not installed")
+                content = content_for(provider, role, tier, spec)
+                if not has_toml_spelling(content):
+                    # Any configured field can carry a lone surrogate, which
+                    # no UTF-8 write can encode: report the profile as
+                    # uninstalled instead of raising out of the write. Checking
+                    # the composed text keeps this from being a field list.
+                    messages.append(f"{path.name}: the profile would carry text no UTF-8 file can hold; "
+                                    "native profile not installed")
                     continue
                 directory.mkdir(parents=True, exist_ok=True)
-                content = content_for(provider, role, tier, spec)
                 atomic_write_text(path, content, 0o644)
                 atomic_write_text(marker, hashlib.sha256(content.encode()).hexdigest() + "\n", 0o644)
     return messages
