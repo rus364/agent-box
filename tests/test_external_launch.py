@@ -15,6 +15,25 @@ from test_runtime import IsolatedRuntimeTest
 
 
 class ExternalProcessTests(unittest.TestCase):
+    def test_search_defaults_and_native_session_options_reach_codex_without_cli_overrides(self):
+        """A later CLI override must not mask missing defaults or dropped native settings."""
+        for search in (None, 'live', 'cached'):
+            with self.subTest(search=search), tempfile.TemporaryDirectory() as temp:
+                raw = external_config().to_dict()
+                endpoint = raw['external_providers']['deepseek']['codex']
+                if search:
+                    endpoint['config'] = {'web_search': search, 'model_context_window': 64000,
+                                          'model_auto_compact_token_limit': 48000}
+                command, _ = ext.prepare(['codex'], 'deepseek', 'codex', Config.from_dict(raw), temp, {})
+                options = {}
+                for index, arg in enumerate(command[:-1]):
+                    if arg == '-c':
+                        options.update(tomllib.loads(command[index + 1]))
+                self.assertEqual(options['web_search'], search or 'disabled')
+                if search:
+                    self.assertEqual(options['model_context_window'], 64000)
+                    self.assertEqual(options['model_auto_compact_token_limit'], 48000)
+
     def test_native_options_preserve_auth_and_keep_header_values_out_of_argv(self):
         """Native search/transport settings must work without touching subscription auth."""
         raw = external_config().to_dict()

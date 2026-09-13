@@ -200,8 +200,6 @@ def help_for(path):
                 "On requires a supported exact model ID and account access. Claude native needs verified inherited fast; otherwise use managed CLI.")
     if dotted in HELP:
         return HELP[dotted]
-    if path[-1:] == ("api_provider",):
-        return "Choose the built-in API or an enabled external API for this CLI. External routes use a separate managed process; changing API leaves the model editable."
     if path[:1] == ("external_providers",):
         return {"enabled": "Expose this API connection to agent-box sessions. Off by default.",
                 "api_key": "Stored in the protected global config; masked in displays and excluded from command arguments.",

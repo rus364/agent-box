@@ -77,6 +77,12 @@ feature alone does not establish API support. This setting cannot translate a
 provider-specific search protocol. Native `/model` changes do not restart the
 session or reapply endpoint settings.
 
+Native session settings such as `model_context_window` and
+`model_auto_compact_token_limit` override the model catalog values. Leave them
+unset to use each model's configured context and compaction threshold. They
+remain available for deliberate session-wide overrides; agent-box does not
+duplicate Codex's configuration schema.
+
 See the [Codex configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference)
 and the provider's integration guide, for example
 [Kimi with Codex](https://platform.kimi.ai/docs/guide/codex-kimi) or

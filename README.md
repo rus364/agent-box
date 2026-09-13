@@ -268,8 +268,9 @@ affects only the selected role, tier, and provider.
 
 [External API providers](docs/integrations/external-providers.md) are named global
 connections with a private key and separate Codex/Claude URLs and model lists.
-Each candidate's **API provider** selects the built-in API or an enabled external
-connection. `agent-box [--host] ext NAME codex|claude` starts an explicit external
+Each candidate's **Model** list combines built-in models and configured models
+from enabled external APIs; selecting a row sets the API and model together.
+`agent-box [--host] ext NAME codex|claude` starts an explicit external
 session; there is no default CLI for external connections.
 
 Cancel writes nothing. Save and apply performs the selected changes, including
