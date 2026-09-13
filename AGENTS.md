@@ -149,6 +149,11 @@ Test modules import each other by bare name, so keep discovery.
 - Module-level constants derived from `paths.py` (`AGENTS_DIR`, `TRACKER_RUNTIME_DIR`,
   `CONTAINER_TRACKER_RUNTIME_DIR`) are resolved at import; tests patch them on `runtime`,
   not on `paths`.
+- Inside a workspace box the session's own `AGENT_BOX_*` environment reaches the
+  tests: the suite then reads that session's `AGENT_BOX_RUNTIME_CONFIG` instead
+  of its fixtures, so the workflow/handoff tests fail as if regressed and
+  `selftest` fails on "local runs still notify". Clear it for the run:
+  `env $(env | grep -o '^AGENT_BOX_[A-Z_]*' | sed 's/^/-u/') python3 tests/run_suite.py`.
 - The image label `io.agent-box.tools` records the built tool groups. A missing
   label means *unknown*, not *empty* — never report it as drift.
 - `agent_box/skills/` contains short owned `ab-*` skills. Maintain them directly
