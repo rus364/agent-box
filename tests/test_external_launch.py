@@ -15,6 +15,26 @@ from test_runtime import IsolatedRuntimeTest
 
 
 class ExternalProcessTests(unittest.TestCase):
+    def test_exec_config_flags_share_one_scope_without_consuming_option_values_or_prompt(self):
+        """Exec-level -c must not discard API/auth/catalog overrides in the installed CLI."""
+        args = ['-c', 'web_search="cached"', 'exec', '--ignore-user-config',
+                '--config=web_search="live"', '-cmodel_reasoning_effort="max"',
+                '--output-schema', '-c-literal-path', '--', '-c', 'literal-prompt']
+        with tempfile.TemporaryDirectory() as temp:
+            command, _ = ext.prepare(['codex', *args], 'deepseek', 'codex', external_config(), temp, {})
+        boundary = command.index('exec')
+        self.assertEqual(command[boundary:], ['exec', '--ignore-user-config', '--output-schema',
+                                             '-c-literal-path', '--', '-c', 'literal-prompt'])
+        options = {}
+        for index, arg in enumerate(command[:boundary]):
+            if arg == '-c':
+                options.update(tomllib.loads(command[index + 1]))
+        self.assertEqual(options['model_provider'], 'agent_box_external')
+        self.assertEqual(options['cli_auth_credentials_store'], 'ephemeral')
+        self.assertIn('model_catalog_json', options)
+        self.assertEqual(options['web_search'], 'live')
+        self.assertEqual(options['model_reasoning_effort'], 'max')
+
     def test_search_defaults_and_native_session_options_reach_codex_without_cli_overrides(self):
         """A later CLI override must not mask missing defaults or dropped native settings."""
         for search in (None, 'live', 'cached'):

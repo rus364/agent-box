@@ -42,6 +42,29 @@ def toml_value(value):
     return json.dumps(value, ensure_ascii=False, allow_nan=False)
 
 
+def codex_config_arguments(args):
+    """Codex can drop global -c values when exec also has -c; keep one ordered list."""
+    clean, overrides = [], []
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        key, equal, value = arg.partition('=')
+        if arg.startswith('-c') and arg != '-c' and not arg.startswith('--'):
+            key, equal, value = '-c', '=', arg[2:]
+        if key in ('-c', '--config'):
+            if not equal:
+                index += 1
+                value = args[index]
+            overrides += ['-c', value]
+        else:
+            clean.append(arg)
+            if key in value_options('codex') and not equal:
+                index += 1
+                clean.append(args[index])
+        index += 1
+    return clean, overrides
+
+
 def builtin_environment(environment):
     """Restore the environment before ext, including opt-in built-in API keys."""
     env = dict(environment)
@@ -299,8 +322,9 @@ def prepare(command, name, cli, config, directory, environment, *, model=None):
                      + '=' + toml_value(value) for key, value in options.items()]
         if settings['effort'] != 'default':
             overrides.append('model_reasoning_effort=' + json.dumps(settings['effort']))
-        # Global -c options precede a possible managed exec subcommand.
-        return [command[0], *[arg for value in overrides for arg in ('-c', value)], *before, *tail], env
+        before, explicit = codex_config_arguments(before)
+        return [command[0], *[arg for value in overrides for arg in ('-c', value)],
+                *explicit, *before, *tail], env
     model = claude_model(model, settings)
     # An explicit ID still needs the configured context suffix in the CLI option.
     for i, arg in enumerate(before):

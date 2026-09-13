@@ -114,7 +114,7 @@ class ExternalModelTests(unittest.TestCase):
             self.assertEqual(env['CLAUDE_CODE_EFFORT_LEVEL'], 'high')
             command, _ = ext.prepare(['codex', '-cmodel_reasoning_effort=max', '-c', 'model_reasoning_summary=concise'],
                                      'deepseek', 'codex', config, tmp, {})
-            self.assertIn('-cmodel_reasoning_effort=max', command)
+            self.assertIn('model_reasoning_effort=max', command)
 
     def test_model_environment_is_restored_across_external_and_builtin_children(self):
         """Endpoint tuning must not contaminate a nested API or its built-in fallback."""
