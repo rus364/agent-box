@@ -95,36 +95,21 @@ class ExternalRoutingTests(unittest.TestCase):
             with self.assertRaisesRegex(AgentBoxError, 'managed CLI'):
                 workflow.native_output(args, spec, 1)
             args = SimpleNamespace(primary='codex', session_model=None, session_effort=None)
-            direct = workflow.session_route(args, 'worker', config)
-            self.assertEqual(direct['api_provider'], 'deepseek')
-            self.assertNotIn('managed_only', direct)
             with self.assertRaisesRegex(AgentBoxError, 'verified --session-model'):
-                workflow.session_route(args, 'worker', config, delegated=True)
+                workflow.session_route(args, 'worker', config)
             args.session_model, args.session_effort = 'external-small', 'high'
-            self.assertTrue(workflow.session_route(args, 'worker', config, delegated=True)['managed_only'])
+            self.assertTrue(workflow.session_route(args, 'worker', config)['managed_only'])
 
     def test_active_api_identity_survives_config_edits_and_rejects_other_sessions(self):
-        """Direct work uses the launched endpoint; fresh managed work cannot silently substitute it."""
+        """Delegation from an external session binds the launched endpoint; config edits cannot substitute it."""
         config = external_config()
-        original = external_launch.route_identity(config, 'deepseek', 'codex')
         with tempfile.TemporaryDirectory() as tmp:
             _, env = external_launch.prepare(['codex'], 'deepseek', 'codex', config, tmp, {})
-            report = Path(tmp) / 'report.json'
-            report.write_text(json.dumps({'status': 'completed', 'summary': 'Done', 'evidence': []}))
-            args = SimpleNamespace(primary='codex', session_model='external-small', session_effort='high',
-                                   provider='codex', model='external-small', effort='high', role='worker',
-                                   fallback_reason=None, session_inherited=False, file=str(report))
+            args = SimpleNamespace(primary='codex', session_model='external-small', session_effort='high')
             config.external_providers['deepseek'].codex.url = 'https://changed.example/v1'
             with patch.dict(os.environ, env, clear=True):
-                direct = workflow.session_route(args, 'worker', config)
-                self.assertEqual(direct['api_fingerprint'], original['api_fingerprint'])
-                self.assertEqual(workflow.native_output(args, direct, None)['route']['api_fingerprint'],
-                                 original['api_fingerprint'])
                 with self.assertRaisesRegex(AgentBoxError, 'definition changed'):
-                    workflow.session_route(args, 'worker', config, delegated=True)
-                with patch.dict(os.environ, {external_launch.FINGERPRINT_ENV: '0' * 64}):
-                    with self.assertRaisesRegex(AgentBoxError, 'active session API differs'):
-                        workflow.native_output(args, direct, None)
+                    workflow.session_route(args, 'worker', config)
                 with patch.dict(os.environ, {external_launch.CLI_ENV: 'claude'}):
                     with self.assertRaisesRegex(AgentBoxError, 'differs from the CLI'):
                         workflow.session_route(args, 'worker', config)

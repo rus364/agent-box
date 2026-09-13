@@ -880,12 +880,8 @@ def native_output(args, selected, tier):
     if selected.get("mode") == "current-session":
         if selected.get("managed_only"):
             raise AgentBoxError("This API route requires managed CLI execution; native reports are not accepted")
-        if selected.get("api_provider", "") != os.environ.get("AGENT_BOX_API_PROVIDER", ""):
+        if os.environ.get("AGENT_BOX_API_PROVIDER"):
             raise AgentBoxError("The active session API differs from the prepared current-session execution")
-        if selected.get("api_provider"):
-            from .external_launch import session_identity
-            if session_identity(args.provider)["api_fingerprint"] != selected.get("api_fingerprint"):
-                raise AgentBoxError("The active session API differs from the prepared current-session execution")
         if args.provider != selected["provider"]:
             raise AgentBoxError("Reported provider differs from the prepared current session")
         if selected["model"] is None:
@@ -898,7 +894,6 @@ def native_output(args, selected, tier):
         if args.fallback_reason:
             raise AgentBoxError("Current-session execution has no fallback route")
         actual.update(mode="current-session", session_inherited=args.session_inherited)
-        actual.update({k: selected[k] for k in ("api_provider", "api_fingerprint") if k in selected})
         if args.role == "reviewer":
             actual["fresh_context"] = True
         return {"route": actual, "report": validate_report(report_json(Path(args.file).read_text(), "report file is not valid JSON"), args.role),
@@ -1046,8 +1041,12 @@ def bind_api_route(candidate, config):
                          native_limitation="API selection requires a separate managed CLI process")
 
 
-def session_route(args, role, config=None, *, delegated=False):
-    """Session settings are supplied facts or inherited, never tier defaults."""
+def session_route(args, role, config=None):
+    """Session settings are supplied facts or inherited, never tier defaults.
+
+    Every session route is a delegation: a native child would inherit the
+    parent's external endpoint, so an API session binds and requires managed.
+    """
     if not args.primary:
         raise AgentBoxError("Pass --primary with the active session provider for current-session execution")
     model, effort = args.session_model, args.session_effort
@@ -1059,12 +1058,11 @@ def session_route(args, role, config=None, *, delegated=False):
     if api:
         from .external_launch import check_route, session_identity
         result.update(session_identity(args.primary))
-        if delegated:
-            if model is None:
-                raise AgentBoxError("External session delegation needs verified --session-model and --session-effort, or a configured model override")
-            config = config or effective_config()
-            check_route(config, result)
-            bind_api_route(result, config)
+        if model is None:
+            raise AgentBoxError("External session delegation needs verified --session-model and --session-effort, or a configured model override")
+        config = config or effective_config()
+        check_route(config, result)
+        bind_api_route(result, config)
     return result
 
 
@@ -1749,7 +1747,7 @@ def worker_dispatch(args, root, binding, adapter, task, config):
     validate_role_tier("worker", tier)
     facts, facts_binding = read_facts(getattr(args, "facts", None), task, fingerprint)
     prompt = assignment_handoff(root, task, base, read_brief(args.brief), "worker", facts=facts)
-    selected = (session_route(args, "worker", config, delegated=True) if tier is None and not config.workflow.override_for("worker", tier)
+    selected = (session_route(args, "worker", config) if tier is None and not config.workflow.override_for("worker", tier)
                 else route(config, "worker", tier, args.primary, saved.get("writer")))
     model_source = ("active-session" if selected.get("mode") == "current-session" else
                     "workflow.worker.override.models" if config.workflow.override_for("worker", tier) else
@@ -2024,7 +2022,7 @@ def dispatch(args):
         # The route the delegation was prepared with rides in the descriptor, so
         # the report is ingested at the role and tier it was actually run at.
         inherit_session = tier is None and not config.workflow.override_for(role, tier)
-        selected = (descriptor["route"] if descriptor else session_route(args, role, config, delegated=True) if inherit_session
+        selected = (descriptor["route"] if descriptor else session_route(args, role, config) if inherit_session
                     else route(config, role, tier, args.primary, saved.get("writer")))
         review_round = (descriptor["delegation"] if role == "reviewer" and descriptor else
                         secrets.token_urlsafe(18) if role == "reviewer" else None)

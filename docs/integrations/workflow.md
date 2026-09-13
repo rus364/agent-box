@@ -284,7 +284,7 @@ with an explicit error without returning to session or tier models. Reviewer and
 scout configuration remain independent.
 
 `prepare` returns the selected route for native execution; worker `run --handoff`
-executes that route through managed CLI. A new worker `run` requires the same execution choice and reason as prepare. Reports record actual provider/model/effort against
+executes that route through managed CLI. A new worker `run` applies the same execution policy and reason rule as prepare. Reports record actual provider/model/effort against
 the prepared route, including permitted fallback candidates and their reasons,
 even if configuration changes later. Running workers are not rescheduled.
 Untiered overrides have no native tier profile. Use supported explicit native
