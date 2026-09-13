@@ -40,9 +40,9 @@ class ExternalTomlRenderingTests(unittest.TestCase):
         Only a JSON source can carry one into an option; refusing it with the
         field named beats writing invalid UTF-8 into the command Codex parses.
         """
-        for options in ({"web_search": "\ud83d"}, {"\ud83d": "live"}):
-            with self.subTest(options=options), \
-                 self.assertRaisesRegex(AgentBoxError, r"Invalid Codex options: TOML cannot carry"):
+        for options, named in (({"web_search": "\ud83d"}, r"Codex options\.web_search"),
+                               ({"\ud83d": "live"}, r"Codex options\.'\\ud83d'")):
+            with self.subTest(options=options), self.assertRaisesRegex(AgentBoxError, named):
                 codex_options(options, "Codex options")
 
 

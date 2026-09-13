@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import tomllib
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -108,6 +109,21 @@ class RemoteControlTests(unittest.TestCase):
             self.assertIn('features."multi_agent"=true', server)
             self.assertEqual(client[-4:], ['--cd', temp, '--', '--literal'])
             self.assertIn('image.png', client)
+
+    def test_remote_config_text_is_toml_codex_can_parse(self):
+        """The RC transport hands Codex TOML text, so it needs the TOML escaper.
+
+        An astral feature name or an option value carrying DEL used to render
+        through JSON escaping that TOML rejects, which fails before Codex ever
+        sees the flag.
+        """
+        server, _client, _cwd = rc.codex_commands(
+            ['codex', '--enable', '🚀', '--model', 'mod\x7fel', 'prompt'])
+        values = [server[index + 1] for index, arg in enumerate(server) if arg == '-c']
+        self.assertTrue(any('🚀' in value for value in values))
+        for value in values:
+            with self.subTest(value=value):
+                tomllib.loads(value)
 
     def test_incompatible_codex_options_keep_original_launch(self):
         """Profiles and unsupported CLI features must remain available without RC."""

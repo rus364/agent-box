@@ -330,10 +330,10 @@ def prepare(command, name, cli, config, directory, environment, *, model=None):
                    # An external API must never read/delete the subscription login.
                    'cli_auth_credentials_store': 'ephemeral',
                    'model_catalog_json': str(path)}
-        overrides = [(key if re.fullmatch(r'[A-Za-z0-9_-]+', key) else json.dumps(key))
+        overrides = [(key if re.fullmatch(r'[A-Za-z0-9_-]+', key) else toml_string(key))
                      + '=' + toml_value(value) for key, value in options.items()]
         if settings['effort'] != 'default':
-            overrides.append('model_reasoning_effort=' + json.dumps(settings['effort']))
+            overrides.append('model_reasoning_effort=' + toml_string(settings['effort']))
         before, explicit = codex_config_arguments(before)
         return [command[0], *[arg for value in overrides for arg in ('-c', value)],
                 *explicit, *before, *tail], env

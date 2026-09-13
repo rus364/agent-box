@@ -61,18 +61,35 @@ def codex_options(raw, path, *, provider=False):
         if isinstance(value, list):
             return all(valid(v) for v in value)
         return type(value) in (str, bool, int, float)
-    def spelled(value):
+    def unspellable(value, where):
+        """Where the first text TOML cannot spell sits, or None.
+
+        The offending key is reported through ``ascii``: text TOML cannot
+        carry is text a terminal cannot print either.
+        """
         if isinstance(value, dict):
-            return all(spelled(k) and spelled(v) for k, v in value.items())
-        if isinstance(value, list):
-            return all(spelled(v) for v in value)
-        return not isinstance(value, str) or has_toml_spelling(value)
+            for key, item in value.items():
+                if not has_toml_spelling(key):
+                    return f"{where}.{ascii(key)}"
+                found = unspellable(item, f"{where}.{key}")
+                if found:
+                    return found
+        elif isinstance(value, list):
+            for index, item in enumerate(value):
+                found = unspellable(item, f"{where}[{index}]")
+                if found:
+                    return found
+        elif isinstance(value, str) and not has_toml_spelling(value):
+            return where
+        return None
     if (not isinstance(raw, dict) or not valid(raw) or any(k in reserved for k in raw)
             or not provider and (any('remote' in k for k in raw)
                 or isinstance(raw.get('features'), dict) and any('remote' in k for k in raw['features']))):
         raise AgentBoxError(f'Invalid {path}: expected native options without launcher-owned API/auth/Remote Control fields')
-    if not spelled(raw):
-        raise AgentBoxError(f'Invalid {path}: TOML cannot carry these characters, and Codex parses -c values as TOML')
+    bad_path = unspellable(raw, path)
+    if bad_path:
+        raise AgentBoxError(f'Invalid {bad_path}: TOML cannot carry these characters, '
+                            'and Codex parses -c values as TOML')
     try:
         json.dumps(raw, allow_nan=False)
     except (TypeError, ValueError):

@@ -17,6 +17,7 @@ from pathlib import Path
 
 from .atomicio import atomic_write_json
 from .errors import AgentBoxError
+from .external_config import toml_string
 from .paths import WORKFLOW_STATE
 
 
@@ -258,7 +259,7 @@ def build_command(route, role, root, schema_path, result_path, read_paths=()):
         command = ["codex", "exec", "--ephemeral", "--ignore-user-config", "--json", "-C", str(root),
                    "--sandbox", "read-only" if readonly else "workspace-write", "--model", route["model"]]
         if route["effort"] != "default":
-            command += ["-c", 'model_reasoning_effort=' + json.dumps(route["effort"])]
+            command += ["-c", 'model_reasoning_effort=' + toml_string(route["effort"])]
         if route.get("fast", False):
             command += ["-c", 'service_tier="fast"', "-c", "features.fast_mode=true"]
         command += [*([] if readonly else ["-c", "sandbox_workspace_write.network_access=true"]),

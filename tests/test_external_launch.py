@@ -54,6 +54,25 @@ class ExternalProcessTests(unittest.TestCase):
                     self.assertEqual(options['model_context_window'], 64000)
                     self.assertEqual(options['model_auto_compact_token_limit'], 48000)
 
+    def test_prepare_renders_option_keys_and_values_codex_can_parse(self):
+        """A generated -c Codex cannot parse is a launch that never starts.
+
+        Option keys and values reach Codex as TOML text; an astral character in
+        a key used to be escaped as a UTF-16 surrogate pair and DEL was left
+        literal, both of which TOML rejects -- while the configuration carrying
+        them passes validation.
+        """
+        raw = external_config().to_dict()
+        endpoint = raw['external_providers']['deepseek']['codex']
+        endpoint['config'] = {'🚀': 'del\x7fhere', 'web_search': 'live'}
+        with tempfile.TemporaryDirectory() as temp:
+            command, _ = ext.prepare(['codex'], 'deepseek', 'codex', Config.from_dict(raw), temp, {})
+        options = {}
+        for index, arg in enumerate(command[:-1]):
+            if arg == '-c':
+                options.update(tomllib.loads(command[index + 1]))
+        self.assertEqual(options['🚀'], 'del\x7fhere')
+
     def test_native_options_preserve_auth_and_keep_header_values_out_of_argv(self):
         """Native search/transport settings must work without touching subscription auth."""
         raw = external_config().to_dict()

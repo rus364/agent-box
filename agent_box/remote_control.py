@@ -18,6 +18,7 @@ import time
 from pathlib import Path
 
 from .errors import AgentBoxError
+from .external_config import toml_string
 from .paths import CODEX_REMOTE_LOCK, SESSION_TEMP_ROOT, expand_user
 
 START_TIMEOUT = 10
@@ -118,11 +119,11 @@ def codex_commands(command: list[str]) -> tuple[list[str], list[str], Path]:
         if key in {"-c", "--config"}:
             config += ["-c", value]
         elif key in {"--enable", "--disable"}:
-            config += ["-c", f"features.{json.dumps(value)}={'true' if key == '--enable' else 'false'}"]
+            config += ["-c", f"features.{toml_string(value)}={'true' if key == '--enable' else 'false'}"]
         elif key in {"-m", "--model", "-s", "--sandbox", "-a", "--ask-for-approval"}:
             setting = {"-m": "model", "--model": "model", "-s": "sandbox_mode", "--sandbox": "sandbox_mode",
                        "-a": "approval_policy", "--ask-for-approval": "approval_policy"}[key]
-            typed += ["-c", f"{setting}={json.dumps(value)}"]
+            typed += ["-c", f"{setting}={toml_string(value)}"]
         elif key == "--dangerously-bypass-approvals-and-sandbox":
             typed += ["-c", 'sandbox_mode="danger-full-access"', "-c", 'approval_policy="never"']
         elif key == "--full-auto":
