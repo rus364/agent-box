@@ -770,7 +770,7 @@ and `facts` (1–12 objects). Each fact has exactly `text` (nonempty, at most 10
 characters), `sources` (1–6 nonempty path/source reference strings, at most 300
 characters each), and optional `limitations` (nonempty, at most 500 characters).
 The file is limited to 16384 bytes. Wrong keys/types, task or scope refuse before
-routing. Direct workers and other roles reject facts. Managed consumption requires
+routing. Scouts and reviewers reject facts; direct work takes none. Managed consumption requires
 the same validated bytes. The descriptor/evidence bind digest, count and scope;
 worker `delegate_handoff.selected_source_evidence` carries the validated object.
 These selected facts reduce repeated reading/context without promising token savings.
@@ -813,8 +813,8 @@ Support checked 2026-09-11:
   alone does not prove fast; use managed CLI only when the requested fast cannot
   be established natively. Model/effort and fresh-context checks still apply.
 
-Direct execution, native session inheritance, and managed untiered session
-routes retain their previous behavior. Ordinary interactive launcher commands
+Direct work, native session inheritance, and managed untiered session
+routes retain their previous speed behavior. Ordinary interactive launcher commands
 keep provider-owned settings and user CLI arguments; workflow matrices do not
 change the coordinator's session. GitHub-hosted reviews have no independent
 fast control here; use local workflow review for configured speed.
