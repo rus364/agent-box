@@ -73,6 +73,29 @@ errno-default seccomp allowlist, and access to `/dev/net/tun`. Host policies
 such as SELinux or AppArmor may impose additional restrictions; agent-box
 does not disable those policies or change host sysctls automatically.
 
+### Codex sandbox
+
+The image gives Codex's bundled `bwrap` an **empty** file-capability set when
+the Podman group is enabled. Linux clears ambient capabilities on execution of
+that file, so bwrap can start its unprivileged sandbox. No capability is granted
+to bwrap, its binary content is unchanged, and Codex's digest check remains intact.
+The parent Codex process retains the permissions needed by Podman's ID helpers.
+Clearing capabilities around the whole Codex process would break creation of a
+fresh nested Podman user namespace under `no-new-privileges`.
+
+This applies to interactive and managed Codex processes using the image's CLI;
+launching does not rewrite CLI settings. The disabled Podman group skips this
+image step. Rebuild and recreate the workspace to pick up the change. Replacing
+Codex manually inside a running workspace can replace this file attribute too.
+
+Sandbox restrictions still apply: read-only commands cannot create Podman state,
+and nested Podman operations can require execution outside Codex's command sandbox
+under the session's approval policy. The workspace itself remains rootless.
+Run `python3 tests/smoke_codex_sandbox.py` in enabled and disabled workspaces for
+offline source/evidence reads, read-only/workspace-write boundaries and unchanged
+temporary CLI settings. Run the separate nested Podman smoke for actual build/run
+support; a sandbox smoke does not invoke a model or prove a provider review.
+
 ## Developing agent-box inside agent-box
 
 The `agent-box` command on PATH includes its build context and can build an

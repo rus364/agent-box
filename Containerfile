@@ -494,6 +494,17 @@ RUN --mount=type=cache,id=agent-box-npm,target=/root/.npm \
         @openai/codex@latest \
         @anthropic-ai/claude-code@latest
 
+# An empty file-capability set clears ambient privileges on exec of bwrap
+# alone. Dropping them from Codex itself breaks nested Podman's ID helpers.
+# Keep the bundled binary intact so Codex's digest verification still applies.
+RUN set -eux; \
+    if [ "${TOOLS_PODMAN}" != "1" ]; then exit 0; fi; \
+    set -- "$(npm root --global)"/@openai/codex/node_modules/@openai/codex-*/vendor/*/codex-resources/bwrap; \
+    test "$#" -eq 1; \
+    test -x "$1"; \
+    setcap '=' "$1"; \
+    test "$(getcap "$1")" = "$1 ="
+
 #
 # yq v4 (Mike Farah)
 #

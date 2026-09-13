@@ -12,6 +12,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -63,6 +64,61 @@ class SessionToolingTests(unittest.TestCase):
         text = containerfile_text()
         self.assertRegex(text, r"(?m)^\s+tmux \\$")
         self.assertRegex(text, r"(?m)^\s+tmux -V$")
+
+
+class CodexBwrapCapabilitiesTests(unittest.TestCase):
+    """Exercise the image step without changing installed binaries or xattrs."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        text = containerfile_text()
+        layer = text[text.index("# An empty file-capability set"):]
+        self.script = layer[layer.index("RUN ") + 4:layer.index("\n\n#")].replace("\\\n", "")
+        for name, body in {
+            "npm": 'printf "%s\\n" "$PROBE_ROOT"',
+            "setcap": 'printf "%s\\n" "$@" > "$PROBE_ROOT/calls"',
+            "getcap": 'printf "%s =\\n" "$1"',
+        }.items():
+            executable = self.root / name
+            executable.write_text("#!/bin/sh\n" + body + "\n")
+            executable.chmod(0o755)
+
+    def run_layer(self, enabled):
+        return subprocess.run(["/bin/sh", "-c", self.script], capture_output=True, text=True,
+                              env={"PATH": str(self.root), "PROBE_ROOT": str(self.root),
+                                   "TOOLS_PODMAN": "1" if enabled else "0"})
+
+    def binary(self, arch):
+        binary = self.root / f"@openai/codex/node_modules/@openai/codex-{arch}/vendor/triple/codex-resources/bwrap"
+        binary.parent.mkdir(parents=True)
+        binary.write_bytes(b"bundled binary")
+        binary.chmod(0o755)
+        return binary
+
+    def test_disabled_group_never_resolves_or_changes_codex(self):
+        """No Podman must also mean no dependency on capability tooling."""
+        for executable in self.root.iterdir():
+            executable.unlink()
+        result = self.run_layer(False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_only_bwrap_receives_an_empty_capability_set(self):
+        """The Codex parent must retain capabilities for ordinary Podman commands."""
+        binary = self.binary("linux-x64")
+        result = self.run_layer(True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.root / "calls").read_text().splitlines(), ["=", str(binary)])
+        self.assertEqual(binary.read_bytes(), b"bundled binary")
+
+    def test_missing_or_ambiguous_bwrap_fails_before_changing_files(self):
+        """A changed npm layout must fail the build instead of shipping the conflict."""
+        self.assertNotEqual(self.run_layer(True).returncode, 0)
+        self.binary("linux-x64")
+        self.binary("linux-arm64")
+        self.assertNotEqual(self.run_layer(True).returncode, 0)
+        self.assertFalse((self.root / "calls").exists())
 
 
 class GitHubCliTests(unittest.TestCase):
