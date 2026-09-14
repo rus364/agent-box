@@ -70,8 +70,15 @@ class CandidateTests(unittest.TestCase):
             with self.subTest(line=line):
                 self.assertEqual(words(line), ("files", []))
 
+    def test_tracker_and_workflow_offer_every_subcommand_of_their_parsers(self):
+        """Subcommands added without help= are still commands a person types."""
+        for command, load in (("tracker", completion.tracker_parser), ("workflow", completion.workflow_parser)):
+            with self.subTest(command=command):
+                sub = next(action for action in load()._actions if isinstance(action, argparse._SubParsersAction))
+                self.assertEqual(words(f"{command} ")[1], list(sub.choices))
+        self.assertEqual(words("workflow lan")[1], ["land"])
+
     def test_tracker_and_workflow_complete_from_their_parsers(self):
-        self.assertIn("resolve", words("tracker ")[1])
         self.assertEqual(words("tracker state 374 Re")[1], ["Ready", "Review"])
         self.assertEqual(words("--no-tmux workflow land 374 ")[1], ["inspect", "request-review", "merge", "reconcile", "cleanup"])
         self.assertEqual(words("workflow prepare 374 --role ")[1], ["worker", "reviewer", "scout"])
@@ -87,7 +94,9 @@ class CandidateTests(unittest.TestCase):
         fresh.add_argument("task")
         fresh.add_argument("--mode", choices=("fast", "slow"))
         fresh.add_argument("--file")
-        self.assertEqual(completion.parser_candidates(parser, ["--verbose", ""]), ("words", [("fresh", "A command added later")]))
+        sub.add_parser("quiet")
+        self.assertEqual(completion.parser_candidates(parser, ["--verbose", ""]),
+                         ("words", [("fresh", "A command added later"), ("quiet", "")]))
         self.assertEqual(completion.parser_candidates(parser, ["fresh", "1", "--mode", ""])[1], [("fast", ""), ("slow", "")])
         self.assertEqual(completion.parser_candidates(parser, ["fresh", "1", "--mode=s"])[1],
                          [("--mode=fast", ""), ("--mode=slow", "")])

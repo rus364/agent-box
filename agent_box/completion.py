@@ -181,7 +181,9 @@ def parser_candidates(parser, args):
         return "words", []
     action = positionals[0]
     if isinstance(action, argparse._SubParsersAction):
-        return "words", [(choice.dest, choice.help or "") for choice in action._choices_actions]
+        # `choices` holds every subcommand; `_choices_actions` only those added with help=.
+        helps = {choice.dest: choice.help or "" for choice in action._choices_actions}
+        return "words", [(name, helps.get(name, "")) for name in action.choices]
     if action.nargs == argparse.REMAINDER:
         return files(args)
     return action_values(action, ("words", []))
