@@ -68,9 +68,10 @@ class WorkflowGitTests(unittest.TestCase):
 
     def test_ignored_paths_match_real_names_of_renames_and_non_ascii_paths(self):
         """Git's display field joins renames as `old => new` and quotes non-ASCII paths;
-        matching it would drop code renamed out of docs and never ignore `docs/планы.md`."""
+        matching it would drop code renamed out of docs and never ignore `docs/планы.md`.
+        A file moved out of a sensitive path into an ignored one must still trigger review."""
         from agent_box import git_workflow as gw
-        from agent_box.workflow import diff_stats
+        from agent_box.workflow import diff_stats, review_reasons
         from agent_box.config import ReviewConfig
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -79,15 +80,23 @@ class WorkflowGitTests(unittest.TestCase):
             (root / "docs").mkdir()
             (root / "docs" / "guide.md").write_text("".join(f"line {number}\n" for number in range(50)))
             (root / "docs" / "notes.md").write_text("".join(f"note {number}\n" for number in range(50)))
+            (root / "agent_box" / "api").mkdir(parents=True)
+            (root / "agent_box" / "api" / "handler.py").write_text("".join(f"handle_{number} = {number}\n" for number in range(50)))
             gw.git(root, "add", "-A")
             gw.git(root, "commit", "-m", "docs")
             gw.git(root, "switch", "-c", "ab/1-task")
             gw.git(root, "mv", "docs/guide.md", "tool.py")
             gw.git(root, "mv", "docs/notes.md", "docs/archive.md")
+            gw.git(root, "mv", "agent_box/api/handler.py", "docs/handler.py")
             (root / "docs" / "планы.md").write_text("plan\n")
             gw.git(root, "add", "-A")
             gw.git(root, "commit", "-m", "rename")
-            self.assertEqual(diff_stats(root, "main", ReviewConfig(ignored_paths=["docs/**"])), (["tool.py"], 0))
+            config = ReviewConfig(ignored_paths=["docs/**"])
+            files, lines = diff_stats(root, "main", config)
+            self.assertCountEqual(files, ["tool.py", "agent_box/api/handler.py"])
+            self.assertEqual(lines, 0)
+            self.assertIn("sensitive path agent_box/api/handler.py matches **/api/**",
+                          review_reasons(config, [Task("1", "1", "Task")], files, lines))
 
     def test_native_worker_report_accepts_its_code_changes_but_reviewer_report_does_not(self):
         from unittest.mock import Mock, patch

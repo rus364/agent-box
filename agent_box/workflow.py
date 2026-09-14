@@ -656,7 +656,9 @@ def diff_stats(root, base, review):
     sensitive match keeps a path counted so a broad ignore cannot silence it.
     `-z` yields real names: the default output quotes non-ASCII paths and joins
     a rename as `old => new`, which globs would match wrongly. A rename leaves
-    the counts only when both names are ignored."""
+    the counts only when both names are ignored, and a counted one is listed
+    under its sensitive name so moving a file out of a sensitive path still
+    triggers review."""
     files, lines = [], 0
     fields = gw.git(root, "diff", "--numstat", "-z", f"{gw.base_ref(root, base)}...HEAD", "--").split("\0")
     index = 0
@@ -664,10 +666,10 @@ def diff_stats(root, base, review):
         added, deleted, path = fields[index].split("\t", 2)
         names = [path] if path else fields[index + 1:index + 3]
         index += 1 if path else 3
-        if (all(any(path_matches(name, pattern) for pattern in review.ignored_paths) for name in names)
-                and not any(path_matches(name, pattern) for name in names for pattern in review.sensitive_paths)):
+        sensitive = [name for name in names if any(path_matches(name, pattern) for pattern in review.sensitive_paths)]
+        if not sensitive and all(any(path_matches(name, pattern) for pattern in review.ignored_paths) for name in names):
             continue
-        files.append(names[-1])
+        files.append((sensitive or names)[-1])
         lines += int(added) + int(deleted) if added != "-" and deleted != "-" else 10**9
     return files, lines
 
