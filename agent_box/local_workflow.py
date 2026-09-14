@@ -118,7 +118,7 @@ def operate(args, root, config, adapter, task):
     reasons, tasks = _constraints(adapter, task)
     integrated = gw._is_ancestor(root, task_head, base_head)
     accepted = saved if saved.get("scope") == scope(root, base, tasks) else {}
-    files, lines = diff_stats(root, base)
+    files, lines = diff_stats(root, base, config.workflow.review)
     snapshot = {"head": task_head, "base": base, "base_head": base_head,
                 "requirements": requirements(tasks), "scope": accepted.get("scope"),
                 "files": files, "lines": lines, "integrated_scope": integrated,

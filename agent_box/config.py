@@ -618,6 +618,7 @@ class ReviewConfig:
     sensitive_paths: list[str] = field(default_factory=lambda: [
         "**/auth/**", "**/security/**", "**/migrations/**", "**/skills/**",
         "**/config*", ".github/**", "**/*schema*", "**/api/**"])
+    ignored_paths: list[str] = field(default_factory=list)
     label: str = "ab:review"
     github_provider: str = "auto"
     github_model: str = ""
@@ -640,8 +641,9 @@ class ReviewConfig:
                 setattr(result, key, data[key].strip())
         for key in ("max_files", "max_lines", "max_rounds", "wait_seconds"):
             setattr(result, key, _number(data, key, getattr(result, key)))
-        if isinstance(data.get("sensitive_paths"), list):
-            result.sensitive_paths = [s for s in data["sensitive_paths"] if isinstance(s, str)]
+        for key in ("sensitive_paths", "ignored_paths"):
+            if isinstance(data.get(key), list):
+                setattr(result, key, [s for s in data[key] if isinstance(s, str)])
         return result
 
 

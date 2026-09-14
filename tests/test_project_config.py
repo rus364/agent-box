@@ -34,11 +34,13 @@ class ProjectConfigTests(unittest.TestCase):
         self.config.workflow.review.override.scope = "untiered"
         original = self.config.to_dict()
         data = {'browser': {'enabled': False}, 'image': {'tools': {'browser': True}},
-                'workflow': {'review': {'sensitive_paths': [], 'override': {'models': {'codex': {'model': ''}}}},
+                'workflow': {'review': {'sensitive_paths': [], 'ignored_paths': ['**/*.md'],
+                                        'override': {'models': {'codex': {'model': ''}}}},
                              'auto_push': False}}
         project_config.validate(data, self.path)
         result = project_config.apply(self.config, data)
         self.assertEqual(result.workflow.review.sensitive_paths, [])
+        self.assertEqual(result.workflow.review.ignored_paths, ['**/*.md'])
         self.assertEqual(result.workflow.review.override.scope, "untiered")
         self.assertEqual(result.workflow.review.override.models['codex']['model'], '')
         self.assertFalse(result.workflow.auto_push)
@@ -81,6 +83,8 @@ class ProjectConfigTests(unittest.TestCase):
                      {'launch': {'default_agent': 'codex'}},
                      {'workflow': {'unknown': 1}}, {'workflow': {'merge_mode': ''}},
                      {'workflow': {'review': {'sensitive_paths': [None]}}},
+                     {'workflow': {'review': {'ignored_paths': [None]}}},
+                     {'workflow': {'review': {'ignored_paths': '**/*.md'}}},
                      {'workflow': {'tiers': {'0': {'codex': {'effort': ''}}}}},
                      {'tracker': {'connections': {'vikunja': {'url': 'https://u:secret@host'}}}},
                      [], None):

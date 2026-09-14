@@ -645,10 +645,21 @@ def native_review_result(args, root, binding, adapter, config):
     return review_result(root, binding, adapter, task, config, round_id, reconcile=True)
 
 
-def diff_stats(root, base):
+def path_matches(path, pattern):
+    """One glob rule for both review path lists: fnmatch lets `*` cross `/`, and
+    the slash-prefixed form lets `**/name/**` reach top-level directories."""
+    return fnmatch.fnmatch(path, pattern) or fnmatch.fnmatch("/" + path, pattern)
+
+
+def diff_stats(root, base, review):
+    """Ignored paths leave only the trigger counts, never the reviewed diff; a
+    sensitive match keeps a path counted so a broad ignore cannot silence it."""
     files, lines = [], 0
     for row in gw.git(root, "diff", "--numstat", f"{gw.base_ref(root, base)}...HEAD", "--").splitlines():
         added, deleted, path = row.split("\t", 2)
+        if (any(path_matches(path, pattern) for pattern in review.ignored_paths)
+                and not any(path_matches(path, pattern) for pattern in review.sensitive_paths)):
+            continue
         files.append(path)
         lines += int(added) + int(deleted) if added != "-" and deleted != "-" else 10**9
     return files, lines
@@ -674,7 +685,7 @@ def review_reasons(config, tasks, files, lines):
             reasons.append(f"task {task.id} has review label {config.label}")
     for path in files:
         for pattern in config.sensitive_paths:
-            if fnmatch.fnmatch(path, pattern) or fnmatch.fnmatch("/" + path, pattern):
+            if path_matches(path, pattern):
                 reasons.append(f"sensitive path {path} matches {pattern}")
     return reasons
 
@@ -785,7 +796,7 @@ def inspect(root, binding, adapter, task, config):
         return result
     fingerprint = scope(root, base, tasks)
     saved = evidence(root, task, fingerprint)
-    files, lines = diff_stats(root, base)
+    files, lines = diff_stats(root, base, config.workflow.review)
     reasons = review_reasons(config.workflow.review, tasks, files, lines)
     integrated = integrated_parent(root, task, parent, base)
     if integrated and config.workflow.review.policy != "off":
@@ -1531,7 +1542,7 @@ def finish(root, config, adapter, task_id):
         saved = evidence(root, task, scope(root, base, tasks))
         if saved.get("validation", {}).get("exit") != 0:
             raise AgentBoxError("Run workflow validate against this exact scope before completion")
-        files, lines = diff_stats(root, base)
+        files, lines = diff_stats(root, base, config.workflow.review)
         reasons = review_blockers(config.workflow.review, tasks, files, lines, saved,
                                   allow_human=config.workflow.merge_mode == "local",
                                   integrated=integrated_parent(root, task, parent, base))
@@ -1591,7 +1602,7 @@ def finish_child(root, config, adapter, task, parent, info, branch, tasks):
         saved = evidence(root, task, scope(root, base, tasks))
         if saved.get("validation", {}).get("exit") != 0:
             raise AgentBoxError("Run workflow validate against this exact scope before completion")
-        files, lines = diff_stats(root, base)
+        files, lines = diff_stats(root, base, config.workflow.review)
         reasons = review_blockers(config.workflow.review, tasks, files, lines, saved)
         if reasons:
             raise AgentBoxError("; ".join(reasons))
@@ -2019,7 +2030,7 @@ def dispatch(args):
         tier = delegation_tier(args, task, role)
         review_context = ""
         if role == "reviewer":
-            files, lines = diff_stats(root, base)
+            files, lines = diff_stats(root, base, config.workflow.review)
             integrated = integrated_parent(root, task, parent, base)
             required = review_required(config.workflow.review, tasks, files, lines)
             if integrated:

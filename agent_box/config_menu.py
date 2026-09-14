@@ -91,7 +91,8 @@ HELP = {
     "workflow.review.max_files": "Automatic-review threshold for changed file count. The Review preset action can set this together with max lines.",
     "workflow.review.max_lines": "Automatic-review threshold for changed line count. The Review preset action can set this together with max files.",
     "workflow.review.max_rounds": "Maximum local review attempts, including failed or abandoned attempts, before explicit user allowance is required.",
-    "workflow.review.sensitive_paths": "JSON list of glob patterns that always trigger automatic review regardless of size thresholds.",
+    "workflow.review.sensitive_paths": "JSON list of glob patterns that always trigger automatic review regardless of size thresholds, e.g. [\"**/auth/**\", \".github/**\"]. Paths are repository-relative and * also matches /.",
+    "workflow.review.ignored_paths": "JSON list of glob patterns excluded from automatic-review file/line counts, e.g. [\"**/*.md\", \"docs/**\"]. Same matching as sensitive paths, which still win. The reviewer still sees the whole diff.",
     "workflow.review.label": "Tracker label that forces review for a task when the review policy is automatic.",
     "workflow.review.github_provider": "Provider requested for GitHub PR review: auto/local uses local review, Codex cannot pin model or effort, and Claude uses its configured Action.",
     "workflow.review.github_model": "Model expected in a Claude GitHub Action. Codex GitHub review rejects model overrides; leave empty unless the Claude Action pins it.",
@@ -143,7 +144,7 @@ MENU_GROUPS = {
         ("Models", ("override",)),
     ),
     ("workflow", "review"): (
-        ("Review triggers", ("policy", "max_files", "max_lines", "sensitive_paths", "label")),
+        ("Review triggers", ("policy", "max_files", "max_lines", "sensitive_paths", "ignored_paths", "label")),
         ("Routing and models", ("routing", "override", "tiers")),
         ("Review attempts", ("max_rounds",)),
         ("GitHub review", ("github_provider", "github_model", "github_effort", "wait_seconds")),

@@ -31,6 +31,41 @@ class WorkflowGitTests(unittest.TestCase):
         self.assertTrue(review_required(config, [task], ["src/auth/token.py"], 1))
         self.assertTrue(review_required(config, [task], ["readme.md"], 200))
 
+    def test_ignored_paths_leave_trigger_counts_but_never_hide_sensitive_paths(self):
+        """A documentation-only change skips auto review; a broad ignore must not silence
+        a sensitive file, a binary it does not cover, or the always policy."""
+        from agent_box import git_workflow as gw
+        from agent_box.workflow import diff_stats, review_reasons, review_required
+        from agent_box.config import ReviewConfig
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for args in (["init", "-b", "main"], ["config", "user.name", "Test"], ["config", "user.email", "test@example.invalid"],
+                         ["commit", "--allow-empty", "-m", "initial"], ["switch", "-c", "ab/1-task"]):
+                subprocess.run(["git", *args], cwd=root, check=True, capture_output=True)
+            (root / "docs").mkdir()
+            (root / "docs" / "guide.txt").write_text("guide\n" * 300)
+            (root / "readme.md").write_text("readme\n")
+            (root / "logo.png").write_bytes(b"\x00\x01binary")
+            gw.git(root, "add", "-A")
+            gw.git(root, "commit", "-m", "docs")
+            task = Task("1", "1", "Task")
+            ignored = ReviewConfig(max_files=1, ignored_paths=["*.md", "docs/**", "**/*.png"])
+            self.assertEqual(diff_stats(root, "main", ignored), ([], 0))
+            self.assertFalse(review_required(ignored, [task], [], 0))
+            default = ReviewConfig(max_files=1)
+            self.assertTrue(review_required(default, [task], *diff_stats(root, "main", default)))
+            ignored.policy = "always"
+            self.assertTrue(review_required(ignored, [task], *diff_stats(root, "main", ignored)))
+            ignored.policy = "auto"
+            (root / "agent_box" / "skills" / "ab-work").mkdir(parents=True)
+            (root / "agent_box" / "skills" / "ab-work" / "SKILL.md").write_text("rule\n")
+            gw.git(root, "add", "-A")
+            gw.git(root, "commit", "-m", "skill")
+            files, lines = diff_stats(root, "main", ignored)
+            self.assertEqual((files, lines), (["agent_box/skills/ab-work/SKILL.md"], 1))
+            self.assertIn("sensitive path agent_box/skills/ab-work/SKILL.md matches **/skills/**",
+                          review_reasons(ignored, [task], files, lines))
+
     def test_native_worker_report_accepts_its_code_changes_but_reviewer_report_does_not(self):
         from unittest.mock import Mock, patch
         from agent_box import workflow

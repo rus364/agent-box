@@ -92,7 +92,7 @@ class ConfigMenuTests(unittest.TestCase):
                            'scout_limit', 'timeout_seconds'],
             ('workflow', 'worker'): ['execution', 'override'],
             ('workflow', 'review'): ['policy', 'max_files', 'max_lines', 'sensitive_paths',
-                                    'label', 'routing', 'override', 'tiers', 'max_rounds',
+                                    'ignored_paths', 'label', 'routing', 'override', 'tiers', 'max_rounds',
                                     'github_provider', 'github_model', 'github_effort', 'wait_seconds'],
         }
         for path, keys in expected.items():
