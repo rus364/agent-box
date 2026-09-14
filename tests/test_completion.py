@@ -1,10 +1,13 @@
 import argparse
+import ast
 import contextlib
+import inspect
 import io
 import os
 import shutil
 import subprocess
 import tempfile
+import textwrap
 import unittest
 import unittest.mock
 from pathlib import Path
@@ -30,8 +33,20 @@ class CandidateTests(unittest.TestCase):
         self.assertEqual(set(words("-")[1]), set(FLAGS))
 
     def test_every_dispatched_command_has_a_completion_entry(self):
-        """A command added to cli.main without an entry here would silently never complete."""
-        dispatched = cli.NON_RUNTIME | {"claude", "codex", "shell", "doctor", "ext"}
+        """A command added to cli.main without an entry here would silently never complete.
+
+        The names are read from main's own `args[0]` comparisons, so a new dispatch
+        branch counts even when it is not in NON_RUNTIME, as `ext` is not.
+        """
+        dispatched = set(cli.HOST_ONLY_AGENTS)
+        for node in ast.walk(ast.parse(textwrap.dedent(inspect.getsource(cli.main)))):
+            if isinstance(node, ast.Compare) and ast.unparse(node.left) == "args[0]":
+                for part in (part for comparator in node.comparators for part in ast.walk(comparator)):
+                    if isinstance(part, ast.Constant) and isinstance(part.value, str):
+                        dispatched.add(part.value)
+                    elif isinstance(part, ast.Name):
+                        dispatched |= set(getattr(cli, part.id))
+        self.assertTrue({"ext", "shell", "attach", "completion"} <= dispatched)
         self.assertEqual(dispatched - set(completion.COMMANDS) - completion.HIDDEN, set())
         offered = set(words("")[1])
         self.assertEqual(offered & completion.HIDDEN, set())
@@ -164,19 +179,20 @@ class ShellScriptTests(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which("bash"), "bash is not installed")
     def test_bash_completes_through_the_real_script(self):
-        """Bash splits words at = and :, so candidates must replace only what follows the break."""
+        """Readline replaces only the text between the last = or : and the cursor, so candidates must too."""
         script = r"""
 source <(agent-box completion bash)
-ask() { COMP_LINE=$1; COMP_POINT=${#1}; shift; COMP_WORDS=("$@"); COMP_CWORD=$(($# - 1))
-        _agent_box; printf '%s,' "${COMPREPLY[@]}"; echo; }
-ask 'agent-box --rev' agent-box --rev
-ask 'agent-box --review=al' agent-box --review = al
-ask 'agent-box --review=' agent-box --review =
-ask 'agent-box tracker st' agent-box tracker st
+ask() { COMP_LINE=$1; COMP_POINT=${2:-${#1}}; _agent_box; printf '%s,' "${COMPREPLY[@]}"; echo; }
+ask 'agent-box --rev'
+ask 'agent-box --review=al'
+ask 'agent-box --review='
+ask 'agent-box --review' 15
+ask 'agent-box tracker st'
 """
         result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=self.env, timeout=60)
         self.assertEqual((result.stderr, result.stdout.splitlines()),
-                         ("", ["--reviewer,--review,", "always,", "=off,=auto,=always,", "status,state,"]))
+                         ("", ["--reviewer,--review,", "always,", "off,auto,always,", "--reviewer,--review,",
+                               "status,state,"]))
 
     @unittest.skipUnless(shutil.which("zsh"), "zsh is not installed")
     def test_zsh_script_parses(self):
