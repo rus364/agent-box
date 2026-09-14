@@ -130,9 +130,10 @@ project one; an explicit `claude` or `codex` always wins.
 ### Session options
 
 Options before the agent change one launch and are never saved; `agent-box
---help` lists them all. Session values apply over the global and project
-configuration, travel in the session snapshot (so reattached and nested
-commands see them), and `agent-box config show` inside the session names them.
+--help` lists them all. Launch options shape only the launch itself. Workflow,
+tracker and access options apply over the global and project configuration,
+travel in the session snapshot (so nested launches inside the session inherit
+them), and `agent-box config show` inside the session names them.
 
 ```bash
 agent-box --reviewer claude:opus:high --review always codex
@@ -424,7 +425,8 @@ permanently requires updating the binding. A project URL never redirects a
 global token, and `tracker.enabled` remains a global permission.
 
 For one session, `--tracker URL` selects another server and `--project ID`
-another project; together they bind even an unbound repository. The token is
+another project; together they bind even an unbound repository. Both need
+the tracker enabled in `agent-box config`; a session cannot open that gate. The token is
 read by name from `VIKUNJA_TOKEN` in the launching shell, never from an
 argument or the stored environment lists, and reaches the session only through
 its private snapshot. Neither configuration file changes:

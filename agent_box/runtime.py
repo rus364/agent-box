@@ -909,7 +909,7 @@ def launch_config(options=None):
         if os.environ.get("AGENT_BOX_RUNTIME_CONFIG"):
             raise AgentBoxError("--notify applies to launches from the host; a session cannot turn notifications on")
         if not config.notifications.usable:
-            raise AgentBoxError("--notify needs Telegram notifications set up in agent-box config")
+            raise AgentBoxError("--notify needs Telegram notifications enabled and set up in agent-box config")
     config.env = policy
     if config.tracker.enabled:
         from .project_config import load

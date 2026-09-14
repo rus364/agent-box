@@ -90,7 +90,7 @@ class Binding:
         server = launch.get("tracker") or data.get("connections", {}).get(provider, {}).get("url")
         project = launch.get("project") or data.get("project")
         if not server or not project:
-            raise AgentBoxError("--tracker and --project together name a binding for an unbound repository")
+            raise AgentBoxError("This repository has no tracker binding; a session binds one only with both --tracker and --project")
         result = cls(provider, server, project, data.get("recursive", False))
         result.validate()
         return result

@@ -104,7 +104,7 @@ class SessionPrecedenceTests(IsolatedLaunchTest):
     def test_session_tracker_follows_the_provider_the_project_selects(self):
         """The saved configuration may name another provider; the account lands where the session reads it."""
         config = workflow_config()
-        config.tracker.provider = "jira"
+        config.tracker.enabled, config.tracker.provider = True, "jira"
         project = {"tracker": {"provider": "vikunja"}}
         with patch.dict(os.environ, {"VIKUNJA_TOKEN": "session-secret"}):
             launched, snapshot = self.launch(config, {"tracker": "https://tasks.example"}, project)
@@ -113,7 +113,9 @@ class SessionPrecedenceTests(IsolatedLaunchTest):
         self.assertEqual(rendered["connections"]["vikunja"], {"url": "https://tasks.example", "token": "session-secret"})
         with patch.dict(os.environ, {"VIKUNJA_TOKEN": "session-secret"}), \
              self.assertRaisesRegex(AgentBoxError, "supports the vikunja tracker; this configuration selects jira"):
-            self.launch(workflow_config(), {"tracker": "https://tasks.example"}, {"tracker": {"provider": "jira"}})
+            enabled = workflow_config()
+            enabled.tracker.enabled = True
+            self.launch(enabled, {"tracker": "https://tasks.example"}, {"tracker": {"provider": "jira"}})
 
     def test_notify_inside_a_session_is_refused_for_what_it_is(self):
         """A snapshot carries no notification settings, so the host-side reason would be false there."""
@@ -137,6 +139,7 @@ class SessionPrecedenceTests(IsolatedLaunchTest):
                 (workflow_config(), {"workflow": False, "execution": "direct"}, "drop --no-workflow"),
                 (workflow_config(), {"tracker": "https://tasks.example", "workflow": False}, "contradict --no-workflow"),
                 (Config(), {"project": "12"}, "--project needs the tracker"),
+                (workflow_config(), {"tracker": "https://tasks.example"}, "--tracker needs the tracker"),
                 (workflow_config(), {"reviewer": "claude@deepseek:v4"}, "not an enabled external provider")):
             with self.subTest(overrides=overrides), self.assertRaisesRegex(AgentBoxError, message):
                 launch_options.apply(config, overrides)

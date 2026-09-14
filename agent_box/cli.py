@@ -46,8 +46,9 @@ def usage_text() -> None:
 
 Options go before the agent; everything after it reaches the agent unchanged,
 and '--' ends them early. Without claude/codex the default agent starts
-(launch.default_agent). Session options last for that session only and are
-never saved; 'agent-box config show' inside the session lists them.
+(launch.default_agent). Launch options shape only this launch. Options in the
+"for this session" groups travel with the session, are never saved, and
+'agent-box config show' inside the session lists them.
 SPEC is {SPEC}, for example claude:opus:high.
 
 {help_text()}

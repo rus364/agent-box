@@ -193,7 +193,6 @@ def apply(config, overrides):
         elif key == "workflow":
             workflow.enabled = config.tracker.enabled = False
         elif key == "tracker":
-            config.tracker.enabled = True
             config.tracker.connections.setdefault(config.tracker.provider, TrackerConnection()).url = value
         elif key == "gh-token":
             config.github.gh_token = value
@@ -214,8 +213,10 @@ def apply(config, overrides):
     if used and not workflow.enabled:
         raise AgentBoxError(f"--{option_key(used[0])} needs workflow; enable it in agent-box config"
                             + (" and drop --no-workflow" if "workflow" in overrides else ""))
-    if "project" in overrides and not config.tracker.enabled:
-        raise AgentBoxError("--project needs the tracker; enable it in agent-box config")
+    tracker_keys = [key for key in ("tracker", "project") if key in overrides]
+    if tracker_keys and not config.tracker.enabled:
+        # A session may point the tracker elsewhere, never open a gate the saved configuration keeps closed.
+        raise AgentBoxError(f"--{tracker_keys[0]} needs the tracker; enable it in agent-box config")
     if overrides.get("browser") and not config.image.tools.get("browser"):
         raise AgentBoxError("--browser needs the browser image tool group; enable it in agent-box config, then agent-box build")
     for role, models in workflow.pins.items():
@@ -243,7 +244,6 @@ def bind_tracker_account(config, url, environ=None):
     if not token.strip():
         raise AgentBoxError("--tracker needs VIKUNJA_TOKEN exported in this shell; the token is never passed as an argument")
     for target in {id(c): c for c in (getattr(config, "_project_base", config), config)}.values():
-        target.tracker.enabled = True
         target.tracker.connections["vikunja"] = TrackerConnection(url, token)
 
 
