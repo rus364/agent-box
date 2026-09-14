@@ -51,7 +51,7 @@ class LaunchOptionParsingTests(unittest.TestCase):
     def test_invalid_or_repeated_options_fail_before_anything_starts(self):
         """A typo must not start an agent with the intended setting silently missing."""
         for argv in (["--review", "sometimes"], ["--rounds", "0"],
-                     ["--reviewer", "gpt:x"], ["--reviewer", "claude"], ["--scout", "codex@Bad:m"],
+                     ["--reviewer", "gpt:x"], ["--reviewer", "claude"], ["--reviewer", "claude::high"], ["--scout", "codex@Bad:m"],
                      ["--push=yes"], ["--review", "off", "--review", "auto"],
                      ["--mount"], ["--env", "1BAD"], ["--tracker", "ftp://tasks.example.org"]):
             with self.subTest(argv=argv), self.assertRaises(AgentBoxError):

@@ -79,6 +79,28 @@ class SessionPrecedenceTests(IsolatedLaunchTest):
         self.assertEqual((nested.workflow.review.policy, nested.workflow.review.max_rounds), ("always", 7))
         self.assertEqual(nested._launch, {"review": "always", "rounds": 7})
 
+    def test_a_project_copy_inside_the_session_cannot_pick_up_session_options(self):
+        """The editor's global baseline is the snapshot's base layer; flags must not be saved from it."""
+        _, snapshot = self.launch(workflow_config(), {"review": "always", "push": False})
+        with patch.dict(os.environ, {"AGENT_BOX_RUNTIME_CONFIG": str(snapshot)}):
+            baseline = effective_config(include_project=False)
+        self.assertEqual((baseline.workflow.review.policy, baseline.workflow.auto_push), ("auto", True))
+
+    def test_notify_on_needs_configured_notifications_and_leaves_them_on(self):
+        with self.assertRaisesRegex(AgentBoxError, "--notify needs"):
+            self.launch(Config(), {"notify": True})
+        config = Config()
+        config.notifications.enabled, config.notifications.telegram_token, config.notifications.telegram_chat_id = True, "t", "c"
+        launched, _ = self.launch(config, {"notify": True})
+        self.assertTrue(launched.notifications.usable)
+        with patch.object(runtime.shutil, "which", return_value="/usr/bin/codex"), \
+             patch.object(runtime, "resolve_workspace", return_value=Workspace(self.root, self.root)), \
+             patch.object(runtime, "launch_config", return_value=launched), \
+             patch.object(runtime, "tmux_enabled", return_value=False), \
+             patch.object(runtime.subprocess, "call", return_value=0) as call:
+            runtime.host_main("codex", [])
+        self.assertNotIn(notify.NOTIFY_OFF_ENV, call.call_args.kwargs["env"])
+
     def test_config_show_names_the_session_options(self):
         _, snapshot = self.launch(workflow_config(), {"execution": "direct", "push": False})
         with patch.dict(os.environ, {"AGENT_BOX_RUNTIME_CONFIG": str(snapshot)}), \
@@ -92,6 +114,7 @@ class SessionPrecedenceTests(IsolatedLaunchTest):
         for config, overrides, message in (
                 (Config(), {"review": "always"}, "--review needs workflow"),
                 (workflow_config(), {"workflow": False, "execution": "direct"}, "drop --no-workflow"),
+                (workflow_config(), {"tracker": "https://tasks.example", "workflow": False}, "contradict --no-workflow"),
                 (Config(), {"project": "12"}, "--project needs the tracker"),
                 (workflow_config(), {"reviewer": "claude@deepseek:v4"}, "not an enabled external provider")):
             with self.subTest(overrides=overrides), self.assertRaisesRegex(AgentBoxError, message):

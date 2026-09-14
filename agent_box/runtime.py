@@ -890,22 +890,22 @@ def session_runtime(config, *, container=True, runtime_state=None):
 
 
 def launch_config(options=None):
-    """Saved settings, then the project, then this launch's flags.
-
-    The flags are applied beneath the project overlay as well, so the snapshot
-    rendered from that layer already reflects them (a --no-workflow session
-    never receives a tracker token), and again above it, so they win.
-    """
+    """Saved settings, then the project, then this launch's flags."""
     from . import launch_options
     options = options or launch_options.LaunchOptions()
     base = runtime_config_base()
     overrides = {**getattr(base, "_launch", {}), **options.overrides}
     policy = base.env.overlay(options.env)
     config = effective_config(base)
-    for target in (config._project_base, config):
-        launch_options.apply(target, overrides)
+    launch_options.apply(config, overrides)
+    # The snapshot renders from the layer beneath the project overlay. Only the
+    # --tracker account and --no-workflow's withdrawal of the tracker belong
+    # there; any other flag would reach a project copy made inside the session.
+    launch_options.apply(config._project_base, {k: v for k, v in overrides.items() if k in ("tracker", "workflow")})
     if "tracker" in options.overrides:
         launch_options.bind_tracker_token(config)
+    if options.overrides.get("notify") and not config.notifications.usable:
+        raise AgentBoxError("--notify needs Telegram notifications set up in agent-box config")
     config.env = policy
     if config.tracker.enabled:
         from .project_config import load
@@ -2391,7 +2391,7 @@ def runtime_main(
     browser_dir = browser_session(config, workspace, runtime_state, agent)
     channel, extra_env = claude_channel_args(agent, config, workspace, rest, session)
     extra_env += [f"AGENT_BOX_PRIMARY_PROVIDER={agent}"]
-    if "notify" in getattr(config, "_launch", {}):
+    if getattr(config, "_launch", {}).get("notify") is False:
         extra_env += [f"{notify_module.NOTIFY_OFF_ENV}=1"]
     snapshot = session_runtime(config, runtime_state=runtime_state)
     snapshot_root, snapshot_destination, _ = tracker_mounts(config, runtime_state)[0]
@@ -2796,7 +2796,7 @@ def host_main(
     # Owned metadata describes this launch, even when env.set names these keys.
     env["AGENT_BOX_PRIMARY_PROVIDER"] = agent
     env["AGENT_BOX_RUNTIME_CONFIG"] = str(session_runtime(config, container=False))
-    if "notify" in getattr(config, "_launch", {}):
+    if getattr(config, "_launch", {}).get("notify") is False:
         env[notify_module.NOTIFY_OFF_ENV] = "1"
     # agent-box's own request channel is not part of the session it describes.
     for key in [k for k in env if k.startswith(ENV_PREFIX)]:

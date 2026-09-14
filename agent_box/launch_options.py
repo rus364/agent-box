@@ -59,7 +59,8 @@ OPTIONS = (
     Option("api-keys", ACCESS, "Provider API key variables", form="pair", container=True),
     Option("browser", ACCESS, "Agent browser", form="pair", container=True),
     Option("remote-control", ACCESS, "Remote control; the --no- form also keeps Claude off Telegram", form="pair"),
-    Option("notify", ACCESS, "Send no Telegram notifications", form="negated"),
+    Option("notify", ACCESS, "Telegram notifications; turning them on needs them set up in agent-box config",
+           form="pair"),
 )
 BY_NAME = {option.name: option for option in OPTIONS}
 FLAGS = {**{f"--{o.name}": (o, True) for o in OPTIONS if o.form != "negated"},
@@ -99,11 +100,11 @@ def parse_spec(flag, text):
     """``PROVIDER[@API]:MODEL[:EFFORT]``; a trailing segment is an effort only if it names one."""
     head, _, rest = text.partition(":")
     provider, at, api = head.partition("@")
-    if provider not in AGENT_PROVIDERS or not rest or (at and not valid_name(api)):
-        raise AgentBoxError(f"{flag} expects {SPEC}, for example claude:opus:high")
     model, colon, effort = rest.rpartition(":")
-    if not colon or effort not in (API_EFFORTS if api else AGENT_EFFORTS)[provider]:
+    if not colon or effort not in (API_EFFORTS if api else AGENT_EFFORTS).get(provider, ()):
         model, effort = rest, "default"
+    if provider not in AGENT_PROVIDERS or not model or (at and not valid_name(api)):
+        raise AgentBoxError(f"{flag} expects {SPEC}, for example claude:opus:high")
     return model_candidates({provider: {"model": model, "effort": effort, "api_provider": api}})
 
 
@@ -172,6 +173,8 @@ def parse(argv: list[str]) -> tuple[LaunchOptions, list[str]]:
 def apply(config, overrides):
     """Apply session overrides in place; applying the same mapping again changes nothing."""
     workflow = config.workflow
+    if "workflow" in overrides and overrides.keys() & {"tracker", "project"}:
+        raise AgentBoxError("--tracker and --project contradict --no-workflow")
     for key, value in overrides.items():
         if key == "execution":
             workflow.worker.execution = value
@@ -205,7 +208,7 @@ def apply(config, overrides):
         elif key == "remote-control":
             config.claude.remote_control = config.codex.remote_control = value
             config.claude.telegram_channel = config.claude.telegram_channel and value
-        elif key == "notify":
+        elif key == "notify" and not value:
             config.notifications.enabled = False
     used = [key for key in overrides if key in WORKFLOW_KEYS]
     if used and not workflow.enabled:
