@@ -85,7 +85,7 @@ class ConfigMenuTests(unittest.TestCase):
         data.pop('install')
         expected = {
             (): ['workflow', 'tracker', 'image', 'browser', 'env', 'external_providers', 'providers',
-                 'github', 'git', 'claude', 'codex', 'usage', 'skills', 'notifications'],
+                 'github', 'git', 'claude', 'codex', 'usage', 'skills', 'notifications', 'launch'],
             ('workflow',): ['enabled', 'worker', 'tiers', 'routing', 'weights', 'fallback',
                            'reserve_percent', 'smoothing_hours', 'review', 'merge_mode',
                            'auto_push', 'cleanup_local_branches', 'cleanup_remote_branches',

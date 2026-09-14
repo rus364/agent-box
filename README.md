@@ -118,12 +118,16 @@ box exits and Podman's `--rm` removes it.
 ## Daily usage
 
 ```bash
-agent-box                  # default agent: Claude
+agent-box                  # default agent: Claude, or Codex if chosen in agent-box config
 agent-box claude -p "summarize this repository"
 agent-box codex exec "inspect this repository"
 
-export AGENT_BOX_AGENT=codex     # change the default
+AGENT_BOX_AGENT=codex agent-box  # override the default for one command
 ```
+
+Choose the default under **Launch → Default agent** in `agent-box config`
+(`launch.default_agent`: `claude` or `codex`). It is a global setting, not a
+project one; an explicit `claude` or `codex` always wins.
 
 ### Detach and reattach
 
@@ -303,6 +307,7 @@ because you asked for it.
 
 | Setting | Default | Purpose |
 | --- | --- | --- |
+| Default agent | claude | What a bare `agent-box` starts; `AGENT_BOX_AGENT` overrides it for one command |
 | Claude status line | on | Workspace, git state, context and provider usage in one line |
 | Git identity | on | `user.name` / `user.email`, for commit attribution |
 | Provider transport settings | on | Base URL, proxies, CA bundle — without these a container behind a proxy cannot reach the network |
@@ -315,7 +320,7 @@ Every switch and what it exposes: **[docs/integrations](docs/integrations/)**.
 ### Environment overrides
 
 ```text
-AGENT_BOX_AGENT           Default agent when claude/codex is omitted
+AGENT_BOX_AGENT           Agent when claude/codex is omitted (overrides launch.default_agent)
 AGENT_BOX_IMAGE           Container image name
 AGENT_BOX_KVM=0           Disable KVM passthrough
 AGENT_BOX_GH_TOKEN=0|1    Withhold / force the GitHub token for one run

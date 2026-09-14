@@ -544,6 +544,31 @@ class CodexRuntimeOverridesTests(IsolatedRuntimeTest):
                 runtime.runtime_main([agent], Path.cwd())
             overrides.assert_not_called()
 
+    def test_bare_launch_starts_the_configured_agent_unless_overridden(self):
+        """Configured default < AGENT_BOX_AGENT < explicit agent, so a one-off never needs a config edit."""
+        workspace = Workspace(Path.cwd(), Path.cwd())
+        config = Config()
+        config.launch.default_agent = "codex"
+        cases = (([], {}, "codex"), ([], {"AGENT_BOX_AGENT": "claude"}, "claude"),
+                 (["claude"], {"AGENT_BOX_AGENT": "codex"}, "claude"), (["codex"], {}, "codex"))
+        for args, env, expected in cases:
+            environ = {k: v for k, v in os.environ.items() if k not in ("AGENT_BOX_AGENT", "AGENT_BOX_RUNTIME_CONFIG")}
+            with self.subTest(args=args, env=env), \
+                 mock.patch.dict(os.environ, {**environ, **env}, clear=True), \
+                 mock.patch.object(runtime.shutil, "which", return_value="/usr/bin/podman"), \
+                 mock.patch.object(runtime, "resolve_workspace", return_value=workspace), \
+                 mock.patch.object(runtime, "ensure_state_dirs"), \
+                 mock.patch.object(runtime, "ensure_refresh_token"), \
+                 mock.patch.object(runtime, "load_config", return_value=config), \
+                 mock.patch.object(runtime, "image_exists", return_value=True), \
+                 mock.patch.object(runtime, "tmux_enabled", return_value=False), \
+                 mock.patch.object(runtime, "claude_channel_args", return_value=([], [])), \
+                 mock.patch.object(runtime, "codex_command", return_value=["codex"]), \
+                 mock.patch.object(runtime, "launch_in_workspace_container", return_value=0) as launch, \
+                 self.assertRaises(SystemExit):
+                runtime.runtime_main(args, Path.cwd())
+            self.assertEqual(launch.call_args.args[2][0], expected)
+
 
 
 

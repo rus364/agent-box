@@ -72,7 +72,6 @@ from .sessions import host_tmux_env, tmux_argv, tmux_session_exists, tmux_sessio
 from .workspace import Workspace, resolve_workspace
 
 IMAGE = os.environ.get("AGENT_BOX_IMAGE", "localhost/agent-box:latest")
-DEFAULT_AGENT = os.environ.get("AGENT_BOX_AGENT", "claude")
 CHATGPT_DESKTOP_RESOURCES = "/usr/lib/chatgpt/resources/"
 
 WORKSPACE_CONTAINER_SCHEMA = "2"
@@ -2369,7 +2368,7 @@ def runtime_main(
                  f" -- run 'agent-box build' to drop them")
 
 
-    agent, rest = DEFAULT_AGENT, args
+    agent, rest = os.environ.get("AGENT_BOX_AGENT") or config.launch.default_agent, args
     if args and args[0] in {"claude", "codex", "shell", "doctor"}:
         agent, rest = args[0], args[1:]
     if agent not in {"claude", "codex", "shell", "doctor"}:

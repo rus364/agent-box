@@ -9,12 +9,13 @@ import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 
-from .config import AGENT_EFFORTS, IMAGE_TOOL_GROUP_HELP, Config, REVIEW_PRESETS, TRACKER_PROVIDERS, TrackerConnection
+from .config import AGENT_EFFORTS, IMAGE_TOOL_GROUP_HELP, LAUNCH_AGENTS, Config, REVIEW_PRESETS, TRACKER_PROVIDERS, TrackerConnection
 from .errors import AgentBoxError
 from .external_config import API_EFFORTS, ExternalProvider, model_defaults, model_settings, valid_model, valid_name, validate_connections
 from .model_catalog import load_model_catalogs
 
 CHOICES = {
+    "launch.default_agent": LAUNCH_AGENTS,
     "tracker.provider": TRACKER_PROVIDERS,
     "workflow.merge_mode": ("github", "local"),
     "workflow.routing": ("current", "weighted", "usage-aware"),
@@ -26,6 +27,8 @@ CHOICES = {
     "workflow.review.github_provider": ("auto", "local", "codex", "claude"),
 }
 HELP = {
+    "launch": "What a bare `agent-box` starts. Global only; not a project setting.",
+    "launch.default_agent": "Agent started by `agent-box` without claude/codex. AGENT_BOX_AGENT overrides it for one command; an explicit claude or codex always wins.",
     "claude": "Claude host integration settings. Changes are applied only after Save and apply.",
     "claude.telegram_channel": "Start Claude with Anthropic's official Telegram channel plugin. This requires its host-side setup and exposes the session through that channel.",
     "claude.statusline": "Keep Claude's status line pointed at agent-box. An existing user-owned status line is never overwritten.",
@@ -104,6 +107,7 @@ ACTION_HELP = {
     "preset": "Set file and line thresholds together from a named review preset; all review fields remain editable.",
 }
 LABELS = {
+    "launch": "Launch", "default_agent": "Default agent",
     "claude": "Claude", "codex": "Codex", "github": "GitHub", "git": "Git",
     "usage": "Usage segment", "command": "Custom command",
     "env": "Environment", "providers": "Provider environment", "image": "Workspace image",
@@ -122,6 +126,7 @@ MENU_GROUPS = {
         ("Workspace", ("image", "browser", "env")),
         ("Host access", ("external_providers", "providers", "github", "git")),
         ("Host integrations", ("claude", "codex", "usage", "skills", "notifications")),
+        ("Launch", ("launch",)),
     ),
     ("workflow",): (
         ("Workflow", ("enabled",)),

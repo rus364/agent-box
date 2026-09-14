@@ -107,6 +107,25 @@ class CodexConfig:
         return cls(remote_control=_bool(data, "remote_control", False))
 
 
+LAUNCH_AGENTS = ("claude", "codex")
+
+
+@dataclass
+class LaunchConfig:
+    #: The agent a bare ``agent-box`` starts. ``AGENT_BOX_AGENT`` still wins
+    #: for one command; an explicit ``claude``/``codex`` wins over both.
+    #: Global only: which TUI to open is the user's habit, not a repository's policy.
+    default_agent: str = "claude"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"default_agent": self.default_agent}
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "LaunchConfig":
+        agent = _str(data, "default_agent")
+        return cls(default_agent=agent if agent in LAUNCH_AGENTS else "claude")
+
+
 @dataclass
 class UsageConfig:
     #: Shell command whose first output line follows the Claude and Codex usage
@@ -749,10 +768,12 @@ class Config:
     browser: BrowserConfig = field(default_factory=BrowserConfig)
     workflow: WorkflowConfig = field(default_factory=WorkflowConfig)
     usage: UsageConfig = field(default_factory=UsageConfig)
+    launch: LaunchConfig = field(default_factory=LaunchConfig)
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "version": VERSION,
+            "launch": self.launch.to_dict(),
             "claude": self.claude.to_dict(),
             "codex": self.codex.to_dict(),
             "notifications": self.notifications.to_dict(),
@@ -775,6 +796,7 @@ class Config:
         if not isinstance(data, dict):
             return cls()
         return cls(
+            launch=LaunchConfig.from_dict(data.get("launch")),
             claude=ClaudeConfig.from_dict(data.get("claude")),
             codex=CodexConfig.from_dict(data.get("codex")),
             notifications=NotificationsConfig.from_dict(data.get("notifications")),

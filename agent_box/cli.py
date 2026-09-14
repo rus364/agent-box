@@ -1,6 +1,7 @@
 """Command-line dispatch. Kept free of business logic beyond argument parsing."""
 from __future__ import annotations
 
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -155,7 +156,7 @@ Installation:
                             shell startup file; --yes skips that confirmation.
 
 Environment (overrides for a single command):
-  AGENT_BOX_AGENT           Default agent when claude/codex is omitted (default: claude)
+  AGENT_BOX_AGENT           Agent when claude/codex is omitted (overrides launch.default_agent)
   AGENT_BOX_IMAGE           Container image name (default: localhost/agent-box:latest)
   AGENT_BOX_KVM=0           Disable KVM passthrough
   AGENT_BOX_TMUX=0          Run the session directly, with no detachable tmux
@@ -360,6 +361,9 @@ def config_show() -> None:
     if source["kind"] == "runtime":
         print("Rendered container configuration; host-only settings are not included.")
     print()
+    print(f"  Default agent               {config.launch.default_agent}"
+          + (f" (AGENT_BOX_AGENT={os.environ['AGENT_BOX_AGENT']} overrides it here)"
+             if os.environ.get("AGENT_BOX_AGENT") else ""))
     print(f"  Claude Telegram channel     {'on' if config.claude.telegram_channel else 'off'}")
     print(f"  Claude status line          {'on' if config.claude.statusline else 'off'}{_statusline_note(config)}")
     print(f"  Outbound notifications      {'on' if config.notifications.enabled else 'off'}")

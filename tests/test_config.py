@@ -222,5 +222,30 @@ class ClaudeStatuslineDefaultTests(unittest.TestCase):
             config_module.ClaudeConfig.from_dict(claude.to_dict()), claude)
 
 
+class DefaultAgentTests(unittest.TestCase):
+    """A bare ``agent-box`` must open the TUI the user chose, and only a known one."""
+
+    def test_claude_is_the_default_and_leaves_the_saved_file_sparse(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            save_config(Config(), path)
+            self.assertNotIn("launch", json.loads(path.read_text()))
+            self.assertEqual(load_config(path).launch.default_agent, "claude")
+
+    def test_codex_choice_survives_save_and_load(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            config = Config()
+            config.launch.default_agent = "codex"
+            save_config(config, path)
+            self.assertEqual(load_config(path).launch.default_agent, "codex")
+
+    def test_an_unknown_agent_reads_as_claude_instead_of_failing_every_launch(self):
+        for value in ("shell", "gemini", "", 3, None):
+            with self.subTest(value=value):
+                self.assertEqual(
+                    Config.from_dict({"launch": {"default_agent": value}}).launch.default_agent, "claude")
+
+
 if __name__ == "__main__":
     unittest.main()
