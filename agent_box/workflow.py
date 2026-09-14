@@ -653,14 +653,21 @@ def path_matches(path, pattern):
 
 def diff_stats(root, base, review):
     """Ignored paths leave only the trigger counts, never the reviewed diff; a
-    sensitive match keeps a path counted so a broad ignore cannot silence it."""
+    sensitive match keeps a path counted so a broad ignore cannot silence it.
+    `-z` yields real names: the default output quotes non-ASCII paths and joins
+    a rename as `old => new`, which globs would match wrongly. A rename leaves
+    the counts only when both names are ignored."""
     files, lines = [], 0
-    for row in gw.git(root, "diff", "--numstat", f"{gw.base_ref(root, base)}...HEAD", "--").splitlines():
-        added, deleted, path = row.split("\t", 2)
-        if (any(path_matches(path, pattern) for pattern in review.ignored_paths)
-                and not any(path_matches(path, pattern) for pattern in review.sensitive_paths)):
+    fields = gw.git(root, "diff", "--numstat", "-z", f"{gw.base_ref(root, base)}...HEAD", "--").split("\0")
+    index = 0
+    while index < len(fields) and fields[index]:
+        added, deleted, path = fields[index].split("\t", 2)
+        names = [path] if path else fields[index + 1:index + 3]
+        index += 1 if path else 3
+        if (all(any(path_matches(name, pattern) for pattern in review.ignored_paths) for name in names)
+                and not any(path_matches(name, pattern) for name in names for pattern in review.sensitive_paths)):
             continue
-        files.append(path)
+        files.append(names[-1])
         lines += int(added) + int(deleted) if added != "-" and deleted != "-" else 10**9
     return files, lines
 

@@ -434,6 +434,7 @@ so `*.md` and `**/*.md` both match Markdown anywhere, `docs/**` matches under th
 top-level `docs`, and `**/auth/**` matches an `auth` directory at any depth. A
 changed path matching `ignored_paths` leaves the file and line counts, so a
 documentation-only change with `["**/*.md", "docs/**"]` needs no auto review. A
+rename leaves the counts only when both its old and new names are ignored. A
 path matching both lists stays counted and triggers review as sensitive. Ignoring
 never changes `always`, labels, scope, validation or the diff a reviewer reads.
 `agent-box workflow inspect TASK` is read-only and works before begin, from another
