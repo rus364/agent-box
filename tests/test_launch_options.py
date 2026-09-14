@@ -101,6 +101,27 @@ class SessionPrecedenceTests(IsolatedLaunchTest):
             runtime.host_main("codex", [])
         self.assertNotIn(notify.NOTIFY_OFF_ENV, call.call_args.kwargs["env"])
 
+    def test_session_tracker_follows_the_provider_the_project_selects(self):
+        """The saved configuration may name another provider; the account lands where the session reads it."""
+        config = workflow_config()
+        config.tracker.provider = "jira"
+        project = {"tracker": {"provider": "vikunja"}}
+        with patch.dict(os.environ, {"VIKUNJA_TOKEN": "session-secret"}):
+            launched, snapshot = self.launch(config, {"tracker": "https://tasks.example"}, project)
+        self.assertEqual(launched._project_base.tracker.connection("vikunja").token, "session-secret")
+        rendered = json.loads(snapshot.read_text())["tracker"]
+        self.assertEqual(rendered["connections"]["vikunja"], {"url": "https://tasks.example", "token": "session-secret"})
+        with patch.dict(os.environ, {"VIKUNJA_TOKEN": "session-secret"}), \
+             self.assertRaisesRegex(AgentBoxError, "supports the vikunja tracker; this configuration selects jira"):
+            self.launch(workflow_config(), {"tracker": "https://tasks.example"}, {"tracker": {"provider": "jira"}})
+
+    def test_notify_inside_a_session_is_refused_for_what_it_is(self):
+        """A snapshot carries no notification settings, so the host-side reason would be false there."""
+        _, snapshot = self.launch(workflow_config(), {})
+        with patch.dict(os.environ, {"AGENT_BOX_RUNTIME_CONFIG": str(snapshot)}), \
+             self.assertRaisesRegex(AgentBoxError, "a session cannot turn notifications on"):
+            runtime.launch_config(LaunchOptions(overrides={"notify": True}))
+
     def test_config_show_names_the_session_options(self):
         _, snapshot = self.launch(workflow_config(), {"execution": "direct", "push": False})
         with patch.dict(os.environ, {"AGENT_BOX_RUNTIME_CONFIG": str(snapshot)}), \

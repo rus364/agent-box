@@ -898,14 +898,18 @@ def launch_config(options=None):
     policy = base.env.overlay(options.env)
     config = effective_config(base)
     launch_options.apply(config, overrides)
-    # The snapshot renders from the layer beneath the project overlay. Only the
-    # --tracker account and --no-workflow's withdrawal of the tracker belong
+    # The snapshot renders from the layer beneath the project overlay. Only
+    # --no-workflow's withdrawal of the tracker and the --tracker account belong
     # there; any other flag would reach a project copy made inside the session.
-    launch_options.apply(config._project_base, {k: v for k, v in overrides.items() if k in ("tracker", "workflow")})
+    if "workflow" in overrides:
+        launch_options.apply(config._project_base, {"workflow": overrides["workflow"]})
     if "tracker" in options.overrides:
-        launch_options.bind_tracker_token(config)
-    if options.overrides.get("notify") and not config.notifications.usable:
-        raise AgentBoxError("--notify needs Telegram notifications set up in agent-box config")
+        launch_options.bind_tracker_account(config, overrides["tracker"])
+    if options.overrides.get("notify"):
+        if os.environ.get("AGENT_BOX_RUNTIME_CONFIG"):
+            raise AgentBoxError("--notify applies to launches from the host; a session cannot turn notifications on")
+        if not config.notifications.usable:
+            raise AgentBoxError("--notify needs Telegram notifications set up in agent-box config")
     config.env = policy
     if config.tracker.enabled:
         from .project_config import load

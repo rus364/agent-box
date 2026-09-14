@@ -229,19 +229,22 @@ def apply(config, overrides):
     return config
 
 
-def bind_tracker_token(config, environ=None):
-    """Put the ``--tracker`` account's token where the snapshot renders it from.
+def bind_tracker_account(config, url, environ=None):
+    """Put the ``--tracker`` account beneath the project overlay, where the snapshot renders it from.
 
-    Read by name from the launching shell, so the value never enters an argv.
+    The effective provider decides, since the project may select one the
+    saved configuration does not. The token is read by name from the
+    launching shell, so its value never enters an argv.
     """
     environ = os.environ if environ is None else environ
-    provider = config.tracker.provider
-    name = f"{provider.upper()}_TOKEN"
-    token = environ.get(name, "")
+    if config.tracker.provider != "vikunja":
+        raise AgentBoxError(f"--tracker supports the vikunja tracker; this configuration selects {config.tracker.provider}")
+    token = environ.get("VIKUNJA_TOKEN", "")
     if not token.strip():
-        raise AgentBoxError(f"--tracker needs {name} exported in this shell; the token is never passed as an argument")
+        raise AgentBoxError("--tracker needs VIKUNJA_TOKEN exported in this shell; the token is never passed as an argument")
     for target in {id(c): c for c in (getattr(config, "_project_base", config), config)}.values():
-        target.tracker.connections[provider].token = token
+        target.tracker.enabled = True
+        target.tracker.connections["vikunja"] = TrackerConnection(url, token)
 
 
 def describe(overrides):
