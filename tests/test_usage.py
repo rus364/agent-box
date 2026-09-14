@@ -142,6 +142,8 @@ class UsageFormattingTests(unittest.TestCase):
             {"caching_observed": False},
             {"warm": True},
             {"warm": "yes", "expires_at": self.EXPIRES_AT},
+            # Beyond the platform's localtime range: must not abort the line.
+            {"warm": True, "expires_at": float("inf")},
         ):
             with self.subTest(cache=cache):
                 self.assertEqual(self._cache(**cache), "")

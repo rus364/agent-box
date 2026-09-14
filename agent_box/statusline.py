@@ -18,7 +18,6 @@ command whose output only ever goes to the terminal.
 from __future__ import annotations
 
 import os
-import re
 import subprocess
 import time
 from pathlib import Path
@@ -71,16 +70,18 @@ def worktree_diff(cwd: Path) -> str:
 
     This is the repository's state, deliberately not Claude Code's session
     counter: that one keeps growing across commits and misses edits made
-    through the shell. Untracked files are not counted; the dirty marker
-    already reports them. No HEAD, no changes or any git failure give "".
+    through the shell. ``--numstat`` rather than ``--shortstat``, whose
+    summary git translates for the caller's locale. Untracked files, binary
+    rows (``-``) and changes without lines are left to the dirty marker.
+    No HEAD, no line changes or any git failure give "".
     """
-    stat = git_output(cwd, "diff", "--shortstat", "HEAD")
-    added = re.search(r"(\d+) insertion", stat)
-    removed = re.search(r"(\d+) deletion", stat)
-    if not added and not removed:
-        return ""
-    return usage_module.format_line_counts(
-        int(added.group(1)) if added else 0, int(removed.group(1)) if removed else 0)
+    added = removed = 0
+    for row in git_output(cwd, "diff", "--numstat", "HEAD").splitlines():
+        counts = row.split("\t", 2)[:2]
+        if len(counts) == 2 and all(count.isdigit() for count in counts):
+            added += int(counts[0])
+            removed += int(counts[1])
+    return usage_module.format_line_counts(added, removed) if added or removed else ""
 
 
 def format_directory(cwd: Path) -> str:

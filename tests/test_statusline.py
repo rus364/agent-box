@@ -117,6 +117,28 @@ class GitProbeTests(unittest.TestCase):
         (self.repo / "a.txt").write_text("one\n")
         self.assertEqual(statusline.worktree_diff(self.repo), "+0/−2")
 
+    def test_changes_without_line_counts_show_no_count(self):
+        """A binary or empty change is left to ✗; a "+0/−0" count would read as a defect."""
+        (self.repo / "a.bin").write_bytes(b"\x00\x01")
+        (self.repo / "empty.txt").write_text("")
+        self._git("add", ".")
+        self._git("commit", "-q", "-m", "init")
+        (self.repo / "a.bin").write_bytes(b"\x00\x02")
+        self._git("rm", "-q", "empty.txt")
+        self.assertTrue(statusline.worktree_dirty(self.repo))
+        self.assertEqual(statusline.worktree_diff(self.repo), "")
+
+    def test_diff_count_does_not_depend_on_the_callers_locale(self):
+        """Host sessions keep the caller's locale, and git translates its --shortstat summary."""
+        (self.repo / "a.txt").write_text("one\n")
+        self._git("add", "a.txt")
+        self._git("commit", "-q", "-m", "init")
+        (self.repo / "a.txt").write_text("one\ntwo\n")
+        with mock.patch.dict(os.environ, {"LANGUAGE": "ru", "LC_ALL": "ru_RU.UTF-8", "LANG": "ru_RU.UTF-8"}):
+            if "insertion" in statusline.git_output(self.repo, "diff", "--shortstat", "HEAD"):
+                self.skipTest("git has no Russian translation installed here")
+            self.assertEqual(statusline.worktree_diff(self.repo), "+1/−0")
+
     def test_outside_a_repository_there_is_no_branch(self):
         with tempfile.TemporaryDirectory() as plain:
             self.assertEqual(statusline.git_branch(Path(plain)), "")

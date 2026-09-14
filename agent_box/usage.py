@@ -207,7 +207,10 @@ def prompt_cache_state(cache: Any, now: float) -> str:
         if not isinstance(expires, (int, float)):
             return ""
         if expires > now:
-            return f"cache →{time.strftime('%H:%M', time.localtime(expires))}"
+            try:
+                return f"cache →{time.strftime('%H:%M', time.localtime(expires))}"
+            except (OverflowError, OSError, ValueError):
+                return ""
     elif warm is not False:
         return ""
     rebuild = cache.get("recache_tokens_if_cold")
