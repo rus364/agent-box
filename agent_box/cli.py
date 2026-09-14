@@ -41,6 +41,7 @@ def usage_text() -> None:
   agent-box build | update | rebuild
   agent-box upgrade [--check]
   agent-box uninstall [--purge] [--yes]
+  agent-box completion bash|zsh
   agent-box tracker COMMAND | workflow COMMAND
   agent-box selftest | help
 
@@ -76,6 +77,7 @@ Installation:
                           configuration; --check only reports
   uninstall               Remove what agent-box wrote outside its directories and every box;
                           --purge also deletes its config and state, --yes skips confirmation
+  completion bash|zsh     Print a shell completion script; --help says how to load it
 
 Other:
   tracker, workflow       Task tracker and workflow; see their --help
@@ -459,6 +461,19 @@ def config_command(args: list[str]) -> None:
         die("expected: agent-box config [--project|show|check|apply]")
 
 
+# -- completion --------------------------------------------------------
+
+def completion_command(args: list[str]) -> None:
+    from . import completion
+    asks_help = args[-1:] in (["-h"], ["--help"])
+    if not args or asks_help and (len(args) == 1 or len(args) == 2 and args[0] in completion.SHELLS):
+        print(completion.HELP)
+    elif len(args) == 1 and args[0] in completion.SHELLS:
+        print(completion.script(args[0]), end="")
+    else:
+        die("expected: agent-box completion bash|zsh; see agent-box completion --help")
+
+
 # -- selftest ----------------------------------------------------------
 
 def selftest() -> None:
@@ -472,6 +487,7 @@ def selftest() -> None:
 NON_RUNTIME = {
     "usage", "statusline", "notify", "config", "selftest", "help", "-h", "--help",
     "build", "update", "rebuild", "tracker", "workflow", "attach", "stop", "upgrade", "uninstall",
+    "completion",
 }
 #: --host only makes sense for a real agent launch, never for these.
 HOST_ONLY_AGENTS = {"claude", "codex"}
@@ -495,6 +511,11 @@ def main() -> None:
             raise SystemExit(remote_control.main(sys.argv[2:]))
         except (AgentBoxError, OSError) as exc:
             die(str(exc))
+    if sys.argv[1:2] == ["_complete"]:
+        # Before the project configuration loads: a broken .agent-box.json must not break Tab.
+        from . import completion
+        completion.main(sys.argv[2:])
+        return
     from . import launch_options, project_config
     try:
         project_config.load()
@@ -522,6 +543,8 @@ def main() -> None:
             notify_command(args[1:]); return
         if args and args[0] == "config":
             config_command(args[1:]); return
+        if args and args[0] == "completion":
+            completion_command(args[1:]); return
         if args and args[0] == "selftest":
             if len(args) != 1: die("agent-box selftest takes no arguments")
             selftest(); return

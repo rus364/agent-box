@@ -91,6 +91,17 @@ agent-box doctor      # verify the environment
 agent-box upgrade     # move this checkout to the newest release
 ```
 
+**Shell completion** (optional). Add one line to `~/.bashrc`, or to `~/.zshrc`
+after `compinit`:
+
+```bash
+source <(agent-box completion bash)   # zsh: source <(agent-box completion zsh)
+```
+
+agent-box computes the candidates on every Tab from the same tables that parse
+the command line, so new options and commands complete without regenerating
+the script.
+
 ## How it works
 
 ```mermaid
