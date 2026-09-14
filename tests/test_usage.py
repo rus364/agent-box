@@ -109,6 +109,10 @@ class UsageFormattingTests(unittest.TestCase):
             {"context_window": None},
             {"context_window": {"context_window_size": 200_000, "used_percentage": None}},
             {"context_window": {"used_percentage": 0, "context_window_size": 0}},
+            # Infinity parses from JSON but would raise in compact_tokens.
+            {"context_window": {
+                "used_percentage": 5, "context_window_size": float("inf"),
+                "total_input_tokens": 1}},
         ):
             with self.subTest(payload=payload):
                 self.assertEqual(usage.format_context_window(payload), "")
@@ -132,6 +136,9 @@ class UsageFormattingTests(unittest.TestCase):
             self._cache(warm=False, expires_at=None, recache_tokens_if_cold=45_000),
             "cache cold · 45k")
         self.assertEqual(self._cache(warm=False, recache_tokens_if_cold=None), "cache cold")
+        # An unusable token count drops only the suffix, never the whole line.
+        self.assertEqual(
+            self._cache(warm=False, recache_tokens_if_cold=float("inf")), "cache cold")
 
     def test_a_stale_warm_payload_past_its_expiry_is_cold(self):
         self.assertEqual(

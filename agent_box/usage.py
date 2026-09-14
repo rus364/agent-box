@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import http.client
+import math
 import os
 import time
 import urllib.error
@@ -166,6 +167,12 @@ def compact_tokens(count: float) -> str:
     return str(n)
 
 
+def finite(value: Any) -> bool:
+    """A usable payload number. ``json.loads`` accepts ``Infinity`` and ``1e400``,
+    which ``int()`` and ``time.localtime`` then refuse by raising."""
+    return isinstance(value, (int, float)) and math.isfinite(value)
+
+
 def format_line_counts(added: int, removed: int) -> str:
     return f"+{added}/−{removed}"
 
@@ -204,7 +211,7 @@ def prompt_cache_state(cache: Any, now: float) -> str:
     warm = cache.get("warm")
     expires = cache.get("expires_at")
     if warm is True:
-        if not isinstance(expires, (int, float)):
+        if not finite(expires):
             return ""
         if expires > now:
             try:
@@ -214,7 +221,7 @@ def prompt_cache_state(cache: Any, now: float) -> str:
     elif warm is not False:
         return ""
     rebuild = cache.get("recache_tokens_if_cold")
-    if isinstance(rebuild, (int, float)) and rebuild > 0:
+    if finite(rebuild) and rebuild > 0:
         return f"cache cold · {compact_tokens(rebuild)}"
     return "cache cold"
 
@@ -236,9 +243,7 @@ def context_usage(window: Any) -> str:
     used = window.get("used_percentage")
     total = window.get("context_window_size")
     tokens = window.get("total_input_tokens")
-    if not isinstance(used, (int, float)) or not isinstance(total, (int, float)) or total <= 0:
-        return ""
-    if not isinstance(tokens, (int, float)):
+    if not (finite(used) and finite(total) and finite(tokens)) or total <= 0:
         return ""
     return f"ctx {int(used)}% · {compact_tokens(tokens)}/{compact_tokens(total)}"
 
