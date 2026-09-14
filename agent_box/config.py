@@ -112,8 +112,7 @@ LAUNCH_AGENTS = ("claude", "codex")
 
 @dataclass
 class LaunchConfig:
-    #: The agent a bare ``agent-box`` starts. ``AGENT_BOX_AGENT`` still wins
-    #: for one command; an explicit ``claude``/``codex`` wins over both.
+    #: The agent a bare ``agent-box`` starts; an explicit ``claude``/``codex`` wins.
     #: Global only: which TUI to open is the user's habit, not a repository's policy.
     default_agent: str = "claude"
 
@@ -671,12 +670,20 @@ class WorkflowConfig:
     cleanup_local_branches: bool = False
     cleanup_remote_branches: bool = False
     worker: WorkerConfig = field(default_factory=WorkerConfig)
+    #: Launch-only models pinned by --worker/--reviewer/--scout, keyed by role.
+    #: Never serialized: a session re-derives them from its snapshot's launch
+    #: flags, so no configuration file can hold one.
+    pins: dict[str, dict] = field(default_factory=dict)
 
     def to_dict(self):
         from dataclasses import asdict
-        return asdict(self)
+        data = asdict(self)
+        data.pop("pins")
+        return data
 
     def override_for(self, role, tier):
+        if role in self.pins:
+            return ModelOverride("all", self.pins[role])
         settings = self.worker if role == "worker" else self.review if role == "reviewer" else None
         return settings.override if settings and settings.override.applies(tier) else None
 
@@ -730,6 +737,7 @@ class WorkflowConfig:
                       for tier, models in tiers.items()]
         candidates.extend((f"workflow.{name}.override.models", settings.override.models)
                           for name, settings in (("worker", self.worker), ("review", self.review)))
+        candidates.extend((f"--{role}", models) for role, models in self.pins.items())
         return candidates
 
     @classmethod
@@ -841,27 +849,20 @@ def save_config(config: Config, path: Path | None = None) -> None:
     atomic_write_json(CONFIG_FILE if path is None else path, {"version": VERSION, **data}, SECRET_MODE)
 
 
-def session_tracker(config, environ=None):
-    """Select an explicit complete session account without falling back on a token."""
-    from .errors import AgentBoxError
-    from .repo_binding import server_identity
-    environ = os.environ if environ is None else environ
-    source = getattr(config, "_project_base", config).tracker
-    present = [name in environ for name in ("VIKUNJA_URL", "VIKUNJA_TOKEN")]
-    if not any(present):
-        return source
-    if not all(present) or not all(environ[name].strip() for name in ("VIKUNJA_URL", "VIKUNJA_TOKEN")):
-        raise AgentBoxError("VIKUNJA_URL and VIKUNJA_TOKEN must both be nonempty; no global connection fallback")
-    url = server_identity(environ["VIKUNJA_URL"])
-    result = TrackerConfig.from_dict(source.to_dict())
-    result.connections["vikunja"] = TrackerConnection(url, environ["VIKUNJA_TOKEN"])
-    return result
+def session_account(config):
+    """The tracker account a session connects with: the global one, or --tracker's.
+
+    The project configuration can name a URL but never a token, so the account
+    comes from the configuration beneath the project overlay.
+    """
+    return getattr(config, "_project_base", config).tracker
 
 
-def effective_config(base=None, environ=None, *, include_project=True) -> Config:
-    """Apply project policy to the host or session snapshot using one precedence."""
-    from . import project_config
+def effective_config(base=None, *, include_project=True) -> Config:
+    """Global (or snapshot) < project < this session's launch flags."""
+    from . import launch_options, project_config
     runtime_file = os.environ.get("AGENT_BOX_RUNTIME_CONFIG")
+    launch = {}
     if base is None:
         if not runtime_file:
             base = load_config()
@@ -872,6 +873,7 @@ def effective_config(base=None, environ=None, *, include_project=True) -> Config
                 base = Config.from_dict(rendered)
                 if "global_tracker_urls" in rendered:
                     base._global_tracker_urls = rendered["global_tracker_urls"]
+                launch = rendered.get("launch") if isinstance(rendered.get("launch"), dict) else {}
             except (OSError, ValueError, TypeError):
                 raise AgentBoxError("Cannot read rendered workflow configuration") from None
     import copy
@@ -881,8 +883,12 @@ def effective_config(base=None, environ=None, *, include_project=True) -> Config
     source = getattr(base, "_project_base", base)
     base._global_tracker_urls = getattr(source, "_global_tracker_urls", {
         name: connection.url for name, connection in source.tracker.connections.items()})
-    base.tracker = session_tracker(base, environ)
-    return project_config.apply(base, project_config.load()) if include_project else base
+    if not include_project:
+        # A nested launch starts from this session's flags and adds its own.
+        base._launch = launch
+        return base
+    result = project_config.apply(base, project_config.load())
+    return launch_options.apply(result, launch) if launch else result
 
 
 def effective_config_source() -> dict[str, str]:

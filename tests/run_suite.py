@@ -22,7 +22,6 @@ def isolated_environment(directory):
     }.items():
         env[name] = str(directory / child)
     env.pop("AGENT_BOX_RUNTIME_CONFIG", None)
-    env.pop("AGENT_BOX_WORKSPACE_ROOT", None)
     # Uninstall must not discover the developer's launcher through PATH.
     env["PATH"] = os.pathsep.join((str(directory / "bin"), os.defpath))
     env["GIT_CONFIG_GLOBAL"] = os.devnull

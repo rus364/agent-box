@@ -12,7 +12,7 @@ import unittest
 from unittest import mock
 
 from agent_box import runtime
-from agent_box.cli import parse_global_args
+from agent_box.launch_options import parse
 from agent_box.config import Config, EnvConfig, parse_env_spec
 
 
@@ -149,23 +149,21 @@ class InvocationEnvTests(unittest.TestCase):
 
 class EnvArgumentParsingTests(unittest.TestCase):
     def test_the_flag_is_collected_before_the_agent(self):
-        mounts, host, env_specs, rest = parse_global_args(
-            ["--env", "TZ=UTC", "--env=MY_TOKEN", "codex"])
-        self.assertEqual(env_specs, ["TZ=UTC", "MY_TOKEN"])
+        options, rest = parse(["--env", "TZ=UTC", "--env=MY_TOKEN", "codex"])
+        self.assertEqual(options.env, [("TZ", "UTC"), ("MY_TOKEN", None)])
         self.assertEqual(rest, ["codex"])
-        self.assertEqual(mounts, [])
-        self.assertFalse(host)
+        self.assertEqual(options.mounts, [])
+        self.assertFalse(options.host)
 
     def test_a_flag_after_the_agent_belongs_to_the_agent(self):
-        _mounts, _host, env_specs, rest = parse_global_args(["codex", "--env", "theirs"])
-        self.assertEqual(env_specs, [])
+        options, rest = parse(["codex", "--env", "theirs"])
+        self.assertEqual(options.env, [])
         self.assertEqual(rest, ["codex", "--env", "theirs"])
 
     def test_it_combines_with_mounts_and_host_mode(self):
-        mounts, host, env_specs, rest = parse_global_args(
-            ["--mount", "/data", "--env", "TZ=UTC", "--host", "claude"])
-        self.assertEqual((mounts, host, env_specs, rest),
-                         (["/data"], True, ["TZ=UTC"], ["claude"]))
+        options, rest = parse(["--mount", "/data", "--env", "TZ=UTC", "--host", "claude"])
+        self.assertEqual((options.mounts, options.host, options.env, rest),
+                         (["/data"], True, [("TZ", "UTC")], ["claude"]))
 
 
 class EnvConfigSchemaTests(unittest.TestCase):

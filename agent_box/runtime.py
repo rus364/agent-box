@@ -35,10 +35,11 @@ from . import claude_settings
 from . import notify as notify_module
 from . import nested_podman
 from .atomicio import atomic_write_json, atomic_write_text, read_json
-from .config import ENV_PREFIX, WORKFLOW_SKILLS, Config, load_config, effective_config, session_tracker
+from .config import ENV_PREFIX, WORKFLOW_SKILLS, Config, load_config, effective_config, session_account
 from .errors import AgentBoxError
 from .external_config import has_toml_spelling, toml_string
 from .identity import HostIdentity, detect_host_identity
+from .launch_options import LaunchOptions
 from .mounts import MountSpec, plan_mounts
 from .notify import SUPPRESS_NOTIFY_ENV
 from .paths import (
@@ -270,7 +271,7 @@ def tool_build_args(config: Config) -> list[str]:
 def runtime_config_base() -> Config:
     """Nested launches use the session snapshot; the host config is not mounted."""
     if os.environ.get("AGENT_BOX_RUNTIME_CONFIG"):
-        return effective_config(environ={}, include_project=False)
+        return effective_config(include_project=False)
     return load_config()
 
 
@@ -603,7 +604,7 @@ def seed_git_config(target: Path, config: Config) -> None:
     * both off -- an empty directory; git falls back to its own defaults.
 
     Independently of those three, when GitHub token passthrough is enabled
-    (``github_enabled``, which also honors ``AGENT_BOX_GH_TOKEN``), a
+    (``github_enabled``), a
     ``credential.https://github.com.helper`` entry is added so a plain
     ``git push`` over HTTPS actually has a usable credential path -- without
     this, forwarding ``GH_TOKEN`` into the container environment alone does
@@ -830,6 +831,7 @@ def container_tracker_url(raw: str) -> str:
 
 def sync_tracker_runtime(config: Config, directory: Path | None = None, *, policy=False, container=True) -> None:
     """Render only explicitly enabled capabilities; directory mounts see atomic updates."""
+    launch = getattr(config, "_launch", {})
     config = getattr(config, "_project_base", config)
     directory = TRACKER_RUNTIME_DIR if directory is None else directory
     if not policy and not (config.tracker.enabled or config.workflow.enabled):
@@ -866,6 +868,8 @@ def sync_tracker_runtime(config: Config, directory: Path | None = None, *, polic
         "image": config.image.to_dict(),
         "external_providers": external,
         "container": container,
+        # Re-applied over the project configuration inside the session.
+        "launch": launch,
     }
     atomic_write_json(directory / "config.json", rendered, 0o600)
 
@@ -885,23 +889,32 @@ def session_runtime(config, *, container=True, runtime_state=None):
     return path
 
 
-def launch_config(env_specs=None, *, container=True):
+def launch_config(options=None):
+    """Saved settings, then the project, then this launch's flags.
+
+    The flags are applied beneath the project overlay as well, so the snapshot
+    rendered from that layer already reflects them (a --no-workflow session
+    never receives a tracker token), and again above it, so they win.
+    """
+    from . import launch_options
+    options = options or launch_options.LaunchOptions()
     base = runtime_config_base()
-    policy = base.env.overlay(env_specs)
-    environment = ({name: os.environ[name] for name in policy.forward if name in os.environ}
-                   if container else dict(os.environ))
-    environment.update(policy.set)
-    config = effective_config(base, environ=environment)
+    overrides = {**getattr(base, "_launch", {}), **options.overrides}
+    policy = base.env.overlay(options.env)
+    config = effective_config(base)
+    for target in (config._project_base, config):
+        launch_options.apply(target, overrides)
+    if "tracker" in options.overrides:
+        launch_options.bind_tracker_token(config)
     config.env = policy
-    from .project_config import load
-    from .repo_binding import server_identity
-    tracker = load().get("tracker", {})
-    selected = session_tracker(config, environment)
     if config.tracker.enabled:
-        connection = tracker.get("connections", {}).get(config.tracker.provider, {})
-        account = selected.connection(config.tracker.provider)
-        if account.url and "url" in connection and server_identity(account.url) != server_identity(connection["url"]):
-            raise AgentBoxError("Repository binding targets a different tracker server; update the project binding")
+        from .project_config import load
+        from .repo_binding import server_identity
+        provider = config.tracker.provider
+        project_url = overrides.get("tracker") or load().get("tracker", {}).get("connections", {}).get(provider, {}).get("url")
+        account = session_account(config).connection(provider)
+        if account.url and project_url and server_identity(account.url) != server_identity(project_url):
+            raise AgentBoxError("Repository binding targets a different tracker server; pass --tracker or update the project binding")
     return config
 
 
@@ -1257,16 +1270,16 @@ def build_mounts(
     return out
 
 
-def kvm_args(config: Config) -> list[str]:
+def kvm_args(config: Config, enabled: bool = True) -> list[str]:
     """``/dev/kvm`` passthrough, when there is something in the box to use it.
 
     Tied to the ``virtualization`` tool group: without QEMU in the image the
     device is a bind with no consumer, and handing a container a device it has
-    no use for is not a neutral default.
+    no use for is not a neutral default. ``--no-kvm`` withholds it for a launch.
     """
     if not config.image.tools.get("virtualization"):
         return []
-    if os.environ.get("AGENT_BOX_KVM", "1") == "0" or not Path("/dev/kvm").exists():
+    if not enabled or not Path("/dev/kvm").exists():
         return []
     if not os.access("/dev/kvm", os.R_OK | os.W_OK):
         warn("/dev/kvm exists but current user cannot access it; KVM disabled")
@@ -1291,16 +1304,8 @@ def github_enabled(config: Config) -> bool:
     is a different trust boundary from your interactive shell, and a variable
     that happens to be in the environment is not a decision about it. So the
     config switch gates *both* the host-derived token and any already-exported
-    one.
-
-    ``AGENT_BOX_GH_TOKEN`` overrides for a single run: ``1`` allows, ``0``
-    denies. Anything else is ignored rather than guessed at.
+    one; ``--[no-]gh-token`` sets that switch for one launch.
     """
-    override = os.environ.get("AGENT_BOX_GH_TOKEN", "").strip()
-    if override == "1":
-        return True
-    if override == "0":
-        return False
     return config.github.gh_token
 
 
@@ -1386,7 +1391,7 @@ def provider_env(config: Config) -> list[str]:
 def container_lifetime_args(
     workspace: Workspace, extra_mounts: list[MountSpec], script_dir: Path,
     config: Config | None = None, mount_notifications: bool = False,
-    runtime_state: WorkspaceRuntimeState | None = None,
+    runtime_state: WorkspaceRuntimeState | None = None, kvm: bool = True,
 ) -> list[str]:
     """Container-level arguments shared by workspace creation and legacy argv tests.
 
@@ -1399,7 +1404,7 @@ def container_lifetime_args(
     config = effective_config(runtime_config_base()) if config is None else config
     home = HOST_HOME
     args = [
-        "--userns=keep-id", *kvm_args(config),
+        "--userns=keep-id", *kvm_args(config, kvm),
         "--cap-drop=all", "--security-opt=no-new-privileges", "--hostname=agent-box", "--tz=local",
         *nested_podman_args(config, workspace),
         f"--env=HOME={home}",
@@ -1502,14 +1507,15 @@ class WorkspaceContainerSpec:
 
 def workspace_container_spec(
     workspace: Workspace, extra_mounts: list[MountSpec], script_dir: Path, config: Config,
+    kvm: bool = True,
 ) -> WorkspaceContainerSpec:
     """The immutable box definition; deliberately excludes per-exec secrets/policy."""
     runtime_state = workspace_runtime_state(workspace)
     lifetime = container_lifetime_args(
-        workspace, extra_mounts, script_dir, config, mount_notifications=False, runtime_state=runtime_state,
+        workspace, extra_mounts, script_dir, config, mount_notifications=False, runtime_state=runtime_state, kvm=kvm,
     )
     base_lifetime = container_lifetime_args(
-        workspace, [], script_dir, config, mount_notifications=False, runtime_state=runtime_state,
+        workspace, [], script_dir, config, mount_notifications=False, runtime_state=runtime_state, kvm=kvm,
     )
     extra_mounts_hash = hashlib.sha256(json.dumps([
         (str(mount.path), mount.read_only)
@@ -1772,15 +1778,16 @@ def exec_argv(name: str, workspace: Workspace, command: list[str], extra_env: li
 # until the session ends or `agent-box stop` removes it.
 
 
-def tmux_enabled(agent: str) -> bool:
+def tmux_enabled(agent: str, allowed: bool = True) -> bool:
     """Whether this launch gets a detachable session.
 
     Only a real terminal is wrapped.  A piped or captured run (``claude -p``,
     CI, a redirected ``agent-box shell -c``) must keep writing straight to the
     caller's stdout, where that output is the entire point, and has no
-    terminal to be detached from in the first place.
+    terminal to be detached from in the first place. ``--no-tmux`` clears
+    ``allowed``.
     """
-    if agent not in TMUX_AGENTS or os.environ.get("AGENT_BOX_TMUX", "1") == "0":
+    if agent not in TMUX_AGENTS or not allowed:
         return False
     return sys.stdin.isatty() and sys.stdout.isatty()
 
@@ -1832,7 +1839,7 @@ class TmuxSession:
                 # leaves an exit code and nothing else on screen.
                 print(
                     f"agent-box: session '{self.name}' exited with status {recorded}; what it "
-                    "printed went with the terminal -- rerun with AGENT_BOX_TMUX=0 to see it",
+                    "printed went with the terminal -- rerun with --no-tmux to see it",
                     file=sys.stderr,
                 )
             return recorded
@@ -2317,18 +2324,13 @@ def claude_channel_args(
     return channel_module.channel_flag(), [f"{SUPPRESS_NOTIFY_ENV}=1"]
 
 
-def default_agent(config: Config) -> str:
-    """What runs when claude/codex is omitted, in a box or with --host alike."""
-    return os.environ.get("AGENT_BOX_AGENT") or config.launch.default_agent
-
-
 def runtime_main(
-    args: list[str], script_dir: Path, extra_mount_specs: list[str] | None = None,
-    env_specs: list[tuple[str, str | None]] | None = None,
+    args: list[str], script_dir: Path, options: LaunchOptions | None = None,
     *, api_provider: str = "",
 ) -> None:
     from .mounts import MountError, parse_mount_arg, plan_mounts
 
+    options = options or LaunchOptions()
     if not shutil.which("podman"):
         raise AgentBoxError("podman not found")
     if not (script_dir / "Containerfile").is_file():
@@ -2339,20 +2341,16 @@ def runtime_main(
         # gets a subdirectory of the project instead of the repository root.
         warn("git not found on the host: the workspace root falls back to the "
              "current directory instead of the repository root")
+    workspace = resolved_workspace(options.workspace)
     try:
-        workspace = resolve_workspace()
-    except (NotADirectoryError, ValueError) as exc:
-        raise AgentBoxError(str(exc)) from exc
-
-    try:
-        extra_mounts = plan_mounts([parse_mount_arg(spec) for spec in (extra_mount_specs or [])])
+        extra_mounts = plan_mounts([parse_mount_arg(spec) for spec in options.mounts])
     except MountError as exc:
         raise AgentBoxError(str(exc)) from exc
 
     ensure_state_dirs()
     ensure_refresh_token()
-    config = launch_config(env_specs)
-    agent, rest = default_agent(config), args
+    config = launch_config(options)
+    agent, rest = config.launch.default_agent, args
     if args and args[0] in {"claude", "codex", "shell", "doctor"}:
         agent, rest = args[0], args[1:]
     if agent not in {"claude", "codex", "shell", "doctor"}:
@@ -2386,13 +2384,15 @@ def runtime_main(
 
     # Decided before the channel is claimed, because the claim records it.
     runtime_state = workspace_runtime_state(workspace)
-    session = tmux_session(agent, runtime_state) if tmux_enabled(agent) else None
+    session = tmux_session(agent, runtime_state) if tmux_enabled(agent, options.tmux) else None
     # Invocation-scoped, and deliberately not part of the box's structural
     # identity: everything it needs is already in the image and already
     # mounted, so flipping browser.enabled never recreates a compatible box.
     browser_dir = browser_session(config, workspace, runtime_state, agent)
     channel, extra_env = claude_channel_args(agent, config, workspace, rest, session)
     extra_env += [f"AGENT_BOX_PRIMARY_PROVIDER={agent}"]
+    if "notify" in getattr(config, "_launch", {}):
+        extra_env += [f"{notify_module.NOTIFY_OFF_ENV}=1"]
     snapshot = session_runtime(config, runtime_state=runtime_state)
     snapshot_root, snapshot_destination, _ = tracker_mounts(config, runtime_state)[0]
     snapshot_target = snapshot_destination / snapshot.relative_to(snapshot_root)
@@ -2429,7 +2429,13 @@ def runtime_main(
             command = external_command(command, agent, api_provider, container=True)
         elif remote_control_invocation(agent, rest):
             command = remote_control_command(command, agent, config, container=True)
-        spec = workspace_container_spec(workspace, extra_mounts, script_dir, config)
+        spec = workspace_container_spec(workspace, extra_mounts, script_dir, config, options.kvm)
+        # These copies are seeded only when a box is created, so a running box
+        # would silently keep its old ones.
+        seeded = [name for name in ("gh-config", "git-config") if name in options.overrides]
+        if seeded and (inspect_workspace_container(spec.name) or {}).get("State", {}).get("Status") == "running":
+            raise AgentBoxError(f"--[no-]{seeded[0]} is copied when the box is created, and this workspace's box "
+                                "is already running; end it with agent-box stop first")
         invocation, process_env = invocation_env(config, agent)
         # Channel/workflow values are invocation policy, not box identity.
         invocation += extra_env
@@ -2453,9 +2459,9 @@ def runtime_main(
     raise SystemExit(rc)
 
 
-def resolved_workspace() -> Workspace:
+def resolved_workspace(override: str = "") -> Workspace:
     try:
-        return resolve_workspace()
+        return resolve_workspace(override=override)
     except (NotADirectoryError, ValueError) as exc:
         raise AgentBoxError(str(exc)) from exc
 
@@ -2481,7 +2487,7 @@ def choose_session(sessions: list[str], wanted: str | None, *, location: str = "
     raise AgentBoxError(f"{location} holds several sessions; name one:\n" + listing)
 
 
-def attach_main(args: list[str]) -> int:
+def attach_main(args: list[str], workspace_root: str = "") -> int:
     """``agent-box attach [session]``: take back a session from a dead terminal."""
     if len(args) > 1:
         raise AgentBoxError("usage: agent-box attach [session]")
@@ -2489,7 +2495,7 @@ def attach_main(args: list[str]) -> int:
         raise AgentBoxError("podman not found")
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
         raise AgentBoxError("agent-box attach needs a terminal")
-    workspace = resolved_workspace()
+    workspace = resolved_workspace(workspace_root)
     name = running_workspace_container(workspace)
     session = choose_session(tmux_sessions(name), args[0] if args else None)
     # ``-d`` evicts whichever client still holds the session. After a closed
@@ -2509,7 +2515,7 @@ def attach_main(args: list[str]) -> int:
     return rc
 
 
-def stop_main(args: list[str]) -> int:
+def stop_main(args: list[str], workspace_root: str = "") -> int:
     """``agent-box stop``: end this workspace's box, detached sessions included.
 
     Ordinary boxes still disappear on their own once no workload remains. A
@@ -2520,7 +2526,7 @@ def stop_main(args: list[str]) -> int:
         raise AgentBoxError("agent-box stop takes no arguments")
     if not shutil.which("podman"):
         raise AgentBoxError("podman not found")
-    workspace = resolved_workspace()
+    workspace = resolved_workspace(workspace_root)
     name = workspace_container_name(workspace)
     with workspace_transition_lock(workspace):
         current = inspect_workspace_container(name)
@@ -2761,8 +2767,7 @@ def uninstall_main(args: list[str]) -> int:
 
 
 def host_main(
-    agent: str | None, rest: list[str],
-    env_specs: list[tuple[str, str | None]] | None = None,
+    agent: str | None, rest: list[str], options: LaunchOptions | None = None,
     *, api_provider: str = "",
 ) -> int:
     """``agent-box --host [claude|codex]``: run the installed host executable
@@ -2771,15 +2776,10 @@ def host_main(
     Workflow policy is read from the same global configuration as container mode.
     No agent means the default agent, resolved as in container mode.
     """
-    try:
-        workspace = resolve_workspace()
-    except (NotADirectoryError, ValueError) as exc:
-        raise AgentBoxError(str(exc)) from exc
-
-    config = launch_config(env_specs, container=False)
-    agent = agent or default_agent(config)
-    if agent not in {"claude", "codex"}:
-        raise AgentBoxError(f"AGENT_BOX_AGENT={agent} is container-only; --host runs claude or codex")
+    options = options or LaunchOptions()
+    workspace = resolved_workspace(options.workspace)
+    config = launch_config(options)
+    agent = agent or config.launch.default_agent
     executable = shutil.which(agent)
     if not executable:
         raise AgentBoxError(f"'{agent}' not found on PATH; install it on the host to use --host")
@@ -2796,6 +2796,8 @@ def host_main(
     # Owned metadata describes this launch, even when env.set names these keys.
     env["AGENT_BOX_PRIMARY_PROVIDER"] = agent
     env["AGENT_BOX_RUNTIME_CONFIG"] = str(session_runtime(config, container=False))
+    if "notify" in getattr(config, "_launch", {}):
+        env[notify_module.NOTIFY_OFF_ENV] = "1"
     # agent-box's own request channel is not part of the session it describes.
     for key in [k for k in env if k.startswith(ENV_PREFIX)]:
         del env[key]
@@ -2805,7 +2807,7 @@ def host_main(
         command = external_command(command, agent, api_provider, container=False)
     elif remote_control_invocation(agent, rest):
         command = remote_control_command(command, agent, config, container=False)
-    if tmux_enabled(agent) and host_interactive_invocation(agent, rest):
+    if tmux_enabled(agent, options.tmux) and host_interactive_invocation(agent, rest):
         tmux = shutil.which("tmux")
         if tmux is not None:
             return host_tmux_launch(workspace, agent, command, env, tmux)
@@ -2876,7 +2878,7 @@ def host_tmux_launch(workspace: Workspace, agent: str, command: list[str],
                      environment: dict[str, str], executable: str) -> int:
     shell = shutil.which("bash")
     if shell is None:
-        raise AgentBoxError("host tmux requires bash on PATH; install it or use AGENT_BOX_TMUX=0")
+        raise AgentBoxError("host tmux requires bash on PATH; install it or use --no-tmux")
     shell = str(Path(shell).resolve())
     executable = str(Path(executable).resolve())
     root = HOST_SESSIONS_ROOT / workspace_identity(workspace)
@@ -2911,7 +2913,7 @@ def host_tmux_launch(workspace: Workspace, agent: str, command: list[str],
             env_path.unlink(missing_ok=True)
 
 
-def host_session_main(args: list[str], *, stop: bool = False) -> int:
+def host_session_main(args: list[str], *, stop: bool = False, workspace_root: str = "") -> int:
     command = "stop" if stop else "attach"
     if (stop and args) or len(args) > 1:
         raise AgentBoxError(f"usage: agent-box --host {command}" + ("" if stop else " [session]"))
@@ -2919,7 +2921,7 @@ def host_session_main(args: list[str], *, stop: bool = False) -> int:
         raise AgentBoxError("tmux not found on the host")
     if not stop and not (sys.stdin.isatty() and sys.stdout.isatty()):
         raise AgentBoxError("agent-box --host attach needs a terminal")
-    root = HOST_SESSIONS_ROOT / workspace_identity(resolved_workspace())
+    root = HOST_SESSIONS_ROOT / workspace_identity(resolved_workspace(workspace_root))
     names = tmux_sessions(None, host_root=root)
     if stop:
         if not names:

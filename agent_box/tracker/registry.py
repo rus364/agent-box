@@ -4,7 +4,7 @@ from pathlib import Path
 
 from ..atomicio import read_json
 
-from ..config import TRACKER_PROVIDERS, effective_config, session_tracker
+from ..config import TRACKER_PROVIDERS, effective_config, session_account
 from ..repo_binding import server_identity
 from .core import TrackerError
 
@@ -18,7 +18,7 @@ def make_adapter(binding=None, provider=None, config=None):
         raise TrackerError(f"Tracker provider '{provider}' is not implemented; configure Vikunja with agent-box config", "unsupported")
     if not config.tracker.enabled:
         raise TrackerError("Tracker is disabled; enable it with agent-box config", "disabled")
-    connection = session_tracker(config).connection(provider)
+    connection = session_account(config).connection(provider)
     if not connection.usable:
         raise TrackerError(f"Configure the {provider} server and token with agent-box config", "configuration")
     url = server_identity(connection.url)

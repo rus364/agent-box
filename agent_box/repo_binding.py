@@ -72,6 +72,29 @@ class Binding:
         except (KeyError, TypeError):
             raise AgentBoxError(f"Incomplete repository binding: {root / BINDING_FILE}; run ab-setup") from None
 
+    @classmethod
+    def session(cls, root: Path):
+        """The binding this session works in: the file, then --tracker/--project.
+
+        Setup and adoption keep reading :meth:`load`, because they compare and
+        write the file itself. Returns None for an unbound repository.
+        """
+        from .launch_options import session_overrides
+        from .project_config import load
+        launch = session_overrides()
+        data = load(root / BINDING_FILE).get("tracker", {})
+        if not launch.keys() & {"tracker", "project"}:
+            return cls.load(root) if "project" in data else None
+        from .config import effective_config
+        provider = data.get("provider") or effective_config().tracker.provider
+        server = launch.get("tracker") or data.get("connections", {}).get(provider, {}).get("url")
+        project = launch.get("project") or data.get("project")
+        if not server or not project:
+            raise AgentBoxError("--tracker and --project together name a binding for an unbound repository")
+        result = cls(provider, server, project, data.get("recursive", False))
+        result.validate()
+        return result
+
 
 def binding_document(root, binding):
     from .project_config import load

@@ -28,7 +28,7 @@ CHOICES = {
 }
 HELP = {
     "launch": "What a bare `agent-box` starts. Global only; not a project setting.",
-    "launch.default_agent": "Agent started by `agent-box` without claude/codex. AGENT_BOX_AGENT overrides it for one command; an explicit claude or codex always wins.",
+    "launch.default_agent": "Agent started by `agent-box` without claude/codex; an explicit claude or codex always wins.",
     "claude": "Claude host integration settings. Changes are applied only after Save and apply.",
     "claude.telegram_channel": "Start Claude with Anthropic's official Telegram channel plugin. This requires its host-side setup and exposes the session through that channel.",
     "claude.statusline": "Keep Claude's status line pointed at agent-box. An existing user-owned status line is never overwritten.",

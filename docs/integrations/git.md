@@ -58,8 +58,8 @@ publishes the base automatically, even when remote cleanup is enabled.
 ## One-off overrides
 
 ```bash
-AGENT_BOX_GH_TOKEN=1 agent-box claude    # force it for this run
-AGENT_BOX_GH_TOKEN=0 agent-box claude    # withhold it for this run
+agent-box --gh-token claude       # forward it for this session
+agent-box --no-gh-token claude    # withhold it for this session
 ```
 
 ## Checking it

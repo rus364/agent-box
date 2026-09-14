@@ -151,7 +151,7 @@ class HostLaunchDecisionTests(IsolatedRuntimeTest):
         from agent_box.errors import AgentBoxError
         with mock.patch.object(runtime.shutil, 'which', return_value=None), \
              mock.patch.object(runtime.subprocess, 'call') as launch, \
-             self.assertRaisesRegex(AgentBoxError, 'bash on PATH.*AGENT_BOX_TMUX=0'):
+             self.assertRaisesRegex(AgentBoxError, 'bash on PATH.*--no-tmux'):
             runtime.host_tmux_launch(Workspace(Path('/tmp'), Path('/tmp')), 'codex',
                                      ['/bin/false'], {}, '/usr/bin/tmux')
         self.assertEqual(launch.call_count, 0)
@@ -197,7 +197,7 @@ class NativeHostSessionsTests(unittest.TestCase):
                 os.environ['TERM'] = 'xterm-256color'
                 os.chdir(project)
                 if attach:
-                    runtime.resolve_workspace = lambda: Workspace(project, project)
+                    runtime.resolve_workspace = lambda **_: Workspace(project, project)
                     rc = runtime.host_session_main([])
                 else:
                     if argv is None:

@@ -1,7 +1,6 @@
 """Command-line dispatch. Kept free of business logic beyond argument parsing."""
 from __future__ import annotations
 
-import os
 import shutil
 import sys
 from pathlib import Path
@@ -18,7 +17,6 @@ from .config import (
     effective_config,
     effective_config_source,
     load_config,
-    parse_env_spec,
     save_config,
     session_snapshot_only,
 )
@@ -31,183 +29,75 @@ def die(message: str) -> NoReturn:
     raise SystemExit(1)
 
 
-def parse_global_args(argv: list[str]) -> tuple[list[str], bool, list[str], list[str]]:
-    """Split agent-box's own leading options from the rest of argv.
-
-    Grammar: ``agent-box [--mount PATH[:ro]]... [--env NAME[=VALUE]]... [--host] [claude|codex|shell|doctor] [provider args...]``.
-    Agent-box's own options must come first; once a non-option token is seen
-    (or a bare ``--``), everything after it is passed through untouched, so
-    ``agent-box claude --model opus`` or a hypothetical Claude/Codex
-    ``--mount``/``--host`` flag of their own is never misinterpreted as ours.
-
-    ``--host`` runs the resolved subcommand directly on the host instead of
-    in a container; ``agent-box claude``/``agent-box codex`` keep meaning
-    containerized execution.
-    """
-    mounts: list[str] = []
-    env_specs: list[str] = []
-    host = False
-    i = 0
-    while i < len(argv):
-        token = argv[i]
-        if token == "--":
-            i += 1
-            break
-        if token == "--mount":
-            if i + 1 >= len(argv):
-                die("--mount requires a path")
-            mounts.append(argv[i + 1])
-            i += 2
-            continue
-        if token.startswith("--mount="):
-            value = token[len("--mount="):]
-            if not value:
-                die("--mount requires a path")
-            mounts.append(value)
-            i += 1
-            continue
-        if token == "--env":
-            if i + 1 >= len(argv):
-                die("--env requires NAME=VALUE or NAME")
-            env_specs.append(argv[i + 1])
-            i += 2
-            continue
-        if token.startswith("--env="):
-            value = token[len("--env="):]
-            if not value:
-                die("--env requires NAME=VALUE or NAME")
-            env_specs.append(value)
-            i += 1
-            continue
-        if token == "--host":
-            host = True
-            i += 1
-            continue
-        break
-    return mounts, host, env_specs, argv[i:]
-
-
 def usage_text() -> None:
-    print('''Usage:
-  agent-box [--mount PATH[:ro]]... [--env NAME[=VALUE]]... [--host] [codex|claude|shell|doctor] [arguments...]
-  agent-box [--host] ext NAME [codex|claude] [arguments...]
-  agent-box attach [session]
-  agent-box stop
-  agent-box --host attach [session]
-  agent-box --host stop
-  agent-box config [--project|show|check|apply]
-  agent-box usage <codex|claude|all>
-  agent-box statusline
-  agent-box notify <test|claude|codex>
-  agent-box selftest
+    from .launch_options import SPEC, help_text
+    print(f"""Usage:
+  agent-box [OPTIONS] [claude|codex|shell|doctor] [AGENT ARGS...]
+  agent-box [OPTIONS] ext API [claude|codex] [AGENT ARGS...]
+  agent-box [--host] [--workspace PATH] attach [SESSION] | stop
+  agent-box config [--project | show | check | apply]
+  agent-box usage [codex|claude|all] [--no-cache] [--json]
+  agent-box notify test
   agent-box build | update | rebuild
   agent-box upgrade [--check]
   agent-box uninstall [--purge] [--yes]
-  agent-box tracker <command> [arguments...]
-  agent-box workflow <command> [arguments...]
+  agent-box tracker COMMAND | workflow COMMAND
+  agent-box selftest | help
+
+Options go before the agent; everything after it reaches the agent unchanged,
+and '--' ends them early. Without claude/codex the default agent starts
+(launch.default_agent). Session options last for that session only and are
+never saved; 'agent-box config show' inside the session lists them.
+SPEC is {SPEC}, for example claude:opus:high.
+
+{help_text()}
 
 Sessions:
-  An interactive claude/codex/shell session runs inside a tmux server in the
-  workspace box, so closing the terminal detaches it instead of orphaning it:
-  the agent keeps running and 'agent-box attach' takes it back. Detach on
-  purpose with 'C-\\ d'. A detached session keeps its box alive, so a box you
-  walked away from ends with 'agent-box stop'. Non-terminal runs
-  ('claude -p ...', pipes, CI) are never wrapped.
-
-  agent-box attach          Reattach to this workspace's session (names one
-                            when the box holds several)
-  agent-box stop            Remove this workspace's box and every session in it
+  claude, codex           Start the agent in this workspace's box, or on the host with --host
+  shell, doctor           A shell in the box; check the box and its integrations
+  ext API                 Start claude/codex against an enabled external API provider
+  attach [SESSION]        Reattach to a detached session; detach with C-\\ d
+  stop                    Remove the box and its sessions; with --host, this project's host sessions
 
 Configuration:
-  agent-box config          Interactive setup, starting with putting the
-                            agent-box command on your PATH. Persists to
-                            ~/.config/agent-box/config.json
-  agent-box config show     Print the current settings (token redacted)
-  agent-box config check    Verify the official Claude Telegram channel setup
-  agent-box config apply    Apply the saved file without asking anything:
-                            restore the agent-box symlink in the directory the
-                            PATH question chose, install the skills it enables,
-                            link them for Claude, and reconcile Claude's
-                            settings.json.
-                            'agent-box config' and 'agent-box upgrade' both end
-                            by doing this, so it is only needed after editing
-                            config.json by hand. Starting an agent never
-                            applies configuration by itself.
-                            Inside a workspace box the saved file is not
-                            mounted, so this applies the rendered session
-                            configuration instead: skills and profiles only,
-                            leaving notifications, hooks, status line,
-                            credentials, PATH and Claude links alone.
+  config                  Interactive setup, saved to ~/.config/agent-box/config.json and applied
+  config --project        Edit this repository's .agent-box.json
+  config show             Effective settings, tokens redacted
+  config check            Check the Claude Telegram channel setup
+  config apply            Apply the saved file after editing it by hand
+  usage                   Remaining subscription limits
+  notify test             Send a test Telegram notification
 
 Installation:
-  agent-box upgrade         Fetch and move this checkout to the newest release
-                            tag (or fast-forward it, until the first tag
-                            exists), then apply the saved configuration.
-                            Refuses on a checkout with uncommitted changes or
-                            unpushed commits. --check only reports.
-  agent-box uninstall       Undo what agent-box wrote outside its own
-                            directories: the status line and hooks in Claude's
-                            settings.json, its skill links and installed
-                            skills, its rendered credential files, the symlink
-                            it put on your PATH, and every workspace box. Add
-                            --purge to also delete agent-box's own config and
-                            state (tokens included) and, when it still matches
-                            byte for byte, the PATH block it added to your
-                            shell startup file; --yes skips that confirmation.
+  build                   Build the workspace image; update refreshes its tools,
+                          rebuild also pulls the base image
+  upgrade                 Move this checkout to the newest release and apply the
+                          configuration; --check only reports
+  uninstall               Remove what agent-box wrote outside its directories and every box;
+                          --purge also deletes its config and state, --yes skips confirmation
 
-Environment (overrides for a single command):
-  AGENT_BOX_AGENT           Agent when claude/codex is omitted (overrides launch.default_agent)
-  AGENT_BOX_IMAGE           Container image name (default: localhost/agent-box:latest)
-  AGENT_BOX_KVM=0           Disable KVM passthrough
-  AGENT_BOX_TMUX=0          Run the session directly, with no detachable tmux
-  AGENT_BOX_GH_TOKEN=0|1    Withhold / force the host GitHub token for this run
-  AGENT_BOX_WORKSPACE_ROOT  Override the host directory mounted into the container
-  AGENT_BOX_STATUSLINE=0    Leave Claude's statusLine untouched when applying
-  AGENT_BOX_AGENTS_DIR      Override ~/.agents, the shared agent/skill tree
-  AGENT_BOX_ENV_<NAME>      Set <NAME> inside the session (see --env below)
+Other:
+  tracker, workflow       Task tracker and workflow; see their --help
+  selftest                Fast checks without Podman
+  statusline, notify claude|codex
+                          Entry points for Claude and Codex hooks
 
---env NAME=VALUE sets a variable inside the session; --env NAME forwards the
-value that name already has in this shell, without putting it in the process
-list, which is the form to use for anything secret. Repeatable, and both win
-over the lists stored in 'agent-box config'. The same thing can be said as a
-shell prefix, which is why the namespace exists:
-
-  AGENT_BOX_ENV_DATABASE_URL=postgres://... agent-box codex
-
-A bare 'NAME=VALUE agent-box codex' cannot work: inside the process such a
-variable is indistinguishable from the hundreds inherited from your shell, so
-honouring it would mean handing the container your whole environment.
-
---mount PATH[:ro] additionally bind-mounts PATH (an existing absolute host
-directory) into the container at that same path, read-write by default or
-read-only with the ':ro' suffix. Repeatable. Must appear before the
-claude/codex/shell/doctor subcommand; use '--' to stop agent-box's own
-option parsing early if a provider argument would otherwise be ambiguous.
-
---host runs claude/codex directly on the host instead of in a container: no
-Podman, the installed host executable, your normal host git/gh credentials.
-'agent-box claude'/'agent-box codex' (without --host) keep meaning
-containerized execution. Without claude/codex it starts the default agent
-(launch.default_agent, or AGENT_BOX_AGENT). Not valid with --mount, and not
-valid with shell/doctor, which are container-only. The opt-in agent browser
-lives in the workspace image, so --host sessions do not get it. Interactive host sessions
-use tmux when installed (requires bash on PATH); otherwise they start directly. Use --host attach
-[session] to return, --host stop to end this project's host sessions, or
-AGENT_BOX_TMUX=0 to launch directly.
+Environment:
+  AGENT_BOX_ENV_NAME=VALUE  --env NAME=VALUE as a shell prefix
+  AGENT_BOX_IMAGE           Workspace image (default localhost/agent-box:latest)
+  AGENT_BOX_CONFIG_DIR      Instead of ~/.config/agent-box
+  AGENT_BOX_STATE_DIR       Instead of ~/.local/share/agent-box
+  AGENT_BOX_AGENTS_DIR      Instead of ~/.agents
+  AGENT_BOX_STATUSLINE=0    Leave Claude's status line alone when applying
 
 Examples:
   agent-box
-  agent-box claude
-  agent-box codex
-  agent-box --host
-  agent-box --host claude
   agent-box --host codex
-  agent-box --mount ~/code claude
-  agent-box --mount /mnt/data/specs:ro --mount /srv/generated codex
-  agent-box attach
-  agent-box stop
-  agent-box config
-  agent-box usage all''')
+  agent-box --reviewer claude:opus:high --review always codex
+  agent-box --mount /srv/specs:ro --env DATABASE_URL claude
+  export VIKUNJA_TOKEN=...; agent-box --tracker https://tasks.example.org --project 12 codex
+
+Details: README.md and docs/integrations/.""")
 
 
 # -- usage -----------------------------------------------------------------
@@ -362,10 +252,11 @@ def config_show() -> None:
     print(f"Config source: {source['kind']} ({source['path']})")
     if source["kind"] == "runtime":
         print("Rendered container configuration; host-only settings are not included.")
+    if getattr(config, "_launch", None):
+        from .launch_options import describe
+        print(f"Session options: {describe(config._launch)}")
     print()
-    print(f"  Default agent               {config.launch.default_agent}"
-          + (f" (AGENT_BOX_AGENT={os.environ['AGENT_BOX_AGENT']} overrides it here)"
-             if os.environ.get("AGENT_BOX_AGENT") else ""))
+    print(f"  Default agent               {config.launch.default_agent}")
     print(f"  Claude Telegram channel     {'on' if config.claude.telegram_channel else 'off'}")
     print(f"  Claude status line          {'on' if config.claude.statusline else 'off'}{_statusline_note(config)}")
     print(f"  Outbound notifications      {'on' if config.notifications.enabled else 'off'}")
@@ -498,7 +389,7 @@ def config_interactive(project=False) -> None:
     from . import config_menu, runtime
     from . import project_config
     path = project_config.project_path() if project else None
-    result = (config_menu.edit(effective_config(environ={}, include_project=False), project=project_config.load(path))
+    result = (config_menu.edit(effective_config(include_project=False), project=project_config.load(path))
               if project else config_menu.edit(load_config()))
     if result is None:
         print("Configuration unchanged.")
@@ -580,7 +471,6 @@ def selftest() -> None:
 NON_RUNTIME = {
     "usage", "statusline", "notify", "config", "selftest", "help", "-h", "--help",
     "build", "update", "rebuild", "tracker", "workflow", "attach", "stop", "upgrade", "uninstall",
-    "skills",
 }
 #: --host only makes sense for a real agent launch, never for these.
 HOST_ONLY_AGENTS = {"claude", "codex"}
@@ -604,26 +494,25 @@ def main() -> None:
             raise SystemExit(remote_control.main(sys.argv[2:]))
         except (AgentBoxError, OSError) as exc:
             die(str(exc))
-    from . import project_config
+    from . import launch_options, project_config
     try:
         project_config.load()
+        options, args = launch_options.parse(sys.argv[1:])
     except AgentBoxError as exc:
         die(str(exc))
-    mounts, host, env_specs, args = parse_global_args(sys.argv[1:])
     script_dir = Path(__file__).resolve().parent.parent
     try:
-        parsed_env = [parse_env_spec(spec) for spec in env_specs]
-    except ValueError as exc:
-        die(str(exc))
-    try:
-        if mounts and args and args[0] in NON_RUNTIME:
-            die("--mount is only valid before claude/codex/shell/doctor")
-        if env_specs and args and args[0] in NON_RUNTIME:
-            die("--env is only valid before claude/codex/shell/doctor")
-        if host and args and args[0] in NON_RUNTIME - {"attach", "stop"}:
-            die("--host is only valid before claude/codex/attach/stop")
-        if host and mounts:
-            die("--host does not use --mount; there is no container to mount into")
+        given = options.given()
+        if args and args[0] in NON_RUNTIME:
+            allowed = {"host", "workspace"} if args[0] in {"attach", "stop"} else set()
+            refused = [option for option in given if option.name not in allowed]
+            if refused:
+                die(f"{launch_options.spelling(refused[0])} is not valid before {args[0]}; "
+                    + ("it accepts only --host and --workspace" if allowed else "it applies only when starting an agent"))
+        if options.host:
+            refused = [option for option in given if option.container]
+            if refused:
+                die(f"{launch_options.spelling(refused[0])} needs a container; it does not apply with --host")
         if args and args[0] == "usage":
             usage_command(args[1:]); return
         if args and args[0] == "statusline":
@@ -657,11 +546,12 @@ def main() -> None:
             raise SystemExit(runtime.uninstall_main(args[1:]))
         if args and args[0] in {"attach", "stop"}:
             from . import runtime
-            if host:
-                raise SystemExit(runtime.host_session_main(args[1:], stop=args[0] == "stop"))
+            if options.host:
+                raise SystemExit(runtime.host_session_main(args[1:], stop=args[0] == "stop",
+                                                           workspace_root=options.workspace))
             if args[0] == "attach":
-                raise SystemExit(runtime.attach_main(args[1:]))
-            raise SystemExit(runtime.stop_main(args[1:]))
+                raise SystemExit(runtime.attach_main(args[1:], options.workspace))
+            raise SystemExit(runtime.stop_main(args[1:], options.workspace))
         if args and args[0] == "ext":
             if len(args) < 2:
                 die("usage: agent-box [--host] ext NAME [codex|claude] [CLI args]")
@@ -669,17 +559,17 @@ def main() -> None:
             name, rest = args[1], args[2:]
             if rest and rest[0] in {"shell", "doctor"}:
                 die(f"ext runs claude or codex; {rest[0]} does not use an API provider")
-            if host:
-                raise SystemExit(runtime.host_main(*_agent_and_rest(rest), parsed_env, api_provider=name))
-            runtime.runtime_main(rest, script_dir, mounts, parsed_env, api_provider=name)
+            if options.host:
+                raise SystemExit(runtime.host_main(*_agent_and_rest(rest), options, api_provider=name))
+            runtime.runtime_main(rest, script_dir, options, api_provider=name)
             return
-        if host:
+        if options.host:
             if args and args[0] in {"shell", "doctor"}:
                 die("--host runs claude or codex; shell/doctor are container-only")
             from . import runtime
-            raise SystemExit(runtime.host_main(*_agent_and_rest(args), parsed_env))
+            raise SystemExit(runtime.host_main(*_agent_and_rest(args), options))
         from . import runtime
-        runtime.runtime_main(args, script_dir, mounts, parsed_env)
+        runtime.runtime_main(args, script_dir, options)
     except AgentBoxError as exc:
         die(str(exc))
     except (KeyboardInterrupt, EOFError):

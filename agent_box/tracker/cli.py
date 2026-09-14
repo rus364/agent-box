@@ -125,10 +125,8 @@ def context(provider=None, require_binding=False, adoption=None):
         if provider and provider != binding.provider:
             raise TrackerError("Provider differs from the adoption receipt", "conflict")
         return adapter, binding, root
-    if root and ((root / ".agent-box.json").exists() or (root / ".agent-box.json").is_symlink()):
-        from ..project_config import load
-        if "project" in load(root / ".agent-box.json").get("tracker", {}):
-            binding = Binding.load(root)
+    if root:
+        binding = Binding.session(root)
     if require_binding and binding is None:
         raise TrackerError("This operation needs a repository binding; run ab-setup")
     return make_adapter(binding, provider), binding, root

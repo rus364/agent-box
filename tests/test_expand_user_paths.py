@@ -3,7 +3,7 @@
 ``paths.HOST_HOME`` is passwd-derived, but the settings that expand ``~``
 themselves are security- or correctness-relevant and must agree with it:
 
-* ``AGENT_BOX_WORKSPACE_ROOT`` decides which host tree is mounted read-write.
+* ``--workspace`` decides which host tree is mounted read-write.
 * ``--mount`` adds an arbitrary host path to the container.
 
 A ``$HOME`` that a shell, a service manager, or a hostile caller set could

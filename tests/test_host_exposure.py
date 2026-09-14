@@ -24,11 +24,8 @@ def _argv(config, env=None, gh_token="gho_secrettoken"):
     tmp = tempfile.TemporaryDirectory()
     project = Path(tmp.name)
     base = {k: v for k, v in os.environ.items()
-            if k not in ("GH_TOKEN", "GITHUB_TOKEN", "AGENT_BOX_GH_TOKEN",
+            if k not in ("GH_TOKEN", "GITHUB_TOKEN",
                          "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "HTTPS_PROXY")}
-    # KVM off: kvm_args() shells out to `podman info`, which the gh mock below
-    # would otherwise answer, printing a confusing warning.
-    base["AGENT_BOX_KVM"] = "0"
     base.update(env or {})
     try:
         state = project / "state"
@@ -86,15 +83,17 @@ class GitHubCredentialGatingTests(unittest.TestCase):
         self.assertIn("--env=GH_TOKEN", argv)
         self.assertNotIn("gho_from_shell", " ".join(argv))
 
-    def test_override_1_allows_for_one_run(self):
-        argv = _argv(Config(), env={"AGENT_BOX_GH_TOKEN": "1"})
+    def test_launch_flag_allows_for_one_run(self):
+        from agent_box import launch_options
+        argv = _argv(launch_options.apply(Config(), {"gh-token": True}))
         self.assertIn("--env=GH_TOKEN", argv)
         self.assertNotIn("gho_secrettoken", " ".join(argv))
 
-    def test_override_0_denies_even_when_configured_on(self):
+    def test_launch_flag_denies_even_when_configured_on(self):
+        from agent_box import launch_options
         config = Config()
         config.github.gh_token = True
-        argv = _argv(config, env={"AGENT_BOX_GH_TOKEN": "0", "GH_TOKEN": "gho_from_shell"})
+        argv = _argv(launch_options.apply(config, {"gh-token": False}), env={"GH_TOKEN": "gho_from_shell"})
         self.assertFalse([f for f in _env_flags(argv) if "GH_TOKEN" in f])
 
     def test_no_host_token_available_forwards_nothing(self):

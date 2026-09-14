@@ -44,8 +44,7 @@ class SeedGitConfigCredentialHelperTests(unittest.TestCase):
             }
             for enabled in (False, True):
                 config.github.gh_token = enabled
-                with mock.patch.dict(os.environ, {"AGENT_BOX_GH_TOKEN": ""}):
-                    runtime.seed_git_config(target, config)
+                runtime.seed_git_config(target, config)
                 env = dict(os.environ, GIT_CONFIG_GLOBAL=str(target / "config"), GIT_CONFIG_NOSYSTEM="1")
                 for original, rewritten in cases.items():
                     with self.subTest(enabled=enabled, original=original):
@@ -72,27 +71,6 @@ class SeedGitConfigCredentialHelperTests(unittest.TestCase):
             config = Config()
             config.github.gh_token = False
             runtime.seed_git_config(target, config)
-            config_file = target / "config"
-            if config_file.exists():
-                values = _git_config_get_all(config_file, "credential.https://github.com.helper")
-                self.assertEqual(values, [])
-
-    def test_agent_box_gh_token_override_enables_helper(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            target = Path(tmp) / "git"
-            config = Config()  # gh_token off in config...
-            with mock.patch.dict(os.environ, {"AGENT_BOX_GH_TOKEN": "1"}):  # ...but forced on for this run
-                runtime.seed_git_config(target, config)
-            values = _git_config_get_all(target / "config", "credential.https://github.com.helper")
-            self.assertEqual(values, ["!gh auth git-credential"])
-
-    def test_agent_box_gh_token_override_disables_helper(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            target = Path(tmp) / "git"
-            config = Config()
-            config.github.gh_token = True
-            with mock.patch.dict(os.environ, {"AGENT_BOX_GH_TOKEN": "0"}):
-                runtime.seed_git_config(target, config)
             config_file = target / "config"
             if config_file.exists():
                 values = _git_config_get_all(config_file, "credential.https://github.com.helper")

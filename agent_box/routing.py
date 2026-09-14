@@ -38,6 +38,7 @@ def select(config, role, tier, primary, state, usage=None, *, now=None, writer=N
         raise AgentBoxError("; ".join(errors))
     validate_role_tier(role, tier)
     override = config.override_for(role, tier)
+    pinned = role in config.pins
     if tier is None and not override:
         raise AgentBoxError("Tier 0 is reserved for scouts; workers and reviewers require tier 1-3")
     if primary not in AGENT_PROVIDERS:
@@ -45,13 +46,21 @@ def select(config, role, tier, primary, state, usage=None, *, now=None, writer=N
     now = time.time() if now is None else now
     usage = usage or {}
     available = set(AGENT_PROVIDERS if available is None else available)
-    matrix = (f"workflow.{'review' if role == 'reviewer' else 'worker'}.override.models" if override else
+    matrix = (f"--{role}" if pinned else
+              f"workflow.{'review' if role == 'reviewer' else 'worker'}.override.models" if override else
               f"workflow.review.tiers.{tier}" if role == "reviewer" else f"workflow.tiers.{tier}")
     models = (override.models if override else
               (config.review.tiers if role == "reviewer" else config.tiers)[str(tier)])
     allowed = [p for p in AGENT_PROVIDERS if p in available and models[p]["model"]]
     writer = writer or primary
-    if role == "reviewer":
+    if pinned:
+        # A launch flag names the model outright: writer-relative review
+        # routing, the current-provider filter and weights do not apply.
+        order = allowed
+        reason = f"Pinned for this session by --{role}"
+        if not order:
+            raise AgentBoxError(f"--{role} names a provider whose CLI is not installed here")
+    elif role == "reviewer":
         if writer not in AGENT_PROVIDERS:
             raise AgentBoxError("Reviewer routing requires the actual writer provider")
         if config.review.routing == "same-provider":
@@ -102,5 +111,5 @@ def select(config, role, tier, primary, state, usage=None, *, now=None, writer=N
         return {"provider": provider, "model": models[provider]["model"], "effort": models[provider]["effort"],
                 **({"api_provider": models[provider]["api_provider"]} if models[provider].get("api_provider") else {}),
                 "fast": models[provider].get("fast", False), "tier": tier}
-    return {**entry(order[0]), "role": role, "reason": reason + (f"; models from {matrix}" if override else ""),
+    return {**entry(order[0]), "role": role, "reason": reason + (f"; models from {matrix}" if override and not pinned else ""),
             "fallbacks": [entry(p) for p in order[1:]]}

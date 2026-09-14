@@ -7,75 +7,118 @@ import unittest.mock
 
 from agent_box import notify as notify_module
 from agent_box import usage as usage_module
-from agent_box.cli import notify_command, parse_global_args, usage_command
+from agent_box.cli import notify_command, usage_command
+from agent_box.errors import AgentBoxError
+from agent_box.launch_options import LaunchOptions, parse, parse_spec
 
 
-class ParseGlobalArgsTests(unittest.TestCase):
-    def test_no_options_passes_through(self):
-        mounts, host, _env, rest = parse_global_args(["claude", "--model", "opus"])
-        self.assertEqual(mounts, [])
-        self.assertFalse(host)
-        self.assertEqual(rest, ["claude", "--model", "opus"])
+class LaunchOptionParsingTests(unittest.TestCase):
+    def test_agent_arguments_pass_through_untouched(self):
+        """Everything after the agent is the agent's, even spellings agent-box also uses."""
+        options, rest = parse(["claude", "--model", "opus", "--host", "--mount", "/x", "--review", "off"])
+        self.assertEqual(options, LaunchOptions())
+        self.assertEqual(rest, ["claude", "--model", "opus", "--host", "--mount", "/x", "--review", "off"])
 
-    def test_single_mount_space_form(self):
-        mounts, host, _env, rest = parse_global_args(["--mount", "/foo", "claude"])
-        self.assertEqual(mounts, ["/foo"])
-        self.assertFalse(host)
-        self.assertEqual(rest, ["claude"])
+    def test_double_dash_ends_options_early(self):
+        options, rest = parse(["--host", "--", "--review", "always"])
+        self.assertTrue(options.host)
+        self.assertEqual(rest, ["--review", "always"])
 
-    def test_mount_equals_form(self):
-        mounts, host, _env, rest = parse_global_args(["--mount=/foo", "claude"])
-        self.assertEqual(mounts, ["/foo"])
-        self.assertEqual(rest, ["claude"])
+    def test_space_and_equals_forms_are_one_option(self):
+        for argv in (["--mount", "/has spaces", "--review", "always"], ["--mount=/has spaces", "--review=always"]):
+            with self.subTest(argv=argv):
+                options, rest = parse([*argv, "codex"])
+                self.assertEqual((options.mounts, options.overrides, rest),
+                                 (["/has spaces"], {"review": "always"}, ["codex"]))
 
-    def test_multiple_mounts(self):
-        mounts, host, _env, rest = parse_global_args(["--mount", "/a", "--mount", "/b:ro", "codex"])
-        self.assertEqual(mounts, ["/a", "/b:ro"])
+    def test_launch_options_shape_this_launch_and_are_not_session_overrides(self):
+        """Mounts, env, tmux and KVM describe how to start, so the snapshot never carries them."""
+        options, rest = parse(["--host", "--workspace", "/w", "--mount", "/a", "--mount", "/b:ro",
+                               "--env", "TZ=UTC", "--env=TOKEN", "--no-tmux", "--no-kvm", "codex"])
+        self.assertEqual(options, LaunchOptions(True, "/w", ["/a", "/b:ro"], [("TZ", "UTC"), ("TOKEN", None)],
+                                                False, False, {}))
         self.assertEqual(rest, ["codex"])
 
-    def test_provider_own_model_flag_never_consumed(self):
-        # Claude/Codex's own flags must never be misread as agent-box's.
-        mounts, host, _env, rest = parse_global_args(["claude", "-p", "do something", "--model", "opus"])
-        self.assertEqual(mounts, [])
-        self.assertEqual(rest, ["claude", "-p", "do something", "--model", "opus"])
+    def test_session_options_become_overrides_in_one_normalized_form(self):
+        options, _ = parse(["--worker", "direct", "--worker", "codex:gpt-5.5:high",
+                            "--reviewer", "claude@deepseek:deepseek-v4", "--rounds", "5", "--no-push",
+                            "--gh-token", "--no-notify", "--tracker", "HTTPS://Tasks.Example.org/", "--project", "12"])
+        self.assertEqual(options.overrides, {
+            "execution": "direct", "worker": "codex:gpt-5.5:high", "reviewer": "claude@deepseek:deepseek-v4",
+            "rounds": 5, "push": False, "gh-token": True, "notify": False,
+            "tracker": "https://tasks.example.org", "project": "12"})
 
-    def test_double_dash_stops_global_parsing(self):
-        mounts, host, _env, rest = parse_global_args(["--", "claude", "--mount", "notours"])
-        self.assertEqual(mounts, [])
-        self.assertEqual(rest, ["claude", "--mount", "notours"])
+    def test_invalid_or_repeated_options_fail_before_anything_starts(self):
+        """A typo must not start an agent with the intended setting silently missing."""
+        for argv in (["--review", "sometimes"], ["--rounds", "0"],
+                     ["--reviewer", "gpt:x"], ["--reviewer", "claude"], ["--scout", "codex@Bad:m"],
+                     ["--push=yes"], ["--review", "off", "--review", "auto"],
+                     ["--mount"], ["--env", "1BAD"], ["--tracker", "ftp://tasks.example.org"]):
+            with self.subTest(argv=argv), self.assertRaises(AgentBoxError):
+                parse(argv)
 
-    def test_mount_after_subcommand_is_not_consumed_as_ours(self):
-        # Grammar: our options must precede the subcommand.
-        mounts, host, _env, rest = parse_global_args(["claude", "--mount", "/foo"])
-        self.assertEqual(mounts, [])
-        self.assertEqual(rest, ["claude", "--mount", "/foo"])
+    def test_the_first_foreign_option_starts_the_default_agents_arguments(self):
+        """`agent-box --host --model x` passes --model to the default agent, so unknown flags end ours."""
+        options, rest = parse(["--no-push", "--model", "x", "--review", "off"])
+        self.assertEqual((options.overrides, rest), ({"push": False}, ["--model", "x", "--review", "off"]))
 
-    def test_bare_run_no_args(self):
-        mounts, host, _env, rest = parse_global_args([])
-        self.assertEqual(mounts, [])
-        self.assertFalse(host)
-        self.assertEqual(rest, [])
+    def test_help_stays_a_command(self):
+        for flag in ("--help", "-h"):
+            self.assertEqual(parse([flag]), (LaunchOptions(), [flag]))
 
-    def test_path_with_spaces_stays_one_token(self):
-        mounts, host, _env, rest = parse_global_args(["--mount", "/has spaces/dir", "claude"])
-        self.assertEqual(mounts, ["/has spaces/dir"])
+    def test_an_effort_suffix_is_optional_and_a_model_may_contain_colons(self):
+        """Only a known effort is split off, so provider model IDs such as `name:free` survive."""
+        self.assertEqual(parse_spec("--reviewer", "claude:opus:high")["claude"],
+                         {"model": "opus", "effort": "high", "fast": False, "api_provider": ""})
+        self.assertEqual(parse_spec("--worker", "codex@openrouter:deepseek/v4:free")["codex"],
+                         {"model": "deepseek/v4:free", "effort": "default", "fast": False, "api_provider": "openrouter"})
+        self.assertEqual(parse_spec("--scout", "codex:gpt-5.5")["claude"]["model"], "")
 
-    def test_host_flag_recognized(self):
-        mounts, host, _env, rest = parse_global_args(["--host", "claude", "--model", "opus"])
-        self.assertTrue(host)
-        self.assertEqual(mounts, [])
-        self.assertEqual(rest, ["claude", "--model", "opus"])
 
-    def test_host_flag_after_subcommand_is_not_consumed_as_ours(self):
-        mounts, host, _env, rest = parse_global_args(["claude", "--host"])
-        self.assertFalse(host)
-        self.assertEqual(rest, ["claude", "--host"])
+class LaunchOptionDispatchTests(unittest.TestCase):
+    def run_main(self, argv):
+        from agent_box import cli, project_config, runtime
+        with unittest.mock.patch.object(project_config, "load", return_value={}), \
+             unittest.mock.patch("sys.argv", ["agent-box", *argv]), \
+             unittest.mock.patch.object(runtime, "host_main", return_value=0) as host, \
+             unittest.mock.patch.object(runtime, "runtime_main") as box, \
+             unittest.mock.patch.object(runtime, "attach_main", return_value=0) as attach, \
+             unittest.mock.patch.object(runtime, "host_session_main", return_value=0), \
+             unittest.mock.patch.object(cli, "config_show") as show, \
+             unittest.mock.patch.object(cli, "die", side_effect=SystemExit(1)) as die:
+            try:
+                cli.main()
+            except SystemExit:
+                pass
+        return die, (host, box, attach, show)
 
-    def test_host_and_mount_combine(self):
-        mounts, host, _env, rest = parse_global_args(["--mount", "/foo", "--host", "codex"])
-        self.assertEqual(mounts, ["/foo"])
-        self.assertTrue(host)
-        self.assertEqual(rest, ["codex"])
+    def test_options_that_cannot_apply_are_refused_instead_of_ignored(self):
+        for argv, message in ((["--host", "--mount", "/x", "claude"], "--mount needs a container"),
+                              (["--host", "--browser"], "--[no-]browser needs a container"),
+                              (["--host", "--no-kvm", "codex"], "--no-kvm needs a container"),
+                              (["--review", "always", "config", "show"], "not valid before config"),
+                              (["--mount", "/x", "attach"], "not valid before attach")):
+            with self.subTest(argv=argv):
+                die, calls = self.run_main(argv)
+                self.assertIn(message, die.call_args.args[0])
+                for call in calls:
+                    call.assert_not_called()
+
+    def test_workspace_reaches_attach(self):
+        die, (_, _, attach, _) = self.run_main(["--workspace", "/w", "attach"])
+        die.assert_not_called()
+        attach.assert_called_once_with([], "/w")
+
+    def test_help_lists_every_option_and_command(self):
+        """The option table renders the help, so nothing can be accepted without being documented."""
+        from agent_box import cli
+        from agent_box.launch_options import OPTIONS, spelling
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            cli.usage_text()
+        for option in OPTIONS:
+            self.assertIn(spelling(option), output.getvalue())
+        for command in cli.NON_RUNTIME - {"-h", "--help"}:
+            self.assertRegex(output.getvalue(), rf"\b{command}\b")
 
 
 class HostSessionDispatchTests(unittest.TestCase):
@@ -91,7 +134,7 @@ class HostSessionDispatchTests(unittest.TestCase):
                  self.assertRaises(SystemExit) as result:
                 cli.main()
             self.assertEqual(result.exception.code, 7)
-            host.assert_called_once_with(args, stop=command == "stop")
+            host.assert_called_once_with(args, stop=command == "stop", workspace_root="")
             attach.assert_not_called()
             stop.assert_not_called()
 
@@ -106,7 +149,8 @@ class HostSessionDispatchTests(unittest.TestCase):
                  unittest.mock.patch.object(runtime, "host_main", return_value=0) as host, \
                  self.assertRaises(SystemExit):
                 cli.main()
-            host.assert_called_once_with(agent, rest, [])
+            self.assertEqual(host.call_args.args[:2], (agent, rest))
+            self.assertTrue(host.call_args.args[2].host)
 
     def test_host_refuses_container_only_commands(self):
         from agent_box import cli, project_config, runtime

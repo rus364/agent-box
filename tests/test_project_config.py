@@ -8,7 +8,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from agent_box import project_config, runtime
-from agent_box.config import Config, TrackerConnection, effective_config
+from agent_box.config import Config, TrackerConnection, effective_config, session_account
+from agent_box.launch_options import LaunchOptions
 from agent_box.errors import AgentBoxError
 from agent_box.repo_binding import Binding, write_binding, setup_content
 from agent_box.tracker.registry import make_adapter
@@ -184,19 +185,27 @@ class ProjectConfigTests(unittest.TestCase):
                 self.assertNotIn('Traceback', output.getvalue())
                 help_action.assert_not_called()
 
-    def test_session_connection_cannot_mutate_global_or_bypass_project_identity(self):
+    def test_session_tracker_selects_its_account_without_touching_saved_files(self):
+        """--tracker/--project bind the session and bring a token by name; neither file changes."""
+        write_binding(self.root, self.binding)
+        saved = self.path.read_bytes()
         original = self.config.to_dict()
-        with patch.object(project_config, 'load', return_value={}), patch.dict(os.environ, {
-                'VIKUNJA_URL': self.binding.server, 'VIKUNJA_TOKEN': 'session-secret'}):
-            result = effective_config(self.config)
-            adapter = make_adapter(self.binding, config=result)
-            self.assertEqual(adapter.client.token, 'session-secret')
+        with patch.dict(os.environ, {'VIKUNJA_TOKEN': 'session-secret'}), \
+             patch.object(runtime, 'load_config', return_value=self.config), \
+             patch.object(project_config, 'project_path', return_value=self.path), \
+             patch.object(runtime, 'TRACKER_RUNTIME_DIR', self.root / 'runtime'), \
+             patch.object(runtime, 'container_tracker_url', side_effect=lambda url: url):
+            result = runtime.launch_config(LaunchOptions(overrides={'tracker': 'https://other.example', 'project': '34'}))
+            snapshot = runtime.session_runtime(result, container=False)
         self.assertEqual(self.config.to_dict(), original)
-        for env in ({'VIKUNJA_URL': self.binding.server}, {'VIKUNJA_TOKEN': 'session-secret'},
-                    {'VIKUNJA_URL': '', 'VIKUNJA_TOKEN': 'session-secret'},
-                    {'VIKUNJA_URL': 'https://other.example', 'VIKUNJA_TOKEN': 'session-secret'}):
-            with patch.dict(os.environ, env), self.assertRaises(AgentBoxError):
-                make_adapter(self.binding, config=self.config)
+        self.assertEqual(self.path.read_bytes(), saved)
+        with patch.dict(os.environ, {'AGENT_BOX_RUNTIME_CONFIG': str(snapshot)}, clear=True), \
+             patch.object(project_config, 'project_path', return_value=self.path):
+            binding = Binding.session(self.root)
+            self.assertEqual((binding.server, binding.project), ('https://other.example', '34'))
+            self.assertEqual(Binding.load(self.root), self.binding)
+            adapter = make_adapter(binding)
+            self.assertEqual((adapter.client.url, adapter.client.token), ('https://other.example', 'session-secret'))
 
     def test_project_url_cannot_redirect_global_token(self):
         config = project_config.apply(self.config, {'tracker': {'connections': {'vikunja': {'url': 'https://other.example'}}}})
@@ -210,21 +219,19 @@ class ProjectConfigTests(unittest.TestCase):
         project_config.save(self.path, {'tracker': {'provider': 'vikunja', 'project': '12', 'connections': {
             'vikunja': {'url': self.binding.server}, 'jira': {'url': 'https://project-jira.example'}}}})
         original = self.config.to_dict()
-        for environment, token in (({}, 'global-secret'), ({'VIKUNJA_URL': self.binding.server,
-                                                          'VIKUNJA_TOKEN': 'session-secret'}, 'session-secret')):
-            with self.subTest(session=bool(environment)), patch.dict(os.environ, environment), \
+        for overrides, token in (({}, 'global-secret'), ({'tracker': self.binding.server}, 'session-secret')):
+            with self.subTest(session=bool(overrides)), patch.dict(os.environ, {'VIKUNJA_TOKEN': 'session-secret'}), \
                  patch.object(runtime, 'load_config', return_value=self.config), \
                  patch.object(project_config, 'project_path', return_value=self.path):
-                result = runtime.launch_config([(name, None) for name in environment])
+                result = runtime.launch_config(LaunchOptions(overrides=overrides))
                 self.assertEqual(result.tracker.provider, 'vikunja')
                 self.assertEqual(make_adapter(self.binding, config=result).client.token, token)
                 self.assertEqual(result.tracker.connection('jira').url, 'https://project-jira.example')
         self.assertEqual(self.config.to_dict(), original)
 
     def test_container_ignores_unforwarded_process_account_in_its_snapshot(self):
-        """A shell export alone must not grant a container the temporary account."""
-        for environment in ({'VIKUNJA_URL': self.binding.server, 'VIKUNJA_TOKEN': 'session-secret'},
-                            {'VIKUNJA_TOKEN': 'session-secret'}):
+        """A shell export alone, without --tracker, must not grant a session another account."""
+        for environment in ({'VIKUNJA_TOKEN': 'session-secret'},):
             with self.subTest(environment=environment), patch.dict(os.environ, environment), \
                  patch.object(runtime, 'load_config', return_value=self.config), \
                  patch.object(project_config, 'load', return_value={}), \
@@ -235,28 +242,20 @@ class ProjectConfigTests(unittest.TestCase):
                 self.assertEqual(result.tracker.connection('vikunja').token, 'global-secret')
                 self.assertNotIn('session-secret', snapshot.read_text())
 
-    def test_container_selects_account_from_existing_environment_channels(self):
-        """All explicit launch channels keep their existing overlay precedence."""
-        from agent_box.config import EnvConfig
-        pair = {'VIKUNJA_URL': self.binding.server, 'VIKUNJA_TOKEN': 'session-secret'}
-        cases = [(EnvConfig(forward=list(pair)), pair, None),
-                 (EnvConfig(set=pair), {}, None),
-                 (EnvConfig(), pair, [(name, None) for name in pair]),
-                 (EnvConfig(), {}, list(pair.items())),
-                 (EnvConfig(), {'AGENT_BOX_ENV_' + name: value for name, value in pair.items()}, None)]
-        for policy, environment, specs in cases:
-            self.config.env = policy
-            with self.subTest(policy=policy, specs=specs), patch.dict(os.environ, environment, clear=True), \
+    def test_session_tracker_token_comes_only_from_the_named_shell_variable(self):
+        """Environment lists and a blank export cannot stand in for the token --tracker reads by name."""
+        self.config.env.set = {'VIKUNJA_TOKEN': 'from-config'}
+        for environment in ({}, {'VIKUNJA_TOKEN': ' '}):
+            with self.subTest(environment=environment), patch.dict(os.environ, environment, clear=True), \
                  patch.object(runtime, 'load_config', return_value=self.config), \
-                 patch.object(project_config, 'load', return_value={}):
-                result = runtime.launch_config(specs)
-                self.assertEqual(result.tracker.connection('vikunja').token, 'session-secret')
+                 patch.object(project_config, 'load', return_value={}), \
+                 self.assertRaisesRegex(AgentBoxError, 'VIKUNJA_TOKEN'):
+                runtime.launch_config(LaunchOptions(overrides={'tracker': self.binding.server}))
 
-    def test_host_launch_inherits_process_account_without_forwarding(self):
-        """Host execution and its snapshot must select the account inherited by the child."""
+    def test_host_session_snapshot_carries_the_session_tracker_account(self):
+        """A host child reads the snapshot, so the --tracker token must be there and not in argv."""
         from agent_box.workspace import Workspace
-        pair = {'VIKUNJA_URL': self.binding.server, 'VIKUNJA_TOKEN': 'session-secret'}
-        with patch.dict(os.environ, pair, clear=True), \
+        with patch.dict(os.environ, {'VIKUNJA_TOKEN': 'session-secret'}, clear=True), \
              patch.object(runtime, 'load_config', return_value=self.config), \
              patch.object(project_config, 'load', return_value={}), \
              patch.object(runtime, 'TRACKER_RUNTIME_DIR', self.root / 'runtime'), \
@@ -264,30 +263,26 @@ class ProjectConfigTests(unittest.TestCase):
              patch.object(runtime.shutil, 'which', return_value='/fake/codex'), \
              patch.object(runtime, 'resolve_workspace', return_value=Workspace(self.root, self.root)), \
              patch.object(runtime.subprocess, 'call', return_value=0) as call:
-            self.assertEqual(runtime.host_main('codex', []), 0)
-            environment = call.call_args.kwargs['env']
-            self.assertEqual(environment['VIKUNJA_TOKEN'], 'session-secret')
-            snapshot = json.loads(Path(environment['AGENT_BOX_RUNTIME_CONFIG']).read_text())
-            self.assertEqual(snapshot['tracker']['connections']['vikunja']['token'], 'session-secret')
+            options = LaunchOptions(host=True, overrides={'tracker': 'https://other.example'})
+            self.assertEqual(runtime.host_main('codex', [], options), 0)
+            self.assertNotIn('session-secret', str(call.call_args.args))
+            snapshot = json.loads(Path(call.call_args.kwargs['env']['AGENT_BOX_RUNTIME_CONFIG']).read_text())
+            self.assertEqual(snapshot['tracker']['connections']['vikunja'],
+                             {'url': 'https://other.example', 'token': 'session-secret'})
+            self.assertEqual(snapshot['launch'], {'tracker': 'https://other.example'})
             self.assertFalse(snapshot['container'])
 
-    def test_launch_rejects_selected_account_mismatch_and_incomplete_session_pair(self):
-        """The launcher must reject invalid account selection before any consumer can connect."""
+    def test_launch_rejects_an_account_for_another_server_unless_tracker_names_one(self):
+        """The saved account must match the binding; --tracker is the one way to point elsewhere."""
         write_binding(self.root, self.binding)
-        cases = [({}, 'https://wrong-global.example'),
-                 ({'VIKUNJA_URL': 'https://wrong-session.example', 'VIKUNJA_TOKEN': 'session-secret'}, self.binding.server),
-                 ({'VIKUNJA_URL': self.binding.server}, self.binding.server),
-                 ({'VIKUNJA_TOKEN': 'session-secret'}, self.binding.server),
-                 ({'VIKUNJA_URL': '', 'VIKUNJA_TOKEN': 'session-secret'}, self.binding.server),
-                 ({'VIKUNJA_URL': self.binding.server, 'VIKUNJA_TOKEN': ''}, self.binding.server)]
-        for environment, global_url in cases:
-            self.config.tracker.connections['vikunja'].url = global_url
-            with self.subTest(environment=environment, global_url=global_url), \
-                 patch.dict(os.environ, environment), \
-                 patch.object(runtime, 'load_config', return_value=self.config), \
-                 patch.object(project_config, 'project_path', return_value=self.path), \
-                 self.assertRaises(AgentBoxError):
-                runtime.launch_config([(name, None) for name in environment])
+        self.config.tracker.connections['vikunja'].url = 'https://wrong-global.example'
+        with patch.dict(os.environ, {'VIKUNJA_TOKEN': 'session-secret'}), \
+             patch.object(runtime, 'load_config', return_value=self.config), \
+             patch.object(project_config, 'project_path', return_value=self.path):
+            with self.assertRaisesRegex(AgentBoxError, 'different tracker server'):
+                runtime.launch_config()
+            result = runtime.launch_config(LaunchOptions(overrides={'tracker': 'https://another.example'}))
+        self.assertEqual(session_account(result).connection('vikunja').url, 'https://another.example')
 
     def test_session_snapshots_survive_other_sessions_and_global_disable(self):
         with patch.object(runtime, 'TRACKER_RUNTIME_DIR', self.root / 'runtime'), \
@@ -325,9 +320,10 @@ class ProjectConfigTests(unittest.TestCase):
         with patch.dict(os.environ, {'AGENT_BOX_RUNTIME_CONFIG': str(snapshot)}):
             adapter = make_adapter(self.binding, config=self.config)
             self.assertEqual(adapter.client.url, 'http://host.containers.internal:8080')
-            with patch.dict(os.environ, {'VIKUNJA_URL': 'https://new.example', 'VIKUNJA_TOKEN': 'new-secret'}), \
-                 patch.object(runtime, 'container_tracker_url', return_value='https://new.example'):
-                adapter = make_adapter(Binding('vikunja', 'https://new.example', '12'), config=self.config)
+            other = Config.from_dict(self.config.to_dict())
+            other.tracker.connections['vikunja'] = TrackerConnection('https://new.example', 'new-secret')
+            with patch.object(runtime, 'container_tracker_url', return_value='https://new.example'):
+                adapter = make_adapter(Binding('vikunja', 'https://new.example', '12'), config=other)
                 self.assertEqual(adapter.client.url, 'https://new.example')
 
     def test_duplicate_keys_cannot_hide_a_stored_credential_from_validation(self):

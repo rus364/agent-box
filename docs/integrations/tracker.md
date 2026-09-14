@@ -55,9 +55,9 @@ Global configuration holds accounts, credentials and integration permissions.
 [project configuration overrides](../../README.md#project-configuration).
 A project ID identifies a project on that server; the selected connection URL
 must match it. Commit this portable configuration. A fresh clone on another
-device needs a matching global connection or a complete temporary
-`VIKUNJA_URL`/`VIKUNJA_TOKEN` pair. The pair must also match the project URL;
-changing servers requires updating the project binding. Setup and adoption
+device needs a matching global connection, or `--tracker URL` with
+`VIKUNJA_TOKEN` exported for one session. Changing servers permanently requires
+updating the project binding. Setup and adoption
 preserve other project overrides. Setup maintains checksum blocks in
 `AGENTS.md` and the `CLAUDE.md` import, preserving outside text and refusing
 edited blocks, symlinks and ambiguous ownership.

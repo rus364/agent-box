@@ -1767,6 +1767,7 @@ def worker_dispatch(args, root, binding, adapter, task, config):
     selected = (session_route(args, "worker", config) if tier is None and not config.workflow.override_for("worker", tier)
                 else route(config, "worker", tier, args.primary, saved.get("writer")))
     model_source = ("active-session" if selected.get("mode") == "current-session" else
+                    "--worker" if "worker" in config.workflow.pins else
                     "workflow.worker.override.models" if config.workflow.override_for("worker", tier) else
                     f"workflow.tiers.{tier}")
     if args.command == "run" and selected["model"] is None:
@@ -1919,7 +1920,7 @@ def dispatch(args):
     if errors:
         raise AgentBoxError("; ".join(errors))
     root = repository_root()
-    binding = Binding.load(root)
+    binding = Binding.session(root) or Binding.load(root)
     adapter = make_adapter(binding)
     if args.command == "review-result":
         return review_result(root, binding, adapter, SimpleNamespace(id=args.task), config,

@@ -125,12 +125,8 @@ class KvmPassthroughTests(unittest.TestCase):
         with mock.patch.object(runtime.Path, "exists", return_value=False):
             self.assertEqual(runtime.kvm_args(config), [])
 
-    def test_the_environment_override_still_wins(self):
-        import os
+    def test_no_kvm_withholds_a_present_device(self):
         config = _config(virtualization=True)
-        with mock.patch.dict(os.environ, {"AGENT_BOX_KVM": "0"}):
-            self.assertEqual(runtime.kvm_args(config), [])
+        with mock.patch.object(runtime.Path, "exists", return_value=True):
+            self.assertEqual(runtime.kvm_args(config, enabled=False), [])
 
-
-if __name__ == "__main__":
-    unittest.main()

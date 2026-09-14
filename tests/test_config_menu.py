@@ -762,20 +762,20 @@ class ProjectMenuTests(unittest.TestCase):
             config = Config()
             config.tracker.enabled = True
             config.tracker.connections['vikunja'] = TrackerConnection('https://global.example', 'GLOBAL_SECRET')
-            config.env.forward = ['VIKUNJA_URL', 'VIKUNJA_TOKEN']
             project = {'tracker': {'project': '12', 'connections': {'vikunja': {'url': 'https://temporary.example'}}}}
-            environment = {'VIKUNJA_URL': 'https://temporary.example', 'VIKUNJA_TOKEN': 'TEMPORARY_SECRET'}
+            environment = {'VIKUNJA_TOKEN': 'TEMPORARY_SECRET'}
             with patch.dict(os.environ, environment, clear=True), \
                  patch.object(runtime, 'load_config', return_value=config), \
                  patch.object(project_config, 'load', return_value=project), \
                  patch.object(runtime, 'TRACKER_RUNTIME_DIR', root / 'runtime'), \
                  patch.object(runtime, 'container_tracker_url', side_effect=lambda url: url):
-                launched = runtime.launch_config()
+                from agent_box.launch_options import LaunchOptions
+                launched = runtime.launch_config(LaunchOptions(overrides={'tracker': 'https://temporary.example'}))
                 state = runtime.WorkspaceRuntimeState(root / 'workspace', root / 'git', root / 'gh')
                 snapshot = runtime.session_runtime(launched, runtime_state=state)
             self.assertNotIn('GLOBAL_SECRET', snapshot.read_text())
             with patch.dict(os.environ, {'AGENT_BOX_RUNTIME_CONFIG': str(snapshot)}, clear=True):
-                baseline = effective_config(environ={}, include_project=False)
+                baseline = effective_config(include_project=False)
                 self.assertEqual(baseline.tracker.connection('vikunja').token, 'TEMPORARY_SECRET')
                 self.assertEqual(baseline.tracker.connection('vikunja').url, 'https://temporary.example')
                 result, screen = self.edit(baseline, [*select("tracker"), 'g',
@@ -897,7 +897,7 @@ class ProjectMenuTests(unittest.TestCase):
             original_global = global_path.read_bytes()
             original_runtime = runtime_path.read_bytes()
             for source, expected in (('host', 'https://global.example'), ('runtime', 'https://runtime.example')):
-                environment = {'VIKUNJA_URL': 'https://temporary.example', 'VIKUNJA_TOKEN': 'TEMPORARY_SECRET'}
+                environment = {}
                 if source == 'runtime':
                     environment['AGENT_BOX_RUNTIME_CONFIG'] = str(runtime_path)
                 screen = Screen([*select("tracker"), 'g', curses.KEY_END, curses.KEY_UP, '\n'])

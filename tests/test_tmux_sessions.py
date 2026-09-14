@@ -21,8 +21,7 @@ class TmuxDecisionTests(unittest.TestCase):
         )
 
     def test_interactive_agent_session_is_detachable(self):
-        with self._tty(), mock.patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("AGENT_BOX_TMUX", None)
+        with self._tty():
             for agent in ("claude", "codex", "shell"):
                 self.assertTrue(runtime.tmux_enabled(agent), agent)
 
@@ -35,9 +34,9 @@ class TmuxDecisionTests(unittest.TestCase):
         with self._tty(False):
             self.assertFalse(runtime.tmux_enabled("claude"))
 
-    def test_opt_out_env_disables_wrapping(self):
-        with self._tty(), mock.patch.dict(os.environ, {"AGENT_BOX_TMUX": "0"}):
-            self.assertFalse(runtime.tmux_enabled("claude"))
+    def test_no_tmux_disables_wrapping(self):
+        with self._tty():
+            self.assertFalse(runtime.tmux_enabled("claude", allowed=False))
 
 
 class TmuxSessionCommandTests(unittest.TestCase):
@@ -86,7 +85,7 @@ class TmuxSessionCommandTests(unittest.TestCase):
         session.status_path.write_text("1\n")
         with contextlib.redirect_stderr(io.StringIO()) as stderr:
             self.assertEqual(session.finish("box", 0), 1)
-        self.assertIn("AGENT_BOX_TMUX=0", stderr.getvalue())
+        self.assertIn("--no-tmux", stderr.getvalue())
 
     def test_a_clean_session_end_is_reported_only_by_its_status(self):
         session = runtime.tmux_session("claude", self.state)

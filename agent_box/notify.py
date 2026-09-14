@@ -45,6 +45,9 @@ NOTIFY_COMMAND = "agent-box notify claude"
 SUPPRESS_NOTIFY_ENV = "AGENT_BOX_SUPPRESS_NOTIFY"
 NOTIFY_TOKEN_ENV = "AGENT_BOX_NOTIFY_TOKEN"
 NOTIFY_CHAT_ID_ENV = "AGENT_BOX_NOTIFY_CHAT_ID"
+#: Set by ``agent-box --no-notify``. Host hooks would otherwise still find the
+#: credential file, so the session says "none" instead of withholding values.
+NOTIFY_OFF_ENV = "AGENT_BOX_NOTIFY_OFF"
 OFFICIAL_CHANNEL_NOTIFICATION_TYPES = frozenset({"permission_prompt", "idle_prompt"})
 # Bot API limits: sendMessage text is 1-4096 characters after entity parsing;
 # sendRichMessage accepts up to 32768 UTF-8 characters in the rich text.
@@ -113,6 +116,8 @@ def load_credentials(path: Path = NOTIFY_CREDENTIALS) -> tuple[str, str] | None:
     # sessions so they never enter persistent box metadata or a shared file.
     # Same-user peers in the shared PID namespace may still inspect a running
     # process's environment; this is metadata minimisation, not isolation.
+    if os.environ.get(NOTIFY_OFF_ENV):
+        return None
     token = os.environ.get(NOTIFY_TOKEN_ENV, "")
     chat_id = os.environ.get(NOTIFY_CHAT_ID_ENV, "")
     if token and chat_id:

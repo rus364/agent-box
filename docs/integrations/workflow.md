@@ -307,6 +307,8 @@ Set Scope to select reviewer model and effort independently for Codex and Claude
 under Models. The same/cross-provider policy still chooses the provider relative
 to the actual writer, including for untiered tasks. Empty models disable candidates;
 there is no implicit fallback to session settings or tier models.
+`agent-box --reviewer SPEC` instead pins one reviewer for a session, whatever
+routing, tier and override say; `--worker SPEC` and `--scout SPEC` pin those roles.
 
 `workflow.review.override` contains `scope` and `models.codex` / `models.claude`,
 each with `model` and `effort`. It shares the worker scope choices but owns its

@@ -121,13 +121,38 @@ box exits and Podman's `--rm` removes it.
 agent-box                  # default agent: Claude, or Codex if chosen in agent-box config
 agent-box claude -p "summarize this repository"
 agent-box codex exec "inspect this repository"
-
-AGENT_BOX_AGENT=codex agent-box  # override the default for one command
 ```
 
 Choose the default under **Launch → Default agent** in `agent-box config`
 (`launch.default_agent`: `claude` or `codex`). It is a global setting, not a
 project one; an explicit `claude` or `codex` always wins.
+
+### Session options
+
+Options before the agent change one launch and are never saved; `agent-box
+--help` lists them all. Session values apply over the global and project
+configuration, travel in the session snapshot (so reattached and nested
+commands see them), and `agent-box config show` inside the session names them.
+
+```bash
+agent-box --reviewer claude:opus:high --review always codex
+agent-box --worker direct --no-push claude
+agent-box --host --no-tmux codex exec "run the tests"
+```
+
+| Group | Options |
+| --- | --- |
+| Launch | `--host`, `--workspace PATH`, `--mount PATH[:ro]`, `--env NAME[=VALUE]`, `--no-tmux`, `--no-kvm` |
+| Workflow | `--worker auto\|direct\|delegated\|SPEC`, `--reviewer SPEC`, `--scout SPEC`, `--review off\|auto\|always`, `--rounds N`, `--routing current\|weighted\|usage-aware`, `--merge github\|local`, `--[no-]push`, `--no-workflow` |
+| Tracker | `--tracker URL`, `--project ID` ([details](#project-configuration)) |
+| Access | `--[no-]gh-token`, `--[no-]gh-config`, `--[no-]git-config`, `--[no-]api-keys`, `--[no-]browser`, `--[no-]remote-control`, `--no-notify` |
+
+`SPEC` is `PROVIDER[@API]:MODEL[:EFFORT]`, for example `codex:gpt-5.5:high` or
+`claude@deepseek:deepseek-v4`. `--reviewer`, `--scout` and `--worker SPEC` pin
+that model outright: review routing, the current-provider filter, weights and
+tiers choose no other. Workflow options need workflow enabled in
+`agent-box config`. Options that only a container can honour (mounts, KVM,
+credentials, browser) are refused with `--host` rather than ignored.
 
 ### Detach and reattach
 
@@ -150,11 +175,11 @@ For an already running server, apply the setting from `agent-box shell` with
 `tmux -L agent-box set -g mouse on`; new servers load it automatically.
 
 Only real terminals are wrapped — pipes, redirects, CI and `claude -p` write
-straight to stdout. `AGENT_BOX_TMUX=0` disables tmux for one launch.
+straight to stdout. `--no-tmux` disables tmux for one launch.
 
 A wrapped session that fails reports its exit status and nothing else: the pane
 is destroyed with the session, so whatever the command printed before it died
-goes with it. Rerun with `AGENT_BOX_TMUX=0` to read it on the terminal.
+goes with it. Rerun with `--no-tmux` to read it on the terminal.
 
 ### Extra mounts
 
@@ -214,11 +239,11 @@ terminal; detach with `Ctrl-\ d` and return with `agent-box --host attach`
 (optionally followed by a session name). Each launch receives its own current
 environment and working directory. `--host stop` affects only that project's
 agent-box host server, leaving other projects and your own tmux servers alone.
-Without tmux, the CLI starts directly with a short notice. `AGENT_BOX_TMUX=0`,
+Without tmux, the CLI starts directly with a short notice. `--no-tmux`,
 pipes, redirects and noninteractive commands such as `claude -p` and `codex exec`
 also use direct execution. Agent-box never installs tmux at launch.
 Bash is resolved from the caller's PATH before starting tmux; if it is missing,
-install it or use `AGENT_BOX_TMUX=0` for direct execution.
+install it or use `--no-tmux` for direct execution.
 
 | Area | Host responsibility / agent-box behavior |
 | --- | --- |
@@ -308,7 +333,7 @@ because you asked for it.
 
 | Setting | Default | Purpose |
 | --- | --- | --- |
-| Default agent | claude | What a bare `agent-box` starts; `AGENT_BOX_AGENT` overrides it for one command |
+| Default agent | claude | What a bare `agent-box` starts; an explicit `claude`/`codex` wins |
 | Claude status line | on | Workspace, git state, context and provider usage in one line |
 | Git identity | on | `user.name` / `user.email`, for commit attribution |
 | Provider transport settings | on | Base URL, proxies, CA bundle — without these a container behind a proxy cannot reach the network |
@@ -318,21 +343,18 @@ because you asked for it.
 
 Every switch and what it exposes: **[docs/integrations](docs/integrations/)**.
 
-### Environment overrides
+### Environment variables
 
 ```text
-AGENT_BOX_AGENT           Agent when claude/codex is omitted (overrides launch.default_agent)
 AGENT_BOX_IMAGE           Container image name
-AGENT_BOX_KVM=0           Disable KVM passthrough
-AGENT_BOX_GH_TOKEN=0|1    Withhold / force the GitHub token for one run
-AGENT_BOX_WORKSPACE_ROOT  Override the resolved workspace root
 AGENT_BOX_STATE_DIR       Override ~/.local/share/agent-box
 AGENT_BOX_CONFIG_DIR      Override ~/.config/agent-box
 AGENT_BOX_AGENTS_DIR      Override ~/.agents, the shared agent/skill tree
 AGENT_BOX_STATUSLINE=0    Leave Claude's statusLine untouched when applying
 AGENT_BOX_ENV_<NAME>      Set <NAME> inside the session
-AGENT_BOX_TMUX=0          Disable tmux wrapping for one launch
 ```
+
+Choices for one launch are [session options](#session-options), not variables.
 
 
 ## Project configuration
@@ -372,8 +394,8 @@ effective global value and follows subsequent global changes. **G: Copy current 
 copies the current effective global value into an explicit project override,
 pinning it against subsequent global changes. Both actions work on fields and
 sections. The available global baseline comes from the session runtime snapshot
-when present, otherwise the host configuration; additional process account
-overrides are excluded from copying. A temporary session retains the original
+when present, otherwise the host configuration; a session's `--tracker`
+account is excluded from copying. A temporary session retains the original
 global URLs for the editor, without retaining the replaced global token.
 Section copying includes only project-allowed settings. Copying tracker connections
 removes project-only accounts absent from the global section; copying the enclosing
@@ -397,27 +419,20 @@ value. URL credentials, queries and fragments are rejected. This checks the
 allowed schema and credential fields, not arbitrary strings for possible
 secrets, and does not inspect Git history or control commands outside agent-box.
 
-A complete, nonempty `VIKUNJA_URL` and `VIKUNJA_TOKEN` pair selects the account
-for a process/session. One missing or empty variable is an error with no
-fallback to the global token. The selected URL must match the project URL,
-including for a temporary pair; moving a server requires updating the binding.
-A project URL never redirects a global token. `tracker.enabled` remains a
-global permission.
+The saved global account must match the project URL; moving a server
+permanently requires updating the binding. A project URL never redirects a
+global token, and `tracker.enabled` remains a global permission.
 
-Direct tracker/workflow commands read the process environment. Launches also
-support the existing global `env.forward`/`env.set`, `--env`, and
-`AGENT_BOX_ENV_*` channels. A container selects a temporary account only from
-these explicitly forwarded or assigned values; exporting the pair alone does
-not select it. `--host` inherits the full process environment as usual.
-Prefer forwarding secrets by name:
+For one session, `--tracker URL` selects another server and `--project ID`
+another project; together they bind even an unbound repository. The token is
+read by name from `VIKUNJA_TOKEN` in the launching shell, never from an
+argument or the stored environment lists, and reaches the session only through
+its private snapshot. Neither configuration file changes:
 
 ```bash
-# Export VIKUNJA_URL and VIKUNJA_TOKEN securely in your shell first.
-agent-box --env VIKUNJA_URL --env VIKUNJA_TOKEN codex
+export VIKUNJA_TOKEN=...
+agent-box --tracker https://tasks.example.org --project 12 codex
 ```
-
-`--env NAME=VALUE` can expose a literal in process arguments and shell history;
-`env.set` stores its literal in global configuration. These remain user choices.
 Temporary account values are never saved in global or project configuration,
 and configuration display masks credentials and environment assignments.
 Launches use immutable session snapshots in agent-box runtime state. Each
@@ -542,7 +557,7 @@ Workspace resolution is intentionally simple:
 
 1. Inside a Git repository or worktree: its top-level directory.
 2. Outside Git: the current directory.
-3. `AGENT_BOX_WORKSPACE_ROOT` overrides both, when you deliberately want a broader tree.
+3. `--workspace PATH` overrides both, when you deliberately want a broader tree.
 
 By default, every workspace box runs with:
 
@@ -648,8 +663,8 @@ That is the default. See [Git and GitHub](docs/integrations/git.md).
 <details>
 <summary><strong>The configured workspace root rejects my current directory</strong></summary>
 
-`AGENT_BOX_WORKSPACE_ROOT` is set and the current directory is outside it.
-Change directory, or remove the override.
+`--workspace` names a directory that does not contain the current one.
+Change directory, or pass another path.
 
 </details>
 

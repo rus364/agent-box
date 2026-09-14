@@ -1,0 +1,276 @@
+"""Launch options: one table parses them, renders their help and applies them.
+
+Session overrides travel in the launch's configuration snapshot under
+``launch`` and are applied after the project configuration, so for that
+session they win over both configuration files without being written to
+either. A per-option environment variable was the rejected alternative: it
+spread one launch's choices over as many spellings as there were settings.
+"""
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from .config import AGENT_EFFORTS, AGENT_PROVIDERS, API_EFFORTS, TrackerConnection, model_candidates, parse_env_spec, valid_name
+from .errors import AgentBoxError
+
+SPEC = "PROVIDER[@API]:MODEL[:EFFORT]"
+EXECUTION = ("auto", "direct", "delegated")
+
+
+@dataclass(frozen=True)
+class Option:
+    name: str
+    group: str
+    help: str
+    metavar: str = ""
+    #: "switch" is --NAME, "negated" only --no-NAME, "pair" both spellings.
+    form: str = "switch"
+    container: bool = False
+    #: Carried into the session snapshot, as opposed to shaping this launch only.
+    session: bool = True
+    choices: tuple[str, ...] = ()
+
+
+LAUNCH, WORKFLOW, TRACKER, ACCESS = "Launch", "Workflow for this session", "Tracker for this session", "Access for this session"
+OPTIONS = (
+    Option("host", LAUNCH, "Run the host's claude/codex, without a container", session=False),
+    Option("workspace", LAUNCH, "Workspace root instead of the Git top level", "PATH", session=False),
+    Option("mount", LAUNCH, "Also bind-mount a host directory; repeatable", "PATH[:ro]", container=True, session=False),
+    Option("env", LAUNCH, "Set NAME, or forward it from this shell by name; repeatable", "NAME[=VALUE]", session=False),
+    Option("tmux", LAUNCH, "Start directly, without a detachable tmux session", form="negated", session=False),
+    Option("kvm", LAUNCH, "Do not pass /dev/kvm through", form="negated", container=True, session=False),
+    Option("worker", WORKFLOW, "Worker execution policy, or pin the delegated worker", "auto|direct|delegated|SPEC"),
+    Option("reviewer", WORKFLOW, "Pin the reviewer, whatever review routing and tier say", "SPEC"),
+    Option("scout", WORKFLOW, "Pin the scout model", "SPEC"),
+    Option("review", WORKFLOW, "When review is required", "off|auto|always", choices=("off", "auto", "always")),
+    Option("rounds", WORKFLOW, "Review attempt limit per task", "N"),
+    Option("routing", WORKFLOW, "Delegated worker routing", "current|weighted|usage-aware",
+           choices=("current", "weighted", "usage-aware")),
+    Option("merge", WORKFLOW, "Delivery route", "github|local", choices=("github", "local")),
+    Option("push", WORKFLOW, "Publish after integration", form="pair"),
+    Option("workflow", WORKFLOW, "Start without workflow and tracker", form="negated"),
+    Option("tracker", TRACKER, "Tracker server; the token is read from VIKUNJA_TOKEN by name", "URL"),
+    Option("project", TRACKER, "Tracker project ID", "ID"),
+    Option("gh-token", ACCESS, "GitHub token", form="pair", container=True),
+    Option("gh-config", ACCESS, "Copy of the host gh configuration", form="pair", container=True),
+    Option("git-config", ACCESS, "Copy of the full host Git configuration", form="pair", container=True),
+    Option("api-keys", ACCESS, "Provider API key variables", form="pair", container=True),
+    Option("browser", ACCESS, "Agent browser", form="pair", container=True),
+    Option("remote-control", ACCESS, "Remote control; the --no- form also keeps Claude off Telegram", form="pair"),
+    Option("notify", ACCESS, "Send no Telegram notifications", form="negated"),
+)
+BY_NAME = {option.name: option for option in OPTIONS}
+FLAGS = {**{f"--{o.name}": (o, True) for o in OPTIONS if o.form != "negated"},
+         **{f"--no-{o.name}": (o, False) for o in OPTIONS if o.form != "switch"}}
+WORKFLOW_KEYS = {"execution", *(o.name for o in OPTIONS if o.group == WORKFLOW and o.name != "workflow")}
+
+
+@dataclass
+class LaunchOptions:
+    host: bool = False
+    workspace: str = ""
+    mounts: list[str] = field(default_factory=list)
+    env: list[tuple[str, str | None]] = field(default_factory=list)
+    tmux: bool = True
+    kvm: bool = True
+    #: Session overrides by key; the snapshot stores exactly this mapping.
+    overrides: dict[str, object] = field(default_factory=dict)
+
+    def given(self):
+        """The options used, for refusing those that cannot apply where they were given."""
+        used = {"host": self.host, "workspace": self.workspace, "mount": self.mounts,
+                "env": self.env, "tmux": not self.tmux, "kvm": not self.kvm}
+        names = [name for name, value in used.items() if value] + [option_key(key) for key in self.overrides]
+        return [BY_NAME[name] for name in dict.fromkeys(names)]
+
+
+def option_key(key):
+    return "worker" if key == "execution" else key
+
+
+def spelling(option):
+    return {"switch": f"--{option.name}", "negated": f"--no-{option.name}",
+            "pair": f"--[no-]{option.name}"}[option.form]
+
+
+def parse_spec(flag, text):
+    """``PROVIDER[@API]:MODEL[:EFFORT]``; a trailing segment is an effort only if it names one."""
+    head, _, rest = text.partition(":")
+    provider, at, api = head.partition("@")
+    if provider not in AGENT_PROVIDERS or not rest or (at and not valid_name(api)):
+        raise AgentBoxError(f"{flag} expects {SPEC}, for example claude:opus:high")
+    model, colon, effort = rest.rpartition(":")
+    if not colon or effort not in (API_EFFORTS if api else AGENT_EFFORTS)[provider]:
+        model, effort = rest, "default"
+    return model_candidates({provider: {"model": model, "effort": effort, "api_provider": api}})
+
+
+def convert(option, flag, text):
+    if option.choices and text not in option.choices:
+        raise AgentBoxError(f"{flag} expects {option.metavar}")
+    if option.name in ("reviewer", "scout") or option.name == "worker" and text not in EXECUTION:
+        parse_spec(flag, text)
+    if option.name == "rounds":
+        if not text.isdigit() or int(text) < 1:
+            raise AgentBoxError(f"{flag} expects a positive integer")
+        return int(text)
+    if option.name == "tracker":
+        from .repo_binding import server_identity
+        return server_identity(text)
+    return text
+
+
+def parse(argv: list[str]) -> tuple[LaunchOptions, list[str]]:
+    """Leading agent-box options, and the untouched rest.
+
+    Options end at the first token that is not one of ours or a bare ``--``,
+    so an agent's own ``--model`` after ``claude``/``codex``, or directly
+    after the options when the default agent starts, is never ours. A
+    misspelled option therefore reaches the agent, which rejects it.
+    """
+    options = LaunchOptions()
+    index = 0
+    while index < len(argv):
+        token = argv[index]
+        if token == "--":
+            return options, argv[index + 1:]
+        flag, inline, text = token.partition("=")
+        option, positive = FLAGS.get(flag, (None, None))
+        if option is None:
+            break
+        if not option.metavar or not positive:
+            if inline:
+                raise AgentBoxError(f"{flag} takes no value")
+            value = positive
+        else:
+            if not inline:
+                index += 1
+                text = argv[index] if index < len(argv) else ""
+            if not text:
+                raise AgentBoxError(f"{flag} requires {option.metavar}")
+            value = convert(option, flag, text)
+        index += 1
+        if option.name == "mount":
+            options.mounts.append(value)
+        elif option.name == "env":
+            try:
+                options.env.append(parse_env_spec(value))
+            except ValueError as exc:
+                raise AgentBoxError(str(exc)) from None
+        elif not option.session:
+            setattr(options, option.name, value)
+        else:
+            key = "execution" if option.name == "worker" and value in EXECUTION else option.name
+            if key in options.overrides:
+                raise AgentBoxError(f"{flag} is given twice")
+            options.overrides[key] = value
+    return options, argv[index:]
+
+
+def apply(config, overrides):
+    """Apply session overrides in place; applying the same mapping again changes nothing."""
+    workflow = config.workflow
+    for key, value in overrides.items():
+        if key == "execution":
+            workflow.worker.execution = value
+        elif key in ("worker", "reviewer", "scout"):
+            workflow.pins[key] = parse_spec(f"--{key}", value)
+        elif key == "review":
+            workflow.review.policy = value
+        elif key == "rounds":
+            workflow.review.max_rounds = value
+        elif key == "routing":
+            workflow.routing = value
+        elif key == "merge":
+            workflow.merge_mode = value
+        elif key == "push":
+            workflow.auto_push = value
+        elif key == "workflow":
+            workflow.enabled = config.tracker.enabled = False
+        elif key == "tracker":
+            config.tracker.enabled = True
+            config.tracker.connections.setdefault(config.tracker.provider, TrackerConnection()).url = value
+        elif key == "gh-token":
+            config.github.gh_token = value
+        elif key == "gh-config":
+            config.github.gh_config = value
+        elif key == "git-config":
+            config.git.full_config = value
+        elif key == "api-keys":
+            config.providers.api_keys = value
+        elif key == "browser":
+            config.browser.enabled = value
+        elif key == "remote-control":
+            config.claude.remote_control = config.codex.remote_control = value
+            config.claude.telegram_channel = config.claude.telegram_channel and value
+        elif key == "notify":
+            config.notifications.enabled = False
+    used = [key for key in overrides if key in WORKFLOW_KEYS]
+    if used and not workflow.enabled:
+        raise AgentBoxError(f"--{option_key(used[0])} needs workflow; enable it in agent-box config"
+                            + (" and drop --no-workflow" if "workflow" in overrides else ""))
+    if "project" in overrides and not config.tracker.enabled:
+        raise AgentBoxError("--project needs the tracker; enable it in agent-box config")
+    if overrides.get("browser") and not config.image.tools.get("browser"):
+        raise AgentBoxError("--browser needs the browser image tool group; enable it in agent-box config, then agent-box build")
+    for role, models in workflow.pins.items():
+        api = next(spec["api_provider"] for spec in models.values() if spec["model"])
+        if api and not (api in config.external_providers and config.external_providers[api].enabled):
+            raise AgentBoxError(f"--{role} names API provider {api}, which is not an enabled external provider")
+    errors = workflow.validate() if used else []
+    if errors:
+        raise AgentBoxError(errors[0])
+    config._launch = dict(overrides)
+    return config
+
+
+def bind_tracker_token(config, environ=None):
+    """Put the ``--tracker`` account's token where the snapshot renders it from.
+
+    Read by name from the launching shell, so the value never enters an argv.
+    """
+    environ = os.environ if environ is None else environ
+    provider = config.tracker.provider
+    name = f"{provider.upper()}_TOKEN"
+    token = environ.get(name, "")
+    if not token.strip():
+        raise AgentBoxError(f"--tracker needs {name} exported in this shell; the token is never passed as an argument")
+    for target in {id(c): c for c in (getattr(config, "_project_base", config), config)}.values():
+        target.tracker.connections[provider].token = token
+
+
+def describe(overrides):
+    """The session's overrides as the flags that set them."""
+    parts = []
+    for key, value in overrides.items():
+        name = option_key(key)
+        parts.append(f"--{name} {value}" if BY_NAME[name].metavar else
+                     f"--{name}" if value is True else f"--no-{name}")
+    return " ".join(parts)
+
+
+def session_overrides():
+    """This session's launch overrides, read from its snapshot; empty outside a session."""
+    from .atomicio import read_json
+    path = os.environ.get("AGENT_BOX_RUNTIME_CONFIG")
+    try:
+        launch = read_json(Path(path)).get("launch") if path else None
+    except (OSError, ValueError, AttributeError):
+        return {}
+    return launch if isinstance(launch, dict) else {}
+
+
+def help_text():
+    lines = []
+    for group in (LAUNCH, WORKFLOW, TRACKER, ACCESS):
+        lines += ["", f"{group}:"]
+        for option in (o for o in OPTIONS if o.group == group):
+            usage = f"{spelling(option)} {option.metavar}".rstrip()
+            suffix = " (container)" if option.container else ""
+            if len(usage) > 22:
+                lines += [f"  {usage}", f"  {'':22}  {option.help}{suffix}"]
+            else:
+                lines.append(f"  {usage:22}  {option.help}{suffix}")
+    return "\n".join(lines[1:])

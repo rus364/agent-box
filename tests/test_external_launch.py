@@ -138,11 +138,13 @@ class ExternalProcessTests(unittest.TestCase):
             with self.subTest(argv=argv), patch.object(cli_module.sys, 'argv', ['agent-box', *argv]), \
                  patch.object(runtime, 'host_main', return_value=0) as host, self.assertRaises(SystemExit):
                 cli_module.main()
-            host.assert_called_once_with(agent, rest, [], api_provider='deepseek')
+            self.assertEqual(host.call_args.args[:2], (agent, rest))
+            self.assertEqual(host.call_args.kwargs, {'api_provider': 'deepseek'})
         with patch.object(cli_module.sys, 'argv', ['agent-box', 'ext', 'deepseek']), \
              patch.object(runtime, 'runtime_main') as launch:
             cli_module.main()
-        launch.assert_called_once_with([], ANY, [], [], api_provider='deepseek')
+        from agent_box.launch_options import LaunchOptions
+        launch.assert_called_once_with([], ANY, LaunchOptions(), api_provider='deepseek')
         for argv in (['ext'], ['ext', 'deepseek', 'shell'], ['--host', 'ext', 'deepseek', 'doctor']):
             with self.subTest(argv=argv), patch.object(cli_module.sys, 'argv', ['agent-box', *argv]), \
                  patch.object(runtime, 'runtime_main') as launch, patch.object(runtime, 'host_main') as host, \
