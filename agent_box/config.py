@@ -108,6 +108,21 @@ class CodexConfig:
 
 
 @dataclass
+class UsageConfig:
+    #: Shell command whose first output line follows the Claude and Codex usage
+    #: segments. Empty shows nothing extra; set, it runs wherever the line is
+    #: drawn, which for Claude's status line is inside the workspace box.
+    command: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"command": self.command}
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "UsageConfig":
+        return cls(command=_str(data, "command"))
+
+
+@dataclass
 class NotificationsConfig:
     """Outbound-only Telegram notifications. No polling, no session control."""
 
@@ -733,6 +748,7 @@ class Config:
     tracker: TrackerConfig = field(default_factory=TrackerConfig)
     browser: BrowserConfig = field(default_factory=BrowserConfig)
     workflow: WorkflowConfig = field(default_factory=WorkflowConfig)
+    usage: UsageConfig = field(default_factory=UsageConfig)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -751,6 +767,7 @@ class Config:
             "tracker": self.tracker.to_dict(),
             "browser": self.browser.to_dict(),
             "workflow": self.workflow.to_dict(),
+            "usage": self.usage.to_dict(),
         }
 
     @classmethod
@@ -772,6 +789,7 @@ class Config:
             tracker=TrackerConfig.from_dict(data.get("tracker")),
             browser=BrowserConfig.from_dict(data.get("browser")),
             workflow=WorkflowConfig.from_dict(data.get("workflow")),
+            usage=UsageConfig.from_dict(data.get("usage")),
         )
 
 

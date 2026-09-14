@@ -1,10 +1,13 @@
 """Claude/Codex subscription usage reporting (host-side, no container)."""
 from __future__ import annotations
 
+import hashlib
 import json
 import http.client
 import math
 import os
+import signal
+import subprocess
 import time
 import urllib.error
 import urllib.request
@@ -34,6 +37,16 @@ STATUSLINE_SEPARATOR = " │ "
 CONTEXT_COLOR = "38;5;140"   # muted violet
 CLAUDE_COLOR = "38;5;173"    # muted terracotta
 CODEX_COLOR = "38;5;110"     # muted steel blue
+#: Orchid rather than a second violet: next to ``CONTEXT_COLOR`` on the status
+#: line a closer hue would stop telling the two segments apart.
+CUSTOM_COLOR = "38;5;133"    # muted orchid
+CUSTOM_PLACEHOLDER = "—"
+#: The user's command runs on every status-line redraw that misses the cache,
+#: so a slow network call is cut off rather than allowed to stall the line.
+CUSTOM_TIMEOUT_SECONDS = 5
+CUSTOM_CACHE_TTL = 60
+CUSTOM_MAX_WIDTH = 40
+CUSTOM_USAGE_CACHE = XDG_CACHE_HOME / "agent-box/usage-command.json"
 #: End bold and restore the default foreground, and nothing else. A full reset
 #: (``0``) would also clear the dim attribute Claude Code wraps the status line
 #: in, making everything after it brighter than the rest of the line.
@@ -251,6 +264,74 @@ def context_usage(window: Any) -> str:
 def join_segments(*segments: str) -> str:
     """Join the non-empty status-line segments agent-box has to show."""
     return STATUSLINE_SEPARATOR.join(segment for segment in segments if segment)
+
+
+def configured_custom_command() -> str:
+    """``usage.command`` from the saved file, or from the session snapshot in a box."""
+    from .config import effective_config
+    try:
+        return effective_config(include_project=False).usage.command
+    except AgentBoxError:
+        return ""
+
+
+def custom_usage() -> str:
+    """One line printed by the user's ``usage.command``; "" when none is set.
+
+    Failures are cached like successes: a command that times out would
+    otherwise cost every redraw its full timeout. The cache is keyed by a hash
+    so a changed command never shows the old one's output, and so the command
+    text -- which may carry a key despite the advice -- is not copied to disk.
+    """
+    command = configured_custom_command()
+    if not command:
+        return ""
+    key = hashlib.sha256(command.encode()).hexdigest()
+    try:
+        cached = read_json(CUSTOM_USAGE_CACHE)
+    except (OSError, ValueError):
+        cached = None
+    if (isinstance(cached, dict) and cached.get("command") == key and isinstance(cached.get("text"), str)
+            and cache_fresh(CUSTOM_USAGE_CACHE, CUSTOM_CACHE_TTL)):
+        return cached["text"]
+    text = run_custom_command(command)
+    try:
+        atomic_write_json(CUSTOM_USAGE_CACHE, {"command": key, "text": text}, 0o600)
+    except OSError:
+        pass
+    return text
+
+
+def run_custom_command(command: str) -> str:
+    """The first non-empty output line, printable and short, or a placeholder.
+
+    The command runs in its own process group: ``sh`` exits on a kill while a
+    ``curl`` it started keeps the output pipe open, so killing only the shell
+    would leave the timeout waiting on the pipe.
+    """
+    try:
+        process = subprocess.Popen(["sh", "-c", command], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                   stderr=subprocess.DEVNULL, start_new_session=True)
+    except OSError:
+        return CUSTOM_PLACEHOLDER
+    with process:
+        try:
+            output, _ = process.communicate(timeout=CUSTOM_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except OSError:
+                pass
+            process.communicate()
+            return CUSTOM_PLACEHOLDER
+    if process.returncode:
+        return CUSTOM_PLACEHOLDER
+    line = next((line for line in output.decode(errors="replace").splitlines() if line.strip()), "")
+    # Escape sequences in the output would restyle or move the terminal line.
+    text = "".join(character for character in line if character.isprintable()).strip()
+    if len(text) > CUSTOM_MAX_WIDTH:
+        text = text[:CUSTOM_MAX_WIDTH - 1] + "…"
+    return text or CUSTOM_PLACEHOLDER
 
 
 def parse_payload(payload: str) -> dict[str, Any]:

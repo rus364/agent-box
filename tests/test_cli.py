@@ -125,7 +125,7 @@ class NotifyCodexDispatchTests(unittest.TestCase):
 class UsageCommandColorTests(unittest.TestCase):
     """Colour separates segments, so only the combined line carries it."""
 
-    def _run(self, args: list[str]) -> str:
+    def _run(self, args: list[str], custom: str = "") -> str:
         out = io.StringIO()
         with (
             unittest.mock.patch.dict(os.environ, {}, clear=True),
@@ -133,6 +133,7 @@ class UsageCommandColorTests(unittest.TestCase):
                 usage_module, "claude_usage", return_value="88/59 · 2h29m/4d15h"),
             unittest.mock.patch.object(
                 usage_module, "codex_usage", return_value="91/17 · 2h11m/4d9h"),
+            unittest.mock.patch.object(usage_module, "custom_usage", return_value=custom),
             contextlib.redirect_stdout(out),
         ):
             usage_command(args)
@@ -162,6 +163,16 @@ class UsageCommandColorTests(unittest.TestCase):
             f"\x1b[{usage_module.CODEX_COLOR}m91/17 · 2h11m/4d9h{usage_module.COLOR_OFF}",
         ]))
 
+    def test_configured_command_adds_its_own_hue_after_codex(self):
+        """Without a provider name, only a distinct hue tells the extra segment apart."""
+        self.assertEqual(self._run(["all"], custom="$4.20"), usage_module.STATUSLINE_SEPARATOR.join([
+            f"\x1b[{usage_module.CLAUDE_COLOR}m88/59 · 2h29m/4d15h{usage_module.COLOR_OFF}",
+            f"\x1b[{usage_module.CODEX_COLOR}m91/17 · 2h11m/4d9h{usage_module.COLOR_OFF}",
+            f"\x1b[{usage_module.CUSTOM_COLOR}m$4.20{usage_module.COLOR_OFF}",
+        ]))
+        self.assertNotIn(usage_module.CUSTOM_COLOR, (usage_module.CONTEXT_COLOR, usage_module.CLAUDE_COLOR,
+                                                     usage_module.CODEX_COLOR))
+
     def test_every_provider_rejects_arguments(self):
         for args in (["claude", "--statusline"], ["codex", "-x"], ["all", "--statusline"]):
             with (
@@ -177,6 +188,7 @@ class UsageCommandColorTests(unittest.TestCase):
             unittest.mock.patch.dict(os.environ, {"NO_COLOR": "1"}, clear=True),
             unittest.mock.patch.object(usage_module, "claude_usage", return_value="a"),
             unittest.mock.patch.object(usage_module, "codex_usage", return_value="b"),
+            unittest.mock.patch.object(usage_module, "custom_usage", return_value=""),
             contextlib.redirect_stdout(out),
         ):
             usage_command(["all"])

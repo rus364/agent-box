@@ -148,4 +148,5 @@ def render(payload: str, *, now: str | None = None) -> str:
             usage_module.format_context_window(obj), usage_module.CONTEXT_COLOR),
         usage_module.colorize(claude, usage_module.CLAUDE_COLOR),
         usage_module.colorize(codex, usage_module.CODEX_COLOR),
+        usage_module.colorize(usage_module.custom_usage(), usage_module.CUSTOM_COLOR),
     )

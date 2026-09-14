@@ -262,6 +262,7 @@ def usage_command(args: list[str]) -> None:
         print(usage_module.join_segments(
             usage_module.colorize(claude, usage_module.CLAUDE_COLOR),
             usage_module.colorize(codex, usage_module.CODEX_COLOR),
+            usage_module.colorize(usage_module.custom_usage(), usage_module.CUSTOM_COLOR),
         ))
 
 

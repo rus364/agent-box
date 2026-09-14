@@ -32,6 +32,8 @@ HELP = {
     "claude.remote_control": "Request Remote Control for new interactive Claude sessions, including --host. Off preserves native behavior. Resume and explicit settings use the ordinary launch. Requires eligible Claude login.",
     "codex": "Codex interactive session settings, including --host.",
     "codex.remote_control": "Request Remote Control through a private app-server; one agent-box RC session per CODEX_HOME. Unsupported launches keep the ordinary CLI. Off leaves native behavior unchanged.",
+    "usage": "Extra segment after Claude and Codex usage in `agent-box usage all` and Claude's status line.",
+    "usage.command": "Shell command whose first output line is shown after Codex usage; empty shows nothing. Runs where the line is drawn (Claude's status line runs inside the box), cached 60s, 5s timeout, failures show —. Pass keys via environment, not in the command.",
     "notifications": "Outbound Telegram completion notifications. The bot token and chat ID stay disabled until this section is enabled and fully configured.",
     "notifications.enabled": "Send outbound completion notifications through Telegram when a bot token and chat ID are configured.",
     "notifications.telegram_token": "Telegram bot token used only for outbound notifications. The value is masked in the menu and saved in the protected config file.",
@@ -103,6 +105,7 @@ ACTION_HELP = {
 }
 LABELS = {
     "claude": "Claude", "codex": "Codex", "github": "GitHub", "git": "Git",
+    "usage": "Usage segment", "command": "Custom command",
     "env": "Environment", "providers": "Provider environment", "image": "Workspace image",
     "url": "URL", "token": "Access token", "effort": "Reasoning effort",
     "github_model": "GitHub review model", "github_effort": "GitHub review effort",
@@ -118,7 +121,7 @@ MENU_GROUPS = {
         ("Tracked work", ("workflow", "tracker")),
         ("Workspace", ("image", "browser", "env")),
         ("Host access", ("external_providers", "providers", "github", "git")),
-        ("Host integrations", ("claude", "codex", "skills", "notifications")),
+        ("Host integrations", ("claude", "codex", "usage", "skills", "notifications")),
     ),
     ("workflow",): (
         ("Workflow", ("enabled",)),

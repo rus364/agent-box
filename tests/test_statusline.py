@@ -186,7 +186,7 @@ class RenderTests(unittest.TestCase):
     })
     CONTEXT = "ctx 31% · 62k/200k · cache →00:00 · +156/−23"
 
-    def _render(self, payload: str, env: dict[str, str]) -> str:
+    def _render(self, payload: str, env: dict[str, str], custom: str = "") -> str:
         with (
             mock.patch.dict(os.environ, env, clear=True),
             mock.patch.object(usage.time, "localtime", time.gmtime),
@@ -195,8 +195,16 @@ class RenderTests(unittest.TestCase):
             mock.patch.object(statusline, "worktree_diff", return_value="+42/−7"),
             mock.patch.object(usage, "claude_usage", return_value="88/59 · 2h29m/4d15h"),
             mock.patch.object(usage, "codex_usage", return_value="91/17 · 2h11m/4d9h"),
+            mock.patch.object(usage, "custom_usage", return_value=custom),
         ):
             return statusline.render(payload, now="09:41")
+
+    def test_configured_command_segment_ends_the_line(self):
+        self.assertEqual(
+            self._render(self.PAYLOAD, {"NO_COLOR": "1"}, custom="$4.20"),
+            f"➜ [09:41] project git:(main) ✗ +42/−7 │ {self.CONTEXT}"
+            " │ 88/59 · 2h29m/4d15h │ 91/17 · 2h11m/4d9h │ $4.20",
+        )
 
     def test_complete_line(self):
         self.assertEqual(
@@ -237,6 +245,7 @@ class RenderTests(unittest.TestCase):
             mock.patch.object(statusline, "git_branch", return_value=""),
             mock.patch.object(usage, "claude_usage", side_effect=RuntimeError("offline")),
             mock.patch.object(usage, "codex_usage", side_effect=RuntimeError("offline")),
+            mock.patch.object(usage, "custom_usage", return_value=""),
         ):
             line = statusline.render(self.PAYLOAD, now="09:41")
         self.assertEqual(

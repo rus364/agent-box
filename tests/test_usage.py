@@ -182,5 +182,77 @@ class UsageFormattingTests(unittest.TestCase):
         self.assertIsNone(usage.parse_epoch("not-a-date"))
 
 
+class CustomUsageTests(unittest.TestCase):
+    """The user's `usage.command` runs on status-line redraws, so it must stay cheap and inert."""
+
+    def setUp(self):
+        import tempfile
+        from pathlib import Path
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        cache = mock.patch.object(usage, "CUSTOM_USAGE_CACHE", self.root / "cache/usage-command.json")
+        cache.start()
+        self.addCleanup(cache.stop)
+
+    def _custom(self, command):
+        with mock.patch.object(usage, "configured_custom_command", return_value=command):
+            return usage.custom_usage()
+
+    def test_no_command_adds_no_segment_and_runs_nothing(self):
+        with mock.patch.object(usage.subprocess, "Popen") as popen:
+            self.assertEqual(self._custom(""), "")
+        popen.assert_not_called()
+
+    def test_first_non_empty_line_is_the_segment(self):
+        self.assertEqual(self._custom("printf '\\n  $4.20  \\nsecond\\n'"), "$4.20")
+
+    def test_failure_or_silence_shows_a_placeholder_instead_of_breaking_the_line(self):
+        for command in ("echo partial; exit 3", "true", "exec /nonexistent/binary"):
+            with self.subTest(command=command):
+                self.assertEqual(self._custom(command), usage.CUSTOM_PLACEHOLDER)
+
+    def test_timeout_kills_children_that_keep_the_output_pipe_open(self):
+        """Killing only `sh` would leave `sleep` holding stdout and the redraw waiting on it."""
+        import time
+        started = time.monotonic()
+        with mock.patch.object(usage, "CUSTOM_TIMEOUT_SECONDS", 0.3):
+            self.assertEqual(self._custom("sleep 30; echo late"), usage.CUSTOM_PLACEHOLDER)
+        self.assertLess(time.monotonic() - started, 5)
+
+    def test_escape_sequences_are_removed_and_long_output_is_clipped(self):
+        self.assertEqual(self._custom("printf '\\033[2J\\033[31mred\\033[0m\\n'"), "[2J[31mred[0m")
+        clipped = self._custom(f"printf '{'x' * 100}'")
+        self.assertEqual(len(clipped), usage.CUSTOM_MAX_WIDTH)
+        self.assertTrue(clipped.endswith("…"))
+
+    def test_cache_serves_the_same_command_but_never_another_one(self):
+        runs = self.root / "runs"
+        first = f"echo run >> {runs}; echo one"
+        self.assertEqual(self._custom(first), "one")
+        self.assertEqual(self._custom(first), "one")
+        self.assertEqual(runs.read_text().count("run"), 1)
+        self.assertEqual(self._custom(f"echo run >> {runs}; echo two"), "two")
+        self.assertNotIn("echo", usage.CUSTOM_USAGE_CACHE.read_text(), "command text must not be cached")
+
+    def test_failures_are_cached_so_a_slow_command_does_not_stall_every_redraw(self):
+        runs = self.root / "runs"
+        command = f"echo run >> {runs}; exit 1"
+        for _ in range(2):
+            self.assertEqual(self._custom(command), usage.CUSTOM_PLACEHOLDER)
+        self.assertEqual(runs.read_text().count("run"), 1)
+
+    def test_box_session_reads_the_command_from_its_snapshot(self):
+        """Claude's status line runs in the box, where the saved config is not mounted."""
+        from agent_box import runtime
+        from agent_box.config import Config
+        config = Config()
+        config.usage.command = "echo balance"
+        runtime.sync_tracker_runtime(config, self.root / "session", policy=True)
+        snapshot = self.root / "session/config.json"
+        with mock.patch.dict(os.environ, {"AGENT_BOX_RUNTIME_CONFIG": str(snapshot)}, clear=True):
+            self.assertEqual(usage.configured_custom_command(), "echo balance")
+
+
 if __name__ == "__main__":
     unittest.main()
