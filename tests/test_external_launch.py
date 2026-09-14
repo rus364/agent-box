@@ -4,7 +4,7 @@ from pathlib import Path
 import tempfile
 import tomllib
 import unittest
-from unittest.mock import patch, Mock
+from unittest.mock import ANY, patch, Mock
 
 from agent_box import cli as cli_module, external_launch as ext, runtime, provider_runner
 from agent_box.config import Config
@@ -131,17 +131,25 @@ class ExternalProcessTests(unittest.TestCase):
         efforts = [arg for arg in command if arg.startswith('model_reasoning_effort=')]
         self.assertEqual(efforts[-1], 'model_reasoning_effort="low"')
 
-    def test_cli_requires_an_explicit_cli_and_dispatches_host_selection(self):
-        """No saved or default CLI may silently decide how an external API is called."""
-        with patch.object(cli_module.sys, 'argv', ['agent-box', '--host', 'ext', 'deepseek', 'claude', '--model', 'x']), \
-             patch.object(runtime, 'host_main', return_value=0) as host, self.assertRaises(SystemExit):
-            cli_module.main()
-        host.assert_called_once_with('claude', ['--model', 'x'], [], api_provider='deepseek')
+    def test_cli_leaves_an_omitted_cli_to_the_default_agent_in_both_modes(self):
+        """`ext NAME` without claude/codex follows the same default agent as a plain launch."""
+        for argv, agent, rest in ((['--host', 'ext', 'deepseek', 'claude', '--model', 'x'], 'claude', ['--model', 'x']),
+                                  (['--host', 'ext', 'deepseek', '--model', 'x'], None, ['--model', 'x'])):
+            with self.subTest(argv=argv), patch.object(cli_module.sys, 'argv', ['agent-box', *argv]), \
+                 patch.object(runtime, 'host_main', return_value=0) as host, self.assertRaises(SystemExit):
+                cli_module.main()
+            host.assert_called_once_with(agent, rest, [], api_provider='deepseek')
         with patch.object(cli_module.sys, 'argv', ['agent-box', 'ext', 'deepseek']), \
-             patch.object(runtime, 'runtime_main') as launch, \
-             patch.object(cli_module, 'die', side_effect=SystemExit(1)), self.assertRaises(SystemExit):
+             patch.object(runtime, 'runtime_main') as launch:
             cli_module.main()
-        launch.assert_not_called()
+        launch.assert_called_once_with([], ANY, [], [], api_provider='deepseek')
+        for argv in (['ext'], ['ext', 'deepseek', 'shell'], ['--host', 'ext', 'deepseek', 'doctor']):
+            with self.subTest(argv=argv), patch.object(cli_module.sys, 'argv', ['agent-box', *argv]), \
+                 patch.object(runtime, 'runtime_main') as launch, patch.object(runtime, 'host_main') as host, \
+                 patch.object(cli_module, 'die', side_effect=SystemExit(1)), self.assertRaises(SystemExit):
+                cli_module.main()
+            launch.assert_not_called()
+            host.assert_not_called()
 
     def test_separate_cli_endpoints_use_private_auth_and_external_model_catalogs(self):
         """An external process must neither reuse subscription auth nor expose keys in argv."""

@@ -95,6 +95,32 @@ class HostSessionDispatchTests(unittest.TestCase):
             attach.assert_not_called()
             stop.assert_not_called()
 
+    def test_host_without_an_agent_is_left_to_the_default_agent(self):
+        """A bare --host is a launch, not an error; the host launch resolves the default."""
+        from agent_box import cli, project_config, runtime
+        for argv, agent, rest in ((["--host"], None, []), (["--host", "--model", "x"], None, ["--model", "x"]),
+                                  (["--host", "codex", "exec"], "codex", ["exec"])):
+            with self.subTest(argv=argv), \
+                 unittest.mock.patch.object(project_config, "load", return_value={}), \
+                 unittest.mock.patch("sys.argv", ["agent-box", *argv]), \
+                 unittest.mock.patch.object(runtime, "host_main", return_value=0) as host, \
+                 self.assertRaises(SystemExit):
+                cli.main()
+            host.assert_called_once_with(agent, rest, [])
+
+    def test_host_refuses_container_only_commands(self):
+        from agent_box import cli, project_config, runtime
+        for command in ("shell", "doctor"):
+            with self.subTest(command=command), \
+                 unittest.mock.patch.object(project_config, "load", return_value={}), \
+                 unittest.mock.patch("sys.argv", ["agent-box", "--host", command]), \
+                 unittest.mock.patch.object(runtime, "host_main") as host, \
+                 unittest.mock.patch.object(cli, "die", side_effect=SystemExit(1)) as die, \
+                 self.assertRaises(SystemExit):
+                cli.main()
+            host.assert_not_called()
+            self.assertIn("container-only", die.call_args.args[0])
+
 
 
 

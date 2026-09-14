@@ -4,7 +4,7 @@ Open `agent-box config` → **External API providers** → **Add provider**.
 Choose a name such as `deepseek`, enter the API key, and configure the URL and
 models under Codex, Claude, or both. Under **Models**, use **Add model**, edit
 its fields, then **Use as default**. Each CLI has its own endpoint and model
-settings; there is one key per named connection and no default CLI. Enable the
+settings; there is one key per named connection. Enable the
 connection and save. New connections start disabled.
 
 Keys live in the global protected `config.json` (mode `0600`), are masked in the
@@ -16,11 +16,15 @@ URLs or keys. Cancel leaves the saved configuration unchanged.
 ## Launch
 
 ```bash
+agent-box ext deepseek                 # the default agent (launch.default_agent)
 agent-box ext deepseek codex
 agent-box ext deepseek claude --model your-model-id
 agent-box --host ext deepseek codex exec 'Inspect this repository'
 agent-box --host ext deepseek claude -p 'Inspect this repository'
 ```
+
+Without `codex` or `claude` the default agent starts, chosen as for a plain
+launch; the connection must configure an endpoint for that CLI.
 
 The selected CLI's `default_model` starts the session unless `--model` selects
 another ID. An empty default uses the first entry; choose a default explicitly

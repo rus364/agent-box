@@ -194,6 +194,7 @@ mean handing the container your entire host environment.
 ### Host mode
 
 ```bash
+agent-box --host              # default agent, chosen as without --host
 agent-box --host claude
 agent-box --host codex
 agent-box --host attach       # return to a host session in this project
@@ -278,8 +279,8 @@ affects only the selected role, tier, and provider.
 connections with a private key and separate Codex/Claude URLs and model lists.
 Each candidate's **Model** list combines built-in models and configured models
 from enabled external APIs; selecting a row sets the API and model together.
-`agent-box [--host] ext NAME codex|claude` starts an explicit external
-session; there is no default CLI for external connections.
+`agent-box [--host] ext NAME [codex|claude]` starts an explicit external
+session; without claude/codex it uses the default agent.
 
 Cancel writes nothing. Save and apply performs the selected changes, including
 optional PATH setup: restoring the `agent-box` symlink in the directory you

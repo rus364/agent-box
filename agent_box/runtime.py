@@ -2317,6 +2317,11 @@ def claude_channel_args(
     return channel_module.channel_flag(), [f"{SUPPRESS_NOTIFY_ENV}=1"]
 
 
+def default_agent(config: Config) -> str:
+    """What runs when claude/codex is omitted, in a box or with --host alike."""
+    return os.environ.get("AGENT_BOX_AGENT") or config.launch.default_agent
+
+
 def runtime_main(
     args: list[str], script_dir: Path, extra_mount_specs: list[str] | None = None,
     env_specs: list[tuple[str, str | None]] | None = None,
@@ -2347,9 +2352,16 @@ def runtime_main(
     ensure_state_dirs()
     ensure_refresh_token()
     config = launch_config(env_specs)
+    agent, rest = default_agent(config), args
+    if args and args[0] in {"claude", "codex", "shell", "doctor"}:
+        agent, rest = args[0], args[1:]
+    if agent not in {"claude", "codex", "shell", "doctor"}:
+        raise AgentBoxError(f"unsupported agent '{agent}'; expected claude or codex")
     if api_provider:
+        if agent not in {"claude", "codex"}:
+            raise AgentBoxError(f"ext {api_provider} runs claude or codex, not {agent}")
         from .external_launch import selected_model
-        selected_model(config, api_provider, args[0], args[1:])
+        selected_model(config, api_provider, agent, rest)
 
     if not image_exists():
         print("agent-box: image not found; building it...", file=sys.stderr)
@@ -2367,12 +2379,6 @@ def runtime_main(
             warn(f"image still carries tool group(s) you turned off: {', '.join(extra)}"
                  f" -- run 'agent-box build' to drop them")
 
-
-    agent, rest = os.environ.get("AGENT_BOX_AGENT") or config.launch.default_agent, args
-    if args and args[0] in {"claude", "codex", "shell", "doctor"}:
-        agent, rest = args[0], args[1:]
-    if agent not in {"claude", "codex", "shell", "doctor"}:
-        raise AgentBoxError(f"unsupported agent '{agent}'; expected claude or codex")
 
     # Nothing here reconciles Claude's settings, installs a skill or writes a
     # symlink: those belong to 'agent-box config' and 'agent-box config apply'
@@ -2755,24 +2761,28 @@ def uninstall_main(args: list[str]) -> int:
 
 
 def host_main(
-    agent: str, rest: list[str],
+    agent: str | None, rest: list[str],
     env_specs: list[tuple[str, str | None]] | None = None,
     *, api_provider: str = "",
 ) -> int:
-    """``agent-box --host claude|codex``: run the installed host executable
+    """``agent-box --host [claude|codex]``: run the installed host executable
     directly, no Podman.
 
     Workflow policy is read from the same global configuration as container mode.
+    No agent means the default agent, resolved as in container mode.
     """
-    executable = shutil.which(agent)
-    if not executable:
-        raise AgentBoxError(f"'{agent}' not found on PATH; install it on the host to use --host")
     try:
         workspace = resolve_workspace()
     except (NotADirectoryError, ValueError) as exc:
         raise AgentBoxError(str(exc)) from exc
 
     config = launch_config(env_specs, container=False)
+    agent = agent or default_agent(config)
+    if agent not in {"claude", "codex"}:
+        raise AgentBoxError(f"AGENT_BOX_AGENT={agent} is container-only; --host runs claude or codex")
+    executable = shutil.which(agent)
+    if not executable:
+        raise AgentBoxError(f"'{agent}' not found on PATH; install it on the host to use --host")
     from .external_launch import builtin_environment, selected_model
     if api_provider:
         selected_model(config, api_provider, agent, rest)

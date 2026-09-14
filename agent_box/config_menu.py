@@ -47,7 +47,7 @@ HELP = {
     "git": "Configure how much host Git configuration is copied into workspace boxes.",
     "git.identity": "Copy only user.name and user.email for commit attribution. This exposes no Git credential settings.",
     "git.full_config": "Copy the complete host Git configuration, which may include credential helpers, headers, URL rewrites, and included files.",
-    "external_providers": "Named external APIs. Enable explicitly to expose their keys to agent-box sessions. Each CLI has its own URL and model list; no default CLI.",
+    "external_providers": "Named external APIs. Enable explicitly to expose their keys to agent-box sessions. Each CLI has its own URL and model list; `ext NAME` without claude/codex uses the default agent.",
     "providers": "Control which provider-related environment variables are forwarded from the host.",
     "providers.api_keys": "Forward known Claude and Codex API-key variables by name. Disabled by default because these values are credentials.",
     "providers.transport": "Forward provider endpoint, proxy, CA, Bedrock, and Vertex transport variables. Proxy URLs may themselves contain credentials.",

@@ -569,6 +569,27 @@ class CodexRuntimeOverridesTests(IsolatedRuntimeTest):
                 runtime.runtime_main(args, Path.cwd())
             self.assertEqual(launch.call_args.args[2][0], expected)
 
+    def test_external_launch_selects_the_model_for_the_default_agent(self):
+        """`ext NAME` without a CLI must pick the model of the agent that will actually start."""
+        config = Config()
+        config.launch.default_agent = "codex"
+        for env, expected in (({}, "codex"), ({"AGENT_BOX_AGENT": "claude"}, "claude"), ({"AGENT_BOX_AGENT": "shell"}, None)):
+            environ = {k: v for k, v in os.environ.items() if k not in ("AGENT_BOX_AGENT", "AGENT_BOX_RUNTIME_CONFIG")}
+            with self.subTest(env=env), \
+                 mock.patch.dict(os.environ, {**environ, **env}, clear=True), \
+                 mock.patch.object(runtime.shutil, "which", return_value="/usr/bin/podman"), \
+                 mock.patch.object(runtime, "resolve_workspace", return_value=Workspace(Path.cwd(), Path.cwd())), \
+                 mock.patch.object(runtime, "ensure_state_dirs"), \
+                 mock.patch.object(runtime, "ensure_refresh_token"), \
+                 mock.patch.object(runtime, "load_config", return_value=config), \
+                 mock.patch.object(external_launch, "selected_model", side_effect=AgentBoxError("stop")) as selected:
+                with self.assertRaisesRegex(AgentBoxError, "stop" if expected else "runs claude or codex"):
+                    runtime.runtime_main(["--model", "m"], Path.cwd(), api_provider="deepseek")
+            if expected:
+                self.assertEqual(selected.call_args.args[1:], ("deepseek", expected, ["--model", "m"]))
+            else:
+                selected.assert_not_called()
+
 
 
 
@@ -707,6 +728,36 @@ class ClaudeNotifyHookLifecycleTests(IsolatedRuntimeTest):
 
 
 class HostModeTests(IsolatedRuntimeTest):
+
+    def test_bare_host_launch_uses_the_default_agent_with_container_precedence(self):
+        """--host must not answer 'which agent' differently from a box launch."""
+        config = Config()
+        config.launch.default_agent = "codex"
+        cases = ((None, {}, "codex"), (None, {"AGENT_BOX_AGENT": "claude"}, "claude"),
+                 ("claude", {"AGENT_BOX_AGENT": "codex"}, "claude"))
+        for agent, env, expected in cases:
+            environ = {k: v for k, v in os.environ.items() if k != "AGENT_BOX_AGENT"}
+            with self.subTest(agent=agent, env=env), tempfile.TemporaryDirectory() as tmp, \
+                 mock.patch.dict(os.environ, {**environ, **env}, clear=True), \
+                 mock.patch.object(runtime.shutil, "which", side_effect=lambda name: f"/usr/bin/{name}"), \
+                 mock.patch.object(runtime, "resolve_workspace", return_value=Workspace(Path(tmp), Path(tmp))), \
+                 mock.patch.object(runtime, "launch_config", return_value=config), \
+                 mock.patch.object(runtime, "tmux_enabled", return_value=False), \
+                 mock.patch.object(runtime.subprocess, "call", return_value=0) as call:
+                self.assertEqual(runtime.host_main(agent, ["--model", "x"]), 0)
+            self.assertEqual(call.call_args.args[0], [f"/usr/bin/{expected}", "--model", "x"])
+
+    def test_container_only_default_agent_is_refused_on_the_host(self):
+        """AGENT_BOX_AGENT=shell must fail clearly instead of looking for a 'shell' executable."""
+        for value in ("shell", "doctor"):
+            with self.subTest(value=value), tempfile.TemporaryDirectory() as tmp, \
+                 mock.patch.dict(os.environ, {"AGENT_BOX_AGENT": value}), \
+                 mock.patch.object(runtime, "resolve_workspace", return_value=Workspace(Path(tmp), Path(tmp))), \
+                 mock.patch.object(runtime, "launch_config", return_value=Config()), \
+                 mock.patch.object(runtime.subprocess, "call") as call, \
+                 self.assertRaisesRegex(AgentBoxError, "container-only"):
+                runtime.host_main(None, [])
+            call.assert_not_called()
 
     def test_interactive_host_launch_captures_remote_mode_for_the_new_session(self):
         for agent in ("claude", "codex"):

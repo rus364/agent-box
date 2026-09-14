@@ -90,7 +90,7 @@ def parse_global_args(argv: list[str]) -> tuple[list[str], bool, list[str], list
 def usage_text() -> None:
     print('''Usage:
   agent-box [--mount PATH[:ro]]... [--env NAME[=VALUE]]... [--host] [codex|claude|shell|doctor] [arguments...]
-  agent-box [--host] ext NAME codex|claude [arguments...]
+  agent-box [--host] ext NAME [codex|claude] [arguments...]
   agent-box attach [session]
   agent-box stop
   agent-box --host attach [session]
@@ -187,9 +187,10 @@ option parsing early if a provider argument would otherwise be ambiguous.
 --host runs claude/codex directly on the host instead of in a container: no
 Podman, the installed host executable, your normal host git/gh credentials.
 'agent-box claude'/'agent-box codex' (without --host) keep meaning
-containerized execution. Not valid with --mount, and not valid with
-shell/doctor, which are container-only. The opt-in agent browser lives in the
-workspace image, so --host sessions do not get it. Interactive host sessions
+containerized execution. Without claude/codex it starts the default agent
+(launch.default_agent, or AGENT_BOX_AGENT). Not valid with --mount, and not
+valid with shell/doctor, which are container-only. The opt-in agent browser
+lives in the workspace image, so --host sessions do not get it. Interactive host sessions
 use tmux when installed (requires bash on PATH); otherwise they start directly. Use --host attach
 [session] to return, --host stop to end this project's host sessions, or
 AGENT_BOX_TMUX=0 to launch directly.
@@ -198,6 +199,7 @@ Examples:
   agent-box
   agent-box claude
   agent-box codex
+  agent-box --host
   agent-box --host claude
   agent-box --host codex
   agent-box --mount ~/code claude
@@ -584,6 +586,11 @@ NON_RUNTIME = {
 HOST_ONLY_AGENTS = {"claude", "codex"}
 
 
+def _agent_and_rest(args: list[str]) -> tuple[str | None, list[str]]:
+    """An explicit claude/codex, or None so the launch resolves the default agent."""
+    return (args[0], args[1:]) if args and args[0] in HOST_ONLY_AGENTS else (None, args)
+
+
 def main() -> None:
     if sys.argv[1:2] == ["_external"]:
         from . import external_launch
@@ -656,20 +663,21 @@ def main() -> None:
                 raise SystemExit(runtime.attach_main(args[1:]))
             raise SystemExit(runtime.stop_main(args[1:]))
         if args and args[0] == "ext":
-            if len(args) < 3 or args[2] not in HOST_ONLY_AGENTS:
-                die("usage: agent-box [--host] ext NAME codex|claude [CLI args]")
+            if len(args) < 2:
+                die("usage: agent-box [--host] ext NAME [codex|claude] [CLI args]")
             from . import runtime
-            name, agent, *rest = args[1:]
+            name, rest = args[1], args[2:]
+            if rest and rest[0] in {"shell", "doctor"}:
+                die(f"ext runs claude or codex; {rest[0]} does not use an API provider")
             if host:
-                raise SystemExit(runtime.host_main(agent, rest, parsed_env, api_provider=name))
-            runtime.runtime_main([agent, *rest], script_dir, mounts, parsed_env, api_provider=name)
+                raise SystemExit(runtime.host_main(*_agent_and_rest(rest), parsed_env, api_provider=name))
+            runtime.runtime_main(rest, script_dir, mounts, parsed_env, api_provider=name)
             return
         if host:
-            agent = args[0] if args else None
-            if agent not in HOST_ONLY_AGENTS:
-                die("--host requires 'claude' or 'codex'; shell/doctor are container-only")
+            if args and args[0] in {"shell", "doctor"}:
+                die("--host runs claude or codex; shell/doctor are container-only")
             from . import runtime
-            raise SystemExit(runtime.host_main(agent, args[1:], parsed_env))
+            raise SystemExit(runtime.host_main(*_agent_and_rest(args), parsed_env))
         from . import runtime
         runtime.runtime_main(args, script_dir, mounts, parsed_env)
     except AgentBoxError as exc:
