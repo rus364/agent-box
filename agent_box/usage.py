@@ -166,18 +166,68 @@ def compact_tokens(count: float) -> str:
     return str(n)
 
 
-def format_context_window(data: Any) -> str:
-    """Session context consumption, from a Claude status-line payload.
+def format_line_counts(added: int, removed: int) -> str:
+    return f"+{added}/−{removed}"
 
-    Claude Code computes this itself and ships it in the status-line JSON
-    (``context_window``), so agent-box neither reads the transcript nor asks
-    the API for it -- and, because a status line is a plain shell command whose
-    output only reaches the terminal, none of it costs session context.
 
-    Returns an empty segment before the first assistant message of a session,
-    when ``used_percentage`` is still null and there is nothing to report.
+def format_context_window(data: Any, now: float | None = None) -> str:
+    """Session context, prompt cache and edits, from a Claude status-line payload.
+
+    Claude Code computes all of it itself and ships it in the status-line JSON
+    (``context_window``, ``prompt_cache``, ``cost``), so agent-box neither
+    reads the transcript nor asks the API for it -- and, because a status line
+    is a plain shell command whose output only reaches the terminal, none of it
+    costs session context. Cumulative session in/out tokens are left out on
+    purpose: only the transcript has them, and cache reads dominate the sum.
+
+    Each part is dropped on its own when its fields are missing or unusable,
+    so the segment is empty before the first assistant message of a session.
     """
-    window = data.get("context_window") if isinstance(data, dict) else None
+    if not isinstance(data, dict):
+        return ""
+    return " · ".join(part for part in (
+        context_usage(data.get("context_window")),
+        prompt_cache_state(data.get("prompt_cache"), time.time() if now is None else now),
+        session_line_counts(data.get("cost")),
+    ) if part)
+
+
+def prompt_cache_state(cache: Any, now: float) -> str:
+    """When the cached prefix goes cold, or what rebuilding it will cost.
+
+    The expiry is a clock time, not a countdown: Claude Code redraws the status
+    line only on session events, so a countdown would freeze while the session
+    idles -- exactly when whether the cache is still warm matters.
+    """
+    if not isinstance(cache, dict) or cache.get("caching_observed") is not True:
+        return ""
+    warm = cache.get("warm")
+    expires = cache.get("expires_at")
+    if warm is True:
+        if not isinstance(expires, (int, float)):
+            return ""
+        if expires > now:
+            return f"cache →{time.strftime('%H:%M', time.localtime(expires))}"
+    elif warm is not False:
+        return ""
+    rebuild = cache.get("recache_tokens_if_cold")
+    if isinstance(rebuild, (int, float)) and rebuild > 0:
+        return f"cache cold · {compact_tokens(rebuild)}"
+    return "cache cold"
+
+
+def session_line_counts(cost: Any) -> str:
+    """Lines Claude Code changed this session; it does not reset on commit."""
+    if not isinstance(cost, dict):
+        return ""
+    counts = [
+        value if isinstance(value, int) and value > 0 else 0
+        for value in (cost.get("total_lines_added"), cost.get("total_lines_removed"))
+    ]
+    return format_line_counts(*counts) if any(counts) else ""
+
+
+def context_usage(window: Any) -> str:
     if not isinstance(window, dict):
         return ""
     used = window.get("used_percentage")

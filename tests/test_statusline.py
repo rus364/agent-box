@@ -64,6 +64,15 @@ class PromptSegmentTests(unittest.TestCase):
                     f"➜ [09:41] project {expected}",
                 )
 
+    def test_uncommitted_diff_follows_the_dirty_marker(self):
+        with mock.patch.object(statusline, "git_branch", return_value="main"), \
+                mock.patch.object(statusline, "worktree_dirty", return_value=True), \
+                mock.patch.object(statusline, "worktree_diff", return_value="+42/−7"):
+            self.assertEqual(
+                statusline.format_prompt(Path("/srv/work/project"), now="09:41"),
+                "➜ [09:41] project git:(main) ✗ +42/−7",
+            )
+
     def test_no_git_segment_outside_a_repository(self):
         with mock.patch.object(statusline, "git_branch", return_value=""):
             self.assertNotIn(
@@ -77,10 +86,10 @@ class GitProbeTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.repo = Path(self.tmp.name)
-        env = {**os.environ, "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null"}
+        self.env = {**os.environ, "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null"}
         subprocess.run(
             ["git", "init", "-q", "-b", "main", str(self.repo)],
-            check=True, capture_output=True, env=env)
+            check=True, capture_output=True, env=self.env)
 
     def test_branch_of_a_fresh_repository(self):
         self.assertEqual(statusline.git_branch(self.repo), "main")
@@ -89,6 +98,24 @@ class GitProbeTests(unittest.TestCase):
     def test_untracked_file_makes_the_worktree_dirty(self):
         (self.repo / "new.txt").write_text("x")
         self.assertTrue(statusline.worktree_dirty(self.repo))
+
+    def _git(self, *args: str) -> None:
+        subprocess.run(
+            ["git", "-C", str(self.repo), "-c", "user.name=t", "-c", "user.email=t@t", *args],
+            check=True, capture_output=True, env=self.env)
+
+    def test_diff_counts_uncommitted_tracked_lines_against_head(self):
+        """The repository's own diff, which a commit clears; untracked files are left to ✗."""
+        (self.repo / "a.txt").write_text("one\ntwo\nthree\n")
+        self.assertEqual(statusline.worktree_diff(self.repo), "")  # no HEAD yet
+        self._git("add", "a.txt")
+        self._git("commit", "-q", "-m", "init")
+        self.assertEqual(statusline.worktree_diff(self.repo), "")
+        (self.repo / "a.txt").write_text("one\nTWO\nthree\nfour\n")
+        (self.repo / "untracked.txt").write_text("x\n")
+        self.assertEqual(statusline.worktree_diff(self.repo), "+2/−1")
+        (self.repo / "a.txt").write_text("one\n")
+        self.assertEqual(statusline.worktree_diff(self.repo), "+0/−2")
 
     def test_outside_a_repository_there_is_no_branch(self):
         with tempfile.TemporaryDirectory() as plain:
@@ -100,6 +127,7 @@ class GitProbeTests(unittest.TestCase):
         ):
             self.assertEqual(statusline.git_output(self.repo, "status"), "")
             self.assertEqual(statusline.git_branch(self.repo), "")
+            self.assertEqual(statusline.worktree_diff(self.repo), "")
 
     def test_a_slow_repository_loses_its_segment_instead_of_stalling(self):
         with mock.patch.object(
@@ -130,13 +158,19 @@ class RenderTests(unittest.TestCase):
             "total_input_tokens": 62_385, "context_window_size": 200_000,
             "used_percentage": 31,
         },
+        # 2100-01-01 00:00 UTC: always in the future, rendered in UTC.
+        "prompt_cache": {"caching_observed": True, "warm": True, "expires_at": 4_102_444_800},
+        "cost": {"total_lines_added": 156, "total_lines_removed": 23},
     })
+    CONTEXT = "ctx 31% · 62k/200k · cache →00:00 · +156/−23"
 
     def _render(self, payload: str, env: dict[str, str]) -> str:
         with (
             mock.patch.dict(os.environ, env, clear=True),
+            mock.patch.object(usage.time, "localtime", time.gmtime),
             mock.patch.object(statusline, "git_branch", return_value="main"),
             mock.patch.object(statusline, "worktree_dirty", return_value=True),
+            mock.patch.object(statusline, "worktree_diff", return_value="+42/−7"),
             mock.patch.object(usage, "claude_usage", return_value="88/59 · 2h29m/4d15h"),
             mock.patch.object(usage, "codex_usage", return_value="91/17 · 2h11m/4d9h"),
         ):
@@ -145,7 +179,7 @@ class RenderTests(unittest.TestCase):
     def test_complete_line(self):
         self.assertEqual(
             self._render(self.PAYLOAD, {"NO_COLOR": "1"}),
-            "➜ [09:41] project git:(main) ✗ │ ctx 31% · 62k/200k"
+            f"➜ [09:41] project git:(main) ✗ +42/−7 │ {self.CONTEXT}"
             " │ 88/59 · 2h29m/4d15h │ 91/17 · 2h11m/4d9h",
         )
 
@@ -177,6 +211,7 @@ class RenderTests(unittest.TestCase):
     def test_unusable_usage_degrades_to_placeholders(self):
         with (
             mock.patch.dict(os.environ, {"NO_COLOR": "1"}, clear=True),
+            mock.patch.object(usage.time, "localtime", time.gmtime),
             mock.patch.object(statusline, "git_branch", return_value=""),
             mock.patch.object(usage, "claude_usage", side_effect=RuntimeError("offline")),
             mock.patch.object(usage, "codex_usage", side_effect=RuntimeError("offline")),
@@ -184,7 +219,7 @@ class RenderTests(unittest.TestCase):
             line = statusline.render(self.PAYLOAD, now="09:41")
         self.assertEqual(
             line,
-            f"➜ [09:41] project │ ctx 31% · 62k/200k"
+            f"➜ [09:41] project │ {self.CONTEXT}"
             f" │ {usage.PLACEHOLDER_USAGE} │ {usage.PLACEHOLDER_USAGE}",
         )
 

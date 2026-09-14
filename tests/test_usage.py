@@ -113,6 +113,57 @@ class UsageFormattingTests(unittest.TestCase):
             with self.subTest(payload=payload):
                 self.assertEqual(usage.format_context_window(payload), "")
 
+    #: 2025-02-01 17:00:00 UTC; tests render it in UTC.
+    EXPIRES_AT = 1_738_429_200
+
+    def _cache(self, **cache) -> str:
+        with mock.patch.object(usage.time, "localtime", usage.time.gmtime):
+            return usage.format_context_window(
+                {"prompt_cache": {"caching_observed": True, **cache}},
+                now=self.EXPIRES_AT - 600)
+
+    def test_warm_cache_shows_the_clock_time_it_goes_cold(self):
+        # A countdown would freeze while the session idles, because Claude
+        # Code redraws only on session events; a clock time stays true.
+        self.assertEqual(self._cache(warm=True, expires_at=self.EXPIRES_AT), "cache →17:00")
+
+    def test_cold_cache_names_the_tokens_the_next_request_recaches(self):
+        self.assertEqual(
+            self._cache(warm=False, expires_at=None, recache_tokens_if_cold=45_000),
+            "cache cold · 45k")
+        self.assertEqual(self._cache(warm=False, recache_tokens_if_cold=None), "cache cold")
+
+    def test_a_stale_warm_payload_past_its_expiry_is_cold(self):
+        self.assertEqual(
+            self._cache(warm=True, expires_at=self.EXPIRES_AT - 601), "cache cold")
+
+    def test_cache_part_absent_without_observed_caching_or_usable_fields(self):
+        for cache in (
+            {"caching_observed": False},
+            {"warm": True},
+            {"warm": "yes", "expires_at": self.EXPIRES_AT},
+        ):
+            with self.subTest(cache=cache):
+                self.assertEqual(self._cache(**cache), "")
+        self.assertEqual(usage.format_context_window({"prompt_cache": None}), "")
+
+    def test_session_line_counts_come_from_the_payload_cost(self):
+        self.assertEqual(
+            usage.format_context_window(
+                {"cost": {"total_lines_added": 156, "total_lines_removed": 23}}),
+            "+156/−23")
+        for cost in ({"total_lines_added": 0, "total_lines_removed": 0}, {}, None):
+            with self.subTest(cost=cost):
+                self.assertEqual(usage.format_context_window({"cost": cost}), "")
+
+    def test_one_unusable_part_does_not_hide_the_others(self):
+        payload = {
+            **self.CONTEXT_PAYLOAD,
+            "prompt_cache": {"caching_observed": True, "warm": True},
+            "cost": {"total_lines_added": 5, "total_lines_removed": 2},
+        }
+        self.assertEqual(usage.format_context_window(payload), "ctx 31% · 62k/200k · +5/−2")
+
     def test_join_segments_drops_empty_ones(self):
         self.assertEqual(usage.join_segments("", "Claude a", "Codex b"), "Claude a │ Codex b")
         self.assertEqual(usage.join_segments("ctx 3%", "Claude a"), "ctx 3% │ Claude a")
