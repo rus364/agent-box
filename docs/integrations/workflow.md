@@ -111,7 +111,8 @@ One new delegation requires one new context. Clarifications and ordinary file ed
 stay with the active worker; changed files/hashes alone do not create a delegation.
 New scope or task, work after completion (including review fixes), and every reviewer
 verdict require a new instance. Untiered direct coordinator work is not a delegation.
-Codex native explicitly passes `fork_turns="none"` or a verified equivalent; omitted
+Codex native explicitly passes `fork_turns="none"` or a verified equivalent
+(`fork_context=false` in `multi_agent_v1`); omitted
 inheritance, `all` and reuse of completed agents violate the contract. Claude native
 requires a verified equivalent through the available interface; unknown support uses
 managed execution. Prefer native when route and context requirements are supported;
@@ -131,7 +132,9 @@ separate measures, never exact tokens; compare identical scenarios and mandatory
 Configure worker/scout model IDs and effort in `workflow.tiers` (tiers 0-3),
 and independent reviewer settings in `workflow.review.tiers` (tiers 1-3), each
 with `codex` and `claude` entries containing `model`, `effort`, `fast` (default `false`)
-and `api_provider` (empty for the built-in API). Both matrices
+and `api_provider` (empty for the built-in API). A candidate on the active `ext`
+session's own API may run natively; other API identities run managed (see
+[external providers](external-providers.md#workflow)). Both matrices
 are available in the configuration menu and `config show`, and travel in the
 container's minimal workflow configuration. Empty reviewer models disable those
 candidates; they never inherit worker models. The

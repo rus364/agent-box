@@ -225,13 +225,24 @@ be entered for any enabled API. An empty model disables that candidate. For exam
 }
 ```
 
-External candidates require a separate managed `codex exec` or `claude -p`
-process, even when the parent uses the same CLI. A built-in candidate called
-from an external session also uses a managed process with the original API
+A native subagent always runs on its parent's API: both CLIs send the child's
+requests to the session's endpoint with the session's credentials. A candidate
+whose identity (CLI, API name and endpoint/catalog fingerprint) equals the
+active `ext` session's may therefore run natively. Any other external candidate
+requires a separate managed `codex exec` or `claude -p` process, and a built-in
+candidate called from an external session uses one with the original API
 environment restored. Prepared routes expose CLI, API name, model and an
 endpoint/catalog fingerprint; keys and key fingerprints are absent. Changed
 endpoints, deleted/disabled definitions and missing credentials fail before
 execution. Changing a prepared endpoint or catalog requires fresh preparation.
+A native report is accepted only from a session that still has the prepared
+identity, and the accepted route records `api_provider` and `api_fingerprint`.
+
+Native model and effort follow the live tool. Codex `spawn_agent` takes catalog
+`model` and `reasoning_effort` of the session's API. Claude's Agent tool accepts
+only model aliases, which `ext` maps to the session model, and the session's
+`CLAUDE_CODE_EFFORT_LEVEL` overrides a profile's effort; a Claude candidate whose
+model or effort differs from the session's uses managed CLI.
 
 `managed_only` routes return a managed command and refuse native reports. Owned
 native profiles are removed for external candidates when configuration is

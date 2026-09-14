@@ -97,8 +97,73 @@ class ExternalRoutingTests(unittest.TestCase):
             args = SimpleNamespace(primary='codex', session_model=None, session_effort=None)
             with self.assertRaisesRegex(AgentBoxError, 'verified --session-model'):
                 workflow.session_route(args, 'worker', config)
-            args.session_model, args.session_effort = 'external-small', 'high'
-            self.assertTrue(workflow.session_route(args, 'worker', config)['managed_only'])
+
+    def test_candidate_on_the_sessions_own_api_stays_native(self):
+        """A native child reaches exactly the session's API, so a separate process buys nothing there.
+
+        Any other identity still needs one: the child cannot switch endpoints, and a
+        report from a session without the prepared identity cannot show where it ran.
+        """
+        reports = {'worker': {'status': 'completed', 'summary': 'Done', 'evidence': []},
+                   'reviewer': {'verdict': 'PASS', 'summary': 'Reviewed', 'findings': []}}
+        for cli, other in (('codex', 'claude'), ('claude', 'codex')):
+            for role, tier, override in [('worker', 1, False), ('scout', 0, False), ('reviewer', 2, False),
+                                         ('worker', None, True), ('reviewer', None, True)]:
+                with self.subTest(cli=cli, role=role, override=override), tempfile.TemporaryDirectory() as tmp:
+                    config = external_config()
+                    policy = config.workflow
+                    policy.routing = 'current'
+                    policy.review.routing = 'same-provider'
+                    if override:
+                        spec = (policy.review if role == 'reviewer' else policy.worker).override
+                        spec.scope = 'all'
+                        spec.models.update({cli: candidate(), other: candidate()})
+                    else:
+                        matrix = policy.review.tiers if role == 'reviewer' else policy.tiers
+                        matrix[str(tier)].update({cli: candidate(), other: candidate()})
+                    _, env = external_launch.prepare([cli], 'deepseek', cli, config, tmp, {})
+                    with patch.dict(os.environ, env, clear=True), \
+                         patch.object(workflow, 'WORKFLOW_STATE', Path(tmp)), \
+                         patch.object(workflow_state, 'WORKFLOW_STATE', Path(tmp)), \
+                         patch.object(workflow.shutil, 'which', return_value='/bin/cli'):
+                        route = workflow.route(config, role, tier, cli, cli)
+                        elsewhere = workflow.route(config, role, tier, other, other)
+                    self.assertFalse(route.get('managed_only'))
+                    self.assertEqual(route['api_fingerprint'], env[external_launch.FINGERPRINT_ENV])
+                    self.assertEqual(route['native_explicit_settings'],
+                                     {'provider': cli, 'model': 'external-small', 'effort': 'high'})
+                    self.assertTrue(elsewhere['managed_only'])
+                    self.assertNotEqual(elsewhere['api_fingerprint'], route['api_fingerprint'])
+                    if role not in reports:
+                        continue
+                    path = Path(tmp) / 'report.json'
+                    path.write_text(json.dumps(reports[role]))
+                    args = SimpleNamespace(provider=cli, model='external-small', effort='high', role=role,
+                                           file=str(path), fallback_reason=None, fresh_context=True)
+                    with patch.dict(os.environ, env, clear=True):
+                        output = workflow.native_output(args, route, tier)
+                    self.assertEqual((output['route']['api_provider'], output['route']['api_fingerprint']),
+                                     (route['api_provider'], route['api_fingerprint']))
+                    with patch.dict(os.environ, {}, clear=True), self.assertRaisesRegex(AgentBoxError, 'managed CLI'):
+                        workflow.native_output(args, route, tier)
+
+    def test_session_route_from_the_same_external_session_stays_native(self):
+        """Current-session delegation inherits the session's API; only a session without it is refused."""
+        config = external_config()
+        with tempfile.TemporaryDirectory() as tmp:
+            _, env = external_launch.prepare(['codex'], 'deepseek', 'codex', config, tmp, {})
+            report = Path(tmp) / 'report.json'
+            report.write_text(json.dumps({'verdict': 'PASS', 'summary': 'Reviewed', 'findings': []}))
+            session = SimpleNamespace(primary='codex', session_model='external-small', session_effort='high')
+            args = SimpleNamespace(provider='codex', model='external-small', effort='high', role='reviewer',
+                                   file=str(report), fallback_reason=None, fresh_context=True, session_inherited=False)
+            with patch.dict(os.environ, env, clear=True):
+                route = workflow.session_route(session, 'reviewer', config)
+                self.assertFalse(route.get('managed_only'))
+                output = workflow.native_output(args, route, None)
+            self.assertEqual(output['route']['api_fingerprint'], env[external_launch.FINGERPRINT_ENV])
+            with patch.dict(os.environ, {}, clear=True), self.assertRaisesRegex(AgentBoxError, 'session API differs'):
+                workflow.native_output(args, route, None)
 
     def test_active_api_identity_survives_config_edits_and_rejects_other_sessions(self):
         """Delegation from an external session binds the launched endpoint; config edits cannot substitute it."""

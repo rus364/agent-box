@@ -137,6 +137,13 @@ def session_identity(cli):
     return {'api_provider': name, 'api_fingerprint': fingerprint}
 
 
+def session_matches(route):
+    """A native child sends its requests to the active session's API, so only that identity qualifies."""
+    return (bool(route.get('api_fingerprint')) and os.environ.get(PROVIDER_ENV) == route.get('api_provider')
+            and os.environ.get(CLI_ENV) == route.get('provider')
+            and os.environ.get(FINGERPRINT_ENV) == route['api_fingerprint'])
+
+
 def value_options(cli):
     return ({'--model', '-m', '--config', '-c', '--image', '-i', '--cd', '-C', '--sandbox', '-s',
              '--output-schema', '--output-last-message', '-o', '--base', '--commit', '--title',

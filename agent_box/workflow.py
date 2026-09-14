@@ -880,7 +880,7 @@ def native_output(args, selected, tier):
     if selected.get("mode") == "current-session":
         if selected.get("managed_only"):
             raise AgentBoxError("This API route requires managed CLI execution; native reports are not accepted")
-        if os.environ.get("AGENT_BOX_API_PROVIDER"):
+        if not same_api(selected):
             raise AgentBoxError("The active session API differs from the prepared current-session execution")
         if args.provider != selected["provider"]:
             raise AgentBoxError("Reported provider differs from the prepared current session")
@@ -893,7 +893,8 @@ def native_output(args, selected, tier):
             raise AgentBoxError("Confirm --fresh-context for independent current-session review")
         if args.fallback_reason:
             raise AgentBoxError("Current-session execution has no fallback route")
-        actual.update(mode="current-session", session_inherited=args.session_inherited)
+        actual.update(mode="current-session", session_inherited=args.session_inherited,
+                      **{key: selected[key] for key in ("api_provider", "api_fingerprint") if selected.get(key)})
         if args.role == "reviewer":
             actual["fresh_context"] = True
         return {"route": actual, "report": validate_report(report_json(Path(args.file).read_text(), "report file is not valid JSON"), args.role),
@@ -903,9 +904,11 @@ def native_output(args, selected, tier):
                   if all(candidate.get(key) == value for key, value in actual.items())), None)
     if match is None:
         raise AgentBoxError("Reported provider/model/effort is outside the configured route")
-    if (candidates[match].get("managed_only") or candidates[match].get("api_provider") or
-            os.environ.get("AGENT_BOX_API_PROVIDER")):
-        raise AgentBoxError("This API route requires managed CLI execution; native reports are not accepted")
+    if candidates[match].get("managed_only") or not same_api(candidates[match]):
+        raise AgentBoxError("This API route requires managed CLI execution from this session; native reports are not accepted")
+    # The child ran on the session's API; the accepted route names which one.
+    actual.update({key: candidates[match][key] for key in ("api_provider", "api_fingerprint")
+                   if candidates[match].get(key)})
     # False preserves provider/session behavior; only an opt-in constrains speed.
     actual["fast"] = candidates[match].get("fast", False)
     if actual["fast"] and getattr(args, "fast", None) != "on":
@@ -1031,11 +1034,24 @@ def route(config, role, tier, primary, writer=None):
     return result
 
 
+def same_api(route):
+    """Whether a native child of this session would reach the route's API.
+
+    Native children of both CLIs send requests to their parent's endpoint with
+    its credentials, so a native agent cannot switch API identity. Nor does it
+    need to when the route names exactly the session's identity.
+    """
+    if route.get("api_provider"):
+        from .external_launch import session_matches
+        return session_matches(route)
+    return not os.environ.get("AGENT_BOX_API_PROVIDER")
+
+
 def bind_api_route(candidate, config):
     from .external_launch import route_identity
     if candidate.get("api_provider"):
         candidate.update(route_identity(config, candidate["api_provider"], candidate["provider"]))
-    if candidate.get("api_provider") or os.environ.get("AGENT_BOX_API_PROVIDER"):
+    if not same_api(candidate):
         candidate.update(managed_only=True, native_profile=None, native_profile_ready=False,
                          native_explicit_settings=None,
                          native_limitation="API selection requires a separate managed CLI process")
@@ -1044,8 +1060,9 @@ def bind_api_route(candidate, config):
 def session_route(args, role, config=None):
     """Session settings are supplied facts or inherited, never tier defaults.
 
-    Every session route is a delegation: a native child would inherit the
-    parent's external endpoint, so an API session binds and requires managed.
+    Every session route is a delegation: a native child inherits the parent's
+    external endpoint, so an API session binds that identity and a native report
+    must come from a session that still has it.
     """
     if not args.primary:
         raise AgentBoxError("Pass --primary with the active session provider for current-session execution")

@@ -20,6 +20,19 @@ Sources: [Codex subagents](https://learn.chatgpt.com/docs/agent-configuration/su
 schema. Native launch is coordinated through prepare/spawn/report. Managed
 run/review do not choose a native backend, and provider selection remains separate.
 
+## External API sessions
+
+Investigated for task 381 on 2026-09-14 with Claude Code 2.1.270 and Codex CLI
+0.154.0 through `agent-box --host ext`, isolated CLI homes and a loopback
+Messages/Responses stub with a fake key, then one short live DeepSeek run per CLI.
+
+| Interface | Evidence and decision |
+| --- | --- |
+| API identity | Native children of both CLIs sent requests to the session's endpoint with the session's key. A route on the session's identity may run natively; any other identity stays managed. |
+| Claude model/effort | A profile's `model` pinned an external ID. Agent `model` accepts only aliases, which `ext` maps to the session model. The session's `CLAUDE_CODE_EFFORT_LEVEL` overrode profile effort; without it the profile effort applied. |
+| Codex model/effort | `multi_agent_v1` `spawn_agent` pinned catalog `model` and `reasoning_effort`; `fork_context=false` started the child with only repository instructions and its message. This version has no agent-type selection. |
+| Evidence | The stub logged each request's model and effort. Live Claude stream-json child events carried the provider-returned model; the live Codex child rollout recorded provider, parent thread, model, effort and read-only sandbox. Keys were not logged. |
+
 ## Validation boundaries
 
 Regression tests exercise prepared route diagnostics for missing, exact and
