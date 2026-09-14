@@ -1883,12 +1883,26 @@ def announce_existing_sessions(container: str) -> None:
         )
 
 
+def _is_podman_pause(args: str) -> bool:
+    """Whether a process is rootless Podman's pause process, ``catatonit -P``.
+
+    One nested ``podman`` call starts it to hold the user namespace, and it
+    never exits by itself. It runs nothing, so excluding the exact pause-mode
+    argv cannot hide work; ``catatonit`` as an init for a real command can.
+    Unlike ``pause.pid``, whose directory depends on the environment of the
+    exec that first ran podman, the argv is visible to ``podman top`` too.
+    """
+    argv = args.split()
+    return len(argv) == 2 and argv[0].rsplit("/", 1)[-1] == "catatonit" and argv[1] == "-P"
+
+
 def parse_top_workloads(output: str) -> list[tuple[int, str]]:
     """Return processes outside the init/keeper process subtree.
 
     The keeper occasionally needs helper children (for example ``flock`` or a
     delay). Excluding its *tree* is structural and cannot hide an unrelated
-    user ``sleep``/daemon merely because it has a familiar command name.
+    user ``sleep``/daemon merely because it has a familiar command name. The
+    one argv-based exclusion is Podman's pause process, which runs nothing.
     """
     processes: dict[int, tuple[int, str]] = {}
     for line in output.splitlines()[1:]:  # first line is Podman's header
@@ -1911,7 +1925,8 @@ def parse_top_workloads(output: str) -> list[tuple[int, str]]:
             if parent in internal and pid not in internal:
                 internal.add(pid)
                 changed = True
-    return [(pid, args) for pid, (_parent, args) in processes.items() if pid not in internal and pid != 1]
+    return [(pid, args) for pid, (_parent, args) in processes.items()
+            if pid not in internal and pid != 1 and not _is_podman_pause(args)]
 
 
 def container_has_keeper(name: str) -> bool | None:

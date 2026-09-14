@@ -481,6 +481,21 @@ class WorkspaceContainerLifecycleTests(unittest.TestCase):
             "PID PPID COMMAND\n1 0 catatonit\n2 1 bash keeper.sh\n3 2 sleep 1\n"
         ))
 
+    def test_podman_pause_process_does_not_keep_the_box_alive(self):
+        """One nested `podman` call leaves `catatonit -P` holding its user
+        namespace for good; counting it would keep the box up forever."""
+        self.assertFalse(runtime.parse_top_workloads(
+            "PID PPID COMMAND\n1 0 catatonit\n2 1 bash keeper.sh\n540 1 catatonit -P\n"
+        ))
+
+    def test_nested_container_beside_the_pause_process_is_still_a_workload(self):
+        """Only the pause-mode argv is exempt: a running inner container, even
+        one using catatonit as its init, is real work."""
+        self.assertEqual(runtime.parse_top_workloads(
+            "PID PPID COMMAND\n1 0 catatonit\n2 1 bash keeper.sh\n540 1 catatonit -P\n"
+            "600 1 /usr/bin/conmon --api-version 1\n601 600 catatonit -- sleep 60\n"
+        ), [(600, "/usr/bin/conmon --api-version 1"), (601, "catatonit -- sleep 60")])
+
     def test_exec_barrier_waits_for_a_real_workload_not_a_keeper_child(self):
         process = mock.Mock()
         process.poll.side_effect = [None, None]

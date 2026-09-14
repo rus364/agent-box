@@ -39,10 +39,11 @@ volume deletion when the group is disabled. To discard that data, first end
 the workspace's sessions, then explicitly remove its named volume with the
 outer Podman. Source files stay in the mounted project directory.
 
-Podman's pause and network helpers count as workspace workloads and can keep
-the workspace alive after an interactive shell exits. Use `agent-box stop`
-from its parent environment when that workspace and its nested processes are
-no longer needed.
+Podman's pause process, which holds the rootless user namespace and never
+exits by itself, is not a workspace workload: a workspace with nothing else
+left exits as usual. Running inner containers and their network helpers do
+keep it alive; stop them, or run `agent-box stop` from the parent environment
+when the workspace and its nested processes are no longer needed.
 
 The dedicated volume avoids unsupported overlay-on-overlay storage without
 passing `/dev/fuse` or sharing the host engine's graphroot. Its backing

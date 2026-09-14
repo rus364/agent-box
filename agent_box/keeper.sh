@@ -18,11 +18,17 @@ while :; do
   # The scan uses only shell builtins while the shared lifecycle lock is held.
   # There are no helper processes to ignore here: PID 1 is Podman's init and
   # PID 2 is this keeper. Any other PID is a user/agent workload, including a
-  # daemon re-parented to PID 1.
+  # daemon re-parented to PID 1, except rootless Podman's pause process: it
+  # only holds the nested user namespace and never exits by itself. Its exact
+  # argv identifies it; pause.pid's location depends on the environment of
+  # whichever exec first ran podman. An unreadable argv counts as work.
   for proc in /proc/[0-9]*; do
     pid=${proc##*/}
     (( pid <= 2 )) && continue
     [[ -d "$proc" ]] || continue
+    argv=()
+    mapfile -d '' -t argv <"$proc/cmdline" 2>/dev/null
+    [[ ${#argv[@]} -eq 2 && ${argv[0]##*/} == catatonit && ${argv[1]} == -P ]] && continue
     workloads=1
     break
   done
