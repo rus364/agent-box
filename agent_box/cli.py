@@ -36,7 +36,7 @@ def usage_text() -> None:
   agent-box [OPTIONS] [claude|codex|shell|doctor] [AGENT ARGS...]
   agent-box [OPTIONS] ext API [claude|codex] [AGENT ARGS...]
   agent-box [--host] [--workspace PATH] attach [SESSION] | stop
-  agent-box config [--project | show | check | apply]
+  agent-box config [--project | show | describe [PATH] | check | apply]
   agent-box usage [codex|claude|all] [--no-cache] [--json]
   agent-box notify test
   agent-box build | update | rebuild
@@ -66,6 +66,7 @@ Configuration:
   config                  Interactive setup, saved to ~/.config/agent-box/config.json and applied
   config --project        Edit this repository's .agent-box.json
   config show             Effective settings, tokens redacted
+  config describe [PATH]  JSON per setting for agents: help, layered values, project eligibility; secrets redacted
   config check            Check the Claude Telegram channel setup
   config apply            Apply the saved file after editing it by hand
   usage                   Remaining subscription limits
@@ -281,6 +282,12 @@ def _show_value(value, hidden: bool) -> str:
     return str(value) if value != "" else "(not set)"
 
 
+def _hidden(at) -> bool:
+    from . import config_menu
+    # A command line routinely carries a bearer token; the menu shows it for editing.
+    return config_menu.secret(at) or at == ("usage", "command")
+
+
 def _show_rows(data, path=()):
     """``(depth, key, value or None for a heading, dotted path)`` in menu order.
 
@@ -292,16 +299,12 @@ def _show_rows(data, path=()):
     def leaf(value, at):
         return not isinstance(value, dict) or config_menu.json_field(at)
 
-    def hidden(at):
-        # A command line routinely carries a bearer token; the menu shows it for editing.
-        return config_menu.secret(at) or at == ("usage", "command")
-
     for key in config_menu.menu_keys(data, path):
         value, at = data[key], (*path, key)
         if leaf(value, at):
-            yield len(path), key, _show_value(value, hidden(at)), at
+            yield len(path), key, _show_value(value, _hidden(at)), at
         elif len(at) > 2 and all(leaf(item, (*at, name)) for name, item in value.items()):
-            yield len(path), key, "; ".join(f"{name} {_show_value(item, hidden((*at, name)))}"
+            yield len(path), key, "; ".join(f"{name} {_show_value(item, _hidden((*at, name)))}"
                                              for name, item in value.items()), at
         else:
             yield len(path), key, None, at
@@ -314,6 +317,117 @@ def _rendered_only(data, rendered):
             else value for key, value in data.items() if key in rendered}
 
 
+def _snapshot_sections(source) -> dict:
+    """What a runtime snapshot renders; its `launch` key holds this session's flags, not settings."""
+    rendered = read_json(Path(source["path"]))
+    return {key: value for key, value in rendered.items() if key != "launch"} if isinstance(rendered, dict) else {}
+
+
+_DESCRIBED_TYPES = {bool: "boolean", int: "integer", float: "number", str: "string", list: "list", dict: "object"}
+
+
+def _masked(value, hidden: bool):
+    """Whether a secret is set, without the secret."""
+    if not hidden or isinstance(value, list):
+        # A hidden list holds variable names (env.forward), never their values.
+        return value
+    if isinstance(value, dict):
+        return {key: "<redacted>" for key in value}
+    return "<redacted>" if value else ""
+
+
+def config_description(prefix: str = "") -> dict:
+    """Every setting as data for an agent: help, values by layer, project eligibility.
+
+    Help, masking, order and eligibility are the menu's and the project
+    loader's own, so ``config ai`` cannot explain or scope a setting
+    differently from ``agent-box config``. A snapshot inside a box renders
+    only some sections; the rest keep help and defaults but claim no global
+    value, instead of passing defaults off as the host's choices.
+    """
+    from . import config_menu, project_config
+    from .config import AGENT_EFFORTS, TRACKER_PROVIDERS, Config, TrackerConnection
+    from .model_catalog import BUNDLED_MODELS
+    source = effective_config_source()
+    baseline = effective_config(include_project=False)
+    project_file = project_config.project_path()
+    project = project_config.load(project_file)
+    defaults = Config().to_dict()
+    known = baseline.to_dict()
+    # The editor's baseline: a session's --tracker account is not a global value.
+    connections = known["tracker"]["connections"]
+    known["tracker"]["connections"] = {
+        name: {"url": url, "token": connections[name]["token"] if connections.get(name, {}).get("url") == url else ""}
+        for name, url in baseline._global_tracker_urls.items()}
+    if source["kind"] == "runtime":
+        known = _rendered_only(known, _snapshot_sections(source))
+    tree = project_config.merge(project_config.merge(defaults, known), project)
+    tree.pop("version")
+    tree.pop("install")
+    for name in TRACKER_PROVIDERS:
+        tree["tracker"]["connections"].setdefault(name, TrackerConnection().to_dict())
+    tree["tracker"].setdefault("project", "")
+    tree["tracker"].setdefault("recursive", False)
+    missing = object()
+
+    def lookup(data, at):
+        for part in at:
+            if not isinstance(data, dict) or part not in data:
+                return missing
+            data = data[part]
+        return data
+
+    fields = []
+
+    def walk(data, at=()):
+        for key in config_menu.menu_keys(data, at):
+            value, full = data[key], (*at, key)
+            dotted = ".".join(full)
+            leaf = not isinstance(value, dict) or config_menu.json_field(full)
+            selected = not prefix or dotted == prefix or dotted.startswith(prefix + ".")
+            if selected:
+                entry = {"path": dotted, "type": _DESCRIBED_TYPES[type(value)] if leaf else "section",
+                         "project_allowed": project_config.project_field(full) is not None}
+                if leaf:
+                    choices = config_menu.CHOICES.get(dotted)
+                    if key == "effort" and config_menu._candidate_field(full):
+                        choices = AGENT_EFFORTS[at[-1]]
+                    if choices:
+                        entry["choices"] = list(choices)
+                    if config_menu._model_path(full):
+                        entry["suggestions"] = list(BUNDLED_MODELS[at[-1]])
+                    layers = {layer: lookup(values, full) for layer, values in
+                              (("default", defaults), ("global", known), ("project", project))}
+                    for layer, found in layers.items():
+                        if found is not missing:
+                            entry[layer] = _masked(found, _hidden(full))
+                    if layers["project"] is not missing:
+                        entry["source"], entry["effective"] = "project", entry["project"]
+                    elif layers["global"] is not missing:
+                        entry["source"] = "default" if layers["global"] == layers["default"] else "global"
+                        entry["effective"] = entry["global"]
+                    else:
+                        entry["source"] = "unset" if layers["default"] is missing else "host-only"
+                entry["help"] = config_menu.help_for(full)
+                fields.append(entry)
+            if not leaf and (selected or prefix.startswith(dotted + ".")):
+                walk(value, full)
+
+    walk(tree)
+    if not fields:
+        raise AgentBoxError(f"no setting {prefix}; 'agent-box config describe' lists every path")
+    return {"source": source, "project_file": str(project_file), "fields": fields}
+
+
+def config_describe(prefix: str = "") -> None:
+    """One setting per line, so an agent can read a section without paging a dump."""
+    description = config_description(prefix)
+    fields = description.pop("fields")
+    print(json.dumps(description, ensure_ascii=False)[:-1] + ', "fields": [')
+    print(",\n".join(json.dumps(field, ensure_ascii=False) for field in fields))
+    print("]}")
+
+
 def config_show() -> None:
     config = effective_config()
     source = effective_config_source()
@@ -323,11 +437,8 @@ def config_show() -> None:
     if source["kind"] == "runtime":
         print("Rendered container configuration; host-only settings are not included.")
         # A setting the snapshot omits would otherwise print as its default,
-        # at any depth: `claude` carries only remote_control. The snapshot's
-        # `launch` key holds this session's flags, not the launch section.
-        rendered = read_json(Path(source["path"]))
-        rendered = {key: value for key, value in rendered.items() if key != "launch"} if isinstance(rendered, dict) else {}
-        data = _rendered_only(data, rendered)
+        # at any depth: `claude` carries only remote_control.
+        data = _rendered_only(data, _snapshot_sections(source))
     if getattr(config, "_launch", None):
         from .launch_options import describe
         print(f"Session options: {describe(config._launch)}")
@@ -461,12 +572,14 @@ def config_command(args: list[str]) -> None:
         config_interactive(project=True)
     elif args == ["show"]:
         config_show()
+    elif args[:1] == ["describe"] and len(args) <= 2:
+        config_describe(*args[1:])
     elif args == ["check"]:
         config_check()
     elif args == ["apply"]:
         config_apply()
     else:
-        die("expected: agent-box config [--project|show|check|apply]")
+        die("expected: agent-box config [--project|show|describe [PATH]|check|apply]")
 
 
 # -- completion --------------------------------------------------------

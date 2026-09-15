@@ -61,6 +61,8 @@ HELP = {
     "tracker": "Expose configured task-tracker connections to agents. Connections remain unavailable while this integration is disabled.",
     "tracker.enabled": "Expose configured tracker connections to agents. Keep credentials out of repository files.",
     "tracker.provider": "Default tracker for repositories without a more specific binding. Choose one of the supported adapters.",
+    "tracker.project": "Project tracker identity: the tracker project ID this repository's tasks belong to. Project setting only; setup and adopt write it.",
+    "tracker.recursive": "Project tracker identity: include every project under the bound project in the workflow. Project setting only.",
     "tracker.connections": "Provider URLs and tokens rendered into minimal runtime credential files only when tracker integration is enabled.",
     "browser": "Configure the agent-controlled headless browser inside the workspace box.",
     "browser.enabled": "Headless Chromium in the box; isolated in-memory profile, same trust boundary as agents. Unavailable in --host mode.",
@@ -743,7 +745,7 @@ def edit(config, *, project=None):
             selected = min(selected, len(rows) - 1)
             if selected < len(keys):
                 selected_path = (*path, keys[selected])
-                hint, help_title = ("Project tracker identity." if selected_path in (("tracker", "project"), ("tracker", "recursive")) else help_for(selected_path)), ".".join(selected_path)
+                hint, help_title = help_for(selected_path), ".".join(selected_path)
                 if project_mode:
                     hint = ("Global only. Edit in agent-box config. " if project_field(selected_path) is None
                             else "R: Reset to default (remove override; inherit future global changes). "
