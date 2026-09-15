@@ -11,6 +11,7 @@ describes one thing you can turn on, what it exposes, and what it costs.
 | [Workflow](workflow.md) | off | Sequential tasks, model routing, fresh review and parent PRs |
 | [External API providers](external-providers.md) | off | Named API keys, separate CLI endpoints, explicit launches and workflow candidates |
 | [Agent browser](browser.md) | off | A headless browser inside the workspace box for agents to drive |
+| [Host audio](audio.md) | off | The host microphone and speakers in the box, e.g. for Claude Code `/voice` |
 | [Telegram](telegram.md) | off | Anthropic's official channel for control, plus one-way notifications |
 | [Remote Control](remote-control.md) | off | Native Claude/Codex remote access for new interactive sessions |
 | [Git and GitHub](git.md) | identity on, credentials off | What of your Git and GitHub setup reaches a session |

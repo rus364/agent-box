@@ -403,6 +403,23 @@ RUN --mount=type=cache,id=agent-box-npm,target=/root/.npm \
     npm install --global jscpd@5.0.16
 
 #
+# Host audio client
+#
+# Small and always present; the audio switch decides at box creation whether
+# the host's PulseAudio socket is mounted. ALSA users such as Claude Code's
+# voice capture reach it through the pulse plugin. Placed after the large
+# stable layers so adding it does not invalidate them.
+#
+
+RUN --mount=type=cache,id=agent-box-apt,target=/var/cache/apt,sharing=locked \
+    set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends libasound2-plugins; \
+    rm -rf /var/lib/apt/lists/*; \
+    printf 'pcm.!default { type pulse }\nctl.!default { type pulse }\n' > /etc/asound.conf; \
+    ls /usr/lib/*/alsa-lib/libasound_module_pcm_pulse.so
+
+#
 # ---------------------------------------------------------------------------
 # Frequently updated tools
 # ---------------------------------------------------------------------------

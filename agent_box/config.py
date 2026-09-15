@@ -507,6 +507,31 @@ class BrowserConfig:
         return cls(enabled=_bool(data, "enabled", False))
 
 
+@dataclass
+class AudioConfig:
+    """The host's sound server inside workspace boxes.
+
+    Off by default: turning it on lets everything in the box -- agents, their
+    tools, the project's own code -- record from the host microphone and play
+    through its speakers. The PulseAudio socket grants both directions and
+    control of the server, so there is deliberately one switch rather than a
+    microphone/speaker pair that the protocol could not actually separate.
+
+    The socket, not ``/dev/snd``: raw ALSA devices would contend with the
+    host's PipeWire or PulseAudio for exclusive access, while the socket works
+    with either server. Structural, because a bind mount is part of the box.
+    """
+
+    enabled: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"enabled": self.enabled}
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "AudioConfig":
+        return cls(enabled=_bool(data, "enabled", False))
+
+
 TRACKER_PROVIDERS = ("vikunja", "jira", "linear", "github")
 AGENT_PROVIDERS = ("codex", "claude")
 AGENT_EFFORTS = {
@@ -776,6 +801,7 @@ class Config:
     image: ImageConfig = field(default_factory=ImageConfig)
     tracker: TrackerConfig = field(default_factory=TrackerConfig)
     browser: BrowserConfig = field(default_factory=BrowserConfig)
+    audio: AudioConfig = field(default_factory=AudioConfig)
     workflow: WorkflowConfig = field(default_factory=WorkflowConfig)
     usage: UsageConfig = field(default_factory=UsageConfig)
     launch: LaunchConfig = field(default_factory=LaunchConfig)
@@ -797,6 +823,7 @@ class Config:
             "image": self.image.to_dict(),
             "tracker": self.tracker.to_dict(),
             "browser": self.browser.to_dict(),
+            "audio": self.audio.to_dict(),
             "workflow": self.workflow.to_dict(),
             "usage": self.usage.to_dict(),
         }
@@ -820,6 +847,7 @@ class Config:
             image=ImageConfig.from_dict(data.get("image")),
             tracker=TrackerConfig.from_dict(data.get("tracker")),
             browser=BrowserConfig.from_dict(data.get("browser")),
+            audio=AudioConfig.from_dict(data.get("audio")),
             workflow=WorkflowConfig.from_dict(data.get("workflow")),
             usage=UsageConfig.from_dict(data.get("usage")),
         )

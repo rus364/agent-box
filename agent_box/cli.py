@@ -327,6 +327,7 @@ def config_show() -> None:
         print(f"    reviewer tier {tier}: {models}")
     print("    fast                      opt-in speed request, not delivered service; false preserves provider/native defaults")
     print(f"  Agent browser (containers)  {'on' if config.browser.enabled else 'off'}{_browser_note(config)}")
+    print(f"  Host audio (containers)     {'on (microphone and speakers)' if config.audio.enabled else 'off'}")
     forwarded = ", ".join(config.env.forward) or "(none)"
     print(f"  Forwarded env variables     {forwarded}")
     assignments = ", ".join(f"{k}=<configured>" for k in sorted(config.env.set)) or "(none)"
@@ -439,7 +440,7 @@ def config_apply() -> None:
               "links are host-only and untouched")
     for line in runtime.apply_config(config, session=session):
         print(f"agent-box: {line}")
-    for problem in runtime.tracker_warnings(config):
+    for problem in runtime.tracker_warnings(config) + runtime.audio_warnings(config):
         print(f"agent-box: warning: {problem}", file=sys.stderr)
     if not session:
         for line in path_status(config):

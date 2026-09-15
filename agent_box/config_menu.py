@@ -64,6 +64,8 @@ HELP = {
     "tracker.connections": "Provider URLs and tokens rendered into minimal runtime credential files only when tracker integration is enabled.",
     "browser": "Configure the agent-controlled headless browser inside the workspace box.",
     "browser.enabled": "Headless Chromium in the box; isolated in-memory profile, same trust boundary as agents. Unavailable in --host mode.",
+    "audio": "Configure access to the host's sound server from workspace boxes.",
+    "audio.enabled": "Mount the host PulseAudio/PipeWire socket so agents can use the microphone and speakers, e.g. Claude Code /voice. Everything in the box gets both. Changing it recreates the box.",
     "workflow": "Opt-in tracked-work orchestration, routing, review, publication, and cleanup policy.",
     "workflow.enabled": "Enable agent-box's tracked-task workflow. Enabling it does not itself expose provider or tracker credentials.",
     "workflow.merge_mode": "Finish parent work through a GitHub pull request or a local fast-forward into origin's default branch.",
@@ -124,7 +126,7 @@ LABELS = {
 MENU_GROUPS = {
     (): (
         ("Tracked work", ("workflow", "tracker")),
-        ("Workspace", ("image", "browser", "env")),
+        ("Workspace", ("image", "browser", "audio", "env")),
         ("Host access", ("external_providers", "providers", "github", "git")),
         ("Host integrations", ("claude", "codex", "usage", "skills", "notifications")),
         ("Launch", ("launch",)),

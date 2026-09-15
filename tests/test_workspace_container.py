@@ -431,6 +431,18 @@ class WorkspaceContainerLifecycleTests(unittest.TestCase):
             with self.assertRaisesRegex(AgentBoxError, "incompatible container-level configuration"):
                 runtime.ensure_workspace_container(with_kvm)
 
+    def test_audio_change_is_a_running_base_configuration_mismatch(self):
+        """A running box cannot gain or lose a bind mount, so flipping audio
+        must recreate it rather than report sound that is not there."""
+        with mock.patch.object(runtime, "audio_args", return_value=[]):
+            without_audio = runtime.workspace_container_spec(self.workspace, [], self.script_dir, self.config)
+        with mock.patch.object(runtime, "audio_args", return_value=["--env=PULSE_SERVER=unix:/run/user/1/pulse/native"]):
+            with_audio = runtime.workspace_container_spec(self.workspace, [], self.script_dir, self.config)
+        self.assertNotEqual(without_audio.base_config_hash, with_audio.base_config_hash)
+        with mock.patch.object(runtime, "inspect_workspace_container", return_value=self._container(base_hash=without_audio.base_config_hash)):
+            with self.assertRaisesRegex(AgentBoxError, "incompatible container-level configuration"):
+                runtime.ensure_workspace_container(with_audio)
+
     def test_image_change_is_a_running_base_configuration_mismatch(self):
         with mock.patch.object(runtime, "IMAGE", "localhost/agent-box:old"):
             old_spec = runtime.workspace_container_spec(self.workspace, [], self.script_dir, self.config)

@@ -74,6 +74,9 @@ XDG_CONFIG_HOME = env_path("XDG_CONFIG_HOME", HOST_HOME / ".config")
 XDG_DATA_HOME = env_path("XDG_DATA_HOME", HOST_HOME / ".local/share")
 XDG_CACHE_HOME = env_path("XDG_CACHE_HOME", HOST_HOME / ".cache")
 XDG_STATE_HOME = env_path("XDG_STATE_HOME", HOST_HOME / ".local/state")
+# The login runtime directory comes from the real uid, not $XDG_RUNTIME_DIR,
+# for the same reason HOST_HOME ignores $HOME: its sockets become bind mounts.
+HOST_RUNTIME_DIR = Path("/run/user") / str(os.getuid())
 
 def launcher_state_root(shared: Path) -> Path:
     """Keep nested builds and workspace records outside their parent's mounts.

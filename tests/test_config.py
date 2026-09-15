@@ -186,6 +186,27 @@ class BrowserConfigTests(unittest.TestCase):
             self.assertEqual(json.loads(path.read_text())["version"], 1)
 
 
+class AudioConfigTests(unittest.TestCase):
+    """The audio switch hands the box the host microphone, so it must be off
+    until asked for and never read as on from a malformed value."""
+
+    def test_defaults_disabled(self):
+        self.assertFalse(Config().audio.enabled)
+
+    def test_round_trips(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            config = Config()
+            config.audio.enabled = True
+            save_config(config, path)
+            self.assertTrue(json.loads(path.read_text())["audio"]["enabled"])
+            self.assertTrue(load_config(path).audio.enabled)
+
+    def test_a_non_boolean_is_not_treated_as_enabled(self):
+        self.assertFalse(config_module.AudioConfig.from_dict({"enabled": "yes"}).enabled)
+        self.assertFalse(config_module.AudioConfig.from_dict("nonsense").enabled)
+
+
 class NotificationsUsableTests(unittest.TestCase):
     def test_enabled_alone_is_not_enough(self):
         config = Config()

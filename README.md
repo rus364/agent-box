@@ -351,7 +351,7 @@ because you asked for it.
 | Provider transport settings | on | Base URL, proxies, CA bundle — without these a container behind a proxy cannot reach the network |
 | Share skills with Claude | on | Link `~/.agents/skills` into `~/.claude/skills` |
 | Image tool groups | analysis, kubernetes | What the workspace image is built with |
-| Everything else | **off** | Credentials, task tracking, browser, notifications, workflow (auto-push defaults on within opt-in workflow) |
+| Everything else | **off** | Credentials, task tracking, browser, host audio, notifications, workflow (auto-push defaults on within opt-in workflow) |
 
 Every switch and what it exposes: **[docs/integrations](docs/integrations/)**.
 
@@ -517,6 +517,7 @@ All off by default and independent of each other. See
 - **[Tracker](docs/integrations/tracker.md)** — portable task commands, repository setup and a working Vikunja API v2 provider.
 - **[Workflow](docs/integrations/workflow.md)** — sequential tracked work, configurable provider/model routing, fresh review and parent GitHub PRs.
 - **[Agent browser](docs/integrations/browser.md)** — a headless browser inside the box for agents to drive.
+- **[Host audio](docs/integrations/audio.md)** — the host microphone and speakers in the box, e.g. for Claude Code `/voice`.
 - **[Telegram](docs/integrations/telegram.md)** — Anthropic's official control channel, plus one-way notifications.
 - **[Remote Control](docs/integrations/remote-control.md)** — optional native remote access for new Claude/Codex sessions, with ordinary-launch fallback.
 - **[External API providers](docs/integrations/external-providers.md)** — named API connections for either CLI and managed workflow roles.

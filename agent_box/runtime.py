@@ -56,6 +56,7 @@ from .paths import (
     CONTAINER_POLICY_RUNTIME_DIR,
     CONTAINER_WORKFLOW_STATE,
     HOST_HOME,
+    HOST_RUNTIME_DIR,
     HOST_SESSIONS_ROOT,
     HOST_SESSION_RUNNER,
     LOCAL_LAUNCHER,
@@ -685,6 +686,8 @@ def prepare_container_lifetime_state(
         WORKFLOW_STATE.mkdir(parents=True, exist_ok=True)
         for problem in tracker_warnings(config):
             warn(problem)
+    for problem in audio_warnings(config):
+        warn(problem)
 
 
 def agent_tree_mounts() -> list[tuple[Path, Path, bool]]:
@@ -865,6 +868,8 @@ def sync_tracker_runtime(config: Config, directory: Path | None = None, *, polic
         "usage": config.usage.to_dict(),
         "github": config.github.to_dict(),
         "browser": config.browser.to_dict(),
+        # A nested box inherits the outer box's sound socket at the same path.
+        "audio": config.audio.to_dict(),
         "image": config.image.to_dict(),
         "external_providers": external,
         "container": container,
@@ -1300,6 +1305,31 @@ def kvm_args(config: Config, enabled: bool = True) -> list[str]:
     return args
 
 
+PULSE_DIR = HOST_RUNTIME_DIR / "pulse"
+
+
+def audio_args(config: Config) -> list[str]:
+    """The host's PulseAudio socket, when the audio switch asks for it.
+
+    The directory is mounted rather than the socket file: a restarted sound
+    server replaces the socket inode, which a file bind would keep pointing at.
+    PipeWire's pulse server and PulseAudio both accept the same-uid client that
+    ``--userns=keep-id`` maps back, so no cookie is involved. A host without
+    the socket gets no mount; :func:`audio_warnings` says so.
+    """
+    socket = PULSE_DIR / "native"
+    if not config.audio.enabled or not socket.is_socket():
+        return []
+    return ["--mount", f"type=bind,src={PULSE_DIR},dst={PULSE_DIR}", f"--env=PULSE_SERVER=unix:{socket}"]
+
+
+def audio_warnings(config: Config) -> list[str]:
+    socket = PULSE_DIR / "native"
+    if config.audio.enabled and not socket.is_socket():
+        return [f"Audio is enabled but {socket} is not a sound-server socket; workspace boxes start without sound"]
+    return []
+
+
 def github_enabled(config: Config) -> bool:
     """Whether a GitHub credential may reach the container at all.
 
@@ -1408,7 +1438,7 @@ def container_lifetime_args(
     config = effective_config(runtime_config_base()) if config is None else config
     home = HOST_HOME
     args = [
-        "--userns=keep-id", *kvm_args(config, kvm),
+        "--userns=keep-id", *kvm_args(config, kvm), *audio_args(config),
         "--cap-drop=all", "--security-opt=no-new-privileges", "--hostname=agent-box", "--tz=local",
         *nested_podman_args(config, workspace),
         f"--env=HOME={home}",
