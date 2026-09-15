@@ -216,7 +216,14 @@ def help_for(path):
     if dotted in HELP:
         return HELP[dotted]
     if path[:1] == ("external_providers",):
-        return {"enabled": "Expose this API connection to agent-box sessions. Off by default.",
+        # Provider names and model IDs are the user's own; every fixed field below needs its own help.
+        if len(path) == 2:
+            return HELP["external_providers"]
+        if len(path) == 3 and path[-1] in LAUNCH_AGENTS:
+            return f"{path[-1].title()} endpoint of this API: its own URL, models and environment, used only when {path[-1]} runs against it."
+        if len(path) == 5 and path[3] == "models":
+            return "Settings for this model ID. Workflow candidates select it through the model picker; the ID sent to the API is the key itself."
+        text = {"enabled": "Expose this API connection to agent-box sessions. Off by default.",
                 "api_key": "Stored in the protected global config; masked in displays and excluded from command arguments.",
                 "url": "HTTP(S) API base URL for this CLI, without credentials, query or fragment. Codex requires Responses API; Claude requires Anthropic Messages API.",
                 "models": "Model settings keyed by ID. Add a model, edit its fields, or select a default. Manual workflow IDs remain available.",
@@ -232,7 +239,9 @@ def help_for(path):
                 "metadata": "Additional native Codex model metadata as JSON. Typed model fields cannot be overridden here; fields must be supported by your CLI.",
                 "provider_options": "Native Codex model-provider JSON: query_params, http_headers, env_http_headers, retries, timeouts, transport. URL/auth fields belong to agent-box. Header values travel through environment variables; use non-secret query parameters.",
                 "config": "Native Codex session JSON, for example {\"web_search\":\"live\"}. CLI overrides win; model effort defaults apply next. API/auth/catalog/Remote Control fields belong to agent-box. Use env or header settings for secrets, never literal secrets here.",
-                "env": "JSON object of per-process environment strings. Model values override endpoint values; typed effort/compact fields and explicit effort take priority. API/auth/RC ownership cannot be overridden. Values are masked and never placed in argv."}.get(path[-1], HELP["external_providers"])
+                "env": "JSON object of per-process environment strings. Model values override endpoint values; typed effort/compact fields and explicit effort take priority. API/auth/RC ownership cannot be overridden. Values are masked and never placed in argv."}.get(path[-1])
+        if text:
+            return text
     if len(path) == 3 and path[:2] == ("image", "tools"):
         return f"{IMAGE_TOOL_GROUP_HELP.get(path[-1], path[-1])}. Rebuild the workspace image to install or remove this group; browsing and saving this selection do not rebuild it."
     if len(path) == 3 and path[:2] == ("tracker", "connections"):

@@ -42,11 +42,11 @@ class ConfigDescribeTests(unittest.TestCase):
             return self.describe()
 
     def test_every_schema_setting_is_described_with_the_menus_own_help(self):
-        """An agent explaining a setting differently from the menu, or missing one, would mislead the user."""
-        _, fields = self.describe()
-        data = Config().to_dict()
-        data.pop("version")
+        """An agent explaining a setting differently from the menu, or missing one, would mislead the user.
 
+        The default configuration has no external provider, so a configured one
+        is walked too; otherwise that whole schema would escape the check.
+        """
         def check(value, path=()):
             for key in config_menu.menu_keys(value, path):
                 full = (*path, key)
@@ -54,10 +54,21 @@ class ConfigDescribeTests(unittest.TestCase):
                 if isinstance(value[key], dict) and not config_menu.json_field(full):
                     check(value[key], full)
 
-        check(data)
+        for config in (Config(), rich_config()):
+            save_config(config, self.global_file)
+            _, fields = self.describe()
+            data = config.to_dict()
+            data.pop("version")
+            check(data)
+            self.assertTrue(all(field["help"] for field in fields.values()))
+        self.assertIn("external_providers.deepseek.codex.models.v4-pro.metadata", fields)
         self.assertIn("install.bin_dir", fields)
         self.assertEqual(fields["tracker.project"]["help"], config_menu.help_for(("tracker", "project")))
-        self.assertTrue(all(field["help"] for field in fields.values()))
+        # Only names the user chooses share generic help; a new fixed field needs its own.
+        with self.assertRaises(KeyError):
+            config_menu.help_for(("external_providers", "deepseek", "claude", "models", "v4-pro", "new_field"))
+        with self.assertRaises(KeyError):
+            config_menu.help_for(("external_providers", "deepseek", "new_field"))
 
     def test_layers_sources_and_project_eligibility_follow_the_project_loader(self):
         """The agent must know which value wins, where it comes from, and whether a project may change it."""
