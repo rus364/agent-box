@@ -1311,14 +1311,17 @@ def audio_args(config: Config) -> list[str]:
 
     The directory is mounted rather than the socket file: a restarted sound
     server replaces the socket inode, which a file bind would keep pointing at.
-    PipeWire's pulse server and PulseAudio both accept the same-uid client that
-    ``--userns=keep-id`` maps back, so no cookie is involved. A host without
-    the socket gets no mount; :func:`audio_warnings` says so.
+    Read-only, because a client only connects: the kernel exempts sockets from
+    the read-only mount check, while the box can no longer unlink or replace
+    the host's socket. PipeWire's pulse server and PulseAudio both accept the
+    same-uid client that ``--userns=keep-id`` maps back, so no cookie is
+    involved. A host without the socket gets no mount; :func:`audio_warnings`
+    says so.
     """
     socket = PULSE_DIR / "native"
     if not config.audio.enabled or not socket.is_socket():
         return []
-    return ["--mount", f"type=bind,src={PULSE_DIR},dst={PULSE_DIR}", f"--env=PULSE_SERVER=unix:{socket}"]
+    return ["--mount", f"type=bind,src={PULSE_DIR},dst={PULSE_DIR},ro=true", f"--env=PULSE_SERVER=unix:{socket}"]
 
 
 def audio_warnings(config: Config) -> list[str]:

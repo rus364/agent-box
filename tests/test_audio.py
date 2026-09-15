@@ -46,10 +46,12 @@ class AudioPassthroughTests(unittest.TestCase):
         self.assertEqual(runtime.audio_args(audio_config(False)), [])
         self.assertEqual(runtime.audio_warnings(audio_config(False)), [])
 
-    def test_enabled_mounts_the_socket_directory_and_points_clients_at_it(self):
+    def test_enabled_mounts_the_socket_directory_read_only_and_points_clients_at_it(self):
+        """Read-only: the box connects to the host's socket but must not be
+        able to unlink or replace it under the host's other clients."""
         self._serve()
         args = runtime.audio_args(audio_config())
-        self.assertIn(f"type=bind,src={self.pulse},dst={self.pulse}", args)
+        self.assertIn(f"type=bind,src={self.pulse},dst={self.pulse},ro=true", args)
         self.assertIn(f"--env=PULSE_SERVER=unix:{self.pulse / 'native'}", args)
         self.assertEqual(runtime.audio_warnings(audio_config()), [])
 
