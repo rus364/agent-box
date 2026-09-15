@@ -8,5 +8,30 @@
         "url": "http://pm.infrado.org:3456"
       }
     }
+  },
+  "workflow": {
+    "review": {
+      "sensitive_paths": [
+        "**/skills/**",
+        "**/config*",
+        ".github/**",
+        "agent_box/paths.py",
+        "agent_box/pathsetup.py",
+        "agent_box/selfupdate.py",
+        "agent_box/runtime.py",
+        "agent_box/notify.py",
+        "agent_box/tracker/*_api.py",
+        "Containerfile",
+        "agent-box"
+      ],
+      "ignored_paths": [
+        "docs/**",
+        "**/*.md"
+      ]
+    },
+    "merge_mode": "local",
+    "auto_push": true,
+    "cleanup_local_branches": true,
+    "cleanup_remote_branches": true
   }
 }
