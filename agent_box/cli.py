@@ -361,16 +361,24 @@ def config_description(prefix: str = "") -> dict:
     unlaunched = project_config.apply(baseline, project).to_dict()
     launch = getattr(baseline, "_launch", {})
     # The editor's baseline: a session's --tracker account is not a global value.
+    global_urls = baseline._global_tracker_urls
     connections = known["tracker"]["connections"]
-    known["tracker"]["connections"] = {
+    accounts = {
         name: {"url": url, "token": connections[name]["token"] if connections.get(name, {}).get("url") == url else ""}
-        for name, url in baseline._global_tracker_urls.items()}
+        for name, url in global_urls.items()}
+    known["tracker"]["connections"] = accounts
     if source["kind"] == "runtime":
-        known = _rendered_only(known, _snapshot_sections(source))
-    # As in the menu, every supported tracker has an empty account row by default.
+        rendered = _snapshot_sections(source)
+        known = _rendered_only(known, rendered)
+        # A snapshot carries every global URL on its own, but a token only for an account it renders.
+        rendered_accounts = rendered.get("tracker", {}).get("connections", {})
+        if "tracker" in known:
+            known["tracker"]["connections"] = {name: row if name in rendered_accounts else {"url": row["url"]}
+                                              for name, row in accounts.items()}
+    # As in the menu, a tracker without a global account has an empty row by default.
     for name in TRACKER_PROVIDERS:
         defaults["tracker"]["connections"].setdefault(name, TrackerConnection().to_dict())
-        if "connections" in known.get("tracker", {}):
+        if "tracker" in known and name not in global_urls:
             known["tracker"]["connections"].setdefault(name, TrackerConnection().to_dict())
     tree = project_config.merge(project_config.merge(defaults, known), project)
     tree.pop("version")
@@ -416,7 +424,9 @@ def config_description(prefix: str = "") -> dict:
                     if full == ("tracker", "project") and launch.get("project"):
                         effective = launch["project"]
                     # A --tracker account is bound beneath the project overlay rather than applied as a flag.
-                    bound = full[:2] == ("tracker", "connections") and underlying != layered
+                    # Compared in the loader's normalization, which strips strings a project file may pad.
+                    bound = (full[:2] == ("tracker", "connections")
+                             and underlying != (layered.strip() if isinstance(layered, str) else layered))
                     if layered is missing and layers["default"] is not missing:
                         entry["source"] = "host-only"
                     elif effective is missing:

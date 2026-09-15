@@ -123,6 +123,19 @@ class ConfigDescribeTests(unittest.TestCase):
         self.assertEqual(fields["install.bin_dir"]["source"], "host-only")
         self.assertEqual(fields["tracker.enabled"]["effective"], True)
 
+    def test_a_snapshot_without_tracker_accounts_keeps_global_urls_and_an_unknown_token(self):
+        """With the tracker off the box still knows global URLs; a token it cannot see is unknown, not unset."""
+        config = Config()
+        config.workflow.enabled = True
+        config.tracker.connections["vikunja"] = TrackerConnection("https://tracker.example", "tracker-secret-value")
+        output, fields = self.in_session(config)
+        url, token = fields["tracker.connections.vikunja.url"], fields["tracker.connections.vikunja.token"]
+        self.assertEqual((url["global"], url["effective"], url["source"]), ("https://tracker.example", "https://tracker.example", "global"))
+        self.assertEqual(token["source"], "host-only")
+        self.assertNotIn("effective", token)
+        self.assertEqual(fields["tracker.connections.jira.url"]["source"], "default")
+        self.assertNotIn("tracker-secret-value", output)
+
     def test_session_flags_win_over_project_and_global_values(self):
         """Launch flags apply last; reporting the project or global value would misstate what the session uses."""
         config = Config()
@@ -144,10 +157,13 @@ class ConfigDescribeTests(unittest.TestCase):
 
     def test_a_normalized_project_value_is_not_attributed_to_a_session(self):
         """Without launch flags nothing can come from a session, even when loading trims a value."""
-        self.project_file.write_text(json.dumps({"workflow": {"review": {"label": "ab:review "}}}))
+        self.project_file.write_text(json.dumps({"workflow": {"review": {"label": "ab:review "}},
+                                                 "tracker": {"connections": {"vikunja": {"url": "https://tracker.example "}}}}))
         _, fields = self.describe()
         label = fields["workflow.review.label"]
         self.assertEqual((label["project"], label["effective"], label["source"]), ("ab:review ", "ab:review", "project"))
+        url = fields["tracker.connections.vikunja.url"]
+        self.assertEqual((url["effective"], url["source"]), ("https://tracker.example", "project"))
         self.assertNotIn("session_options", self.document)
         self.assertNotIn("session", {field.get("source") for field in fields.values()})
 
