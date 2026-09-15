@@ -281,6 +281,20 @@ class InvocationEnvironmentTests(unittest.TestCase):
         self.assertIn("GH_TOKEN", flags)
         self.assertEqual(env["GH_TOKEN"], "derived-token")
 
+    def test_claude_sessions_keep_background_managed_runs_through_pressure_spikes(self):
+        """Claude Code's PSI reaper killed a background managed review, CLI and all;
+        the opt-out is per exec, so enabling it never recreates a box."""
+        name = "CLAUDE_CODE_DISABLE_BG_SHELL_PRESSURE_REAP"
+        with mock.patch.object(runtime, "github_env", return_value=[]), \
+             mock.patch.object(runtime, "provider_env", return_value=[]):
+            claude, _ = runtime.invocation_env(Config(), "claude")
+            codex, _ = runtime.invocation_env(Config(), "codex")
+        self.assertIn(f"{name}=1", claude)
+        self.assertFalse(any(item.startswith(name) for item in codex))
+        with tempfile.TemporaryDirectory() as project:
+            workspace = Workspace(Path(project), Path(project))
+            self.assertNotIn(name, " ".join(runtime.container_argv(workspace, [], Path(project), ["claude"])))
+
 
 class CodexRuntimeOverridesTests(IsolatedRuntimeTest):
     def _overrides_for(self, config_text: str | None) -> tuple[list[str], tuple[bytes, bytes]]:

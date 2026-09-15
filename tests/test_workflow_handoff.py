@@ -2032,6 +2032,29 @@ class WorkerHandoffTests(unittest.TestCase):
             self.assertNotIn("review", workflow.read_evidence(self.root, self.task))
             self.assertNotIn("human_acceptance", workflow.read_evidence(self.root, self.task))
 
+    def test_interrupted_managed_review_reads_back_as_ended_not_as_an_older_round(self):
+        """A killed run left no result, and review-result showed the previous verdict
+        while pointing at diagnostics that were never written."""
+        with patch.object(workflow, "run", return_value={
+                "verdict": "PASS", "summary": "Earlier round", "findings": []}):
+            self.managed_fallback(self.prepared_review())
+        prepared = self.prepared_review()
+        with patch.object(workflow, "run", side_effect=provider_runner.ProviderFailure("signal", "interrupted")), \
+             self.assertRaisesRegex(AgentBoxError, "interrupted by a signal.*attempt stays spent"):
+            self.managed_fallback(prepared)
+        self.assertFalse(self.delegation_input(prepared).exists())
+        state = workflow.read_review_state(self.root, BINDING, self.task)
+        self.assertEqual(state["used"], 2)
+        with self.assertRaisesRegex(AgentBoxError, "ended without a saved provider response.*stays spent"):
+            self.run_workflow("review-result", "1")
+        self.assertEqual(self.run_workflow("inspect", "1")["review"]["pending_round"],
+                         {"round": state["pending"], "backend": "managed", "status": "ended_without_response"})
+        # The lock is what a live `workflow review` holds for its whole execution.
+        with workflow_state.lock(self.root, "review"):
+            with self.assertRaisesRegex(AgentBoxError, "still running"):
+                self.run_workflow("review-result", "1", "--round=" + state["pending"])
+            self.assertEqual(self.run_workflow("inspect", "1")["review"]["pending_round"]["status"], "running")
+
     def test_managed_fallback_preserves_prepared_prompt_and_artifact_hashes(self):
         """Brief and validation edits cannot rewrite files a native reviewer may still read."""
         prepared = self.prepared_review()

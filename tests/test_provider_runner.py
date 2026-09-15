@@ -2,7 +2,10 @@
 import importlib
 import json
 import os
+import signal
+import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -409,6 +412,29 @@ class FailureDiagnosticsTests(unittest.TestCase):
             self.assertEqual(len(base64.b64decode(data["streams"][name]["base64"])), limit)
             self.assertTrue(data["streams"][name]["truncated"])
         self.assertEqual(unrelated.read_text(), "keep")
+
+    def test_signal_to_the_runner_stops_its_cli_and_records_an_interruption(self):
+        """The CLI runs in its own session: a SIGTERM that only reached the runner
+        used to leave no failure record, and could leave the CLI spending alone."""
+        started = []
+        real_popen = self.r.subprocess.Popen
+
+        def popen(*args, **kwargs):
+            process = real_popen(*args, **kwargs)
+            started.append(process)
+            threading.Timer(0.3, os.kill, (os.getpid(), signal.SIGTERM)).start()
+            return process
+
+        command = [sys.executable, "-c", "import sys, time; sys.stdin.read(); time.sleep(60)"]
+        previous = signal.getsignal(signal.SIGTERM)
+        with patch.object(self.r, "build_command", return_value=command), \
+             patch.object(self.r.subprocess, "Popen", side_effect=popen), \
+             self.assertRaises(self.r.ProviderFailure) as caught:
+            self.r.run(self.route, "reviewer", self.root, "private prompt")
+        self.assertEqual(caught.exception.category, "interrupted")
+        self.assertIsNotNone(started[0].returncode)
+        self.assertTrue((self.state / caught.exception.diagnostic["artifact"]).exists())
+        self.assertIs(signal.getsignal(signal.SIGTERM), previous)
 
     def test_timeout_unavailable_and_persistence_failure_keep_safe_failure_context(self):
         """Diagnostic storage failure must not mask the original category."""

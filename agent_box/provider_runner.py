@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 import fcntl
 import json
 import math
@@ -11,6 +12,7 @@ import signal
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -27,6 +29,14 @@ DIAGNOSTIC_STREAM_LIMIT = 1024 * 1024
 STDERR_LIMIT = 64 * 1024
 DIAGNOSTIC_MAX_FILES = 20
 DIAGNOSTIC_MAX_AGE = 7 * 24 * 3600
+
+
+class Interrupted(Exception):
+    pass
+
+
+def interrupted(signum, frame):
+    raise Interrupted(signum)
 
 
 class ProviderFailure(AgentBoxError):
@@ -357,17 +367,34 @@ def run(route, role, root, prompt, *, timeout=3600, read_paths=(), diagnostics=N
                                    directory, env, model=route["model"])
         with (directory / "stdout").open("w+") as stdout, (directory / "stderr").open("w+") as stderr:
             try:
+                # The CLI runs in its own session, so a signal to this process
+                # alone would leave it spending unobserved; the default SIGTERM
+                # would also skip every failure record and cleanup.
+                handlers = {}
                 try:
-                    process = subprocess.Popen(command, cwd=root, env=env, stdin=subprocess.PIPE, stdout=stdout,
-                                               stderr=stderr, text=True, encoding="utf-8", start_new_session=True)
+                    if threading.current_thread() is threading.main_thread():
+                        handlers = {signum: signal.signal(signum, interrupted) for signum in (signal.SIGTERM, signal.SIGHUP)}
                     try:
-                        process.communicate(prompt, timeout=timeout)
-                    except subprocess.TimeoutExpired:
-                        os.killpg(process.pid, signal.SIGKILL)
+                        process = subprocess.Popen(command, cwd=root, env=env, stdin=subprocess.PIPE, stdout=stdout,
+                                                   stderr=stderr, text=True, encoding="utf-8", start_new_session=True)
+                        try:
+                            process.communicate(prompt, timeout=timeout)
+                        except subprocess.TimeoutExpired:
+                            os.killpg(process.pid, signal.SIGKILL)
+                            process.wait()
+                            raise ProviderFailure("Provider timed out; inspect work before retrying", "timeout") from None
+                    except OSError:
+                        raise ProviderFailure(f"Cannot start {route['provider']} CLI", "unavailable") from None
+                except (Interrupted, KeyboardInterrupt):
+                    if process is not None:
+                        with contextlib.suppress(ProcessLookupError):
+                            os.killpg(process.pid, signal.SIGKILL)
                         process.wait()
-                        raise ProviderFailure("Provider timed out; inspect work before retrying", "timeout") from None
-                except OSError:
-                    raise ProviderFailure(f"Cannot start {route['provider']} CLI", "unavailable") from None
+                    raise ProviderFailure("Managed execution was interrupted by a signal before a provider response",
+                                          "interrupted") from None
+                finally:
+                    for signum, handler in handlers.items():
+                        signal.signal(signum, handler)
                 stdout.flush()
                 stderr.flush()
                 source = result if route["provider"] == "codex" and result.exists() else directory / "stdout"

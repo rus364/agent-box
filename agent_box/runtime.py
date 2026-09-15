@@ -2085,7 +2085,15 @@ def invocation_env(config: Config, agent: str) -> tuple[list[str], dict[str, str
         ]
     # `--env=NAME` means inherit NAME from the local podman client. Convert
     # the existing helpers' argv spelling into exec_argv's compact form.
-    return [f"TERM={env.get('TERM', 'xterm-256color')}", *(item[6:] for item in forwarded)], env
+    invocation = [f"TERM={env.get('TERM', 'xterm-256color')}", *(item[6:] for item in forwarded)]
+    if agent == "claude":
+        # Claude Code kills background shells, whole process tree included, on a
+        # 150 ms-in-2 s cgroup PSI spike once the user has been idle for 30
+        # minutes. That spike is not memory exhaustion, and it killed managed
+        # reviews that must run in the background because they outlast the
+        # foreground command limit. The kernel OOM killer still applies.
+        invocation.append("CLAUDE_CODE_DISABLE_BG_SHELL_PRESSURE_REAP=1")
+    return invocation, env
 
 
 DOCTOR_SCRIPT = r'''

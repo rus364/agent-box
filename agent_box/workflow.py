@@ -500,6 +500,24 @@ def result_record(descriptor, receipt):
             "changes": [], "reason": "Provider response saved; applicability not checked"}
 
 
+def managed_round_status(root, state, round_id=None):
+    """A managed round's liveness is its execution lock, never a stored status.
+
+    The kernel releases the lock however `workflow review` dies, so a pending
+    managed round without a saved response and with a free lock has ended. A
+    failure and a kill look alike here; both spent the attempt.
+    """
+    pending = state.get("pending") if state else None
+    if (not pending or state.get("pending_backend") != "managed" or round_id not in (None, pending)
+            or any(item["round"] == pending for item in state.get("results", []))):
+        return None
+    try:
+        with lock(root, "review"):
+            return "ended_without_response"
+    except AgentBoxError:
+        return "running"
+
+
 def review_result(root, binding, adapter, task, config, round_id=None, *, reconcile=False):
     """Retry only application of the latest receipt; terminal decisions never revive."""
     with lock(root, "review-budget"):
@@ -522,10 +540,18 @@ def review_result(root, binding, adapter, task, config, round_id=None, *, reconc
             record = result_record(value["descriptor"], receipt)
             if state is not None:
                 state["results"] = [*records, record][-review_results.MAX_FILES:]
+        elif status := managed_round_status(root, state, round_id):
+            if status == "running":
+                raise AgentBoxError(f"Review round {pending} is still running managed execution; "
+                                    "wait for its command to finish")
+            raise AgentBoxError(
+                f"Review round {pending} ended without a saved provider response, by failure or interruption; "
+                "its attempt stays spent. A handled failure named its provider-failures artifact in that "
+                "command's error. Start a new round within budget")
         elif record is not None:
             value, path = review_results.read(WORKFLOW_STATE, repository_key(root), record["receipt"])
         else:
-            raise AgentBoxError("No saved review result; inspect provider failure diagnostics before a new dispatch")
+            raise AgentBoxError("No saved review result for this round")
         if state is None:
             record.update(status="error", reason="Review budget read failed; restore access before reconciliation")
             return review_result_summary(task, config, state, record, value, path)
@@ -778,6 +804,8 @@ def inspect(root, binding, adapter, task, config):
         latest = review_state["results"][-1]
         review["last_result"] = {key: latest[key] for key in ("round", "status", "changes", "reason")}
         review["result_command"] = f"agent-box workflow review-result {task.id} --round={latest['round']}"
+    if status := managed_round_status(root, review_state):
+        review["pending_round"] = {"round": review_state["pending"], "backend": "managed", "status": status}
     result = {"task": task.id, **info, "task_branch": expected, "current_branch": branch,
               "head": head, "scope": None, "configuration": configuration_summary(config),
               "acceptance": {"available": not unavailable, "reasons": unavailable},
@@ -1119,6 +1147,12 @@ def execute(config, selected, role, root, prompt, read_paths=(), on_completed=No
             failures.append({"provider": candidate["provider"],
                              **({"api_provider": candidate["api_provider"]} if candidate.get("api_provider") else {}),
                              "category": exc.category, **exc.diagnostic})
+            if exc.category == "interrupted":
+                raise AgentBoxError(
+                    f"Managed {role} was interrupted by a signal; no provider fallback runs"
+                    + {"worker": "; reconcile files and task progress before retrying",
+                       "reviewer": "; its review attempt stays spent, start a new round within budget"}.get(role, "")
+                    + ": " + json.dumps(failures)) from None
             if role == "reviewer" and exc.category not in (
                     "unavailable", "model-unavailable", "authentication", "quota", "timeout"):
                 raise AgentBoxError("Reviewer failure does not establish provider unavailability; "
