@@ -99,6 +99,7 @@ class ConfigDescribeTests(unittest.TestCase):
         config.env.set = {"LITERAL": "env-secret-value"}
         config.env.forward = ["FORWARDED_NAME"]
         config.usage.command = "curl -H 'Authorization: command-secret-value'"
+        config.github.gh_token = True
         save_config(config, self.global_file)
         output, fields = self.describe()
         for secret in ("tg-secret-value", "tracker-secret-value", "env-secret-value", "command-secret-value"):
@@ -109,6 +110,8 @@ class ConfigDescribeTests(unittest.TestCase):
                          {"default": "", "source": "default", "effective": ""})
         self.assertEqual(fields["env.set"]["global"], {"LITERAL": "<redacted>"})
         self.assertEqual(fields["env.forward"]["global"], ["FORWARDED_NAME"])
+        # A token-named switch stores no credential; masking it would hide the setting itself.
+        self.assertIs(fields["github.gh_token"]["effective"], True)
 
     def test_a_session_snapshot_claims_no_global_value_for_host_only_settings(self):
         """Inside a box a missing section is unknown; reporting defaults would misstate the host's choices."""
@@ -151,7 +154,9 @@ class ConfigDescribeTests(unittest.TestCase):
         url = fields["tracker.connections.vikunja.url"]
         self.assertEqual((url["global"], url["effective"], url["source"]),
                          ("https://global.example", "https://session.example", "session"))
-        self.assertEqual(fields["tracker.connections.vikunja.token"]["effective"], "<redacted>")
+        token = fields["tracker.connections.vikunja.token"]
+        self.assertEqual((token["effective"], token["source"]), ("<redacted>", "session"))
+        self.assertNotIn("global", token, "the snapshot does not carry the host token, so its presence is unknown")
         self.assertNotIn("session-token-value", output)
         self.assertIn("--review", self.document["session_options"])
 
@@ -168,6 +173,7 @@ class ConfigDescribeTests(unittest.TestCase):
         self.assertNotIn("session", {field.get("source") for field in fields.values()})
 
     def test_a_path_narrows_the_output_and_an_unknown_path_is_an_error(self):
+        """An agent reads one section at a time; a typo must fail instead of printing nothing."""
         _, fields = self.describe("workflow.review")
         self.assertIn("workflow.review", fields)
         self.assertIn("workflow.review.sensitive_paths", fields)
@@ -176,6 +182,7 @@ class ConfigDescribeTests(unittest.TestCase):
             self.describe("workflow.revie")
 
     def test_an_invalid_project_file_fails_before_any_output(self):
+        """Partial JSON from a rejected project file would look like a valid description."""
         self.project_file.write_text(json.dumps({"audio": {"enabled": True}}))
         with contextlib.redirect_stdout(io.StringIO()) as output, self.assertRaises(AgentBoxError):
             cli.config_command(["describe"])

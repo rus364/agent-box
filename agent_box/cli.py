@@ -328,8 +328,8 @@ _DESCRIBED_TYPES = {bool: "boolean", int: "integer", float: "number", str: "stri
 
 def _masked(value, hidden: bool):
     """Whether a secret is set, without the secret."""
-    if not hidden or isinstance(value, list):
-        # A hidden list holds variable names (env.forward), never their values.
+    if not hidden or isinstance(value, (bool, list)):
+        # A switch is its own value, and a hidden list holds variable names (env.forward).
         return value
     if isinstance(value, dict):
         return {key: "<redacted>" for key in value}
@@ -363,13 +363,15 @@ def config_description(prefix: str = "") -> dict:
     # The editor's baseline: a session's --tracker account is not a global value.
     global_urls = baseline._global_tracker_urls
     connections = known["tracker"]["connections"]
+    # A session bound to another URL does not carry the global token, so its presence is unknown here.
     accounts = {
-        name: {"url": url, "token": connections[name]["token"] if connections.get(name, {}).get("url") == url else ""}
-        for name, url in global_urls.items()}
+        name: {"url": url, "token": connections[name]["token"]} if connections.get(name, {}).get("url") == url
+        else {"url": url} for name, url in global_urls.items()}
     known["tracker"]["connections"] = accounts
+    resolved = actual
     if source["kind"] == "runtime":
         rendered = _snapshot_sections(source)
-        known = _rendered_only(known, rendered)
+        known, resolved = _rendered_only(known, rendered), _rendered_only(actual, rendered)
         # A snapshot carries every global URL on its own, but a token only for an account it renders.
         rendered_accounts = rendered.get("tracker", {}).get("connections", {})
         if "tracker" in known:
@@ -427,7 +429,8 @@ def config_description(prefix: str = "") -> dict:
                     # Compared in the loader's normalization, which strips strings a project file may pad.
                     bound = (full[:2] == ("tracker", "connections")
                              and underlying != (layered.strip() if isinstance(layered, str) else layered))
-                    if layered is missing and layers["default"] is not missing:
+                    # Unknowable here: no layer carries it and the session renders no value of its own.
+                    if layered is missing and layers["default"] is not missing and lookup(resolved, full) is missing:
                         entry["source"] = "host-only"
                     elif effective is missing:
                         entry["source"] = "unset"
