@@ -37,6 +37,7 @@ def usage_text() -> None:
   agent-box [OPTIONS] ext API [claude|codex] [AGENT ARGS...]
   agent-box [--host] [--workspace PATH] attach [SESSION] | stop
   agent-box config [--project | show | describe [PATH] | check | apply]
+  agent-box config set --project [--dry-run] PATH=JSON... [--reset PATH]...
   agent-box usage [codex|claude|all] [--no-cache] [--json]
   agent-box notify test
   agent-box build | update | rebuild
@@ -67,6 +68,7 @@ Configuration:
   config --project        Edit this repository's .agent-box.json
   config show             Effective settings, tokens redacted
   config describe [PATH]  JSON per setting for agents: help, layered values, project eligibility; secrets redacted
+  config set --project    Validate, diff and save .agent-box.json changes; values are JSON, --reset inherits again
   config check            Check the Claude Telegram channel setup
   config apply            Apply the saved file after editing it by hand
   usage                   Remaining subscription limits
@@ -465,6 +467,71 @@ def config_describe(prefix: str = "") -> None:
     print("]}")
 
 
+CONFIG_SET_USAGE = "expected: agent-box config set --project [--dry-run] PATH=JSON... [--reset PATH]..."
+
+
+def _setting_path(text: str) -> tuple[str, ...]:
+    path = tuple(text.split("."))
+    if not all(path):
+        die(f"config set: invalid setting path {text!r}; 'agent-box config describe' lists every path")
+    return path
+
+
+def config_set(args: list[str]) -> None:
+    """``config set --project``: the checked, diffed project write ``config ai`` agents use.
+
+    Values are JSON, so a type is never guessed (``"off"`` against ``false``).
+    The whole resulting file passes the project loader's validation before
+    anything is written; no apply, PATH or user directory is touched.
+    """
+    import difflib
+    from . import project_config
+    project = dry_run = False
+    assignments, resets = [], []
+    rest = list(args)
+    while rest:
+        arg = rest.pop(0)
+        if arg == "--project":
+            project = True
+        elif arg == "--dry-run":
+            dry_run = True
+        elif arg == "--reset" and rest:
+            resets.append(_setting_path(rest.pop(0)))
+        elif "=" in arg and not arg.startswith("-"):
+            name, text = arg.split("=", 1)
+            try:
+                value = json.loads(text)
+            except ValueError:
+                # The value may be a secret typed into the wrong place; name the setting only.
+                die(f'config set: the value for {name} must be JSON, for example true, 5, "text" or ["a"]')
+            assignments.append((_setting_path(name), value))
+        else:
+            die(CONFIG_SET_USAGE)
+    paths = [path for path, _ in assignments] + resets
+    if not project or not paths:
+        die(CONFIG_SET_USAGE)
+    if len(set(paths)) != len(paths):
+        die("config set: each setting path may appear once")
+    file = project_config.project_path()
+    before = project_config.load(file)
+    after = project_config.changed(before, assignments, resets)
+    # The refusal is about the proposal; the file on disk was not changed and holds no such value.
+    project_config.validate(after, f"{file} (proposed change; file unchanged)")
+    diff = "".join(difflib.unified_diff(
+        (json.dumps(before, indent=2, ensure_ascii=False) + "\n").splitlines(keepends=True),
+        (json.dumps(after, indent=2, ensure_ascii=False) + "\n").splitlines(keepends=True),
+        f"{file} (current)", f"{file} (proposed)"))
+    if not diff:
+        print(f"No changes: {file}")
+        return
+    print(diff, end="")
+    if dry_run:
+        print("Dry run: nothing written")
+        return
+    project_config.save(file, after)
+    print(f"Saved project configuration: {file}")
+
+
 def config_show() -> None:
     config = effective_config()
     source = effective_config_source()
@@ -611,12 +678,14 @@ def config_command(args: list[str]) -> None:
         config_show()
     elif args[:1] == ["describe"] and len(args) <= 2:
         config_describe(*args[1:])
+    elif args[:1] == ["set"]:
+        config_set(args[1:])
     elif args == ["check"]:
         config_check()
     elif args == ["apply"]:
         config_apply()
     else:
-        die("expected: agent-box config [--project|show|describe [PATH]|check|apply]")
+        die("expected: agent-box config [--project|show|describe [PATH]|set --project ...|check|apply]")
 
 
 # -- completion --------------------------------------------------------

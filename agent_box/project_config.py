@@ -44,6 +44,37 @@ def merge(base, overrides):
     return result
 
 
+def changed(data, assignments=(), resets=()):
+    """A copy of project overrides with ``resets`` removed and ``assignments`` set.
+
+    A reset is the menu's Reset to default: the path inherits again, and
+    sections it empties disappear. Nothing is checked here; the whole result
+    goes through ``validate``, so a change cannot pass a rule the file fails.
+    """
+    result = copy.deepcopy(data)
+    for path in resets:
+        chain, target = [], result
+        for part in path[:-1]:
+            if not isinstance(target.get(part), dict):
+                break
+            chain.append((target, part))
+            target = target[part]
+        else:
+            target.pop(path[-1], None)
+            for parent, part in reversed(chain):
+                if parent[part]:
+                    break
+                del parent[part]
+    for path, value in assignments:
+        target = result
+        for part in path[:-1]:
+            if not isinstance(target.get(part), dict):
+                target[part] = {}
+            target = target[part]
+        target[path[-1]] = copy.deepcopy(value)
+    return result
+
+
 def validate(data, path):
     def credentials(value, parts=()):
         if not isinstance(value, dict):
