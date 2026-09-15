@@ -473,6 +473,30 @@ class ConfigMenuTests(unittest.TestCase):
         self.assertNotIn("do-not-draw-this", "\n".join(screen.drawn))
         self.assertEqual(config.notifications.telegram_token, "do-not-draw-this")
 
+    def test_environment_values_are_visible_and_malformed_names_are_refused_while_editing(self):
+        """env.set and env.forward hold no secrets by design.
+
+        Masking them hid the pre-filled JSON that blind typing then corrupted,
+        and a name that saving drops must not be reported as a draft change.
+        """
+        import curses
+        config = Config()
+        config.env.set = {"TZ": "UTC"}
+        open_set = [*select("env"), "\n", *select("set", ("env",)), "\n"]
+        save = ["\x1b", curses.KEY_END, curses.KEY_UP, "\n"]
+        result, screen = self.edit(config, [*open_set, curses.KEY_LEFT, *', "LANG": "C"', "\n", *save])
+        self.assertEqual(result.config.env.set, {"TZ": "UTC", "LANG": "C"})
+        self.assertTrue(any('{"TZ": "UTC"}' in line for line in screen.drawn))
+
+        refused, screen = self.edit(config, [*open_set, "\x15", *'{"my-var": "x"}', "\n", *save])
+        self.assertEqual(refused.config.env.set, {"TZ": "UTC"})
+        self.assertTrue(any(line.startswith('Not saved: "my-var"') for line in screen.drawn))
+
+        open_forward = [*select("env"), "\n", *select("forward", ("env",)), "\n"]
+        refused, screen = self.edit(config, [*open_forward, "\x15", *'["TOKEN", "1BAD"]', "\n", *save])
+        self.assertEqual(refused.config.env.forward, [])
+        self.assertTrue(any(line.startswith('Not saved: "1BAD"') for line in screen.drawn))
+
     def test_model_picker_preserves_unknown_value_and_accepts_custom_or_disable(self):
         import curses
         config = Config()

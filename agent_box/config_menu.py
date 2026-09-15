@@ -9,7 +9,7 @@ import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 
-from .config import AGENT_EFFORTS, IMAGE_TOOL_GROUP_HELP, LAUNCH_AGENTS, Config, REVIEW_PRESETS, TRACKER_PROVIDERS, TrackerConnection
+from .config import AGENT_EFFORTS, IMAGE_TOOL_GROUP_HELP, LAUNCH_AGENTS, Config, EnvConfig, REVIEW_PRESETS, TRACKER_PROVIDERS, TrackerConnection
 from .errors import AgentBoxError
 from .external_config import API_EFFORTS, ExternalProvider, model_defaults, model_settings, valid_model, valid_name, validate_connections
 from .model_catalog import load_model_catalogs
@@ -299,7 +299,7 @@ class EditResult:
 
 def secret(path):
     return ("token" in path[-1] and path[-1] != 'auto_compact_token_limit'
-            or path[-1] == "api_key" or path[0] == "env"
+            or path[-1] == "api_key"
             or json_field(path) and path[-1] in ('env', 'provider_options'))
 
 
@@ -314,6 +314,21 @@ def parse_value(text, current):
     if isinstance(current, float):
         return float(text)
     return text
+
+
+def env_entries(name, value):
+    """Refuse in the editor what saving would silently drop.
+
+    Saving normalizes through ``EnvConfig.from_dict``, which discards
+    malformed names so they never reach Podman; accepting them here reported
+    a draft change that was then lost without a word.
+    """
+    kept = getattr(EnvConfig.from_dict({name: value}), name)
+    dropped = [entry for entry in value if entry not in kept]
+    if dropped:
+        raise ValueError("Not saved: " + ", ".join(json.dumps(entry, ensure_ascii=False) for entry in dropped)
+                         + "; names use letters, digits and _ and do not start with a digit; values are text")
+    return kept
 
 
 def _candidate_field(path):
@@ -979,7 +994,10 @@ def edit(config, *, project=None):
                     changed = input_value(screen, " / ".join(label_for(part, full[:index]) for index, part in enumerate(full)), initial, secret(full))
                     if changed is not None:
                         try:
-                            data[name], notice = parse_value(changed, value), "Draft updated; save to keep changes"
+                            parsed = parse_value(changed, value)
+                            if full[:1] == ("env",):
+                                parsed = env_entries(name, parsed)
+                            data[name], notice = parsed, "Draft updated; save to keep changes"
                             accepted = True
                         except (ValueError, json.JSONDecodeError) as exc:
                             notice = str(exc)

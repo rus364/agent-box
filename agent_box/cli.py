@@ -289,8 +289,9 @@ def _show_value(value, hidden: bool) -> str:
 
 def _hidden(at) -> bool:
     from . import config_menu
-    # A command line routinely carries a bearer token; the menu shows it for editing.
-    return config_menu.secret(at) or at == ("statusline", "command")
+    # A command line routinely carries a bearer token and a literal env value
+    # may be one despite its help; the menu shows both for editing.
+    return config_menu.secret(at) or at == ("statusline", "command") or at[:1] == ("env",)
 
 
 def _show_rows(data, path=()):
