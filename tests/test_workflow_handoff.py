@@ -477,6 +477,8 @@ class WorkerHandoffTests(unittest.TestCase):
                                      "--brief", str(self.review_brief), "--primary", "codex")
         self.assertEqual(prepared["scout_limit"], self.config.workflow.scout.limit)
         self.assertIn("coordinator-counted", prepared["scout_slots"])
+        # A scout follows these sentences literally; a lost separator fuses two of them into one token.
+        self.assertIn(". " + workflow.LAUNCH_CONTEXT, prepared["instructions"])
         prompt = self.delegation_input(prepared).read_bytes().decode("utf-8")
         command = ("run", "1", "--role", "scout", "--handoff", prepared["handoff"],
                    "--brief", str(self.review_brief))

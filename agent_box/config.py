@@ -732,10 +732,12 @@ class WorkflowConfig:
                for v in self.weights.values()) or not any(self.weights.values()):
             errors.append("workflow.weights must be finite, nonnegative, and not all zero")
         for name, minimum, maximum in (("reserve_percent", 0, 99), ("smoothing_hours", 1, 168),
-                                        ("scout.limit", 1, 16), ("timeout_seconds", 30, 86400)):
-            value = self.scout.limit if name == "scout.limit" else getattr(self, name)
-            if not isinstance(value, (int, float)) or not math.isfinite(value) or not minimum <= value <= maximum or name in ("scout.limit", "timeout_seconds") and not isinstance(value, int):
+                                        ("timeout_seconds", 30, 86400)):
+            value = getattr(self, name)
+            if not isinstance(value, (int, float)) or not math.isfinite(value) or not minimum <= value <= maximum or name == "timeout_seconds" and not isinstance(value, int):
                 errors.append(f"workflow.{name} must be between {minimum} and {maximum}")
+        if not isinstance(self.scout.limit, int) or not 1 <= self.scout.limit <= 16:
+            errors.append("workflow.scout.limit must be between 1 and 16")
         if self.review.routing not in ("cross-provider", "same-provider"):
             errors.append("workflow.review.routing must be cross-provider or same-provider")
         if self.review.policy not in ("off", "auto", "always"):

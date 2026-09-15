@@ -1915,7 +1915,7 @@ def scout_dispatch(args, root, binding, adapter, task, config):
                 "managed_command": shlex.join(["agent-box", "workflow", "run", task.id, "--role", "scout",
                                                 "--tier", str(tier), "--handoff", token, "--brief", args.brief]),
                 "report_command": f"agent-box workflow report {task.id} --role scout --tier {tier} --scope {fingerprint} --provider ACTUAL_PROVIDER --model ACTUAL_MODEL --effort ACTUAL_EFFORT --handoff DESCRIPTOR --file REPORT.json",
-                "instructions": "Only the coordinator dispatches distinct bounded questions; never duplicate scouts. Count active native scouts against scout_limit (workflow.scout.limit); preparation reserves no native slot." + LAUNCH_CONTEXT}
+                "instructions": "Only the coordinator dispatches distinct bounded questions; never duplicate scouts. Count active native scouts against scout_limit (workflow.scout.limit); preparation reserves no native slot. " + LAUNCH_CONTEXT}
     if not getattr(args, "handoff", None):
         raise AgentBoxError("Scout execution requires --handoff from prepare")
     descriptor = read_handoff_descriptor(identity, task, fingerprint, args.handoff)
