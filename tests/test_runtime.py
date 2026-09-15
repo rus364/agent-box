@@ -281,19 +281,42 @@ class InvocationEnvironmentTests(unittest.TestCase):
         self.assertIn("GH_TOKEN", flags)
         self.assertEqual(env["GH_TOKEN"], "derived-token")
 
-    def test_claude_sessions_keep_background_managed_runs_through_pressure_spikes(self):
-        """Claude Code's PSI reaper killed a background managed review, CLI and all;
-        the opt-out is per exec, so enabling it never recreates a box."""
-        name = "CLAUDE_CODE_DISABLE_BG_SHELL_PRESSURE_REAP"
-        with mock.patch.object(runtime, "github_env", return_value=[]), \
-             mock.patch.object(runtime, "provider_env", return_value=[]):
-            claude, _ = runtime.invocation_env(Config(), "claude")
-            codex, _ = runtime.invocation_env(Config(), "codex")
-        self.assertIn(f"{name}=1", claude)
-        self.assertFalse(any(item.startswith(name) for item in codex))
+    def test_every_launch_keeps_background_managed_runs_through_pressure_spikes(self):
+        """Claude Code's PSI reaper killed a background managed review, CLI and all.
+        A box's tmux server keeps its first launch's environment, so a Codex or
+        shell launch must carry the opt-out for a later Claude pane. It is per
+        exec, so enabling it never recreates a box, and env.set still wins."""
+        name = runtime.PRESSURE_REAP_OPT_OUT
+        for agent in ("claude", "codex", "shell"):
+            with self.subTest(agent=agent), \
+                 mock.patch.object(runtime, "github_env", return_value=[]), \
+                 mock.patch.object(runtime, "provider_env", return_value=[]), \
+                 mock.patch.object(runtime, "user_env", return_value=[f"--env={name}=0"]):
+                pairs, _ = runtime.invocation_env(Config(), agent)
+                self.assertLess(pairs.index(f"{name}=1"), pairs.index(f"{name}=0"))
         with tempfile.TemporaryDirectory() as project:
             workspace = Workspace(Path(project), Path(project))
             self.assertNotIn(name, " ".join(runtime.container_argv(workspace, [], Path(project), ["claude"])))
+
+
+class HostReaperOptOutTests(IsolatedRuntimeTest):
+    def test_host_sessions_carry_the_pressure_reaper_opt_out_unless_env_set_overrides(self):
+        """A host coordinator runs the same background managed reviews as one in a box."""
+        name = runtime.PRESSURE_REAP_OPT_OUT
+        for configured, expected in (({}, "1"), ({name: "0"}, "0")):
+            config = Config()
+            config.env.set = configured
+            with self.subTest(configured=configured), \
+                 mock.patch.object(runtime.shutil, "which", return_value="/usr/bin/claude"), \
+                 mock.patch.object(runtime, "resolve_workspace", return_value=Workspace(Path.cwd(), Path.cwd())), \
+                 mock.patch.object(runtime, "launch_config", return_value=config), \
+                 mock.patch.object(runtime, "tmux_enabled", return_value=False), \
+                 mock.patch.object(runtime, "remote_control_invocation", return_value=False), \
+                 mock.patch.object(runtime, "ensure_state_dirs"), \
+                 mock.patch.object(runtime, "ensure_refresh_token"), \
+                 mock.patch.object(runtime.subprocess, "call", return_value=0) as call:
+                runtime.host_main("claude", [])
+            self.assertEqual(call.call_args.kwargs["env"][name], expected)
 
 
 class CodexRuntimeOverridesTests(IsolatedRuntimeTest):

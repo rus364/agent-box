@@ -2062,6 +2062,14 @@ def launch_in_workspace_container(
     return rc
 
 
+# Claude Code kills background shells, whole process tree included, on a
+# 150 ms-in-2 s cgroup PSI spike once the user has been idle for 30 minutes.
+# That spike is not memory exhaustion, and it killed managed reviews that must
+# run in the background because they outlast the foreground command limit.
+# The kernel OOM killer still applies.
+PRESSURE_REAP_OPT_OUT = "CLAUDE_CODE_DISABLE_BG_SHELL_PRESSURE_REAP"
+
+
 def invocation_env(config: Config, agent: str) -> tuple[list[str], dict[str, str]]:
     """Per-exec env flags and the host environment from which named values flow.
 
@@ -2085,15 +2093,12 @@ def invocation_env(config: Config, agent: str) -> tuple[list[str], dict[str, str
         ]
     # `--env=NAME` means inherit NAME from the local podman client. Convert
     # the existing helpers' argv spelling into exec_argv's compact form.
-    invocation = [f"TERM={env.get('TERM', 'xterm-256color')}", *(item[6:] for item in forwarded)]
-    if agent == "claude":
-        # Claude Code kills background shells, whole process tree included, on a
-        # 150 ms-in-2 s cgroup PSI spike once the user has been idle for 30
-        # minutes. That spike is not memory exhaustion, and it killed managed
-        # reviews that must run in the background because they outlast the
-        # foreground command limit. The kernel OOM killer still applies.
-        invocation.append("CLAUDE_CODE_DISABLE_BG_SHELL_PRESSURE_REAP=1")
-    return invocation, env
+    # Every agent gets the reaper opt-out, not only Claude: a tmux server keeps
+    # the environment of the launch that started it, so a later Claude session
+    # in a box first opened by `agent-box codex` would otherwise lack it.
+    # Listed before user flags so an explicit env.set still wins.
+    return [f"TERM={env.get('TERM', 'xterm-256color')}", f"{PRESSURE_REAP_OPT_OUT}=1",
+            *(item[6:] for item in forwarded)], env
 
 
 DOCTOR_SCRIPT = r'''
@@ -2835,6 +2840,7 @@ def host_main(
         selected_model(config, api_provider, agent, rest)
     # As in container mode: a launch applies nothing to the user's own files.
     env = builtin_environment(os.environ)
+    env[PRESSURE_REAP_OPT_OUT] = "1"
     # ``env.set`` states what a session should have; a host session is still a
     # session. ``env.forward`` has nothing to do here -- host mode already
     # runs in the very shell those names would have been forwarded from, so
