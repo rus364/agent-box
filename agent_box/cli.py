@@ -510,8 +510,9 @@ def config_set(args: list[str]) -> None:
     paths = [path for path, _ in assignments] + resets
     if not project or not paths:
         die(CONFIG_SET_USAGE)
-    if len(set(paths)) != len(paths):
-        die("config set: each setting path may appear once")
+    # A section and a field inside it would make the result depend on argument order.
+    if any(a[:len(b)] == b for i, a in enumerate(paths) for j, b in enumerate(paths) if i != j):
+        die("config set: each setting path may appear once, and not together with a section containing it")
     file = project_config.project_path()
     before = project_config.load(file)
     after = project_config.changed(before, assignments, resets)

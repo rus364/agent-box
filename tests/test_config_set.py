@@ -81,6 +81,8 @@ class ConfigSetTests(unittest.TestCase):
             ("workflow.review.policy=\"sometimes\"",): "",
             ("--reset",): "expected",
             ("browser.enabled=true", "browser.enabled=false"): "once",
+            ('workflow.review={"max_files": 5}', "workflow.review.max_lines=3"): "containing",
+            ("--reset", "workflow.review", "workflow.review.max_lines=3"): "containing",
         }
         for args, message in refused.items():
             with self.subTest(args=args), contextlib.redirect_stdout(io.StringIO()) as output:
