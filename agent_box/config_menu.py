@@ -78,7 +78,8 @@ HELP = {
     "workflow.fallback": "Try another eligible provider on failure. Reviewer fallback requires observed unavailability; missing native support uses the same provider's CLI. Same-provider review never switches.",
     "workflow.reserve_percent": "Subscription capacity reserved from usage-aware routing. Valid values are 0 through 99 percent.",
     "workflow.smoothing_hours": "Time window, from 1 through 168 hours, used to smooth usage-aware routing decisions.",
-    "workflow.scout_limit": "Maximum number of concurrent read-only scouts, from 1 through 16.",
+    "workflow.scout": "Read-only scouts the coordinator dispatches for bounded questions. Their models come from Worker and scout models under Delegation.",
+    "workflow.scout.limit": "Maximum number of concurrent read-only scouts, from 1 through 16.",
     "workflow.auto_push": "Within the opt-in workflow, publish the parent task in GitHub mode or the accepted base after a local fast-forward. Turning this off keeps completion local.",
     "workflow.timeout_seconds": "Maximum delegated agent runtime in seconds, from 30 through 86400.",
     "workflow.worker": "Worker execution preference and model source. Delegated provider routing is shared with scouts; reviewer settings stay independent.",
@@ -121,7 +122,8 @@ LABELS = {
     "github_model": "GitHub review model", "github_effort": "GitHub review effort",
     "telegram_chat_id": "Telegram chat ID",
     "scope": "Model override scope",
-    "execution": "Worker execution",
+    "execution": "Worker execution", "worker": "Workers", "scout": "Scouts",
+    "github_provider": "GitHub review provider",
     "external_providers": "External API providers", "api_provider": "API provider", "api_key": "API key",
 }
 
@@ -136,13 +138,10 @@ MENU_GROUPS = {
     ),
     ("workflow",): (
         ("Workflow", ("enabled",)),
-        ("Worker execution and models", ("worker", "tiers")),
-        ("Shared delegated routing", ("routing", "weights", "fallback",
-                                      "reserve_percent", "smoothing_hours")),
-        ("Review", ("review",)),
-        ("Delivery and cleanup", ("merge_mode", "auto_push", "cleanup_local_branches",
-                                  "cleanup_remote_branches")),
-        ("Execution limits", ("scout_limit", "timeout_seconds")),
+        ("Delivery", ("merge_mode", "auto_push", "cleanup_local_branches", "cleanup_remote_branches")),
+        ("Roles", ("worker", "scout", "review")),
+        ("Delegation", ("tiers", "routing", "weights", "fallback", "reserve_percent",
+                        "smoothing_hours", "timeout_seconds")),
     ),
     ("workflow", "worker"): (
         ("Execution", ("execution",)),
@@ -197,6 +196,13 @@ def label_for(key, path=()):
         return key
     if key == "override" and path in (("workflow", "worker"), ("workflow", "review")):
         return "Global worker override" if path[-1] == "worker" else "Global reviewer override"
+    # Workflow and review both have tiers and routing; bare names would read as one setting.
+    if path == ("workflow",) and key in ("tiers", "routing"):
+        return "Worker and scout models" if key == "tiers" else "Provider routing"
+    if path == ("workflow", "review") and key == "routing":
+        return "Reviewer routing"
+    if path == ("workflow", "tiers") and key == "0":
+        return "Tier 0 (scouts only)"
     return LABELS.get(key, f"Tier {key}" if key.isdigit() else key.replace("_", " ").capitalize()).replace('Api', 'API')
 
 

@@ -34,6 +34,16 @@ def shown(config):
     return show_paths(output.getvalue())
 
 
+class ScoutLimitValidationTests(unittest.TestCase):
+    def test_scout_limit_accepts_only_whole_numbers_within_range(self):
+        """The limit is a count of repository slot locks, so a fraction or out-of-range value cannot be honoured."""
+        for value in (0, 17, 2.5):
+            with self.subTest(value=value):
+                errors = Config.from_dict({"workflow": {"scout": {"limit": value}}}).workflow.validate()
+                self.assertIn("workflow.scout.limit must be between 1 and 16", errors)
+        self.assertEqual(Config.from_dict({"workflow": {"scout": {"limit": 16}}}).workflow.validate(), [])
+
+
 class ConfigShowTests(unittest.TestCase):
     def test_every_schema_setting_is_shown_without_per_field_code(self):
         """A setting added to the schema must appear; hand-written rows once dropped sensitive_paths."""

@@ -475,7 +475,7 @@ class WorkerHandoffTests(unittest.TestCase):
         """Routing drift must not replace the scout whose evidence is being accepted."""
         prepared = self.run_workflow("prepare", "1", "--role", "scout", "--question", "Where is the boundary?",
                                      "--brief", str(self.review_brief), "--primary", "codex")
-        self.assertEqual(prepared["scout_limit"], self.config.workflow.scout_limit)
+        self.assertEqual(prepared["scout_limit"], self.config.workflow.scout.limit)
         self.assertIn("coordinator-counted", prepared["scout_slots"])
         prompt = self.delegation_input(prepared).read_bytes().decode("utf-8")
         command = ("run", "1", "--role", "scout", "--handoff", prepared["handoff"],
@@ -734,7 +734,7 @@ class WorkerHandoffTests(unittest.TestCase):
         """Two active CLI scouts exhaust two slots while distinct prepared work remains retryable."""
         import threading
         from concurrent.futures import ThreadPoolExecutor
-        self.config.workflow.scout_limit = 2
+        self.config.workflow.scout.limit = 2
         prepared = [self.run_workflow("prepare", "1", "--role", "scout", "--question", f"Question {i}?",
                                       "--brief", str(self.review_brief)) for i in range(3)]
         entered = threading.Barrier(3)

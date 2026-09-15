@@ -87,10 +87,9 @@ class ConfigMenuTests(unittest.TestCase):
             (): ['default_agent', 'claude', 'codex', 'external_providers', 'tracker', 'workflow',
                  'image', 'browser', 'audio', 'git', 'github', 'providers', 'env',
                  'statusline', 'skills', 'notifications'],
-            ('workflow',): ['enabled', 'worker', 'tiers', 'routing', 'weights', 'fallback',
-                           'reserve_percent', 'smoothing_hours', 'review', 'merge_mode',
-                           'auto_push', 'cleanup_local_branches', 'cleanup_remote_branches',
-                           'scout_limit', 'timeout_seconds'],
+            ('workflow',): ['enabled', 'merge_mode', 'auto_push', 'cleanup_local_branches',
+                           'cleanup_remote_branches', 'worker', 'scout', 'review', 'tiers', 'routing',
+                           'weights', 'fallback', 'reserve_percent', 'smoothing_hours', 'timeout_seconds'],
             ('workflow', 'worker'): ['execution', 'override'],
             ('workflow', 'review'): ['policy', 'max_files', 'max_lines', 'sensitive_paths',
                                     'ignored_paths', 'label', 'routing', 'override', 'tiers', 'max_rounds',
@@ -103,6 +102,14 @@ class ConfigMenuTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertEqual(config_menu.menu_keys(dict(reversed(section.items())), path), keys)
                 self.assertCountEqual(keys, section)
+
+    def test_workflow_and_review_settings_sharing_a_key_read_as_different_settings(self):
+        """Provider routing and reviewer routing are separate policies; one bare label would merge them."""
+        self.assertEqual(config_menu.label_for("routing", ("workflow",)), "Provider routing")
+        self.assertEqual(config_menu.label_for("routing", ("workflow", "review")), "Reviewer routing")
+        self.assertEqual(config_menu.label_for("tiers", ("workflow",)), "Worker and scout models")
+        self.assertEqual(config_menu.label_for("0", ("workflow", "tiers")), "Tier 0 (scouts only)")
+        self.assertEqual(config_menu.label_for("1", ("workflow", "tiers")), "Tier 1")
 
     def test_long_labels_keep_value_columns_and_full_selected_help_at_supported_widths(self):
         """A long override label must neither shift its value nor disappear from help."""

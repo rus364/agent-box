@@ -48,6 +48,13 @@ class ProjectConfigTests(unittest.TestCase):
         self.assertTrue(result.image.tools['analysis'])
         self.assertEqual(self.config.to_dict(), original)
 
+    def test_project_scout_limit_overrides_the_scout_section_without_changing_global(self):
+        """A repository may allow fewer or more concurrent scouts; the host's own limit stays as saved."""
+        data = {'workflow': {'scout': {'limit': 2}}}
+        project_config.validate(data, self.path)
+        self.assertEqual(project_config.apply(self.config, data).workflow.scout.limit, 2)
+        self.assertEqual(self.config.workflow.scout.limit, 3)
+
     def test_worker_override_project_values_reach_runtime_without_changing_global(self):
         """Sparse project scope/execution choices supersede global settings without sharing candidates."""
         override = self.config.workflow.worker.override

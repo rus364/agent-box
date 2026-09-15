@@ -1883,7 +1883,7 @@ def worker_dispatch(args, root, binding, adapter, task, config):
 
 
 def scout_diagnostics(config):
-    return {"scout_limit": config.workflow.scout_limit,
+    return {"scout_limit": config.workflow.scout.limit,
             "scout_slots": "Managed runs enforce shared repository slots; native scouts are coordinator-counted. CLI processes cannot own native subagent leases."}
 
 
@@ -1915,7 +1915,7 @@ def scout_dispatch(args, root, binding, adapter, task, config):
                 "managed_command": shlex.join(["agent-box", "workflow", "run", task.id, "--role", "scout",
                                                 "--tier", str(tier), "--handoff", token, "--brief", args.brief]),
                 "report_command": f"agent-box workflow report {task.id} --role scout --tier {tier} --scope {fingerprint} --provider ACTUAL_PROVIDER --model ACTUAL_MODEL --effort ACTUAL_EFFORT --handoff DESCRIPTOR --file REPORT.json",
-                "instructions": "Only the coordinator dispatches distinct bounded questions; never duplicate scouts. Count active native scouts against scout_limit; preparation reserves no native slot. " + LAUNCH_CONTEXT}
+                "instructions": "Only the coordinator dispatches distinct bounded questions; never duplicate scouts. Count active native scouts against scout_limit (workflow.scout.limit); preparation reserves no native slot." + LAUNCH_CONTEXT}
     if not getattr(args, "handoff", None):
         raise AgentBoxError("Scout execution requires --handoff from prepare")
     descriptor = read_handoff_descriptor(identity, task, fingerprint, args.handoff)
@@ -1940,7 +1940,7 @@ def scout_dispatch(args, root, binding, adapter, task, config):
             current_prompt = assignment_handoff(root, task, "HEAD", read_brief(args.brief), "scout", question=descriptor["question"])
             if current_prompt != prompt:
                 raise AgentBoxError("Scout brief or repository instructions changed; prepared handoff must match")
-        execution_lock = scout_slot(root, config.workflow.scout_limit) if args.command == "run" else nullcontext()
+        execution_lock = scout_slot(root, config.workflow.scout.limit) if args.command == "run" else nullcontext()
         with execution_lock:
             atomic_write_text(path, json.dumps({"descriptor": descriptor, "status": "consumed"}), 0o600)
             try:

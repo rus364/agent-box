@@ -30,7 +30,7 @@ remains the offline answer. The coordinator creates the parent branch from that
 base, then creates each subtask branch from the parent, executes it sequentially,
 and integrates it before starting the next. No parallel workers or automatic
 branch creation by delegated agents. Read-only scouts may run concurrently within
-`scout_limit`. A finished sibling unblocks after integration; a dependency in
+`workflow.scout.limit`. A finished sibling unblocks after integration; a dependency in
 another parent remains blocked until that parent's merge.
 
 `workflow begin CHILD` records the initial head only for a new branch claimed
@@ -767,7 +767,7 @@ Scouts answer distinct bounded unanswered questions that materially affect a dec
 or avoid substantial repeated reading. Quick lookups stay with the coordinator;
 duplicate scouts are prohibited. Only the coordinator launches scouts; workers and
 scouts must not launch nested scouts. Fresh read-only scouts may overlap up to the
-effective `scout_limit`, shown by prepare, inspect and config diagnostics. Managed
+effective `workflow.scout.limit`, shown as `scout_limit` by prepare, inspect and config diagnostics. Managed
 runs enforce the shared repository slot lock. Native launches are coordinator-counted:
 CLI processes cannot safely own native subagent leases; prepare reserves no slot.
 

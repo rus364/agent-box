@@ -621,6 +621,20 @@ class WorkerConfig:
 
 
 @dataclass
+class ScoutConfig:
+    """Scout policy of its own; scout models stay in the shared worker/scout tiers.
+
+    Scouts run at tier 0-3 from the same matrix as workers, so splitting that
+    matrix by role would give scouts two sources for one tier.
+    """
+    limit: int = 3
+
+    @classmethod
+    def from_dict(cls, data):
+        return cls(_number(_mapping(data), "limit", 3))
+
+
+@dataclass
 class ReviewConfig:
     tiers: dict[str, dict] = field(default_factory=lambda: model_tiers(range(1, 4)))
     policy: str = "auto"
@@ -678,7 +692,7 @@ class WorkflowConfig:
     fallback: bool = True
     reserve_percent: float = 5
     smoothing_hours: float = 24
-    scout_limit: int = 3
+    scout: ScoutConfig = field(default_factory=ScoutConfig)
     auto_push: bool = True
     timeout_seconds: int = 3600
     review: ReviewConfig = field(default_factory=ReviewConfig)
@@ -718,9 +732,9 @@ class WorkflowConfig:
                for v in self.weights.values()) or not any(self.weights.values()):
             errors.append("workflow.weights must be finite, nonnegative, and not all zero")
         for name, minimum, maximum in (("reserve_percent", 0, 99), ("smoothing_hours", 1, 168),
-                                        ("scout_limit", 1, 16), ("timeout_seconds", 30, 86400)):
-            value = getattr(self, name)
-            if not isinstance(value, (int, float)) or not math.isfinite(value) or not minimum <= value <= maximum or name in ("scout_limit", "timeout_seconds") and not isinstance(value, int):
+                                        ("scout.limit", 1, 16), ("timeout_seconds", 30, 86400)):
+            value = self.scout.limit if name == "scout.limit" else getattr(self, name)
+            if not isinstance(value, (int, float)) or not math.isfinite(value) or not minimum <= value <= maximum or name in ("scout.limit", "timeout_seconds") and not isinstance(value, int):
                 errors.append(f"workflow.{name} must be between {minimum} and {maximum}")
         if self.review.routing not in ("cross-provider", "same-provider"):
             errors.append("workflow.review.routing must be cross-provider or same-provider")
@@ -764,8 +778,9 @@ class WorkflowConfig:
         result.routing = _str(data, "routing") or result.routing
         for key in ("fallback", "auto_push", "cleanup_local_branches", "cleanup_remote_branches"):
             setattr(result, key, _bool(data, key, getattr(result, key)))
-        for key in ("reserve_percent", "smoothing_hours", "scout_limit", "timeout_seconds"):
+        for key in ("reserve_percent", "smoothing_hours", "timeout_seconds"):
             setattr(result, key, _number(data, key, getattr(result, key)))
+        result.scout = ScoutConfig.from_dict(data.get("scout"))
         weights = _mapping(data.get("weights"))
         result.weights = {p: _number(weights, p, 1) for p in AGENT_PROVIDERS}
         result.tiers = model_tiers(range(4), data.get("tiers"))
