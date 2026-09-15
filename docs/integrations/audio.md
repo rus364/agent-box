@@ -33,8 +33,10 @@ The host needs a PulseAudio-compatible server: PulseAudio itself or PipeWire's
 `/run/user/<uid>/pulse/native` is not a socket when a box is created, the box
 starts without sound and agent-box prints a warning.
 
-The socket is part of the box's identity: turning the switch on or off
-recreates the workspace box on the next launch.
+The socket is part of the box's identity. After turning the switch on or off,
+a stopped workspace box is recreated on the next launch; a running one refuses
+the launch as incompatible until you stop it with `agent-box stop`. The same
+applies when the sound server was absent at creation and appears later.
 
 ## What it exposes
 

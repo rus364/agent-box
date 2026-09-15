@@ -705,6 +705,7 @@ yours.
 - Workspace containers are transient. Detached tmux sessions survive terminal loss, but not a host reboot or a forced container kill.
 - `~/.agents` is exposed as a whole tree, not only `skills/`; it is read-only except for the read-write `skills/` subtree and its external symlink targets.
 - The agent browser is amd64/arm64 only, because those are the architectures Playwright publishes Chromium builds for.
+- Host audio needs a PulseAudio-compatible sound server on the host — PulseAudio or PipeWire's `pipewire-pulse` — at `/run/user/<uid>/pulse/native`; without it the switch gives boxes no sound and agent-box warns. It exposes both microphone and speakers.
 - `agent-box update` reuses the pinned browser layer when the local base and earlier build inputs are unchanged. `rebuild` reinstalls it.
 - The official Claude Telegram plugin is outside agent-box's control and may need compatibility updates when its internals change.
 - There is no remote equivalent of `--mount`, and Telegram cannot create a new workspace box by itself.
