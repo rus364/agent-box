@@ -11,6 +11,7 @@ from unittest.mock import patch
 from agent_box import cli, config as config_module, config_menu, project_config, runtime
 from agent_box.config import Config, TrackerConnection, save_config
 from agent_box.errors import AgentBoxError
+from test_external_models import rich_config
 
 
 class ConfigDescribeTests(unittest.TestCase):
@@ -29,14 +30,22 @@ class ConfigDescribeTests(unittest.TestCase):
     def describe(self, *args):
         with contextlib.redirect_stdout(io.StringIO()) as output:
             cli.config_command(["describe", *args])
-        return output.getvalue(), {field["path"]: field for field in json.loads(output.getvalue())["fields"]}
+        document = json.loads(output.getvalue())
+        self.document = document
+        return output.getvalue(), {field["path"]: field for field in document["fields"]}
 
-    def test_every_menu_setting_is_described_with_the_menus_own_help(self):
+    def in_session(self, config, launch=None):
+        """Describe from inside a box whose snapshot was rendered from ``config``."""
+        config._launch = launch or {}
+        runtime.sync_tracker_runtime(config, self.root / "rendered")
+        with patch.dict(os.environ, {"AGENT_BOX_RUNTIME_CONFIG": str(self.root / "rendered" / "config.json")}):
+            return self.describe()
+
+    def test_every_schema_setting_is_described_with_the_menus_own_help(self):
         """An agent explaining a setting differently from the menu, or missing one, would mislead the user."""
         _, fields = self.describe()
         data = Config().to_dict()
         data.pop("version")
-        data.pop("install")
 
         def check(value, path=()):
             for key in config_menu.menu_keys(value, path):
@@ -46,6 +55,7 @@ class ConfigDescribeTests(unittest.TestCase):
                     check(value[key], full)
 
         check(data)
+        self.assertIn("install.bin_dir", fields)
         self.assertEqual(fields["tracker.project"]["help"], config_menu.help_for(("tracker", "project")))
         self.assertTrue(all(field["help"] for field in fields.values()))
 
@@ -68,6 +78,18 @@ class ConfigDescribeTests(unittest.TestCase):
         self.assertIn("xhigh", fields["workflow.tiers.1.codex.effort"]["choices"])
         self.assertIn("opus", fields["workflow.tiers.1.claude.model"]["suggestions"])
         self.assertEqual(fields["tracker.project"]["source"], "unset")
+
+    def test_choices_are_the_menus_for_external_api_settings(self):
+        """A value the configured API model rejects must not be offered as allowed."""
+        config = rich_config()
+        config.workflow.tiers["1"]["claude"] = {"model": "v4-pro", "api_provider": "deepseek", "effort": "high", "fast": False}
+        save_config(config, self.global_file)
+        output, fields = self.describe()
+        self.assertEqual(fields["workflow.tiers.1.claude.effort"]["choices"], ["default", "low", "high", "max"])
+        self.assertEqual(fields["external_providers.deepseek.claude.models.v4-pro.effort"]["choices"],
+                         ["default", "low", "high", "max"])
+        self.assertEqual(fields["external_providers.deepseek.claude.default_model"]["choices"], ["", "v4-flash", "v4-pro"])
+        self.assertNotIn(config.external_providers["deepseek"].api_key, output)
 
     def test_secrets_are_reported_as_set_without_their_values(self):
         """Describe output lands in an agent transcript, so a credential must never appear in it."""
@@ -93,14 +115,30 @@ class ConfigDescribeTests(unittest.TestCase):
         config = Config()
         config.tracker.enabled = True
         config.claude.statusline = False
-        runtime.sync_tracker_runtime(config, self.root / "rendered")
-        with patch.dict(os.environ, {"AGENT_BOX_RUNTIME_CONFIG": str(self.root / "rendered" / "config.json")}):
-            _, fields = self.describe()
+        _, fields = self.in_session(config)
         statusline = fields["claude.statusline"]
         self.assertEqual(statusline["source"], "host-only")
         self.assertNotIn("global", statusline)
         self.assertNotIn("effective", statusline)
+        self.assertEqual(fields["install.bin_dir"]["source"], "host-only")
         self.assertEqual(fields["tracker.enabled"]["effective"], True)
+
+    def test_session_flags_win_over_project_and_global_values(self):
+        """Launch flags apply last; reporting the project or global value would misstate what the session uses."""
+        config = Config()
+        config.tracker.enabled = config.workflow.enabled = True
+        config.tracker.connections["vikunja"] = TrackerConnection("https://session.example", "session-token-value")
+        config._global_tracker_urls = {"vikunja": "https://global.example"}
+        self.project_file.write_text(json.dumps({"workflow": {"review": {"policy": "always"}}}))
+        output, fields = self.in_session(config, {"review": "off"})
+        policy = fields["workflow.review.policy"]
+        self.assertEqual((policy["project"], policy["effective"], policy["source"]), ("always", "off", "session"))
+        url = fields["tracker.connections.vikunja.url"]
+        self.assertEqual((url["global"], url["effective"], url["source"]),
+                         ("https://global.example", "https://session.example", "session"))
+        self.assertEqual(fields["tracker.connections.vikunja.token"]["effective"], "<redacted>")
+        self.assertNotIn("session-token-value", output)
+        self.assertIn("--review", self.document["session_options"])
 
     def test_a_path_narrows_the_output_and_an_unknown_path_is_an_error(self):
         _, fields = self.describe("workflow.review")

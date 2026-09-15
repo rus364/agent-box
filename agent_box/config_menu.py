@@ -29,6 +29,8 @@ CHOICES = {
 HELP = {
     "launch": "What a bare `agent-box` starts. Global only; not a project setting.",
     "launch.default_agent": "Agent started by `agent-box` without claude/codex; an explicit claude or codex always wins.",
+    "install": "Where agent-box keeps its PATH symlink. Global only; set through the menu's PATH integration.",
+    "install.bin_dir": "Directory holding the agent-box PATH symlink; empty means agent-box manages none. `agent-box config apply` restores the link here.",
     "claude": "Claude host integration settings. Changes are applied only after Save and apply.",
     "claude.telegram_channel": "Start Claude with Anthropic's official Telegram channel plugin. This requires its host-side setup and exposes the session through that channel.",
     "claude.statusline": "Keep Claude's status line pointed at agent-box. An existing user-owned status line is never overwritten.",
@@ -308,6 +310,25 @@ def _candidate_field(path):
 
 def _model_path(path):
     return path[-1:] == ("model",) and _candidate_field(path)
+
+
+def value_choices(path, section, tree):
+    """The values the menu offers for ``path``, or None for free input; `config describe` reports the same."""
+    name, value = path[-1], section[path[-1]]
+    options = CHOICES.get(".".join(path))
+    if name == "effort" and _candidate_field(path):
+        options = AGENT_EFFORTS[path[-2]]
+        api = section.get('api_provider')
+        if api:
+            models = tree['external_providers'].get(api, {}).get(path[-2], {}).get('models', {})
+            model = model_settings(models, section.get('model', ''), path[-2])
+            options = tuple(dict.fromkeys(['default', *(model.get('supported_efforts') or API_EFFORTS[path[-2]][1:]), value]))
+    if path[:1] == ('external_providers',):
+        if len(path) == 6 and name == 'effort':
+            options = tuple(dict.fromkeys(['default', *(section['supported_efforts'] or API_EFFORTS[path[2]][1:]), value]))
+        elif len(path) == 4 and name == 'default_model':
+            options = ['', *section['models']]
+    return options
 
 
 def edit(config, *, project=None):
@@ -900,19 +921,7 @@ def edit(config, *, project=None):
                     notice = "Global only: edit in agent-box config"
                     continue
                 accepted = False
-                options = CHOICES.get(".".join(full))
-                if name == "effort" and _candidate_field(full):
-                    options = AGENT_EFFORTS[path[-1]]
-                    api = data.get('api_provider')
-                    if api:
-                        models = draft['external_providers'].get(api, {}).get(path[-1], {}).get('models', {})
-                        model = model_settings(models, data.get('model', ''), path[-1])
-                        options = tuple(dict.fromkeys(['default', *(model.get('supported_efforts') or API_EFFORTS[path[-1]][1:]), value]))
-                if path[:1] == ('external_providers',):
-                    if len(path) == 5 and name == 'effort':
-                        options = tuple(dict.fromkeys(['default', *(data['supported_efforts'] or API_EFFORTS[path[2]][1:]), value]))
-                    elif len(path) == 3 and name == 'default_model':
-                        options = ['', *data['models']]
+                options = value_choices(full, data, draft)
                 if isinstance(value, bool):
                     data[name] = not value
                     accepted = True

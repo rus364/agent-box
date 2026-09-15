@@ -346,7 +346,8 @@ def config_description(prefix: str = "") -> dict:
     value, instead of passing defaults off as the host's choices.
     """
     from . import config_menu, project_config
-    from .config import AGENT_EFFORTS, TRACKER_PROVIDERS, Config, TrackerConnection
+    from .config import TRACKER_PROVIDERS, Config, TrackerConnection
+    from .launch_options import describe as describe_launch
     from .model_catalog import BUNDLED_MODELS
     source = effective_config_source()
     baseline = effective_config(include_project=False)
@@ -354,6 +355,8 @@ def config_description(prefix: str = "") -> dict:
     project = project_config.load(project_file)
     defaults = Config().to_dict()
     known = baseline.to_dict()
+    # Session flags apply last, so only the resolved configuration knows what wins.
+    actual = effective_config().to_dict()
     # The editor's baseline: a session's --tracker account is not a global value.
     connections = known["tracker"]["connections"]
     known["tracker"]["connections"] = {
@@ -363,7 +366,6 @@ def config_description(prefix: str = "") -> dict:
         known = _rendered_only(known, _snapshot_sections(source))
     tree = project_config.merge(project_config.merge(defaults, known), project)
     tree.pop("version")
-    tree.pop("install")
     for name in TRACKER_PROVIDERS:
         tree["tracker"]["connections"].setdefault(name, TrackerConnection().to_dict())
     tree["tracker"].setdefault("project", "")
@@ -389,25 +391,33 @@ def config_description(prefix: str = "") -> dict:
                 entry = {"path": dotted, "type": _DESCRIBED_TYPES[type(value)] if leaf else "section",
                          "project_allowed": project_config.project_field(full) is not None}
                 if leaf:
-                    choices = config_menu.CHOICES.get(dotted)
-                    if key == "effort" and config_menu._candidate_field(full):
-                        choices = AGENT_EFFORTS[at[-1]]
+                    choices = config_menu.value_choices(full, data, tree)
                     if choices:
                         entry["choices"] = list(choices)
                     if config_menu._model_path(full):
                         entry["suggestions"] = list(BUNDLED_MODELS[at[-1]])
+                    hidden = _hidden(full)
                     layers = {layer: lookup(values, full) for layer, values in
                               (("default", defaults), ("global", known), ("project", project))}
                     for layer, found in layers.items():
                         if found is not missing:
-                            entry[layer] = _masked(found, _hidden(full))
-                    if layers["project"] is not missing:
-                        entry["source"], entry["effective"] = "project", entry["project"]
-                    elif layers["global"] is not missing:
-                        entry["source"] = "default" if layers["global"] == layers["default"] else "global"
-                        entry["effective"] = entry["global"]
+                            entry[layer] = _masked(found, hidden)
+                    layered = layers["project"] if layers["project"] is not missing else layers["global"]
+                    # Project identity has no Config field, so its project value is what applies.
+                    effective = lookup(actual, full)
+                    effective = layered if effective is missing else effective
+                    if layered is missing and layers["default"] is not missing:
+                        entry["source"] = "host-only"
+                    elif effective is missing:
+                        entry["source"] = "unset"
                     else:
-                        entry["source"] = "unset" if layers["default"] is missing else "host-only"
+                        entry["effective"] = _masked(effective, hidden)
+                        if effective != layered:
+                            entry["source"] = "session"
+                        elif layers["project"] is not missing:
+                            entry["source"] = "project"
+                        else:
+                            entry["source"] = "default" if layered == layers["default"] else "global"
                 entry["help"] = config_menu.help_for(full)
                 fields.append(entry)
             if not leaf and (selected or prefix.startswith(dotted + ".")):
@@ -416,7 +426,10 @@ def config_description(prefix: str = "") -> dict:
     walk(tree)
     if not fields:
         raise AgentBoxError(f"no setting {prefix}; 'agent-box config describe' lists every path")
-    return {"source": source, "project_file": str(project_file), "fields": fields}
+    result = {"source": source, "project_file": str(project_file)}
+    if getattr(baseline, "_launch", None):
+        result["session_options"] = describe_launch(baseline._launch)
+    return {**result, "fields": fields}
 
 
 def config_describe(prefix: str = "") -> None:
