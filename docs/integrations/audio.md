@@ -31,12 +31,13 @@ available with an API key.
 The host needs a PulseAudio-compatible server: PulseAudio itself or PipeWire's
 `pipewire-pulse`, which desktop distributions run by default. If
 `/run/user/<uid>/pulse/native` is not a socket when a box is created, the box
-starts without sound and agent-box prints a warning.
+starts without sound, and every launch prints a warning while that lasts.
 
 The socket is part of the box's identity. After turning the switch on or off,
 a stopped workspace box is recreated on the next launch; a running one refuses
-the launch as incompatible until you stop it with `agent-box stop`. The same
-applies when the sound server was absent at creation and appears later.
+the launch as incompatible until you stop it with `agent-box stop`. With the
+switch on, the same happens when the socket appears or disappears while a box
+is running, for example when the sound server is started or stopped.
 
 ## What it exposes
 

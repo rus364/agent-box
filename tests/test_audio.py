@@ -67,5 +67,30 @@ class AudioPassthroughTests(unittest.TestCase):
         self.assertEqual(len(runtime.audio_warnings(audio_config())), 1)
 
 
+class AudioLaunchWarningTests(unittest.TestCase):
+    def test_a_launch_joining_a_running_box_still_warns_about_a_missing_socket(self):
+        """With no socket the box identity is unchanged, so a launch that joins
+        a running box never prepares a new one; the warning must not depend on
+        that, or the switch reads as on while doing nothing."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Containerfile").write_text("FROM scratch\n")
+            with mock.patch.object(runtime.shutil, "which", side_effect=lambda name: f"/usr/bin/{name}"), \
+                 mock.patch.object(runtime, "PULSE_DIR", root / "pulse"), \
+                 mock.patch.object(runtime, "resolve_workspace", return_value=runtime.Workspace(root, root)), \
+                 mock.patch.object(runtime, "ensure_state_dirs"), \
+                 mock.patch.object(runtime, "POLICY_RUNTIME_DIR", root / "runtime/policy"), \
+                 mock.patch.object(runtime, "ensure_refresh_token"), \
+                 mock.patch.object(runtime, "load_config", return_value=audio_config()), \
+                 mock.patch.object(runtime, "image_exists", return_value=True), \
+                 mock.patch.object(runtime, "image_tool_drift", return_value=([], [])), \
+                 mock.patch.object(runtime, "claude_channel_args", return_value=([], [])), \
+                 mock.patch.object(runtime, "launch_in_workspace_container", return_value=0), \
+                 mock.patch.object(runtime, "warn") as warn, \
+                 self.assertRaises(SystemExit):
+                runtime.runtime_main(["claude"], root)
+        self.assertTrue(any("sound-server socket" in call.args[0] for call in warn.call_args_list))
+
+
 if __name__ == "__main__":
     unittest.main()

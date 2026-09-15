@@ -686,8 +686,6 @@ def prepare_container_lifetime_state(
         WORKFLOW_STATE.mkdir(parents=True, exist_ok=True)
         for problem in tracker_warnings(config):
             warn(problem)
-    for problem in audio_warnings(config):
-        warn(problem)
 
 
 def agent_tree_mounts() -> list[tuple[Path, Path, bool]]:
@@ -2410,6 +2408,10 @@ def runtime_main(
         if extra:
             warn(f"image still carries tool group(s) you turned off: {', '.join(extra)}"
                  f" -- run 'agent-box build' to drop them")
+    # Every launch, not only box creation: joining a running box with the
+    # switch on and no socket leaves box identity unchanged and would say nothing.
+    for problem in audio_warnings(config):
+        warn(problem)
 
 
     # Nothing here reconciles Claude's settings, installs a skill or writes a
