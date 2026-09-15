@@ -368,4 +368,5 @@ class ProjectConfigTests(unittest.TestCase):
             self.assertTrue(effective.image.tools['virtualization'])
             self.assertFalse(effective.image.tools['analysis'])
             self.assertFalse(effective.workflow.auto_push)
-            self.assertIn('Agent browser (containers)  on', output.getvalue())
+            from test_workflow_config import show_paths
+            self.assertEqual(show_paths(output.getvalue())['browser.enabled'], 'on')

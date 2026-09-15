@@ -1,6 +1,7 @@
 """Command-line dispatch. Kept free of business logic beyond argument parsing."""
 from __future__ import annotations
 
+import json
 import shutil
 import sys
 from pathlib import Path
@@ -195,12 +196,6 @@ def notify_command(args: list[str]) -> None:
 
 # -- config ----------------------------------------------------------------
 
-def _redact(token: str) -> str:
-    if not token:
-        return "(not set)"
-    return "(set)"
-
-
 def _statusline_note(config) -> str:
     """Say so when Claude's status line is somebody else's, not agent-box's.
 
@@ -249,89 +244,93 @@ def _browser_note(config) -> str:
     return " (headless Chromium in the box; --host sessions unaffected)"
 
 
+def _show_notes(config) -> dict[str, str]:
+    """Explanations derived from state, keyed by the dotted path they qualify.
+
+    Only these are written by hand. Every value comes from walking the schema,
+    so a new setting appears in ``config show`` without code here; the
+    rejected alternative, one print per field, silently lost fields.
+    """
+    direct = config.workflow.worker.execution == "direct"
+    worker = "  [inapplicable to direct workers]" if direct else ""
+    notes = {
+        "claude.statusline": _statusline_note(config),
+        "image.tools": _image_note(config),
+        "browser.enabled": _browser_note(config),
+        "workflow.worker.execution": " (worker model: active session)" if direct else "",
+        "workflow.worker.override": worker,
+        "workflow.auto_push": (" (accepted base after local merge)" if config.workflow.merge_mode == "local"
+                               else " (parent task branch after subtask integration)"),
+    }
+    for tier in config.workflow.tiers:
+        notes[f"workflow.tiers.{tier}"] = "  [scouts only]" if direct and tier == "0" else worker
+    return notes
+
+
+def _show_value(value, hidden: bool) -> str:
+    if isinstance(value, bool):
+        return "on" if value else "off"
+    if isinstance(value, list):
+        # A hidden list holds variable names (env.forward), never their values.
+        return ", ".join(map(str, value)) or "(none)"
+    if isinstance(value, dict):
+        return ", ".join(f"{key}=<configured>" if hidden else f"{key}={json.dumps(item)}"
+                         for key, item in value.items()) or "(none)"
+    if hidden:
+        return "(set)" if value else "(not set)"
+    return str(value) if value != "" else "(not set)"
+
+
+def _show_rows(data, path=()):
+    """``(depth, key, value or None for a heading, dotted path)`` in menu order.
+
+    Below a section's first level, a mapping of plain values renders on one
+    line, so a model candidate or a tracker connection stays one row.
+    """
+    from . import config_menu
+
+    def leaf(value, at):
+        return not isinstance(value, dict) or config_menu.json_field(at)
+
+    def hidden(at):
+        # A command line routinely carries a bearer token; the menu shows it for editing.
+        return config_menu.secret(at) or at == ("usage", "command")
+
+    for key in config_menu.menu_keys(data, path):
+        value, at = data[key], (*path, key)
+        if leaf(value, at):
+            yield len(path), key, _show_value(value, hidden(at)), at
+        elif len(at) > 2 and all(leaf(item, (*at, name)) for name, item in value.items()):
+            yield len(path), key, "; ".join(f"{name} {_show_value(item, hidden((*at, name)))}"
+                                             for name, item in value.items()), at
+        else:
+            yield len(path), key, None, at
+            yield from _show_rows(value, at)
+
+
 def config_show() -> None:
     config = effective_config()
     source = effective_config_source()
     print(f"Config source: {source['kind']} ({source['path']})")
+    data = config.to_dict()
+    data.pop("version")
     if source["kind"] == "runtime":
         print("Rendered container configuration; host-only settings are not included.")
+        # A section the snapshot omits would otherwise print as defaults. Its
+        # `launch` key holds this session's flags, not the launch section.
+        rendered = set(read_json(Path(source["path"]))) - {"launch"}
+        data = {key: value for key, value in data.items() if key in rendered}
     if getattr(config, "_launch", None):
         from .launch_options import describe
         print(f"Session options: {describe(config._launch)}")
     print()
-    print(f"  Default agent               {config.launch.default_agent}")
-    print(f"  Claude Telegram channel     {'on' if config.claude.telegram_channel else 'off'}")
-    print(f"  Claude status line          {'on' if config.claude.statusline else 'off'}{_statusline_note(config)}")
-    print(f"  Outbound notifications      {'on' if config.notifications.enabled else 'off'}")
-    print(f"    bot token                 {_redact(config.notifications.telegram_token)}")
-    print(f"    chat id                   {config.notifications.telegram_chat_id or '(not set)'}")
-    print(f"  GitHub token passthrough    {'on' if config.github.gh_token else 'off'}")
-    print(f"  GitHub gh config copy       {'on' if config.github.gh_config else 'off'}")
-    print(f"  Git identity (name/email)   {'on' if config.git.identity else 'off'}")
-    print(f"  Git full config copy        {'on' if config.git.full_config else 'off'}")
-    print(f"  Provider API keys           {'on' if config.providers.api_keys else 'off'}")
-    print(f"  Provider transport/proxy    {'on' if config.providers.transport else 'off'}")
-    print("  External API providers")
-    for name, spec in config.external_providers.items():
-        print(f"    {name}: {'on' if spec.enabled else 'off'}; key {'<configured>' if spec.api_key else '<empty>'}")
-        for agent in ("codex", "claude"):
-            endpoint = getattr(spec, agent)
-            print(f"      {agent}: {endpoint.url or '(not set)'}; models {', '.join(endpoint.models) or '(none)'}")
-            print(f"        default {endpoint.default_model or '(first configured)'}; env {len(endpoint.env)} configured")
-            if agent == 'codex':
-                print(f"        provider options {len(endpoint.provider_options)} fields; config {len(endpoint.config)} fields")
-            for model, settings in endpoint.models.items():
-                details = (f"effort {settings['effort']}; levels {','.join(settings['supported_efforts']) or '(unknown)'}; "
-                           f"context {settings['context_window'] or '(CLI default)'}; "
-                           f"compact {settings['auto_compact_token_limit'] or '(CLI default)'}; env {len(settings['env'])} configured")
-                if agent == 'codex':
-                    details += (f"; input {','.join(settings['input_modalities'])}; "
-                                f"parallel {settings['supports_parallel_tool_calls']}; summaries {settings['supports_reasoning_summaries']}; "
-                                f"metadata {len(settings['metadata'])} fields")
-                print(f"        {model}: {details}")
-    print(f"  Share skills with Claude    {'on' if config.skills.claude_links else 'off'}")
-    print(f"  Image tool groups           {', '.join(config.image.enabled_groups()) or '(base only)'}"
-          f"{_image_note(config)}")
-    print(f"  Tracker                     {'on' if config.tracker.enabled else 'off'} ({config.tracker.provider})")
-    for name, connection in config.tracker.connections.items():
-        print(f"    {name}: {connection.url or '(not set)'}; token {_redact(connection.token)}")
-    print(f"  Workflow                    {'on' if config.workflow.enabled else 'off'}")
-    print(f"    merge mode                {config.workflow.merge_mode}")
-    print(f"    cleanup local branches    {config.workflow.cleanup_local_branches}")
-    print(f"    cleanup remote branches   {config.workflow.cleanup_remote_branches}")
-    print(f"    scout limit               {config.workflow.scout_limit}; managed shared slots, native coordinator-counted (no CLI lease)")
-    print(f"    worker execution          {config.workflow.worker.execution}")
-    direct = config.workflow.worker.execution == "direct"
-    model_source = ("active-session" if direct else
-                    "chosen after auto execution decision" if config.workflow.worker.execution == "auto" else
-                    "session, override, or tier selected at delegation")
-    print(f"    worker model source       {model_source}")
-    direct_shared = "; scouts only, inapplicable to direct workers" if direct else ""
-    direct_worker = "  [inapplicable to direct workers]" if direct else ""
-    print(f"    delegated routing         {config.workflow.routing}; weights {config.workflow.weights}{direct_shared}")
-    print(f"    review                    {config.workflow.review.policy}; files {config.workflow.review.max_files}; lines {config.workflow.review.max_lines}")
-    print(f"    review routing            {config.workflow.review.routing}")
-    for role, settings in (("worker", config.workflow.worker), ("reviewer", config.workflow.review)):
-        override = settings.override
-        suffix = direct_worker if role == "worker" else ""
-        print(f"    {role + ' model scope':26s}{override.scope}{suffix}")
-        for provider, spec in override.models.items():
-            print(f"    {role} override {provider}: {spec}{suffix}")
-    print(f"    fallback / auto-push      {config.workflow.fallback} / {config.workflow.auto_push}")
-    print("    auto-push scope           " + ("accepted base after local merge" if config.workflow.merge_mode == "local" else "parent task branch after subtask integration"))
-    for tier, models in config.workflow.tiers.items():
-        suffix = ("  [scouts only; inapplicable to direct workers]" if direct and tier == "0"
-                  else direct_worker)
-        print(f"    worker/scout tier {tier}: {models}{suffix}")
-    for tier, models in config.workflow.review.tiers.items():
-        print(f"    reviewer tier {tier}: {models}")
-    print("    fast                      opt-in speed request, not delivered service; false preserves provider/native defaults")
-    print(f"  Agent browser (containers)  {'on' if config.browser.enabled else 'off'}{_browser_note(config)}")
-    print(f"  Host audio (containers)     {'on (microphone and speakers)' if config.audio.enabled else 'off'}")
-    forwarded = ", ".join(config.env.forward) or "(none)"
-    print(f"  Forwarded env variables     {forwarded}")
-    assignments = ", ".join(f"{k}=<configured>" for k in sorted(config.env.set)) or "(none)"
-    print(f"  Set env variables           {assignments}")
+    notes = _show_notes(config)
+    rows = list(_show_rows(data))
+    width = max(2 * depth + len(key) for depth, key, value, _ in rows if value is not None) + 2
+    for depth, key, value, at in rows:
+        name = "  " * (depth + 1) + key
+        note = notes.get(".".join(at), "")
+        print(name + note if value is None else name.ljust(width + 2) + value + note)
 
 
 def config_check() -> None:

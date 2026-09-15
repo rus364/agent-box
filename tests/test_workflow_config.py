@@ -11,6 +11,69 @@ from unittest.mock import patch
 from agent_box.config import Config
 
 
+def show_paths(text):
+    """`config show` output as {dotted config path: rendered value}."""
+    rows, stack = {}, []
+    for line in text.split("\n\n", 1)[1].splitlines():
+        depth = (len(line) - len(line.lstrip())) // 2 - 1
+        key, _, value = line.strip().partition(" ")
+        del stack[depth:]
+        stack.append(key)
+        rows[".".join(stack)] = value.strip()
+    return rows
+
+
+def shown(config):
+    """`config show` for ``config``, with the notes that probe the host silenced."""
+    from agent_box import cli
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output), patch.object(cli, 'effective_config', return_value=config), \
+         patch.object(cli, '_statusline_note', return_value=''), \
+         patch.object(cli, '_image_note', return_value=''), patch.object(cli, '_browser_note', return_value=''):
+        cli.config_show()
+    return show_paths(output.getvalue())
+
+
+class ConfigShowTests(unittest.TestCase):
+    def test_every_schema_setting_is_shown_without_per_field_code(self):
+        """A setting added to the schema must appear; hand-written rows once dropped sensitive_paths."""
+        config = Config.from_dict({"tracker": {"connections": {"vikunja": {"url": "https://tasks.example"}}}})
+        rows = shown(config)
+
+        def leaves(data, path=()):
+            for key, value in data.items():
+                if isinstance(value, dict) and value:
+                    yield from leaves(value, (*path, key))
+                else:
+                    yield (*path, key)
+
+        data = config.to_dict()
+        data.pop("version")
+        for path in leaves(data):
+            with self.subTest(path=".".join(path)):
+                self.assertTrue(".".join(path) in rows or f"{path[-1]} " in rows.get(".".join(path[:-1]), ""))
+
+    def test_secret_values_never_reach_the_output(self):
+        """Tokens, literal env values and a usage command line may all carry credentials."""
+        from agent_box import cli
+        config = Config.from_dict({
+            "notifications": {"telegram_token": "SECRET-telegram"},
+            "tracker": {"connections": {"vikunja": {"url": "https://tasks.example", "token": "SECRET-tracker"}}},
+            "env": {"forward": ["FORWARDED"], "set": {"LITERAL": "SECRET-env"}},
+            "usage": {"command": "curl -H 'Authorization: Bearer SECRET-usage'"}})
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output), patch.object(cli, 'effective_config', return_value=config), \
+             patch.object(cli, '_statusline_note', return_value=''), \
+             patch.object(cli, '_image_note', return_value=''), patch.object(cli, '_browser_note', return_value=''):
+            cli.config_show()
+        self.assertNotIn("SECRET", output.getvalue())
+        rows = show_paths(output.getvalue())
+        self.assertEqual(rows["env.forward"], "FORWARDED")
+        self.assertEqual(rows["env.set"], "LITERAL=<configured>")
+        self.assertEqual(rows["usage.command"], "(set)")
+        self.assertIn("token (set)", rows["tracker.connections.vikunja"])
+
+
 class WorkflowConfigTests(unittest.TestCase):
     def test_execution_and_scopes_survive_global_save_and_minimal_runtime(self):
         """Saved execution and model sources reach the container without host secrets."""
@@ -105,57 +168,48 @@ class WorkflowConfigTests(unittest.TestCase):
 
     def test_show_distinguishes_worker_and_reviewer_override_scope(self):
         """A visible worker override must not imply reviewer settings have changed."""
-        from agent_box import cli
         config = Config()
         config.workflow.worker.override.scope = "untiered"
         config.workflow.worker.override.models['codex'] = {'model': 'worker-model', 'effort': 'high'}
-        output = io.StringIO()
-        with contextlib.redirect_stdout(output), patch.object(cli, 'effective_config', return_value=config), \
-             patch.object(cli, '_statusline_note', return_value=''), \
-             patch.object(cli, '_image_note', return_value=''), patch.object(cli, '_browser_note', return_value=''):
-            cli.config_show()
-        self.assertIn('worker model scope        untiered', output.getvalue())
-        self.assertIn('reviewer model scope      off', output.getvalue())
-        self.assertIn('worker execution          auto', output.getvalue())
-        self.assertIn('native coordinator-counted (no CLI lease)', output.getvalue())
-        self.assertEqual(output.getvalue().count('delegated routing'), 1)
-        self.assertIn("worker override codex: {'model': 'worker-model', 'effort': 'high'}", output.getvalue())
+        rows = shown(config)
+        self.assertEqual(rows['workflow.worker.override.scope'], 'untiered')
+        self.assertEqual(rows['workflow.review.override.scope'], 'off')
+        self.assertEqual(rows['workflow.worker.execution'], 'auto')
+        self.assertEqual(rows['workflow.worker.override.models.codex'], 'model worker-model; effort high')
 
     def test_show_marks_delegated_worker_settings_inapplicable_under_direct(self):
         """Forced direct reports the active-session source without hiding scout consumers."""
-        from agent_box import cli
         config = Config()
         config.workflow.worker.execution = "direct"
         config.workflow.worker.override.scope = "all"
-        output = io.StringIO()
-        with contextlib.redirect_stdout(output), patch.object(cli, 'effective_config', return_value=config), \
-             patch.object(cli, '_statusline_note', return_value=''), \
-             patch.object(cli, '_image_note', return_value=''), patch.object(cli, '_browser_note', return_value=''):
-            cli.config_show()
-        rendered = output.getvalue()
-        self.assertIn('worker model source       active-session', rendered)
-        self.assertIn('worker model scope        all  [inapplicable to direct workers]', rendered)
-        self.assertIn('delegated routing         current; weights', rendered)
-        self.assertIn('scouts only, inapplicable to direct workers', rendered)
-        self.assertIn('worker/scout tier 0:', rendered)
+        rows = shown(config)
+        self.assertEqual(rows['workflow.worker.execution'], 'direct (worker model: active session)')
+        self.assertEqual(rows['workflow.worker.override'], '[inapplicable to direct workers]')
+        self.assertEqual(rows['workflow.tiers.1'], '[inapplicable to direct workers]')
+        self.assertEqual(rows['workflow.tiers.0'], '[scouts only]')
+        self.assertIn('model ', rows['workflow.tiers.0.codex'])
 
     def test_show_reads_the_runtime_artifact_instead_of_host_defaults(self):
-        """A container must show the same merge route that workflow dispatch uses."""
+        """A container shows the merge route workflow dispatch uses, and no host section as defaults."""
         from agent_box import cli
         with tempfile.TemporaryDirectory() as directory:
             artifact = Path(directory) / "runtime.json"
-            artifact.write_text(json.dumps({"workflow": {"enabled": True, "merge_mode": "local"}}))
+            artifact.write_text(json.dumps({"workflow": {"enabled": True, "merge_mode": "local"},
+                                            "launch": {"push": False}}))
             output = io.StringIO()
             with patch.dict(os.environ, {"AGENT_BOX_RUNTIME_CONFIG": str(artifact)}), \
                  patch.object(cli, "load_config", return_value=Config()), \
                  patch.object(cli, "_statusline_note", return_value=""), \
                  patch.object(cli, "_image_note", return_value=""), contextlib.redirect_stdout(output):
                 cli.config_show()
-            self.assertIn("merge mode                local", output.getvalue())
+            rows = show_paths(output.getvalue())
+            self.assertEqual(rows["workflow.merge_mode"], "local")
+            self.assertNotIn("notifications.enabled", rows)
+            self.assertNotIn("launch.default_agent", rows)
             self.assertIn(str(artifact), output.getvalue())
 
     def test_cleanup_opt_ins_round_trip_through_config_runtime_and_show(self):
-        from agent_box import cli, config_menu, runtime
+        from agent_box import config_menu, runtime
         for local, remote in ((False, False), (True, False), (False, True), (True, True)):
             config = Config.from_dict({'workflow': {
                 'enabled': True, 'cleanup_local_branches': local, 'cleanup_remote_branches': remote}})
@@ -165,14 +219,9 @@ class WorkflowConfigTests(unittest.TestCase):
                 rendered = Config.from_dict(json.loads((Path(directory) / 'config.json').read_text()))
             self.assertEqual(rendered.workflow.cleanup_local_branches, local)
             self.assertEqual(rendered.workflow.cleanup_remote_branches, remote)
-            output = io.StringIO()
-            with contextlib.redirect_stdout(output), patch.object(cli, 'effective_config', return_value=config), \
-                 patch.object(cli, '_statusline_note', return_value=''), \
-                 patch.object(cli, '_image_note', return_value=''), \
-                 patch.object(cli, '_browser_note', return_value=''):
-                cli.config_show()
-            self.assertIn('cleanup local branches    ' + str(local), output.getvalue())
-            self.assertIn('cleanup remote branches   ' + str(remote), output.getvalue())
+            rows = shown(config)
+            self.assertEqual(rows['workflow.cleanup_local_branches'], 'on' if local else 'off')
+            self.assertEqual(rows['workflow.cleanup_remote_branches'], 'on' if remote else 'off')
         self.assertFalse(Config().workflow.cleanup_local_branches)
         self.assertFalse(Config().workflow.cleanup_remote_branches)
         for field in ('cleanup_local_branches', 'cleanup_remote_branches'):

@@ -430,14 +430,13 @@ class ConfigSurfaceTests(unittest.TestCase):
         return buffer.getvalue()
 
     def _browser_line(self, config: Config) -> str:
-        """The switch's own line -- not the image group that shares its name."""
-        return next(
-            line for line in self._show(config).splitlines()
-            if "Agent browser" in line)
+        """The switch's own value -- not the image group that shares its name."""
+        from test_workflow_config import show_paths
+        return show_paths(self._show(config))["browser.enabled"]
 
     def test_config_show_reports_the_switch_off(self):
         line = self._browser_line(browser_config(False))
-        self.assertRegex(line, r"Agent browser \(containers\)\s+off")
+        self.assertEqual(line, "off")
 
     def test_config_show_flags_a_switch_the_image_cannot_serve(self):
         """Enabling the browser without building it is a state worth naming."""
@@ -448,7 +447,7 @@ class ConfigSurfaceTests(unittest.TestCase):
 
     def test_config_show_reports_the_switch_on_and_where_it_runs(self):
         line = self._browser_line(browser_config(True))
-        self.assertRegex(line, r"Agent browser \(containers\)\s+on")
+        self.assertTrue(line.startswith("on "))
         self.assertIn("headless Chromium in the box", line)
         self.assertIn("--host", line)
 

@@ -1,7 +1,5 @@
 """Speed requests stay independent and never silently select another model."""
 import argparse
-import contextlib
-import io
 import json
 import os
 from pathlib import Path
@@ -10,7 +8,7 @@ import tomllib
 import unittest
 from unittest.mock import patch
 
-from agent_box import agent_profiles, cli, config_menu, provider_runner, routing, runtime, workflow
+from agent_box import agent_profiles, config_menu, provider_runner, routing, runtime, workflow
 from agent_box.config import Config, load_config, save_config
 from agent_box.errors import AgentBoxError
 
@@ -66,14 +64,10 @@ class FastModeTests(unittest.TestCase):
             runtime.sync_tracker_runtime(loaded, Path(directory) / 'runtime')
             rendered = json.loads((Path(directory) / 'runtime/config.json').read_text())
             self.assertEqual(Config.from_dict(rendered).workflow, loaded.workflow)
-        output = io.StringIO()
-        with patch.object(cli, 'effective_config', return_value=config), \
-             patch.object(cli, '_statusline_note', return_value=''), \
-             patch.object(cli, '_image_note', return_value=''), \
-             patch.object(cli, '_browser_note', return_value=''), contextlib.redirect_stdout(output):
-            cli.config_show()
-        self.assertIn("'fast': True", output.getvalue())
-        self.assertIn('not delivered service', output.getvalue())
+        from test_workflow_config import shown
+        rows = shown(config)
+        self.assertIn('fast on', rows['workflow.tiers.0.codex'])
+        self.assertIn('fast off', rows['workflow.tiers.1.codex'])
         self.assertFalse(loaded.workflow.tiers['1']['codex']['fast'])
         self.assertFalse(loaded.workflow.tiers['0']['claude']['fast'])
         self.assertFalse(loaded.workflow.review.tiers['1']['codex']['fast'])

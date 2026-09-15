@@ -1,8 +1,6 @@
 """Reviewer settings and native route evidence must describe the actual delegate."""
 import json
 import base64
-import contextlib
-import io
 import unittest
 import os
 import tempfile
@@ -51,50 +49,33 @@ class NativePreparationTests(unittest.TestCase):
 
 class ReviewerMatrixTests(unittest.TestCase):
     def test_config_show_reports_merge_mode(self):
-        from agent_box import cli
+        from test_workflow_config import shown
         config = Config()
         config.workflow.merge_mode = "local"
-        output = io.StringIO()
-        with patch.object(cli, "effective_config", return_value=config), \
-             patch.object(cli, "_statusline_note", return_value=""), \
-             patch.object(cli, "_image_note", return_value=""), \
-             patch.object(cli, "_browser_note", return_value=""), contextlib.redirect_stdout(output):
-            cli.config_show()
-        self.assertIn("merge mode                local", output.getvalue())
+        self.assertEqual(shown(config)["workflow.merge_mode"], "local")
 
     def test_config_show_distinguishes_reviewer_models_from_worker_models(self):
-        from agent_box import cli
+        from test_workflow_config import shown
         config = Config()
         config.workflow.tiers["1"]["codex"]["model"] = "worker-model"
         config.workflow.review.tiers["1"]["codex"] = {"fast": False, "model": "review-model", "effort": "default"}
-        output = io.StringIO()
-        with patch.object(cli, "effective_config", return_value=config), \
-             patch.object(cli, "_statusline_note", return_value=""), \
-             patch.object(cli, "_image_note", return_value=""), \
-             patch.object(cli, "_browser_note", return_value=""), contextlib.redirect_stdout(output):
-            cli.config_show()
-        rows = output.getvalue().splitlines()
-        self.assertTrue(any("reviewer tier 1:" in row and "review-model" in row and "default" in row for row in rows))
-        self.assertTrue(any("worker/scout tier 1:" in row and "worker-model" in row for row in rows))
+        rows = shown(config)
+        self.assertIn("model review-model; effort default", rows["workflow.review.tiers.1.codex"])
+        self.assertIn("model worker-model;", rows["workflow.tiers.1.codex"])
 
     def test_config_show_reports_review_routing_separately_from_worker_routing(self):
         """Inspection must reveal strict reviewer routing even when workers use another mode."""
-        from agent_box import cli
+        from test_workflow_config import shown
         for mode in ("cross-provider", "same-provider"):
             with self.subTest(routing=mode):
                 config = Config()
                 config.workflow.routing = "weighted"
                 config.workflow.review.routing = mode
-                output = io.StringIO()
-                with patch.object(cli, "effective_config", return_value=config), \
-                     patch.object(cli, "_statusline_note", return_value=""), \
-                     patch.object(cli, "_image_note", return_value=""), \
-                     patch.object(cli, "_browser_note", return_value=""), contextlib.redirect_stdout(output):
-                    cli.config_show()
-                rows = [" ".join(row.split()) for row in output.getvalue().splitlines()]
-                self.assertIn(f"review routing {mode}", rows)
-                self.assertTrue(any(row.startswith("delegated routing weighted;") for row in rows))
-                self.assertIn("review auto; files 5; lines 200", rows)
+                rows = shown(config)
+                self.assertEqual(rows["workflow.review.routing"], mode)
+                self.assertEqual(rows["workflow.routing"], "weighted")
+                self.assertEqual((rows["workflow.review.policy"], rows["workflow.review.max_files"],
+                                  rows["workflow.review.max_lines"]), ("auto", "5", "200"))
 
     def test_reviewer_defaults_are_empty_and_have_only_task_tiers(self):
         config = Config()
