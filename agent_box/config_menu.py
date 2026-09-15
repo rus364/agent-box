@@ -444,6 +444,8 @@ def edit(config, *, project=None):
         return result
 
     global_only_color = 0
+    #: A_DIM where the terminal renders it; None marks muted rows with text instead.
+    unused_attr = None
 
     def add_line(screen, y, value, width, attr=0, x=0):
         try:
@@ -453,7 +455,7 @@ def edit(config, *, project=None):
             # A resize can arrive between measuring the screen and drawing it.
             pass
 
-    def paint(screen, rows, selected, title, help_text="", notice="", controls=None, group=""):
+    def paint(screen, rows, selected, title, help_text="", notice="", controls=None, group="", muted=None):
         screen.erase()
         height, width = screen.getmaxyx()
         if height < 8 or width < 40:
@@ -478,15 +480,29 @@ def edit(config, *, project=None):
         add_line(screen, 2, group, list_width, curses.A_BOLD)
         label_width = min(max((display_width(row[0]) for row in rows if isinstance(row, tuple)), default=0),
                           32, list_width // 2 - 2)
-        offset = min(max(0, selected - list_height + 1), max(0, len(rows) - list_height))
-        for index, row in enumerate(rows[offset:offset + list_height], offset):
+        muted = muted or {}
+        # One unselectable note precedes each run of rows muted for the same
+        # reason, so selection keeps row indices and the reason is said once.
+        lines = []
+        for index, row in enumerate(rows):
+            if index in muted and muted.get(index - 1) != muted[index]:
+                lines.append((None, f"-- {muted[index]} --"))
+            lines.append((index, row))
+        position = next(line for line, (index, _) in enumerate(lines) if index == selected)
+        offset = min(max(0, position - list_height + 1), max(0, len(lines) - list_height))
+        for y, (index, row) in enumerate(lines[offset:offset + list_height], 3):
+            if index is None:
+                add_line(screen, y, row, list_width, unused_attr or 0)
+                continue
             attr = curses.A_REVERSE | curses.A_BOLD if index == selected else 0
             if "Global only" in (row[1] if isinstance(row, tuple) else row):
                 attr = global_only_color | (curses.A_BOLD | curses.A_UNDERLINE if index == selected else 0)
+            if index in muted and unused_attr is not None:
+                attr |= unused_attr
             if isinstance(row, tuple):
                 label, value = row
                 row = padded(clipped(label, label_width), label_width) + ": " + clipped(value, list_width - label_width - 3)
-            add_line(screen, index - offset + 3, row, list_width, attr)
+            add_line(screen, y, row, list_width, attr)
         message = help_text
         if notice:
             message = notice + "\n\n" + help_text
@@ -716,20 +732,18 @@ def edit(config, *, project=None):
             return f"PATH integration: found {link.found}, kept by you, not agent-box"
         return "PATH integration: agent-box is not on PATH yet"
 
-    def applicability(path):
-        """Direct keeps delegated settings editable while naming their remaining consumers."""
-        if draft["workflow"]["worker"]["execution"] != "direct":
-            return ""
-        if path[:3] == ("workflow", "worker", "override"):
-            return "Inapplicable to direct workers"
-        if path[:2] == ("workflow", "tiers"):
-            return ("Scouts only; direct workers inapplicable" if len(path) < 3 or path[2] == "0"
-                    else "Inapplicable to direct workers")
-        if path[:2] in (("workflow", "routing"), ("workflow", "weights"),
-                        ("workflow", "fallback"), ("workflow", "reserve_percent"),
-                        ("workflow", "smoothing_hours")):
-            return "Scouts only; direct workers inapplicable"
-        return ""
+    def unused(path):
+        """Why ``path`` has no effect in this draft, as (note, explanation), or None.
+
+        Only a setting with no remaining consumer is muted: under direct
+        execution the tiers, routing and fallback still serve scouts and
+        reviewers, and marking them made every delegation row look disabled.
+        """
+        if path[:3] == ("workflow", "worker", "override") and draft["workflow"]["worker"]["execution"] == "direct":
+            return ("unused while execution is direct",
+                    "Unused while execution is direct: workers edit in the active session. "
+                    "The value is kept and applies again under auto or delegated execution.")
+        return None
 
     def menu(screen, data, path=()):
         selected, notice = (len(data), "Setup starts here: agent-box is not on PATH yet") if not path and path_pending() else (0, "")
@@ -751,7 +765,7 @@ def edit(config, *, project=None):
                 if project_mode:
                     extras = [("PATH integration: Global only", "global", "Global only: configure host integration in agent-box config."), ("Save project", "save", "Save explicit project overrides without applying host integrations."), ("Cancel", "cancel", ACTION_HELP["cancel"])]
             labels = [label_for(key, path) for key in keys]
-            rows = []
+            rows, muted = [], {}
             for key, label in zip(keys, labels):
                 value, full = data[key], (*path, key)
                 if isinstance(value, dict) and not json_field(full):
@@ -772,9 +786,11 @@ def edit(config, *, project=None):
                         shown = (">  " if isinstance(value, dict) else "") + "[Global only]"
                     else:
                         shown += "  [" + status + "]"
-                applies = applicability(full)
-                if applies:
-                    shown += "  [" + applies + "]"
+                reason = unused(full)
+                if reason:
+                    muted[len(rows)] = reason[0]
+                    if unused_attr is None:
+                        shown += "  (unused)"
                 rows.append((label, shown))
             rows += [entry[0] for entry in extras]
             selected = min(selected, len(rows) - 1)
@@ -789,9 +805,9 @@ def edit(config, *, project=None):
                                else "G: Copy current global (copy and pin current effective global values). ")) + hint
                 else:
                     hint = "R: Reset to default (built-in program values; remove global override on save). " + hint
-                applies = applicability(selected_path)
-                if applies:
-                    hint = applies + ". " + hint
+                reason = unused(selected_path)
+                if reason:
+                    hint = reason[1] + " " + hint
                 hint = labels[selected] + "\n" + hint
             else:
                 hint, help_title = extras[selected - len(keys)][2], extras[selected - len(keys)][0]
@@ -799,7 +815,7 @@ def edit(config, *, project=None):
             controls = ("Enter R reset G copy " if project_mode else "Enter open R reset ") + "? help Esc back"
             group = next((heading for heading, fields in MENU_GROUPS.get(path, ())
                           if selected < len(keys) and keys[selected] in fields), "")
-            usable = paint(screen, rows, selected, title, hint, notice, controls=controls, group=group)
+            usable = paint(screen, rows, selected, title, hint, notice, controls=controls, group=group, muted=muted)
             key = screen.get_wch()
             if key in ("\x1b", curses.KEY_LEFT):
                 return None
@@ -997,7 +1013,12 @@ def edit(config, *, project=None):
         return path_state["bin"] is not None
 
     def start(screen):
-        nonlocal global_only_color
+        nonlocal global_only_color, unused_attr
+        try:
+            if curses.termattrs() & curses.A_DIM:
+                unused_attr = curses.A_DIM
+        except curses.error:
+            pass
         try:
             curses.use_default_colors()
             if project_mode and curses.has_colors():

@@ -192,16 +192,16 @@ class WorkflowConfigTests(unittest.TestCase):
         self.assertEqual(rows['workflow.worker.execution'], 'auto')
         self.assertEqual(rows['workflow.worker.override.models.codex'], 'model worker-model; effort high')
 
-    def test_show_marks_delegated_worker_settings_inapplicable_under_direct(self):
-        """Forced direct reports the active-session source without hiding scout consumers."""
+    def test_show_marks_only_the_worker_override_unused_under_direct(self):
+        """Direct reports the active-session source; tiers still serve scouts, so they carry no mark."""
         config = Config()
         config.workflow.worker.execution = "direct"
         config.workflow.worker.override.scope = "all"
         rows = shown(config)
         self.assertEqual(rows['workflow.worker.execution'], 'direct (worker model: active session)')
-        self.assertEqual(rows['workflow.worker.override'], '[inapplicable to direct workers]')
-        self.assertEqual(rows['workflow.tiers.1'], '[inapplicable to direct workers]')
-        self.assertEqual(rows['workflow.tiers.0'], '[scouts only]')
+        self.assertEqual(rows['workflow.worker.override'], '(unused while execution is direct)')
+        self.assertEqual(rows['workflow.tiers.1'], '')
+        self.assertEqual(rows['workflow.tiers.0'], '')
         self.assertIn('model ', rows['workflow.tiers.0.codex'])
 
     def test_show_reads_the_runtime_artifact_instead_of_host_defaults(self):

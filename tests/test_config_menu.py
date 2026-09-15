@@ -306,21 +306,59 @@ class ConfigMenuTests(unittest.TestCase):
                     if project is not None:
                         self.assertEqual(result.project, {"workflow": {"worker": {"execution": execution}}})
 
-    def test_direct_marks_only_delegated_worker_consumers_inapplicable(self):
-        """Direct bypasses worker routing, while shared settings remain meaningful to scouts."""
+    def test_a_muted_override_still_opens_and_saves_an_edit_under_direct(self):
+        """Muting explains; it must not stop someone preparing the override for a later switch to delegated."""
+        import curses
         config = Config()
         config.workflow.worker.execution = "direct"
+        path = ("workflow", "worker", "override")
+        keys = [*select("workflow"), "\n", *select("worker", path[:1]), "\n", *select("override", path[:2]), "\n",
+                *select("scope", path), " ", "\x1b", "\x1b", "\x1b", curses.KEY_END, curses.KEY_UP, "\n"]
+        result, _ = self.edit(config, keys)
+        self.assertEqual(result.config.workflow.worker.override.scope, "untiered")
+        self.assertEqual(result.config.workflow.worker.execution, "direct")
+
+    def test_direct_mutes_only_the_worker_override_under_one_note(self):
+        """Direct bypasses only worker model selection; tiers and routing still serve scouts and reviewers."""
+        import curses
+
+        def dim_edit(config, keys):
+            # Without initscr curses.termattrs raises curses.error, which is the no-dim fallback below.
+            with patch.object(curses, "termattrs", return_value=curses.A_DIM):
+                return self.edit(config, keys, screen=Screen(keys, sizes=[(40, 160)]))
+
+        note = "-- unused while execution is direct --"
         keys = [*select("workflow"), "\n", *select("worker", ("workflow",)), "\n",
-                "\x1b", "\x1b", "\x1b"]
-        _, screen = self.edit(config, keys, screen=Screen(keys, sizes=[(40, 160)]))
+                *select("override", ("workflow", "worker")), "\x1b", "\x1b", "\x1b"]
+
+        def rows(screen, prefix):
+            return [attr for _, x, text, attr in screen.writes if x == 0 and text.startswith(prefix)]
+
+        config = Config()
+        config.workflow.worker.execution = "direct"
+        _, screen = dim_edit(config, keys)
         rendered = "\n".join(screen.frames)
-        self.assertIn("Global worker override", rendered)
-        self.assertIn("[Inapplicable to direct workers]", rendered)
-        self.assertIn("[Scouts only; direct workers inapplicable]", rendered)
+        self.assertEqual(max(frame.count(note) for frame in screen.frames), 1)
+        self.assertNotIn("(unused)", rendered)
+        self.assertNotIn("Inapplicable", rendered)
+        self.assertTrue(all(attr & curses.A_DIM for attr in rows(screen, "Global worker override")))
+        for delegation in ("Worker and scout models", "Provider routing", "Fallback"):
+            with self.subTest(row=delegation):
+                self.assertTrue(rows(screen, delegation))
+                self.assertFalse(any(attr & curses.A_DIM for attr in rows(screen, delegation)))
+        help_text = " ".join(" ".join(text for _, x, text, _ in screen.writes if x > 80).split())
+        self.assertIn("The value is kept and applies again under auto or delegated execution.", help_text)
+
+        _, screen = self.edit(config, keys, screen=Screen(keys, sizes=[(40, 160)]))
+        self.assertIn(note, "\n".join(screen.frames))
+        self.assertTrue(any("Global worker override" in text and "(unused)" in text for _, _, text, _ in screen.writes))
 
         config.workflow.worker.execution = "auto"
-        _, screen = self.edit(config, keys, screen=Screen(keys, sizes=[(40, 160)]))
-        self.assertNotIn("direct workers inapplicable", "\n".join(screen.frames))
+        _, screen = dim_edit(config, keys)
+        rendered = "\n".join(screen.frames)
+        self.assertNotIn(note, rendered)
+        self.assertNotIn("(unused)", rendered)
+        self.assertFalse(any(attr & curses.A_DIM for attr in rows(screen, "Global worker override")))
 
     def edit(self, config, keys, choices=(), link=None, screen=None, project=None, catalogs=None):
         import curses

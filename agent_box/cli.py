@@ -260,18 +260,16 @@ def _show_notes(config) -> dict[str, str]:
     rejected alternative, one print per field, silently lost fields.
     """
     direct = config.workflow.worker.execution == "direct"
-    worker = "  [inapplicable to direct workers]" if direct else ""
     notes = {
         "statusline.enabled": _statusline_note(config),
         "image.tools": _image_note(config),
         "browser.enabled": _browser_note(config),
         "workflow.worker.execution": " (worker model: active session)" if direct else "",
-        "workflow.worker.override": worker,
+        # Only the override loses its consumer; tiers and routing still serve scouts and reviewers.
+        "workflow.worker.override": "  (unused while execution is direct)" if direct else "",
         "workflow.auto_push": (" (accepted base after local merge)" if config.workflow.merge_mode == "local"
                                else " (parent task branch after subtask integration)"),
     }
-    for tier in config.workflow.tiers:
-        notes[f"workflow.tiers.{tier}"] = "  [scouts only]" if direct and tier == "0" else worker
     return notes
 
 
