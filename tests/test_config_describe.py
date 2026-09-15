@@ -105,8 +105,8 @@ class ConfigDescribeTests(unittest.TestCase):
             self.assertNotIn(secret, output)
         self.assertEqual(fields["notifications.telegram_token"]["effective"], "<redacted>")
         self.assertEqual(fields["tracker.connections.vikunja.token"]["global"], "<redacted>")
-        self.assertEqual(fields["tracker.connections.jira.token"]["source"], "unset")
-        self.assertNotIn("effective", fields["tracker.connections.jira.token"])
+        self.assertEqual({key: fields["tracker.connections.jira.token"][key] for key in ("default", "source", "effective")},
+                         {"default": "", "source": "default", "effective": ""})
         self.assertEqual(fields["env.set"]["global"], {"LITERAL": "<redacted>"})
         self.assertEqual(fields["env.forward"]["global"], ["FORWARDED_NAME"])
 
@@ -129,16 +129,27 @@ class ConfigDescribeTests(unittest.TestCase):
         config.tracker.enabled = config.workflow.enabled = True
         config.tracker.connections["vikunja"] = TrackerConnection("https://session.example", "session-token-value")
         config._global_tracker_urls = {"vikunja": "https://global.example"}
-        self.project_file.write_text(json.dumps({"workflow": {"review": {"policy": "always"}}}))
-        output, fields = self.in_session(config, {"review": "off"})
+        self.project_file.write_text(json.dumps({"workflow": {"review": {"policy": "always"}}, "tracker": {"project": "7"}}))
+        output, fields = self.in_session(config, {"review": "off", "project": "12"})
         policy = fields["workflow.review.policy"]
         self.assertEqual((policy["project"], policy["effective"], policy["source"]), ("always", "off", "session"))
+        project = fields["tracker.project"]
+        self.assertEqual((project["project"], project["effective"], project["source"]), ("7", "12", "session"))
         url = fields["tracker.connections.vikunja.url"]
         self.assertEqual((url["global"], url["effective"], url["source"]),
                          ("https://global.example", "https://session.example", "session"))
         self.assertEqual(fields["tracker.connections.vikunja.token"]["effective"], "<redacted>")
         self.assertNotIn("session-token-value", output)
         self.assertIn("--review", self.document["session_options"])
+
+    def test_a_normalized_project_value_is_not_attributed_to_a_session(self):
+        """Without launch flags nothing can come from a session, even when loading trims a value."""
+        self.project_file.write_text(json.dumps({"workflow": {"review": {"label": "ab:review "}}}))
+        _, fields = self.describe()
+        label = fields["workflow.review.label"]
+        self.assertEqual((label["project"], label["effective"], label["source"]), ("ab:review ", "ab:review", "project"))
+        self.assertNotIn("session_options", self.document)
+        self.assertNotIn("session", {field.get("source") for field in fields.values()})
 
     def test_a_path_narrows_the_output_and_an_unknown_path_is_an_error(self):
         _, fields = self.describe("workflow.review")

@@ -355,8 +355,11 @@ def config_description(prefix: str = "") -> dict:
     project = project_config.load(project_file)
     defaults = Config().to_dict()
     known = baseline.to_dict()
-    # Session flags apply last, so only the resolved configuration knows what wins.
+    # Session flags apply last. Comparing with the same resolution without them
+    # attributes a value to the session; loader normalization never does.
     actual = effective_config().to_dict()
+    unlaunched = project_config.apply(baseline, project).to_dict()
+    launch = getattr(baseline, "_launch", {})
     # The editor's baseline: a session's --tracker account is not a global value.
     connections = known["tracker"]["connections"]
     known["tracker"]["connections"] = {
@@ -364,10 +367,13 @@ def config_description(prefix: str = "") -> dict:
         for name, url in baseline._global_tracker_urls.items()}
     if source["kind"] == "runtime":
         known = _rendered_only(known, _snapshot_sections(source))
+    # As in the menu, every supported tracker has an empty account row by default.
+    for name in TRACKER_PROVIDERS:
+        defaults["tracker"]["connections"].setdefault(name, TrackerConnection().to_dict())
+        if "connections" in known.get("tracker", {}):
+            known["tracker"]["connections"].setdefault(name, TrackerConnection().to_dict())
     tree = project_config.merge(project_config.merge(defaults, known), project)
     tree.pop("version")
-    for name in TRACKER_PROVIDERS:
-        tree["tracker"]["connections"].setdefault(name, TrackerConnection().to_dict())
     tree["tracker"].setdefault("project", "")
     tree["tracker"].setdefault("recursive", False)
     missing = object()
@@ -403,16 +409,21 @@ def config_description(prefix: str = "") -> dict:
                         if found is not missing:
                             entry[layer] = _masked(found, hidden)
                     layered = layers["project"] if layers["project"] is not missing else layers["global"]
-                    # Project identity has no Config field, so its project value is what applies.
-                    effective = lookup(actual, full)
-                    effective = layered if effective is missing else effective
+                    # Project identity has no Config field: the file sets it, or the session's --project.
+                    underlying, effective = lookup(unlaunched, full), lookup(actual, full)
+                    underlying = layered if underlying is missing else underlying
+                    effective = underlying if effective is missing else effective
+                    if full == ("tracker", "project") and launch.get("project"):
+                        effective = launch["project"]
+                    # A --tracker account is bound beneath the project overlay rather than applied as a flag.
+                    bound = full[:2] == ("tracker", "connections") and underlying != layered
                     if layered is missing and layers["default"] is not missing:
                         entry["source"] = "host-only"
                     elif effective is missing:
                         entry["source"] = "unset"
                     else:
                         entry["effective"] = _masked(effective, hidden)
-                        if effective != layered:
+                        if effective != underlying or bound:
                             entry["source"] = "session"
                         elif layers["project"] is not missing:
                             entry["source"] = "project"
