@@ -767,7 +767,7 @@ Scouts answer distinct bounded unanswered questions that materially affect a dec
 or avoid substantial repeated reading. Quick lookups stay with the coordinator;
 duplicate scouts are prohibited. Only the coordinator launches scouts; workers and
 scouts must not launch nested scouts. Fresh read-only scouts may overlap up to the
-effective `workflow.scout.limit`, shown as `scout_limit` by prepare, inspect and config diagnostics. Managed
+effective `workflow.scout.limit`, reported as `scout_limit` by prepare and inspect. Managed
 runs enforce the shared repository slot lock. Native launches are coordinator-counted:
 CLI processes cannot safely own native subagent leases; prepare reserves no slot.
 
