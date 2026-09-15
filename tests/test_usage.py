@@ -183,7 +183,7 @@ class UsageFormattingTests(unittest.TestCase):
 
 
 class CustomUsageTests(unittest.TestCase):
-    """The user's `usage.command` runs on status-line redraws, so it must stay cheap and inert."""
+    """The user's `statusline.command` runs on status-line redraws, so it must stay cheap and inert."""
 
     def setUp(self):
         import tempfile
@@ -247,7 +247,7 @@ class CustomUsageTests(unittest.TestCase):
         from agent_box import runtime
         from agent_box.config import Config
         config = Config()
-        config.usage.command = "echo balance"
+        config.statusline.command = "echo balance"
         runtime.sync_tracker_runtime(config, self.root / "session", policy=True)
         snapshot = self.root / "session/config.json"
         with mock.patch.dict(os.environ, {"AGENT_BOX_RUNTIME_CONFIG": str(snapshot)}, clear=True):

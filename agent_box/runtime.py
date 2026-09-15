@@ -862,8 +862,9 @@ def sync_tracker_runtime(config: Config, directory: Path | None = None, *, polic
         "workflow": config.workflow.to_dict(),
         "claude": {"remote_control": config.claude.remote_control},
         "codex": config.codex.to_dict(),
-        # Claude's status line is drawn inside the box, where the saved file is not mounted.
-        "usage": config.usage.to_dict(),
+        # Claude's status line is drawn inside the box, where the saved file is not
+        # mounted; whether agent-box owns the host's statusLine slot stays host-only.
+        "statusline": {"command": config.statusline.command},
         "github": config.github.to_dict(),
         "browser": config.browser.to_dict(),
         # A nested box inherits the outer box's sound socket at the same path.
@@ -2398,7 +2399,7 @@ def runtime_main(
     ensure_state_dirs()
     ensure_refresh_token()
     config = launch_config(options)
-    agent, rest = config.launch.default_agent, args
+    agent, rest = config.default_agent, args
     if args and args[0] in {"claude", "codex", "shell", "doctor"}:
         agent, rest = args[0], args[1:]
     if agent not in {"claude", "codex", "shell", "doctor"}:
@@ -2675,7 +2676,7 @@ def apply_config(config: Config, *, session=False) -> list[str]:
             f"{'yes' if config.skills.claude_links else 'no'}")
 
         settings = CLAUDE_HOME / "settings.json"
-        statusline = claude_settings.statusline_intent(config.claude.statusline)
+        statusline = claude_settings.statusline_intent(config.statusline.enabled)
         claude_settings.reconcile_claude_settings(
             settings, notifications=config.notifications.enabled, statusline=statusline)
         report.append(
@@ -2831,7 +2832,7 @@ def host_main(
     options = options or LaunchOptions()
     workspace = resolved_workspace(options.workspace)
     config = launch_config(options)
-    agent = agent or config.launch.default_agent
+    agent = agent or config.default_agent
     executable = shutil.which(agent)
     if not executable:
         raise AgentBoxError(f"'{agent}' not found on PATH; install it on the host to use --host")

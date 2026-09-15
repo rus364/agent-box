@@ -16,7 +16,7 @@ URLs or keys. Cancel leaves the saved configuration unchanged.
 ## Launch
 
 ```bash
-agent-box ext deepseek                 # the default agent (launch.default_agent)
+agent-box ext deepseek                 # the default agent (default_agent)
 agent-box ext deepseek codex
 agent-box ext deepseek claude --model your-model-id
 agent-box --host ext deepseek codex exec 'Inspect this repository'

@@ -77,7 +77,7 @@ class ConfigSetTests(unittest.TestCase):
             ("audio.enabled=true",): "is not a project field",
             ("workflow.review.max_files=\"five\"",): "invalid type",
             ('tracker.connections.vikunja.token="token-secret-value"',): "PROJECT_CREDENTIALS_FORBIDDEN",
-            ("usage.command=curl-secret-value",): "must be JSON",
+            ("statusline.command=curl-secret-value",): "must be JSON",
             ("workflow.review.policy=\"sometimes\"",): "",
             ("--reset",): "expected",
             ("browser.enabled=true", "browser.enabled=false"): "once",

@@ -1,7 +1,7 @@
 # Remote Control
 
 In `agent-box config`, enable `claude.remote_control` or `codex.remote_control`
-under Host integrations, then save. Both default to off. The choice applies to
+under Agents, then save. Both default to off. The choice applies to
 new interactive terminal launches, in containers and with `--host`.
 
 Off uses the ordinary provider command: no private server, profile restrictions

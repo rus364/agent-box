@@ -51,7 +51,7 @@ def usage_text() -> None:
 
 Options go before the agent; everything after it reaches the agent unchanged,
 and '--' ends them early. Without claude/codex the default agent starts
-(launch.default_agent). Launch options shape only this launch. Options in the
+(default_agent). Launch options shape only this launch. Options in the
 "for this session" groups travel with the session, are never saved, and
 'agent-box config show' inside the session lists them.
 SPEC is {SPEC}, for example claude:opus:high.
@@ -210,7 +210,7 @@ def _statusline_note(config) -> str:
     Reconciliation never overwrites a status line it does not own, so "on"
     alone could otherwise look like a promise agent-box is not keeping.
     """
-    if not config.claude.statusline:
+    if not config.statusline.enabled:
         return ""
     settings_path = CLAUDE_HOME / "settings.json"
     try:
@@ -262,7 +262,7 @@ def _show_notes(config) -> dict[str, str]:
     direct = config.workflow.worker.execution == "direct"
     worker = "  [inapplicable to direct workers]" if direct else ""
     notes = {
-        "claude.statusline": _statusline_note(config),
+        "statusline.enabled": _statusline_note(config),
         "image.tools": _image_note(config),
         "browser.enabled": _browser_note(config),
         "workflow.worker.execution": " (worker model: active session)" if direct else "",
@@ -292,7 +292,7 @@ def _show_value(value, hidden: bool) -> str:
 def _hidden(at) -> bool:
     from . import config_menu
     # A command line routinely carries a bearer token; the menu shows it for editing.
-    return config_menu.secret(at) or at == ("usage", "command")
+    return config_menu.secret(at) or at == ("statusline", "command")
 
 
 def _show_rows(data, path=()):

@@ -109,7 +109,7 @@ class ConfigDescribeTests(unittest.TestCase):
         config.tracker.connections["vikunja"] = TrackerConnection("https://tracker.example", "tracker-secret-value")
         config.env.set = {"LITERAL": "env-secret-value"}
         config.env.forward = ["FORWARDED_NAME"]
-        config.usage.command = "curl -H 'Authorization: command-secret-value'"
+        config.statusline.command = "curl -H 'Authorization: command-secret-value'"
         config.github.gh_token = True
         save_config(config, self.global_file)
         output, fields = self.describe()
@@ -128,9 +128,9 @@ class ConfigDescribeTests(unittest.TestCase):
         """Inside a box a missing section is unknown; reporting defaults would misstate the host's choices."""
         config = Config()
         config.tracker.enabled = True
-        config.claude.statusline = False
+        config.statusline.enabled = False
         _, fields = self.in_session(config)
-        statusline = fields["claude.statusline"]
+        statusline = fields["statusline.enabled"]
         self.assertEqual(statusline["source"], "host-only")
         self.assertNotIn("global", statusline)
         self.assertNotIn("effective", statusline)

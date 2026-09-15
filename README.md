@@ -134,8 +134,8 @@ agent-box claude -p "summarize this repository"
 agent-box codex exec "inspect this repository"
 ```
 
-Choose the default under **Launch → Default agent** in `agent-box config`
-(`launch.default_agent`: `claude` or `codex`). It is a global setting, not a
+Choose the default under **Agents → Default agent** in `agent-box config`
+(`default_agent`: `claude` or `codex`). It is a global setting, not a
 project one; an explicit `claude` or `codex` always wins.
 
 ### Session options

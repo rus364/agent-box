@@ -20,7 +20,7 @@ pulse ALSA plugin (in the image)
 ## Enabling it
 
 ```bash
-agent-box config    # Workspace → Audio → Enabled
+agent-box config    # Workspace box → Audio → Enabled
 agent-box build     # once, if the image predates the audio client layer
 agent-box claude
 ```

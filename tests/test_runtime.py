@@ -582,10 +582,10 @@ class CodexRuntimeOverridesTests(IsolatedRuntimeTest):
             overrides.assert_not_called()
 
     def test_bare_launch_starts_the_configured_agent_unless_named(self):
-        """An explicit claude/codex wins over launch.default_agent."""
+        """An explicit claude/codex wins over default_agent."""
         workspace = Workspace(Path.cwd(), Path.cwd())
         config = Config()
-        config.launch.default_agent = "codex"
+        config.default_agent = "codex"
         for args, expected in (([], "codex"), (["claude"], "claude"), (["codex"], "codex")):
             with self.subTest(args=args), \
                  mock.patch.object(runtime.shutil, "which", return_value="/usr/bin/podman"), \
@@ -605,7 +605,7 @@ class CodexRuntimeOverridesTests(IsolatedRuntimeTest):
     def test_external_launch_selects_the_model_for_the_default_agent(self):
         """`ext NAME` without a CLI must pick the model of the agent that will actually start."""
         config = Config()
-        config.launch.default_agent = "codex"
+        config.default_agent = "codex"
         with mock.patch.object(runtime.shutil, "which", return_value="/usr/bin/podman"), \
              mock.patch.object(runtime, "resolve_workspace", return_value=Workspace(Path.cwd(), Path.cwd())), \
              mock.patch.object(runtime, "ensure_state_dirs"), \
@@ -758,7 +758,7 @@ class HostModeTests(IsolatedRuntimeTest):
     def test_bare_host_launch_uses_the_default_agent_like_a_box_launch(self):
         """--host must not answer 'which agent' differently from a box launch."""
         config = Config()
-        config.launch.default_agent = "codex"
+        config.default_agent = "codex"
         for agent, expected in ((None, "codex"), ("claude", "claude")):
             with self.subTest(agent=agent), tempfile.TemporaryDirectory() as tmp, \
                  mock.patch.object(runtime.shutil, "which", side_effect=lambda name: f"/usr/bin/{name}"), \

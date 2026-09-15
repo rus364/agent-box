@@ -15,7 +15,7 @@ from .external_config import API_EFFORTS, ExternalProvider, model_defaults, mode
 from .model_catalog import load_model_catalogs
 
 CHOICES = {
-    "launch.default_agent": LAUNCH_AGENTS,
+    "default_agent": LAUNCH_AGENTS,
     "tracker.provider": TRACKER_PROVIDERS,
     "workflow.merge_mode": ("github", "local"),
     "workflow.routing": ("current", "weighted", "usage-aware"),
@@ -27,18 +27,17 @@ CHOICES = {
     "workflow.review.github_provider": ("auto", "local", "codex", "claude"),
 }
 HELP = {
-    "launch": "What a bare `agent-box` starts. Global only; not a project setting.",
-    "launch.default_agent": "Agent started by `agent-box` without claude/codex; an explicit claude or codex always wins.",
+    "default_agent": "Agent started by `agent-box` without claude/codex; an explicit claude or codex always wins. Global only; not a project setting.",
     "install": "Where agent-box keeps its PATH symlink. Global only; set through the menu's PATH integration.",
     "install.bin_dir": "Directory holding the agent-box PATH symlink; empty means agent-box manages none. `agent-box config apply` restores the link here.",
-    "claude": "Claude host integration settings. Changes are applied only after Save and apply.",
+    "claude": "Claude session settings, including --host. Global only.",
     "claude.telegram_channel": "Start Claude with Anthropic's official Telegram channel plugin. This requires its host-side setup and exposes the session through that channel.",
-    "claude.statusline": "Keep Claude's status line pointed at agent-box. An existing user-owned status line is never overwritten.",
     "claude.remote_control": "Request Remote Control for new interactive Claude sessions, including --host. Off preserves native behavior. Resume and explicit settings use the ordinary launch. Requires eligible Claude login.",
     "codex": "Codex interactive session settings, including --host.",
     "codex.remote_control": "Request Remote Control through a private app-server; one agent-box RC session per CODEX_HOME. Unsupported launches keep the ordinary CLI. Off leaves native behavior unchanged.",
-    "usage": "Extra segment after Claude and Codex usage in `agent-box usage all` and Claude's status line.",
-    "usage.command": "Shell command whose first output line is shown after Codex usage; empty shows nothing. Runs where the line is drawn (Claude's status line runs inside the box), cached 60s, 5s timeout, failures show —. Pass keys via environment, not in the command.",
+    "statusline": "Claude's status line and its extra usage segment. Global only; changes apply after Save and apply.",
+    "statusline.enabled": "Keep Claude's status line pointed at agent-box. An existing user-owned status line is never overwritten.",
+    "statusline.command": "Extra segment in Claude's status line and `agent-box usage all`: shell command whose first output line is shown after Codex usage; empty shows nothing. Runs where the line is drawn (Claude's status line runs inside the box), cached 60s, 5s timeout, failures show —. Pass keys via environment, not in the command.",
     "notifications": "Outbound Telegram completion notifications. The bot token and chat ID stay disabled until this section is enabled and fully configured.",
     "notifications.enabled": "Send outbound completion notifications through Telegram when a bot token and chat ID are configured.",
     "notifications.telegram_token": "Telegram bot token used only for outbound notifications. The value is masked in the menu and saved in the protected config file.",
@@ -114,9 +113,9 @@ ACTION_HELP = {
     "preset": "Set file and line thresholds together from a named review preset; all review fields remain editable.",
 }
 LABELS = {
-    "launch": "Launch", "default_agent": "Default agent",
+    "default_agent": "Default agent", "statusline": "Status line",
     "claude": "Claude", "codex": "Codex", "github": "GitHub", "git": "Git",
-    "usage": "Usage segment", "command": "Custom command",
+    "command": "Custom command",
     "env": "Environment", "providers": "Provider environment", "image": "Workspace image",
     "url": "URL", "token": "Access token", "effort": "Reasoning effort",
     "github_model": "GitHub review model", "github_effort": "GitHub review effort",
@@ -129,11 +128,11 @@ LABELS = {
 # Presentation follows the user's decisions, not dataclass serialization order.
 MENU_GROUPS = {
     (): (
-        ("Tracked work", ("workflow", "tracker")),
-        ("Workspace", ("image", "browser", "audio", "env")),
-        ("Host access", ("external_providers", "providers", "github", "git")),
-        ("Host integrations", ("claude", "codex", "usage", "skills", "notifications")),
-        ("Launch", ("launch",)),
+        ("Agents", ("default_agent", "claude", "codex", "external_providers")),
+        ("Tracked work", ("tracker", "workflow")),
+        ("Workspace box", ("image", "browser", "audio")),
+        ("From host into the box", ("git", "github", "providers", "env")),
+        ("On the host", ("statusline", "skills", "notifications")),
     ),
     ("workflow",): (
         ("Workflow", ("enabled",)),

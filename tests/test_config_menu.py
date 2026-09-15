@@ -84,8 +84,9 @@ class ConfigMenuTests(unittest.TestCase):
         data.pop('version')
         data.pop('install')
         expected = {
-            (): ['workflow', 'tracker', 'image', 'browser', 'audio', 'env', 'external_providers', 'providers',
-                 'github', 'git', 'claude', 'codex', 'usage', 'skills', 'notifications', 'launch'],
+            (): ['default_agent', 'claude', 'codex', 'external_providers', 'tracker', 'workflow',
+                 'image', 'browser', 'audio', 'git', 'github', 'providers', 'env',
+                 'statusline', 'skills', 'notifications'],
             ('workflow',): ['enabled', 'worker', 'tiers', 'routing', 'weights', 'fallback',
                            'reserve_percent', 'smoothing_hours', 'review', 'merge_mode',
                            'auto_push', 'cleanup_local_branches', 'cleanup_remote_branches',
@@ -331,13 +332,13 @@ class ConfigMenuTests(unittest.TestCase):
     def test_cancel_discards_draft_while_save_returns_the_selected_values(self):
         import curses
         config = Config()
-        keys = [*select("claude"), "\n", curses.KEY_DOWN, " ", "\x1b"]
+        keys = [*select("statusline"), "\n", *select("enabled", ("statusline",)), " ", "\x1b"]
         result, _ = self.edit(config, [*keys, "\x1b"])
         self.assertIsNone(result)
-        self.assertTrue(config.claude.statusline)
+        self.assertTrue(config.statusline.enabled)
         result, _ = self.edit(config, [*keys, curses.KEY_END, curses.KEY_UP, "\n"])
-        self.assertFalse(result.config.claude.statusline)
-        self.assertTrue(config.claude.statusline)
+        self.assertFalse(result.config.statusline.enabled)
+        self.assertTrue(config.statusline.enabled)
         self.assertEqual(result.config.install.bin_dir, "")
 
     def test_saved_token_is_not_drawn_when_opening_its_connection(self):
@@ -487,7 +488,7 @@ class ConfigMenuTests(unittest.TestCase):
              patch.object(pathsetup, "bin_dir_choices", return_value=[]):
             self.assertIsNone(config_menu.edit(Config()))
         self.assertIn("Resize terminal to at least 40 columns x 8 rows (Esc: back)", screen.drawn)
-        self.assertIn("Help: workflow", screen.drawn)
+        self.assertIn("Help: " + config_menu.menu_keys(Config().to_dict())[0], screen.drawn)
 
     def test_both_roles_and_providers_offer_suggestions_custom_entry_and_cancel(self):
         """Every model matrix must use the same picker without changing effort or the other role."""
@@ -526,11 +527,12 @@ class ConfigMenuTests(unittest.TestCase):
     def test_long_help_reaches_its_end_and_resets_when_another_setting_is_selected(self):
         """Full help must actually scroll, and stale notices must not hide the next field's explanation."""
         import curses
+        first, second = config_menu.menu_keys(Config().to_dict())[:2]
         screen = Screen(["?", curses.KEY_END, "\x1b", curses.KEY_DOWN, "?", "\x1b", "\x1b"], sizes=[(8, 40)])
-        with patch.dict(config_menu.HELP, {"workflow": "First paragraph. " * 50 + "LAST_SENTENCE"}):
+        with patch.dict(config_menu.HELP, {first: "First paragraph. " * 50 + "LAST_SENTENCE"}):
             self.edit(Config(), [], screen=screen)
         self.assertTrue(any("LAST_SENTENCE" in frame for frame in screen.frames))
-        self.assertIn("Help: tracker", "\n".join(screen.frames))
+        self.assertIn("Help: " + second, "\n".join(screen.frames))
 
     def test_editor_scrolls_long_values_and_preserves_draft_across_resize(self):
         """Editing the visible tail and then shrinking the terminal must retain the full value."""
@@ -628,7 +630,7 @@ class ProjectMenuTests(unittest.TestCase):
         import curses
         config = Config()
         config.workflow.enabled = True
-        keys = ['\n', ' ', 'r', 'g', '\x1b', curses.KEY_END, curses.KEY_UP, '\n']
+        keys = [*select('workflow'), '\n', ' ', 'r', 'g', '\x1b', curses.KEY_END, curses.KEY_UP, '\n']
         screen = Screen(keys, sizes=[(8, 40)])
         result, _ = self.edit(config, [], screen=screen, project={})
         self.assertEqual(result.project, {})

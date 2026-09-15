@@ -224,23 +224,29 @@ class NotificationsUsableTests(unittest.TestCase):
         self.assertFalse(config.notifications.usable)
 
 
-class ClaudeStatuslineDefaultTests(unittest.TestCase):
-    def test_statusline_defaults_on(self):
-        self.assertTrue(config_module.ClaudeConfig().statusline)
+class StatuslineDefaultTests(unittest.TestCase):
+    """The status line switch and its extra segment are one section of one line."""
 
-    def test_a_config_written_before_the_setting_existed_gets_the_default(self):
-        claude = config_module.ClaudeConfig.from_dict({"telegram_channel": True})
-        self.assertTrue(claude.statusline)
-        self.assertTrue(claude.telegram_channel)
+    def test_statusline_defaults_on_without_an_extra_segment(self):
+        statusline = Config().statusline
+        self.assertTrue(statusline.enabled)
+        self.assertEqual(statusline.command, "")
 
-    def test_an_explicit_false_is_kept(self):
-        self.assertFalse(
-            config_module.ClaudeConfig.from_dict({"statusline": False}).statusline)
+    def test_a_sparse_file_with_only_a_command_keeps_the_line_on(self):
+        """Saving omits defaults, so a command alone must not read as switching the line off."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            config = Config()
+            config.statusline.command = "echo balance"
+            save_config(config, path)
+            self.assertEqual(json.loads(path.read_text())["statusline"], {"command": "echo balance"})
+            self.assertTrue(load_config(path).statusline.enabled)
 
-    def test_round_trip(self):
-        claude = config_module.ClaudeConfig(telegram_channel=True, statusline=False)
-        self.assertEqual(
-            config_module.ClaudeConfig.from_dict(claude.to_dict()), claude)
+    def test_switch_and_command_survive_a_round_trip_together(self):
+        config = Config()
+        config.statusline.enabled = False
+        config.statusline.command = "echo balance"
+        self.assertEqual(Config.from_dict(config.to_dict()).statusline, config.statusline)
 
 
 class DefaultAgentTests(unittest.TestCase):
@@ -250,22 +256,21 @@ class DefaultAgentTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "config.json"
             save_config(Config(), path)
-            self.assertNotIn("launch", json.loads(path.read_text()))
-            self.assertEqual(load_config(path).launch.default_agent, "claude")
+            self.assertNotIn("default_agent", json.loads(path.read_text()))
+            self.assertEqual(load_config(path).default_agent, "claude")
 
     def test_codex_choice_survives_save_and_load(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "config.json"
             config = Config()
-            config.launch.default_agent = "codex"
+            config.default_agent = "codex"
             save_config(config, path)
-            self.assertEqual(load_config(path).launch.default_agent, "codex")
+            self.assertEqual(load_config(path).default_agent, "codex")
 
     def test_an_unknown_agent_reads_as_claude_instead_of_failing_every_launch(self):
         for value in ("shell", "gemini", "", 3, None):
             with self.subTest(value=value):
-                self.assertEqual(
-                    Config.from_dict({"launch": {"default_agent": value}}).launch.default_agent, "claude")
+                self.assertEqual(Config.from_dict({"default_agent": value}).default_agent, "claude")
 
 
 if __name__ == "__main__":

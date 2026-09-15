@@ -71,26 +71,15 @@ class ClaudeConfig:
     remote_control: bool = False
     #: Start `agent-box claude` with --channels plugin:telegram@claude-plugins-official.
     telegram_channel: bool = False
-    #: Keep Claude's ``statusLine`` pointed at ``agent-box statusline``.
-    #:
-    #: Defaults on, unlike every other integration here, because it is the one
-    #: setting that exposes nothing: no credential leaves the host and nothing
-    #: reaches the container that was not already mounted. What it costs is a
-    #: line of Claude's own UI, which agent-box gives back the moment the
-    #: setting is turned off. A status line someone else configured is never
-    #: overwritten -- see ``agent_box.claude_settings.reconcile_statusline``.
-    statusline: bool = True
 
     def to_dict(self) -> dict[str, Any]:
-        return {"telegram_channel": self.telegram_channel, "statusline": self.statusline,
-                "remote_control": self.remote_control}
+        return {"telegram_channel": self.telegram_channel, "remote_control": self.remote_control}
 
     @classmethod
     def from_dict(cls, data: Any) -> "ClaudeConfig":
         return cls(
             remote_control=_bool(data, "remote_control", False),
             telegram_channel=_bool(data, "telegram_channel", False),
-            statusline=_bool(data, "statusline", True),
         )
 
 
@@ -111,33 +100,32 @@ LAUNCH_AGENTS = ("claude", "codex")
 
 
 @dataclass
-class LaunchConfig:
-    #: The agent a bare ``agent-box`` starts; an explicit ``claude``/``codex`` wins.
-    #: Global only: which TUI to open is the user's habit, not a repository's policy.
-    default_agent: str = "claude"
+class StatuslineConfig:
+    """Claude's status line: whether agent-box keeps the slot, and its extra segment.
 
-    def to_dict(self) -> dict[str, Any]:
-        return {"default_agent": self.default_agent}
-
-    @classmethod
-    def from_dict(cls, data: Any) -> "LaunchConfig":
-        agent = _str(data, "default_agent")
-        return cls(default_agent=agent if agent in LAUNCH_AGENTS else "claude")
-
-
-@dataclass
-class UsageConfig:
+    Both describe the same line, so they share a section; the command also
+    feeds ``agent-box usage all``, which prints the same segments.
+    """
+    #: Keep Claude's ``statusLine`` pointed at ``agent-box statusline``.
+    #:
+    #: Defaults on, unlike every other integration here, because it is the one
+    #: setting that exposes nothing: no credential leaves the host and nothing
+    #: reaches the container that was not already mounted. What it costs is a
+    #: line of Claude's own UI, which agent-box gives back the moment the
+    #: setting is turned off. A status line someone else configured is never
+    #: overwritten -- see ``agent_box.claude_settings.reconcile_statusline``.
+    enabled: bool = True
     #: Shell command whose first output line follows the Claude and Codex usage
     #: segments. Empty shows nothing extra; set, it runs wherever the line is
     #: drawn, which for Claude's status line is inside the workspace box.
     command: str = ""
 
     def to_dict(self) -> dict[str, Any]:
-        return {"command": self.command}
+        return {"enabled": self.enabled, "command": self.command}
 
     @classmethod
-    def from_dict(cls, data: Any) -> "UsageConfig":
-        return cls(command=_str(data, "command"))
+    def from_dict(cls, data: Any) -> "StatuslineConfig":
+        return cls(enabled=_bool(data, "enabled", True), command=_str(data, "command"))
 
 
 @dataclass
@@ -803,13 +791,15 @@ class Config:
     browser: BrowserConfig = field(default_factory=BrowserConfig)
     audio: AudioConfig = field(default_factory=AudioConfig)
     workflow: WorkflowConfig = field(default_factory=WorkflowConfig)
-    usage: UsageConfig = field(default_factory=UsageConfig)
-    launch: LaunchConfig = field(default_factory=LaunchConfig)
+    statusline: StatuslineConfig = field(default_factory=StatuslineConfig)
+    #: The agent a bare ``agent-box`` starts; an explicit ``claude``/``codex`` wins.
+    #: Global only: which TUI to open is the user's habit, not a repository's policy.
+    default_agent: str = "claude"
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "version": VERSION,
-            "launch": self.launch.to_dict(),
+            "default_agent": self.default_agent,
             "claude": self.claude.to_dict(),
             "codex": self.codex.to_dict(),
             "notifications": self.notifications.to_dict(),
@@ -825,15 +815,16 @@ class Config:
             "browser": self.browser.to_dict(),
             "audio": self.audio.to_dict(),
             "workflow": self.workflow.to_dict(),
-            "usage": self.usage.to_dict(),
+            "statusline": self.statusline.to_dict(),
         }
 
     @classmethod
     def from_dict(cls, data: Any) -> "Config":
         if not isinstance(data, dict):
             return cls()
+        agent = _str(data, "default_agent")
         return cls(
-            launch=LaunchConfig.from_dict(data.get("launch")),
+            default_agent=agent if agent in LAUNCH_AGENTS else "claude",
             claude=ClaudeConfig.from_dict(data.get("claude")),
             codex=CodexConfig.from_dict(data.get("codex")),
             notifications=NotificationsConfig.from_dict(data.get("notifications")),
@@ -849,7 +840,7 @@ class Config:
             browser=BrowserConfig.from_dict(data.get("browser")),
             audio=AudioConfig.from_dict(data.get("audio")),
             workflow=WorkflowConfig.from_dict(data.get("workflow")),
-            usage=UsageConfig.from_dict(data.get("usage")),
+            statusline=StatuslineConfig.from_dict(data.get("statusline")),
         )
 
 
