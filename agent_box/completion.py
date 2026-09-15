@@ -76,7 +76,7 @@ def external_command(args):
 COMMANDS = {
     "claude": files, "codex": files, "shell": fixed(), "doctor": fixed(), "ext": external_command,
     "attach": fixed(), "stop": fixed(),
-    "config": fixed("--project", "show", "describe", "set", "check", "apply"),
+    "config": fixed("--project", "show", "describe", "set", "proposal", "check", "apply"),
     "usage": fixed("codex", "claude", "all", "--no-cache", "--json"),
     "notify": fixed("test"),
     "build": fixed(), "update": fixed(), "rebuild": fixed(),

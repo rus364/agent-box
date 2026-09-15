@@ -128,6 +128,20 @@ def repository_root(cwd: Path | None = None, *, fallback=False):
     return Path(result.stdout.strip()).resolve()
 
 
+def git_dir(cwd: Path | None = None) -> Path:
+    """This checkout's own Git directory, for workspace state that must never be committed."""
+    directory = Path.cwd() if cwd is None else Path(cwd)
+    try:
+        result = subprocess.run(["git", "rev-parse", "--absolute-git-dir"], cwd=cwd,
+                                capture_output=True, text=True, timeout=15,
+                                env={**os.environ, "LC_ALL": "C"})
+    except (OSError, subprocess.TimeoutExpired):
+        raise AgentBoxError(f"Cannot discover the Git directory in {directory}: Git could not run") from None
+    if result.returncode:
+        raise AgentBoxError("Run this command inside a Git repository")
+    return Path(result.stdout.strip())
+
+
 def block_text(body, name):
     digest = hashlib.sha256(body.encode()).hexdigest()
     return f"<!-- BEGIN AGENT-BOX {name} sha256={digest} -->\n{body}<!-- END AGENT-BOX {name} -->\n"

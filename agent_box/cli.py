@@ -37,7 +37,8 @@ def usage_text() -> None:
   agent-box [OPTIONS] ext API [claude|codex] [AGENT ARGS...]
   agent-box [--host] [--workspace PATH] attach [SESSION] | stop
   agent-box config [--project | show | describe [PATH] | check | apply]
-  agent-box config set --project [--dry-run] PATH=JSON... [--reset PATH]...
+  agent-box config set --project|--global [--dry-run] PATH=JSON... [--reset PATH]...
+  agent-box config proposal [apply | discard]
   agent-box usage [codex|claude|all] [--no-cache] [--json]
   agent-box notify test
   agent-box build | update | rebuild
@@ -69,6 +70,8 @@ Configuration:
   config show             Effective settings, tokens redacted
   config describe [PATH]  JSON per setting for agents: help, layered values, project eligibility; secrets redacted
   config set --project    Validate, diff and save .agent-box.json changes; values are JSON, --reset inherits again
+  config set --global     Record checked global changes as this checkout's proposal; credentials stay in the menu
+  config proposal         Show the proposal; apply saves and applies it on the host after a y/N confirmation
   config check            Check the Claude Telegram channel setup
   config apply            Apply the saved file after editing it by hand
   usage                   Remaining subscription limits
@@ -467,7 +470,8 @@ def config_describe(prefix: str = "") -> None:
     print("]}")
 
 
-CONFIG_SET_USAGE = "expected: agent-box config set --project [--dry-run] PATH=JSON... [--reset PATH]..."
+CONFIG_SET_USAGE = "expected: agent-box config set --project|--global [--dry-run] PATH=JSON... [--reset PATH]..."
+CONFIG_PROPOSAL_USAGE = "expected: agent-box config proposal [apply | discard]"
 
 
 def _setting_path(text: str) -> tuple[str, ...]:
@@ -478,7 +482,7 @@ def _setting_path(text: str) -> tuple[str, ...]:
 
 
 def config_set(args: list[str]) -> None:
-    """``config set --project``: the checked, diffed project write ``config ai`` agents use.
+    """``config set``: the checked, diffed write ``config ai`` agents use.
 
     Values are JSON, so a type is never guessed (``"off"`` against ``false``).
     The whole resulting file passes the project loader's validation before
@@ -486,16 +490,21 @@ def config_set(args: list[str]) -> None:
     """
     import difflib
     from . import project_config
-    project = dry_run = False
+    project = global_scope = dry_run = False
     assignments, resets = [], []
     rest = list(args)
     while rest:
         arg = rest.pop(0)
         if arg == "--project":
             project = True
+        elif arg == "--global":
+            global_scope = True
         elif arg == "--dry-run":
             dry_run = True
-        elif arg == "--reset" and rest:
+        elif arg == "--reset":
+            # Taking `--reset --dry-run` as a path would turn a preview into a write.
+            if not rest or rest[0].startswith("-"):
+                die(CONFIG_SET_USAGE)
             resets.append(_setting_path(rest.pop(0)))
         elif "=" in arg and not arg.startswith("-"):
             name, text = arg.split("=", 1)
@@ -508,11 +517,14 @@ def config_set(args: list[str]) -> None:
         else:
             die(CONFIG_SET_USAGE)
     paths = [path for path, _ in assignments] + resets
-    if not project or not paths:
+    if project == global_scope or not paths:
         die(CONFIG_SET_USAGE)
     # A section and a field inside it would make the result depend on argument order.
     if any(a[:len(b)] == b for i, a in enumerate(paths) for j, b in enumerate(paths) if i != j):
         die("config set: each setting path may appear once, and not together with a section containing it")
+    if global_scope:
+        _propose_global(assignments, resets, dry_run)
+        return
     file = project_config.project_path()
     before = project_config.load(file)
     after = project_config.changed(before, assignments, resets)
@@ -531,6 +543,139 @@ def config_set(args: list[str]) -> None:
         return
     project_config.save(file, after)
     print(f"Saved project configuration: {file}")
+
+
+_MISSING = object()
+
+
+def _lookup(data, path):
+    for part in path:
+        if not isinstance(data, dict) or part not in data:
+            return _MISSING
+        data = data[part]
+    return data
+
+
+def _checked_global(baseline: dict, proposal: dict):
+    """The configuration a global proposal makes of ``baseline``, or an error naming the setting.
+
+    Credentials, environment policy and installation stay with the menu, so an
+    agent can neither read nor propose them. Each value must keep the
+    baseline's type and the menu's choices, and the whole result must pass the
+    menu's validation. Nothing here writes.
+    """
+    from . import config_menu, config_proposal
+    from .config import Config
+    defaults = Config().to_dict()
+    for dotted in [*proposal["set"], *proposal["reset"]]:
+        path = tuple(dotted.split("."))
+        current = _lookup(baseline, path)
+        if path[0] in ("version", "install") or _hidden(path):
+            raise AgentBoxError(f"config set --global: {dotted} is a credential, environment or installation "
+                                "setting; change it in 'agent-box config'")
+        if current is _MISSING or isinstance(current, dict) and not config_menu.json_field(path):
+            raise AgentBoxError(f"config set --global: {dotted} is not a setting; 'agent-box config describe' lists every path")
+        if dotted in proposal["reset"] and _lookup(defaults, path) is _MISSING:
+            raise AgentBoxError(f"config set --global: {dotted} has no built-in value to reset to")
+        if dotted in proposal["set"]:
+            value = proposal["set"][dotted]
+            if type(value) is not type(current) and not {type(value), type(current)} <= {int, float}:
+                raise AgentBoxError(f"config set --global: {dotted} has an invalid type")
+            choices = config_menu.value_choices(path, _lookup(baseline, path[:-1]), baseline)
+            if choices and value not in choices:
+                raise AgentBoxError(f"config set --global: {dotted} must be one of: {', '.join(map(str, choices))}")
+    config = Config.from_dict(config_proposal.applied(baseline, proposal))
+    errors = config_menu.validate(config)
+    if errors:
+        raise AgentBoxError(f"config set --global: {errors[0]}")
+    return config
+
+
+def _change_lines(before: dict, after: dict, proposal: dict) -> list[str]:
+    """Only the proposed settings: a whole-file diff of config.json would print its credentials."""
+    lines = []
+    for dotted in [*proposal["reset"], *proposal["set"]]:
+        path = tuple(dotted.split("."))
+        old, new = _lookup(before, path), _lookup(after, path)
+        if old != new:
+            lines += [f"- {dotted} = {json.dumps(old, ensure_ascii=False)}",
+                      f"+ {dotted} = {json.dumps(new, ensure_ascii=False)}"]
+    return lines
+
+
+def _propose_global(assignments, resets, dry_run: bool) -> None:
+    """Record global changes as a proposal; only ``config proposal apply`` on the host saves them.
+
+    A box cannot write config.json, and a host write needs the user's own
+    terminal confirmation, so both places propose instead of writing.
+    """
+    from . import config_proposal
+    file = config_proposal.proposal_path()
+    proposal = config_proposal.merged(config_proposal.load(file), assignments, resets)
+    baseline = effective_config(include_project=False).to_dict()
+    config = _checked_global(baseline, proposal)
+    lines = _change_lines(baseline, config.to_dict(), proposal)
+    if not lines:
+        if not dry_run:
+            config_proposal.discard(file)
+        print("No changes to the global configuration")
+        return
+    where = "this session's global snapshot" if session_snapshot_only() else "the saved global configuration"
+    print(f"Proposed global changes, checked against {where}:")
+    print("\n".join(lines))
+    if dry_run:
+        print("Dry run: nothing written")
+        return
+    config_proposal.save(file, proposal)
+    print(f"Saved global proposal: {file}")
+    print("Nothing is applied until 'agent-box config proposal apply' runs on the host and the user confirms.")
+
+
+def config_proposal_command(args: list[str]) -> None:
+    """Show, apply after the user's terminal confirmation, or discard this checkout's global proposal."""
+    from . import config_proposal, runtime
+    if args not in ([], ["apply"], ["discard"]):
+        die(CONFIG_PROPOSAL_USAGE)
+    file = config_proposal.proposal_path()
+    if not file.is_file():
+        print(f"No pending global proposal: {file}")
+        return
+    if args == ["discard"]:
+        config_proposal.discard(file)
+        print(f"Discarded the global proposal: {file}")
+        return
+    session = session_snapshot_only()
+    if args == ["apply"] and session:
+        die("config proposal apply runs on the host: this session cannot write the saved global configuration")
+    proposal = config_proposal.load(file)
+    # The host rechecks against the saved file: it may have changed since the proposal.
+    baseline = (effective_config(include_project=False) if session else load_config()).to_dict()
+    try:
+        config = _checked_global(baseline, proposal)
+    except AgentBoxError as exc:
+        die(f"{exc}; nothing changed. The proposal is kept: change it with 'agent-box config set --global' "
+            "or remove it with 'agent-box config proposal discard'")
+    print(f"Global proposal {file}:")
+    print("\n".join(_change_lines(baseline, config.to_dict(), proposal)) or "(no effect on the current global configuration)")
+    if args != ["apply"]:
+        print("Apply on the host with 'agent-box config proposal apply'; remove with 'agent-box config proposal discard'.")
+        return
+    if not sys.stdin.isatty():
+        die("config proposal apply asks for confirmation in a terminal; nothing changed")
+    try:
+        answer = input("Save and apply these global changes? [y/N] ")
+    except EOFError:
+        print("\nNo answer; nothing changed")
+        return
+    if answer.strip().lower() not in ("y", "yes"):
+        config_proposal.discard(file)
+        print("Declined: the proposal was discarded and nothing changed")
+        return
+    save_config(config)
+    for line in runtime.apply_config(config):
+        print(line)
+    config_proposal.discard(file)
+    print("Saved and applied the global proposal")
 
 
 def config_show() -> None:
@@ -681,12 +826,14 @@ def config_command(args: list[str]) -> None:
         config_describe(*args[1:])
     elif args[:1] == ["set"]:
         config_set(args[1:])
+    elif args[:1] == ["proposal"]:
+        config_proposal_command(args[1:])
     elif args == ["check"]:
         config_check()
     elif args == ["apply"]:
         config_apply()
     else:
-        die("expected: agent-box config [--project|show|describe [PATH]|set --project ...|check|apply]")
+        die("expected: agent-box config [--project|show|describe [PATH]|set --project|--global ...|proposal|check|apply]")
 
 
 # -- completion --------------------------------------------------------
