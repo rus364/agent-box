@@ -122,7 +122,7 @@ browser integration: disabled (enable it with 'agent-box config')
 ## Troubleshooting
 
 **The agent says it has no browser tools.** Check `agent-box config show`:
-*Agent browser* must be `on`, and it must not say the image has none. The server
+`browser` → `enabled` must be `on`, and it must not say the image has none. The server
 is added per invocation, so a session started before you enabled it keeps
 running without one — start a new session.
 

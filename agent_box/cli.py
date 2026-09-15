@@ -308,6 +308,12 @@ def _show_rows(data, path=()):
             yield from _show_rows(value, at)
 
 
+def _rendered_only(data, rendered):
+    """``data`` narrowed to the keys the snapshot carries, level by level."""
+    return {key: _rendered_only(value, rendered[key]) if isinstance(value, dict) and isinstance(rendered[key], dict)
+            else value for key, value in data.items() if key in rendered}
+
+
 def config_show() -> None:
     config = effective_config()
     source = effective_config_source()
@@ -316,17 +322,19 @@ def config_show() -> None:
     data.pop("version")
     if source["kind"] == "runtime":
         print("Rendered container configuration; host-only settings are not included.")
-        # A section the snapshot omits would otherwise print as defaults. Its
+        # A setting the snapshot omits would otherwise print as its default,
+        # at any depth: `claude` carries only remote_control. The snapshot's
         # `launch` key holds this session's flags, not the launch section.
-        rendered = set(read_json(Path(source["path"]))) - {"launch"}
-        data = {key: value for key, value in data.items() if key in rendered}
+        rendered = read_json(Path(source["path"]))
+        rendered = {key: value for key, value in rendered.items() if key != "launch"} if isinstance(rendered, dict) else {}
+        data = _rendered_only(data, rendered)
     if getattr(config, "_launch", None):
         from .launch_options import describe
         print(f"Session options: {describe(config._launch)}")
     print()
     notes = _show_notes(config)
     rows = list(_show_rows(data))
-    width = max(2 * depth + len(key) for depth, key, value, _ in rows if value is not None) + 2
+    width = max((2 * depth + len(key) for depth, key, value, _ in rows if value is not None), default=0) + 2
     for depth, key, value, at in rows:
         name = "  " * (depth + 1) + key
         note = notes.get(".".join(at), "")

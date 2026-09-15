@@ -60,7 +60,12 @@ class ConfigShowTests(unittest.TestCase):
             "notifications": {"telegram_token": "SECRET-telegram"},
             "tracker": {"connections": {"vikunja": {"url": "https://tasks.example", "token": "SECRET-tracker"}}},
             "env": {"forward": ["FORWARDED"], "set": {"LITERAL": "SECRET-env"}},
-            "usage": {"command": "curl -H 'Authorization: Bearer SECRET-usage'"}})
+            "usage": {"command": "curl -H 'Authorization: Bearer SECRET-usage'"},
+            "external_providers": {"api": {
+                "enabled": True, "api_key": "SECRET-key",
+                "codex": {"url": "https://api.example/v1", "env": {"ENDPOINT_ENV": "SECRET-endpoint-env"},
+                          "provider_options": {"http_headers": {"X-Key": "SECRET-header"}},
+                          "models": {"small": {"env": {"MODEL_ENV": "SECRET-model-env"}}}}}}})
         output = io.StringIO()
         with contextlib.redirect_stdout(output), patch.object(cli, 'effective_config', return_value=config), \
              patch.object(cli, '_statusline_note', return_value=''), \
@@ -195,6 +200,7 @@ class WorkflowConfigTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             artifact = Path(directory) / "runtime.json"
             artifact.write_text(json.dumps({"workflow": {"enabled": True, "merge_mode": "local"},
+                                            "claude": {"remote_control": True},
                                             "launch": {"push": False}}))
             output = io.StringIO()
             with patch.dict(os.environ, {"AGENT_BOX_RUNTIME_CONFIG": str(artifact)}), \
@@ -205,6 +211,8 @@ class WorkflowConfigTests(unittest.TestCase):
             rows = show_paths(output.getvalue())
             self.assertEqual(rows["workflow.merge_mode"], "local")
             self.assertNotIn("notifications.enabled", rows)
+            self.assertEqual(rows["claude.remote_control"], "on")
+            self.assertNotIn("claude.statusline", rows)
             self.assertNotIn("launch.default_agent", rows)
             self.assertIn(str(artifact), output.getvalue())
 
