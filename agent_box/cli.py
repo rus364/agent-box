@@ -39,6 +39,7 @@ def usage_text() -> None:
   agent-box config [--project | show | describe [PATH] | check | apply]
   agent-box config set --project|--global [--dry-run] PATH=JSON... [--reset PATH]...
   agent-box config proposal [apply | discard]
+  agent-box config ai [claude|codex]
   agent-box usage [codex|claude|all] [--no-cache] [--json]
   agent-box notify test
   agent-box build | update | rebuild
@@ -72,6 +73,7 @@ Configuration:
   config set --project    Validate, diff and save .agent-box.json changes; values are JSON, --reset inherits again
   config set --global     Record checked global changes as this checkout's proposal; credentials stay in the menu
   config proposal         Show the proposal; apply saves and applies it on the host after a y/N confirmation
+  config ai [AGENT]       Configure agent-box with an agent session in the box; offers global proposals after it
   config check            Check the Claude Telegram channel setup
   config apply            Apply the saved file after editing it by hand
   usage                   Remaining subscription limits
@@ -391,15 +393,6 @@ def config_description(prefix: str = "") -> dict:
     tree.pop("version")
     tree["tracker"].setdefault("project", "")
     tree["tracker"].setdefault("recursive", False)
-    missing = object()
-
-    def lookup(data, at):
-        for part in at:
-            if not isinstance(data, dict) or part not in data:
-                return missing
-            data = data[part]
-        return data
-
     fields = []
 
     def walk(data, at=()):
@@ -418,16 +411,16 @@ def config_description(prefix: str = "") -> dict:
                     if config_menu._model_path(full):
                         entry["suggestions"] = list(BUNDLED_MODELS[at[-1]])
                     hidden = _hidden(full)
-                    layers = {layer: lookup(values, full) for layer, values in
+                    layers = {layer: _lookup(values, full) for layer, values in
                               (("default", defaults), ("global", known), ("project", project))}
                     for layer, found in layers.items():
-                        if found is not missing:
+                        if found is not _MISSING:
                             entry[layer] = _masked(found, hidden)
-                    layered = layers["project"] if layers["project"] is not missing else layers["global"]
+                    layered = layers["project"] if layers["project"] is not _MISSING else layers["global"]
                     # Project identity has no Config field: the file sets it, or the session's --project.
-                    underlying, effective = lookup(unlaunched, full), lookup(actual, full)
-                    underlying = layered if underlying is missing else underlying
-                    effective = underlying if effective is missing else effective
+                    underlying, effective = _lookup(unlaunched, full), _lookup(actual, full)
+                    underlying = layered if underlying is _MISSING else underlying
+                    effective = underlying if effective is _MISSING else effective
                     if full == ("tracker", "project") and launch.get("project"):
                         effective = launch["project"]
                     # A --tracker account is bound beneath the project overlay rather than applied as a flag.
@@ -435,15 +428,15 @@ def config_description(prefix: str = "") -> dict:
                     bound = (full[:2] == ("tracker", "connections")
                              and underlying != (layered.strip() if isinstance(layered, str) else layered))
                     # Unknowable here: no layer carries it and the session renders no value of its own.
-                    if layered is missing and layers["default"] is not missing and lookup(resolved, full) is missing:
+                    if layered is _MISSING and layers["default"] is not _MISSING and _lookup(resolved, full) is _MISSING:
                         entry["source"] = "host-only"
-                    elif effective is missing:
+                    elif effective is _MISSING:
                         entry["source"] = "unset"
                     else:
                         entry["effective"] = _masked(effective, hidden)
                         if effective != underlying or bound:
                             entry["source"] = "session"
-                        elif layers["project"] is not missing:
+                        elif layers["project"] is not _MISSING:
                             entry["source"] = "project"
                         else:
                             entry["source"] = "default" if layered == layers["default"] else "global"
@@ -620,7 +613,8 @@ def _propose_global(assignments, resets, dry_run: bool) -> None:
             config_proposal.discard(file)
         print("No changes to the global configuration")
         return
-    where = "this session's global snapshot" if session_snapshot_only() else "the saved global configuration"
+    where = ("this session's global snapshot" if effective_config_source()["kind"] == "runtime"
+             else "the saved global configuration")
     print(f"Proposed global changes, checked against {where}:")
     print("\n".join(lines))
     if dry_run:
@@ -644,9 +638,10 @@ def config_proposal_command(args: list[str]) -> None:
         config_proposal.discard(file)
         print(f"Discarded the global proposal: {file}")
         return
-    session = session_snapshot_only()
+    # Any agent session, in a box or --host, reads a snapshot; consent belongs to the user's own terminal.
+    session = effective_config_source()["kind"] == "runtime"
     if args == ["apply"] and session:
-        die("config proposal apply runs on the host: this session cannot write the saved global configuration")
+        die("config proposal apply runs in your own host terminal, outside agent sessions; nothing changed")
     proposal = config_proposal.load(file)
     # The host rechecks against the saved file: it may have changed since the proposal.
     baseline = (effective_config(include_project=False) if session else load_config()).to_dict()
@@ -676,6 +671,64 @@ def config_proposal_command(args: list[str]) -> None:
         print(line)
     config_proposal.discard(file)
     print("Saved and applied the global proposal")
+
+
+CONFIG_AI_SKILL = "ab-config/SKILL.md"
+
+
+def _inside_session() -> bool:
+    """A box, or any agent session reading a snapshot: config ai would nest a session there."""
+    return Path("/run/.containerenv").is_file() or effective_config_source()["kind"] == "runtime"
+
+
+def _offer_global_proposal() -> None:
+    """Hand a pending proposal to ``config proposal apply``; a refusal is reported, not fatal here."""
+    from . import config_proposal
+    try:
+        if not config_proposal.proposal_path().is_file():
+            return
+    except AgentBoxError:
+        return  # Outside Git there is nowhere a proposal could be.
+    if not sys.stdin.isatty():
+        print("agent-box: a global proposal is pending; run 'agent-box config proposal apply' in a terminal")
+        return
+    try:
+        config_proposal_command(["apply"])
+    except AgentBoxError as exc:
+        print(f"agent-box: {exc}", file=sys.stderr)
+    except SystemExit:
+        pass  # die() already said why; the proposal stays for later.
+
+
+def config_ai(args: list[str]) -> None:
+    """``config ai [claude|codex]``: configure agent-box together with an agent.
+
+    The session is an ordinary interactive box launch whose first prompt points
+    at the shipped ab-config skill on the read-only launcher mount, so launching
+    installs and applies nothing. The agent saves project changes through
+    ``config set --project`` and can only propose global ones; this host command
+    offers a pending proposal before the session and again when it ends or
+    detaches, because the box itself can never apply it.
+    """
+    from . import runtime
+    from .launch_options import LaunchOptions
+    from .paths import CONTAINER_LAUNCHER_ROOT, MANAGED_SKILLS_SOURCE
+    if len(args) > 1 or args and args[0] not in ("claude", "codex"):
+        die("expected: agent-box config ai [claude|codex]")
+    if _inside_session():
+        die("config ai starts its own agent session; run it in your own host terminal. Inside this session, ask "
+            f"the agent to read {MANAGED_SKILLS_SOURCE / CONFIG_AI_SKILL} and follow it")
+    _offer_global_proposal()
+    skill = CONTAINER_LAUNCHER_ROOT / "agent_box/skills" / CONFIG_AI_SKILL
+    prompt = f"Read {skill} completely and follow it to configure agent-box for this project with me."
+    try:
+        runtime.runtime_main([*args, prompt], Path(__file__).resolve().parent.parent, LaunchOptions())
+        code = 0
+    except SystemExit as exc:
+        code = exc.code
+    _offer_global_proposal()
+    if code:
+        raise SystemExit(code)
 
 
 def config_show() -> None:
@@ -828,12 +881,14 @@ def config_command(args: list[str]) -> None:
         config_set(args[1:])
     elif args[:1] == ["proposal"]:
         config_proposal_command(args[1:])
+    elif args[:1] == ["ai"]:
+        config_ai(args[1:])
     elif args == ["check"]:
         config_check()
     elif args == ["apply"]:
         config_apply()
     else:
-        die("expected: agent-box config [--project|show|describe [PATH]|set --project|--global ...|proposal|check|apply]")
+        die("expected: agent-box config [--project|show|describe [PATH]|set --project|--global ...|proposal|ai|check|apply]")
 
 
 # -- completion --------------------------------------------------------

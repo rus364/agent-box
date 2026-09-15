@@ -71,7 +71,11 @@ def applied(data: dict, proposal: dict) -> dict:
 
 def save(path: Path, proposal: dict) -> None:
     # Credentials are refused before saving, but the file stays as private as config.json.
-    atomic_write_json(path, proposal, SECRET_MODE)
+    try:
+        atomic_write_json(path, proposal, SECRET_MODE)
+    except OSError as exc:
+        # A sandboxed agent may be unable to write the Git directory; explain instead of a traceback.
+        raise AgentBoxError(f"Cannot write the global proposal {path}: {exc.strerror or exc}") from None
 
 
 def discard(path: Path) -> None:

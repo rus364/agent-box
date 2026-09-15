@@ -60,7 +60,7 @@ class ConfigProposalTests(unittest.TestCase):
         self.assertIn("session's global snapshot", output)
         self.assertFalse(self.global_file.exists())
         self.assertEqual(config_proposal.load(self.proposal), {"set": {"workflow.review.max_files": 7}, "reset": []})
-        with self.assertRaisesRegex(AgentBoxError, "runs on the host"):
+        with self.assertRaisesRegex(AgentBoxError, "outside agent sessions"):
             self.command("proposal", "apply", answer="y")
         self.apply.assert_not_called()
 
@@ -137,6 +137,33 @@ class ConfigProposalTests(unittest.TestCase):
         self.assertEqual(config_proposal.merged({"set": {"workflow.review.max_files": 9, "browser.enabled": True}, "reset": []},
                                                 [(("workflow", "review", "max_files"), 4)], [("browser", "enabled")]),
                          {"set": {"workflow.review.max_files": 4}, "reset": ["browser.enabled"]})
+
+    def test_apply_is_refused_inside_any_agent_session(self):
+        """An agent must not answer the confirmation itself, in a box or in a --host session with a saved file."""
+        snapshot = Config()
+        snapshot.workflow.enabled = True
+        runtime.sync_tracker_runtime(snapshot, self.root / "rendered")
+        self.command("set", "--global", "workflow.review.max_files=9")
+        os.environ["AGENT_BOX_RUNTIME_CONFIG"] = str(self.root / "rendered" / "config.json")
+        self.assertTrue(self.global_file.is_file())
+        with self.assertRaisesRegex(AgentBoxError, "outside agent sessions"):
+            self.command("proposal", "apply", answer="y")
+        self.apply.assert_not_called()
+        self.assertTrue(self.proposal.exists())
+
+    def test_discard_removes_the_proposal_and_changes_nothing(self):
+        before = self.global_file.read_text()
+        self.command("set", "--global", "workflow.review.max_files=9")
+        self.assertIn("Discarded", self.command("proposal", "discard"))
+        self.assertFalse(self.proposal.exists())
+        self.assertEqual(self.global_file.read_text(), before)
+        self.assertIn("No pending global proposal", self.command("proposal", "discard"))
+
+    def test_an_unwritable_git_directory_is_a_clear_refusal(self):
+        """A sandboxed agent needs an explanation it can relay, not a traceback."""
+        with patch.object(config_proposal, "atomic_write_json", side_effect=PermissionError(13, "Permission denied")), \
+                self.assertRaisesRegex(AgentBoxError, "Cannot write the global proposal"):
+            self.command("set", "--global", "workflow.review.max_files=9")
 
     def test_reset_never_takes_a_flag_for_its_path(self):
         """`--reset --dry-run` reading --dry-run as a path would turn a preview into a write."""

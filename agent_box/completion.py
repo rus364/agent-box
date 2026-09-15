@@ -72,11 +72,21 @@ def external_command(args):
     return files(args)
 
 
+def config_words(args):
+    """``config`` subcommands, then the arguments of the one already given."""
+    if len(args) > 1 and args[0] == "set":
+        once = ("--project", "--global", "--dry-run")
+        return "words", [(word, "") for word in (*once, "--reset") if word == "--reset" or word not in args[1:-1]]
+    if len(args) > 1 and args[0] in ("proposal", "ai"):
+        return fixed(*(("apply", "discard") if args[0] == "proposal" else ("claude", "codex")))(args[1:])
+    return fixed("--project", "show", "describe", "set", "proposal", "ai", "check", "apply")(args)
+
+
 #: Every command ``cli.main`` dispatches, except HIDDEN; a test fails when one is missing.
 COMMANDS = {
     "claude": files, "codex": files, "shell": fixed(), "doctor": fixed(), "ext": external_command,
     "attach": fixed(), "stop": fixed(),
-    "config": fixed("--project", "show", "describe", "set", "proposal", "check", "apply"),
+    "config": config_words,
     "usage": fixed("codex", "claude", "all", "--no-cache", "--json"),
     "notify": fixed("test"),
     "build": fixed(), "update": fixed(), "rebuild": fixed(),

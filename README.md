@@ -288,6 +288,7 @@ agent-box config        # menu: arrows, Space, Enter; save and apply
 agent-box config show   # print current settings, tokens redacted
 agent-box config check  # verify the Claude Telegram channel setup
 agent-box config apply  # apply the saved file without asking anything
+agent-box config ai     # set things up together with an agent; see below
 ```
 
 `agent-box config` uses Python’s standard-library curses menu, with no extra
@@ -458,6 +459,37 @@ overrides to the snapshot's global baseline, so another project/session or a
 global apply cannot replace an active session's settings or credentials.
 Snapshots remain available for detached sessions and are removed with runtime
 state during uninstall.
+
+### Guided setup with `config ai`
+
+`agent-box config ai [claude|codex]` starts an ordinary interactive session in
+this workspace's box — the default agent and its configured model unless you
+name one — whose first prompt is the shipped `ab-config` skill. The agent reads
+the repository and `agent-box config describe`, asks about your goals in your
+language, and explains each recommendation: its purpose, consequences and
+alternatives, and whether it belongs to the project or to your global
+configuration. Starting it installs nothing and applies nothing.
+
+The agent writes only through checked commands, after showing you the change:
+
+```bash
+agent-box config describe [PATH]    # every setting as JSON, secrets redacted
+agent-box config set --project [--dry-run] PATH=JSON... [--reset PATH]...
+agent-box config set --global [--dry-run] PATH=JSON... [--reset PATH]...
+agent-box config proposal [apply | discard]
+```
+
+Project changes are validated as a whole `.agent-box.json` and saved with a
+diff. An agent never writes global settings: `config set --global` saves a
+proposal in the checkout's Git directory (`.git/agent-box/`, never committed),
+checked against the global configuration the session can see.
+`agent-box config proposal apply` runs in your own host terminal, outside agent
+sessions: it rechecks the proposal against the saved `config.json`, shows the
+changed settings, and saves and applies them only after you answer yes.
+`config ai` offers a pending proposal before the session and again when it ends
+or detaches. Credentials, tokens, API keys, environment and installation
+settings are never read or proposed this way; set them in `agent-box config`.
+Image tool changes still need `agent-box build`.
 
 
 ## The workspace image
