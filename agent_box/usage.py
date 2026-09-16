@@ -267,7 +267,7 @@ def join_segments(*segments: str) -> str:
 
 
 def configured_custom_command() -> str:
-    """``claude.claude.statusline.command`` from the saved file, or from the session snapshot in a box."""
+    """``claude.statusline.command`` from the saved file, or from the session snapshot in a box."""
     from .config import effective_config
     try:
         return effective_config(include_project=False).claude.statusline.command
@@ -276,7 +276,7 @@ def configured_custom_command() -> str:
 
 
 def custom_usage() -> str:
-    """One line printed by the user's ``claude.claude.statusline.command``; "" when none is set.
+    """One line printed by the user's ``claude.statusline.command``; "" when none is set.
 
     Failures are cached like successes: a command that times out would
     otherwise cost every redraw its full timeout. The cache is keyed by a hash
