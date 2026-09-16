@@ -612,12 +612,20 @@ def model_list(data=None):
     index; dropping it would silently shorten the list, or empty it and let
     untiered work inherit the session instead.
     """
-    return [model_entry(item) for item in data] if isinstance(data, list) else []
+    if data is None:
+        return []
+    return [model_entry(item) for item in data] if isinstance(data, list) else data
 
 
 def model_tiers(numbers, data=None):
-    data = _mapping(data)
-    return {str(number): model_list(data.get(str(number))) for number in numbers}
+    """Known tiers as lists; a wrong container or unknown tier stays for validate() to name."""
+    if data is None:
+        data = {}
+    if not isinstance(data, dict):
+        return data
+    known = {str(number) for number in numbers}
+    return {**{tier: model_list(data.get(tier)) for tier in sorted(known)},
+            **{tier: value for tier, value in data.items() if tier not in known}}
 
 
 @dataclass
@@ -731,7 +739,8 @@ class WorkflowConfig:
             return f"--{role}", self.pins[role]
         section = "review" if role == "reviewer" else role
         settings = self.role(role)
-        if tier is not None and settings.tiers.get(str(tier)):
+        # Wrong containers are validate()'s errors; unvalidated readers such as profile sync must not crash.
+        if tier is not None and isinstance(settings.tiers, dict) and settings.tiers.get(str(tier)):
             return f"workflow.{section}.tiers.{tier}", settings.tiers[str(tier)]
         return f"workflow.{section}.models", settings.models
 
@@ -758,6 +767,20 @@ class WorkflowConfig:
             if not isinstance(value, int) or value < 1:
                 errors.append(f"workflow.review.{name} must be a positive integer")
         from .fast_mode import configuration_error
+        for role, tiers in ROLE_TIERS.items():
+            section = "review" if role == "reviewer" else role
+            settings = self.role(role)
+            if not isinstance(settings.models, list):
+                errors.append(f"workflow.{section}.models must be a list of candidates")
+            if not isinstance(settings.tiers, dict):
+                errors.append(f"workflow.{section}.tiers must be an object keyed by tier")
+                continue
+            for tier, models in settings.tiers.items():
+                if tier not in {str(number) for number in tiers}:
+                    errors.append(f"workflow.{section}.tiers.{tier} is not a {role} tier; use "
+                                  + ", ".join(str(number) for number in tiers))
+                elif not isinstance(models, list):
+                    errors.append(f"workflow.{section}.tiers.{tier} must be a list of candidates")
         for path, spec in self.candidates():
             provider = spec.get("provider")
             if provider not in AGENT_PROVIDERS:
@@ -782,9 +805,12 @@ class WorkflowConfig:
             section = "review" if role == "reviewer" else role
             settings = self.role(role)
             groups.append((f"workflow.{section}.models", settings.models))
-            groups.extend((f"workflow.{section}.tiers.{tier}", models) for tier, models in settings.tiers.items())
+            if isinstance(settings.tiers, dict):
+                groups.extend((f"workflow.{section}.tiers.{tier}", models) for tier, models in settings.tiers.items())
         groups.extend((f"--{role}", models) for role, models in self.pins.items())
-        return [(f"{path}.{index}", spec) for path, models in groups for index, spec in enumerate(models)]
+        # Wrong containers are reported by validate() by themselves, not entry by entry.
+        return [(f"{path}.{index}", spec) for path, models in groups if isinstance(models, list)
+                for index, spec in enumerate(models)]
 
     @classmethod
     def from_dict(cls, data):

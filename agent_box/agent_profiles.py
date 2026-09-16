@@ -52,7 +52,8 @@ def profile_candidate(config, provider, role, tier):
     and API candidates (which native agents cannot reach) are passed over.
     """
     _, models = config.workflow.models_for(role, tier)
-    return next((spec for spec in models if spec["provider"] == provider and not spec.get("api_provider")),
+    return next((spec for spec in (models if isinstance(models, list) else [])
+                 if spec["provider"] == provider and not spec.get("api_provider")),
                 {"provider": provider, "model": "", "effort": "medium", "fast": False, "api_provider": ""})
 
 

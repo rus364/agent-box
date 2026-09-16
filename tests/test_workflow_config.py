@@ -125,6 +125,9 @@ class WorkflowConfigTests(unittest.TestCase):
                   # Malformed entries stay in place so a hand edit cannot silently empty a list.
                   ({"worker": {"models": ["codex:gpt-5.5"]}}, "workflow.worker.models.0: provider"),
                   ({"scout": {"tiers": {"1": [{"provider": "codex", "model": 5}]}}}, "workflow.scout.tiers.1.0: model"),
+                  ({"worker": {"models": {"provider": "codex", "model": "gpt-5.5"}}}, "workflow.worker.models must be a list"),
+                  ({"review": {"tiers": [[]]}}, "workflow.review.tiers must be an object"),
+                  ({"review": {"tiers": {"0": []}}}, "workflow.review.tiers.0 is not a reviewer tier"),
                   ({"review": {"models": [{"provider": "claude", "model": "opus", "effort": "invalid"}]}},
                    "workflow.review.models.0: invalid effort")]
         for workflow, message in cases:

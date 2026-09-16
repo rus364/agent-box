@@ -806,7 +806,7 @@ def edit(config, *, project=None):
                     shown = "[x]" if value else "[ ]"
                 elif secret(full):
                     shown = "<configured>" if value else "<empty>"
-                elif candidate_list(full):
+                elif candidate_list(full) and isinstance(value, list):
                     shown = ", ".join(candidate_label(spec) for spec in value) or "(none)"
                 elif isinstance(value, str):
                     shown = value or "(not set)"
@@ -980,7 +980,7 @@ def edit(config, *, project=None):
                 if isinstance(value, bool):
                     data[name] = not value
                     accepted = True
-                elif candidate_list(full):
+                elif candidate_list(full) and isinstance(value, list):
                     if edit_candidates(screen, value, full):
                         notice = "Draft updated; save to keep changes"
                         accepted = True

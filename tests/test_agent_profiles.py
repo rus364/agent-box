@@ -76,6 +76,15 @@ class AgentProfileTests(unittest.TestCase):
                 self.assertEqual(tomllib.loads((codex / f"agents/ab-scout-{tier}.toml").read_text())["model"], "gpt-5.6-luna")
                 self.assertIn('model: "haiku"', (claude / f"agents/ab-scout-{tier}.md").read_text())
 
+    def test_apply_with_a_malformed_list_removes_profiles_instead_of_crashing(self):
+        """config apply reports validation warnings and still syncs; a wrong container means no candidate."""
+        with tempfile.TemporaryDirectory() as directory:
+            codex, claude = Path(directory) / "codex", Path(directory) / "claude"
+            config = Config.from_dict({"workflow": {"enabled": True, "scout": {"models": "luna", "tiers": ["x"]}}})
+            self.assertTrue(config.workflow.validate())
+            self.assertEqual(sync(config, codex, claude), [])
+            self.assertFalse((codex / "agents/ab-scout-0.toml").exists())
+
     def test_profile_toml_carries_what_toml_can_spell(self):
         """A profile is TOML Codex parses, so its fields need the TOML escaper.
 
