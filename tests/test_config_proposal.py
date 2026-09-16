@@ -96,6 +96,8 @@ class ConfigProposalTests(unittest.TestCase):
                               (('install.bin_dir="/tmp/elsewhere"',), "installation"),
                               (('env.forward=["NAME"]',), "environment"),
                               (('workflow.review.max_files="nine"',), "invalid type"),
+                              (('workflow.scout.models=["codex:gpt-5.5"]',), r"models\.0 must be an object"),
+                              (('workflow.worker.tiers.2=[{"provider": "codex", "model": 5}]',), r"tiers\.2\.0 must be an object"),
                               (('workflow.review.policy="sometimes"',), "must be one of"),
                               (("workflow.review.nope=1",), "not a setting")):
             with self.subTest(args=args):

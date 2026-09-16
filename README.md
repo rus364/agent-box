@@ -576,8 +576,8 @@ segments from each other.
 `--no-cache` always requests live usage. Claude tokens are renewed on demand
 only after expiry or HTTP 401, at most once per call; there is no background
 refresh. Status-line reads never renew credentials. A busy credential lock or
-failed renewal returns an error; model selection then treats that usage as
-unknown and excludes no candidate.
+failed renewal returns an error; model selection still skips a candidate whose
+cached window is known to be exhausted until its reset.
 Renewal honors Claude's approved custom OAuth origins; an arbitrary usage
 endpoint override never receives a refresh token.
 

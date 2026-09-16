@@ -69,7 +69,8 @@ class RoutingTests(unittest.TestCase):
         c = WorkflowConfig()
         c.scout.models = [candidate("codex", "gpt-5.6-luna"), candidate("claude", "haiku")]
         self.assertEqual(routing.select(c, "scout", 0, "codex", available=["claude"])["model"], "haiku")
-        usage = {"codex": {"windows": [{"seconds": 18000, "remaining": 0, "reset_at": 2000}]}}
+        # A failed refresh (fresh: false) keeps the cached exhaustion evidence, and it still excludes.
+        usage = {"codex": {"fresh": False, "windows": [{"seconds": 18000, "remaining": 0, "reset_at": 2000}]}}
         self.assertEqual(routing.select(c, "scout", 0, "codex", usage, now=1000)["model"], "haiku")
         # A window that has already reset no longer excludes anything.
         self.assertEqual(routing.select(c, "scout", 0, "codex", usage, now=3000)["model"], "gpt-5.6-luna")

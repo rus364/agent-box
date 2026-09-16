@@ -575,6 +575,14 @@ def _checked_global(baseline: dict, proposal: dict):
             value = proposal["set"][dotted]
             if type(value) is not type(current) and not {type(value), type(current)} <= {int, float}:
                 raise AgentBoxError(f"config set --global: {dotted} has an invalid type")
+            if config_menu.candidate_list(path):
+                # Loading keeps only object entries, so a malformed one would save as a silently shorter list.
+                from .config import MODEL_ENTRY
+                for index, item in enumerate(value):
+                    if not isinstance(item, dict) or any(key not in MODEL_ENTRY or type(field) is not MODEL_ENTRY[key]
+                                                         for key, field in item.items()):
+                        raise AgentBoxError(f"config set --global: {dotted}.{index} must be an object with "
+                                            f"{', '.join(MODEL_ENTRY)} fields of the right types")
             choices = config_menu.value_choices(path, _lookup(baseline, path[:-1]), baseline)
             if choices and value not in choices:
                 raise AgentBoxError(f"config set --global: {dotted} must be one of: {', '.join(map(str, choices))}")

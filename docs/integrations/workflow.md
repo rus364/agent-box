@@ -217,6 +217,8 @@ resolved before asking for session settings.
 
 `agent-box usage --json --no-cache` requests live usage. A failed refresh has
 `fresh: false`, retains any useful cached exhaustion evidence and exits nonzero.
+Model selection keeps skipping a candidate whose retained window is exhausted
+with a future reset; a failure without such evidence excludes nothing.
 The provider APIs may themselves delay updates; bypassing the local cache cannot
 remove server-side lag.
 
