@@ -87,7 +87,7 @@ class ProjectConfigTests(unittest.TestCase):
 
     def test_unknown_forbidden_and_malformed_values_never_fall_back(self):
         for data in ({'browser': {'enabled': 1}}, {'env': {}}, {'workflow': {'enabled': False}},
-                     {'default_agent': 'codex'}, {'statusline': {'command': 'echo'}},
+                     {'default_agent': 'codex'}, {'claude': {'statusline': {'command': 'echo'}}},
                      {'workflow': {'unknown': 1}}, {'workflow': {'merge_mode': ''}},
                      {'workflow': {'review': {'sensitive_paths': [None]}}},
                      {'workflow': {'review': {'ignored_paths': [None]}}},

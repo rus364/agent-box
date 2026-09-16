@@ -32,7 +32,7 @@ class RemoteControlTests(unittest.TestCase):
             loaded = Config.from_dict(data)
             self.assertTrue(loaded.claude.remote_control)
             self.assertTrue(loaded.codex.remote_control)
-            self.assertEqual(data['claude'], {'remote_control': True})
+            self.assertEqual(data['claude'], {'remote_control': True, 'statusline': {'command': ''}})
 
     def test_off_preserves_exact_native_command_for_both_launch_modes(self):
         """Disabled RC must not impose server limitations on profiles or arguments."""

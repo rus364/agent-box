@@ -247,7 +247,7 @@ class CustomUsageTests(unittest.TestCase):
         from agent_box import runtime
         from agent_box.config import Config
         config = Config()
-        config.statusline.command = "echo balance"
+        config.claude.statusline.command = "echo balance"
         runtime.sync_tracker_runtime(config, self.root / "session", policy=True)
         snapshot = self.root / "session/config.json"
         with mock.patch.dict(os.environ, {"AGENT_BOX_RUNTIME_CONFIG": str(snapshot)}, clear=True):

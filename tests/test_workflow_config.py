@@ -70,7 +70,7 @@ class ConfigShowTests(unittest.TestCase):
             "notifications": {"telegram_token": "SECRET-telegram"},
             "tracker": {"connections": {"vikunja": {"url": "https://tasks.example", "token": "SECRET-tracker"}}},
             "env": {"forward": ["FORWARDED"], "set": {"LITERAL": "SECRET-env"}},
-            "statusline": {"command": "curl -H 'Authorization: Bearer SECRET-usage'"},
+            "claude": {"statusline": {"command": "curl -H 'Authorization: Bearer SECRET-usage'"}},
             "external_providers": {"api": {
                 "enabled": True, "api_key": "SECRET-key",
                 "codex": {"url": "https://api.example/v1", "env": {"ENDPOINT_ENV": "SECRET-endpoint-env"},
@@ -85,7 +85,7 @@ class ConfigShowTests(unittest.TestCase):
         rows = show_paths(output.getvalue())
         self.assertEqual(rows["env.forward"], "FORWARDED")
         self.assertEqual(rows["env.set"], "LITERAL=<configured>")
-        self.assertEqual(rows["statusline.command"], "(set)")
+        self.assertEqual(rows["claude.statusline.command"], "(set)")
         self.assertIn("token (set)", rows["tracker.connections.vikunja"])
 
 

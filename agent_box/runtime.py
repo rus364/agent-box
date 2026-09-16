@@ -860,11 +860,11 @@ def sync_tracker_runtime(config: Config, directory: Path | None = None, *, polic
         "global_tracker_urls": getattr(config, "_global_tracker_urls", {
             name: connection.url for name, connection in config.tracker.connections.items()}),
         "workflow": config.workflow.to_dict(),
-        "claude": {"remote_control": config.claude.remote_control},
-        "codex": config.codex.to_dict(),
         # Claude's status line is drawn inside the box, where the saved file is not
         # mounted; whether agent-box owns the host's statusLine slot stays host-only.
-        "statusline": {"command": config.statusline.command},
+        "claude": {"remote_control": config.claude.remote_control,
+                   "statusline": {"command": config.claude.statusline.command}},
+        "codex": config.codex.to_dict(),
         "github": config.github.to_dict(),
         "browser": config.browser.to_dict(),
         # A nested box inherits the outer box's sound socket at the same path.
@@ -2676,7 +2676,7 @@ def apply_config(config: Config, *, session=False) -> list[str]:
             f"{'yes' if config.skills.claude_links else 'no'}")
 
         settings = CLAUDE_HOME / "settings.json"
-        statusline = claude_settings.statusline_intent(config.statusline.enabled)
+        statusline = claude_settings.statusline_intent(config.claude.statusline.enabled)
         claude_settings.reconcile_claude_settings(
             settings, notifications=config.notifications.enabled, statusline=statusline)
         report.append(

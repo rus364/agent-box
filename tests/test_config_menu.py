@@ -86,7 +86,7 @@ class ConfigMenuTests(unittest.TestCase):
         expected = {
             (): ['default_agent', 'claude', 'codex', 'external_providers', 'tracker', 'workflow',
                  'image', 'browser', 'audio', 'git', 'github', 'providers', 'env',
-                 'statusline', 'skills', 'notifications'],
+                 'skills', 'notifications'],
             ('workflow',): ['enabled', 'merge_mode', 'auto_push', 'cleanup_local_branches',
                            'cleanup_remote_branches', 'worker', 'scout', 'review', 'tiers', 'routing',
                            'weights', 'fallback', 'reserve_percent', 'smoothing_hours', 'timeout_seconds'],
@@ -377,13 +377,14 @@ class ConfigMenuTests(unittest.TestCase):
     def test_cancel_discards_draft_while_save_returns_the_selected_values(self):
         import curses
         config = Config()
-        keys = [*select("statusline"), "\n", *select("enabled", ("statusline",)), " ", "\x1b"]
+        keys = [*select("claude"), "\n", *select("statusline", ("claude",)), "\n",
+                *select("enabled", ("claude", "statusline")), " ", "\x1b", "\x1b"]
         result, _ = self.edit(config, [*keys, "\x1b"])
         self.assertIsNone(result)
-        self.assertTrue(config.statusline.enabled)
+        self.assertTrue(config.claude.statusline.enabled)
         result, _ = self.edit(config, [*keys, curses.KEY_END, curses.KEY_UP, "\n"])
-        self.assertFalse(result.config.statusline.enabled)
-        self.assertTrue(config.statusline.enabled)
+        self.assertFalse(result.config.claude.statusline.enabled)
+        self.assertTrue(config.claude.statusline.enabled)
         self.assertEqual(result.config.install.bin_dir, "")
 
     def test_saved_token_is_not_drawn_when_opening_its_connection(self):

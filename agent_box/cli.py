@@ -210,7 +210,7 @@ def _statusline_note(config) -> str:
     Reconciliation never overwrites a status line it does not own, so "on"
     alone could otherwise look like a promise agent-box is not keeping.
     """
-    if not config.statusline.enabled:
+    if not config.claude.statusline.enabled:
         return ""
     settings_path = CLAUDE_HOME / "settings.json"
     try:
@@ -261,7 +261,7 @@ def _show_notes(config) -> dict[str, str]:
     """
     direct = config.workflow.worker.execution == "direct"
     notes = {
-        "statusline.enabled": _statusline_note(config),
+        "claude.statusline.enabled": _statusline_note(config),
         "image.tools": _image_note(config),
         "browser.enabled": _browser_note(config),
         "workflow.worker.execution": " (worker model: active session)" if direct else "",
@@ -291,7 +291,7 @@ def _hidden(at) -> bool:
     from . import config_menu
     # A command line routinely carries a bearer token and a literal env value
     # may be one despite its help; the menu shows both for editing.
-    return config_menu.secret(at) or at == ("statusline", "command") or at[:1] == ("env",)
+    return config_menu.secret(at) or at == ("claude", "statusline", "command") or at[:1] == ("env",)
 
 
 def _show_rows(data, path=()):

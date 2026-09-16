@@ -228,7 +228,7 @@ class StatuslineDefaultTests(unittest.TestCase):
     """The status line switch and its extra segment are one section of one line."""
 
     def test_statusline_defaults_on_without_an_extra_segment(self):
-        statusline = Config().statusline
+        statusline = Config().claude.statusline
         self.assertTrue(statusline.enabled)
         self.assertEqual(statusline.command, "")
 
@@ -237,16 +237,16 @@ class StatuslineDefaultTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "config.json"
             config = Config()
-            config.statusline.command = "echo balance"
+            config.claude.statusline.command = "echo balance"
             save_config(config, path)
-            self.assertEqual(json.loads(path.read_text())["statusline"], {"command": "echo balance"})
-            self.assertTrue(load_config(path).statusline.enabled)
+            self.assertEqual(json.loads(path.read_text())["claude"]["statusline"], {"command": "echo balance"})
+            self.assertTrue(load_config(path).claude.statusline.enabled)
 
     def test_switch_and_command_survive_a_round_trip_together(self):
         config = Config()
-        config.statusline.enabled = False
-        config.statusline.command = "echo balance"
-        self.assertEqual(Config.from_dict(config.to_dict()).statusline, config.statusline)
+        config.claude.statusline.enabled = False
+        config.claude.statusline.command = "echo balance"
+        self.assertEqual(Config.from_dict(config.to_dict()).claude.statusline, config.claude.statusline)
 
 
 class DefaultAgentTests(unittest.TestCase):

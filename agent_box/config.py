@@ -66,40 +66,6 @@ def _is_env_name(name: str) -> bool:
 
 
 @dataclass
-class ClaudeConfig:
-    #: Remote access is opt-in and applies to new interactive launches only.
-    remote_control: bool = False
-    #: Start `agent-box claude` with --channels plugin:telegram@claude-plugins-official.
-    telegram_channel: bool = False
-
-    def to_dict(self) -> dict[str, Any]:
-        return {"telegram_channel": self.telegram_channel, "remote_control": self.remote_control}
-
-    @classmethod
-    def from_dict(cls, data: Any) -> "ClaudeConfig":
-        return cls(
-            remote_control=_bool(data, "remote_control", False),
-            telegram_channel=_bool(data, "telegram_channel", False),
-        )
-
-
-@dataclass
-class CodexConfig:
-    #: Remote access is opt-in; a session never switches the shared daemon.
-    remote_control: bool = False
-
-    def to_dict(self) -> dict[str, Any]:
-        return {"remote_control": self.remote_control}
-
-    @classmethod
-    def from_dict(cls, data: Any) -> "CodexConfig":
-        return cls(remote_control=_bool(data, "remote_control", False))
-
-
-LAUNCH_AGENTS = ("claude", "codex")
-
-
-@dataclass
 class StatuslineConfig:
     """Claude's status line: whether agent-box keeps the slot, and its extra segment.
 
@@ -126,6 +92,43 @@ class StatuslineConfig:
     @classmethod
     def from_dict(cls, data: Any) -> "StatuslineConfig":
         return cls(enabled=_bool(data, "enabled", True), command=_str(data, "command"))
+
+
+@dataclass
+class ClaudeConfig:
+    #: Remote access is opt-in and applies to new interactive launches only.
+    remote_control: bool = False
+    #: Start `agent-box claude` with --channels plugin:telegram@claude-plugins-official.
+    telegram_channel: bool = False
+    statusline: StatuslineConfig = field(default_factory=StatuslineConfig)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"telegram_channel": self.telegram_channel, "remote_control": self.remote_control,
+                "statusline": self.statusline.to_dict()}
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "ClaudeConfig":
+        return cls(
+            remote_control=_bool(data, "remote_control", False),
+            telegram_channel=_bool(data, "telegram_channel", False),
+            statusline=StatuslineConfig.from_dict(_mapping(data).get("statusline")),
+        )
+
+
+@dataclass
+class CodexConfig:
+    #: Remote access is opt-in; a session never switches the shared daemon.
+    remote_control: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"remote_control": self.remote_control}
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "CodexConfig":
+        return cls(remote_control=_bool(data, "remote_control", False))
+
+
+LAUNCH_AGENTS = ("claude", "codex")
 
 
 @dataclass
@@ -808,7 +811,6 @@ class Config:
     browser: BrowserConfig = field(default_factory=BrowserConfig)
     audio: AudioConfig = field(default_factory=AudioConfig)
     workflow: WorkflowConfig = field(default_factory=WorkflowConfig)
-    statusline: StatuslineConfig = field(default_factory=StatuslineConfig)
     #: The agent a bare ``agent-box`` starts; an explicit ``claude``/``codex`` wins.
     #: Global only: which TUI to open is the user's habit, not a repository's policy.
     default_agent: str = "claude"
@@ -832,7 +834,6 @@ class Config:
             "browser": self.browser.to_dict(),
             "audio": self.audio.to_dict(),
             "workflow": self.workflow.to_dict(),
-            "statusline": self.statusline.to_dict(),
         }
 
     @classmethod
@@ -857,7 +858,6 @@ class Config:
             browser=BrowserConfig.from_dict(data.get("browser")),
             audio=AudioConfig.from_dict(data.get("audio")),
             workflow=WorkflowConfig.from_dict(data.get("workflow")),
-            statusline=StatuslineConfig.from_dict(data.get("statusline")),
         )
 
 
