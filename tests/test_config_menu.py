@@ -486,7 +486,8 @@ class ConfigMenuTests(unittest.TestCase):
         save = ["\x1b", curses.KEY_END, curses.KEY_UP, "\n"]
         result, screen = self.edit(config, [*open_set, curses.KEY_LEFT, *', "LANG": "C"', "\n", *save])
         self.assertEqual(result.config.env.set, {"TZ": "UTC", "LANG": "C"})
-        self.assertTrue(any('{"TZ": "UTC"}' in line for line in screen.drawn))
+        self.assertTrue(any(line.startswith("Set") and '{"TZ": "UTC"}' in line for line in screen.drawn))
+        self.assertTrue(any(line.startswith('{"TZ": "UTC"}') for line in screen.drawn), "editor field is masked")
 
         refused, screen = self.edit(config, [*open_set, "\x15", *'{"my-var": "x"}', "\n", *save])
         self.assertEqual(refused.config.env.set, {"TZ": "UTC"})
