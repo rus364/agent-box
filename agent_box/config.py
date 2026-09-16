@@ -592,8 +592,10 @@ def model_entry(data):
     The provider is stored rather than derived from the model name, because an
     external API model (DeepSeek through Claude's CLI) names no provider.
     """
-    return {"provider": _str(data, "provider"), "model": _str(data, "model"),
-            "effort": _str(data, "effort") or "medium", "fast": data.get("fast", False),
+    data = _mapping(data)
+    # Kept as written, not coerced: a wrong type must reach validate() at its path.
+    return {"provider": data.get("provider", ""), "model": data.get("model", ""),
+            "effort": data.get("effort", "medium"), "fast": data.get("fast", False),
             "api_provider": data.get("api_provider", "")}
 
 
@@ -604,8 +606,13 @@ def candidate_label(spec):
 
 
 def model_list(data=None):
-    """Candidates in preference order; a role runs the first one available."""
-    return [model_entry(item) for item in data if isinstance(item, dict)] if isinstance(data, list) else []
+    """Candidates in preference order; a role runs the first one available.
+
+    A malformed entry becomes an empty candidate that validation rejects at its
+    index; dropping it would silently shorten the list, or empty it and let
+    untiered work inherit the session instead.
+    """
+    return [model_entry(item) for item in data] if isinstance(data, list) else []
 
 
 def model_tiers(numbers, data=None):
@@ -756,8 +763,8 @@ class WorkflowConfig:
             if provider not in AGENT_PROVIDERS:
                 errors.append(f"{path}: provider must be codex or claude")
                 continue
-            if not spec.get("model"):
-                errors.append(f"{path}: model must be nonempty")
+            if not isinstance(spec.get("model"), str) or not spec["model"].strip():
+                errors.append(f"{path}: model must be a nonempty string")
             if spec.get("api_provider", "") != "" and not valid_name(spec.get("api_provider")):
                 errors.append(f"{path}: invalid API provider name")
             efforts = API_EFFORTS if spec.get('api_provider') else AGENT_EFFORTS
