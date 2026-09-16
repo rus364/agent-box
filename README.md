@@ -303,14 +303,15 @@ In the global editor, **R: Reset to default** restores the selected field or
 section to built-in program values and removes its stored override on save.
 Reset changes only the draft until you save.
 
-Worker, scout, and reviewer model fields combine local suggestions with a
-manual model-ID editor. Codex suggestions come from its local model cache when
-usable and otherwise from agent-box's bundled hints; Claude uses bundled stable
-aliases and model IDs. These lists are hints rather than availability checks,
-and opening the menu never makes a network request. Manual entry and the
-explicit disable action stay at the top of the list. Existing custom values
-remain editable, Escape restores the previous value, and disabling a candidate
-affects only the selected role, tier, and provider.
+Worker, scout, and reviewer models are ordered candidate lists: add, reorder,
+change effort or fast, or remove a candidate. The picker offers Codex, Claude
+and enabled external API models together with manual model-ID entry per CLI and
+API, because any CLI's model may serve any role; a model of the other CLI than
+the coordinator's runs as a managed process. Codex suggestions come from its
+local model cache when usable and otherwise from agent-box's bundled hints;
+Claude uses bundled stable aliases and model IDs. These lists are hints rather
+than availability checks. Existing custom values remain editable, Escape
+restores the previous value, and a change affects only the list being edited.
 
 [External API providers](docs/integrations/external-providers.md) are named global
 connections with a private key and separate Codex/Claude URLs and model lists.
@@ -393,11 +394,11 @@ bound project still require a complete tracker binding.
 
 The allowed shared paths are `workflow` except its top-level `enabled`,
 `browser.enabled`, `image.tools`, `tracker.provider`, and
-`tracker.connections.<provider>.url`. Workflow includes independent worker and reviewer overrides,
-models, efforts and tier policy. `tracker.project` and `tracker.recursive` are
+`tracker.connections.<provider>.url`. Workflow includes each role's candidate lists
+(`models` and `tiers.N`) and worker execution. `tracker.project` and `tracker.recursive` are
 project identity fields. Missing fields inherit global settings; nested objects
 merge by key and lists replace the whole inherited list. Explicit `false`,
-empty lists, and allowed empty strings (such as disabled model candidates)
+empty lists, and allowed empty strings
 remain choices. Unknown fields, wrong types and invalid JSON are errors.
 
 The project menu labels values **Inherited** or **Overridden**. **R: Reset to

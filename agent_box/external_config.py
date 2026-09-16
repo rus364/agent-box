@@ -312,8 +312,9 @@ def validate_connections(config):
         if spec.enabled and (not spec.api_key.strip() or not (spec.codex.url or spec.claude.url)):
             errors.append(f"external_providers.{name}: enabled provider requires an API key and a CLI URL")
     for path, candidate in config.workflow.candidates():
-        connection = config.external_providers.get(candidate.get('api_provider'))
-        cli = candidate.get('provider')
+        api, cli = candidate.get('api_provider'), candidate.get('provider')
+        # A malformed name is WorkflowConfig.validate's error to report, not a lookup to crash on.
+        connection = config.external_providers.get(api) if isinstance(api, str) else None
         if connection and cli in ('codex', 'claude') and candidate.get('model'):
             error = model_effort_error(getattr(connection, cli), candidate['model'], cli, candidate['effort'])
             if error:

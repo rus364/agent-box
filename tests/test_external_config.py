@@ -109,6 +109,12 @@ class ExternalConfigTests(unittest.TestCase):
         self.assertFalse(Config.from_dict({'external_providers': {'new': {}}}).external_providers['new'].enabled)
         self.assertFalse(validate_connections(config))
 
+    def test_a_malformed_candidate_api_name_is_a_validation_error_not_a_crash(self):
+        """The menu and config set run both validators; a list-valued name must reach the schema error."""
+        config = external_config()
+        config.workflow.scout.models = [{'provider': 'codex', 'model': 'm', 'effort': 'medium', 'fast': False, 'api_provider': []}]
+        self.assertIn('workflow.scout.models.0: invalid API provider name', config_menu.validate(config))
+
     def test_invalid_connections_fail_without_echoing_values(self):
         """An invalid URL must not expose embedded credentials in diagnostics."""
         bad = [[], {'bad secret': {}}, {'valid': {'enabled': 'private-api-key'}},

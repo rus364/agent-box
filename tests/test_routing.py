@@ -14,6 +14,19 @@ def candidate(provider, model, **fields):
 
 
 class RoutingTests(unittest.TestCase):
+    def test_a_lone_exhausted_candidate_is_refused_when_the_route_is_prepared(self):
+        """Usage is read for a single candidate too, so a known exhausted model is not launched to fail."""
+        config = Config()
+        config.workflow.scout.models = [candidate("codex", "gpt-5.6-luna")]
+        exhausted = {"windows": [{"seconds": 18000, "remaining": 0, "reset_at": 4102444800}]}
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {}, clear=True), \
+             patch.object(workflow, "WORKFLOW_STATE", Path(directory)), \
+             patch.object(workflow.shutil, "which", side_effect=lambda name: name), \
+             patch.object(workflow, "usage_snapshot", return_value=exhausted) as usage, \
+             self.assertRaisesRegex(Exception, "exhausted"):
+            workflow.route(config, "scout", 0, "claude")
+        usage.assert_called_once_with("codex", no_cache=True)
+
     def test_a_claude_coordinator_gets_a_codex_only_scout(self):
         """The reported defect: a codex scout vanished whenever Claude coordinated."""
         c = WorkflowConfig()
@@ -60,6 +73,13 @@ class RoutingTests(unittest.TestCase):
         self.assertEqual(routing.select(c, "scout", 0, "codex", usage, now=1000)["model"], "haiku")
         # A window that has already reset no longer excludes anything.
         self.assertEqual(routing.select(c, "scout", 0, "codex", usage, now=3000)["model"], "gpt-5.6-luna")
+
+    def test_an_exhausted_reviewer_candidate_is_skipped_like_any_other_role(self):
+        c = WorkflowConfig()
+        c.review.models = [candidate("claude", "opus"), candidate("codex", "gpt-5.5")]
+        usage = {"claude": {"windows": [{"seconds": 18000, "remaining": 0, "reset_at": 2000}]}}
+        result = routing.select(c, "reviewer", 2, "codex", usage, now=1000, writer="codex")
+        self.assertEqual((result["provider"], result["fallbacks"]), ("codex", []))
 
     def test_every_candidate_exhausted_is_an_error_not_a_silent_choice(self):
         c = WorkflowConfig()

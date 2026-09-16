@@ -24,7 +24,7 @@ def select(config, role, tier, primary, usage=None, *, now=None, writer=None, av
     Weighted and usage-scored provider shares were the rejected alternative:
     with one ordered list per role and tier there is nothing left to share
     out, and the list states the preference directly. A candidate whose
-    subscription window is exhausted is skipped, not reordered.
+    subscription window is exhausted is skipped, not reordered, for every role.
     """
     errors = config.validate()
     if errors:
@@ -43,6 +43,14 @@ def select(config, role, tier, primary, usage=None, *, now=None, writer=None, av
     if not allowed and models:
         raise AgentBoxError(f"No configured candidate in {path} has its CLI installed here")
     writer = writer or primary
+    if not pinned:
+        # A pin names its model outright; a list skips a known exhausted subscription window.
+        usable = [spec for spec in allowed if spec.get("api_provider") or not any(
+            w["remaining"] <= 0 and w["reset_at"] > now
+            for w in applicable_windows(usage.get(spec["provider"], {}), spec["model"]))]
+        if allowed and not usable:
+            raise AgentBoxError(f"Every candidate in {path} has an exhausted usage limit; wait for a reset or add a candidate")
+        allowed = usable
     if pinned:
         order = allowed
         reason = f"Pinned for this session by --{role}"
@@ -57,13 +65,7 @@ def select(config, role, tier, primary, usage=None, *, now=None, writer=None, av
             order = [spec for spec in allowed if spec["provider"] != writer] + own
             reason = "Use the other writer provider first; fallback requires unavailability"
     else:
-        order = []
-        for spec in allowed:
-            windows = [] if spec.get("api_provider") else applicable_windows(usage.get(spec["provider"], {}), spec["model"])
-            if not any(w["remaining"] <= 0 and w["reset_at"] > now for w in windows):
-                order.append(spec)
-        if allowed and not order:
-            raise AgentBoxError(f"Every candidate in {path} has an exhausted usage limit; wait for a reset or add a candidate")
+        order = allowed
         reason = "First available candidate"
     if not order:
         raise AgentBoxError(f"No allowed {role} model configured in {path}; no automatic tier downgrade")

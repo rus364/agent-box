@@ -1046,10 +1046,10 @@ def check_open_worker_execution(root, task, identity):
 def route(config, role, tier, primary, writer=None):
     policy = config.workflow
     _, models = policy.models_for(role, tier)
-    # Usage is read only when a fallback exists to skip to: a lone candidate runs regardless.
+    # Every role skips a subscription candidate whose known window is exhausted;
+    # external API candidates have no subscription usage to read.
     subscribed = {spec["provider"] for spec in models if not spec.get("api_provider")}
-    usage = ({p: usage_snapshot(p, no_cache=True) for p in sorted(subscribed)}
-             if role != "reviewer" and len(models) > 1 else {})
+    usage = {p: usage_snapshot(p, no_cache=True) for p in sorted(subscribed)}
     result = select(policy, role, tier, primary, usage, writer=writer,
                     available=[p for p in ("codex", "claude") if shutil.which(p)])
     for candidate in [result, *result["fallbacks"]]:
