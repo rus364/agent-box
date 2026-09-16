@@ -113,9 +113,10 @@ class ConfigProposalTests(unittest.TestCase):
             self.command("proposal", "apply", answer="y")
         self.assertNotIn("secret-value", str(error.exception))
         self.proposal.unlink()
-        self.command("set", "--global", "workflow.weights.codex=0")
+        self.command("set", "--global", 'workflow.worker.models=[{"provider": "claude", "api_provider": "deepseek", "model": "v4", "effort": "high"}]')
         config = load_config()
-        config.workflow.weights["claude"] = 0
+        config.external_providers = config_module.Config.from_dict({"external_providers": {"deepseek": {"claude": {
+            "url": "https://api.example/anthropic", "models": {"v4": {"supported_efforts": ["low"]}}}}}}).external_providers
         save_config(config)
         before = self.global_file.read_text()
         with self.assertRaisesRegex(AgentBoxError, "nothing changed"):

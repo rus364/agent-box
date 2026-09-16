@@ -55,12 +55,12 @@ class ConfigSetTests(unittest.TestCase):
         self.assertEqual(self.file.read_text(), before)
 
     def test_explicit_false_empty_and_list_values_are_choices_not_removals(self):
-        """false, an empty model and an empty list override inheritance; dropping them would inherit again."""
-        self.run_set("--project", "workflow.auto_push=false", 'workflow.tiers.1.codex.model=""',
+        """false and an empty list override inheritance; dropping them would inherit again."""
+        self.run_set("--project", "workflow.auto_push=false", 'workflow.worker.tiers.1=[]',
                      "workflow.review.ignored_paths=[]")
         workflow = self.saved()["workflow"]
         self.assertIs(workflow["auto_push"], False)
-        self.assertEqual(workflow["tiers"]["1"]["codex"]["model"], "")
+        self.assertEqual(workflow["worker"]["tiers"]["1"], [])
         self.assertEqual(workflow["review"]["ignored_paths"], [])
 
     def test_reset_removes_the_override_and_empty_sections_so_the_path_inherits(self):

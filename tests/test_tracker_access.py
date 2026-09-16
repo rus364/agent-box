@@ -96,8 +96,8 @@ class TrackerExposureTests(unittest.TestCase):
             config = Config()
             config.workflow.enabled = True
             config.workflow.merge_mode = "local"
-            config.workflow.tiers["2"]["codex"]["model"] = "worker"
-            config.workflow.review.tiers["2"]["codex"] = {"api_provider": "", "fast": False, "model": "reviewer", "effort": "default"}
+            config.workflow.worker.tiers["2"] = [{"provider": "codex", "api_provider": "", "fast": False, "model": "worker", "effort": "medium"}]
+            config.workflow.review.tiers["2"] = [{"provider": "codex", "api_provider": "", "fast": False, "model": "reviewer", "effort": "default"}]
             config.tracker.connections["vikunja"] = TrackerConnection("http://localhost:3456", "secret")
             runtime.sync_tracker_runtime(config, target)
             rendered = json.loads((target / "config.json").read_text())
@@ -105,9 +105,9 @@ class TrackerExposureTests(unittest.TestCase):
             self.assertNotIn("secret", (target / "config.json").read_text())
             restored = Config.from_dict(rendered)
             self.assertEqual(restored.workflow.merge_mode, "local")
-            self.assertEqual(restored.workflow.review.tiers["2"]["codex"],
-                             {"api_provider": "", "fast": False, "model": "reviewer", "effort": "default"})
-            self.assertEqual(restored.workflow.tiers["2"]["codex"]["model"], "worker")
+            self.assertEqual(restored.workflow.review.tiers["2"],
+                             [{"provider": "codex", "api_provider": "", "fast": False, "model": "reviewer", "effort": "default"}])
+            self.assertEqual(restored.workflow.worker.tiers["2"][0]["model"], "worker")
             config.tracker.enabled = True
             runtime.sync_tracker_runtime(config, target)
             rendered = json.loads((target / "config.json").read_text())

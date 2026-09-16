@@ -30,19 +30,18 @@ class ProjectConfigTests(unittest.TestCase):
         self.env.start()
         self.addCleanup(self.env.stop)
 
-    def test_partial_override_preserves_false_empty_list_empty_model_and_global(self):
-        self.config.workflow.review.override.scope = "untiered"
+    def test_partial_override_preserves_false_empty_list_and_global(self):
+        self.config.workflow.review.models = [{"provider": "codex", "model": "global", "effort": "high", "fast": False, "api_provider": ""}]
         original = self.config.to_dict()
         data = {'browser': {'enabled': False}, 'image': {'tools': {'browser': True}},
-                'workflow': {'review': {'sensitive_paths': [], 'ignored_paths': ['**/*.md'],
-                                        'override': {'models': {'codex': {'model': ''}}}},
+                'workflow': {'review': {'sensitive_paths': [], 'ignored_paths': ['**/*.md'], 'tiers': {'2': []}},
                              'auto_push': False}}
         project_config.validate(data, self.path)
         result = project_config.apply(self.config, data)
         self.assertEqual(result.workflow.review.sensitive_paths, [])
         self.assertEqual(result.workflow.review.ignored_paths, ['**/*.md'])
-        self.assertEqual(result.workflow.review.override.scope, "untiered")
-        self.assertEqual(result.workflow.review.override.models['codex']['model'], '')
+        self.assertEqual(result.workflow.review.models, self.config.workflow.review.models)
+        self.assertEqual(result.workflow.review.tiers['2'], [])
         self.assertFalse(result.workflow.auto_push)
         self.assertTrue(result.image.tools['browser'])
         self.assertTrue(result.image.tools['analysis'])
@@ -55,15 +54,13 @@ class ProjectConfigTests(unittest.TestCase):
         self.assertEqual(project_config.apply(self.config, data).workflow.scout.limit, 2)
         self.assertEqual(self.config.workflow.scout.limit, 3)
 
-    def test_worker_override_project_values_reach_runtime_without_changing_global(self):
-        """Sparse project scope/execution choices supersede global settings without sharing candidates."""
-        override = self.config.workflow.worker.override
-        override.scope = "all"
-        override.models['codex'] = {"api_provider": "", "fast": False, 'model': 'global-codex', 'effort': 'high'}
-        override.models['claude'] = {"api_provider": "", "fast": False, 'model': 'global-claude', 'effort': 'medium'}
+    def test_project_role_lists_replace_global_lists_whole_and_reach_runtime(self):
+        """A project list replaces the global one entirely; merging entries would reorder preferences silently."""
+        global_models = [{"provider": "codex", "model": "global-codex", "effort": "high", "fast": False, "api_provider": ""},
+                         {"provider": "claude", "model": "global-claude", "effort": "medium", "fast": False, "api_provider": ""}]
+        self.config.workflow.worker.models = global_models
         original = self.config.to_dict()
-        data = {'workflow': {'worker': {'execution': 'delegated', 'override': {'scope': 'untiered',
-                'models': {'codex': {'model': ''}, 'claude': {'effort': 'default'}}}}}}
+        data = {'workflow': {'worker': {'execution': 'delegated', 'models': [{'provider': 'claude', 'model': 'opus', 'effort': 'default'}]}}}
         project_config.save(self.path, data)
         result = project_config.apply(self.config, project_config.load(self.path))
         runtime.sync_tracker_runtime(result, self.root / 'rendered')
@@ -71,19 +68,16 @@ class ProjectConfigTests(unittest.TestCase):
         with patch.dict(os.environ, {'AGENT_BOX_RUNTIME_CONFIG': str(artifact)}), \
              patch.object(project_config, 'load', return_value=project_config.load(self.path)):
             rendered = effective_config()
-            self.assertEqual(effective_config(include_project=False).workflow.worker.override, override)
-        chosen = rendered.workflow.worker.override
-        self.assertEqual(chosen.scope, "untiered")
+            self.assertEqual(effective_config(include_project=False).workflow.worker.models, global_models)
         self.assertEqual(rendered.workflow.worker.execution, "delegated")
-        self.assertEqual(chosen.models['codex'], {"api_provider": "", "fast": False, 'model': '', 'effort': 'high'})
-        self.assertEqual(chosen.models['claude'], {"api_provider": "", "fast": False, 'model': 'global-claude', 'effort': 'default'})
+        self.assertEqual(rendered.workflow.worker.models,
+                         [{"provider": "claude", "model": "opus", "effort": "default", "fast": False, "api_provider": ""}])
         self.assertEqual(rendered.workflow.review, self.config.workflow.review)
         self.assertEqual(self.config.to_dict(), original)
-        disabled = project_config.apply(self.config, {'workflow': {'worker': {'override': {'scope': 'off'}}}})
-        self.assertIsNone(disabled.workflow.override_for('worker', None))
-        for bad in ({'scope': 'invalid'}, {'models': {'claude': {'effort': 'ultra'}}}):
-            with self.assertRaises(AgentBoxError):
-                project_config.validate({'workflow': {'worker': {'override': bad}}}, self.path)
+        for bad in ({'models': {'claude': {'model': 'opus'}}}, {'models': [{'provider': 'claude', 'model': 'opus', 'effort': 'ultra'}]},
+                    {'models': [{'provider': 'gemini', 'model': 'x'}]}, {'tiers': {'1': [{'provider': 'codex', 'model': 'm', 'scope': 'all'}]}}):
+            with self.subTest(bad=bad), self.assertRaises(AgentBoxError):
+                project_config.validate({'workflow': {'worker': bad}}, self.path)
 
     def test_unknown_forbidden_and_malformed_values_never_fall_back(self):
         for data in ({'browser': {'enabled': 1}}, {'env': {}}, {'workflow': {'enabled': False}},

@@ -88,6 +88,10 @@ def managed_runner(provider):
     return call
 
 
+
+def candidate(provider, model, effort):
+    return {"provider": provider, "model": model, "effort": effort, "fast": False, "api_provider": ""}
+
 class DerivedIdentityTests(unittest.TestCase):
     def test_branch_and_base_come_from_git_not_from_a_task_comment(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -814,16 +818,13 @@ class WorkerHandoffTests(unittest.TestCase):
                     self.assertEqual(result["diagnostics"], {"usage": None, "total_cost_usd": None})
         self.adapter.comments.assert_not_called()
 
-    def test_worker_override_binds_native_facts_even_after_config_changes(self):
+    def test_worker_models_bind_native_facts_even_after_config_changes(self):
         """Both providers report the prepared route, never a changed config or invented tier."""
         self.patches[5].stop()
         self.task.labels = []
-        override = self.config.workflow.worker.override
-        self.config.workflow.routing = "weighted"
         for provider, other in (("codex", "claude"), ("claude", "codex")):
-            override.scope = "untiered"
-            override.models = {p: {"fast": False, "model": p + "-global", "effort": "high"} for p in (provider, other)}
-            self.config.workflow.weights = {provider: 3, other: 1}
+            workflow.evidence_path(self.root, self.task).unlink(missing_ok=True)
+            self.config.workflow.worker.models = [candidate(p, p + "-global", "high") for p in (provider, other)]
             with patch.object(workflow.shutil, "which", side_effect=lambda name: name), \
                  patch("agent_box.agent_profiles.available") as profile:
                 prepared = self.run_workflow("prepare", "1", "--primary", provider)
@@ -834,18 +835,19 @@ class WorkerHandoffTests(unittest.TestCase):
             self.assertFalse(route["native_profile_ready"])
             self.assertEqual(route["native_explicit_settings"],
                              {"provider": provider, "model": provider + "-global", "effort": "high"})
-            override.scope = "off"
-            override.models[provider]["model"] = "changed"
+            # The other CLI's candidate is still a fallback, but only as a managed process.
+            self.assertTrue(route["fallbacks"][0]["managed_only"])
+            self.config.workflow.worker.models[0]["model"] = "changed"
             argv = ["report", "1", "--role", "worker", "--scope", prepared["scope"],
                     "--handoff", prepared["handoff"], "--file", str(self.report)]
             for model, effort in (("changed", "high"), (provider + "-global", "medium")):
                 with self.assertRaisesRegex(AgentBoxError, "outside the configured route"):
                     self.run_workflow(*argv, "--provider", provider, "--model", model, "--effort", effort)
-            with self.assertRaisesRegex(AgentBoxError, "fallback reason"):
-                self.run_workflow(*argv, "--provider", other, "--model", other + "-global", "--effort", "high")
-            result = self.run_workflow(*argv, "--provider", other, "--model", other + "-global",
-                                       "--effort", "high", "--fallback-reason", "Preferred provider unavailable")
-            self.assertEqual(result["route"], {"fast": False, "provider": other, "model": other + "-global", "effort": "high", "tier": None})
+            with self.assertRaisesRegex(AgentBoxError, "managed CLI"):
+                self.run_workflow(*argv, "--provider", other, "--model", other + "-global", "--effort", "high",
+                                  "--fallback-reason", "Preferred provider unavailable")
+            result = self.run_workflow(*argv, "--provider", provider, "--model", provider + "-global", "--effort", "high")
+            self.assertEqual(result["route"], {"fast": False, "provider": provider, "model": provider + "-global", "effort": "high", "tier": None})
             self.assertEqual(workflow.read_evidence(self.root, self.task)["worker"]["route"], result["route"])
             self.assertEqual(self.task.labels, [])
 
@@ -1255,22 +1257,17 @@ class WorkerHandoffTests(unittest.TestCase):
                                   "--brief", str(self.review_brief))
         self.assertEqual(workflow.read_evidence(self.root, self.task)["execution"]["status"], "failed")
 
-    def test_worker_override_managed_fallback_keeps_route_after_config_change(self):
+    def test_worker_managed_fallback_keeps_route_after_config_change(self):
         """A provider failure can use its prepared fallback, but cannot reschedule from new config."""
         self.patches[5].stop()
         self.task.labels = []
-        self.config.workflow.routing = "weighted"
-        self.config.workflow.weights = {"codex": 3, "claude": 1}
-        override = self.config.workflow.worker.override
-        override.scope = "untiered"
-        override.models = {p: {"fast": False, "model": p + "-global", "effort": "high"} for p in ("codex", "claude")}
+        models = self.config.workflow.worker.models = [candidate(p, p + "-global", "high") for p in ("codex", "claude")]
 
-        def run(candidate, *args, **kwargs):
-            if candidate["provider"] == "codex":
-                override.scope = "off"
-                override.models["claude"]["model"] = "new-model"
+        def run(route, *args, **kwargs):
+            if route["provider"] == "codex":
+                models[1]["model"] = "new-model"
                 raise provider_runner.ProviderFailure("provider unavailable", "unavailable")
-            self.assertEqual(candidate["model"], "claude-global")
+            self.assertEqual(route["model"], "claude-global")
             return {"status": "completed", "summary": "Done", "evidence": []}
 
         with patch.object(workflow.shutil, "which", side_effect=lambda name: name), \
@@ -1282,20 +1279,18 @@ class WorkerHandoffTests(unittest.TestCase):
         self.assertEqual(result["failures"], [{"provider": "codex", "category": "unavailable"}])
         self.assertEqual(workflow.read_evidence(self.root, self.task)["writer"], "claude")
 
-    def test_worker_override_priority_and_managed_default_effort(self):
-        """Prepare and run agree; the card tier wins and default effort stays managed."""
+    def test_worker_model_priority_and_managed_default_effort(self):
+        """Prepare and run agree: the card tier wins, an empty tier list uses the role's models, none inherits the session."""
         self.patches[5].stop()
-        override = self.config.workflow.worker.override
+        worker = self.config.workflow.worker
         for provider in ("codex", "claude"):
-            override.models[provider] = {"fast": False, "model": provider + "-global", "effort": "default"}
-            for tier in ("1", "2"):
-                self.config.workflow.tiers[tier][provider] = {"fast": False, "model": provider + "-tier", "effort": "high"}
-            for scope, card, explicit, expected in (
-                    ("off", None, None, "session"), ("off", 1, 2, "tier"),
-                    ("untiered", 1, 2, "tier"), ("untiered", None, 2, "tier"),
-                    ("untiered", None, None, "global"), ("all", None, None, "global"),
-                    ("all", 1, 2, "global"), ("all", None, 2, "global")):
-                override.scope = scope
+            worker.tiers = {"1": [candidate(provider, provider + "-tier", "high")],
+                            "2": [candidate(provider, provider + "-tier", "high")], "3": []}
+            for models, card, explicit, expected in (
+                    (False, None, None, "session"), (False, 1, 2, "tier"),
+                    (True, None, None, "global"), (True, 1, 2, "tier"),
+                    (True, None, 2, "tier"), (True, None, 3, "global")):
+                worker.models = [candidate(provider, provider + "-global", "default")] if models else []
                 self.task.labels = [f"ab:tier:{card}"] if card else []
                 for command in ("prepare", "run"):
                     workflow.evidence_path(self.root, self.task).unlink(missing_ok=True)
@@ -1303,7 +1298,7 @@ class WorkerHandoffTests(unittest.TestCase):
                             "--session-model", provider + "-session", "--session-effort", "medium"]
                     if explicit:
                         argv += ["--tier", str(explicit)]
-                    with self.subTest(provider=provider, scope=scope, card=card, explicit=explicit, command=command), \
+                    with self.subTest(provider=provider, models=models, card=card, explicit=explicit, command=command), \
                          patch.object(workflow.shutil, "which", side_effect=lambda name: name), \
                          patch("agent_box.agent_profiles.available", return_value=False), \
                          patch.object(workflow, "run", return_value={"status": "completed", "summary": "Done", "evidence": []}) as run:
@@ -1323,17 +1318,17 @@ class WorkerHandoffTests(unittest.TestCase):
                         self.assertFalse(any("model_reasoning_effort=" in arg for arg in cmd))
                     self.assertEqual(self.task.labels, [f"ab:tier:{card}"] if card else [])
 
-    def test_override_prepare_and_report_bind_real_candidates_without_fabricating_a_tier(self):
+    def test_reviewer_models_prepare_and_report_bind_real_candidates_without_fabricating_a_tier(self):
         """Config changes cannot rewrite a prepared review's parameters or admit stale reports."""
         self.patches[5].stop()  # Exercise the real route, not the generic handoff fixture.
         self.task.labels = []
-        self.config.workflow.review.override.scope = "untiered"
-        self.config.workflow.review.override.models = {
-            "codex": {"fast": False, "model": "codex-global", "effort": "medium"},
-            "claude": {"fast": False, "model": "claude-global", "effort": "high"}}
+        self.config.workflow.review.models = [candidate("codex", "codex-global", "medium"),
+                                              candidate("claude", "claude-global", "high")]
+        # Codex wrote the change and Claude coordinates: cross-provider review runs natively in this session.
+        workflow.save_evidence(self.root, self.task, {"writer": "codex"})
         with patch.object(workflow.shutil, "which", side_effect=lambda name: name), \
              patch("agent_box.agent_profiles.available") as profile:
-            prepared = self.run_workflow("prepare", "1", "--role", "reviewer", "--primary", "codex",
+            prepared = self.run_workflow("prepare", "1", "--role", "reviewer", "--primary", "claude",
                                          "--brief", str(self.review_brief))
         profile.assert_not_called()
         route = prepared["route"]
@@ -1341,13 +1336,14 @@ class WorkerHandoffTests(unittest.TestCase):
         self.assertIsNone(route["native_profile"])
         self.assertFalse(route["native_profile_ready"])
         self.assertEqual(route["native_explicit_settings"], {"provider": "claude", "model": "claude-global", "effort": "high"})
-        self.config.workflow.review.override.models["claude"]["model"] = "changed-after-prepare"
+        self.assertTrue(route["fallbacks"][0]["managed_only"])
+        self.config.workflow.review.models[1]["model"] = "changed-after-prepare"
         self.report.write_text(json.dumps({"verdict": "PASS", "summary": "Reviewed", "findings": []}))
         argv = ["report", "1", "--role", "reviewer", "--scope", prepared["scope"],
                 "--handoff", prepared["handoff"], "--file", str(self.report)]
         with self.assertRaisesRegex(AgentBoxError, "outside the configured route"):
             self.run_workflow(*argv, "--provider", "claude", "--model", "changed-after-prepare", "--effort", "high", "--fresh-context")
-        with self.assertRaisesRegex(AgentBoxError, "Native reviewer fallback"):
+        with self.assertRaisesRegex(AgentBoxError, "managed CLI"):
             self.run_workflow(*argv, "--provider", "codex", "--model", "codex-global", "--effort", "medium", "--fresh-context")
         with self.assertRaisesRegex(AgentBoxError, "fresh-context"):
             self.run_workflow(*argv, "--provider", "claude", "--model", "claude-global", "--effort", "high")
@@ -1356,23 +1352,21 @@ class WorkerHandoffTests(unittest.TestCase):
         self.assertIsNone(result["route"]["tier"])
         self.assertEqual(self.task.labels, [])
 
-    def test_override_respects_effective_tier_and_managed_default_effort(self):
-        """Reviewer run/review use the override only when applicable, even with explicit --tier."""
+    def test_reviewer_models_respect_effective_tier_and_managed_default_effort(self):
+        """Reviewer run/review use the role's models only where no tier list applies, even with explicit --tier."""
         self.patches[5].stop()
         self.task.labels = []
-        self.config.workflow.review.max_rounds = 20
+        self.config.workflow.review.max_rounds = 30
         self.config.workflow.review.policy = "always"
         self.config.workflow.review.routing = "same-provider"
-        override = self.config.workflow.review.override
-        for provider in ("codex", "claude"):
-            override.models[provider] = {"fast": False, "model": provider + "-global", "effort": "default"}
-            self.config.workflow.review.tiers["2"][provider] = {"fast": False, "model": provider + "-tier", "effort": "high"}
+        review = self.config.workflow.review
         for command in ("run", "review"):
             for provider in ("codex", "claude"):
-                for scope, explicit, expected in (("off", False, "session"),
-                        ("off", True, "tier"), ("untiered", False, "global"),
-                        ("untiered", True, "tier"), ("all", True, "global")):
-                    override.scope = scope
+                for models, tier_list, explicit, expected in ((False, True, False, "session"),
+                        (False, True, True, "tier"), (True, True, False, "global"),
+                        (True, True, True, "tier"), (True, False, True, "global")):
+                    review.models = [candidate(provider, provider + "-global", "default")] if models else []
+                    review.tiers["2"] = [candidate(provider, provider + "-tier", "high")] if tier_list else []
                     argv = [command, "1", "--primary", provider, "--brief", str(self.review_brief),
                             "--session-model", provider + "-session", "--session-effort", "medium"]
                     if command == "run":

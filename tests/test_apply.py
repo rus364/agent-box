@@ -79,7 +79,7 @@ class ApplyConfigTests(unittest.TestCase):
         config.notifications.telegram_token = "123456:token"
         config.notifications.telegram_chat_id = "42"
         config.workflow.enabled = True
-        config.workflow.tiers["1"]["codex"]["model"] = "chosen-model"
+        config.workflow.worker.tiers["1"] = [{"provider": "codex", "model": "chosen-model", "effort": "medium", "fast": False, "api_provider": ""}]
         return config
 
     def test_it_installs_the_skills_the_configuration_enables(self):

@@ -155,14 +155,13 @@ agent-box --host --no-tmux codex exec "run the tests"
 | Group | Options |
 | --- | --- |
 | Launch | `--host`, `--workspace PATH`, `--mount PATH[:ro]`, `--env NAME[=VALUE]`, `--no-tmux`, `--no-kvm` |
-| Workflow | `--worker auto\|direct\|delegated\|SPEC`, `--reviewer SPEC`, `--scout SPEC`, `--review off\|auto\|always`, `--rounds N`, `--routing current\|weighted\|usage-aware`, `--merge github\|local`, `--[no-]push`, `--no-workflow` |
+| Workflow | `--worker auto\|direct\|delegated\|SPEC`, `--reviewer SPEC`, `--scout SPEC`, `--review off\|auto\|always`, `--rounds N`, `--merge github\|local`, `--[no-]push`, `--no-workflow` |
 | Tracker | `--tracker URL`, `--project ID` ([details](#project-configuration)) |
 | Access | `--[no-]gh-token`, `--[no-]gh-config`, `--[no-]git-config`, `--[no-]api-keys`, `--[no-]browser`, `--[no-]remote-control`, `--[no-]notify` |
 
 `SPEC` is `PROVIDER[@API]:MODEL[:EFFORT]`, for example `codex:gpt-5.5:high` or
 `claude@deepseek:deepseek-v4`. `--reviewer`, `--scout` and `--worker SPEC` pin
-that model outright: review routing, the current-provider filter, weights and
-tiers choose no other. Workflow options need workflow enabled in
+that model outright: review routing and the role's candidate lists choose no other. Workflow options need workflow enabled in
 `agent-box config`. Options that only a container can honour (mounts, KVM,
 credentials, browser) are refused with `--host` rather than ignored.
 
@@ -576,8 +575,8 @@ segments from each other.
 `--no-cache` always requests live usage. Claude tokens are renewed on demand
 only after expiry or HTTP 401, at most once per call; there is no background
 refresh. Status-line reads never renew credentials. A busy credential lock or
-failed renewal returns an error; usage-aware routing keeps its static-weight
-fallback when fresh comparable usage is unavailable.
+failed renewal returns an error; model selection then treats that usage as
+unknown and excludes no candidate.
 Renewal honors Claude's approved custom OAuth origins; an arbitrary usage
 endpoint override never receives a refresh token.
 

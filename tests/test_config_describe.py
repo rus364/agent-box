@@ -86,17 +86,17 @@ class ConfigDescribeTests(unittest.TestCase):
         self.assertTrue(fields["workflow.review.sensitive_paths"]["project_allowed"])
         self.assertFalse(fields["audio.enabled"]["project_allowed"])
         self.assertEqual(fields["workflow.merge_mode"]["choices"], ["github", "local"])
-        self.assertIn("xhigh", fields["workflow.tiers.1.codex.effort"]["choices"])
-        self.assertIn("opus", fields["workflow.tiers.1.claude.model"]["suggestions"])
+        self.assertEqual(fields["workflow.worker.tiers.1"]["type"], "list")
+        self.assertIn("opus", fields["workflow.worker.tiers.1"]["suggestions"]["claude"])
+        self.assertIn("gpt-5.6-luna", fields["workflow.scout.models"]["suggestions"]["codex"])
+        self.assertTrue(fields["workflow.scout.models"]["project_allowed"])
         self.assertEqual(fields["tracker.project"]["source"], "unset")
 
     def test_choices_are_the_menus_for_external_api_settings(self):
         """A value the configured API model rejects must not be offered as allowed."""
         config = rich_config()
-        config.workflow.tiers["1"]["claude"] = {"model": "v4-pro", "api_provider": "deepseek", "effort": "high", "fast": False}
         save_config(config, self.global_file)
         output, fields = self.describe()
-        self.assertEqual(fields["workflow.tiers.1.claude.effort"]["choices"], ["default", "low", "high", "max"])
         self.assertEqual(fields["external_providers.deepseek.claude.models.v4-pro.effort"]["choices"],
                          ["default", "low", "high", "max"])
         self.assertEqual(fields["external_providers.deepseek.claude.default_model"]["choices"], ["", "v4-flash", "v4-pro"])

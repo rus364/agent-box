@@ -73,25 +73,23 @@ class ExternalConfigTests(unittest.TestCase):
         config = external_config()
         model = menu_tests.BUNDLED_MODELS['codex'][0]
         config.external_providers['deepseek'].codex.models = {model: config.external_providers['deepseek'].codex.models['external-small']}
-        path = ('workflow', 'tiers', '0', 'codex')
+        path = ('workflow', 'scout', 'models')
         prefix = []
         for index, part in enumerate(path):
-            prefix += [*menu_tests.select(part, path[:index]), '\n']
-        prefix += menu_tests.select('model', path)
-        save = ['\x1b'] * len(path) + [curses.KEY_END, curses.KEY_UP, '\n']
-        keys = [*prefix, '\n', curses.KEY_END, '\n', *save]
+            prefix += [*menu_tests.select(part, path[:index]), *(['\n'] if index < len(path) - 1 else [])]
+        save = ['\x1b'] * 2 + [curses.KEY_END, curses.KEY_UP, '\n']
+        external = len(menu_tests.BUNDLED_MODELS['codex']) + len(menu_tests.BUNDLED_MODELS['claude'])
+        keys = [*prefix, '\n', '\n', curses.KEY_HOME, *[curses.KEY_DOWN] * (4 + external), '\n', '\x1b', *save]
         edited, screen = menu_tests.ConfigMenuTests().edit(config, keys, project={})
-        candidate = edited.project['workflow']['tiers']['0']['codex']
-        self.assertEqual(candidate, {'model': model, 'api_provider': 'deepseek'})
-        self.assertIn(model + ' [Built-in API]', screen.drawn)
-        self.assertIn(model + f' [deepseek: {model}]', screen.drawn)
-        self.assertNotIn('api_provider', config_menu.menu_keys(candidate, path))
+        self.assertEqual(edited.project['workflow']['scout']['models'],
+                         [{'provider': 'codex', 'model': model, 'effort': 'medium', 'fast': False, 'api_provider': 'deepseek'}])
+        self.assertIn(model + ' [codex]', screen.drawn)
+        self.assertIn(model + f' [codex@deepseek: {model}]', screen.drawn)
         reset, _ = menu_tests.ConfigMenuTests().edit(config, [*prefix, 'r', *save], project=edited.project)
         self.assertEqual(reset.project, {})
         copied, _ = menu_tests.ConfigMenuTests().edit(config, [*prefix, 'g', *save], project=edited.project)
-        self.assertEqual(copied.project['workflow']['tiers']['0']['codex'],
-                         {key: config.workflow.tiers['0']['codex'][key] for key in ('model', 'api_provider')})
-        cancelled, _ = menu_tests.ConfigMenuTests().edit(config, [*prefix, '\n', curses.KEY_END, '\x1b', *save], project={})
+        self.assertEqual(copied.project['workflow']['scout']['models'], [])
+        cancelled, _ = menu_tests.ConfigMenuTests().edit(config, [*prefix, '\n', '\n', '\x1b', '\x1b', *save], project={})
         self.assertEqual(cancelled.project, {})
 
     def test_global_key_roundtrip_is_private_and_never_printed(self):
@@ -131,10 +129,16 @@ class ExternalConfigTests(unittest.TestCase):
 
     def test_project_routes_reference_global_connections_without_owning_secrets(self):
         """A repository may select an API, but cannot redefine where its key goes."""
-        value = {'workflow': {'tiers': {'0': {'codex': {'api_provider': 'deepseek', 'model': 'external-small'}}}}}
+        value = {'workflow': {'scout': {'tiers': {'0': [
+            {'provider': 'codex', 'api_provider': 'deepseek', 'model': 'external-small'}]}}}}
         project_config.validate(value, Path('.agent-box.json'))
         loaded = Config.from_dict(project_config.merge(external_config().to_dict(), value))
-        self.assertEqual(loaded.workflow.tiers['0']['codex']['api_provider'], 'deepseek')
+        self.assertEqual(loaded.workflow.scout.tiers['0'][0]['api_provider'], 'deepseek')
+        for invalid in ({'provider': 'codex', 'model': 'm', 'api_key': 'private-api-key'},
+                        {'provider': 'codex', 'model': 1}, 'codex:m'):
+            with self.subTest(invalid=invalid), self.assertRaises(AgentBoxError) as raised:
+                project_config.validate({'workflow': {'scout': {'models': [invalid]}}}, Path('.agent-box.json'))
+            self.assertNotIn('private-api-key', str(raised.exception))
         with self.assertRaisesRegex(AgentBoxError, 'PROJECT_CREDENTIALS_FORBIDDEN') as raised:
             project_config.validate({'external_providers': {'x': {'api_key': 'private-api-key'}}}, Path('.agent-box.json'))
         self.assertNotIn('private-api-key', str(raised.exception))
@@ -168,49 +172,49 @@ class ExternalConfigTests(unittest.TestCase):
         self.assertIn('deepseek', config.external_providers)
         self.assertNotIn('private-api-key', '\n'.join(screen.drawn))
 
-    def test_all_candidate_menus_select_external_models_and_preserve_other_roles(self):
-        """External suggestions must follow the selected CLI and role, including overrides."""
+    def test_all_candidate_lists_select_external_models_and_preserve_other_roles(self):
+        """External suggestions reach every role list and change only the list being edited."""
         import curses
-        paths = [('workflow', 'tiers', '0', 'codex'), ('workflow', 'tiers', '1', 'claude'),
-                 ('workflow', 'review', 'tiers', '2', 'codex'),
-                 ('workflow', 'worker', 'override', 'models', 'claude'),
-                 ('workflow', 'review', 'override', 'models', 'codex')]
+        paths = [('workflow', 'scout', 'models'), ('workflow', 'worker', 'tiers', '2'),
+                 ('workflow', 'review', 'models'), ('workflow', 'review', 'tiers', '1')]
         for path in paths:
             with self.subTest(path=path):
                 config = external_config()
                 keys = []
                 for index, part in enumerate(path):
-                    keys += [*menu_tests.select(part, path[:index]), '\n']
-                keys += [*menu_tests.select('model', path), '\n', curses.KEY_END,
-                         *([curses.KEY_UP] if path[-1] == 'codex' else []), '\n']
-                keys += ['\x1b'] * len(path) + [curses.KEY_END, curses.KEY_UP, '\n']
+                    keys += [*(menu_tests.select(part, path[:index]) if index < 3 else [curses.KEY_HOME, *[curses.KEY_DOWN] * (int(part) - 1)]), '\n']
+                keys += ['\n', curses.KEY_END, '\n', '\x1b']
+                keys += ['\x1b'] * (len(path) - 1) + [curses.KEY_END, curses.KEY_UP, '\n']
                 edited, screen = menu_tests.ConfigMenuTests().edit(config, keys)
                 value = edited.config.to_dict()
                 for part in path:
                     value = value[part]
-                self.assertEqual(value['api_provider'], 'deepseek')
-                self.assertEqual(value['model'], 'external-small')
-                self.assertEqual(config.workflow.tiers['0']['codex']['api_provider'], '')
+                self.assertEqual(value, [{'provider': 'claude', 'model': 'external-small', 'effort': 'medium',
+                                          'fast': False, 'api_provider': 'deepseek'}])
+                self.assertEqual(len(edited.config.workflow.candidates()), 1)
                 self.assertNotIn('private-api-key', '\n'.join(screen.drawn))
 
     def test_empty_or_deleted_provider_still_allows_manual_model_entry(self):
-        """An absent catalog must open on manual entry rather than lose the draft."""
+        """An absent catalog must open on manual entry for the candidate's own API rather than lose it."""
         import curses
-        path = ('workflow', 'tiers', '0', 'codex')
+        path = ('workflow', 'worker', 'models')
         for deleted in (False, True):
             config = external_config()
             config.external_providers['deepseek'].codex.models = {}
             if deleted:
                 del config.external_providers['deepseek']
-            config.workflow.tiers['0']['codex']['api_provider'] = 'deepseek'
+            config.workflow.worker.models = [{'provider': 'codex', 'model': 'old', 'effort': 'medium', 'fast': False,
+                                              'api_provider': 'deepseek'}]
             keys = []
             for index, part in enumerate(path):
                 keys += [*menu_tests.select(part, path[:index]), '\n']
-            keys += [*menu_tests.select('model', path), '\n', '\n', *'manual-model', '\n']
-            keys += ['\x1b'] * len(path) + [curses.KEY_END, curses.KEY_UP, '\n']
-            edited, _ = menu_tests.ConfigMenuTests().edit(config, keys)
-            self.assertEqual(edited.config.workflow.tiers['0']['codex']['model'], 'manual-model')
-            self.assertEqual(edited.config.workflow.tiers['0']['codex']['api_provider'], 'deepseek')
+            row = 0 if deleted else 2
+            keys += ['\n', '\n', curses.KEY_HOME, *[curses.KEY_DOWN] * row, '\n', '\x15', *'manual-model', '\n', '\x1b']
+            keys += ['\x1b'] * 2 + [curses.KEY_END, curses.KEY_UP, '\n']
+            with self.subTest(deleted=deleted):
+                edited, _ = menu_tests.ConfigMenuTests().edit(config, keys)
+                self.assertEqual(edited.config.workflow.worker.models[0]['model'], 'manual-model')
+                self.assertEqual(edited.config.workflow.worker.models[0]['api_provider'], 'deepseek')
 
     def test_reset_clears_only_the_selected_external_key_in_the_draft(self):
         """Dynamic fields need real defaults, just like fixed connection fields."""

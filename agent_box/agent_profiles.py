@@ -4,11 +4,10 @@ import json
 from pathlib import Path
 
 from .atomicio import atomic_write_text
+from .config import ROLE_TIERS
 from .delegation import profile_instructions
 from .external_config import has_toml_spelling, toml_string
 from .fast_mode import configuration_error, native_limitation
-
-ROLES = {"scout": (0, 1, 2), "worker": (1, 2, 3), "reviewer": (1, 2, 3)}
 
 
 def _codex_field(value):
@@ -46,6 +45,17 @@ def content_for(provider, role, tier, spec):
     return value
 
 
+def profile_candidate(config, provider, role, tier):
+    """The first candidate a native agent of ``provider`` could run, or an empty one.
+
+    A profile serves the provider's own session, so candidates of the other CLI
+    and API candidates (which native agents cannot reach) are passed over.
+    """
+    _, models = config.workflow.models_for(role, tier)
+    return next((spec for spec in models if spec["provider"] == provider and not spec.get("api_provider")),
+                {"provider": provider, "model": "", "effort": "medium", "fast": False, "api_provider": ""})
+
+
 def sync(config, codex_home, claude_home):
     messages = []
     for provider, home in (("codex", codex_home), ("claude", claude_home)):
@@ -53,10 +63,9 @@ def sync(config, codex_home, claude_home):
         if directory.is_symlink() or Path(home).is_symlink():
             messages.append(f"Preserved user-owned agent directory: {directory}")
             continue
-        for role, tiers in ROLES.items():
+        for role, tiers in ROLE_TIERS.items():
             for tier in tiers:
-                matrix = config.workflow.review.tiers if role == "reviewer" else config.workflow.tiers
-                spec = matrix[str(tier)][provider]
+                spec = profile_candidate(config, provider, role, tier)
                 path = directory / (f"ab-{role}-{tier}" + (".toml" if provider == "codex" else ".md"))
                 marker = directory / (path.name + ".agent-box")
                 intact = False

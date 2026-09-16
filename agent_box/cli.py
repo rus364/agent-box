@@ -265,8 +265,9 @@ def _show_notes(config) -> dict[str, str]:
         "image.tools": _image_note(config),
         "browser.enabled": _browser_note(config),
         "workflow.worker.execution": " (worker model: active session)" if direct else "",
-        # Only the override loses its consumer; tiers and routing still serve scouts and reviewers.
-        "workflow.worker.override": "  (unused while execution is direct)" if direct else "",
+        # Only worker candidates lose their consumer; scout and reviewer lists still apply.
+        "workflow.worker.models": "  (unused while execution is direct)" if direct else "",
+        "workflow.worker.tiers": "  (unused while execution is direct)" if direct else "",
         "workflow.auto_push": (" (accepted base after local merge)" if config.workflow.merge_mode == "local"
                                else " (parent task branch after subtask integration)"),
     }
@@ -278,7 +279,8 @@ def _show_value(value, hidden: bool) -> str:
         return "on" if value else "off"
     if isinstance(value, list):
         # A hidden list holds variable names (env.forward), never their values.
-        return ", ".join(map(str, value)) or "(none)"
+        from .config import candidate_label
+        return ", ".join(candidate_label(item) if isinstance(item, dict) else str(item) for item in value) or "(none)"
     if isinstance(value, dict):
         return ", ".join(f"{key}=<configured>" if hidden else f"{key}={json.dumps(item)}"
                          for key, item in value.items()) or "(none)"
@@ -407,8 +409,8 @@ def config_description(prefix: str = "") -> dict:
                     choices = config_menu.value_choices(full, data, tree)
                     if choices:
                         entry["choices"] = list(choices)
-                    if config_menu._model_path(full):
-                        entry["suggestions"] = list(BUNDLED_MODELS[at[-1]])
+                    if config_menu.candidate_list(full):
+                        entry["suggestions"] = {provider: list(models) for provider, models in BUNDLED_MODELS.items()}
                     hidden = _hidden(full)
                     layers = {layer: _lookup(values, full) for layer, values in
                               (("default", defaults), ("global", known), ("project", project))}

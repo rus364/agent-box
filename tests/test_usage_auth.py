@@ -358,11 +358,11 @@ class UsageAuthTests(unittest.TestCase):
                 self.assertNotIn('SECRET', json.dumps(result))
 
     def test_truncated_http_bodies_preserve_failure_and_routing_fallback(self):
-        """Partial responses must neither escape routing nor expose response bytes."""
+        """Partial responses must neither exclude a candidate nor expose response bytes."""
         from agent_box.routing import select
-        from test_routing import RoutingTests
-        config = RoutingTests().config()
-        config.routing = 'usage-aware'
+        from agent_box.config import WorkflowConfig, model_entry
+        config = WorkflowConfig()
+        config.worker.models = [model_entry({'provider': 'claude', 'model': 'opus'}), model_entry({'provider': 'codex', 'model': 'gpt-5.5'})]
         for renewing in (False, True):
             if renewing:
                 self.expire()
@@ -375,8 +375,8 @@ class UsageAuthTests(unittest.TestCase):
                 self.assertIn('network', result['error'])
                 self.assertNotIn('SECRET', json.dumps(result))
                 self.assertEqual(self.auth.read_bytes(), before)
-                route = select(config, 'worker', 2, 'codex', {}, {'claude': result})
-                self.assertIn('static weights', route['reason'])
+                route = select(config, 'worker', 2, 'codex', {'claude': result})
+                self.assertEqual((route['model'], [f['model'] for f in route['fallbacks']]), ('opus', ['gpt-5.5']))
 
     def test_redirects_are_refused_before_credentials_can_leave_endpoint(self):
         """An endpoint redirect must not forward bearer credentials to another destination."""

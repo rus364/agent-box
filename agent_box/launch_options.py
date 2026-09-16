@@ -12,7 +12,7 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .config import AGENT_EFFORTS, AGENT_PROVIDERS, API_EFFORTS, TrackerConnection, model_candidates, parse_env_spec, valid_name
+from .config import AGENT_EFFORTS, AGENT_PROVIDERS, API_EFFORTS, TrackerConnection, model_entry, parse_env_spec, valid_name
 from .errors import AgentBoxError
 
 SPEC = "PROVIDER[@API]:MODEL[:EFFORT]"
@@ -42,12 +42,10 @@ OPTIONS = (
     Option("tmux", LAUNCH, "Start directly, without a detachable tmux session", form="negated", session=False),
     Option("kvm", LAUNCH, "Do not pass /dev/kvm through", form="negated", container=True, session=False),
     Option("worker", WORKFLOW, "Worker execution policy, or pin the delegated worker", "auto|direct|delegated|SPEC"),
-    Option("reviewer", WORKFLOW, "Pin the reviewer, whatever review routing and tier say", "SPEC"),
+    Option("reviewer", WORKFLOW, "Pin the reviewer, whatever review routing and tiers say", "SPEC"),
     Option("scout", WORKFLOW, "Pin the scout model", "SPEC"),
     Option("review", WORKFLOW, "When review is required", "off|auto|always", choices=("off", "auto", "always")),
     Option("rounds", WORKFLOW, "Review attempt limit per task", "N"),
-    Option("routing", WORKFLOW, "Delegated worker routing", "current|weighted|usage-aware",
-           choices=("current", "weighted", "usage-aware")),
     Option("merge", WORKFLOW, "Delivery route", "github|local", choices=("github", "local")),
     Option("push", WORKFLOW, "Publish after integration", form="pair"),
     Option("workflow", WORKFLOW, "Start without workflow and tracker", form="negated"),
@@ -105,7 +103,7 @@ def parse_spec(flag, text):
         model, effort = rest, "default"
     if provider not in AGENT_PROVIDERS or not model or (at and not valid_name(api)):
         raise AgentBoxError(f"{flag} expects {SPEC}, for example claude:opus:high")
-    return model_candidates({provider: {"model": model, "effort": effort, "api_provider": api}})
+    return [model_entry({"provider": provider, "model": model, "effort": effort, "api_provider": api})]
 
 
 def convert(option, flag, text):
@@ -184,8 +182,6 @@ def apply(config, overrides):
             workflow.review.policy = value
         elif key == "rounds":
             workflow.review.max_rounds = value
-        elif key == "routing":
-            workflow.routing = value
         elif key == "merge":
             workflow.merge_mode = value
         elif key == "push":
@@ -220,7 +216,7 @@ def apply(config, overrides):
     if overrides.get("browser") and not config.image.tools.get("browser"):
         raise AgentBoxError("--browser needs the browser image tool group; enable it in agent-box config, then agent-box build")
     for role, models in workflow.pins.items():
-        api = next(spec["api_provider"] for spec in models.values() if spec["model"])
+        api = models[0]["api_provider"]
         if api and not (api in config.external_providers and config.external_providers[api].enabled):
             raise AgentBoxError(f"--{role} names API provider {api}, which is not an enabled external provider")
     errors = workflow.validate() if used else []

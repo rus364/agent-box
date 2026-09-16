@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from agent_box import routing, workflow, workflow_state
 from agent_box.config import Config
+from test_agent_profiles import entry
 from agent_box.agent_profiles import sync
 from agent_box.errors import AgentBoxError
 import test_workflow_handoff as handoff_tests
@@ -21,9 +22,8 @@ class NativePreparationTests(unittest.TestCase):
             root = Path(directory)
             config = Config()
             config.workflow.enabled = True
-            config.workflow.review.tiers["1"]["codex"] = {"fast": False, "model": "review-model", "effort": "high"}
-            config.workflow.review.tiers["1"]["claude"] = {"fast": False, "model": "other-review", "effort": "medium"}
-            config.workflow.tiers["1"]["codex"] = {"fast": False, "model": "worker-model", "effort": "low"}
+            config.workflow.review.tiers["1"] = [entry("codex", "review-model", "high"), entry("claude", "other-review", "medium")]
+            config.workflow.worker.tiers["1"] = [entry("codex", "worker-model", "low")]
             profile = root / "codex/agents/ab-reviewer-1.toml"
             with patch("agent_box.paths.CODEX_HOME", root / "codex"), \
                  patch("agent_box.paths.CLAUDE_HOME", root / "claude"), \
@@ -36,13 +36,16 @@ class NativePreparationTests(unittest.TestCase):
                             sync(config, root / "codex", root / "claude")
                         elif state == "overridden":
                             profile.write_text(profile.read_text().replace('"high"', '"low"'))
-                        selected = workflow.route(config, "reviewer", 1, "claude", "claude")
+                        selected = workflow.route(config, "reviewer", 1, "codex", "claude")
                         self.assertEqual(selected["native_profile_ready"], ready)
                         self.assertEqual(selected["native_explicit_settings"], {"provider": "codex", "model": "review-model", "effort": "high"})
+                        # The writer's own fallback belongs to the other CLI than this Codex session: managed only.
                         fallback = selected["fallbacks"][0]
-                        self.assertEqual(fallback["native_explicit_settings"], {"provider": "claude", "model": "other-review", "effort": "medium"})
-                config.workflow.review.tiers["1"]["codex"]["effort"] = "default"
-                selected = workflow.route(config, "reviewer", 1, "claude", "claude")
+                        self.assertTrue(fallback["managed_only"])
+                        self.assertIsNone(fallback["native_explicit_settings"])
+                        self.assertIn("managed CLI", fallback["native_limitation"])
+                config.workflow.review.tiers["1"][0]["effort"] = "default"
+                selected = workflow.route(config, "reviewer", 1, "codex", "claude")
                 self.assertFalse(selected["native_profile_ready"])
                 self.assertIsNone(selected["native_explicit_settings"])
 
@@ -57,53 +60,48 @@ class ReviewerMatrixTests(unittest.TestCase):
     def test_config_show_distinguishes_reviewer_models_from_worker_models(self):
         from test_workflow_config import shown
         config = Config()
-        config.workflow.tiers["1"]["codex"]["model"] = "worker-model"
-        config.workflow.review.tiers["1"]["codex"] = {"fast": False, "model": "review-model", "effort": "default"}
+        config.workflow.worker.tiers["1"] = [entry("codex", "worker-model", "medium")]
+        config.workflow.review.tiers["1"] = [entry("codex", "review-model", "default")]
         rows = shown(config)
-        self.assertIn("model review-model; effort default", rows["workflow.review.tiers.1.codex"])
-        self.assertIn("model worker-model;", rows["workflow.tiers.1.codex"])
+        self.assertIn("1 codex:review-model:default;", rows["workflow.review.tiers"])
+        self.assertIn("1 codex:worker-model:medium;", rows["workflow.worker.tiers"])
 
-    def test_config_show_reports_review_routing_separately_from_worker_routing(self):
-        """Inspection must reveal strict reviewer routing even when workers use another mode."""
+    def test_config_show_reports_review_routing(self):
+        """Inspection must reveal strict reviewer routing next to its triggers."""
         from test_workflow_config import shown
         for mode in ("cross-provider", "same-provider"):
             with self.subTest(routing=mode):
                 config = Config()
-                config.workflow.routing = "weighted"
                 config.workflow.review.routing = mode
                 rows = shown(config)
                 self.assertEqual(rows["workflow.review.routing"], mode)
-                self.assertEqual(rows["workflow.routing"], "weighted")
                 self.assertEqual((rows["workflow.review.policy"], rows["workflow.review.max_files"],
                                   rows["workflow.review.max_lines"]), ("auto", "5", "200"))
 
     def test_reviewer_defaults_are_empty_and_have_only_task_tiers(self):
         config = Config()
-        self.assertEqual(set(config.workflow.review.tiers), {"1", "2", "3"})
-        for tier in config.workflow.review.tiers.values():
-            self.assertEqual(set(tier), {"codex", "claude"})
-            self.assertTrue(all(spec == {"api_provider": "", "fast": False, "model": "", "effort": "medium"} for spec in tier.values()))
+        self.assertEqual(config.workflow.review.tiers, {"1": [], "2": [], "3": []})
+        self.assertEqual(config.workflow.review.models, [])
 
     def test_review_models_do_not_inherit_workers_and_round_trip_defaults(self):
         config = Config.from_dict({"workflow": {
-            "tiers": {"2": {"claude": {"model": "worker"}}},
-            "review": {"tiers": {"2": {
-                "claude": {"api_provider": "", "fast": False, "model": "reviewer", "effort": "default"},
-                "codex": {"fast": False, "model": "fallback", "effort": "high"}}}}}})
+            "worker": {"tiers": {"2": [{"provider": "claude", "model": "worker"}]}},
+            "review": {"tiers": {"2": [
+                {"provider": "codex", "model": "fallback", "effort": "high"},
+                {"provider": "claude", "api_provider": "", "fast": False, "model": "reviewer", "effort": "default"}]}}}})
         config = Config.from_dict(config.to_dict())
-        selected = routing.select(config.workflow, "reviewer", 2, "codex", {})
+        selected = routing.select(config.workflow, "reviewer", 2, "codex")
         self.assertEqual((selected["model"], selected["effort"]), ("reviewer", "default"))
         self.assertEqual(selected["fallbacks"][0]["model"], "fallback")
-        self.assertEqual(config.workflow.tiers["2"]["claude"]["model"], "worker")
-        config.workflow.review.tiers["2"]["claude"]["model"] = ""
-        config.workflow.review.tiers["2"]["codex"]["model"] = ""
-        with self.assertRaisesRegex(AgentBoxError, r"reviewer model configured in workflow\.review\.tiers\.2"):
-            routing.select(config.workflow, "reviewer", 2, "codex", {})
+        self.assertEqual(config.workflow.worker.tiers["2"][0]["model"], "worker")
+        config.workflow.review.tiers["2"] = []
+        with self.assertRaisesRegex(AgentBoxError, r"reviewer model configured in workflow\.review\.models"):
+            routing.select(config.workflow, "reviewer", 2, "codex")
 
     def test_reviewer_effort_is_validated_by_provider(self):
-        config = Config.from_dict({"workflow": {"review": {"tiers": {"3": {
-            "claude": {"fast": False, "model": "review", "effort": "ultra"}}}}}})
-        self.assertTrue(any("workflow.review.tiers.3.claude" in e
+        config = Config.from_dict({"workflow": {"review": {"tiers": {"3": [
+            {"provider": "claude", "fast": False, "model": "review", "effort": "ultra"}]}}}})
+        self.assertTrue(any("workflow.review.tiers.3.0" in e
                             for e in config.workflow.validate()))
 
 

@@ -14,8 +14,17 @@ from test_external_config import external_config
 import test_workflow_handoff as handoff_tests
 
 
-def candidate():
-    return {'model': 'external-small', 'effort': 'high', 'fast': False, 'api_provider': 'deepseek'}
+def candidate(provider='codex'):
+    return {'provider': provider, 'model': 'external-small', 'effort': 'high', 'fast': False, 'api_provider': 'deepseek'}
+
+
+def configure(policy, role, tier, models):
+    """Untiered work reads the role's own list; a tier reads its tier list."""
+    settings = policy.role(role)
+    if tier is None:
+        settings.models = models
+    else:
+        settings.tiers[str(tier)] = models
 
 
 class ExternalRoutingTests(unittest.TestCase):
@@ -33,7 +42,7 @@ class ExternalRoutingTests(unittest.TestCase):
             self.assertEqual(output['route'], second)
             self.assertEqual(output['failures'][0].get('api_provider'), first.get('api_provider'))
 
-    def test_all_roles_and_overrides_bind_the_api_without_native_profiles(self):
+    def test_all_roles_and_role_lists_bind_the_api_without_native_profiles(self):
         """A model name alone cannot identify which API should receive its request."""
         for cli in ('codex', 'claude'):
             for role, tier, override in [('worker', 1, False), ('scout', 0, False), ('reviewer', 2, False),
@@ -41,15 +50,8 @@ class ExternalRoutingTests(unittest.TestCase):
                 with self.subTest(cli=cli, role=role, override=override), tempfile.TemporaryDirectory() as tmp:
                     config = external_config()
                     policy = config.workflow
-                    policy.routing = 'current'
                     policy.review.routing = 'same-provider'
-                    if override:
-                        spec = (policy.review if role == 'reviewer' else policy.worker).override
-                        spec.scope = 'all'
-                        spec.models[cli] = candidate()
-                    else:
-                        matrix = policy.review.tiers if role == 'reviewer' else policy.tiers
-                        matrix[str(tier)][cli] = candidate()
+                    configure(policy, role, tier, [candidate(cli)])
                     with patch.dict(os.environ, {}, clear=True), \
                          patch.object(workflow, 'WORKFLOW_STATE', Path(tmp)), \
                          patch.object(workflow_state, 'WORKFLOW_STATE', Path(tmp)), \
@@ -69,10 +71,9 @@ class ExternalRoutingTests(unittest.TestCase):
         """Subscription capacity is not the budget of a separately billed API."""
         config = external_config()
         policy = config.workflow
-        policy.routing = 'usage-aware'
-        policy.tiers['1']['codex'] = candidate()
+        policy.worker.tiers['1'] = [candidate(), candidate()]
         exhausted = {'codex': {'fresh': True, 'windows': [{'remaining': 0, 'reset_at': 10000, 'seconds': 604800}]}}
-        route = routing.select(policy, 'worker', 1, 'codex', {}, exhausted, now=1)
+        route = routing.select(policy, 'worker', 1, 'codex', exhausted, now=1)
         self.assertEqual(route['api_provider'], 'deepseek')
         with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {}, clear=True), \
              patch.object(workflow, 'WORKFLOW_STATE', Path(tmp)), patch.object(workflow_state, 'WORKFLOW_STATE', Path(tmp)), \
@@ -112,21 +113,15 @@ class ExternalRoutingTests(unittest.TestCase):
                 with self.subTest(cli=cli, role=role, override=override), tempfile.TemporaryDirectory() as tmp:
                     config = external_config()
                     policy = config.workflow
-                    policy.routing = 'current'
                     policy.review.routing = 'same-provider'
-                    if override:
-                        spec = (policy.review if role == 'reviewer' else policy.worker).override
-                        spec.scope = 'all'
-                        spec.models.update({cli: candidate(), other: candidate()})
-                    else:
-                        matrix = policy.review.tiers if role == 'reviewer' else policy.tiers
-                        matrix[str(tier)].update({cli: candidate(), other: candidate()})
                     _, env = external_launch.prepare([cli], 'deepseek', cli, config, tmp, {})
                     with patch.dict(os.environ, env, clear=True), \
                          patch.object(workflow, 'WORKFLOW_STATE', Path(tmp)), \
                          patch.object(workflow_state, 'WORKFLOW_STATE', Path(tmp)), \
                          patch.object(workflow.shutil, 'which', return_value='/bin/cli'):
+                        configure(policy, role, tier, [candidate(cli), candidate(other)])
                         route = workflow.route(config, role, tier, cli, cli)
+                        configure(policy, role, tier, [candidate(other), candidate(cli)])
                         elsewhere = workflow.route(config, role, tier, other, other)
                     self.assertFalse(route.get('managed_only'))
                     self.assertEqual(route['api_fingerprint'], env[external_launch.FINGERPRINT_ENV])
@@ -195,16 +190,16 @@ class ExternalRoutingTests(unittest.TestCase):
         """Applying a configured API must not leave an owned profile pointing at a built-in endpoint."""
         config = external_config()
         config.workflow.enabled = True
-        config.workflow.tiers['1']['codex'] = {**candidate(), 'api_provider': ''}
+        config.workflow.worker.tiers['1'] = [{**candidate(), 'api_provider': ''}]
         with tempfile.TemporaryDirectory() as tmp:
             codex, claude = Path(tmp) / 'codex', Path(tmp) / 'claude'
             agent_profiles.sync(config, codex, claude)
             path = codex / 'agents/ab-worker-1.toml'
             self.assertTrue(path.exists())
-            config.workflow.tiers['1']['codex']['api_provider'] = 'deepseek'
+            config.workflow.worker.tiers['1'][0]['api_provider'] = 'deepseek'
             agent_profiles.sync(config, codex, claude)
             self.assertFalse(path.exists())
-        config.workflow.tiers['1']['codex']['fast'] = True
+        config.workflow.worker.tiers['1'][0]['fast'] = True
         self.assertTrue(any('external API' in e for e in config.workflow.validate()))
 
     def test_endpoint_drift_is_refused_before_process_creation_without_key_fingerprints(self):
@@ -247,8 +242,7 @@ class ExternalDescriptorTests(unittest.TestCase):
         fixture.setUp()
         self.addCleanup(fixture.doCleanups)
         fixture.config.external_providers = external_config().external_providers
-        fixture.config.workflow.routing = 'current'
-        fixture.config.workflow.tiers['1']['codex'] = candidate()
+        fixture.config.workflow.worker.tiers['1'] = [candidate()]
         with patch.object(workflow, 'route', side_effect=real_route):
             prepared = fixture.run_workflow('prepare', '1', '--primary', 'codex')
         descriptor = json.loads(base64.urlsafe_b64decode(prepared['handoff']))

@@ -581,67 +581,70 @@ class TrackerConfig:
                     _mapping(data.get("connections")).items() if k in TRACKER_PROVIDERS})
 
 
-def model_candidates(data=None):
-    """Each role owns its candidates; only parsing and defaults are shared."""
-    data = _mapping(data)
-    result = {}
-    for provider in AGENT_PROVIDERS:
-        spec = _mapping(data.get(provider))
-        result[provider] = {"model": _str(spec, "model"), "effort": _str(spec, "effort") or "medium",
-                            "fast": spec.get("fast", False), "api_provider": spec.get("api_provider", "")}
-    return result
+MODEL_ENTRY = {"provider": str, "model": str, "effort": str, "fast": bool, "api_provider": str}
+#: Tiers each role runs at; tier 0 is reserved for scouts.
+ROLE_TIERS = {"scout": range(4), "worker": range(1, 4), "reviewer": range(1, 4)}
+
+
+def model_entry(data):
+    """One candidate: the CLI that runs it, and the model it runs.
+
+    The provider is stored rather than derived from the model name, because an
+    external API model (DeepSeek through Claude's CLI) names no provider.
+    """
+    return {"provider": _str(data, "provider"), "model": _str(data, "model"),
+            "effort": _str(data, "effort") or "medium", "fast": data.get("fast", False),
+            "api_provider": data.get("api_provider", "")}
+
+
+def candidate_label(spec):
+    """``PROVIDER[@API]:MODEL:EFFORT``, the spelling --worker/--scout/--reviewer accept."""
+    api = f"@{spec['api_provider']}" if spec.get("api_provider") else ""
+    return f"{spec['provider']}{api}:{spec['model']}:{spec['effort']}" + (" fast" if spec.get("fast") is True else "")
+
+
+def model_list(data=None):
+    """Candidates in preference order; a role runs the first one available."""
+    return [model_entry(item) for item in data if isinstance(item, dict)] if isinstance(data, list) else []
 
 
 def model_tiers(numbers, data=None):
     data = _mapping(data)
-    return {str(number): model_candidates(data.get(str(number))) for number in numbers}
-
-
-@dataclass
-class ModelOverride:
-    """Opt in before replacing a role's session inheritance or explicit tiers."""
-    scope: str = "off"
-    models: dict[str, dict] = field(default_factory=model_candidates)
-
-    def applies(self, tier):
-        return self.scope == "all" or self.scope == "untiered" and tier is None
-
-    @classmethod
-    def from_dict(cls, data):
-        data = _mapping(data)
-        return cls(data.get("scope", "off"), model_candidates(data.get("models")))
+    return {str(number): model_list(data.get(str(number))) for number in numbers}
 
 
 @dataclass
 class WorkerConfig:
     execution: str = "auto"
-    override: ModelOverride = field(default_factory=ModelOverride)
+    models: list[dict] = field(default_factory=list)
+    tiers: dict[str, list] = field(default_factory=lambda: model_tiers(ROLE_TIERS["worker"]))
 
     @classmethod
     def from_dict(cls, data):
         data = _mapping(data)
-        return cls(data.get("execution", "auto"), ModelOverride.from_dict(data.get("override")))
+        return cls(data.get("execution", "auto"), model_list(data.get("models")),
+                   model_tiers(ROLE_TIERS["worker"], data.get("tiers")))
 
 
 @dataclass
 class ScoutConfig:
-    """Scout policy of its own; scout models stay in the shared worker/scout tiers.
-
-    Scouts run at tier 0-3 from the same matrix as workers, so splitting that
-    matrix by role would give scouts two sources for one tier.
-    """
     limit: int = 3
+    models: list[dict] = field(default_factory=list)
+    tiers: dict[str, list] = field(default_factory=lambda: model_tiers(ROLE_TIERS["scout"]))
 
     @classmethod
     def from_dict(cls, data):
-        return cls(_number(_mapping(data), "limit", 3))
+        data = _mapping(data)
+        return cls(_number(data, "limit", 3), model_list(data.get("models")),
+                   model_tiers(ROLE_TIERS["scout"], data.get("tiers")))
 
 
 @dataclass
 class ReviewConfig:
-    tiers: dict[str, dict] = field(default_factory=lambda: model_tiers(range(1, 4)))
     policy: str = "auto"
     routing: str = "cross-provider"
+    models: list[dict] = field(default_factory=list)
+    tiers: dict[str, list] = field(default_factory=lambda: model_tiers(ROLE_TIERS["reviewer"]))
     max_files: int = 5
     max_lines: int = 200
     max_rounds: int = 3
@@ -654,7 +657,6 @@ class ReviewConfig:
     github_model: str = ""
     github_effort: str = ""
     wait_seconds: int = 600
-    override: ModelOverride = field(default_factory=ModelOverride)
 
     def to_dict(self):
         from dataclasses import asdict
@@ -664,8 +666,8 @@ class ReviewConfig:
     def from_dict(cls, data):
         data = _mapping(data)
         result = cls()
-        result.tiers = model_tiers(range(1, 4), data.get("tiers"))
-        result.override = ModelOverride.from_dict(data.get("override"))
+        result.models = model_list(data.get("models"))
+        result.tiers = model_tiers(ROLE_TIERS["reviewer"], data.get("tiers"))
         for key in ("policy", "routing", "label", "github_provider", "github_model", "github_effort"):
             if key in data and isinstance(data[key], str):
                 setattr(result, key, data[key].strip())
@@ -685,16 +687,9 @@ class WorkflowConfig:
     publishes task branches only with GitHub integration in GitHub mode. Local
     mode publishes the accepted base using available Git transport credentials;
     it neither enables credentials nor publishes task branches.
-    Routing counters and usage caches contain no authoritative task state.
     """
     enabled: bool = False
     merge_mode: str = "github"
-    routing: str = "current"
-    weights: dict[str, float] = field(default_factory=lambda: {"codex": 1, "claude": 1})
-    tiers: dict[str, dict] = field(default_factory=lambda: model_tiers(range(4)))
-    fallback: bool = True
-    reserve_percent: float = 5
-    smoothing_hours: float = 24
     scout: ScoutConfig = field(default_factory=ScoutConfig)
     auto_push: bool = True
     timeout_seconds: int = 3600
@@ -702,10 +697,10 @@ class WorkflowConfig:
     cleanup_local_branches: bool = False
     cleanup_remote_branches: bool = False
     worker: WorkerConfig = field(default_factory=WorkerConfig)
-    #: Launch-only models pinned by --worker/--reviewer/--scout, keyed by role.
+    #: Launch-only candidate lists pinned by --worker/--reviewer/--scout, keyed by role.
     #: Never serialized: a session re-derives them from its snapshot's launch
     #: flags, so no configuration file can hold one.
-    pins: dict[str, dict] = field(default_factory=dict)
+    pins: dict[str, list] = field(default_factory=dict)
 
     def to_dict(self):
         from dataclasses import asdict
@@ -713,32 +708,36 @@ class WorkflowConfig:
         data.pop("pins")
         return data
 
-    def override_for(self, role, tier):
+    def role(self, role):
+        return {"scout": self.scout, "worker": self.worker, "reviewer": self.review}[role]
+
+    def models_for(self, role, tier):
+        """``(path, candidates)``: a session pin, else a nonempty tier list, else the role's own list.
+
+        The candidate's provider decides only how it runs, never whether the
+        coordinator may use it: a Claude session runs a Codex scout as a
+        managed CLI. Per-provider slots filtered by the session provider were
+        the rejected shape, since a configured model then vanished whenever
+        the other CLI coordinated.
+        """
         if role in self.pins:
-            return ModelOverride("all", self.pins[role])
-        settings = self.worker if role == "worker" else self.review if role == "reviewer" else None
-        return settings.override if settings and settings.override.applies(tier) else None
+            return f"--{role}", self.pins[role]
+        section = "review" if role == "reviewer" else role
+        settings = self.role(role)
+        if tier is not None and settings.tiers.get(str(tier)):
+            return f"workflow.{section}.tiers.{tier}", settings.tiers[str(tier)]
+        return f"workflow.{section}.models", settings.models
 
     def validate(self):
         import math
         errors = []
         if self.merge_mode not in ("github", "local"):
             errors.append("workflow.merge_mode must be github or local")
-        if self.routing not in ("current", "weighted", "usage-aware"):
-            errors.append("workflow.routing must be current, weighted, or usage-aware")
         if self.worker.execution not in ("auto", "direct", "delegated"):
             errors.append("workflow.worker.execution must be auto, direct, or delegated")
-        for name, settings in (("worker", self.worker), ("review", self.review)):
-            if settings.override.scope not in ("off", "untiered", "all"):
-                errors.append(f"workflow.{name}.override.scope must be off, untiered, or all")
-        if any(not isinstance(v, (int, float)) or not math.isfinite(v) or v < 0
-               for v in self.weights.values()) or not any(self.weights.values()):
-            errors.append("workflow.weights must be finite, nonnegative, and not all zero")
-        for name, minimum, maximum in (("reserve_percent", 0, 99), ("smoothing_hours", 1, 168),
-                                        ("timeout_seconds", 30, 86400)):
-            value = getattr(self, name)
-            if not isinstance(value, (int, float)) or not math.isfinite(value) or not minimum <= value <= maximum or name == "timeout_seconds" and not isinstance(value, int):
-                errors.append(f"workflow.{name} must be between {minimum} and {maximum}")
+        value = self.timeout_seconds
+        if not isinstance(value, int) or not math.isfinite(value) or not 30 <= value <= 86400:
+            errors.append("workflow.timeout_seconds must be between 30 and 86400")
         if not isinstance(self.scout.limit, int) or not 1 <= self.scout.limit <= 16:
             errors.append("workflow.scout.limit must be between 1 and 16")
         if self.review.routing not in ("cross-provider", "same-provider"):
@@ -751,28 +750,34 @@ class WorkflowConfig:
             value = getattr(self.review, name)
             if not isinstance(value, int) or value < 1:
                 errors.append(f"workflow.review.{name} must be a positive integer")
-        for path, models in self.candidate_groups():
-            for provider, spec in models.items():
-                if spec.get("api_provider", "") != "" and not valid_name(spec.get("api_provider")):
-                    errors.append(f"{path}.{provider}: invalid API provider name")
-                efforts = API_EFFORTS if spec.get('api_provider') else AGENT_EFFORTS
-                if spec.get("effort") not in efforts.get(provider, ()):
-                    errors.append(f"{path}.{provider}: invalid effort")
-                from .fast_mode import configuration_error
-                error = configuration_error(provider, spec)
-                if error:
-                    errors.append(f"{path}.{provider}: {error}")
+        from .fast_mode import configuration_error
+        for path, spec in self.candidates():
+            provider = spec.get("provider")
+            if provider not in AGENT_PROVIDERS:
+                errors.append(f"{path}: provider must be codex or claude")
+                continue
+            if not spec.get("model"):
+                errors.append(f"{path}: model must be nonempty")
+            if spec.get("api_provider", "") != "" and not valid_name(spec.get("api_provider")):
+                errors.append(f"{path}: invalid API provider name")
+            efforts = API_EFFORTS if spec.get('api_provider') else AGENT_EFFORTS
+            if spec.get("effort") not in efforts.get(provider, ()):
+                errors.append(f"{path}: invalid effort")
+            error = configuration_error(provider, spec)
+            if error:
+                errors.append(f"{path}: {error}")
         return errors
 
-    def candidate_groups(self):
-        candidates = [(f"{path}.{tier}", models)
-                      for path, tiers in (("workflow.tiers", self.tiers),
-                                          ("workflow.review.tiers", self.review.tiers))
-                      for tier, models in tiers.items()]
-        candidates.extend((f"workflow.{name}.override.models", settings.override.models)
-                          for name, settings in (("worker", self.worker), ("review", self.review)))
-        candidates.extend((f"--{role}", models) for role, models in self.pins.items())
-        return candidates
+    def candidates(self):
+        """Every configured candidate with its dotted path, including session pins."""
+        groups = []
+        for role in ROLE_TIERS:
+            section = "review" if role == "reviewer" else role
+            settings = self.role(role)
+            groups.append((f"workflow.{section}.models", settings.models))
+            groups.extend((f"workflow.{section}.tiers.{tier}", models) for tier, models in settings.tiers.items())
+        groups.extend((f"--{role}", models) for role, models in self.pins.items())
+        return [(f"{path}.{index}", spec) for path, models in groups for index, spec in enumerate(models)]
 
     @classmethod
     def from_dict(cls, data):
@@ -780,15 +785,10 @@ class WorkflowConfig:
         result = cls()
         result.enabled = _bool(data, "enabled", False)
         result.merge_mode = _str(data, "merge_mode") or result.merge_mode
-        result.routing = _str(data, "routing") or result.routing
-        for key in ("fallback", "auto_push", "cleanup_local_branches", "cleanup_remote_branches"):
+        for key in ("auto_push", "cleanup_local_branches", "cleanup_remote_branches"):
             setattr(result, key, _bool(data, key, getattr(result, key)))
-        for key in ("reserve_percent", "smoothing_hours", "timeout_seconds"):
-            setattr(result, key, _number(data, key, getattr(result, key)))
+        result.timeout_seconds = _number(data, "timeout_seconds", result.timeout_seconds)
         result.scout = ScoutConfig.from_dict(data.get("scout"))
-        weights = _mapping(data.get("weights"))
-        result.weights = {p: _number(weights, p, 1) for p in AGENT_PROVIDERS}
-        result.tiers = model_tiers(range(4), data.get("tiers"))
         result.review = ReviewConfig.from_dict(data.get("review"))
         result.worker = WorkerConfig.from_dict(data.get("worker"))
         return result

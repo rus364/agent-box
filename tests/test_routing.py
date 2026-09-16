@@ -1,81 +1,87 @@
-"""Selection must respect tier, account limits, and independent review."""
-import importlib
+"""Selection runs a role's ordered candidates, whatever provider coordinates."""
+import os
+import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
-from agent_box.config import WorkflowConfig
+from agent_box import routing, workflow
+from agent_box.config import Config, WorkflowConfig, model_entry
+
+
+def candidate(provider, model, **fields):
+    return model_entry({"provider": provider, "model": model, **fields})
 
 
 class RoutingTests(unittest.TestCase):
-    def config(self):
+    def test_a_claude_coordinator_gets_a_codex_only_scout(self):
+        """The reported defect: a codex scout vanished whenever Claude coordinated."""
         c = WorkflowConfig()
-        c.routing = "weighted"
-        c.weights = {"codex": 3, "claude": 1}
-        for tier in c.tiers.values():
-            for name in tier:
-                tier[name]["model"] = name + "-model"
-        for tier in c.review.tiers.values():
-            for name in tier:
-                tier[name]["model"] = name + "-reviewer"
-        return c
+        c.scout.models = [candidate("codex", "gpt-5.6-luna", effort="high")]
+        result = routing.select(c, "scout", 0, "claude")
+        self.assertEqual((result["provider"], result["model"], result["effort"]), ("codex", "gpt-5.6-luna", "high"))
 
-    def test_weighted_counts_are_independent_per_tier(self):
-        r = importlib.import_module("agent_box.routing")
-        state = {}
-        c = self.config()
-        first = r.select(c, "worker", 3, "codex", state)["provider"]
-        for _ in range(12):
-            r.select(c, "scout", 0, "codex", state)
-        providers = [first] + [r.select(c, "worker", 3, "codex", state)["provider"] for _ in range(3)]
-        self.assertEqual(providers.count("codex"), 3)
-        self.assertEqual(providers.count("claude"), 1)
+    def test_a_prepared_route_marks_another_clis_candidate_managed_only(self):
+        """The coordinator must see that it cannot spawn the candidate natively, and why."""
+        config = Config()
+        config.workflow.scout.models = [candidate("codex", "gpt-5.6-luna", effort="high"), candidate("claude", "haiku", effort="low")]
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {}, clear=True), \
+             patch.object(workflow, "WORKFLOW_STATE", Path(directory)), \
+             patch.object(workflow.shutil, "which", side_effect=lambda name: name), \
+             patch.object(workflow, "usage_snapshot", return_value={}):
+            route = workflow.route(config, "scout", 0, "claude")
+        self.assertEqual((route["provider"], route["model"], route["managed_only"]), ("codex", "gpt-5.6-luna", True))
+        self.assertIsNone(route["native_explicit_settings"])
+        self.assertIn("claude session cannot run a native codex agent", route["native_limitation"])
+        fallback = route["fallbacks"][0]
+        self.assertFalse(fallback.get("managed_only"))
+        self.assertEqual(fallback["native_explicit_settings"], {"provider": "claude", "model": "haiku", "effort": "low"})
 
-    def test_weekly_reset_and_capacity_weight_affect_selection(self):
-        r = importlib.import_module("agent_box.routing")
-        c = self.config()
-        c.routing = "usage-aware"
-        c.reserve_percent = 0
-        c.weights = {"codex": 1, "claude": 1}
-        usage = {"codex": {"fresh": True, "windows": [{"seconds": 604800, "remaining": 60, "reset_at": 87400}]},
-                 "claude": {"fresh": True, "windows": [{"seconds": 604800, "remaining": 60, "reset_at": 519400}]}}
-        self.assertEqual(r.select(c, "worker", 2, "codex", {}, usage, now=1000)["provider"], "codex")
-        c.weights["claude"] = 5
-        self.assertEqual(r.select(c, "worker", 2, "codex", {}, usage, now=1000)["provider"], "claude")
+    def test_the_first_candidate_wins_and_the_rest_are_ordered_fallbacks(self):
+        c = WorkflowConfig()
+        c.worker.models = [candidate("claude", "opus"), candidate("codex", "gpt-5.5"), candidate("claude", "sonnet")]
+        result = routing.select(c, "worker", 2, "codex")
+        self.assertEqual(result["model"], "opus")
+        self.assertEqual([f["model"] for f in result["fallbacks"]], ["gpt-5.5", "sonnet"])
 
-    def test_review_ignores_weights_and_stays_in_the_selected_tier(self):
-        r = importlib.import_module("agent_box.routing")
-        c = self.config()
-        c.weights["claude"] = 0
-        result = r.select(c, "reviewer", 2, "codex", {}, writer="codex")
+    def test_a_nonempty_tier_list_replaces_the_role_models_and_an_empty_one_does_not(self):
+        c = WorkflowConfig()
+        c.worker.models = [candidate("codex", "gpt-5.5")]
+        c.worker.tiers["3"] = [candidate("claude", "opus")]
+        self.assertEqual(routing.select(c, "worker", 3, "codex")["model"], "opus")
+        self.assertEqual(routing.select(c, "worker", 1, "codex")["model"], "gpt-5.5")
+        self.assertIn("workflow.worker.models", routing.select(c, "worker", 1, "codex")["reason"])
+
+    def test_a_missing_cli_or_exhausted_window_skips_to_the_next_candidate(self):
+        c = WorkflowConfig()
+        c.scout.models = [candidate("codex", "gpt-5.6-luna"), candidate("claude", "haiku")]
+        self.assertEqual(routing.select(c, "scout", 0, "codex", available=["claude"])["model"], "haiku")
+        usage = {"codex": {"windows": [{"seconds": 18000, "remaining": 0, "reset_at": 2000}]}}
+        self.assertEqual(routing.select(c, "scout", 0, "codex", usage, now=1000)["model"], "haiku")
+        # A window that has already reset no longer excludes anything.
+        self.assertEqual(routing.select(c, "scout", 0, "codex", usage, now=3000)["model"], "gpt-5.6-luna")
+
+    def test_every_candidate_exhausted_is_an_error_not_a_silent_choice(self):
+        c = WorkflowConfig()
+        c.scout.models = [candidate("codex", "gpt-5.6-luna")]
+        usage = {"codex": {"windows": [{"seconds": 18000, "remaining": 0, "reset_at": 2000}]}}
+        with self.assertRaisesRegex(Exception, "exhausted"):
+            routing.select(c, "scout", 0, "codex", usage, now=1000)
+
+    def test_cross_provider_review_prefers_the_other_writer_provider_whatever_the_list_order(self):
+        c = WorkflowConfig()
+        c.review.models = [candidate("codex", "gpt-5.5"), candidate("claude", "opus")]
+        result = routing.select(c, "reviewer", 2, "codex", writer="codex")
         self.assertEqual(result["provider"], "claude")
-        self.assertEqual(result["fallbacks"][0]["provider"], "codex")
-        c.review.tiers["2"]["claude"]["model"] = ""
-        c.review.tiers["2"]["codex"]["model"] = ""
-        with self.assertRaises(Exception):
-            r.select(c, "reviewer", 2, "codex", {})
+        self.assertEqual([f["provider"] for f in result["fallbacks"]], ["codex"])
+        c.review.routing = "same-provider"
+        result = routing.select(c, "reviewer", 2, "codex", writer="codex")
+        self.assertEqual((result["provider"], result["fallbacks"]), ("codex", []))
 
-    def test_stale_statistics_fall_back_but_a_known_exhausted_window_still_excludes(self):
-        r = importlib.import_module("agent_box.routing")
-        c = self.config()
-        c.routing = "usage-aware"
-        usage = {"codex": {"fresh": False, "windows": [{"seconds": 18000, "remaining": 0, "reset_at": 2000}]}}
-        result = r.select(c, "worker", 1, "codex", {}, usage, now=1000)
-        self.assertEqual(result["provider"], "claude")
-        self.assertIn("static", result["reason"])
-
-    def test_usage_error_falls_back_to_weights_without_excluding_provider(self):
-        """An unavailable budget is unknown, not an exhausted subscription."""
-        r = importlib.import_module("agent_box.routing")
-        c = self.config()
-        c.routing = "usage-aware"
-        snapshots = {
-            "codex": {"fresh": True, "windows": [
-                {"seconds": 604800, "remaining": 90, "reset_at": 604900}]},
-            "claude": {"fresh": False, "error": "claude: HTTP 401", "windows": []},
-        }
-        state = {}
-        results = [r.select(c, "worker", 2, "codex", state, snapshots, now=1000) for _ in range(4)]
-        self.assertEqual([item["provider"] for item in results].count("claude"), 1)
-        self.assertTrue(all("static weights" in item["reason"] for item in results))
+    def test_no_candidates_for_a_tier_is_an_error_without_a_tier_downgrade(self):
+        c = WorkflowConfig()
+        with self.assertRaisesRegex(Exception, "workflow.review.models"):
+            routing.select(c, "reviewer", 2, "codex", writer="codex")
 
 
 if __name__ == "__main__":

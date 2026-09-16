@@ -90,119 +90,69 @@ class ConfigShowTests(unittest.TestCase):
 
 
 class WorkflowConfigTests(unittest.TestCase):
-    def test_execution_and_scopes_survive_global_save_and_minimal_runtime(self):
-        """Saved execution and model sources reach the container without host secrets."""
+    def test_execution_and_role_models_survive_global_save_and_minimal_runtime(self):
+        """Saved execution and candidate lists reach the container without host secrets."""
         from agent_box import runtime
         from agent_box.config import load_config, save_config
         self.assertEqual(Config().workflow.worker.execution, "auto")
+        models = [{"provider": "codex", "model": "gpt-5.6-luna", "effort": "high"},
+                  {"provider": "claude", "model": "deepseek-v4-flash", "effort": "high", "api_provider": "deepseek"}]
         for execution in ("auto", "direct", "delegated"):
-            for scope in ("off", "untiered", "all"):
-                with self.subTest(execution=execution, scope=scope), tempfile.TemporaryDirectory() as directory:
-                    config = Config.from_dict({"workflow": {"enabled": True,
-                        "worker": {"execution": execution, "override": {"scope": scope}},
-                        "review": {"override": {"scope": scope}}}})
-                    config.notifications.telegram_token = "host-secret"
-                    path = Path(directory) / "global.json"
-                    save_config(config, path)
-                    loaded = load_config(path)
-                    self.assertEqual(loaded.workflow, config.workflow)
-                    self.assertEqual(json.loads(path.read_text())["version"], 1)
-                    runtime.sync_tracker_runtime(loaded, Path(directory) / "runtime")
-                    raw = (Path(directory) / "runtime" / "config.json").read_text()
-                    self.assertNotIn("host-secret", raw)
-                    self.assertEqual(Config.from_dict(json.loads(raw)).workflow, config.workflow)
+            with self.subTest(execution=execution), tempfile.TemporaryDirectory() as directory:
+                config = Config.from_dict({"workflow": {"enabled": True,
+                    "worker": {"execution": execution, "tiers": {"3": models[:1]}},
+                    "scout": {"models": models}, "review": {"models": models[::-1]}}})
+                config.notifications.telegram_token = "host-secret"
+                path = Path(directory) / "global.json"
+                save_config(config, path)
+                loaded = load_config(path)
+                self.assertEqual(loaded.workflow, config.workflow)
+                self.assertEqual([spec["model"] for spec in loaded.workflow.review.models], ["deepseek-v4-flash", "gpt-5.6-luna"])
+                self.assertEqual(json.loads(path.read_text())["version"], 1)
+                runtime.sync_tracker_runtime(loaded, Path(directory) / "runtime")
+                raw = (Path(directory) / "runtime" / "config.json").read_text()
+                self.assertNotIn("host-secret", raw)
+                self.assertEqual(Config.from_dict(json.loads(raw)).workflow, config.workflow)
 
-    def test_invalid_execution_and_scope_values_cannot_become_defaults(self):
-        """Unknown, blank and wrongly typed enums must fail global and runtime validation."""
+    def test_invalid_execution_and_candidates_cannot_become_defaults(self):
+        """Unknown enums and unusable candidates must fail global and runtime validation."""
         from agent_box.config import effective_config, load_config
         from agent_box.errors import AgentBoxError
-        for path in (("worker", "execution"), ("worker", "override", "scope"),
-                     ("review", "override", "scope")):
-            for invalid in ("invalid", "", " all ", None, True, 1, [], {}):
-                workflow = {}
-                target = workflow
-                for part in path[:-1]:
-                    target = target.setdefault(part, {})
-                target[path[-1]] = invalid
-                dotted = "workflow." + ".".join(path)
-                with self.subTest(path=dotted, invalid=invalid), tempfile.TemporaryDirectory() as directory:
-                    artifact = Path(directory) / "config.json"
-                    artifact.write_text(json.dumps({"workflow": workflow}))
-                    self.assertTrue(any(dotted in error for error in load_config(artifact).workflow.validate()))
-                    with patch.dict(os.environ, {"AGENT_BOX_RUNTIME_CONFIG": str(artifact)}), \
-                         patch("agent_box.project_config.load", return_value={}), \
-                         self.assertRaisesRegex(AgentBoxError, dotted):
-                        effective_config()
+        cases = [({"worker": {"execution": invalid}}, "workflow.worker.execution")
+                 for invalid in ("invalid", "", " all ", None, True, 1, [], {})]
+        cases += [({"scout": {"models": [{"provider": "gemini", "model": "x"}]}}, "workflow.scout.models.0: provider"),
+                  ({"worker": {"tiers": {"2": [{"provider": "codex"}]}}}, "workflow.worker.tiers.2.0: model"),
+                  ({"review": {"models": [{"provider": "claude", "model": "opus", "effort": "invalid"}]}},
+                   "workflow.review.models.0: invalid effort")]
+        for workflow, message in cases:
+            with self.subTest(workflow=workflow), tempfile.TemporaryDirectory() as directory:
+                artifact = Path(directory) / "config.json"
+                artifact.write_text(json.dumps({"workflow": workflow}))
+                self.assertTrue(any(message in error for error in load_config(artifact).workflow.validate()))
+                with patch.dict(os.environ, {"AGENT_BOX_RUNTIME_CONFIG": str(artifact)}), \
+                     patch("agent_box.project_config.load", return_value={}), \
+                     self.assertRaisesRegex(AgentBoxError, message.split(":")[0]):
+                    effective_config()
 
-    def test_reviewer_override_roundtrips_into_runtime_without_sharing_candidates(self):
-        """The container must receive the same opt-in and independent settings as the menu."""
-        from agent_box import runtime
-        original = Config()
-        self.assertEqual(original.workflow.review.override.scope, "off")
-        self.assertTrue(all(not spec["model"] for spec in original.workflow.review.override.models.values()))
-        for scope in ("off", "untiered", "all"):
-            config = Config.from_dict({"workflow": {"enabled": True, "review": {"override": {
-                "scope": scope, "models": {
-                    "codex": {"model": "custom-codex", "effort": "default"},
-                    "claude": {"model": "custom-claude", "effort": "high"}}}}}})
-            with tempfile.TemporaryDirectory() as directory:
-                runtime.sync_tracker_runtime(config, Path(directory))
-                rendered = Config.from_dict(json.loads((Path(directory) / "config.json").read_text()))
-            self.assertEqual(rendered.workflow.review.override, config.workflow.review.override)
-            self.assertEqual(rendered.workflow.validate(), [])
-            rendered.workflow.review.override.models["codex"]["model"] = "changed"
-            self.assertEqual(rendered.workflow.review.tiers["1"]["codex"]["model"], "")
-            self.assertEqual(rendered.workflow.tiers["1"]["codex"]["model"], "")
-            self.assertEqual(original.workflow.review.override.models["codex"]["model"], "")
-        config.workflow.review.override.models["claude"]["effort"] = "invalid"
-        self.assertIn("workflow.review.override.models.claude: invalid effort", config.workflow.validate())
-
-    def test_worker_override_roundtrips_into_runtime_without_sharing_candidates(self):
-        """The container must receive the same opt-in and independent settings as the menu."""
-        from agent_box import runtime
-        original = Config()
-        self.assertEqual(original.workflow.worker.override.scope, "off")
-        self.assertTrue(all(not spec["model"] for spec in original.workflow.worker.override.models.values()))
-        for scope in ("off", "untiered", "all"):
-            config = Config.from_dict({"workflow": {"enabled": True, "worker": {"override": {
-                "scope": scope, "models": {
-                    "codex": {"model": "custom-codex", "effort": "default"},
-                    "claude": {"model": "custom-claude", "effort": "high"}}}}}})
-            with tempfile.TemporaryDirectory() as directory:
-                runtime.sync_tracker_runtime(config, Path(directory))
-                rendered = Config.from_dict(json.loads((Path(directory) / "config.json").read_text()))
-            self.assertEqual(rendered.workflow.worker.override, config.workflow.worker.override)
-            self.assertEqual(rendered.workflow.validate(), [])
-            rendered.workflow.worker.override.models["codex"]["model"] = "changed"
-            self.assertEqual(rendered.workflow.review.tiers["1"]["codex"]["model"], "")
-            self.assertEqual(rendered.workflow.tiers["1"]["codex"]["model"], "")
-            self.assertEqual(original.workflow.worker.override.models["codex"]["model"], "")
-        self.assertEqual(rendered.workflow.review.override, original.workflow.review.override)
-        config.workflow.worker.override.models["claude"]["effort"] = "invalid"
-        self.assertIn("workflow.worker.override.models.claude: invalid effort", config.workflow.validate())
-
-    def test_show_distinguishes_worker_and_reviewer_override_scope(self):
-        """A visible worker override must not imply reviewer settings have changed."""
+    def test_show_lists_candidates_in_launch_flag_spelling(self):
+        """One row per list, in the spelling --scout accepts, so the order of preference is visible."""
         config = Config()
-        config.workflow.worker.override.scope = "untiered"
-        config.workflow.worker.override.models['codex'] = {'model': 'worker-model', 'effort': 'high'}
+        config.workflow.scout.models = [
+            {"provider": "codex", "model": "gpt-5.6-luna", "effort": "high", "fast": False, "api_provider": ""},
+            {"provider": "claude", "model": "v4", "effort": "high", "fast": False, "api_provider": "deepseek"}]
         rows = shown(config)
-        self.assertEqual(rows['workflow.worker.override.scope'], 'untiered')
-        self.assertEqual(rows['workflow.review.override.scope'], 'off')
-        self.assertEqual(rows['workflow.worker.execution'], 'auto')
-        self.assertEqual(rows['workflow.worker.override.models.codex'], 'model worker-model; effort high')
+        self.assertEqual(rows['workflow.scout.models'], 'codex:gpt-5.6-luna:high, claude@deepseek:v4:high')
+        self.assertEqual(rows['workflow.review.models'], '(none)')
 
-    def test_show_marks_only_the_worker_override_unused_under_direct(self):
-        """Direct reports the active-session source; tiers still serve scouts, so they carry no mark."""
+    def test_show_marks_only_worker_models_unused_under_direct(self):
+        """Direct reports the active-session source; scout and reviewer lists still apply, so they carry no mark."""
         config = Config()
         config.workflow.worker.execution = "direct"
-        config.workflow.worker.override.scope = "all"
         rows = shown(config)
         self.assertEqual(rows['workflow.worker.execution'], 'direct (worker model: active session)')
-        self.assertEqual(rows['workflow.worker.override'], '(unused while execution is direct)')
-        self.assertEqual(rows['workflow.tiers.1'], '')
-        self.assertEqual(rows['workflow.tiers.0'], '')
-        self.assertIn('model ', rows['workflow.tiers.0.codex'])
+        self.assertIn('(unused while execution is direct)', rows['workflow.worker.models'])
+        self.assertIn('(unused while execution is direct)', rows['workflow.worker.tiers'])
+        self.assertNotIn('unused', rows['workflow.scout.models'] + rows['workflow.scout.tiers'])
 
     def test_show_reads_the_runtime_artifact_instead_of_host_defaults(self):
         """A container shows the merge route workflow dispatch uses, and no host section as defaults."""
@@ -245,40 +195,31 @@ class WorkflowConfigTests(unittest.TestCase):
         for field in ('cleanup_local_branches', 'cleanup_remote_branches'):
             self.assertIn('workflow.' + field, config_menu.HELP)
 
-    def test_tracker_and_workflow_start_disabled(self):
+    def test_tracker_and_workflow_start_disabled_with_no_candidates(self):
         data = Config().to_dict()
         self.assertIn("tracker", data)
         self.assertFalse(data["tracker"]["enabled"])
         self.assertFalse(data["workflow"]["enabled"])
         self.assertEqual(data["workflow"]["merge_mode"], "github")
-        self.assertTrue(all(
-            spec["effort"] == "medium"
-            for tier in data["workflow"]["tiers"].values()
-            for spec in tier.values()))
+        for role, tiers in (("scout", ["0", "1", "2", "3"]), ("worker", ["1", "2", "3"]), ("review", ["1", "2", "3"])):
+            self.assertEqual(data["workflow"][role]["models"], [])
+            self.assertEqual(data["workflow"][role]["tiers"], {tier: [] for tier in tiers})
 
-    def test_routing_and_connections_round_trip_without_legacy_sections(self):
+    def test_removed_routing_sections_are_dropped_on_load(self):
+        """Pre-release: the provider-share settings are gone, not migrated."""
         data = {
             "tracker": {"enabled": True, "provider": "vikunja", "connections": {
                 "vikunja": {"url": "https://tasks.example", "token": "secret"}}},
-            "workflow": {"enabled": True, "routing": "usage-aware", "weights": {
-                "codex": 3, "claude": 1}, "tiers": {"0": {
-                    "codex": {"model": "small", "effort": "low"}}, "3": {
-                    "claude": {"model": "large", "effort": "high"}}},
-                "fallback": False, "review": {"policy": "always", "max_files": 9}},
+            "workflow": {"enabled": True, "routing": "usage-aware", "weights": {"codex": 3},
+                         "tiers": {"0": {"codex": {"model": "small"}}}, "fallback": False,
+                         "worker": {"override": {"scope": "all"}}, "review": {"policy": "always", "max_files": 9}},
         }
         result = Config.from_dict(data).to_dict()
         self.assertEqual(result["tracker"], data["tracker"])
-        self.assertEqual(result["workflow"]["weights"], {"codex": 3, "claude": 1})
-        self.assertEqual(result["workflow"]["tiers"]["3"]["claude"]["model"], "large")
-        self.assertFalse(result["workflow"]["fallback"])
+        for removed in ("routing", "weights", "tiers", "fallback", "reserve_percent", "smoothing_hours"):
+            self.assertNotIn(removed, result["workflow"])
+        self.assertNotIn("override", result["workflow"]["worker"])
         self.assertEqual(result["workflow"]["review"]["policy"], "always")
-        self.assertNotIn("flow_next", result)
-        self.assertNotIn("vikunja", result)
-
-    def test_invalid_routing_values_are_reported_before_work_is_dispatched(self):
-        config = Config.from_dict({"workflow": {"routing": "magic", "weights": {
-            "codex": -1, "claude": 0}}})
-        self.assertTrue(any("routing" in e for e in config.workflow.validate()))
 
     def test_merge_mode_round_trips_and_rejects_unknown_values(self):
         config = Config.from_dict({"workflow": {"merge_mode": "local"}})
@@ -287,23 +228,19 @@ class WorkflowConfigTests(unittest.TestCase):
         self.assertTrue(any("merge_mode" in error for error in config.workflow.validate()))
 
     def test_default_effort_round_trips_for_both_providers(self):
-        loaded = Config.from_dict({"workflow": {"tiers": {"0": {
-            "codex": {"model": "small", "effort": "default"},
-            "claude": {"model": "haiku", "effort": "default"},
-        }}}})
+        loaded = Config.from_dict({"workflow": {"scout": {"tiers": {"0": [
+            {"provider": "codex", "model": "small", "effort": "default"},
+            {"provider": "claude", "model": "haiku", "effort": "default"}]}}}})
         config = Config.from_dict(loaded.to_dict())
-        self.assertEqual(config.workflow.tiers["0"]["codex"]["effort"], "default")
-        self.assertEqual(config.workflow.tiers["0"]["claude"]["effort"], "default")
+        self.assertEqual([spec["effort"] for spec in config.workflow.scout.tiers["0"]], ["default", "default"])
         self.assertEqual(config.workflow.validate(), [])
 
-    def test_unknown_effort_is_rejected_without_changing_existing_levels(self):
-        config = Config.from_dict({"workflow": {"tiers": {"1": {
-            "codex": {"model": "codex", "effort": "ultra"},
-            "claude": {"model": "claude", "effort": "unsupported"},
-        }}}})
-        errors = config.workflow.validate()
-        self.assertFalse(any("codex" in error for error in errors))
-        self.assertTrue(any("claude" in error and "effort" in error for error in errors))
+    def test_effort_is_checked_against_the_candidates_own_provider(self):
+        """ultra is a Codex level; the same word on a Claude candidate is an error."""
+        config = Config.from_dict({"workflow": {"worker": {"tiers": {"1": [
+            {"provider": "codex", "model": "codex", "effort": "ultra"},
+            {"provider": "claude", "model": "claude", "effort": "unsupported"}]}}}})
+        self.assertEqual(config.workflow.validate(), ["workflow.worker.tiers.1.1: invalid effort"])
 
 
 if __name__ == "__main__":

@@ -134,11 +134,11 @@ class ExternalModelTests(unittest.TestCase):
     def test_unsupported_workflow_effort_is_rejected_before_preparation_or_process(self):
         """A picker change must not save an incompatible inherited effort or spend a review run."""
         config = rich_config()
-        candidate = dict(model='v4-pro', effort='medium', fast=False, api_provider='deepseek')
-        config.workflow.tiers['1']['codex'] = candidate
+        candidate = dict(provider='codex', model='v4-pro', effort='medium', fast=False, api_provider='deepseek')
+        config.workflow.worker.tiers['1'] = [candidate]
         errors = validate_connections(config)
-        self.assertTrue(any('workflow.tiers.1.codex' in error and 'not supported' in error for error in errors))
-        route = {'provider': 'codex', **candidate, **ext.route_identity(config, 'deepseek', 'codex')}
+        self.assertTrue(any('workflow.worker.tiers.1.0' in error and 'not supported' in error for error in errors))
+        route = {**candidate, **ext.route_identity(config, 'deepseek', 'codex')}
         with patch('agent_box.config.effective_config', return_value=config), \
                 patch.object(provider_runner.subprocess, 'Popen') as process:
             for operation in (lambda: provider_runner.preflight(route),
@@ -231,16 +231,17 @@ class ExternalModelTests(unittest.TestCase):
     def test_suffixed_workflow_model_uses_the_same_effort_choices_as_launch(self):
         """A manually entered [1m] ID must not lose the configured model's effort metadata."""
         config = rich_config()
-        config.workflow.tiers['1']['claude'].update(api_provider='deepseek', model='v4-pro[1m]', effort='default')
-        path = ('workflow', 'tiers', '1', 'claude')
+        config.workflow.worker.models = [dict(provider='claude', api_provider='deepseek', model='v4-pro[1m]',
+                                              effort='default', fast=False)]
+        path = ('workflow', 'worker', 'models')
         keys = []
         for index, part in enumerate(path):
             keys += [*menu_tests.select(part, path[:index]), '\n']
-        keys += [*menu_tests.select('effort', path), '\n', curses.KEY_DOWN, '\n']
-        keys += ['\x1b'] * len(path) + [curses.KEY_END, curses.KEY_UP, '\n']
+        keys += ['\n', curses.KEY_DOWN, '\n', curses.KEY_DOWN, '\n', '\x1b']
+        keys += ['\x1b'] * (len(path) - 1) + [curses.KEY_END, curses.KEY_UP, '\n']
         edited, screen = menu_tests.ConfigMenuTests().edit(config, keys)
-        self.assertEqual(edited.config.workflow.tiers['1']['claude']['effort'], 'low')
-        frames = [frame for frame in screen.frames if 'workflow.tiers.1.claude.effort' in frame]
+        self.assertEqual(edited.config.workflow.worker.models[0]['effort'], 'low')
+        frames = [frame for frame in screen.frames if '/ 1 / effort' in frame]
         self.assertTrue(frames)
         self.assertNotIn('medium', '\n'.join(frames))
         self.assertNotIn('xhigh', '\n'.join(frames))

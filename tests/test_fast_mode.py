@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import patch
 
 from agent_box import agent_profiles, config_menu, provider_runner, routing, runtime, workflow
-from agent_box.config import Config, load_config, save_config
+from agent_box.config import Config, load_config, model_entry, save_config
 from agent_box.errors import AgentBoxError
 
 
@@ -22,9 +22,8 @@ class FastModeTests(unittest.TestCase):
                     root = Path(directory)
                     config = Config()
                     config.workflow.enabled = True
-                    matrix = config.workflow.review.tiers if role == 'reviewer' else config.workflow.tiers
-                    spec = matrix[str(tier)][provider]
-                    spec.update(model=model, effort='high')
+                    spec = model_entry(dict(provider=provider, model=model, effort='high'))
+                    config.workflow.role(role).tiers[str(tier)] = [spec]
                     agent_profiles.sync(config, root / 'codex', root / 'claude')
                     content = agent_profiles.body(provider, role, tier, spec)
                     self.assertNotIn('service_tier', content)
@@ -49,13 +48,15 @@ class FastModeTests(unittest.TestCase):
                     self.assertEqual(workflow.native_output(args, selected, tier)['report'], payload)
 
     def test_fast_roundtrips_without_leaking_to_other_candidates(self):
-        """Each role, provider and tier keeps its own opt-in across save and rendering."""
+        """Each candidate keeps its own opt-in across save and rendering."""
         config = Config()
         config.workflow.enabled = True
-        matrices = [config.workflow.tiers['0'], config.workflow.review.tiers['2'],
-                    config.workflow.worker.override.models, config.workflow.review.override.models]
-        for matrix in matrices:
-            matrix['codex'].update(model='gpt-6-astra', fast=True)
+        fast = model_entry(dict(provider='codex', model='gpt-6-astra', fast=True))
+        slow = model_entry(dict(provider='codex', model='gpt-6-astra'))
+        config.workflow.scout.tiers['0'] = [fast, slow]
+        config.workflow.review.tiers['2'] = [dict(fast)]
+        config.workflow.worker.models = [dict(fast)]
+        config.workflow.review.models = [dict(slow), dict(fast)]
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'config.json'
             save_config(config, path)
@@ -66,15 +67,10 @@ class FastModeTests(unittest.TestCase):
             self.assertEqual(Config.from_dict(rendered).workflow, loaded.workflow)
         from test_workflow_config import shown
         rows = shown(config)
-        self.assertIn('fast on', rows['workflow.tiers.0.codex'])
-        self.assertIn('fast off', rows['workflow.tiers.1.codex'])
-        self.assertFalse(loaded.workflow.tiers['1']['codex']['fast'])
-        self.assertFalse(loaded.workflow.tiers['0']['claude']['fast'])
-        self.assertFalse(loaded.workflow.review.tiers['1']['codex']['fast'])
-        for path in [('workflow', 'tiers', '0', 'codex', 'fast'),
-                     ('workflow', 'review', 'tiers', '2', 'claude', 'fast'),
-                     ('workflow', 'worker', 'override', 'models', 'codex', 'fast')]:
-            self.assertIn('higher provider usage/cost', config_menu.help_for(path))
+        self.assertIn('0 codex:gpt-6-astra:medium fast, codex:gpt-6-astra:medium;', rows['workflow.scout.tiers'])
+        self.assertEqual([spec['fast'] for spec in loaded.workflow.review.models], [False, True])
+        self.assertEqual(loaded.workflow.review.tiers['1'], [])
+        self.assertIn('higher provider usage/cost', config_menu.help_for(('workflow', 'fast')))
         self.assertEqual(config.workflow.validate(), [])
 
     def test_unconfigured_session_speed_is_preserved_and_unsupported_claude_fast_is_refused(self):
@@ -96,11 +92,9 @@ class FastModeTests(unittest.TestCase):
             with self.subTest(provider=provider, model=model), self.assertRaisesRegex(provider_runner.ProviderFailure, 'supported model'):
                 provider_runner.build_command(spec, 'worker', Path('/tmp'), Path('/missing'), Path('/tmp/result'))
         for value in ('true', 1, None, []):
-            config = Config.from_dict({'workflow': {'tiers': {'1': {'codex': {'fast': value}}}}})
+            config = Config.from_dict({'workflow': {'worker': {'tiers': {'1': [
+                {'provider': 'codex', 'model': 'gpt-6-astra', 'fast': value}]}}}})
             self.assertTrue(any('fast must be a boolean' in e for e in config.workflow.validate()))
-        config = Config()
-        config.workflow.tiers['1']['codex']['fast'] = True
-        self.assertEqual(config.workflow.validate(), [])  # An empty model disables the candidate.
 
     def test_cli_roles_only_override_speed_when_requested_without_changing_effort(self):
         """Off preserves each launch path; on requests fast without replacing effort."""
@@ -127,11 +121,9 @@ class FastModeTests(unittest.TestCase):
     def test_routing_and_failed_primary_keep_fallback_speed(self):
         """A fallback uses its own candidate rather than inheriting primary fast."""
         config = Config().workflow
-        config.routing = 'weighted'
-        config.weights = {'codex': 2, 'claude': 1}
-        config.tiers['1']['codex'].update(model='gpt-6-astra', fast=True)
-        config.tiers['1']['claude'].update(model='claude-opus-5', fast=False)
-        selected = routing.select(config, 'worker', 1, 'codex', {})
+        config.worker.tiers['1'] = [model_entry(dict(provider='codex', model='gpt-6-astra', fast=True)),
+                                    model_entry(dict(provider='claude', model='claude-opus-5'))]
+        selected = routing.select(config, 'worker', 1, 'codex')
         self.assertTrue(selected['fast'])
         self.assertFalse(selected['fallbacks'][0]['fast'])
         with patch.object(workflow, 'run', side_effect=[provider_runner.ProviderFailure('Unavailable', 'unavailable'),
@@ -172,13 +164,13 @@ class FastModeTests(unittest.TestCase):
         """Claude profiles remain usable when fast is verified through session inheritance."""
         config = Config()
         config.workflow.enabled = True
-        config.workflow.tiers['1']['claude'].update(model='claude-opus-5')
+        config.workflow.worker.tiers['1'] = [model_entry(dict(provider='claude', model='claude-opus-5'))]
         with tempfile.TemporaryDirectory() as directory:
             codex, claude = Path(directory) / 'codex', Path(directory) / 'claude'
             agent_profiles.sync(config, codex, claude)
             profile = claude / 'agents/ab-worker-1.md'
             self.assertTrue(profile.exists())
-            config.workflow.tiers['1']['claude']['fast'] = True
+            config.workflow.worker.tiers['1'][0]['fast'] = True
             self.assertTrue(any('verify inherited fast' in m for m in agent_profiles.sync(config, codex, claude)))
             self.assertTrue(profile.exists())
         for fast in (False, True):
@@ -198,12 +190,13 @@ class FastModeTests(unittest.TestCase):
             with self.subTest(invalid=invalid), tempfile.TemporaryDirectory() as directory:
                 config = Config()
                 config.workflow.enabled = True
-                spec = config.workflow.tiers['1']['codex']
-                spec.update(model='gpt-6-astra', fast=True)
+                spec = model_entry(dict(provider='codex', model='gpt-6-astra', fast=True))
+                config.workflow.worker.tiers['1'] = [spec]
+                config.workflow.worker.tiers['2'] = [dict(spec)]
                 codex, claude = Path(directory) / 'codex', Path(directory) / 'claude'
                 agent_profiles.sync(config, codex, claude)
                 profile = codex / 'agents/ab-worker-1.toml'
-                edited = codex / 'agents/ab-scout-1.toml'
+                edited = codex / 'agents/ab-worker-2.toml'
                 edited.write_text(edited.read_text() + '# user edit\n')
                 spec.update(invalid)
                 messages = agent_profiles.sync(config, codex, claude)

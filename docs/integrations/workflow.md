@@ -129,18 +129,30 @@ separate measures, never exact tokens; compare identical scenarios and mandatory
 
 ## Models and routing
 
-Configure worker/scout model IDs and effort in `workflow.tiers` (tiers 0-3),
-and independent reviewer settings in `workflow.review.tiers` (tiers 1-3), each
-with `codex` and `claude` entries containing `model`, `effort`, `fast` (default `false`)
-and `api_provider` (empty for the built-in API). A candidate on the active `ext`
-session's own API may run natively; other API identities run managed (see
-[external providers](external-providers.md#workflow)). Both matrices
-are available in the configuration menu and `config show`, and travel in the
-container's minimal workflow configuration. Empty reviewer models disable those
-candidates; they never inherit worker models. The
-effort value `default` omits agent-box's effort override; it does not disable
-thinking or pass a literal `none` value to the provider. The existing default
-for newly created configuration remains `medium`. Model fields start empty
+Each role owns an ordered candidate list: `workflow.scout`, `workflow.worker` and
+`workflow.review` each hold `models` and optional `tiers.N` (scouts 0-3, workers and
+reviewers 1-3). A candidate names the CLI that runs it and what it runs:
+`provider` (`codex` or `claude`), `model`, `effort`, `fast` (default `false`) and
+`api_provider` (empty for the built-in API). A nonempty tier list replaces the
+role's `models` for that tier; an empty tier list, or work without a tier, uses
+`models`. Roles never share or inherit each other's lists.
+
+The first available candidate runs and the rest are ordered fallbacks. A candidate
+is unavailable when its CLI is not installed or, for a subscription model with a
+fallback behind it, a known usage window is exhausted with a future reset. Which
+CLI coordinates never filters the list: a Claude session runs a Codex scout, and a
+Codex session a Claude worker, as a managed `codex exec` / `claude -p` process.
+Such a route is `managed_only` and `native_limitation` says why; native reports
+for it are refused. A candidate of the session's own CLI may run natively. A
+candidate on the active `ext` session's own API may run natively; other API
+identities run managed (see [external providers](external-providers.md#workflow)).
+
+The lists are edited in the configuration menu (add, reorder, change effort or
+fast, remove; the picker offers every CLI's models together), shown in
+`config show` in the `--scout` spelling `PROVIDER[@API]:MODEL:EFFORT`, and travel in
+the container's minimal workflow configuration. The effort value `default` omits
+agent-box's effort override; it does not disable thinking or pass a literal `none`
+value to the provider. A new candidate starts at `medium`. Lists start empty
 rather than guessing what the account can access. Tier 0 is
 for facts, scouting and structuring; task difficulty remains 1-3, represented in
 Vikunja by one `ab:tier:1`, `ab:tier:2` or `ab:tier:3` label. A user-set task tier
@@ -153,8 +165,8 @@ report: edit, commit, record
 then continue to `validate` and review. Editing the task text or committing
 before recording blocks nothing; validation and review of the committed scope
 are the acceptance. Direct keeps the active provider/model/effort even when the
-task has a tier or a global worker override, and never consults routing counters,
-tier matrices or profiles. Delegation is prepared with
+task has a tier or worker models are configured, and never consults candidate lists
+or profiles. Delegation is prepared with
 `agent-box workflow prepare TASK --primary PROVIDER --reason "Separate implementation assignment" --brief /tmp/brief.md`;
 for an untiered delegation supply verified `--session-model MODEL --session-effort EFFORT`
 together, or inherit unknown settings. In auto policy both commands require the
@@ -164,7 +176,7 @@ policies supply it and refuse the other command.
 A delegation's durable descriptor binds policy, effective choice, reason, task scope
 and route. `workflow inspect TASK` exposes the latest execution evidence, the direct
 record or the descriptor, and its model source:
-`active-session`, `workflow.worker.override.models`, or `workflow.tiers.N`.
+`active-session`, `--worker`, `workflow.worker.models`, or `workflow.worker.tiers.N`.
 Later configuration changes cannot reschedule prepared work. Native delegation
 uses the complete bounded `delegate_handoff`; managed execution uses the returned
 `managed_command`: `agent-box workflow run TASK --handoff DESCRIPTOR --brief /tmp/brief.md`
@@ -182,7 +194,7 @@ template for native result ingestion. Replace the ACTUAL route values, descripto
 and report path with observed execution facts; native worker/scout fallback also
 supplies its reason. Reviewer provider fallback requires managed dispatch.
 
-Without an applicable global reviewer override, untiered review uses the active session provider/model/effort in an independent
+When no reviewer list applies (untiered work and empty `workflow.review.models`), review uses the active session provider/model/effort in an independent
 fresh read-only context, even when explicit-tier review routing prefers another
 provider. Without exact session facts, `review` returns
 `action: review-in-fresh-context`; use native inheritance without a named tier
@@ -195,41 +207,13 @@ ensured, obtain verified session facts before running a reviewer.
 
 When both actual settings are known, `prepare`, `run` and `review` accept
 `--session-model MODEL --session-effort EFFORT`. Values must come from the active
-session, not configured profiles; models outside every tier matrix are valid.
+session, not configured profiles; models outside every candidate list are valid.
 With those facts, managed untiered review launches a fresh CLI with that exact
 provider/model/effort and no fallback. Native reports must match the prepared
 concrete settings and affirm `--fresh-context` for review. For inherited worker
 reports, use `--session-inherited` and omit unknown model/effort. Independent
 review and validation/finish gates remain required by policy; SKIPPED is
 resolved before asking for session settings.
-
-Workers with an applicable global override, explicit-tier workers and scouts
-choose one of three provider modes:
-
-- **current**: only the session's provider;
-- **weighted**: smooth weighted round robin, independently per tier;
-- **usage-aware**: fresh account/model budget windows, otherwise static weights.
-
-Static weights represent relative usable subscription capacity, not dollar
-prices. `1:1` replaces a separate 50/50 mode; `5:1` gives the first provider five
-shares. Zero excludes a provider from workers/scouts. A user supplies weights
-because subscription prices do not reliably measure interchangeable token
-budgets across models and providers.
-
-When both candidates have fresh weekly data, choose the highest score:
-
-```text
-score = weight * max(0, remaining_percent - reserve_percent) / 100
-        / (hours_until_weekly_reset + smoothing_hours)
-```
-
-Defaults: reserve 5%, smoothing 24 hours. Model-specific weekly windows constrain
-the score by taking the smallest applicable score. Short windows gate availability
-but do not change weekly reset preference. This is an explicit budget-pacing
-heuristic, not a claim of optimal scheduling: it favors available weekly capacity
-and earlier weekly resets, with smoothing preventing a last-minute spike. Missing
-or failed freshness uses static weights; known exhausted windows with a future
-reset remain excluded even if the refresh fails. Active workers are not preempted.
 
 `agent-box usage --json --no-cache` requests live usage. A failed refresh has
 `fresh: false`, retains any useful cached exhaustion evidence and exits nonzero.
@@ -238,16 +222,16 @@ remove server-side lag.
 
 Set `workflow.review.routing` in `agent-box config` under workflow / review:
 
-- **cross-provider** (default): use the other **actual writer** provider first.
-  Use a fresh context from the writer provider only when the other is unavailable
-  and `workflow.fallback` is enabled (the default). With fallback disabled, only the other provider is allowed.
-- **same-provider**: use only the actual writer provider in fresh context.
-  An unavailable writer executable, empty reviewer model or provider failure
-  stops review without calling the other provider, even with fallback enabled.
+- **cross-provider** (default): use the first available candidate of the other
+  provider than the **actual writer**, then the writer's own candidates in fresh
+  context only when the other provider's are unavailable.
+- **same-provider**: use only the actual writer provider's candidates in fresh context.
+  An unavailable writer executable, no writer candidate or provider failure
+  stops review without calling the other provider.
 
-For explicit tiers, both modes use `workflow.review.tiers` unless the global override applies. Worker weights and usage do not
-select reviewers. Routing changes neither review policy nor worker/scout routing.
-All attempts preserve the selected tier and configured reviewer model/effort.
+Reviewer candidates come from `workflow.review` alone; worker lists and usage do
+not select reviewers. Routing changes neither review policy nor worker/scout
+selection. All attempts preserve the selected tier and configured reviewer model/effort.
 
 Reviewer provider order precedes native preference. If native cannot run the
 selected provider, use its managed CLI in the same prepared round. Native reports
@@ -258,83 +242,47 @@ and invalid reports stop review for diagnosis. Unusable backups do not block the
 before timeout and review verdicts never justify switching provider. Missing CLIs
 and explicitly empty models may exclude candidates during route preparation.
 
-### Worker execution and model source
+### Worker execution and role models
 
 In `agent-box config`, workflow / worker separates execution from model selection.
 `workflow.worker.execution` accepts `auto` (default), `direct` or `delegated`.
 Auto requires an explicit coordinator choice and reason; forced policies determine
-the choice. Direct bypasses model routing. Model scope applies only after delegated
-execution is selected.
+the choice. Direct bypasses model selection, so worker lists are shown as unused
+under direct and apply again under auto or delegated.
 
-Open Global worker override to set `workflow.worker.override.scope` and
-independent `models.codex` / `models.claude` candidates with `model` and `effort`.
-Empty models disable candidates; effort defaults to `medium`. The picker offers
-offline suggestions, manual IDs and an explicit disable choice.
+| Worker or reviewer work | Candidates |
+| --- | --- |
+| Session pin (`--worker SPEC`, `--reviewer SPEC`) | The pinned model only |
+| Effective tier with a nonempty tier list | `tiers.N` |
+| Effective tier with an empty tier list | `models` |
+| No effective tier, nonempty `models` | `models` |
+| No effective tier, empty `models` | Active session |
 
-| Scope | Without an effective tier | With an effective tier |
-| --- | --- | --- |
-| `off` (default) | Active session | `workflow.tiers` |
-| `untiered` | Worker override candidates | `workflow.tiers` |
-| `all` | Worker override candidates | Worker override candidates |
-
+Scouts always run at a tier (0 unless given) and follow the same first three rows.
 The effective tier remains the card's tier, otherwise explicit `--tier`, otherwise
-null. An override never changes tracker labels or invents a tier. It replaces
-only model/effort candidates: current/weighted/usage-aware provider selection,
-weights, availability filtering, budget limits and fallback retain their existing
-rules. In current mode, an unavailable current-provider candidate is an error;
-it does not select the other provider. If no override candidate is eligible, selection fails
-with an explicit error without returning to session or tier models. Reviewer and
-scout configuration remain independent.
+null. Model selection never changes tracker labels or invents a tier. If no
+candidate is eligible, selection fails with an explicit error; it never falls back
+to a lower tier, to the session, or to another role's list.
+`agent-box --reviewer SPEC` pins one reviewer for a session, whatever routing and
+tiers say; `--worker SPEC` and `--scout SPEC` pin those roles.
 
-`prepare` returns the selected route for native execution; worker `run --handoff`
-executes that route through managed CLI. A new worker `run` applies the same execution policy and reason rule as prepare. Reports record actual provider/model/effort against
-the prepared route, including permitted fallback candidates and their reasons,
-even if configuration changes later. Running workers are not rescheduled.
-Untiered overrides have no native tier profile. Use supported explicit native
-model/effort settings, or managed CLI if capabilities are unknown or effort is
-`default`; omitting native effort can inherit a session override. For tiered
-workers, profile readiness still requires an exact match to the chosen candidate.
+`prepare` returns the selected route for native execution; `run --handoff` and
+`review` execute it through managed CLI. A new worker `run` applies the same
+execution policy and reason rule as prepare. Reports record actual
+provider/model/effort against the prepared route, including permitted fallback
+candidates and their reasons, even if configuration changes later. Running
+workers are not rescheduled. Untiered work has no native tier profile: use
+supported explicit native model/effort settings, or managed CLI if capabilities
+are unknown or effort is `default`; omitting native effort can inherit a session
+override. For tiered work, profile readiness still requires an exact match to the
+chosen candidate. Every reviewer still needs a fresh independent context, and an
+unsupported model is an error, not permission to guess a cheaper one.
 
-These settings appear separately from reviewer overrides in `config show`, use
-the same project configuration inheritance and reset controls, and travel in the
-minimal runtime artifact. A project can override execution, scope or individual model/effort
-fields without changing the global configuration.
+A project can replace execution or any role list in `.agent-box.json` without
+changing the global configuration; a project list replaces the global list whole.
 
-### Global reviewer override
-
-In `agent-box config`, open workflow / review / Global reviewer override.
-Set Scope to select reviewer model and effort independently for Codex and Claude
-under Models. The same/cross-provider policy still chooses the provider relative
-to the actual writer, including for untiered tasks. Empty models disable candidates;
-there is no implicit fallback to session settings or tier models.
-`agent-box --reviewer SPEC` instead pins one reviewer for a session, whatever
-routing, tier and override say; `--worker SPEC` and `--scout SPEC` pin those roles.
-
-`workflow.review.override` contains `scope` and `models.codex` / `models.claude`,
-each with `model` and `effort`. It shares the worker scope choices but owns its
-candidates independently:
-
-| Scope | Without an effective tier | With an effective tier |
-| --- | --- | --- |
-| `off` (default) | Active session | Reviewer tier matrix |
-| `untiered` | Global reviewer candidates | Reviewer tier matrix |
-| `all` | Global reviewer candidates | Global reviewer candidates |
-
-The effective tier is the task's tier, otherwise an explicit `--tier`, otherwise
-none. The override never changes it or adds a tracker label. It also leaves
-worker/scout routing, review triggers, budgets and external GitHub review settings
-unchanged. Cross-provider fallback uses only global candidates when the override
-applies; same-provider never calls the other provider.
-
-`prepare`, `run` and `review` resolve concrete global candidates without needing
-session model/effort facts. `report` checks the route saved by `prepare`, even if
-configuration changes afterwards. Untiered overrides have no native tier profile:
-use supported explicit spawn settings or managed CLI. Tiered overrides can use an
-installed profile only if its settings match exactly. `effort=default` requires
-managed CLI, and every reviewer still needs a fresh independent context.
-An unsupported model is an error, not permission to guess a cheaper model.
-
-`config apply` installs owned native agent profiles with exact model/effort.
+`config apply` installs owned native agent profiles with exact model/effort: for each
+role, tier and CLI, the first candidate of that CLI on its built-in API.
 Native execution has two options: an exact available profile, or explicit spawn
 parameters supported by the current tool without an overriding custom agent.
 `native_profile_ready` checks only the installed profile; false does not forbid
@@ -793,8 +741,7 @@ change normative requirements and reviewer handoffs remain independent.
 
 ## Fast mode
 
-`fast` is an independent boolean in each worker/scout tier, reviewer tier and
-worker/reviewer override candidate. It defaults to `false`: agent-box adds no
+`fast` is an independent boolean on each candidate of every role list. It defaults to `false`: agent-box adds no
 speed override or native capability requirement, preserving existing provider
 and session behavior. This does not turn off fast already selected by the user
 in the provider. Enable a request through the candidate's **Fast** menu entry.

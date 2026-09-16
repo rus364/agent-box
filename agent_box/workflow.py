@@ -1045,23 +1045,20 @@ def check_open_worker_execution(root, task, identity):
 
 def route(config, role, tier, primary, writer=None):
     policy = config.workflow
-    path = WORKFLOW_STATE / "routing.json"
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    with lock(WORKFLOW_STATE, "routing"):
-        try:
-            counters = json.loads(path.read_text())
-        except (OSError, ValueError):
-            counters = {}
-        override = policy.override_for(role, tier)
-        models = (override.models if override else
-                  (policy.review.tiers if role == "reviewer" else policy.tiers).get(str(tier), {}))
-        usage = {p: usage_snapshot(p, no_cache=True) for p in ("codex", "claude")
-                 if models.get(p, {}).get("model") and not models[p].get("api_provider")} if role != "reviewer" and policy.routing == "usage-aware" else {}
-        result = select(policy, role, tier, primary, counters, usage, writer=writer,
-                        available=[p for p in ("codex", "claude") if shutil.which(p)])
-        for candidate in [result, *result["fallbacks"]]:
-            bind_api_route(candidate, config)
-        atomic_write_text(path, json.dumps(counters) + "\n", 0o600)
+    _, models = policy.models_for(role, tier)
+    # Usage is read only when a fallback exists to skip to: a lone candidate runs regardless.
+    subscribed = {spec["provider"] for spec in models if not spec.get("api_provider")}
+    usage = ({p: usage_snapshot(p, no_cache=True) for p in sorted(subscribed)}
+             if role != "reviewer" and len(models) > 1 else {})
+    result = select(policy, role, tier, primary, usage, writer=writer,
+                    available=[p for p in ("codex", "claude") if shutil.which(p)])
+    for candidate in [result, *result["fallbacks"]]:
+        bind_api_route(candidate, config)
+        if candidate["provider"] != primary and not candidate.get("managed_only"):
+            candidate.update(managed_only=True, native_profile=None, native_profile_ready=False,
+                             native_explicit_settings=None,
+                             native_limitation=f"A {primary} session cannot run a native {candidate['provider']} agent; "
+                                               "run it through the managed CLI")
     from .agent_profiles import available as native_available
     from .fast_mode import native_limitation
     for candidate in [result, *result["fallbacks"]]:
@@ -1124,7 +1121,7 @@ def session_route(args, role, config=None):
         from .external_launch import check_route, session_identity
         result.update(session_identity(args.primary))
         if model is None:
-            raise AgentBoxError("External session delegation needs verified --session-model and --session-effort, or a configured model override")
+            raise AgentBoxError("External session delegation needs verified --session-model and --session-effort, or configured role models")
         config = config or effective_config()
         check_route(config, result)
         bind_api_route(result, config)
@@ -1818,12 +1815,10 @@ def worker_dispatch(args, root, binding, adapter, task, config):
     validate_role_tier("worker", tier)
     facts, facts_binding = read_facts(getattr(args, "facts", None), task, fingerprint)
     prompt = assignment_handoff(root, task, base, read_brief(args.brief), "worker", facts=facts)
-    selected = (session_route(args, "worker", config) if tier is None and not config.workflow.override_for("worker", tier)
+    source, models = config.workflow.models_for("worker", tier)
+    selected = (session_route(args, "worker", config) if tier is None and not models
                 else route(config, "worker", tier, args.primary, saved.get("writer")))
-    model_source = ("active-session" if selected.get("mode") == "current-session" else
-                    "--worker" if "worker" in config.workflow.pins else
-                    "workflow.worker.override.models" if config.workflow.override_for("worker", tier) else
-                    f"workflow.tiers.{tier}")
+    model_source = "active-session" if selected.get("mode") == "current-session" else source
     if args.command == "run" and selected["model"] is None:
         raise AgentBoxError("Managed worker needs verified --session-model and --session-effort; use prepare for native inheritance")
     decision = {"policy": policy, "choice": "delegated", "reason": reason, "model_source": model_source}
@@ -2093,7 +2088,7 @@ def dispatch(args):
             review_requirements(tasks)
         # The route the delegation was prepared with rides in the descriptor, so
         # the report is ingested at the role and tier it was actually run at.
-        inherit_session = tier is None and not config.workflow.override_for(role, tier)
+        inherit_session = tier is None and not config.workflow.models_for(role, tier)[1]
         selected = (descriptor["route"] if descriptor else session_route(args, role, config) if inherit_session
                     else route(config, role, tier, args.primary, saved.get("writer")))
         review_round = (descriptor["delegation"] if role == "reviewer" and descriptor else

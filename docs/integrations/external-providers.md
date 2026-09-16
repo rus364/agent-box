@@ -251,15 +251,14 @@ model or effort differs from the session's uses managed CLI.
 `managed_only` routes return a managed command and refuse native reports. Owned
 native profiles are removed for external candidates when configuration is
 applied. Existing role contracts, structured report validation, review budgets
-and fallback rules still apply. CLI routing policies and weights keep their
-meaning; subscription usage and exhaustion are ignored for external candidates.
-When usage budgets cannot be compared, selection uses configured static weights.
+and fallback rules still apply. Candidate order keeps its meaning; subscription
+usage and exhaustion are ignored for external candidates.
 Subscription fast mode is unsupported for external workflow candidates.
 
 Direct worker policy still means work in the active coordinator session; it
 does not consult model candidates. Untiered delegated work from an external
-session needs verified `--session-model` and `--session-effort`, or an applicable
-model override. See [workflow routing](workflow.md).
+session needs verified `--session-model` and `--session-effort`, or configured
+role models. See [workflow models](workflow.md#models-and-routing).
 
 ## API and Remote Control boundaries
 

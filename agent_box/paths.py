@@ -140,7 +140,7 @@ AGENT_SKILLS_DIR = AGENTS_DIR / "skills"
 # The skills agent-box ships and installs itself, inside the package.
 MANAGED_SKILLS_SOURCE = Path(__file__).resolve().parent / "skills"
 
-# Workflow scratch, routing counters, and import journals; never a task database.
+# Workflow scratch, locks, evidence and import journals; never a task database.
 WORKFLOW_STATE = env_path("AGENT_BOX_WORKFLOW_STATE", STATE_ROOT / "workflow")
 # Nonsecret policy is exposed by default so config consumers agree even when
 # tracker/workflow are disabled; their credential directory remains opt-in.

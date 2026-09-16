@@ -9,6 +9,10 @@ from agent_box.agent_profiles import available, body, sync
 from agent_box.config import Config
 
 
+def entry(provider, model, effort, **fields):
+    return {"provider": provider, "model": model, "effort": effort, "fast": False, "api_provider": "", **fields}
+
+
 class AgentProfileTests(unittest.TestCase):
     def test_both_providers_keep_report_language_and_role_evidence_semantics(self):
         """An installed scout must not inherit the reviewer's findings contract."""
@@ -33,8 +37,8 @@ class AgentProfileTests(unittest.TestCase):
             root = Path(directory)
             config = Config()
             config.workflow.enabled = True
-            spec = {"model": "chosen-model", "effort": "high"}
-            config.workflow.tiers["1"]["claude"] = spec
+            spec = entry("claude", "chosen-model", "high")
+            config.workflow.worker.tiers["1"] = [spec]
             sync(config, root / "codex", root / "claude")
             with patch("agent_box.paths.CLAUDE_HOME", root / "claude"), \
                  patch.dict(os.environ, {}, clear=True):
@@ -47,18 +51,30 @@ class AgentProfileTests(unittest.TestCase):
             codex, claude = Path(directory) / "codex", Path(directory) / "claude"
             config = Config()
             config.workflow.enabled = True
-            for provider in ("codex", "claude"):
-                config.workflow.tiers["2"][provider]["model"] = "worker-model"
-                config.workflow.review.tiers["2"][provider] = {"model": "reviewer-model", "effort": "default"}
+            config.workflow.worker.tiers["2"] = [entry(p, "worker-model", "medium") for p in ("codex", "claude")]
+            config.workflow.review.tiers["2"] = [entry(p, "reviewer-model", "default") for p in ("codex", "claude")]
             sync(config, codex, claude)
             self.assertNotIn("model_reasoning_effort", tomllib.loads((codex / "agents/ab-reviewer-2.toml").read_text()))
             self.assertNotIn("effort:", (claude / "agents/ab-reviewer-2.md").read_text())
-            for provider in ("codex", "claude"):
-                config.workflow.review.tiers["2"][provider]["model"] = ""
+            config.workflow.review.tiers["2"] = []
             sync(config, codex, claude)
             for home, suffix in ((codex, "toml"), (claude, "md")):
                 self.assertFalse((home / f"agents/ab-reviewer-2.{suffix}").exists())
                 self.assertTrue((home / f"agents/ab-worker-2.{suffix}").exists())
+
+    def test_each_provider_profile_takes_that_providers_first_native_candidate(self):
+        """A mixed list installs a profile per CLI: the other CLI's and API candidates are not native to it."""
+        with tempfile.TemporaryDirectory() as directory:
+            codex, claude = Path(directory) / "codex", Path(directory) / "claude"
+            config = Config()
+            config.workflow.enabled = True
+            config.workflow.scout.models = [entry("codex", "gpt-5.6-luna", "high"),
+                                            entry("claude", "deepseek-v4-flash", "high", api_provider="deepseek"),
+                                            entry("claude", "haiku", "low")]
+            sync(config, codex, claude)
+            for tier in range(4):
+                self.assertEqual(tomllib.loads((codex / f"agents/ab-scout-{tier}.toml").read_text())["model"], "gpt-5.6-luna")
+                self.assertIn('model: "haiku"', (claude / f"agents/ab-scout-{tier}.md").read_text())
 
     def test_profile_toml_carries_what_toml_can_spell(self):
         """A profile is TOML Codex parses, so its fields need the TOML escaper.
@@ -83,8 +99,7 @@ class AgentProfileTests(unittest.TestCase):
                 codex, claude = Path(directory) / "codex", Path(directory) / "claude"
                 config = Config()
                 config.workflow.enabled = True
-                config.workflow.tiers["1"]["codex"] = {"model": "pinned-model",
-                                                       "effort": "high", held: "\ud83d"}
+                config.workflow.worker.tiers["1"] = [{**entry("codex", "pinned-model", "high"), held: "\ud83d"}]
                 messages = sync(config, codex, claude)
                 self.assertTrue(any("ab-worker-1.toml" in message and "UTF-8" in message
                                     for message in messages), messages)
@@ -95,10 +110,8 @@ class AgentProfileTests(unittest.TestCase):
             codex, claude = Path(directory) / "codex", Path(directory) / "claude"
             config = Config()
             config.workflow.enabled = True
-            config.workflow.tiers["1"]["codex"] = {"model": "pinned-model", "effort": "high"}
-            config.workflow.tiers["1"]["claude"] = {"model": "other-model", "effort": "medium"}
-            config.workflow.review.tiers["1"]["codex"] = {"model": "review-model", "effort": "low"}
-            config.workflow.review.tiers["1"]["claude"] = {"model": "review-claude", "effort": "high"}
+            config.workflow.worker.tiers["1"] = [entry("codex", "pinned-model", "high"), entry("claude", "other-model", "medium")]
+            config.workflow.review.tiers["1"] = [entry("codex", "review-model", "low"), entry("claude", "review-claude", "high")]
             self.assertEqual(sync(config, codex, claude), [])
             profile = codex / "agents/ab-reviewer-1.toml"
             data = tomllib.loads(profile.read_text())
@@ -118,9 +131,9 @@ class AgentProfileTests(unittest.TestCase):
             codex, claude = Path(directory) / "codex", Path(directory) / "claude"
             config = Config()
             config.workflow.enabled = True
+            config.workflow.worker.tiers["1"] = [entry("codex", "chosen-model", "default"),
+                                                 entry("claude", "chosen-model", "default")]
             spec = {"model": "chosen-model", "effort": "default"}
-            config.workflow.tiers["1"]["codex"] = spec
-            config.workflow.tiers["1"]["claude"] = spec
             self.assertEqual(sync(config, codex, claude), [])
             codex_profile = codex / "agents/ab-worker-1.toml"
             claude_profile = claude / "agents/ab-worker-1.md"

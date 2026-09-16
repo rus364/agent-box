@@ -27,9 +27,8 @@ reused rather than introducing overlapping implementations.
 - [Claude GitHub Action usage](https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md)
   documents `claude_args` model/effort settings. Cloud mention interfaces are
   distinguished from exact local CLI model selection.
-- Weighted round robin supplies the deterministic static schedule. The
-  usage-aware score is a configurable budget-pacing heuristic agreed for this
-  workflow; subscription weights are user-supplied capacity estimates.
+- Model selection is a user-ordered candidate list per role and tier; known
+  exhausted subscription windows only skip a candidate that has a fallback.
 
 ## Workflow sources
 

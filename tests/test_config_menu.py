@@ -1,5 +1,6 @@
 """Menu cancellation and secret display are independent of terminal escape codes."""
 import json
+import re
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -57,27 +58,6 @@ class Screen:
 
 
 class ConfigMenuTests(unittest.TestCase):
-    def test_fast_toggle_is_draft_safe_and_independent_for_each_role(self):
-        """Saving one speed choice must preserve effort and other candidates."""
-        import curses
-        for path, model in ((('workflow', 'tiers', '0', 'codex'), 'gpt-6-astra'),
-                            (('workflow', 'review', 'tiers', '2', 'claude'), 'claude-opus-5')):
-            config = Config()
-            matrix = config.workflow.tiers if path[1] == 'tiers' else config.workflow.review.tiers
-            matrix[path[-2]][path[-1]]['model'] = model
-            keys = []
-            for index, key in enumerate(path):
-                keys += [*select(key, path[:index]), '\n']
-            keys += [*select('fast', path), ' ']
-            cancelled, _ = self.edit(config, [*keys, *['\x1b'] * (len(path) + 1)])
-            self.assertIsNone(cancelled)
-            result, _ = self.edit(config, [*keys, *['\x1b'] * len(path), curses.KEY_END, curses.KEY_UP, '\n'])
-            data = result.config.to_dict()
-            for key in path:
-                data = data[key]
-            self.assertEqual(data, {'model': model, 'effort': 'medium', 'fast': True, 'api_provider': ''})
-            self.assertFalse(matrix[path[-2]][path[-1]]['fast'])
-
     def test_purpose_order_does_not_follow_configuration_serialization(self):
         """Routing, review and delivery stay together even if storage order changes."""
         data = Config().to_dict()
@@ -88,11 +68,11 @@ class ConfigMenuTests(unittest.TestCase):
                  'image', 'browser', 'audio', 'git', 'github', 'providers', 'env',
                  'skills', 'notifications'],
             ('workflow',): ['enabled', 'merge_mode', 'auto_push', 'cleanup_local_branches',
-                           'cleanup_remote_branches', 'worker', 'scout', 'review', 'tiers', 'routing',
-                           'weights', 'fallback', 'reserve_percent', 'smoothing_hours', 'timeout_seconds'],
-            ('workflow', 'worker'): ['execution', 'override'],
+                           'cleanup_remote_branches', 'worker', 'scout', 'review', 'timeout_seconds'],
+            ('workflow', 'worker'): ['execution', 'models', 'tiers'],
+            ('workflow', 'scout'): ['limit', 'models', 'tiers'],
             ('workflow', 'review'): ['policy', 'max_files', 'max_lines', 'sensitive_paths',
-                                    'ignored_paths', 'label', 'routing', 'override', 'tiers', 'max_rounds',
+                                    'ignored_paths', 'label', 'routing', 'models', 'tiers', 'max_rounds',
                                     'github_provider', 'github_model', 'github_effort', 'wait_seconds'],
         }
         for path, keys in expected.items():
@@ -103,36 +83,30 @@ class ConfigMenuTests(unittest.TestCase):
                 self.assertEqual(config_menu.menu_keys(dict(reversed(section.items())), path), keys)
                 self.assertCountEqual(keys, section)
 
-    def test_workflow_and_review_settings_sharing_a_key_read_as_different_settings(self):
-        """Provider routing and reviewer routing are separate policies; one bare label would merge them."""
-        self.assertEqual(config_menu.label_for("routing", ("workflow",)), "Provider routing")
+    def test_role_model_settings_read_as_their_purpose(self):
+        """Every role has models and tiers; labels name what they hold rather than the storage key."""
         self.assertEqual(config_menu.label_for("routing", ("workflow", "review")), "Reviewer routing")
-        self.assertEqual(config_menu.label_for("tiers", ("workflow",)), "Worker and scout models")
-        self.assertEqual(config_menu.label_for("0", ("workflow", "tiers")), "Tier 0 (scouts only)")
-        self.assertEqual(config_menu.label_for("1", ("workflow", "tiers")), "Tier 1")
+        for role in ("worker", "scout", "review"):
+            self.assertEqual(config_menu.label_for("tiers", ("workflow", role)), "Models by tier")
+            self.assertEqual(config_menu.label_for("models", ("workflow", role)), "Models")
+        self.assertEqual(config_menu.label_for("0", ("workflow", "scout", "tiers")), "Tier 0")
 
-    def test_long_labels_keep_value_columns_and_full_selected_help_at_supported_widths(self):
-        """A long override label must neither shift its value nor disappear from help."""
+    def test_labels_keep_value_columns_and_full_selected_help_at_supported_widths(self):
+        """Labels of different lengths share one value column, and full help stays reachable."""
         keys = [*select('workflow'), '\n', *select('worker', ('workflow',)), '\n',
-                *select('override', ('workflow', 'worker')), '\n',
-                '?', '\x1b', *['\x1b'] * 4]
+                *select('tiers', ('workflow', 'worker')), '?', '\x1b', *['\x1b'] * 4]
         for size in ((8, 40), (24, 80), (24, 100), (40, 160)):
             with self.subTest(size=size):
                 screen = Screen(keys, sizes=[size])
                 self.edit(Config(), [], screen=screen)
-                rows = [text for _, x, text, _ in screen.writes if x == 0 and ':' in text]
-                override_rows = [row for row in rows if row.startswith('Model override')]
-                self.assertTrue(override_rows)
                 for frame, writes in zip(screen.frames, screen.attributes):
-                    if 'Models' not in frame or 'Model override' not in frame:
+                    if 'Worker execution' not in frame or 'Models by tier' not in frame:
                         continue
                     columns = [text.index(':') for _, x, text, _ in writes
-                               if x == 0 and text.startswith(('Model override', 'Models')) and ':' in text]
+                               if x == 0 and re.match(r'(Worker execution|Models|Models by tier) *: ', text)]
                     self.assertEqual(len(set(columns)), 1)
-                full_help = next(frame for frame in screen.frames if 'Help: workflow.worker' in frame)
-                self.assertIn('Model override scope', full_help)
-                if size[1] == 40:
-                    self.assertTrue(any('...:' in row for row in override_rows))
+                full_help = next(frame for frame in screen.frames if 'Help: workflow.worker.tiers' in frame)
+                self.assertIn('Optional worker', full_help)
 
     def test_editor_field_has_default_background_cursor_and_overflow_markers(self):
         """Input stays legible at 40 columns, with both hidden ends and no reverse fill."""
@@ -160,7 +134,7 @@ class ConfigMenuTests(unittest.TestCase):
         """Wide characters use two columns; combining marks stay with their base."""
         keys = [*select('workflow'), '\n', *select('review', ('workflow',)), '\n',
                 *select('label', ('workflow', 'review')), *['\x1b'] * 3]
-        for width, label_columns, value_columns in ((40, 18, 19), (100, 23, 24)):
+        for width, label_columns, value_columns in ((40, 18, 19), (100, 22, 25)):
             for character, columns in (('界', 2), ('e\u0301', 1)):
                 with self.subTest(width=width, character=character):
                     config = Config()
@@ -222,62 +196,6 @@ class ConfigMenuTests(unittest.TestCase):
             save_config(result.config, path)
             self.assertEqual(json.loads(path.read_text()), {'version': 1})
 
-    def test_global_reviewer_candidates_use_picker_effort_and_draft_controls(self):
-        """Both override candidates share the model editor without altering tier settings."""
-        import curses
-        config = Config()
-        prefix = [*select("workflow"), "\n",
-                  *select("review", ("workflow",)), "\n",
-                  *select("override", ("workflow", "review")), "\n",
-                  " ", " ", curses.KEY_DOWN, "\n"]
-        for index, provider in enumerate(("codex", "claude")):
-            cases = [([curses.KEY_HOME, "\n", *"manual-reviewer", "\n"], "manual-reviewer"),
-                     ([curses.KEY_END, "\n"], BUNDLED_MODELS[provider][-1]),
-                     ([curses.KEY_HOME, curses.KEY_DOWN, "\n"], "")]
-            for pick, expected in cases:
-                with self.subTest(provider=provider, expected=expected):
-                    edit_keys = [*prefix, *[curses.KEY_DOWN] * index, "\n", "\n", *pick,
-                                 curses.KEY_DOWN, *[" "] * (5 if provider == "codex" else 4)]
-                    cancelled, _ = self.edit(config, [*edit_keys, *["\x1b"] * 6])
-                    self.assertIsNone(cancelled)
-                    result, _ = self.edit(config, [*edit_keys, *["\x1b"] * 5,
-                                                   curses.KEY_END, curses.KEY_UP, "\n"])
-                    override = result.config.workflow.review.override
-                    self.assertEqual(override.scope, "all")
-                    self.assertEqual(override.models[provider], {"api_provider": "", "fast": False, "model": expected, "effort": "default"})
-                    self.assertEqual(result.config.workflow.review.tiers, config.workflow.review.tiers)
-                    self.assertEqual(result.config.workflow.tiers, config.workflow.tiers)
-        self.assertEqual(config.workflow.review.override.scope, "off")
-
-    def test_global_worker_candidates_use_picker_effort_and_draft_controls(self):
-        """Both override candidates share the model editor without altering tier settings."""
-        import curses
-        config = Config()
-        prefix = [*select("workflow"), "\n",
-                  *select("worker", ("workflow",)), "\n",
-                  *select("override", ("workflow", "worker")), "\n",
-                  " ", " ", curses.KEY_DOWN, "\n"]
-        for index, provider in enumerate(("codex", "claude")):
-            cases = [([curses.KEY_HOME, "\n", *"manual-worker", "\n"], "manual-worker"),
-                     ([curses.KEY_END, "\n"], BUNDLED_MODELS[provider][-1]),
-                     ([curses.KEY_HOME, curses.KEY_DOWN, "\n"], "")]
-            for pick, expected in cases:
-                with self.subTest(provider=provider, expected=expected):
-                    edit_keys = [*prefix, *[curses.KEY_DOWN] * index, "\n", "\n", *pick,
-                                 curses.KEY_DOWN, *[" "] * (5 if provider == "codex" else 4)]
-                    cancelled, _ = self.edit(config, [*edit_keys, *["\x1b"] * 6])
-                    self.assertIsNone(cancelled)
-                    result, screen = self.edit(config, [*edit_keys, *["\x1b"] * 5,
-                                                   curses.KEY_END, curses.KEY_UP, "\n"])
-                    self.assertIn("Global worker override", "\n".join(screen.drawn))
-                    self.assertEqual(result.config.workflow.review, config.workflow.review)
-                    override = result.config.workflow.worker.override
-                    self.assertEqual(override.scope, "all")
-                    self.assertEqual(override.models[provider], {"api_provider": "", "fast": False, "model": expected, "effort": "default"})
-                    self.assertEqual(result.config.workflow.review.tiers, config.workflow.review.tiers)
-                    self.assertEqual(result.config.workflow.tiers, config.workflow.tiers)
-        self.assertEqual(config.workflow.worker.override.scope, "off")
-
     def test_cleanup_toggles_save_independently_without_enabling_the_other(self):
         import curses
         for field in ('cleanup_local_branches', 'cleanup_remote_branches'):
@@ -292,7 +210,7 @@ class ConfigMenuTests(unittest.TestCase):
         self.assertEqual(config_menu.CHOICES["workflow.merge_mode"], ("github", "local"))
 
     def test_worker_execution_choices_save_globally_and_as_project_overrides(self):
-        """Execution can be chosen independently while model scope remains inherited."""
+        """Execution can be chosen independently while worker models remain inherited."""
         import curses
         for project in (None, {}):
             for steps, execution in enumerate(("auto", "direct", "delegated")):
@@ -302,24 +220,23 @@ class ConfigMenuTests(unittest.TestCase):
                 with self.subTest(project=project, execution=execution):
                     result, _ = self.edit(Config(), keys, project=project)
                     self.assertEqual(result.config.workflow.worker.execution, execution)
-                    self.assertEqual(result.config.workflow.worker.override.scope, "off")
                     if project is not None:
                         self.assertEqual(result.project, {"workflow": {"worker": {"execution": execution}}})
 
-    def test_a_muted_override_still_opens_and_saves_an_edit_under_direct(self):
-        """Muting explains; it must not stop someone preparing the override for a later switch to delegated."""
+    def test_muted_worker_models_still_open_and_save_an_edit_under_direct(self):
+        """Muting explains; it must not stop someone preparing worker models for a later switch to delegated."""
         import curses
         config = Config()
         config.workflow.worker.execution = "direct"
-        path = ("workflow", "worker", "override")
-        keys = [*select("workflow"), "\n", *select("worker", path[:1]), "\n", *select("override", path[:2]), "\n",
-                *select("scope", path), " ", "\x1b", "\x1b", "\x1b", curses.KEY_END, curses.KEY_UP, "\n"]
+        path = ("workflow", "worker")
+        keys = [*select("workflow"), "\n", *select("worker", path[:1]), "\n", *select("models", path), "\n",
+                "\n", curses.KEY_HOME, "\n", *"gpt-5.5", "\n", "\x1b", "\x1b", "\x1b", curses.KEY_END, curses.KEY_UP, "\n"]
         result, _ = self.edit(config, keys)
-        self.assertEqual(result.config.workflow.worker.override.scope, "untiered")
+        self.assertEqual([spec["model"] for spec in result.config.workflow.worker.models], ["gpt-5.5"])
         self.assertEqual(result.config.workflow.worker.execution, "direct")
 
-    def test_direct_mutes_only_the_worker_override_under_one_note(self):
-        """Direct bypasses only worker model selection; tiers and routing still serve scouts and reviewers."""
+    def test_direct_mutes_only_worker_models_under_one_note(self):
+        """Direct bypasses only worker model selection; scout and reviewer lists still apply."""
         import curses
 
         def dim_edit(config, keys):
@@ -329,7 +246,7 @@ class ConfigMenuTests(unittest.TestCase):
 
         note = "-- unused while execution is direct --"
         keys = [*select("workflow"), "\n", *select("worker", ("workflow",)), "\n",
-                *select("override", ("workflow", "worker")), "\x1b", "\x1b", "\x1b"]
+                *select("models", ("workflow", "worker")), "\x1b", "\x1b", "\x1b"]
 
         def rows(screen, prefix):
             return [attr for _, x, text, attr in screen.writes if x == 0 and text.startswith(prefix)]
@@ -340,25 +257,22 @@ class ConfigMenuTests(unittest.TestCase):
         rendered = "\n".join(screen.frames)
         self.assertEqual(max(frame.count(note) for frame in screen.frames), 1)
         self.assertNotIn("(unused)", rendered)
-        self.assertNotIn("Inapplicable", rendered)
-        self.assertTrue(all(attr & curses.A_DIM for attr in rows(screen, "Global worker override")))
-        for delegation in ("Worker and scout models", "Provider routing", "Fallback"):
-            with self.subTest(row=delegation):
-                self.assertTrue(rows(screen, delegation))
-                self.assertFalse(any(attr & curses.A_DIM for attr in rows(screen, delegation)))
+        for muted in ("Models  ", "Models by tier"):
+            self.assertTrue(rows(screen, muted))
+            self.assertTrue(all(attr & curses.A_DIM for attr in rows(screen, muted)))
+        self.assertFalse(any(attr & curses.A_DIM for attr in rows(screen, "Worker execution")))
         help_text = " ".join(" ".join(text for _, x, text, _ in screen.writes if x > 80).split())
         self.assertIn("The value is kept and applies again under auto or delegated execution.", help_text)
 
         _, screen = self.edit(config, keys, screen=Screen(keys, sizes=[(40, 160)]))
         self.assertIn(note, "\n".join(screen.frames))
-        self.assertTrue(any("Global worker override" in text and "(unused)" in text for _, _, text, _ in screen.writes))
+        self.assertTrue(any(text.startswith("Models") and "(unused)" in text for _, _, text, _ in screen.writes))
 
         config.workflow.worker.execution = "auto"
         _, screen = dim_edit(config, keys)
         rendered = "\n".join(screen.frames)
         self.assertNotIn(note, rendered)
         self.assertNotIn("(unused)", rendered)
-        self.assertFalse(any(attr & curses.A_DIM for attr in rows(screen, "Global worker override")))
 
     def edit(self, config, keys, choices=(), link=None, screen=None, project=None, catalogs=None):
         import curses
@@ -395,17 +309,7 @@ class ConfigMenuTests(unittest.TestCase):
         self.assertNotIn("secret-token", "\n".join(screen.drawn))
         self.assertIn("Access token: <configured>", screen.drawn)
 
-    def test_tier_effort_default_can_be_selected_and_saved_for_both_providers(self):
-        import curses
-        # Open workflow / tiers / tier 0 / provider, then cycle medium to default.
-        prefix = [*select("workflow"), "\n", *select("tiers", ("workflow",)), "\n", "\n"]
-        suffix = ["\x1b", "\x1b", "\x1b", "\x1b", curses.KEY_END, curses.KEY_UP, "\n"]
-        codex, _ = self.edit(Config(), [*prefix, "\n", curses.KEY_DOWN, *[" "] * 5, *suffix])
-        claude, _ = self.edit(Config(), [*prefix, curses.KEY_DOWN, "\n", curses.KEY_DOWN, *[" "] * 4, *suffix])
-        self.assertEqual(codex.config.workflow.tiers["0"]["codex"]["effort"], "default")
-        self.assertEqual(claude.config.workflow.tiers["0"]["claude"]["effort"], "default")
-
-    def test_review_routing_can_be_saved_without_changing_policy_or_worker_routing(self):
+    def test_review_routing_can_be_saved_without_changing_policy(self):
         """The review submenu must persist strict routing independently of review triggers."""
         import curses
         prefix = [*select("workflow"), "\n", *select("review", ("workflow",)), "\n"]
@@ -417,21 +321,8 @@ class ConfigMenuTests(unittest.TestCase):
         result, _ = self.edit(config, [*prefix, *select("routing", ("workflow", "review")), " ", *suffix])
         self.assertEqual(result.config.workflow.review.routing, "same-provider")
         self.assertEqual(result.config.workflow.review.policy, "auto")
-        self.assertEqual(result.config.workflow.routing, "current")
         result, _ = self.edit(result.config, [*prefix, *select("routing", ("workflow", "review")), " ", *suffix])
         self.assertEqual(result.config.workflow.review.routing, "cross-provider")
-
-    def test_reviewer_effort_menu_uses_provider_choices_without_changing_workers(self):
-        import curses
-        # workflow / review / tiers / tier 1 / provider
-        prefix = [*select("workflow"), "\n", *select("review", ("workflow",)), "\n", *select("tiers", ("workflow", "review")), "\n", "\n"]
-        suffix = [*["\x1b"] * 5, curses.KEY_END, curses.KEY_UP, "\n"]
-        for provider, selection, cycles in (("codex", [], 5), ("claude", [curses.KEY_DOWN], 4)):
-            with self.subTest(provider=provider):
-                result, _ = self.edit(Config(), [*prefix, *selection, "\n", curses.KEY_DOWN,
-                                                 *[" "] * cycles, *suffix])
-                self.assertEqual(result.config.workflow.review.tiers["1"][provider]["effort"], "default")
-                self.assertEqual(result.config.workflow.tiers["1"][provider]["effort"], "medium")
 
     def test_every_generated_section_and_field_has_specific_help(self):
         data = Config().to_dict()
@@ -499,41 +390,6 @@ class ConfigMenuTests(unittest.TestCase):
         self.assertEqual(refused.config.env.forward, [])
         self.assertTrue(any(line.startswith('Not saved: "1BAD"') for line in screen.drawn))
 
-    def test_model_picker_preserves_unknown_value_and_accepts_custom_or_disable(self):
-        import curses
-        config = Config()
-        config.workflow.tiers["0"]["codex"]["model"] = "private-model"
-        prefix = [*select("workflow"), "\n", *select("tiers", ("workflow",)),
-                  "\n", "\n", "\n", "\n"]
-        finish = [*['\x1b'] * 4, curses.KEY_END, curses.KEY_UP, "\n"]
-        kept, screen = self.edit(config, [*prefix, "\n", *finish])
-        self.assertEqual(kept.config.workflow.tiers["0"]["codex"]["model"], "private-model")
-        self.assertIn("private-model [Built-in API] (current)", screen.drawn)
-
-        custom, _ = self.edit(config, [*prefix, curses.KEY_HOME,
-                                       "\n", "\x15", *"manual-model", "\n", *finish])
-        self.assertEqual(custom.config.workflow.tiers["0"]["codex"]["model"], "manual-model")
-
-        disabled, _ = self.edit(config, [*prefix, curses.KEY_HOME, curses.KEY_DOWN,
-                                         "\n", *finish])
-        self.assertEqual(disabled.config.workflow.tiers["0"]["codex"]["model"], "")
-
-    def test_catalogs_refresh_once_per_global_or_project_entry_not_per_picker(self):
-        """Both providers keep unavailable selections across repeated picker visits."""
-        import curses
-        catalogs = {"codex": ("new-codex",), "claude": ("new-claude",)}
-        for project in (None, {}):
-            for provider_index, provider in enumerate(catalogs):
-                config = Config()
-                config.workflow.tiers["0"][provider]["model"] = "private-model"
-                prefix = [*select("workflow"), "\n", *select("tiers", ("workflow",)),
-                          "\n", "\n", *[curses.KEY_DOWN] * provider_index, "\n", "\n"]
-                keys = [*prefix, "\x1b", "\n", "\n", *["\x1b"] * 5]
-                result, screen = self.edit(config, keys, project=project, catalogs=catalogs)
-                self.assertIsNone(result)
-                self.assertIn("private-model [Built-in API] (current)", screen.drawn)
-                self.assertIn(catalogs[provider][0] + " [Built-in API]", screen.drawn)
-
     def test_default_terminal_colors_and_short_escape_delay_are_restored(self):
         import curses
         with patch.object(curses, "use_default_colors") as colors, \
@@ -561,30 +417,64 @@ class ConfigMenuTests(unittest.TestCase):
         self.assertIn("Resize terminal to at least 40 columns x 8 rows (Esc: back)", screen.drawn)
         self.assertIn("Help: " + config_menu.menu_keys(Config().to_dict())[0], screen.drawn)
 
-    def test_both_roles_and_providers_offer_suggestions_custom_entry_and_cancel(self):
-        """Every model matrix must use the same picker without changing effort or the other role."""
+    def test_candidate_list_adds_edits_reorders_and_removes_in_the_draft(self):
+        """One editor serves every role list; cancelling the menu keeps the input untouched."""
         import curses
-        for reviewer in (False, True):
-            for provider_index, provider in enumerate(("codex", "claude")):
-                config = Config()
-                prefix = [*select("workflow"), "\n"]
-                if reviewer:
-                    prefix += [*select("review", ("workflow",)), "\n", *select("tiers", ("workflow", "review")), "\n"]
-                else:
-                    prefix += [*select("tiers", ("workflow",)), "\n"]
-                prefix += ["\n", *[curses.KEY_DOWN] * provider_index, "\n", "\n"]
-                suffix = [*["\x1b"] * (5 if reviewer else 4), curses.KEY_END, curses.KEY_UP, "\n"]
-                cases = [(["\n"], BUNDLED_MODELS[provider][0]),
-                         ([curses.KEY_HOME, "\n", *"custom/deployment", "\n"], "custom/deployment"),
-                         ([curses.KEY_HOME, "\n", *"discarded", "\x1b"], "")]
-                for editing, expected in cases:
-                    with self.subTest(reviewer=reviewer, provider=provider, expected=expected):
-                        result, _ = self.edit(config, [*prefix, *editing, *suffix])
-                        matrix = result.config.workflow.review.tiers if reviewer else result.config.workflow.tiers
-                        candidate = matrix["1" if reviewer else "0"][provider]
-                        self.assertEqual(candidate, {"api_provider": "", "fast": False, "model": expected, "effort": "medium"})
-                        other = result.config.workflow.tiers if reviewer else result.config.workflow.review.tiers
-                        self.assertTrue(all(not c["model"] for tier in other.values() for c in tier.values()))
+        config = Config()
+        opened = [*select("workflow"), "\n", *select("scout", ("workflow",)), "\n", *select("models", ("workflow", "scout")), "\n"]
+        claude_suggestion = len(BUNDLED_MODELS["codex"])  # suggestions list every Codex model before Claude's
+        keys = [*opened,
+                "\n", curses.KEY_HOME, *[curses.KEY_DOWN] * (2 + claude_suggestion), "\n",   # add the first Claude suggestion
+                curses.KEY_END, "\n", curses.KEY_HOME, "\n", *"gpt-6-astra", "\n",       # add a custom Codex model
+                curses.KEY_HOME, curses.KEY_DOWN, "\n", *[curses.KEY_DOWN] * 3, "\n",        # move it up
+                curses.KEY_HOME, "\n", curses.KEY_DOWN, "\n", curses.KEY_HOME, *[curses.KEY_DOWN] * 3, "\n",  # effort high
+                curses.KEY_HOME, "\n", *[curses.KEY_DOWN] * 2, "\n",                        # fast on
+                "\x1b"]
+        cancelled, _ = self.edit(config, [*keys, "\x1b", "\x1b", "\x1b"])
+        self.assertIsNone(cancelled)
+        self.assertEqual(config.workflow.scout.models, [])
+        result, screen = self.edit(config, [*keys, "\x1b", "\x1b", curses.KEY_END, curses.KEY_UP, "\n"])
+        self.assertEqual(result.config.workflow.scout.models, [
+            {"provider": "codex", "model": "gpt-6-astra", "effort": "high", "fast": True, "api_provider": ""},
+            {"provider": "claude", "model": BUNDLED_MODELS["claude"][0], "effort": "medium", "fast": False, "api_provider": ""}])
+        self.assertTrue(any(line.startswith("Models") and "codex:gpt-6-astra:high fast" in line for line in screen.drawn))
+        self.assertEqual(result.config.workflow.worker, config.workflow.worker)
+        removed, _ = self.edit(result.config, [*opened, curses.KEY_HOME, "\n", curses.KEY_END, "\n", "\x1b",
+                                               "\x1b", "\x1b", curses.KEY_END, curses.KEY_UP, "\n"])
+        self.assertEqual([spec["model"] for spec in removed.config.workflow.scout.models], [BUNDLED_MODELS["claude"][0]])
+
+    def test_picker_offers_both_clis_keeps_an_unknown_current_model_and_refreshes_catalogs_once(self):
+        """Any CLI's model may serve any role, so a Codex list offers Claude models too."""
+        import curses
+        catalogs = {"codex": ("new-codex",), "claude": ("new-claude",)}
+        for project in (None, {}):
+            config = Config()
+            config.workflow.review.tiers["2"] = [{"provider": "claude", "model": "private-model", "effort": "medium",
+                                                   "fast": False, "api_provider": ""}]
+            path = ("workflow", "review", "tiers")
+            keys = [*select("workflow"), "\n", *select("review", path[:1]), "\n", *select("tiers", path[:2]), "\n",
+                    curses.KEY_DOWN, "\n", "\n", "\n", "\x1b", "\x1b", "\n", "\n", *["\x1b"] * 7]
+            with self.subTest(project=project):
+                result, screen = self.edit(config, keys, project=project, catalogs=catalogs)
+                self.assertIsNone(result)
+                self.assertIn("private-model [claude] (current)", screen.drawn)
+                self.assertIn("new-codex [codex]", screen.drawn)
+                self.assertIn("new-claude [claude]", screen.drawn)
+                self.assertIn("Enter a custom model ID... [codex]", screen.drawn)
+
+    def test_project_list_edit_records_the_whole_list_and_reset_inherits_again(self):
+        """A list is one value: a project either owns all of it or inherits all of it."""
+        import curses
+        config = Config()
+        config.workflow.worker.models = [{"provider": "claude", "model": "opus", "effort": "high", "fast": False, "api_provider": ""}]
+        prefix = [*select("workflow"), "\n", *select("worker", ("workflow",)), "\n", *select("models", ("workflow", "worker"))]
+        save = ["\x1b", "\x1b", curses.KEY_END, curses.KEY_UP, "\n"]
+        added = [*prefix, "\n", curses.KEY_END, "\n", curses.KEY_HOME, "\n", *"gpt-5.5", "\n", "\x1b"]
+        result, _ = self.edit(config, [*added, *save], project={})
+        self.assertEqual([spec["model"] for spec in result.project["workflow"]["worker"]["models"]], ["opus", "gpt-5.5"])
+        self.assertNotIn("tiers", result.project["workflow"]["worker"])
+        reset, _ = self.edit(config, [*prefix, "r", *save], project=result.project)
+        self.assertEqual(reset.project, {})
 
     def test_narrow_screen_keeps_help_and_exit_keys_visible(self):
         """A supported 40-column screen must not require guessing an offscreen exit key."""
@@ -712,24 +602,6 @@ class ProjectMenuTests(unittest.TestCase):
         self.assertTrue(all('[Global only]' in text for text, _ in rows))
         self.assertTrue(all(not attr & curses.A_REVERSE for _, attr in rows))
 
-    def test_worker_override_project_copy_and_reset_preserve_inheritance(self):
-        """Project copy pins worker settings; reset restores future global values."""
-        import curses
-        from agent_box import project_config
-        config = Config()
-        config.workflow.worker.override.scope = "untiered"
-        prefix = [*select("workflow"), '\n',
-                  *select("worker", ("workflow",)), '\n',
-                  *select("override", ("workflow", "worker"))]
-        save = ['\x1b', '\x1b', curses.KEY_END, curses.KEY_UP, '\n']
-        pinned, _ = self.edit(config, [*prefix, 'g', *save], project={})
-        self.assertEqual(pinned.project['workflow']['worker']['override']['scope'], 'untiered')
-        reset, _ = self.edit(config, [*prefix, 'r', *save], project=pinned.project)
-        self.assertEqual(reset.project, {})
-        config.workflow.worker.override.scope = "off"
-        self.assertEqual(project_config.apply(config, pinned.project).workflow.worker.override.scope, "untiered")
-        self.assertEqual(project_config.apply(config, reset.project).workflow.worker.override.scope, "off")
-
     def test_use_global_pins_equal_values_while_reset_follows_later_global_changes(self):
         """Copying global is an explicit choice; reset resumes live inheritance."""
         import curses
@@ -759,7 +631,7 @@ class ProjectMenuTests(unittest.TestCase):
         expected = config.workflow.to_dict()
         del expected['enabled']
         self.assertEqual(pinned.project, {'workflow': expected})
-        self.assertEqual(pinned.project['workflow']['review']['override']['models']['codex']['model'], '')
+        self.assertEqual(pinned.project['workflow']['review']['models'], [])
         reset, _ = self.edit(config, [*workflow, 'r', *save], project=pinned.project)
         self.assertEqual(reset.project, {})
         self.assertTrue(reset.config.workflow.enabled)
@@ -913,22 +785,6 @@ class ProjectMenuTests(unittest.TestCase):
         blocked, screen = self.edit(config, [*select('claude'), ' ', 'r', 'g', curses.KEY_END, curses.KEY_UP, '\n'], project={})
         self.assertEqual(blocked.project, {})
         self.assertIn('Global only', '\n'.join(screen.drawn))
-
-    def test_project_reviewer_picker_retains_manual_disable_and_default_effort(self):
-        import curses
-        config = Config()
-        prefix = [*select("workflow"), '\n',
-                  *select("review", ("workflow",)), '\n',
-                  *select("override", ("workflow", "review")), '\n',
-                  curses.KEY_DOWN, '\n', '\n', '\n']
-        for pick, expected in (([curses.KEY_HOME, '\n', *'custom-model', '\n'], 'custom-model'),
-                               ([curses.KEY_HOME, curses.KEY_DOWN, '\n'], '')):
-            keys = [*prefix, *pick, curses.KEY_DOWN, *[' '] * 5,
-                    *['\x1b'] * 5, curses.KEY_END, curses.KEY_UP, '\n']
-            result, _ = self.edit(config, keys, project={})
-            self.assertEqual(result.project['workflow']['review']['override']['models']['codex'],
-                             {'api_provider': '', 'model': expected, 'effort': 'default'})
-            self.assertEqual(result.config.workflow.review.override.scope, "off")
 
     def test_project_save_and_cancel_do_not_apply_or_configure_path(self):
         from agent_box import cli, project_config

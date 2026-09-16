@@ -9,7 +9,7 @@ import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 
-from .config import AGENT_EFFORTS, IMAGE_TOOL_GROUP_HELP, LAUNCH_AGENTS, Config, EnvConfig, REVIEW_PRESETS, TRACKER_PROVIDERS, TrackerConnection
+from .config import AGENT_EFFORTS, AGENT_PROVIDERS, IMAGE_TOOL_GROUP_HELP, LAUNCH_AGENTS, Config, EnvConfig, REVIEW_PRESETS, TRACKER_PROVIDERS, TrackerConnection, candidate_label, model_entry
 from .errors import AgentBoxError
 from .external_config import API_EFFORTS, ExternalProvider, model_defaults, model_settings, valid_model, valid_name, validate_connections
 from .model_catalog import load_model_catalogs
@@ -18,10 +18,7 @@ CHOICES = {
     "default_agent": LAUNCH_AGENTS,
     "tracker.provider": TRACKER_PROVIDERS,
     "workflow.merge_mode": ("github", "local"),
-    "workflow.routing": ("current", "weighted", "usage-aware"),
     "workflow.worker.execution": ("auto", "direct", "delegated"),
-    "workflow.worker.override.scope": ("off", "untiered", "all"),
-    "workflow.review.override.scope": ("off", "untiered", "all"),
     "workflow.review.routing": ("cross-provider", "same-provider"),
     "workflow.review.policy": ("off", "auto", "always"),
     "workflow.review.github_provider": ("auto", "local", "codex", "claude"),
@@ -69,31 +66,24 @@ HELP = {
     "browser.enabled": "Headless Chromium in the box; isolated in-memory profile, same trust boundary as agents. Unavailable in --host mode.",
     "audio": "Configure access to the host's sound server from workspace boxes.",
     "audio.enabled": "Mount the host PulseAudio/PipeWire socket so agents can use the microphone and speakers, e.g. Claude Code /voice. Everything in the box gets both. Changing it recreates the box.",
-    "workflow": "Opt-in tracked-work orchestration, routing, review, publication, and cleanup policy.",
+    "workflow": "Opt-in tracked-work orchestration, role models, review, publication, and cleanup policy.",
     "workflow.enabled": "Enable agent-box's tracked-task workflow. Enabling it does not itself expose provider or tracker credentials.",
     "workflow.merge_mode": "Finish parent work through a GitHub pull request or a local fast-forward into origin's default branch.",
-    "workflow.routing": "Workers and scouts use the current provider, static weights, or weekly usage-aware weights. Review routing is configured separately.",
-    "workflow.weights": "Relative provider capacity for worker and scout routing. A zero weight excludes that provider; all weights cannot be zero.",
-    "workflow.tiers": "Worker and scout model candidates. Tier 0 is scouts only; tiers 1-3 represent increasing task complexity. Choose faster models for simple work and more capable models for complex tasks. Each tier has independent provider and effort settings.",
-    "workflow.fallback": "Try another eligible provider on failure. Reviewer fallback requires observed unavailability; missing native support uses the same provider's CLI. Same-provider review never switches.",
-    "workflow.reserve_percent": "Subscription capacity reserved from usage-aware routing. Valid values are 0 through 99 percent.",
-    "workflow.smoothing_hours": "Time window, from 1 through 168 hours, used to smooth usage-aware routing decisions.",
-    "workflow.scout": "Read-only scouts the coordinator dispatches for bounded questions. Their models come from Worker and scout models under Delegation.",
+    "workflow.scout": "Read-only scouts the coordinator dispatches for bounded questions, and the models they run.",
     "workflow.scout.limit": "Maximum number of concurrent read-only scouts, from 1 through 16.",
+    "workflow.scout.models": "Scout candidates in preference order; the first available one runs and the rest are fallbacks. Used for every tier whose own list is empty. A candidate of the other CLI than the coordinator's runs as a managed CLI process.",
+    "workflow.scout.tiers": "Optional scout candidates per tier 0-3. A nonempty tier list replaces Models for that tier; an empty one uses Models.",
     "workflow.auto_push": "Within the opt-in workflow, publish the parent task in GitHub mode or the accepted base after a local fast-forward. Turning this off keeps completion local.",
     "workflow.timeout_seconds": "Maximum delegated agent runtime in seconds, from 30 through 86400.",
-    "workflow.worker": "Worker execution preference and model source. Delegated provider routing is shared with scouts; reviewer settings stay independent.",
+    "workflow.worker": "Worker execution preference and the models delegated workers run.",
     "workflow.worker.execution": "Worker execution policy: auto requires the coordinator to choose with a reason; direct works in the active session; delegated launches a bounded worker assignment.",
-    "workflow.worker.override": "Optional global worker models for Codex and Claude. Replaces model/effort/fast candidates; reviewer and scout settings stay independent.",
-    "workflow.worker.override.scope": "Off uses session/tier models; untiered replaces only session models; all also replaces explicit tier models. Selects model/effort/fast, without changing execution, provider routing or task tier.",
-    "workflow.worker.override.models": "Independent global worker candidates. Empty models disable candidates; provider policy and fallback use only these candidates, with no return to session/tier models.",
-    "workflow.review": "Independent review routing, thresholds, provider selection, and reviewer candidates. Worker tier settings are never inherited.",
-    "workflow.review.tiers": "Independent reviewer candidates for tiers 1-3. An empty model explicitly disables that provider candidate.",
-    "workflow.review.override": "Optional global reviewer models for Codex and Claude. Same/cross-provider still selects the provider; worker and scout settings stay independent.",
-    "workflow.review.override.scope": "Off uses session/reviewer tier models; untiered replaces only session models; all also replaces explicit tier models. Review triggers and same/cross-provider routing stay unchanged.",
-    "workflow.review.override.models": "Independent global reviewer candidates. Empty models disable candidates; fallback uses only these candidates and the existing same/cross-provider policy.",
+    "workflow.worker.models": "Delegated worker candidates in preference order; the first available one runs and the rest are fallbacks. Used for untiered tasks and tiers whose own list is empty; with no candidates an untiered worker inherits the active session. A candidate of the other CLI than the coordinator's runs as a managed CLI process.",
+    "workflow.worker.tiers": "Optional worker candidates per task tier 1-3. A nonempty tier list replaces Models for that tier; an empty one uses Models.",
+    "workflow.review": "Review routing, thresholds, provider selection, and reviewer candidates.",
+    "workflow.review.models": "Reviewer candidates. Cross-provider routing runs the first available candidate of the other provider than the writer's, then the writer's own; same-provider uses only the writer's. Used for untiered tasks and tiers whose own list is empty; with no candidates an untiered review inherits the active session.",
+    "workflow.review.tiers": "Optional reviewer candidates per task tier 1-3. A nonempty tier list replaces Models for that tier; an empty one uses Models.",
     "workflow.review.policy": "Off skips workflow review. Auto triggers on file/line thresholds, sensitive paths, or the review label. Always requires review for every task and the complete parent diff. GitHub merge may still require independent approval.",
-    "workflow.review.routing": "Cross-provider: other writer provider first, backup only if unavailable. Same-provider: writer only. Native preference never changes provider order.",
+    "workflow.review.routing": "Cross-provider: candidates of the other provider than the writer's first, the writer's own only if those are unavailable. Same-provider: writer's candidates only. Native preference never changes candidate order.",
     "workflow.review.max_files": "Automatic-review threshold for changed file count. The Review preset action can set this together with max lines.",
     "workflow.review.max_lines": "Automatic-review threshold for changed line count. The Review preset action can set this together with max files.",
     "workflow.review.max_rounds": "Maximum local review attempts, including failed or abandoned attempts, before explicit user allowance is required.",
@@ -121,7 +111,6 @@ LABELS = {
     "url": "URL", "token": "Access token", "effort": "Reasoning effort",
     "github_model": "GitHub review model", "github_effort": "GitHub review effort",
     "telegram_chat_id": "Telegram chat ID",
-    "scope": "Model override scope",
     "execution": "Worker execution", "worker": "Workers", "scout": "Scouts",
     "github_provider": "GitHub review provider",
     "external_providers": "External API providers", "api_provider": "API provider", "api_key": "API key",
@@ -140,16 +129,19 @@ MENU_GROUPS = {
         ("Workflow", ("enabled",)),
         ("Delivery", ("merge_mode", "auto_push", "cleanup_local_branches", "cleanup_remote_branches")),
         ("Roles", ("worker", "scout", "review")),
-        ("Delegation", ("tiers", "routing", "weights", "fallback", "reserve_percent",
-                        "smoothing_hours", "timeout_seconds")),
+        ("Delegation", ("timeout_seconds",)),
     ),
     ("workflow", "worker"): (
         ("Execution", ("execution",)),
-        ("Models", ("override",)),
+        ("Models", ("models", "tiers")),
+    ),
+    ("workflow", "scout"): (
+        ("Concurrency", ("limit",)),
+        ("Models", ("models", "tiers")),
     ),
     ("workflow", "review"): (
         ("Review triggers", ("policy", "max_files", "max_lines", "sensitive_paths", "ignored_paths", "label")),
-        ("Routing and models", ("routing", "override", "tiers")),
+        ("Routing and models", ("routing", "models", "tiers")),
         ("Review attempts", ("max_rounds",)),
         ("GitHub review", ("github_provider", "github_model", "github_effort", "wait_seconds")),
     ),
@@ -158,8 +150,7 @@ MENU_GROUPS = {
 
 def menu_keys(data, path=()):
     ordered = [key for _, keys in MENU_GROUPS.get(path, ()) for key in keys if key in data]
-    return [key for key in ordered + [key for key in data if key not in ordered]
-            if not (key == 'api_provider' and _candidate_field((*path, key)))]
+    return ordered + [key for key in data if key not in ordered]
 
 
 def character_width(character):
@@ -194,15 +185,10 @@ def clipped(text, width):
 def label_for(key, path=()):
     if path == ('external_providers',) or path[:1] == ('external_providers',) and path[-1:] == ('models',):
         return key
-    if key == "override" and path in (("workflow", "worker"), ("workflow", "review")):
-        return "Global worker override" if path[-1] == "worker" else "Global reviewer override"
-    # Workflow and review both have tiers and routing; bare names would read as one setting.
-    if path == ("workflow",) and key in ("tiers", "routing"):
-        return "Worker and scout models" if key == "tiers" else "Provider routing"
     if path == ("workflow", "review") and key == "routing":
         return "Reviewer routing"
-    if path == ("workflow", "tiers") and key == "0":
-        return "Tier 0 (scouts only)"
+    if len(path) == 2 and path[0] == "workflow" and key == "tiers":
+        return "Models by tier"
     return LABELS.get(key, f"Tier {key}" if key.isdigit() else key.replace("_", " ").capitalize()).replace('Api', 'API')
 
 
@@ -255,24 +241,10 @@ def help_for(path):
         if path[-1] == "url":
             return f"Base URL for the {path[-2]} tracker API. No network request is made while editing."
         return f"Access token for the {path[-2]} tracker. It is masked here and rendered only for enabled tracker integration."
-    if len(path) == 3 and path[:2] == ("workflow", "weights"):
-        return f"Relative {path[-1]} capacity for worker and scout routing. Zero excludes this provider."
-    if len(path) == 3 and path[:2] == ("workflow", "tiers"):
-        return f"Worker and scout tier {path[-1]} candidates for Codex and Claude. Tier 0 is used only by scouts."
-    if len(path) == 4 and path[:2] == ("workflow", "tiers"):
-        return f"{path[-1].title()} candidate for worker and scout tier {path[-2]}. Configure model, effort and fast independently."
-    if len(path) == 5 and path[:2] == ("workflow", "tiers"):
-        subject = f"{path[-2].title()} worker and scout candidate"
-        return (f"Model for the {subject}. Choose a suggestion, enter any supported ID, or disable this candidate." if path[-1] == "model" else f"Reasoning effort for the {subject}. Default omits agent-box's effort override.")
-    if len(path) == 4 and path[:3] == ("workflow", "review", "tiers"):
-        return f"Independent reviewer tier {path[-1]} candidates for Codex and Claude. Empty models disable candidates."
-    if len(path) == 5 and path[:3] == ("workflow", "review", "tiers"):
-        return f"{path[-1].title()} reviewer candidate for tier {path[-2]}. It does not inherit worker settings."
-    if len(path) == 5 and path[:4] in (("workflow", "review", "override", "models"), ("workflow", "worker", "override", "models")):
-        return f"Global {path[-1].title()} {'worker' if path[1] == 'worker' else 'reviewer'} candidate. It does not inherit session or tier settings."
-    if len(path) == 6 and (path[:3] == ("workflow", "review", "tiers") or path[:4] in (("workflow", "review", "override", "models"), ("workflow", "worker", "override", "models"))):
-        subject = f"{path[-2].title()} {'worker' if path[1] == 'worker' else 'reviewer'} candidate"
-        return (f"Model for the {subject}. Choose a suggestion, enter any supported ID, or disable this candidate." if path[-1] == "model" else f"Reasoning effort for the {subject}. Default omits agent-box's effort override.")
+    if candidate_list(path) and len(path) == 4:
+        role = "reviewer" if path[1] == "review" else path[1]
+        return (f"{role.title()} candidates for tier {path[-1]} in preference order. Nonempty replaces the role's Models for this tier; "
+                "empty uses them. Enter edits the list: add, reorder, change or remove candidates.")
     raise KeyError(f"No menu help for {dotted}")
 
 
@@ -331,27 +303,26 @@ def env_entries(name, value):
     return kept
 
 
-def _candidate_field(path):
-    return (len(path) == 5 and path[:2] == ("workflow", "tiers") or
-            len(path) == 6 and (path[:3] == ("workflow", "review", "tiers") or
-                               path[:4] in (("workflow", "review", "override", "models"), ("workflow", "worker", "override", "models"))))
+def candidate_list(path):
+    """A role's ordered candidate list: ``workflow.ROLE.models`` or ``workflow.ROLE.tiers.N``."""
+    return (len(path) >= 3 and path[0] == "workflow" and path[1] in ("scout", "worker", "review")
+            and (len(path) == 3 and path[2] == "models" or len(path) == 4 and path[2] == "tiers"))
 
 
-def _model_path(path):
-    return path[-1:] == ("model",) and _candidate_field(path)
+def candidate_efforts(spec, tree):
+    """Efforts a candidate may request: its CLI's, narrowed by a configured API model's declaration."""
+    provider, api, value = spec["provider"], spec.get("api_provider"), spec["effort"]
+    if not api:
+        return tuple(dict.fromkeys([*AGENT_EFFORTS.get(provider, ()), value]))
+    models = tree["external_providers"].get(api, {}).get(provider, {}).get("models", {})
+    model = model_settings(models, spec["model"], provider)
+    return tuple(dict.fromkeys(["default", *(model.get("supported_efforts") or API_EFFORTS[provider][1:]), value]))
 
 
 def value_choices(path, section, tree):
     """The values the menu offers for ``path``, or None for free input; `config describe` reports the same."""
     name, value = path[-1], section[path[-1]]
     options = CHOICES.get(".".join(path))
-    if name == "effort" and _candidate_field(path):
-        options = AGENT_EFFORTS[path[-2]]
-        api = section.get('api_provider')
-        if api:
-            models = tree['external_providers'].get(api, {}).get(path[-2], {}).get('models', {})
-            model = model_settings(models, section.get('model', ''), path[-2])
-            options = tuple(dict.fromkeys(['default', *(model.get('supported_efforts') or API_EFFORTS[path[-2]][1:]), value]))
     if path[:1] == ('external_providers',):
         if len(path) == 6 and name == 'effort':
             options = tuple(dict.fromkeys(['default', *(section['supported_efforts'] or API_EFFORTS[path[2]][1:]), value]))
@@ -698,40 +669,86 @@ def edit(config, *, project=None):
             elif key in ("?", curses.KEY_F1):
                 full_help(screen, title, help_text)
 
-    def model_value(screen, path, current):
-        provider = path[-2]
-        candidate = draft
-        for part in path[:-1]:
-            candidate = candidate[part]
-        api = candidate.get("api_provider", "")
-        available = {name: spec[provider] for name, spec in draft['external_providers'].items()
-                     if spec['enabled'] and spec[provider]['url']}
-        suggestions = [('', model, model + ' [Built-in API]') for model in model_suggestions[provider]]
-        suggestions += [(name, model, (settings['display_name'] or model) + f' [{name}: {model}]')
-                        for name, endpoint in available.items() for model, settings in endpoint['models'].items()]
-        identities = [(name, model) for name, model, _ in suggestions]
-        if current and (api, current) not in identities:
-            suggestions.insert(0, (api, current, current + f' [{api or "Built-in API"}]'))
-        custom = [name for name in ['', *available] if name != api]
-        rows = [f'Enter a custom model ID... [{api or "Built-in API"}]', 'Disable this candidate (empty model)']
-        rows += [f'Enter a custom model ID... [{name or "Built-in API"}]' for name in custom]
+    def pick_model(screen, spec):
+        """``(provider, api, model)`` chosen together, or None; any CLI's model may serve any role."""
+        current = (spec["provider"], spec.get("api_provider", ""), spec["model"]) if spec else None
+        apis = [(provider, '') for provider in AGENT_PROVIDERS]
+        apis += [(provider, name) for name, connection in draft['external_providers'].items()
+                 for provider in AGENT_PROVIDERS if connection['enabled'] and connection[provider]['url']]
+        if current and current[:2] not in apis:
+            # A deleted or disabled API stays editable by hand rather than silently moving the candidate.
+            apis.insert(0, current[:2])
+        suggestions = [(provider, '', model, f'{model} [{provider}]')
+                       for provider in AGENT_PROVIDERS for model in model_suggestions[provider]]
+        suggestions += [(provider, api, model, (settings['display_name'] or model) + f' [{provider}@{api}: {model}]')
+                        for provider, api in apis if api and api in draft['external_providers']
+                        for model, settings in draft['external_providers'][api][provider]['models'].items()]
+        if current and current not in [row[:3] for row in suggestions]:
+            suggestions.insert(0, (*current, f'{current[2]} [{current[0]}{"@" + current[1] if current[1] else ""}]'))
+        rows = [f'Enter a custom model ID... [{provider}{"@" + api if api else ""}]' for provider, api in apis]
         offset = len(rows)
-        rows += [label + (' (current)' if (name, model) == (api, current) else '')
-                 for name, model, label in suggestions]
-        index = next((i + offset for i, (name, model, _) in enumerate(suggestions)
-                      if (name, model) == (api, current)), offset if suggestions and not api else 0)
-        about = 'Select API and model together. Configured external models are not live discovery; availability depends on the provider account.'
-        picked = choose(screen, rows, provider.title() + ' model', index, explanation=about)
+        rows += [row[3] + (' (current)' if row[:3] == current else '') for row in suggestions]
+        index = next((i + offset for i, row in enumerate(suggestions) if row[:3] == current), offset)
+        about = ('Select the CLI, API and model together. A candidate of the other CLI than the coordinator\'s runs as a '
+                 'managed CLI process. Configured external models are not live discovery; availability depends on the provider account.')
+        picked = choose(screen, rows, 'Model', index, explanation=about)
         if picked is None:
             return None
-        if picked == 1:
-            return '', ''
         if picked < offset:
-            target = api if picked == 0 else custom[picked - 2]
-            changed = input_value(screen, f'{provider} / {target or "Built-in API"} / model',
-                                  current if target == api else '', False)
-            return None if changed is None else (target if changed else '', changed)
-        return suggestions[picked - offset][:2]
+            provider, api = apis[picked]
+            same = current and current[:2] == (provider, api)
+            changed = input_value(screen, f'{provider} / {api or "Built-in API"} / model', current[2] if same else '', False)
+            return (provider, api, changed) if changed else None
+        return suggestions[picked - offset][:3]
+
+    def edit_candidates(screen, models, path):
+        """Edit an ordered candidate list in place; True when the draft changed."""
+        changed, index = False, 0
+        title = " / ".join(label_for(part, path[:i]) for i, part in enumerate(path))
+        while True:
+            rows = [f"{number}. {candidate_label(spec)}" for number, spec in enumerate(models, 1)] + ["Add model"]
+            details = [f"Candidate {number}: Enter to change its model, effort or fast, move it or remove it. " + help_for(path)
+                       for number in range(1, len(models) + 1)] + ["Append a candidate; the first available candidate runs. " + help_for(path)]
+            index = choose(screen, rows, title, min(index, len(rows) - 1), details=details)
+            if index is None:
+                return changed
+            if index == len(models):
+                chosen = pick_model(screen, None)
+                if chosen:
+                    provider, api, model = chosen
+                    models.append(model_entry({"provider": provider, "model": model, "api_provider": api}))
+                    changed = True
+                continue
+            spec = models[index]
+            actions = [f"Model: {spec['model']} [{spec['provider']}{'@' + spec['api_provider'] if spec.get('api_provider') else ''}]",
+                       f"Effort: {spec['effort']}", f"Fast: {'on' if spec.get('fast') is True else 'off'}",
+                       "Move up", "Move down", "Remove"]
+            action = choose(screen, actions, f"{title} / {index + 1}", 0,
+                            details=["Choose the CLI, API and model.", "Reasoning effort; default omits agent-box's effort override.",
+                                     help_for(("workflow", "fast")), "Prefer this candidate earlier.",
+                                     "Prefer this candidate later.", "Delete this candidate from the list."])
+            if action == 0:
+                chosen = pick_model(screen, spec)
+                if chosen:
+                    spec["provider"], spec["api_provider"], spec["model"] = chosen
+                    changed = True
+            elif action == 1:
+                options = candidate_efforts(spec, draft)
+                picked = choose(screen, list(options), f"{title} / {index + 1} / effort",
+                                options.index(spec["effort"]) if spec["effort"] in options else 0)
+                if picked is not None:
+                    spec["effort"], changed = options[picked], True
+            elif action == 2:
+                spec["fast"], changed = spec.get("fast") is not True, True
+            elif action == 3 and index:
+                models[index - 1], models[index] = models[index], models[index - 1]
+                index, changed = index - 1, True
+            elif action == 4 and index < len(models) - 1:
+                models[index + 1], models[index] = models[index], models[index + 1]
+                index, changed = index + 1, True
+            elif action == 5:
+                del models[index]
+                changed = True
 
     def path_pending():
         """Would saving now leave the shell unable to find agent-box?"""
@@ -751,10 +768,10 @@ def edit(config, *, project=None):
         """Why ``path`` has no effect in this draft, as (note, explanation), or None.
 
         Only a setting with no remaining consumer is muted: under direct
-        execution the tiers, routing and fallback still serve scouts and
-        reviewers, and marking them made every delegation row look disabled.
+        execution scout and reviewer candidates still apply, and marking them
+        made every delegation row look disabled.
         """
-        if path[:3] == ("workflow", "worker", "override") and draft["workflow"]["worker"]["execution"] == "direct":
+        if path[:3] in (("workflow", "worker", "models"), ("workflow", "worker", "tiers")) and draft["workflow"]["worker"]["execution"] == "direct":
             return ("unused while execution is direct",
                     "Unused while execution is direct: workers edit in the active session. "
                     "The value is kept and applies again under auto or delegated execution.")
@@ -789,10 +806,10 @@ def edit(config, *, project=None):
                     shown = "[x]" if value else "[ ]"
                 elif secret(full):
                     shown = "<configured>" if value else "<empty>"
+                elif candidate_list(full):
+                    shown = ", ".join(candidate_label(spec) for spec in value) or "(none)"
                 elif isinstance(value, str):
                     shown = value or "(not set)"
-                    if _model_path(full) and value:
-                        shown += f" [{data.get('api_provider') or 'Built-in API'}]"
                 else:
                     shown = json.dumps(value, ensure_ascii=False)
                 if project_mode:
@@ -849,8 +866,6 @@ def edit(config, *, project=None):
                     notice = "Global only"
                 elif project_mode and key in ("r", "R"):
                     data[keys[selected]] = remove_override(full)
-                    if _model_path(full):
-                        data['api_provider'] = remove_override((*path, 'api_provider'))
                     notice = "Reset to default: override removed; inheriting global values"
                 elif key in ("r", "R") or project_mode:
                     value = default_value(full, global_values if project_mode else defaults)
@@ -869,11 +884,6 @@ def edit(config, *, project=None):
                             data[keys[selected]] = current
                         else:
                             data[keys[selected]] = value
-                        if _model_path(full):
-                            api_path = (*path, 'api_provider')
-                            data['api_provider'] = default_value(api_path, global_values if project_mode else defaults)
-                            if project_mode:
-                                record(api_path, data['api_provider'])
                         notice = ("Copy current global: current values copied as explicit project overrides" if project_mode
                                   else "Reset to default: built-in program values restored in draft")
             elif key in (" ", "\n", "\r", curses.KEY_RIGHT):
@@ -970,12 +980,8 @@ def edit(config, *, project=None):
                 if isinstance(value, bool):
                     data[name] = not value
                     accepted = True
-                elif _model_path(full):
-                    changed = model_value(screen, full, value)
-                    if changed is not None:
-                        data['api_provider'], data[name] = changed
-                        if project_mode:
-                            record((*path, 'api_provider'), data['api_provider'])
+                elif candidate_list(full):
+                    if edit_candidates(screen, value, full):
                         notice = "Draft updated; save to keep changes"
                         accepted = True
                 elif options:

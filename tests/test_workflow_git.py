@@ -138,8 +138,8 @@ class WorkflowGitTests(unittest.TestCase):
                 self.assertEqual(workflow.read_evidence(root, task)["writer"], "codex")
                 writer = workflow.read_evidence(root, task)["writer"]
                 from agent_box.routing import select
-                config.workflow.review.tiers["1"] = {provider: {"fast": False, "model": provider + "-model", "effort": "high"} for provider in ("codex", "claude")}
-                self.assertEqual(select(config.workflow, "reviewer", 1, "codex", {}, writer=writer)["provider"], "claude")
+                config.workflow.review.tiers["1"] = [{"provider": provider, "api_provider": "", "fast": False, "model": provider + "-model", "effort": "high"} for provider in ("codex", "claude")]
+                self.assertEqual(select(config.workflow, "reviewer", 1, "codex", writer=writer)["provider"], "claude")
                 subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
                 subprocess.run(["git", "commit", "-m", "change"], cwd=root, check=True, capture_output=True)
                 prepared = workflow.dispatch(workflow.parser().parse_args([

@@ -1,4 +1,4 @@
-"""Local execution locks and routing counters, never authoritative task state."""
+"""Local execution locks, never authoritative task state."""
 import fcntl
 import hashlib
 import os

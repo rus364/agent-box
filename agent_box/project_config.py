@@ -6,19 +6,22 @@ import json
 from pathlib import Path
 
 from .atomicio import atomic_write_text
-from .config import Config, TRACKER_PROVIDERS
+from .config import Config, MODEL_ENTRY, TRACKER_PROVIDERS
 from .errors import AgentBoxError
 from .repo_binding import BINDING_FILE, repository_root, server_identity
 
 
-def _fields(value):
+def _fields(value, parts=()):
     if isinstance(value, dict):
-        return {key: _fields(item) for key, item in value.items()}
+        return {key: _fields(item, (*parts, key)) for key, item in value.items()}
+    # A candidate list holds objects; a one-element list carries the entry's own rule.
+    if parts[:1] == ("workflow",) and ("models" in parts or "tiers" in parts):
+        return [MODEL_ENTRY]
     return type(value)
 
 
 PROJECT_FIELDS = {
-    "workflow": {key: _fields(value) for key, value in Config().workflow.to_dict().items() if key != "enabled"},
+    "workflow": {key: _fields(value, ("workflow", key)) for key, value in Config().workflow.to_dict().items() if key != "enabled"},
     "browser": {"enabled": bool},
     "image": _fields(Config().image.to_dict()),
     "tracker": {"provider": str, "project": str, "recursive": bool,
@@ -87,7 +90,12 @@ def validate(data, path):
 
     def fields(value, rule, parts=()):
         dotted = '.'.join(parts) or '<root>'
-        if isinstance(rule, dict):
+        if isinstance(rule, list):
+            if not isinstance(value, list):
+                raise AgentBoxError(f"Invalid project configuration: {path}: {dotted} must be a list")
+            for index, item in enumerate(value):
+                fields(item, rule[0], (*parts, str(index)))
+        elif isinstance(rule, dict):
             if not isinstance(value, dict):
                 raise AgentBoxError(f"Invalid project configuration: {path}: {dotted} must be an object")
             for key, item in value.items():
@@ -114,7 +122,7 @@ def validate(data, path):
             except AgentBoxError:
                 raise AgentBoxError(f"Invalid project configuration: {path}: tracker.connections.{provider}.url must be an HTTP(S) URL without credentials, query, or fragment") from None
     workflow = data.get("workflow", {})
-    for key in ("merge_mode", "routing"):
+    for key in ("merge_mode",):
         if key in workflow and not workflow[key]:
             raise AgentBoxError(f"Invalid project configuration: {path}: workflow.{key} must be nonempty")
     errors = Config.from_dict(merge(Config().to_dict(), data)).workflow.validate()

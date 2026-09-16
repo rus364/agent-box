@@ -9,7 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from agent_box import cli, launch_options, notify, project_config, runtime
-from agent_box.config import Config, TrackerConnection, effective_config
+from agent_box.config import Config, TrackerConnection, effective_config, model_entry
 from agent_box.errors import AgentBoxError
 from agent_box.launch_options import LaunchOptions
 from agent_box.routing import select
@@ -21,10 +21,9 @@ PROVIDERS = ["codex", "claude"]
 def workflow_config():
     config = Config()
     config.workflow.enabled = True
-    for tiers in (config.workflow.tiers, config.workflow.review.tiers):
-        for tier in tiers.values():
-            for provider in PROVIDERS:
-                tier[provider]["model"] = provider + "-tier"
+    for role in (config.workflow.worker, config.workflow.scout, config.workflow.review):
+        for tier in role.tiers:
+            role.tiers[tier] = [model_entry({"provider": provider, "model": provider + "-tier"}) for provider in PROVIDERS]
     return config
 
 
@@ -189,25 +188,25 @@ class PinnedRouteTests(unittest.TestCase):
                         self.assertEqual((route["provider"], route["model"], route["effort"], route["fallbacks"]),
                                          ("claude", "opus", "high", []))
 
-    def test_pinned_worker_and_scout_escape_current_routing_and_zero_weight(self):
+    def test_pinned_worker_and_scout_replace_the_configured_lists(self):
         workflow = self.pinned(worker="codex:gpt-5.5", scout="claude:haiku:low")
-        workflow.routing, workflow.weights = "current", {"codex": 0, "claude": 1}
-        worker = select(workflow, "worker", None, "claude", {}, available=PROVIDERS)
-        scout = select(workflow, "scout", 0, "codex", {}, available=PROVIDERS)
-        self.assertEqual((worker["provider"], worker["model"], worker["effort"]), ("codex", "gpt-5.5", "default"))
+        worker = select(workflow, "worker", 2, "claude", available=PROVIDERS)
+        scout = select(workflow, "scout", 0, "codex", available=PROVIDERS)
+        self.assertEqual((worker["provider"], worker["model"], worker["effort"], worker["fallbacks"]),
+                         ("codex", "gpt-5.5", "default", []))
         self.assertEqual((scout["provider"], scout["model"], scout["effort"]), ("claude", "haiku", "low"))
 
     def test_a_pin_replaces_session_inheritance_and_is_never_saved(self):
         """Untiered work would otherwise inherit the active session and ignore the flag."""
         workflow = self.pinned(reviewer="codex:gpt-5.5:high")
-        self.assertIsNone(workflow_config().workflow.override_for("reviewer", None))
-        self.assertIsNotNone(workflow.override_for("reviewer", None))
+        self.assertEqual(workflow_config().workflow.models_for("reviewer", None), ("workflow.review.models", []))
+        self.assertEqual(workflow.models_for("reviewer", None)[0], "--reviewer")
         self.assertNotIn("pins", workflow.to_dict())
         self.assertNotIn("pins", project_config.PROJECT_FIELDS["workflow"])
 
     def test_a_pinned_provider_without_its_cli_is_an_error_not_a_substitute(self):
         workflow = self.pinned(reviewer="claude:opus")
-        with self.assertRaisesRegex(AgentBoxError, "not installed"):
+        with self.assertRaisesRegex(AgentBoxError, "CLI installed"):
             select(workflow, "reviewer", 1, "codex", {}, writer="codex", available=["codex"])
 
 

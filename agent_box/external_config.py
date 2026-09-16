@@ -311,11 +311,11 @@ def validate_connections(config):
     for name, spec in config.external_providers.items():
         if spec.enabled and (not spec.api_key.strip() or not (spec.codex.url or spec.claude.url)):
             errors.append(f"external_providers.{name}: enabled provider requires an API key and a CLI URL")
-    for path, models in config.workflow.candidate_groups():
-        for cli, candidate in models.items():
-            connection = config.external_providers.get(candidate.get('api_provider'))
-            if connection and candidate.get('model'):
-                error = model_effort_error(getattr(connection, cli), candidate['model'], cli, candidate['effort'])
-                if error:
-                    errors.append(f'{path}.{cli}: {error}')
+    for path, candidate in config.workflow.candidates():
+        connection = config.external_providers.get(candidate.get('api_provider'))
+        cli = candidate.get('provider')
+        if connection and cli in ('codex', 'claude') and candidate.get('model'):
+            error = model_effort_error(getattr(connection, cli), candidate['model'], cli, candidate['effort'])
+            if error:
+                errors.append(f'{path}: {error}')
     return errors
