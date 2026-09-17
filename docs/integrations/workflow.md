@@ -131,8 +131,8 @@ The reviewer answers in Markdown with exactly one line
 `Verdict: PASS|NEEDS_WORK|INCONCLUSIVE` and one bullet per finding,
 `- [LOW|MEDIUM|HIGH|CRITICAL] path:line — text`; its instructions define each
 severity. Workflow reads only the verdict line and the finding severities, and
-the rest stays prose for the coordinator. No verdict line, or more than one, is a
-failure rather than a guess. A JSON schema was the rejected alternative: external
+the rest stays prose for the coordinator. No verdict line, more than one, or a PASS
+that lists findings is a failure rather than a guess. A JSON schema was the rejected alternative: external
 APIs ignored it, and a valid verdict wrapped in narration then cost a whole round.
 
 Successful managed runs return `usage` token counters through workflow output;

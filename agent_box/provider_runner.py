@@ -66,7 +66,8 @@ def review_report(text):
     A JSON schema was the rejected alternative: external APIs ignored it, and a
     valid verdict wrapped in prose then cost a whole paid round. Everything but
     the verdict stays prose for the coordinator; several or no verdict lines are
-    ambiguous and fail instead of choosing one.
+    ambiguous and fail instead of choosing one, and so does a PASS that lists
+    findings, which would otherwise accept work the reviewer itself faulted.
     """
     lines = [line for line in text.splitlines() if VERDICT_LINE.match(line)]
     if len(lines) != 1:
@@ -76,6 +77,8 @@ def review_report(text):
         invalid("verdict", "Verdict must be PASS, NEEDS_WORK or INCONCLUSIVE")
     findings = [{"severity": match[1], "location": match[2]}
                 for match in map(FINDING.match, text.splitlines()) if match]
+    if verdict[1] == "PASS" and findings:
+        invalid("verdict", "PASS must not list findings")
     return {"verdict": verdict[1], "findings": findings}
 
 

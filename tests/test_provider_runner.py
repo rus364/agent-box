@@ -28,7 +28,8 @@ class ProviderRunnerTests(unittest.TestCase):
         self.assertEqual(r.review_report("## Verdict: PASS\n")["verdict"], "PASS")
         for text, reason in (("The verdict is PASS.\n", "response has no Verdict line"),
                              ("Verdict: PASS\nVerdict: PASS\n", "response has more than one Verdict line"),
-                             ("Verdict: PASS, mostly\n", "Verdict must be PASS, NEEDS_WORK or INCONCLUSIVE")):
+                             ("Verdict: PASS, mostly\n", "Verdict must be PASS, NEEDS_WORK or INCONCLUSIVE"),
+                             ("Verdict: PASS\n\n- [CRITICAL] a.py:1 — data loss\n", "PASS must not list findings")):
             with self.subTest(text=text), self.assertRaises(r.ProviderFailure) as caught:
                 r.review_report(text)
             self.assertEqual((caught.exception.category, caught.exception.stage, caught.exception.reason),
