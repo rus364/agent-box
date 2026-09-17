@@ -566,7 +566,10 @@ def delta_review(root, config, task, tasks):
         value, _ = review_results.read(WORKFLOW_STATE, repository_key(root), records[-1]["receipt"])
     except (AgentBoxError, OSError, ValueError):
         return None
-    report, reviewed = value["output"]["report"], value["descriptor"].get("head")
+    descriptor = value["descriptor"]
+    if descriptor.get("task") != task.id or descriptor.get("delegation") != records[-1]["round"]:
+        return None
+    report, reviewed = value["output"]["report"], descriptor.get("head")
     ceiling = SEVERITIES.index(review.incremental)
     if report["verdict"] == "NEEDS_WORK":
         if any(SEVERITIES.index(item["severity"]) > ceiling for item in report["findings"]):

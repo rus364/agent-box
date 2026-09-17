@@ -119,6 +119,16 @@ class DeltaReviewTests(WorkflowCase):
         self.commit("change.py", 1, "after inconclusive")
         self.assertIsNone(self.run_workflow("inspect", "1")["review"]["delta"])
 
+    def test_a_result_of_another_round_or_task_gives_no_baseline(self):
+        """The index names a receipt; the receipt must describe this task's own round, as review-result also checks."""
+        self.reviewed("Verdict: PASS\n\nReviewed.\n")
+        self.commit("change.py", 2, "small")
+        state = workflow.read_review_state(self.root, BINDING, self.task)
+        self.assertIsNotNone(self.run_workflow("inspect", "1")["review"]["delta"])
+        state["results"][-1]["round"] = "another-round"
+        workflow.save_review_state(self.root, BINDING, self.task, state)
+        self.assertIsNone(self.run_workflow("inspect", "1")["review"]["delta"])
+
     def test_the_setting_is_validated_and_kept_across_save(self):
         """Severity names are exact, so a lowercase level cannot silently turn the mode off."""
         config = Config.from_dict({"workflow": {"review": {"incremental": "MEDIUM"}}})
