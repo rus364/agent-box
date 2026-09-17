@@ -582,8 +582,9 @@ class TrackerConfig:
 
 
 MODEL_ENTRY = {"provider": str, "model": str, "effort": str, "fast": bool, "api_provider": str}
-#: Tiers each role runs at; tier 0 is reserved for scouts.
-ROLE_TIERS = {"scout": range(4), "worker": range(1, 4), "reviewer": range(1, 4)}
+#: Task tiers that may select their own worker and reviewer lists; scouts have none.
+TIERS = range(1, 4)
+TIERED_ROLES = ("worker", "reviewer")
 
 
 def model_entry(data):
@@ -617,13 +618,13 @@ def model_list(data=None):
     return [model_entry(item) for item in data] if isinstance(data, list) else data
 
 
-def model_tiers(numbers, data=None):
+def model_tiers(data=None):
     """Known tiers as lists; a wrong container or unknown tier stays for validate() to name."""
     if data is None:
         data = {}
     if not isinstance(data, dict):
         return data
-    known = {str(number) for number in numbers}
+    known = {str(number) for number in TIERS}
     return {**{tier: model_list(data.get(tier)) for tier in sorted(known)},
             **{tier: value for tier, value in data.items() if tier not in known}}
 
@@ -631,34 +632,30 @@ def model_tiers(numbers, data=None):
 @dataclass
 class WorkerConfig:
     models: list[dict] = field(default_factory=list)
-    tiers: dict[str, list] = field(default_factory=lambda: model_tiers(ROLE_TIERS["worker"]))
+    tiers: dict[str, list] = field(default_factory=model_tiers)
 
     @classmethod
     def from_dict(cls, data):
         data = _mapping(data)
-        return cls(model_list(data.get("models")),
-                   model_tiers(ROLE_TIERS["worker"], data.get("tiers")))
+        return cls(model_list(data.get("models")), model_tiers(data.get("tiers")))
 
 
 @dataclass
 class ScoutConfig:
     limit: int = 3
     models: list[dict] = field(default_factory=list)
-    tiers: dict[str, list] = field(default_factory=lambda: model_tiers(ROLE_TIERS["scout"]))
 
     @classmethod
     def from_dict(cls, data):
         data = _mapping(data)
-        return cls(_number(data, "limit", 3), model_list(data.get("models")),
-                   model_tiers(ROLE_TIERS["scout"], data.get("tiers")))
+        return cls(_number(data, "limit", 3), model_list(data.get("models")))
 
 
 @dataclass
 class ReviewConfig:
     policy: str = "auto"
-    routing: str = "cross-provider"
     models: list[dict] = field(default_factory=list)
-    tiers: dict[str, list] = field(default_factory=lambda: model_tiers(ROLE_TIERS["reviewer"]))
+    tiers: dict[str, list] = field(default_factory=model_tiers)
     max_files: int = 5
     max_lines: int = 200
     max_rounds: int = 3
@@ -681,8 +678,8 @@ class ReviewConfig:
         data = _mapping(data)
         result = cls()
         result.models = model_list(data.get("models"))
-        result.tiers = model_tiers(ROLE_TIERS["reviewer"], data.get("tiers"))
-        for key in ("policy", "routing", "label", "github_provider", "github_model", "github_effort"):
+        result.tiers = model_tiers(data.get("tiers"))
+        for key in ("policy", "label", "github_provider", "github_model", "github_effort"):
             if key in data and isinstance(data[key], str):
                 setattr(result, key, data[key].strip())
         for key in ("max_files", "max_lines", "max_rounds", "wait_seconds"):
@@ -704,6 +701,9 @@ class WorkflowConfig:
     """
     enabled: bool = False
     merge_mode: str = "github"
+    #: Off by default: a task's tier then selects nothing, and every worker and
+    #: reviewer runs its role's own list. The tiers stay configured and labelled.
+    use_tiers: bool = False
     scout: ScoutConfig = field(default_factory=ScoutConfig)
     auto_push: bool = True
     timeout_seconds: int = 3600
@@ -725,8 +725,14 @@ class WorkflowConfig:
     def role(self, role):
         return {"scout": self.scout, "worker": self.worker, "reviewer": self.review}[role]
 
+    def effective_tier(self, tier):
+        """The task tier that selects models, or None while tiers are switched off."""
+        return tier if self.use_tiers else None
+
     def models_for(self, role, tier):
         """``(path, candidates)``: a session pin, else a nonempty tier list, else the role's own list.
+
+        ``tier`` is already effective; scouts have no tier lists.
 
         The candidate's provider decides only how it runs, never whether the
         coordinator may use it: a Claude session runs a Codex scout as a
@@ -739,7 +745,7 @@ class WorkflowConfig:
         section = "review" if role == "reviewer" else role
         settings = self.role(role)
         # Wrong containers are validate()'s errors; unvalidated readers such as profile sync must not crash.
-        if tier is not None and isinstance(settings.tiers, dict) and settings.tiers.get(str(tier)):
+        if role in TIERED_ROLES and tier is not None and isinstance(settings.tiers, dict) and settings.tiers.get(str(tier)):
             return f"workflow.{section}.tiers.{tier}", settings.tiers[str(tier)]
         return f"workflow.{section}.models", settings.models
 
@@ -753,8 +759,6 @@ class WorkflowConfig:
             errors.append("workflow.timeout_seconds must be between 30 and 86400")
         if not isinstance(self.scout.limit, int) or not 1 <= self.scout.limit <= 16:
             errors.append("workflow.scout.limit must be between 1 and 16")
-        if self.review.routing not in ("cross-provider", "same-provider"):
-            errors.append("workflow.review.routing must be cross-provider or same-provider")
         if self.review.policy not in ("off", "auto", "always"):
             errors.append("workflow.review.policy must be off, auto, or always")
         if self.review.github_provider not in ("auto", "local", "codex", "claude"):
@@ -764,18 +768,19 @@ class WorkflowConfig:
             if not isinstance(value, int) or value < 1:
                 errors.append(f"workflow.review.{name} must be a positive integer")
         from .fast_mode import configuration_error
-        for role, tiers in ROLE_TIERS.items():
+        for role in ("scout", *TIERED_ROLES):
             section = "review" if role == "reviewer" else role
             settings = self.role(role)
             if not isinstance(settings.models, list):
                 errors.append(f"workflow.{section}.models must be a list of candidates")
+            if role not in TIERED_ROLES:
+                continue
             if not isinstance(settings.tiers, dict):
                 errors.append(f"workflow.{section}.tiers must be an object keyed by tier")
                 continue
             for tier, models in settings.tiers.items():
-                if tier not in {str(number) for number in tiers}:
-                    errors.append(f"workflow.{section}.tiers.{tier} is not a {role} tier; use "
-                                  + ", ".join(str(number) for number in tiers))
+                if tier not in {str(number) for number in TIERS}:
+                    errors.append(f"workflow.{section}.tiers.{tier} is not a task tier; use 1, 2, 3")
                 elif not isinstance(models, list):
                     errors.append(f"workflow.{section}.tiers.{tier} must be a list of candidates")
         for path, spec in self.candidates():
@@ -798,11 +803,11 @@ class WorkflowConfig:
     def candidates(self):
         """Every configured candidate with its dotted path, including session pins."""
         groups = []
-        for role in ROLE_TIERS:
+        for role in ("scout", *TIERED_ROLES):
             section = "review" if role == "reviewer" else role
             settings = self.role(role)
             groups.append((f"workflow.{section}.models", settings.models))
-            if isinstance(settings.tiers, dict):
+            if role in TIERED_ROLES and isinstance(settings.tiers, dict):
                 groups.extend((f"workflow.{section}.tiers.{tier}", models) for tier, models in settings.tiers.items())
         groups.extend((f"--{role}", models) for role, models in self.pins.items())
         # Wrong containers are reported by validate() by themselves, not entry by entry.
@@ -815,7 +820,7 @@ class WorkflowConfig:
         result = cls()
         result.enabled = _bool(data, "enabled", False)
         result.merge_mode = _str(data, "merge_mode") or result.merge_mode
-        for key in ("auto_push", "cleanup_local_branches", "cleanup_remote_branches"):
+        for key in ("use_tiers", "auto_push", "cleanup_local_branches", "cleanup_remote_branches"):
             setattr(result, key, _bool(data, key, getattr(result, key)))
         result.timeout_seconds = _number(data, "timeout_seconds", result.timeout_seconds)
         result.scout = ScoutConfig.from_dict(data.get("scout"))

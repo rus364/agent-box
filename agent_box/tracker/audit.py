@@ -47,7 +47,7 @@ def task_problems(task, get):
     if task.state == "Unknown":
         report("no-state", "sits in no lifecycle column of its project board")
     try:
-        # Missing tiers use the active session; explicit labels must still be valid.
+        # A task needs no tier; an explicit label must still be valid.
         task.tier
     except TrackerError as exc:
         report("bad-tier", str(exc))

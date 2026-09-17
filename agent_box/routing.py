@@ -1,16 +1,10 @@
-"""Deterministic model selection: an ordered candidate list per role and tier."""
+"""Deterministic model selection: an ordered candidate list per role, and per task tier when enabled."""
 from __future__ import annotations
 
 import time
 
-from .config import AGENT_PROVIDERS
+from .config import AGENT_PROVIDERS, TIERED_ROLES, TIERS
 from .errors import AgentBoxError
-
-
-def validate_role_tier(role, tier):
-    """Tier remains a role boundary even when execution bypasses model routing."""
-    if role not in ("worker", "scout", "reviewer") or tier not in (None, 0, 1, 2, 3) or (tier == 0 and role != "scout"):
-        raise AgentBoxError("Tier 0 is reserved for scouts; workers and reviewers require tier 1-3")
 
 
 def applicable_windows(snapshot, model):
@@ -18,22 +12,23 @@ def applicable_windows(snapshot, model):
             if not window.get("models") or any(name in model for name in window["models"])]
 
 
-def select(config, role, tier, primary, usage=None, *, now=None, writer=None, available=None):
+def select(config, role, tier, usage=None, *, now=None, available=None):
     """The first available candidate of the role's list, with the rest as ordered fallbacks.
 
-    Weighted and usage-scored provider shares were the rejected alternative:
-    with one ordered list per role and tier there is nothing left to share
-    out, and the list states the preference directly. A candidate whose
-    subscription window is exhausted is skipped, not reordered, for every role.
+    ``tier`` is the effective task tier, and scouts have none. Weighted and
+    usage-scored provider shares were the rejected alternative: with one
+    ordered list per role there is nothing left to share out, and the list
+    states the preference directly. Reviewers once ran the other provider than
+    the writer first; the list now states that preference too. A candidate
+    whose subscription window is exhausted is skipped, not reordered.
     """
     errors = config.validate()
     if errors:
         raise AgentBoxError("; ".join(errors))
-    validate_role_tier(role, tier)
+    if tier is not None and (role not in TIERED_ROLES or tier not in TIERS):
+        raise AgentBoxError(f"A {role} has no tier {tier}; task tiers 1-3 select worker and reviewer lists")
     path, models = config.models_for(role, tier)
     pinned = role in config.pins
-    if tier is None and not models:
-        raise AgentBoxError("Tier 0 is reserved for scouts; workers and reviewers require tier 1-3")
     now = time.time() if now is None else now
     usage = usage or {}
     available = set(AGENT_PROVIDERS if available is None else available)
@@ -48,30 +43,13 @@ def select(config, role, tier, primary, usage=None, *, now=None, writer=None, av
         if allowed and not usable:
             raise AgentBoxError(f"Every candidate in {path} has an exhausted usage limit; wait for a reset or add a candidate")
         allowed = usable
-    if pinned:
-        order = allowed
-        reason = f"Pinned for this session by --{role}"
-    elif role == "reviewer":
-        # Until reviewers take their list's first candidate, the session provider stands in for the writer.
-        writer = writer or primary
-        if writer not in AGENT_PROVIDERS:
-            raise AgentBoxError("Specify the primary provider: codex or claude")
-        own = [spec for spec in allowed if spec["provider"] == writer]
-        if config.review.routing == "same-provider":
-            order = own
-            reason = "Fresh reviewer from the actual writer provider only"
-        else:
-            order = [spec for spec in allowed if spec["provider"] != writer] + own
-            reason = "Use the other writer provider first; fallback requires unavailability"
-    else:
-        order = allowed
-        reason = "First available candidate"
-    if not order:
-        raise AgentBoxError(f"No allowed {role} model configured in {path}; no automatic tier downgrade")
+    if not allowed:
+        raise AgentBoxError(f"No {role} candidate configured in {path}")
+    reason = f"Pinned for this session by --{role}" if pinned else "First available candidate"
 
     def entry(spec):
         return {"provider": spec["provider"], "model": spec["model"], "effort": spec["effort"],
                 **({"api_provider": spec["api_provider"]} if spec.get("api_provider") else {}),
                 "fast": spec.get("fast", False), "tier": tier}
-    return {**entry(order[0]), "role": role, "reason": f"{reason}; models from {path}",
-            "fallbacks": [entry(spec) for spec in order[1:]]}
+    return {**entry(allowed[0]), "role": role, "reason": f"{reason}; models from {path}",
+            "fallbacks": [entry(spec) for spec in allowed[1:]]}

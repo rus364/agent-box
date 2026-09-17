@@ -41,8 +41,9 @@ OPTIONS = (
     Option("tmux", LAUNCH, "Start directly, without a detachable tmux session", form="negated", session=False),
     Option("kvm", LAUNCH, "Do not pass /dev/kvm through", form="negated", container=True, session=False),
     Option("worker", WORKFLOW, "Pin the managed worker model", "SPEC"),
-    Option("reviewer", WORKFLOW, "Pin the reviewer, whatever review routing and tiers say", "SPEC"),
+    Option("reviewer", WORKFLOW, "Pin the reviewer model", "SPEC"),
     Option("scout", WORKFLOW, "Pin the scout model", "SPEC"),
+    Option("tiers", WORKFLOW, "Select worker and reviewer models by task tier", form="pair"),
     Option("review", WORKFLOW, "When review is required", "off|auto|always", choices=("off", "auto", "always")),
     Option("rounds", WORKFLOW, "Review attempt limit per task", "N"),
     Option("merge", WORKFLOW, "Delivery route", "github|local", choices=("github", "local")),
@@ -178,6 +179,8 @@ def apply(config, overrides):
             workflow.merge_mode = value
         elif key == "push":
             workflow.auto_push = value
+        elif key == "tiers":
+            workflow.use_tiers = value
         elif key == "workflow":
             workflow.enabled = config.tracker.enabled = False
         elif key == "tracker":

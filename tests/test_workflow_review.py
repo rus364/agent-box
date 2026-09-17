@@ -149,25 +149,23 @@ class ReviewWorkflowTests(WorkflowCase):
         """Config changes cannot rewrite a prepared review's parameters or admit stale reports."""
         self.patches[5].stop()  # Exercise the real route, not the generic handoff fixture.
         self.task.labels = []
-        self.config.workflow.review.models = [candidate("codex", "codex-global", "medium"),
-                                              candidate("claude", "claude-global", "high")]
-        # Claude coordinates and reviews its own session's work: the Claude candidate runs natively here.
-        self.config.workflow.review.routing = "same-provider"
+        self.config.workflow.review.models = [candidate("claude", "claude-global", "high"),
+                                              candidate("codex", "codex-global", "medium")]
         with patch.object(workflow.shutil, "which", side_effect=lambda name: name):
             prepared = self.run_workflow("prepare", "1", "--role", "reviewer", "--primary", "claude",
                                          "--brief", str(self.review_brief))
         route = prepared["route"]
         self.assertEqual((route["provider"], route["model"], route["tier"]), ("claude", "claude-global", None))
-        self.assertIsNone(route["native_profile"])
+        self.assertEqual(route["native_profile"], "ab-reviewer")
         self.assertFalse(route.get("managed_only"))
-        self.assertEqual(route["fallbacks"], [])
-        self.config.workflow.review.models[1]["model"] = "changed-after-prepare"
+        self.assertEqual([fallback["model"] for fallback in route["fallbacks"]], ["codex-global"])
+        self.config.workflow.review.models[0]["model"] = "changed-after-prepare"
         self.report.write_text(json.dumps({"verdict": "PASS", "summary": "Reviewed", "findings": []}))
         argv = ["report", "1", "--role", "reviewer", "--scope", prepared["scope"],
                 "--handoff", prepared["handoff"], "--file", str(self.report)]
         with self.assertRaisesRegex(AgentBoxError, "outside the configured route"):
             self.run_workflow(*argv, "--provider", "claude", "--model", "changed-after-prepare", "--effort", "high", "--fresh-context")
-        with self.assertRaisesRegex(AgentBoxError, "outside the configured route"):
+        with self.assertRaisesRegex(AgentBoxError, "requires managed CLI execution"):
             self.run_workflow(*argv, "--provider", "codex", "--model", "codex-global", "--effort", "medium", "--fresh-context")
         with self.assertRaisesRegex(AgentBoxError, "fresh-context"):
             self.run_workflow(*argv, "--provider", "claude", "--model", "claude-global", "--effort", "high")
@@ -176,32 +174,29 @@ class ReviewWorkflowTests(WorkflowCase):
         self.assertIsNone(result["route"]["tier"])
         self.assertEqual(self.task.labels, [])
 
-    def test_reviewer_models_respect_effective_tier_and_managed_default_effort(self):
-        """Managed review uses the role's models only where no tier list applies, even with explicit --tier."""
+    def test_the_task_tier_selects_reviewer_models_only_while_tiers_are_on(self):
+        """Tiers off run the role's own list for a tier-labelled task; with no list, the session is inherited."""
         self.patches[5].stop()
-        self.task.labels = []
+        self.task.labels = ["ab:tier:2"]
         self.config.workflow.review.max_rounds = 30
         self.config.workflow.review.policy = "always"
-        self.config.workflow.review.routing = "same-provider"
         review = self.config.workflow.review
-        for command in ("review",):
-            for provider in ("codex", "claude"):
-                for models, tier_list, explicit, expected in ((False, True, False, "session"),
-                        (False, True, True, "tier"), (True, True, False, "global"),
-                        (True, True, True, "tier"), (True, False, True, "global")):
-                    review.models = [candidate(provider, provider + "-global", "default")] if models else []
-                    review.tiers["2"] = [candidate(provider, provider + "-tier", "high")] if tier_list else []
-                    argv = [command, "1", "--primary", provider, "--brief", str(self.review_brief),
-                            "--session-model", provider + "-session", "--session-effort", "medium"]
-                    if explicit:
-                        argv += ["--tier", "2"]
-                    with self.subTest(command=command, provider=provider, expected=expected, explicit=explicit), \
-                         patch.object(workflow.shutil, "which", side_effect=lambda name: name), \
-                         patch.object(workflow, "run", return_value={"verdict": "PASS", "summary": "Reviewed", "findings": []}) as run:
-                        result = self.run_workflow(*argv)
+        for provider in ("codex", "claude"):
+            for use_tiers, models, tier_list, expected in ((False, False, True, "session"), (False, True, True, "global"),
+                                                           (True, False, True, "tier"), (True, True, True, "tier"),
+                                                           (True, True, False, "global")):
+                self.config.workflow.use_tiers = use_tiers
+                review.models = [candidate(provider, provider + "-global", "default")] if models else []
+                review.tiers["2"] = [candidate(provider, provider + "-tier", "high")] if tier_list else []
+                argv = ["review", "1", "--primary", provider, "--brief", str(self.review_brief),
+                        "--session-model", provider + "-session", "--session-effort", "medium"]
+                with self.subTest(provider=provider, use_tiers=use_tiers, models=models, tier_list=tier_list), \
+                     patch.object(workflow.shutil, "which", side_effect=lambda name: name), \
+                     patch.object(workflow, "run", return_value={"verdict": "PASS", "summary": "Reviewed", "findings": []}) as run:
+                    result = self.run_workflow(*argv)
                     route = run.call_args.args[0]
                     self.assertEqual(route["model"], provider + "-" + expected)
-                    self.assertEqual(route["tier"], 2 if explicit else None)
+                    self.assertEqual(route["tier"], 2 if use_tiers and expected != "session" else None)
                     if expected == "global":
                         self.assertEqual(route["effort"], "default")
                         cmd = provider_runner.build_command(route, "reviewer", self.root, self.report, self.report)
@@ -275,14 +270,6 @@ class ReviewWorkflowTests(WorkflowCase):
         with self.assertRaisesRegex(AgentBoxError, "active session provider"):
             workflow.dispatch(args)
 
-    def test_explicit_cli_tier_retains_matrix_routing_without_label_mutation(self):
-        """An explicit invocation override remains possible without changing the card."""
-        self.task.labels = []
-        prepared = self.run_workflow("prepare", "1", "--primary", "codex", "--tier", "2",
-                                     "--brief", str(self.review_brief))
-        self.assertEqual((prepared["route"]["tier"], prepared["route"]["model"]), (2, "m"))
-        self.assertEqual(self.task.labels, [])
-
     def test_the_cli_reviewer_path_reaches_the_managed_runner_too(self):
         """`workflow review` calls the same runner, so it breaks on the same mismatch."""
         self.config.workflow.review.policy = "always"
@@ -333,7 +320,7 @@ class ReviewWorkflowTests(WorkflowCase):
                 "message": finding, "evidence": "value is still 1",
                 "requirement": "Fixed values remain bounded"}]}))
         result = self.run_workflow(
-            "report", "1", "--role", "reviewer", "--primary", "codex",
+            "report", "1", "--role", "reviewer",
             "--provider", "claude", "--model", "m", "--effort", "high",
             "--scope", first["scope"], "--handoff", first["handoff"],
             "--file", str(review), "--fresh-context")
@@ -445,7 +432,7 @@ class ReviewWorkflowTests(WorkflowCase):
             "verdict": "PASS", "summary": "Reviewed independently", "findings": []}))
         def report_round(prepared):
             return self.run_workflow(
-                "report", "1", "--role", "reviewer", "--primary", "codex",
+                "report", "1", "--role", "reviewer",
                 "--provider", "claude", "--model", "m", "--effort", "high",
                 "--scope", prepared["scope"], "--handoff", prepared["handoff"],
                 "--file", str(report), "--fresh-context")
@@ -490,7 +477,7 @@ class ReviewWorkflowTests(WorkflowCase):
         prepared = pending[0]
         self.report.write_text(json.dumps({"verdict": "PASS", "summary": "Latest native", "findings": []}))
         result = self.run_workflow(
-            "report", "1", "--role", "reviewer", "--primary", "codex",
+            "report", "1", "--role", "reviewer",
             "--provider", "claude", "--model", "m", "--effort", "high",
             "--scope", prepared["scope"], "--handoff", prepared["handoff"],
             "--file", str(self.report), "--fresh-context")
@@ -536,7 +523,7 @@ class ReviewWorkflowTests(WorkflowCase):
         self.assertTrue((pending_path / "manifest.json").is_file())
         self.report.write_text(json.dumps({"verdict": "INCONCLUSIVE", "summary": "Older native", "findings": []}))
         retired = self.run_workflow(
-                "report", "1", "--role", "reviewer", "--primary", "codex",
+                "report", "1", "--role", "reviewer",
                 "--provider", "claude", "--model", "m", "--effort", "high",
                 "--scope", pending["scope"], "--handoff", pending["handoff"],
                 "--file", str(self.report), "--fresh-context")
@@ -833,7 +820,7 @@ except AgentBoxError:
         self.assertEqual(first["review_budget"]["used"], 1)
         self.assertNotIn("review_budget", self.delegation_input(first).read_bytes().decode("utf-8"))
         self.report.write_text(json.dumps({"verdict": "PASS", "summary": "Checked", "findings": []}))
-        report = self.run_workflow("report", "1", "--role", "reviewer", "--primary", "codex",
+        report = self.run_workflow("report", "1", "--role", "reviewer",
                                   "--provider", "claude", "--model", "m", "--effort", "high",
                                   "--fresh-context", "--scope", first["scope"], "--handoff", first["handoff"],
                                   "--file", str(self.report))
@@ -954,7 +941,7 @@ except AgentBoxError:
             with self.subTest(command=command), self.assertRaisesRegex(AgentBoxError, "used=6, limit=6"):
                 self.run_workflow(command, "1", *flags, "--primary", "codex", "--brief", str(self.review_brief))
         self.report.write_text(json.dumps({"verdict": "PASS", "summary": "Complete review", "findings": []}))
-        report = self.run_workflow("report", "1", "--role", "reviewer", "--primary", "codex",
+        report = self.run_workflow("report", "1", "--role", "reviewer",
                                   "--provider", "claude", "--model", "m", "--effort", "high", "--fresh-context",
                                   "--scope", result["scope"], "--handoff", result["handoff"], "--file", str(self.report))
         self.assertEqual((report["review_budget"]["used"], report["review_budget"]["limit"]), (6, 6))
@@ -1062,7 +1049,7 @@ except AgentBoxError:
         self.assertEqual(prepared["route"]["role"], "reviewer")
         review = Path(self.directory.name) / "review.json"
         review.write_text(json.dumps({"verdict": "PASS", "summary": "Fine", "findings": []}))
-        result = self.run_workflow("report", "1", "--role", "reviewer", "--primary", "codex",
+        result = self.run_workflow("report", "1", "--role", "reviewer",
                                    "--provider", "claude", "--model", "m", "--effort", "high", "--file", str(review),
                                    "--scope", prepared["scope"], "--handoff", prepared["handoff"], "--fresh-context")
         self.assertEqual(result["report"]["verdict"], "PASS")

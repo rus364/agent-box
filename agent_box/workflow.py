@@ -582,7 +582,7 @@ def native_review_result(args, root, binding, adapter, config):
     identity = delegation_identity(root, binding)
     descriptor = read_handoff_descriptor(identity, task, args.scope, args.handoff or "")
     tier = descriptor["route"]["tier"]
-    check_handoff_route(descriptor, "reviewer", args.tier if args.tier is not None else tier)
+    check_handoff_route(descriptor, "reviewer", tier)
     with lock(root, "review-budget"):
         state = read_review_state(root, binding, task)
         if state.get("pending") == descriptor["delegation"] and state.get("pending_backend") == "managed":
@@ -677,7 +677,7 @@ def review_blockers(config, tasks, files, lines, saved, *, allow_human=False, in
 
 def configuration_summary(config):
     return {"source": effective_config_source(), "merge_mode": config.workflow.merge_mode,
-            "auto_push": config.workflow.auto_push,
+            "auto_push": config.workflow.auto_push, "use_tiers": config.workflow.use_tiers,
             **scout_diagnostics(config),
             "cleanup_local_branches": config.workflow.cleanup_local_branches,
             "cleanup_remote_branches": config.workflow.cleanup_remote_branches}
@@ -811,11 +811,6 @@ def read_handoff_descriptor(identity, task, fingerprint, value):
     return payload
 
 
-def delegation_tier(args, task):
-    """A reviewer works at the task's own tier, else the caller's."""
-    return task.tier if task.tier is not None else args.tier
-
-
 def check_handoff_route(descriptor, role, tier):
     """One descriptor names one delegation, so another report path cannot use it.
 
@@ -878,14 +873,14 @@ def native_output(args, selected, tier):
             "fresh_context": True}
 
 
-def candidates(config, role, tier, primary):
+def candidates(config, role, tier):
     """The role's first available candidate with ordered fallbacks, bound to their APIs."""
     _, models = config.workflow.models_for(role, tier)
     # Every role skips a subscription candidate whose known window is exhausted;
     # external API candidates have no subscription usage to read.
     subscribed = {spec["provider"] for spec in models if not spec.get("api_provider")}
     usage = {p: usage_snapshot(p, no_cache=True) for p in sorted(subscribed)}
-    result = select(config.workflow, role, tier, primary, usage,
+    result = select(config.workflow, role, tier, usage,
                     available=[p for p in ("codex", "claude") if shutil.which(p)])
     for candidate in [result, *result["fallbacks"]]:
         bind_api_route(candidate, config)
@@ -896,7 +891,10 @@ def candidates(config, role, tier, primary):
 
 def route(config, role, tier, primary):
     """A reviewer route, annotated with whether the coordinator can run it natively."""
-    result = candidates(config, role, tier, primary)
+    result = candidates(config, role, tier)
+    path, _ = config.workflow.models_for(role, tier)
+    # A native profile exists per nonempty list: the role's own, or its tier's.
+    profile = f"ab-{role}-{tier}" if path.endswith(f".tiers.{tier}") else f"ab-{role}"
     from .fast_mode import native_limitation
     for candidate in [result, *result["fallbacks"]]:
         if candidate["provider"] != primary and not candidate.get("managed_only"):
@@ -904,7 +902,7 @@ def route(config, role, tier, primary):
                              native_limitation=f"A {primary} session cannot run a native {candidate['provider']} agent; "
                                                "run it through the managed CLI")
         if not candidate.get("managed_only"):
-            candidate["native_profile"] = f"ab-{role}-{tier}" if tier is not None else None
+            candidate["native_profile"] = None if path.startswith("--") else profile
             candidate["native_limitation"] = native_limitation(candidate["provider"], candidate["fast"])
     return result
 
@@ -1298,14 +1296,14 @@ def begin(root, adapter, task, resume):
     return {"task": task.id, "parent": parent.id, "branch": gw.current_branch(root), "base": base}
 
 
-VALIDATE_FORM = "agent-box workflow validate ID [--primary PROVIDER] -- COMMAND ARGS"
+VALIDATE_FORM = "agent-box workflow validate ID -- COMMAND ARGS"
 
 
 class WorkflowParser(argparse.ArgumentParser):
     """Split `validate` at `--` before argparse sees the project command.
 
-    A trailing REMAINDER positional swallowed every option after the task ID, so
-    `validate ID --primary claude -- CMD` tried to execute `--primary`. The
+    A trailing REMAINDER positional swallowed every option after the task ID,
+    so a workflow option was executed as part of the project command. The
     separator is required instead: without it an option-looking project argument
     cannot be told apart from a workflow option.
     """
@@ -1338,7 +1336,7 @@ def parser():
         }.get(name)
         cmd = sub.add_parser(name, **({"help": description, "description": description} if description else {}))
         cmd.add_argument("task")
-        if name != "delegate":
+        if name in ("prepare", "review"):
             cmd.add_argument("--primary", choices=("codex", "claude"), default=os.environ.get("AGENT_BOX_PRIMARY_PROVIDER"))
         if name == "review-result":
             cmd.add_argument("--round", help="Saved round identifier; defaults to the last received result")
@@ -1355,11 +1353,9 @@ def parser():
             cmd.add_argument("--role", choices=("worker", "scout"), required=True)
         if name in ("prepare", "report"):
             cmd.add_argument("--role", choices=("reviewer",), default="reviewer")
-        if name in ("prepare", "review", "report"):
-            cmd.add_argument("--tier", type=int, choices=range(4))
         if name in ("prepare", "review"):
-            cmd.add_argument("--session-model", help="Verified active session model for untiered execution")
-            cmd.add_argument("--session-effort", help="Verified active session effort for untiered execution")
+            cmd.add_argument("--session-model", help="Verified active session model when no reviewer candidate is configured")
+            cmd.add_argument("--session-effort", help="Verified active session effort when no reviewer candidate is configured")
         if name in ("prepare", "review", "delegate"):
             cmd.add_argument("--brief", required=name == "delegate", help=(
                 "UTF-8 English assignment: goal, scope, relevant paths, decisions and limitations. Keep briefs outside the working tree"))
@@ -1367,8 +1363,8 @@ def parser():
             cmd.add_argument("--file", required=True)
             cmd.add_argument("--scope", required=True)
             cmd.add_argument("--provider", required=True, choices=("codex", "claude"))
-            cmd.add_argument("--model", help="Actual model used by the native delegate; required for explicit tiers")
-            cmd.add_argument("--effort", help="Actual effort used by the native delegate; required for explicit tiers")
+            cmd.add_argument("--model", help="Actual model used by the native reviewer; required unless inherited from the session")
+            cmd.add_argument("--effort", help="Actual effort used by the native reviewer; required unless inherited from the session")
             cmd.add_argument("--fast", choices=("on", "off"), help="Verified native speed; on is required only when the candidate requests fast")
             cmd.add_argument("--session-inherited", action="store_true", help="Affirm unchanged inherited session settings")
             cmd.add_argument("--fresh-context", action="store_true", help="Affirm independent fresh reviewer context")
@@ -1536,12 +1532,11 @@ def delegate(args, root, adapter, config):
         branch = current.get("branch") or info["branch"]
         if gw.current_branch(root) != branch:
             raise AgentBoxError(f"Switch to task branch {branch} before delegating a worker")
-    tier = task.tier if args.role == "worker" else 0
+    tier = config.workflow.effective_tier(task.tier) if args.role == "worker" else None
     path, models = config.workflow.models_for(args.role, tier)
     if not models:
         raise AgentBoxError(f"No {args.role} candidates in {path}; configure them, or launch a native subagent instead")
-    # Only reviewer routing reads the session provider; a managed delegate runs any CLI.
-    selected = candidates(config, args.role, tier, None)
+    selected = candidates(config, args.role, tier)
     prompt = delegate_prompt(args.role, task, brief, repository_instructions(root))
     # A worker shares the working tree with validation; scouts only read, up to their limit.
     slot = lock(root, "work") if args.role == "worker" else scout_slot(root, config.workflow.scout.limit)
@@ -1620,7 +1615,7 @@ def dispatch(args):
         raise AgentBoxError("Managed fallback requires --handoff from prepare; omit --fallback-reason for a new round")
     if reuse_review:
         descriptor = read_handoff_descriptor(identity, task, fingerprint, args.handoff)
-        check_handoff_route(descriptor, "reviewer", delegation_tier(args, task))
+        check_handoff_route(descriptor, "reviewer", config.workflow.effective_tier(task.tier))
         if not (args.fallback_reason or "").strip():
             raise AgentBoxError("Pass --fallback-reason explaining why the prepared native review could not run")
     saved = evidence(root, task, fingerprint)
@@ -1666,7 +1661,7 @@ def dispatch(args):
         return saved
     if args.command in ("prepare", "review"):
         role = "reviewer"
-        tier = delegation_tier(args, task)
+        tier = config.workflow.effective_tier(task.tier)
         review_context = ""
         if role == "reviewer":
             files, lines = diff_stats(root, base, config.workflow.review)
@@ -1704,12 +1699,8 @@ def dispatch(args):
             delegate_contract = f"The {role} reads and reports without changing files; "
             repository_guidance = (
                 "delegate_handoff is the compact bootstrap for the canonical input; never inline or reconstruct that input. ")
-            report_command = ["agent-box", "workflow", "report", str(task.id), "--role", role]
-            if args.primary:
-                report_command.extend(("--primary", args.primary))
-            if tier is not None:
-                report_command.extend(("--tier", str(tier)))
-            report_command.extend(("--provider", "ACTUAL_PROVIDER"))
+            report_command = ["agent-box", "workflow", "report", str(task.id), "--role", role,
+                              "--provider", "ACTUAL_PROVIDER"]
             if selected.get("mode") == "current-session" and selected.get("model") is None:
                 report_command.append("--session-inherited")
             else:
@@ -1764,7 +1755,7 @@ def dispatch(args):
                     "Launch an independent read-only reviewer in fresh context inheriting the active session's "
                     "provider, model and effort. Create a new reviewer instance for every verdict; for Codex use "
                     "spawn_agent with fork_turns=none, never followup_task or resume an earlier reviewer, and pass "
-                    "delegate_handoff as its complete initial message. Do not use a named tier profile. ")
+                    "delegate_handoff as its complete initial message. Do not use a named agent-box profile. ")
                 result["instructions"] += (
                     review_context + "Follow delegate_handoff requirements and mandatory read evidence. " +
                     "This action has not executed work "
@@ -1778,7 +1769,7 @@ def dispatch(args):
                 "Managed provider fallback requires observed CLI/model unavailability, authentication, quota "
                 "or configured timeout failure; other errors stop review. Speed, cost, preference and verdicts "
                 "never justify switching. If native cannot run, use the same provider through workflow review TASK "
-                "--handoff DESCRIPTOR --brief FILE --fallback-reason REASON (repeat --tier if supplied). "
+                "--handoff DESCRIPTOR --brief FILE --fallback-reason REASON. "
                 "This continues the pending round once; omit --handoff only for a new round.")
             if selected.get("mode") == "current-session" and selected.get("model") is None:
                 result["instructions"] += (
@@ -1794,8 +1785,7 @@ def dispatch(args):
                 result["action"] = "managed-review"
                 result["managed_command"] = shlex.join([
                     "agent-box", "workflow", "review", task.id, "--handoff", result["handoff"],
-                    "--brief", args.brief, "--fallback-reason", selected["native_limitation"],
-                    *(["--tier", str(tier)] if tier is not None else [])])
+                    "--brief", args.brief, "--fallback-reason", selected["native_limitation"]])
             return result
         execution_lock = lock(root, "review")
         selected, preflight_failures = managed_review_route(selected)

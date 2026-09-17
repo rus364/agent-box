@@ -17,13 +17,16 @@ class FastModeTests(unittest.TestCase):
     def test_disabled_fast_preserves_native_profiles_and_reviewer_reports(self):
         """An unused speed option must not add speed settings to profiles or force a native reviewer into CLI."""
         for provider, model in [('codex', 'gpt-6-astra'), ('claude', 'claude-opus-5')]:
-            for role, tier in [('worker', 1), ('scout', 0), ('reviewer', 1)]:
+            for role, tier in [('worker', 1), ('scout', None), ('reviewer', 1)]:
                 with self.subTest(provider=provider, role=role), tempfile.TemporaryDirectory() as directory:
                     root = Path(directory)
                     config = Config()
                     config.workflow.enabled = True
                     spec = model_entry(dict(provider=provider, model=model, effort='high'))
-                    config.workflow.role(role).tiers[str(tier)] = [spec]
+                    if tier is None:
+                        config.workflow.role(role).models = [spec]
+                    else:
+                        config.workflow.role(role).tiers[str(tier)] = [spec]
                     agent_profiles.sync(config, root / 'codex', root / 'claude')
                     content = agent_profiles.body(provider, role, tier, spec)
                     self.assertNotIn('service_tier', content)
@@ -33,7 +36,6 @@ class FastModeTests(unittest.TestCase):
                     with patch.dict(os.environ, {}, clear=True), \
                          patch.object(workflow, 'WORKFLOW_STATE', root / 'state'), \
                          patch.object(workflow.shutil, 'which', return_value='provider-cli'):
-                        config.workflow.review.routing = 'same-provider'
                         routed = workflow.route(config, role, tier, provider)
                         self.assertIsNone(routed['native_limitation'])
                     report = root / 'report.json'
@@ -50,7 +52,7 @@ class FastModeTests(unittest.TestCase):
         config.workflow.enabled = True
         fast = model_entry(dict(provider='codex', model='gpt-6-astra', fast=True))
         slow = model_entry(dict(provider='codex', model='gpt-6-astra'))
-        config.workflow.scout.tiers['0'] = [fast, slow]
+        config.workflow.scout.models = [fast, slow]
         config.workflow.review.tiers['2'] = [dict(fast)]
         config.workflow.worker.models = [dict(fast)]
         config.workflow.review.models = [dict(slow), dict(fast)]
@@ -64,7 +66,7 @@ class FastModeTests(unittest.TestCase):
             self.assertEqual(Config.from_dict(rendered).workflow, loaded.workflow)
         from test_workflow_config import shown
         rows = shown(config)
-        self.assertIn('0 codex:gpt-6-astra:medium fast, codex:gpt-6-astra:medium;', rows['workflow.scout.tiers'])
+        self.assertEqual('codex:gpt-6-astra:medium fast, codex:gpt-6-astra:medium', rows['workflow.scout.models'])
         self.assertEqual([spec['fast'] for spec in loaded.workflow.review.models], [False, True])
         self.assertEqual(loaded.workflow.review.tiers['1'], [])
         self.assertIn('higher provider usage/cost', config_menu.help_for(('workflow', 'fast')))
@@ -120,7 +122,7 @@ class FastModeTests(unittest.TestCase):
         config = Config().workflow
         config.worker.tiers['1'] = [model_entry(dict(provider='codex', model='gpt-6-astra', fast=True)),
                                     model_entry(dict(provider='claude', model='claude-opus-5'))]
-        selected = routing.select(config, 'worker', 1, 'codex')
+        selected = routing.select(config, 'worker', 1)
         self.assertTrue(selected['fast'])
         self.assertFalse(selected['fallbacks'][0]['fast'])
         with patch.object(workflow, 'run', side_effect=[provider_runner.ProviderFailure('Unavailable', 'unavailable'),

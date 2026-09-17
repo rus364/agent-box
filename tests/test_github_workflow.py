@@ -250,7 +250,9 @@ class LandingFreshnessTests(unittest.TestCase):
         import json
         from pathlib import Path
         from unittest.mock import patch
-        from workflow_fixtures import selected_route
+        from workflow_fixtures import candidate, selected_route
+        # A configured reviewer list routes the round; without one it would inherit the session.
+        self.config.workflow.review.models = [candidate("claude", "m", "high")]
         brief = Path(self.temporary.name) / "recovery-brief.md"
         brief.write_text("Changes: original implementation. Risks: lost acceptance. Validation: true passed; no live proof.")
         report = {"verdict": "PASS", "summary": "Reviewed current implementation and requirements", "findings": []}

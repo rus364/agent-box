@@ -205,8 +205,8 @@ would otherwise look like an option or command.
 
 ## Workflow
 
-In each Codex/Claude candidate under worker/scout tiers, reviewer tiers, or
-worker/reviewer model overrides, open **Model**. The single list includes
+In each Codex/Claude candidate of a role's `models` or a worker/reviewer
+`tiers.N` list, open **Model**. The single list includes
 built-in models and configured models from enabled API connections, labeled
 with their API. Selecting a row saves API and model together; project overrides
 pin both, and resetting the model restores inheritance for both. Custom IDs can
@@ -215,15 +215,16 @@ be entered for any enabled API. An empty model disables that candidate. For exam
 ```json
 {
   "workflow": {
-    "tiers": {
-      "1": {
-        "codex": {
+    "worker": {
+      "models": [
+        {
+          "provider": "codex",
           "api_provider": "deepseek",
           "model": "your-model-id",
           "effort": "default",
           "fast": false
         }
-      }
+      ]
     }
   }
 }
@@ -256,8 +257,8 @@ reviewer report validation, review budgets and fallback rules still apply. Candi
 usage and exhaustion are ignored for external candidates.
 Subscription fast mode is unsupported for external workflow candidates.
 
-Untiered review from an external session needs verified `--session-model` and
-`--session-effort`, or configured reviewer models. See
+Review from an external session needs configured reviewer models, or verified
+`--session-model` and `--session-effort`. See
 [workflow models](workflow.md#models-and-routing).
 
 ## API and Remote Control boundaries

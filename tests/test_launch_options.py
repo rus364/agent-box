@@ -21,7 +21,8 @@ PROVIDERS = ["codex", "claude"]
 def workflow_config():
     config = Config()
     config.workflow.enabled = True
-    for role in (config.workflow.worker, config.workflow.scout, config.workflow.review):
+    config.workflow.scout.models = [model_entry({"provider": provider, "model": provider + "-scout"}) for provider in PROVIDERS]
+    for role in (config.workflow.worker, config.workflow.review):
         for tier in role.tiers:
             role.tiers[tier] = [model_entry({"provider": provider, "model": provider + "-tier"}) for provider in PROVIDERS]
     return config
@@ -168,30 +169,28 @@ class SessionPrecedenceTests(IsolatedLaunchTest):
 
     def test_describe_spells_overrides_as_the_flags_that_set_them(self):
         self.assertEqual(launch_options.describe({"worker": "codex:gpt-5.5:high", "push": False, "gh-token": True,
-                                                  "rounds": 4, "notify": False}),
-                         "--worker codex:gpt-5.5:high --no-push --gh-token --rounds 4 --no-notify")
+                                                  "rounds": 4, "notify": False, "tiers": True}),
+                         "--worker codex:gpt-5.5:high --no-push --gh-token --rounds 4 --no-notify --tiers")
 
 
 class PinnedRouteTests(unittest.TestCase):
     def pinned(self, **overrides):
         return launch_options.apply(workflow_config(), overrides).workflow
 
-    def test_pinned_reviewer_ignores_writer_relative_routing_and_tier(self):
-        """--reviewer claude from a claude session still reviews with claude, as written."""
-        for routing in ("cross-provider", "same-provider"):
-            for writer in PROVIDERS:
-                for tier in (None, 2):
-                    workflow = self.pinned(reviewer="claude:opus:high")
-                    workflow.review.routing = routing
-                    with self.subTest(routing=routing, writer=writer, tier=tier):
-                        route = select(workflow, "reviewer", tier, writer, {}, writer=writer, available=PROVIDERS)
-                        self.assertEqual((route["provider"], route["model"], route["effort"], route["fallbacks"]),
-                                         ("claude", "opus", "high", []))
+    def test_pinned_reviewer_ignores_the_tier(self):
+        """--reviewer runs as written, even where a tier list would apply."""
+        for tier in (None, 2):
+            workflow = self.pinned(reviewer="claude:opus:high", tiers=True)
+            workflow.review.tiers["2"] = [model_entry({"provider": "codex", "model": "gpt-5.5"})]
+            with self.subTest(tier=tier):
+                route = select(workflow, "reviewer", tier, {}, available=PROVIDERS)
+                self.assertEqual((route["provider"], route["model"], route["effort"], route["fallbacks"]),
+                                 ("claude", "opus", "high", []))
 
     def test_pinned_worker_and_scout_replace_the_configured_lists(self):
         workflow = self.pinned(worker="codex:gpt-5.5", scout="claude:haiku:low")
-        worker = select(workflow, "worker", 2, "claude", available=PROVIDERS)
-        scout = select(workflow, "scout", 0, "codex", available=PROVIDERS)
+        worker = select(workflow, "worker", 2, available=PROVIDERS)
+        scout = select(workflow, "scout", None, available=PROVIDERS)
         self.assertEqual((worker["provider"], worker["model"], worker["effort"], worker["fallbacks"]),
                          ("codex", "gpt-5.5", "default", []))
         self.assertEqual((scout["provider"], scout["model"], scout["effort"]), ("claude", "haiku", "low"))
@@ -207,7 +206,7 @@ class PinnedRouteTests(unittest.TestCase):
     def test_a_pinned_provider_without_its_cli_is_an_error_not_a_substitute(self):
         workflow = self.pinned(reviewer="claude:opus")
         with self.assertRaisesRegex(AgentBoxError, "CLI installed"):
-            select(workflow, "reviewer", 1, "codex", {}, writer="codex", available=["codex"])
+            select(workflow, "reviewer", 1, {}, available=["codex"])
 
 
 class NotifyOffTests(IsolatedLaunchTest):

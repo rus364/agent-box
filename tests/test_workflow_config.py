@@ -121,10 +121,10 @@ class WorkflowConfigTests(unittest.TestCase):
                   ({"worker": {"tiers": {"2": [{"provider": "codex"}]}}}, "workflow.worker.tiers.2.0: model"),
                   # Malformed entries stay in place so a hand edit cannot silently empty a list.
                   ({"worker": {"models": ["codex:gpt-5.5"]}}, "workflow.worker.models.0: provider"),
-                  ({"scout": {"tiers": {"1": [{"provider": "codex", "model": 5}]}}}, "workflow.scout.tiers.1.0: model"),
+                  ({"review": {"tiers": {"1": [{"provider": "codex", "model": 5}]}}}, "workflow.review.tiers.1.0: model"),
                   ({"worker": {"models": {"provider": "codex", "model": "gpt-5.5"}}}, "workflow.worker.models must be a list"),
                   ({"review": {"tiers": [[]]}}, "workflow.review.tiers must be an object"),
-                  ({"review": {"tiers": {"0": []}}}, "workflow.review.tiers.0 is not a reviewer tier"),
+                  ({"review": {"tiers": {"0": []}}}, "workflow.review.tiers.0 is not a task tier"),
                   ({"review": {"models": [{"provider": "claude", "model": "opus", "effort": "invalid"}]}},
                    "workflow.review.models.0: invalid effort")]
         for workflow, message in cases:
@@ -194,9 +194,11 @@ class WorkflowConfigTests(unittest.TestCase):
         self.assertFalse(data["tracker"]["enabled"])
         self.assertFalse(data["workflow"]["enabled"])
         self.assertEqual(data["workflow"]["merge_mode"], "github")
-        for role, tiers in (("scout", ["0", "1", "2", "3"]), ("worker", ["1", "2", "3"]), ("review", ["1", "2", "3"])):
+        self.assertFalse(data["workflow"]["use_tiers"])
+        self.assertEqual(data["workflow"]["scout"], {"limit": 3, "models": []})
+        for role in ("worker", "review"):
             self.assertEqual(data["workflow"][role]["models"], [])
-            self.assertEqual(data["workflow"][role]["tiers"], {tier: [] for tier in tiers})
+            self.assertEqual(data["workflow"][role]["tiers"], {tier: [] for tier in ("1", "2", "3")})
 
     def test_removed_routing_sections_are_dropped_on_load(self):
         """Pre-release: the provider-share settings are gone, not migrated."""
@@ -205,13 +207,16 @@ class WorkflowConfigTests(unittest.TestCase):
                 "vikunja": {"url": "https://tasks.example", "token": "secret"}}},
             "workflow": {"enabled": True, "routing": "usage-aware", "weights": {"codex": 3},
                          "tiers": {"0": {"codex": {"model": "small"}}}, "fallback": False,
-                         "worker": {"override": {"scope": "all"}}, "review": {"policy": "always", "max_files": 9}},
+                         "worker": {"override": {"scope": "all"}}, "scout": {"tiers": {"0": []}},
+                         "review": {"policy": "always", "max_files": 9, "routing": "same-provider"}},
         }
         result = Config.from_dict(data).to_dict()
         self.assertEqual(result["tracker"], data["tracker"])
         for removed in ("routing", "weights", "tiers", "fallback", "reserve_percent", "smoothing_hours"):
             self.assertNotIn(removed, result["workflow"])
         self.assertNotIn("override", result["workflow"]["worker"])
+        self.assertNotIn("tiers", result["workflow"]["scout"])
+        self.assertNotIn("routing", result["workflow"]["review"])
         self.assertEqual(result["workflow"]["review"]["policy"], "always")
 
     def test_merge_mode_round_trips_and_rejects_unknown_values(self):
@@ -221,11 +226,11 @@ class WorkflowConfigTests(unittest.TestCase):
         self.assertTrue(any("merge_mode" in error for error in config.workflow.validate()))
 
     def test_default_effort_round_trips_for_both_providers(self):
-        loaded = Config.from_dict({"workflow": {"scout": {"tiers": {"0": [
+        loaded = Config.from_dict({"workflow": {"scout": {"models": [
             {"provider": "codex", "model": "small", "effort": "default"},
-            {"provider": "claude", "model": "haiku", "effort": "default"}]}}}})
+            {"provider": "claude", "model": "haiku", "effort": "default"}]}}})
         config = Config.from_dict(loaded.to_dict())
-        self.assertEqual([spec["effort"] for spec in config.workflow.scout.tiers["0"]], ["default", "default"])
+        self.assertEqual([spec["effort"] for spec in config.workflow.scout.models], ["default", "default"])
         self.assertEqual(config.workflow.validate(), [])
 
     def test_effort_is_checked_against_the_candidates_own_provider(self):

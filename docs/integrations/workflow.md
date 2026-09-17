@@ -142,19 +142,19 @@ separate measures, never exact tokens; compare identical scenarios and mandatory
 ## Models and routing
 
 Each role owns an ordered candidate list: `workflow.scout`, `workflow.worker` and
-`workflow.review` each hold `models` and optional `tiers.N` (scouts 0-3, workers and
-reviewers 1-3). A candidate names the CLI that runs it and what it runs:
-`provider` (`codex` or `claude`), `model`, `effort`, `fast` (default `false`) and
-`api_provider` (empty for the built-in API). A nonempty tier list replaces the
-role's `models` for that tier; an empty tier list, or work without a tier, uses
-`models`. Roles never share or inherit each other's lists.
+`workflow.review` each hold `models`; workers and reviewers also hold optional
+`tiers.N` for task tiers 1-3. Scouts have no tiers. A candidate names the CLI that
+runs it and what it runs: `provider` (`codex` or `claude`), `model`, `effort`,
+`fast` (default `false`) and `api_provider` (empty for the built-in API). Roles
+never share or inherit each other's lists.
 
-The first available candidate runs and the rest are ordered fallbacks. A candidate
-is unavailable when its CLI is not installed or, for a subscription model with a
-fallback behind it, a known usage window is exhausted with a future reset. Which
-CLI coordinates never filters the list: `workflow delegate` runs a Codex scout from
-a Claude session, and a Claude worker from a Codex session, as a managed
-`codex exec` / `claude -p` process. In a prepared reviewer route such a candidate is
+The first available candidate runs and the rest are ordered fallbacks. This holds
+for every role, reviewers included: the list order states the preference, whoever
+wrote the code and whichever CLI coordinates. A candidate is unavailable when its
+CLI is not installed or, for a subscription model, a known usage window is
+exhausted with a future reset. `workflow delegate` runs a Codex scout from a Claude
+session, and a Claude worker from a Codex session, as a managed `codex exec` /
+`claude -p` process. In a prepared reviewer route such a candidate is
 `managed_only` and `native_limitation` says why; native reports for it are refused.
 A reviewer candidate of the session's own CLI, or on the active `ext` session's own
 API, may run natively; other API identities run managed (see [external providers](external-providers.md#workflow)).
@@ -165,15 +165,34 @@ fast, remove; the picker offers every CLI's models together), shown in
 the container's minimal workflow configuration. The effort value `default` omits
 agent-box's effort override; it does not disable thinking or pass a literal `none`
 value to the provider. A new candidate starts at `medium`. Lists start empty
-rather than guessing what the account can access. Tier 0 is
-for facts, scouting and structuring; task difficulty remains 1-3, represented in
-Vikunja by one `ab:tier:1`, `ab:tier:2` or `ab:tier:3` label. A user-set task tier
-wins over a coordinator suggestion. Each subtask may have its own explicit tier. Without a task tier, no assessment or label is required for readiness, audit, claim, validation, review or completion; malformed/conflicting explicit labels remain invalid. An explicit `--tier` invocation override selects configured routing when the card has no tier and never changes its labels.
+rather than guessing what the account can access.
 
-When no reviewer list applies (untiered work and empty `workflow.review.models`), review uses the active session provider/model/effort in an independent
-fresh read-only context, even when explicit-tier review routing prefers another
-provider. Without exact session facts, `review` returns
-`action: review-in-fresh-context`; use native inheritance without a named tier
+### Task tiers
+
+A task may carry one `ab:tier:1`, `ab:tier:2` or `ab:tier:3` label. It selects
+models only while `workflow.use_tiers` is on (default off): set it globally, in
+`.agent-box.json`, or for one session with `--tiers` / `--no-tiers`. Off, every
+worker and reviewer runs its role's `models` whatever the task's tier; tier lists
+and tier labels stay as they are. When and how a tier is assigned is decided in
+ab-plan.
+
+| Worker or reviewer work | Candidates |
+| --- | --- |
+| Session pin (`--worker SPEC`, `--reviewer SPEC`) | The pinned model only |
+| Tiers on, task tier N with a nonempty `tiers.N` | `tiers.N` |
+| Otherwise, nonempty `models` | `models` |
+| Otherwise | Reviewer: active session; `delegate` refuses |
+
+Scouts run `workflow.scout.models`, or `--scout SPEC`. Model selection never
+changes tracker labels or invents a tier. If no candidate is eligible, selection
+fails with an explicit error; it never falls back to another list, to the session
+(except the unconfigured reviewer above) or to another role's list.
+
+### Session-inherited review
+
+When no reviewer list applies, review uses the active session provider/model/effort in an independent
+fresh read-only context. Without exact session facts, `review` returns
+`action: review-in-fresh-context`; use native inheritance without a named agent-box
 profile. The returned route keeps unknown model/effort as JSON null. To ingest
 an actual inherited report, use `report --provider PROVIDER --session-inherited
 --fresh-context --role reviewer --file FILE --scope SCOPE --handoff DESCRIPTOR`.
@@ -184,7 +203,7 @@ ensured, obtain verified session facts before running a reviewer.
 When both actual settings are known, `prepare` and `review` accept
 `--session-model MODEL --session-effort EFFORT`. Values must come from the active
 session, not configured profiles; models outside every candidate list are valid.
-With those facts, managed untiered review launches a fresh CLI with that exact
+With those facts, managed review launches a fresh CLI with that exact
 provider/model/effort and no fallback. Native reports must match the prepared
 concrete settings and affirm `--fresh-context` for review. Independent
 review and validation/finish gates remain required by policy; SKIPPED is
@@ -197,18 +216,7 @@ with a future reset; a failure without such evidence excludes nothing.
 The provider APIs may themselves delay updates; bypassing the local cache cannot
 remove server-side lag.
 
-Set `workflow.review.routing` in `agent-box config` under workflow / review:
-
-- **cross-provider** (default): use the first available candidate of the other
-  provider than the **session's** (`--primary`), then the session provider's own
-  candidates in fresh context only when the other provider's are unavailable.
-- **same-provider**: use only the session provider's candidates in fresh context.
-  An unavailable executable, no such candidate or provider failure stops review
-  without calling the other provider.
-
-Reviewer candidates come from `workflow.review` alone; worker lists and usage do
-not select reviewers. Routing changes neither review policy nor worker/scout
-selection. All attempts preserve the selected tier and configured reviewer model/effort.
+### Reviewer fallback
 
 Reviewer provider order precedes native preference. If native cannot run the
 selected provider, use its managed CLI in the same prepared round. Native reports
@@ -218,49 +226,33 @@ quota or expiration of `timeout_seconds`. Unknown errors, unsupported primary se
 and invalid reports stop review for diagnosis. Unusable backups do not block the primary. Speed, cost, preference, silence
 before timeout and review verdicts never justify switching provider. Missing CLIs
 and explicitly empty models may exclude candidates during route preparation.
-
-### Role models
-
-| Worker or reviewer work | Candidates |
-| --- | --- |
-| Session pin (`--worker SPEC`, `--reviewer SPEC`) | The pinned model only |
-| Effective tier with a nonempty tier list | `tiers.N` |
-| Effective tier with an empty tier list | `models` |
-| No effective tier, nonempty `models` | `models` |
-| No effective tier, empty `models` | Reviewer: active session; `delegate` refuses |
-
-Scouts always run at a tier (0 unless given) and follow the same first three rows.
-The effective tier remains the card's tier, otherwise explicit `--tier`, otherwise
-null. Model selection never changes tracker labels or invents a tier. If no
-candidate is eligible, selection fails with an explicit error; it never falls back
-to a lower tier, to the session, or to another role's list.
-`agent-box --reviewer SPEC` pins one reviewer for a session, whatever routing and
-tiers say; `--worker SPEC` and `--scout SPEC` pin those roles.
+`--primary` on `prepare` and `review` names the session's CLI only so the route can
+say which candidates may run natively.
 
 `workflow delegate` and `review` execute the selected route through managed CLI;
-`prepare --role reviewer` returns it for native execution. Untiered review has no
-native tier profile: use supported explicit native model/effort settings, or
-managed CLI if capabilities are unknown or effort is `default`; omitting native
-effort can inherit a session override. Every reviewer still needs a fresh
-independent context, and an unsupported model is an error, not permission to guess
-a cheaper one.
+`prepare --role reviewer` returns it for native execution. Every reviewer needs a
+fresh independent context, and an unsupported model is an error, not permission to
+guess a cheaper one.
 
 A project can replace any role list in `.agent-box.json` without
 changing the global configuration; a project list replaces the global list whole.
 
-`config apply` installs owned native agent profiles with exact model/effort: for each
-role, tier and CLI, the first candidate of that CLI on its built-in API.
-A native subagent can use that exact profile, or explicit spawn parameters
-supported by the current tool without an overriding custom agent; an installed
-profile is a convenience, not proof of the live tool's capabilities.
+`config apply` installs owned native agent profiles with exact model/effort, one
+per CLI for each role's `models` (`ab-scout`, `ab-worker`, `ab-reviewer`) and for
+each nonempty worker or reviewer tier list (`ab-worker-N`, `ab-reviewer-N`); each
+takes the first candidate of that CLI on its built-in API. A profile agent-box no
+longer defines is removed while its content is unedited. A prepared reviewer route
+names the profile of the list it selected in `native_profile`. A native subagent
+can use that exact profile, or explicit spawn parameters supported by the current
+tool without an overriding custom agent; an installed profile is a convenience,
+not proof of the live tool's capabilities.
 
 The coordinator checks the live tool's provider, model availability, effort
 support, profile precedence, defaults and inheritance. A matching file, role name
 or prompt is not sufficient. For Codex explicit spawn, pass both `model` and
-`reasoning_effort`, use fresh context (`fork_turns="none"` or a verified equivalent), and
-avoid named tier profiles; even built-in names can be shadowed. Unknown or
-unsupported capabilities require managed CLI with the exact selected settings.
-Reviewers always require independent fresh read-only context.
+`reasoning_effort` and use fresh context (`fork_turns="none"` or a verified
+equivalent). Unknown or unsupported capabilities require managed CLI with the exact
+selected settings. Reviewers always require independent fresh read-only context.
 
 Effort `default` omits agent-box's override; native omission can inherit one, so
 such a reviewer uses managed CLI, retaining the existing protection against
@@ -278,7 +270,7 @@ requires reconciliation.
 ## Validation, review and completion
 
 ```bash
-agent-box workflow begin TASK --primary codex
+agent-box workflow begin TASK
 agent-box workflow delegate TASK --role worker --brief /tmp/brief.md
 # The coordinator verifies the answer against the code and commits what it accepts.
 agent-box workflow validate TASK -- python3 -m unittest discover -s tests
@@ -312,7 +304,7 @@ and style preferences or hypothetical futures do not block PASS. The coordinator
 findings before fixing, challenges them with evidence and escalates material disagreement
 without inventing independent acceptance. No extra review stage or finding quota is added.
 
-Explicit-tier native handoffs use `prepare --brief FILE`, then `report --file FILE --scope DIGEST --handoff
+Native reviewer handoffs use `prepare --brief FILE`, then `report --file FILE --scope DIGEST --handoff
 DESCRIPTOR --provider ACTUAL_PROVIDER --model ACTUAL_MODEL --effort ACTUAL_EFFORT`
 for the returned structured report, with `--fresh-context` for every native reviewer. Native reviewer
 reports must match the selected primary candidate; unknown
@@ -366,7 +358,7 @@ use the returned descriptor to try the same provider through managed CLI:
 agent-box workflow review TASK --handoff DESCRIPTOR --brief FILE --fallback-reason REASON
 ```
 
-Repeat `--tier` if it was supplied to prepare. This runs managed fallback once within
+This runs managed fallback once within
 the latest pending round, preserving its configured route, role, tier and exact scope.
 It requires known model/effort; unknown inherited session settings cannot run managed.
 The durable dispatch claim precedes execution, so failure, abandonment or restart
@@ -393,7 +385,7 @@ configuration changes; zero stops further attempts without erasing usage.
 Every reviewer invocation obeys that ceiling; only the standalone budget command
 changes the task allowance.
 Every new review retires previous PASS and human acceptance under the reservation
-lock, including explicit tiers and provider failures. Result ingestion uses the
+lock, including provider failures. Result ingestion uses the
 same lock and accepts only the latest pending round; late or replayed results
 cannot restore acceptance. Finish/landing consume freshly reread evidence under
 that lock; validation rereads before saving so a revoked PASS cannot return.
@@ -697,7 +689,7 @@ Support checked 2026-09-11:
   be established natively. Model/effort and fresh-context checks still apply.
 
 The coordinator's own work, native subagents it spawns without a route, and
-managed untiered session routes retain their previous speed behavior. Ordinary interactive launcher commands
+managed session-inherited routes retain their previous speed behavior. Ordinary interactive launcher commands
 keep provider-owned settings and user CLI arguments; workflow matrices do not
 change the coordinator's session. GitHub-hosted reviews have no independent
 fast control here; use local workflow review for configured speed.

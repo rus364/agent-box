@@ -1,6 +1,6 @@
 ---
 name: ab-review
-description: Review a task or complete parent diff in fresh context, following configured reviewer provider routing.
+description: Review a task or complete parent diff in fresh context on the first available configured reviewer candidate.
 ---
 
 # ab-review
@@ -9,7 +9,7 @@ Before reserving a review round, read `tracker checklist ID` and confirm ab-work
 
 Read `workflow inspect ID` first. New prepare/review reserves one attempt after known preflight checks; failures, interruptions and abandonment consume it, while fallback shares it and report/SKIPPED do not. Scope changes never reset it. At exhaustion, only the user's explicit N extra rounds permit `workflow review-budget ID --limit TOTAL --reason TEXT`, where TOTAL = used + N. Read it back; never auto-extend or place budget/history in the handoff. New rounds retire earlier acceptance; only the latest pending round can report.
 
-Before reserving untiered review, determine whether native can create the required fresh context. If it cannot and both active-session facts are verified, pass `--session-model MODEL --session-effort EFFORT` to prepare/review so managed can run; never infer them from a tier or profile. Managed is unavailable without both facts.
+Before reserving a review with no configured reviewer candidate, determine whether native can create the required fresh context. If it cannot and both active-session facts are verified, pass `--session-model MODEL --session-effort EFFORT` to prepare/review so managed can run; never infer them from a tier or profile. Managed is unavailable without both facts.
 
 After a completed response, inspect `reconciliation.status`, not just verdict. `workflow review-result ID [--round=ROUND]` reads the saved receipt summary without tracker access; read its private `result_path` for the full report/findings and diagnostics. A managed round without a saved response reads back as running or ended; an ended round needs a new round. `--reconcile` retries application after tracker/evidence errors or restored workflow conditions, without model dispatch or another attempt. Applied rounds are not applied twice; stale, superseded or invalid-input rounds cannot accept new work. Ordinary related links/labels do not change the content scope; hierarchy, blockers and requirements remain significant, and routing/lifecycle consumers still check current conditions. Never edit state or restore refs to revive acceptance. Receipts stay outside the repository, private, at most 20/32 MiB per checkout, 8 MiB each, seven days; pruning checks ownership. Do not copy private reports/streams into tracker or public output; journal only necessary findings and evidence. Provider failures still consume attempts and use provider-failure diagnostics. Before a paid rerun after an application error, inspect/reconcile the saved result.
 

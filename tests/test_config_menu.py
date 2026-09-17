@@ -68,11 +68,11 @@ class ConfigMenuTests(unittest.TestCase):
                  'image', 'browser', 'audio', 'git', 'github', 'providers', 'env',
                  'skills', 'notifications'],
             ('workflow',): ['enabled', 'merge_mode', 'auto_push', 'cleanup_local_branches',
-                           'cleanup_remote_branches', 'worker', 'scout', 'review', 'timeout_seconds'],
+                           'cleanup_remote_branches', 'use_tiers', 'worker', 'scout', 'review', 'timeout_seconds'],
             ('workflow', 'worker'): ['models', 'tiers'],
-            ('workflow', 'scout'): ['limit', 'models', 'tiers'],
+            ('workflow', 'scout'): ['limit', 'models'],
             ('workflow', 'review'): ['policy', 'max_files', 'max_lines', 'sensitive_paths',
-                                    'ignored_paths', 'label', 'routing', 'models', 'tiers', 'max_rounds',
+                                    'ignored_paths', 'label', 'models', 'tiers', 'max_rounds',
                                     'github_provider', 'github_model', 'github_effort', 'wait_seconds'],
         }
         for path, keys in expected.items():
@@ -84,12 +84,13 @@ class ConfigMenuTests(unittest.TestCase):
                 self.assertCountEqual(keys, section)
 
     def test_role_model_settings_read_as_their_purpose(self):
-        """Every role has models and tiers; labels name what they hold rather than the storage key."""
-        self.assertEqual(config_menu.label_for("routing", ("workflow", "review")), "Reviewer routing")
+        """Labels name what a role's lists hold rather than the storage key."""
+        self.assertEqual(config_menu.label_for("use_tiers", ("workflow",)), "Use tiers")
         for role in ("worker", "scout", "review"):
-            self.assertEqual(config_menu.label_for("tiers", ("workflow", role)), "Models by tier")
             self.assertEqual(config_menu.label_for("models", ("workflow", role)), "Models")
-        self.assertEqual(config_menu.label_for("0", ("workflow", "scout", "tiers")), "Tier 0")
+        for role in ("worker", "review"):
+            self.assertEqual(config_menu.label_for("tiers", ("workflow", role)), "Models by tier")
+        self.assertEqual(config_menu.label_for("1", ("workflow", "worker", "tiers")), "Tier 1")
 
     def test_labels_keep_value_columns_and_full_selected_help_at_supported_widths(self):
         """Labels of different lengths share one value column, and full help stays reachable."""
@@ -244,20 +245,21 @@ class ConfigMenuTests(unittest.TestCase):
         self.assertNotIn("secret-token", "\n".join(screen.drawn))
         self.assertIn("Access token: <configured>", screen.drawn)
 
-    def test_review_routing_can_be_saved_without_changing_policy(self):
-        """The review submenu must persist strict routing independently of review triggers."""
+    def test_the_tier_switch_is_toggled_and_saved_from_the_workflow_menu(self):
+        """Use tiers sits beside the roles it affects, and saving it keeps the tier lists."""
         import curses
-        prefix = [*select("workflow"), "\n", *select("review", ("workflow",)), "\n"]
-        suffix = ["\x1b", "\x1b", curses.KEY_END, curses.KEY_UP, "\n"]
+        prefix = [*select("workflow"), "\n", *select("use_tiers", ("workflow",)), " "]
+        suffix = ["\x1b", curses.KEY_END, curses.KEY_UP, "\n"]
         config = Config()
-        cancelled, _ = self.edit(config, [*prefix, *select("routing", ("workflow", "review")), " ", *["\x1b"] * 3])
+        config.workflow.worker.tiers["2"] = [{"provider": "codex", "model": "gpt-5.5", "effort": "high",
+                                              "fast": False, "api_provider": ""}]
+        cancelled, screen = self.edit(config, [*prefix, *["\x1b"] * 2])
         self.assertIsNone(cancelled)
-        self.assertEqual(config.workflow.review.routing, "cross-provider")
-        result, _ = self.edit(config, [*prefix, *select("routing", ("workflow", "review")), " ", *suffix])
-        self.assertEqual(result.config.workflow.review.routing, "same-provider")
-        self.assertEqual(result.config.workflow.review.policy, "auto")
-        result, _ = self.edit(result.config, [*prefix, *select("routing", ("workflow", "review")), " ", *suffix])
-        self.assertEqual(result.config.workflow.review.routing, "cross-provider")
+        self.assertFalse(config.workflow.use_tiers)
+        self.assertTrue(any("Use tiers" in line for line in screen.drawn))
+        result, _ = self.edit(config, [*prefix, *suffix])
+        self.assertTrue(result.config.workflow.use_tiers)
+        self.assertEqual(result.config.workflow.worker.tiers["2"][0]["model"], "gpt-5.5")
 
     def test_every_generated_section_and_field_has_specific_help(self):
         data = Config().to_dict()

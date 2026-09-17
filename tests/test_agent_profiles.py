@@ -48,6 +48,40 @@ class AgentProfileTests(unittest.TestCase):
                 self.assertFalse((home / f"agents/ab-reviewer-2.{suffix}").exists())
                 self.assertTrue((home / f"agents/ab-worker-2.{suffix}").exists())
 
+    def test_profiles_exist_for_each_role_list_and_only_nonempty_tier_lists(self):
+        """A tier with an empty list runs the role's own list, so its profile would only duplicate that one."""
+        with tempfile.TemporaryDirectory() as directory:
+            codex, claude = Path(directory) / "codex", Path(directory) / "claude"
+            config = Config()
+            config.workflow.enabled = True
+            for role in ("scout", "worker", "reviewer"):
+                config.workflow.role(role).models = [entry("codex", f"{role}-model", "high")]
+            config.workflow.review.tiers["3"] = [entry("codex", "reviewer-tier3", "high")]
+            sync(config, codex, claude)
+            self.assertEqual(sorted(path.name for path in (codex / "agents").glob("*.toml")),
+                             ["ab-reviewer-3.toml", "ab-reviewer.toml", "ab-scout.toml", "ab-worker.toml"])
+            self.assertEqual(tomllib.loads((codex / "agents/ab-reviewer-3.toml").read_text())["model"], "reviewer-tier3")
+            self.assertEqual(tomllib.loads((codex / "agents/ab-scout.toml").read_text())["description"],
+                             "Configured agent-box scout")
+
+    def test_a_profile_agent_box_no_longer_defines_is_removed_only_while_intact(self):
+        """Removing a role list or tier list retires its owned profile; an edited one stays the user's."""
+        with tempfile.TemporaryDirectory() as directory:
+            codex, claude = Path(directory) / "codex", Path(directory) / "claude"
+            config = Config()
+            config.workflow.enabled = True
+            config.workflow.worker.tiers["1"] = [entry("codex", "worker-tier1", "high")]
+            config.workflow.worker.tiers["2"] = [entry("codex", "worker-tier2", "high")]
+            sync(config, codex, claude)
+            edited = codex / "agents/ab-worker-2.toml"
+            edited.write_text(edited.read_text() + "# mine\n")
+            config.workflow.worker.tiers["1"] = config.workflow.worker.tiers["2"] = []
+            messages = sync(config, codex, claude)
+            self.assertFalse((codex / "agents/ab-worker-1.toml").exists())
+            self.assertFalse((codex / "agents/ab-worker-1.toml.agent-box").exists())
+            self.assertTrue(edited.exists())
+            self.assertIn(f"Preserved user-owned or edited agent profile: {edited}", messages)
+
     def test_each_provider_profile_takes_that_providers_first_native_candidate(self):
         """A mixed list installs a profile per CLI: the other CLI's and API candidates are not native to it."""
         with tempfile.TemporaryDirectory() as directory:
@@ -58,18 +92,17 @@ class AgentProfileTests(unittest.TestCase):
                                             entry("claude", "deepseek-v4-flash", "high", api_provider="deepseek"),
                                             entry("claude", "haiku", "low")]
             sync(config, codex, claude)
-            for tier in range(4):
-                self.assertEqual(tomllib.loads((codex / f"agents/ab-scout-{tier}.toml").read_text())["model"], "gpt-5.6-luna")
-                self.assertIn('model: "haiku"', (claude / f"agents/ab-scout-{tier}.md").read_text())
+            self.assertEqual(tomllib.loads((codex / "agents/ab-scout.toml").read_text())["model"], "gpt-5.6-luna")
+            self.assertIn('model: "haiku"', (claude / "agents/ab-scout.md").read_text())
 
     def test_apply_with_a_malformed_list_removes_profiles_instead_of_crashing(self):
         """config apply reports validation warnings and still syncs; a wrong container means no candidate."""
         with tempfile.TemporaryDirectory() as directory:
             codex, claude = Path(directory) / "codex", Path(directory) / "claude"
-            config = Config.from_dict({"workflow": {"enabled": True, "scout": {"models": "luna", "tiers": ["x"]}}})
+            config = Config.from_dict({"workflow": {"enabled": True, "scout": {"models": "luna"}, "worker": {"tiers": ["x"]}}})
             self.assertTrue(config.workflow.validate())
             self.assertEqual(sync(config, codex, claude), [])
-            self.assertFalse((codex / "agents/ab-scout-0.toml").exists())
+            self.assertFalse((codex / "agents/ab-scout.toml").exists())
 
     def test_profile_toml_carries_what_toml_can_spell(self):
         """A profile is TOML Codex parses, so its fields need the TOML escaper.

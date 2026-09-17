@@ -135,11 +135,11 @@ class ExternalConfigTests(unittest.TestCase):
 
     def test_project_routes_reference_global_connections_without_owning_secrets(self):
         """A repository may select an API, but cannot redefine where its key goes."""
-        value = {'workflow': {'scout': {'tiers': {'0': [
+        value = {'workflow': {'worker': {'tiers': {'1': [
             {'provider': 'codex', 'api_provider': 'deepseek', 'model': 'external-small'}]}}}}
         project_config.validate(value, Path('.agent-box.json'))
         loaded = Config.from_dict(project_config.merge(external_config().to_dict(), value))
-        self.assertEqual(loaded.workflow.scout.tiers['0'][0]['api_provider'], 'deepseek')
+        self.assertEqual(loaded.workflow.worker.tiers['1'][0]['api_provider'], 'deepseek')
         for invalid in ({'provider': 'codex', 'model': 'm', 'api_key': 'private-api-key'},
                         {'provider': 'codex', 'model': 1}, 'codex:m'):
             with self.subTest(invalid=invalid), self.assertRaises(AgentBoxError) as raised:

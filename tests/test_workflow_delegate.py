@@ -27,7 +27,7 @@ ANSWER = "## Done\nEdited change.py.\n\n## Evidence\n- unittest passed\n\n## Lim
 class DelegateCommandTests(WorkflowCase):
     def setUp(self):
         super().setUp()
-        self.config.workflow.worker.tiers["1"] = [candidate("claude", "worker-model", "high")]
+        self.config.workflow.worker.models = [candidate("claude", "worker-model", "high")]
         self.config.workflow.scout.models = [candidate("codex", "scout-model", "high"),
                                              candidate("claude", "scout-fallback", "low")]
         usage = patch.object(workflow, "usage_snapshot", return_value={})
@@ -48,6 +48,17 @@ class DelegateCommandTests(WorkflowCase):
             self.assertEqual(run.call_args.args[0]["model"], expected)
             self.assertEqual(run.call_args.args[1], "scout")
             self.assertEqual(result["route"]["model"], expected)
+
+    def test_the_task_tier_selects_a_worker_list_only_when_tiers_are_on_and_never_a_scouts(self):
+        """The task is labelled tier 1; tiers off must run the role's own list, and scouts have no tier lists."""
+        self.config.workflow.worker.tiers["1"] = [candidate("codex", "worker-tier1", "high")]
+        for use_tiers, expected in ((False, "worker-model"), (True, "worker-tier1")):
+            self.config.workflow.use_tiers = use_tiers
+            with self.subTest(use_tiers=use_tiers), patch.object(workflow, "run", return_value=ANSWER) as run:
+                self.delegate("worker")
+                self.assertEqual(run.call_args.args[0]["model"], expected)
+                self.delegate("scout")
+                self.assertEqual((run.call_args.args[0]["model"], run.call_args.args[0]["tier"]), ("scout-model", None))
 
     def test_worker_answer_is_returned_as_markdown_and_saved_privately(self):
         """The coordinator reads the answer as written; the saved copy is private and nothing else is recorded."""
@@ -157,7 +168,7 @@ class DelegateCommandTests(WorkflowCase):
             self.delegate("worker")
         run.assert_not_called()
         gw.git(self.root, "switch", "ab/1-task")
-        self.config.workflow.worker.tiers["1"] = []
+        self.config.workflow.worker.models = []
         with patch.object(workflow, "run") as run, \
              self.assertRaisesRegex(AgentBoxError, "No worker candidates in workflow.worker.models; .*native subagent"):
             self.delegate("worker")

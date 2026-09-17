@@ -375,7 +375,7 @@ class UsageAuthTests(unittest.TestCase):
                 self.assertIn('network', result['error'])
                 self.assertNotIn('SECRET', json.dumps(result))
                 self.assertEqual(self.auth.read_bytes(), before)
-                route = select(config, 'worker', 2, 'codex', {'claude': result})
+                route = select(config, 'worker', 2, {'claude': result})
                 self.assertEqual((route['model'], [f['model'] for f in route['fallbacks']]), ('opus', ['gpt-5.5']))
 
     def test_redirects_are_refused_before_credentials_can_leave_endpoint(self):

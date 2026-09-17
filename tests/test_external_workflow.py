@@ -44,12 +44,11 @@ class ExternalRoutingTests(unittest.TestCase):
     def test_all_roles_and_role_lists_bind_the_api_without_native_profiles(self):
         """A model name alone cannot identify which API should receive its request."""
         for cli in ('codex', 'claude'):
-            for role, tier, override in [('worker', 1, False), ('scout', 0, False), ('reviewer', 2, False),
-                                         ('worker', None, True), ('reviewer', None, True)]:
+            for role, tier, override in [('worker', 1, False), ('reviewer', 2, False),
+                                         ('worker', None, True), ('scout', None, True), ('reviewer', None, True)]:
                 with self.subTest(cli=cli, role=role, override=override), tempfile.TemporaryDirectory() as tmp:
                     config = external_config()
                     policy = config.workflow
-                    policy.review.routing = 'same-provider'
                     configure(policy, role, tier, [candidate(cli)])
                     with patch.dict(os.environ, {}, clear=True), \
                          patch.object(workflow, 'WORKFLOW_STATE', Path(tmp)), \
@@ -71,7 +70,7 @@ class ExternalRoutingTests(unittest.TestCase):
         policy = config.workflow
         policy.worker.tiers['1'] = [candidate(), candidate()]
         exhausted = {'codex': {'fresh': True, 'windows': [{'remaining': 0, 'reset_at': 10000, 'seconds': 604800}]}}
-        route = routing.select(policy, 'worker', 1, 'codex', exhausted, now=1)
+        route = routing.select(policy, 'worker', 1, exhausted, now=1)
         self.assertEqual(route['api_provider'], 'deepseek')
         with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {}, clear=True), \
              patch.object(workflow, 'WORKFLOW_STATE', Path(tmp)), patch.object(workflow_state, 'WORKFLOW_STATE', Path(tmp)), \
@@ -104,12 +103,11 @@ class ExternalRoutingTests(unittest.TestCase):
         report from a session without the prepared identity cannot show where it ran.
         """
         for cli, other in (('codex', 'claude'), ('claude', 'codex')):
-            for role, tier, override in [('worker', 1, False), ('scout', 0, False), ('reviewer', 2, False),
-                                         ('worker', None, True), ('reviewer', None, True)]:
+            for role, tier, override in [('worker', 1, False), ('reviewer', 2, False),
+                                         ('worker', None, True), ('scout', None, True), ('reviewer', None, True)]:
                 with self.subTest(cli=cli, role=role, override=override), tempfile.TemporaryDirectory() as tmp:
                     config = external_config()
                     policy = config.workflow
-                    policy.review.routing = 'same-provider'
                     _, env = external_launch.prepare([cli], 'deepseek', cli, config, tmp, {})
                     with patch.dict(os.environ, env, clear=True), \
                          patch.object(workflow, 'WORKFLOW_STATE', Path(tmp)), \

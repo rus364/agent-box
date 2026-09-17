@@ -259,7 +259,7 @@ def check_settings(route):
         raise ProviderFailure("Unsupported managed provider", "unsupported")
     if not route.get("model") or not route.get("effort"):
         raise ProviderFailure(
-            "Managed execution requires known model and effort; for untiered work pass verified "
+            "Managed execution requires known model and effort; without configured reviewer candidates pass verified "
             "--session-model and --session-effort before dispatch",
             "unsupported",
         )

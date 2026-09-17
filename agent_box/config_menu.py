@@ -18,7 +18,6 @@ CHOICES = {
     "default_agent": LAUNCH_AGENTS,
     "tracker.provider": TRACKER_PROVIDERS,
     "workflow.merge_mode": ("github", "local"),
-    "workflow.review.routing": ("cross-provider", "same-provider"),
     "workflow.review.policy": ("off", "auto", "always"),
     "workflow.review.github_provider": ("auto", "local", "codex", "claude"),
 }
@@ -67,21 +66,20 @@ HELP = {
     "audio.enabled": "Mount the host PulseAudio/PipeWire socket so agents can use the microphone and speakers, e.g. Claude Code /voice. Everything in the box gets both. Changing it recreates the box.",
     "workflow": "Opt-in tracked-work orchestration, role models, review, publication, and cleanup policy.",
     "workflow.enabled": "Enable agent-box's tracked-task workflow. Enabling it does not itself expose provider or tracker credentials.",
+    "workflow.use_tiers": "Let a task's tier 1-3 select the worker and reviewer Models by tier. Off runs every task on the role's own Models; tier lists and task tiers are kept. A project or --[no-]tiers may override it.",
     "workflow.merge_mode": "Finish parent work through a GitHub pull request or a local fast-forward into origin's default branch.",
     "workflow.scout": "Read-only scouts the coordinator dispatches for bounded questions, and the models they run.",
     "workflow.scout.limit": "Maximum number of concurrent read-only scouts, from 1 through 16.",
-    "workflow.scout.models": "Scout candidates in preference order; the first available one runs and the rest are fallbacks. Used for every tier whose own list is empty. A candidate of the other CLI than the coordinator's runs as a managed CLI process.",
-    "workflow.scout.tiers": "Optional scout candidates per tier 0-3. A nonempty tier list replaces Models for that tier; an empty one uses Models.",
+    "workflow.scout.models": "Scout candidates in preference order; the first available one runs and the rest are fallbacks. Scouts have no tiers. A candidate of the other CLI than the coordinator's runs as a managed CLI process.",
     "workflow.auto_push": "Within the opt-in workflow, publish the parent task in GitHub mode or the accepted base after a local fast-forward. Turning this off keeps completion local.",
     "workflow.timeout_seconds": "Maximum delegated agent runtime in seconds, from 30 through 86400.",
     "workflow.worker": "The models managed workers run when the coordinator delegates with workflow delegate.",
-    "workflow.worker.models": "Delegated worker candidates in preference order; the first available one runs and the rest are fallbacks. Used for untiered tasks and tiers whose own list is empty. workflow delegate runs them as a managed CLI process and refuses when none applies; the coordinator can spawn a native worker instead.",
-    "workflow.worker.tiers": "Optional worker candidates per task tier 1-3. A nonempty tier list replaces Models for that tier; an empty one uses Models.",
-    "workflow.review": "Review routing, thresholds, provider selection, and reviewer candidates.",
-    "workflow.review.models": "Reviewer candidates. Cross-provider routing runs the first available candidate of the other provider than the session's, then the session provider's own; same-provider uses only the session provider's. Used for untiered tasks and tiers whose own list is empty; with no candidates an untiered review inherits the active session.",
-    "workflow.review.tiers": "Optional reviewer candidates per task tier 1-3. A nonempty tier list replaces Models for that tier; an empty one uses Models.",
+    "workflow.worker.models": "Delegated worker candidates in preference order; the first available one runs and the rest are fallbacks. Used unless Use tiers is on and the task's tier has its own list. workflow delegate runs them as a managed CLI process and refuses when none applies; the coordinator can spawn a native worker instead.",
+    "workflow.worker.tiers": "Optional worker candidates per task tier 1-3, used only when Use tiers is on. A nonempty tier list replaces Models for that tier; an empty one uses Models.",
+    "workflow.review": "Review thresholds, attempts, reviewer candidates and GitHub review.",
+    "workflow.review.models": "Reviewer candidates in preference order; the first available one runs, skipping a missing CLI or an exhausted usage limit, and the rest are fallbacks. Used unless Use tiers is on and the task's tier has its own list; with no candidates a review inherits the active session.",
+    "workflow.review.tiers": "Optional reviewer candidates per task tier 1-3, used only when Use tiers is on. A nonempty tier list replaces Models for that tier; an empty one uses Models.",
     "workflow.review.policy": "Off skips workflow review. Auto triggers on file/line thresholds, sensitive paths, or the review label. Always requires review for every task and the complete parent diff. GitHub merge may still require independent approval.",
-    "workflow.review.routing": "Cross-provider: candidates of the other provider than the session's first, the session provider's own only if those are unavailable. Same-provider: the session provider's candidates only. Native preference never changes candidate order.",
     "workflow.review.max_files": "Automatic-review threshold for changed file count. The Review preset action can set this together with max lines.",
     "workflow.review.max_lines": "Automatic-review threshold for changed line count. The Review preset action can set this together with max files.",
     "workflow.review.max_rounds": "Maximum local review attempts, including failed or abandoned attempts, before explicit user allowance is required.",
@@ -109,7 +107,7 @@ LABELS = {
     "url": "URL", "token": "Access token", "effort": "Reasoning effort",
     "github_model": "GitHub review model", "github_effort": "GitHub review effort",
     "telegram_chat_id": "Telegram chat ID",
-    "worker": "Workers", "scout": "Scouts",
+    "worker": "Workers", "scout": "Scouts", "use_tiers": "Use tiers",
     "github_provider": "GitHub review provider",
     "external_providers": "External API providers", "api_provider": "API provider", "api_key": "API key",
 }
@@ -126,7 +124,7 @@ MENU_GROUPS = {
     ("workflow",): (
         ("Workflow", ("enabled",)),
         ("Delivery", ("merge_mode", "auto_push", "cleanup_local_branches", "cleanup_remote_branches")),
-        ("Roles", ("worker", "scout", "review")),
+        ("Roles", ("use_tiers", "worker", "scout", "review")),
         ("Delegation", ("timeout_seconds",)),
     ),
     ("workflow", "worker"): (
@@ -134,11 +132,11 @@ MENU_GROUPS = {
     ),
     ("workflow", "scout"): (
         ("Concurrency", ("limit",)),
-        ("Models", ("models", "tiers")),
+        ("Models", ("models",)),
     ),
     ("workflow", "review"): (
         ("Review triggers", ("policy", "max_files", "max_lines", "sensitive_paths", "ignored_paths", "label")),
-        ("Routing and models", ("routing", "models", "tiers")),
+        ("Models", ("models", "tiers")),
         ("Review attempts", ("max_rounds",)),
         ("GitHub review", ("github_provider", "github_model", "github_effort", "wait_seconds")),
     ),
@@ -182,8 +180,6 @@ def clipped(text, width):
 def label_for(key, path=()):
     if path == ('external_providers',) or path[:1] == ('external_providers',) and path[-1:] == ('models',):
         return key
-    if path == ("workflow", "review") and key == "routing":
-        return "Reviewer routing"
     if len(path) == 2 and path[0] == "workflow" and key == "tiers":
         return "Models by tier"
     return LABELS.get(key, f"Tier {key}" if key.isdigit() else key.replace("_", " ").capitalize()).replace('Api', 'API')
@@ -240,7 +236,7 @@ def help_for(path):
         return f"Access token for the {path[-2]} tracker. It is masked here and rendered only for enabled tracker integration."
     if candidate_list(path) and len(path) == 4:
         role = "reviewer" if path[1] == "review" else path[1]
-        return (f"{role.title()} candidates for tier {path[-1]} in preference order. Nonempty replaces the role's Models for this tier; "
+        return (f"{role.title()} candidates for tier {path[-1]} in preference order, used only when Use tiers is on. Nonempty replaces the role's Models for this tier; "
                 "empty uses them. Enter edits the list: add, reorder, change or remove candidates.")
     raise KeyError(f"No menu help for {dotted}")
 
@@ -303,7 +299,7 @@ def env_entries(name, value):
 def candidate_list(path):
     """A role's ordered candidate list: ``workflow.ROLE.models`` or ``workflow.ROLE.tiers.N``."""
     return (len(path) >= 3 and path[0] == "workflow" and path[1] in ("scout", "worker", "review")
-            and (len(path) == 3 and path[2] == "models" or len(path) == 4 and path[2] == "tiers"))
+            and (len(path) == 3 and path[2] == "models" or len(path) == 4 and path[2] == "tiers" and path[1] != "scout"))
 
 
 def candidate_efforts(spec, tree):

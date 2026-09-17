@@ -114,6 +114,7 @@ class WorkflowGitTests(unittest.TestCase):
             task = Task("1", "1", "Task", description="## Acceptance\n- [ ] requirement", state="Doing", assignees=["1"], labels=["ab:tier:1"])
             config = Config()
             config.workflow.enabled = True
+            config.workflow.use_tiers = True
             adapter = Mock()
             adapter.get.return_value = task
             adapter.identity.return_value = {"id": 1}
@@ -134,7 +135,7 @@ class WorkflowGitTests(unittest.TestCase):
                 prepared = workflow.dispatch(workflow.parser().parse_args([
                     "prepare", "1", "--role", "reviewer", "--primary", "codex", "--brief", str(brief)]))
                 (root / "change.py").write_text("value = 2\n")
-                result = workflow.dispatch(workflow.parser().parse_args(["report", "1", "--role", "reviewer", "--primary", "codex", "--provider", "claude", "--model", "exact-model", "--effort", "high", "--fresh-context", "--file", str(report), "--scope", prepared["scope"], "--handoff", prepared["handoff"]]))
+                result = workflow.dispatch(workflow.parser().parse_args(["report", "1", "--role", "reviewer", "--provider", "claude", "--model", "exact-model", "--effort", "high", "--fresh-context", "--file", str(report), "--scope", prepared["scope"], "--handoff", prepared["handoff"]]))
                 self.assertEqual(result["reconciliation"]["status"], "blocked")
                 self.assertIn("working_tree", result["reconciliation"]["changes"])
                 self.assertNotIn("review", workflow.read_evidence(root, task))

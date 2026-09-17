@@ -104,6 +104,8 @@ class WorkflowCase(unittest.TestCase):
                          state="Doing", assignees=["1"], labels=["ab:tier:1"])
         self.config = Config()
         self.config.workflow.enabled = True
+        # The task is labelled tier 1; with tiers on, its reviewer routes at that tier.
+        self.config.workflow.use_tiers = True
         self.adapter = Mock()
         self.adapter.get.return_value = self.task
         self.adapter.identity.return_value = {"id": 1}

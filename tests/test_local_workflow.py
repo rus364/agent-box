@@ -13,7 +13,7 @@ from agent_box.config import Config
 from agent_box.errors import AgentBoxError
 from agent_box.repo_binding import Binding
 from agent_box.tracker.core import Task
-from workflow_fixtures import BINDING, repository, selected_route
+from workflow_fixtures import BINDING, candidate, repository, selected_route
 
 
 class LocalLandTests(unittest.TestCase):
@@ -117,8 +117,8 @@ class LocalLandTests(unittest.TestCase):
         self.assertNotIn("review", result)
         self.assertNotIn("review", workflow.read_evidence(self.root, self.parent))
 
-    def test_validate_options_precede_separator_and_command_keeps_its_own(self):
-        """Workflow options before -- must not be executed as the project command."""
+    def test_the_project_command_keeps_its_own_options_after_the_separator(self):
+        """An option after -- belongs to the project command; without -- it cannot be told from a workflow option."""
         commands = []
         original_run = workflow.subprocess.run
 
@@ -129,11 +129,11 @@ class LocalLandTests(unittest.TestCase):
             return original_run(command, *args, **kwargs)
 
         with patch.object(workflow.subprocess, "run", run):
-            result = self.dispatch(["validate", "7", "--primary", "claude", "--", "validation-fixture", "--primary"])
+            result = self.dispatch(["validate", "7", "--", "validation-fixture", "--help"])
             self.assertEqual(result["validation"]["exit"], 0)
-            self.assertEqual(commands, [["validation-fixture", "--primary"]])
-            with self.assertRaisesRegex(AgentBoxError, r"after --: agent-box workflow validate ID \[--primary PROVIDER\] -- COMMAND"):
-                self.dispatch(["validate", "7", "validation-fixture", "--primary", "claude"])
+            self.assertEqual(commands, [["validation-fixture", "--help"]])
+            with self.assertRaisesRegex(AgentBoxError, r"after --: agent-box workflow validate ID -- COMMAND"):
+                self.dispatch(["validate", "7", "validation-fixture", "--verbose"])
         self.assertEqual(len(commands), 1)
 
     def test_landing_keeps_reservation_out_until_acceptance_is_consumed(self):
@@ -532,7 +532,7 @@ class LocalLandTests(unittest.TestCase):
         workflow.evidence_path(self.root, self.parent).unlink()
         with self.assertRaisesRegex(AgentBoxError, "fresh validation.*review"):
             self.dispatch(["land", "7", "reconcile"])
-        self.parent.labels = ["ab:tier:1"]
+        self.config.workflow.review.models = [candidate("claude", "m", "high")]
         self.config.workflow.review.policy = "auto"
         gw.git(self.root, "switch", "ab/7-parent")
         self.dispatch(["validate", "7", "--", "true"])

@@ -21,7 +21,7 @@ class NativePreparationTests(unittest.TestCase):
             root = Path(directory)
             config = Config()
             config.workflow.enabled = True
-            config.workflow.review.tiers["1"] = [entry("codex", "review-model", "high"), entry("claude", "other-review", "medium")]
+            config.workflow.review.tiers["1"] = [entry("claude", "other-review", "medium"), entry("codex", "review-model", "high")]
             with patch.object(workflow, "WORKFLOW_STATE", root / "state"), \
                  patch.object(workflow_state, "WORKFLOW_STATE", root / "state"), \
                  patch.object(workflow.shutil, "which", return_value="provider-cli"):
@@ -49,17 +49,14 @@ class ReviewerMatrixTests(unittest.TestCase):
         self.assertIn("1 codex:review-model:default;", rows["workflow.review.tiers"])
         self.assertIn("1 codex:worker-model:medium;", rows["workflow.worker.tiers"])
 
-    def test_config_show_reports_review_routing(self):
-        """Inspection must reveal strict reviewer routing next to its triggers."""
+    def test_config_show_reports_the_tier_switch(self):
+        """Inspection must reveal whether task tiers select models, since the tier lists stay listed either way."""
         from test_workflow_config import shown
-        for mode in ("cross-provider", "same-provider"):
-            with self.subTest(routing=mode):
+        for enabled in (False, True):
+            with self.subTest(use_tiers=enabled):
                 config = Config()
-                config.workflow.review.routing = mode
-                rows = shown(config)
-                self.assertEqual(rows["workflow.review.routing"], mode)
-                self.assertEqual((rows["workflow.review.policy"], rows["workflow.review.max_files"],
-                                  rows["workflow.review.max_lines"]), ("auto", "5", "200"))
+                config.workflow.use_tiers = enabled
+                self.assertEqual(shown(config)["workflow.use_tiers"], "on" if enabled else "off")
 
     def test_reviewer_defaults_are_empty_and_have_only_task_tiers(self):
         config = Config()
@@ -70,16 +67,16 @@ class ReviewerMatrixTests(unittest.TestCase):
         config = Config.from_dict({"workflow": {
             "worker": {"tiers": {"2": [{"provider": "claude", "model": "worker"}]}},
             "review": {"tiers": {"2": [
-                {"provider": "codex", "model": "fallback", "effort": "high"},
-                {"provider": "claude", "api_provider": "", "fast": False, "model": "reviewer", "effort": "default"}]}}}})
+                {"provider": "claude", "api_provider": "", "fast": False, "model": "reviewer", "effort": "default"},
+                {"provider": "codex", "model": "fallback", "effort": "high"}]}}}})
         config = Config.from_dict(config.to_dict())
-        selected = routing.select(config.workflow, "reviewer", 2, "codex")
+        selected = routing.select(config.workflow, "reviewer", 2)
         self.assertEqual((selected["model"], selected["effort"]), ("reviewer", "default"))
         self.assertEqual(selected["fallbacks"][0]["model"], "fallback")
         self.assertEqual(config.workflow.worker.tiers["2"][0]["model"], "worker")
         config.workflow.review.tiers["2"] = []
-        with self.assertRaisesRegex(AgentBoxError, r"reviewer model configured in workflow\.review\.models"):
-            routing.select(config.workflow, "reviewer", 2, "codex")
+        with self.assertRaisesRegex(AgentBoxError, r"reviewer candidate configured in workflow\.review\.models"):
+            routing.select(config.workflow, "reviewer", 2)
 
     def test_reviewer_effort_is_validated_by_provider(self):
         config = Config.from_dict({"workflow": {"review": {"tiers": {"3": [
