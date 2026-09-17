@@ -531,6 +531,8 @@ AGENT_EFFORTS = {
 }
 WORKFLOW_SKILLS = ("ab-setup", "ab-adopt", "ab-normalize", "ab-interview", "ab-plan", "ab-work", "ab-review", "ab-pr", "ab-land")
 REVIEW_PRESETS = {"thorough": (2, 80), "balanced": (5, 200), "light": (10, 500)}
+# Off, or the highest finding severity a NEEDS_WORK round may carry for its delta to count.
+REVIEW_INCREMENTAL = ("off", "LOW", "MEDIUM", "HIGH", "CRITICAL")
 
 
 def _mapping(value):
@@ -663,6 +665,7 @@ class ReviewConfig:
         "**/auth/**", "**/security/**", "**/migrations/**", "**/skills/**",
         "**/config*", ".github/**", "**/*schema*", "**/api/**"])
     ignored_paths: list[str] = field(default_factory=list)
+    incremental: str = "off"
     label: str = "ab:review"
     github_provider: str = "auto"
     github_model: str = ""
@@ -679,7 +682,7 @@ class ReviewConfig:
         result = cls()
         result.models = model_list(data.get("models"))
         result.tiers = model_tiers(data.get("tiers"))
-        for key in ("policy", "label", "github_provider", "github_model", "github_effort"):
+        for key in ("policy", "incremental", "label", "github_provider", "github_model", "github_effort"):
             if key in data and isinstance(data[key], str):
                 setattr(result, key, data[key].strip())
         for key in ("max_files", "max_lines", "max_rounds", "wait_seconds"):
@@ -761,6 +764,8 @@ class WorkflowConfig:
             errors.append("workflow.scout.limit must be between 1 and 16")
         if self.review.policy not in ("off", "auto", "always"):
             errors.append("workflow.review.policy must be off, auto, or always")
+        if self.review.incremental not in REVIEW_INCREMENTAL:
+            errors.append("workflow.review.incremental must be off, LOW, MEDIUM, HIGH, or CRITICAL")
         if self.review.github_provider not in ("auto", "local", "codex", "claude"):
             errors.append("workflow.review.github_provider must be auto, local, codex, or claude")
         for name in ("max_files", "max_lines", "max_rounds", "wait_seconds"):

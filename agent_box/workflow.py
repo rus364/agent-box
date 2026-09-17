@@ -496,7 +496,7 @@ def path_matches(path, pattern):
     return fnmatch.fnmatch(path, pattern) or fnmatch.fnmatch("/" + path, pattern)
 
 
-def diff_stats(root, base, review):
+def diff_stats(root, base, review, since=None):
     """Ignored paths leave only the trigger counts, never the reviewed diff; a
     sensitive match keeps a path counted so a broad ignore cannot silence it.
     `-z` yields real names: the default output quotes non-ASCII paths and joins
@@ -505,7 +505,8 @@ def diff_stats(root, base, review):
     under its sensitive name so moving a file out of a sensitive path still
     triggers review."""
     files, lines = [], 0
-    fields = gw.git(root, "diff", "--numstat", "-z", f"{gw.base_ref(root, base)}...HEAD", "--").split("\0")
+    span = f"{since}..HEAD" if since else f"{gw.base_ref(root, base)}...HEAD"
+    fields = gw.git(root, "diff", "--numstat", "-z", span, "--").split("\0")
     index = 0
     while index < len(fields) and fields[index]:
         added, deleted, path = fields[index].split("\t", 2)
@@ -544,6 +545,50 @@ def review_reasons(config, tasks, files, lines):
     return reasons
 
 
+def delta_review(root, config, task, tasks):
+    """Whether commits after this task's latest applied round need another one, judged on their delta.
+
+    Only the task's own rounds count, so a parent's first review is always of its
+    whole diff and a subtask's reviewed head never shortens it. The delta runs
+    from the reviewed head, not from a head accepted this way, so small steps add
+    up. None means the whole diff decides: the setting is off, the latest round
+    is unapplied, inconclusive or has a finding above the level, its receipt is
+    gone, or history no longer descends from it.
+    """
+    review = config.workflow.review
+    if review.incremental == "off":
+        return None
+    binding = Binding.session(root) or Binding.load(root)
+    try:
+        records = read_review_state(root, binding, task).get("results", [])
+        if not records or records[-1]["status"] != "applied":
+            return None
+        value, _ = review_results.read(WORKFLOW_STATE, repository_key(root), records[-1]["receipt"])
+    except (AgentBoxError, OSError, ValueError):
+        return None
+    report, reviewed = value["output"]["report"], value["descriptor"].get("head")
+    ceiling = SEVERITIES.index(review.incremental)
+    if report["verdict"] == "NEEDS_WORK":
+        if any(SEVERITIES.index(item["severity"]) > ceiling for item in report["findings"]):
+            return None
+    elif report["verdict"] != "PASS":
+        return None
+    head = gw.head_sha(root)
+    if (not isinstance(reviewed, str) or not re.fullmatch(r"[0-9a-f]{40,64}", reviewed)
+            or reviewed == head or not gw._is_ancestor(root, reviewed, head)):
+        return None
+    files, lines = diff_stats(root, None, review, since=reviewed)
+    return {"round": records[-1]["round"], "verdict": report["verdict"],
+            "reviewed_head": reviewed, "head": head, "files": len(files), "lines": lines,
+            "reasons": review_reasons(review, tasks, files, lines)}
+
+
+def delta_accepted(saved):
+    """Accepted by the delta threshold of an earlier round: an outcome of its own, never a PASS."""
+    delta = saved.get("delta_review")
+    return bool(delta and not delta["reasons"])
+
+
 def human_accepted(saved):
     accepted = saved.get("human_acceptance", {})
     return bool(saved.get("scope") and accepted.get("scope") == saved["scope"]
@@ -560,8 +605,11 @@ def review_blockers(config, tasks, files, lines, saved, *, integrated=False):
     reasons = review_reasons(config, tasks, files, lines)
     if integrated and config.policy != "off":
         reasons.append("already integrated scope requires acceptance of the original work")
-    if not reasons or saved.get("review", {}).get("verdict") == "PASS" or human_accepted(saved):
+    if (not reasons or saved.get("review", {}).get("verdict") == "PASS" or human_accepted(saved)
+            or (delta_accepted(saved) and not integrated)):
         return []
+    if delta := saved.get("delta_review"):
+        reasons.append(f"its delta from round {delta['round']} still triggers review: " + "; ".join(delta["reasons"]))
     return ["This head requires a fresh independent PASS review: " + "; ".join(reasons)
             + ". The user's explicit acceptance of this head can instead be recorded with workflow approve"]
 
@@ -612,8 +660,9 @@ def inspect(root, binding, adapter, task, config):
     review = {"policy": config.workflow.review.policy,
               "budget": review_budget_summary(review_state, config.workflow.review.max_rounds),
               "max_files": config.workflow.review.max_files, "max_lines": config.workflow.review.max_lines,
+              "incremental": config.workflow.review.incremental,
               "files": None, "lines": None, "required": None, "reasons": [],
-              "independent_verdict": None, "human_accepted": None}
+              "independent_verdict": None, "human_accepted": None, "delta": None}
     if review_state.get("results"):
         latest = review_state["results"][-1]
         review["last_result"] = {key: latest[key] for key in ("round", "status", "changes", "reason")}
@@ -651,9 +700,13 @@ def inspect(root, binding, adapter, task, config):
     integrated = integrated_parent(root, task, parent, base)
     if integrated and config.workflow.review.policy != "off":
         reasons.append("already integrated scope requires acceptance of the original work")
-    review.update(files=len(files), lines=lines, required=bool(reasons), reasons=reasons,
+    delta = delta_review(root, config, task, tasks)
+    accepted = bool(reasons) and not integrated and delta_accepted({"delta_review": delta})
+    review.update(files=len(files), lines=lines, required=bool(reasons) and not accepted, reasons=reasons,
                   independent_verdict=saved.get("review", {}).get("verdict"),
-                  human_accepted=human_accepted(saved))
+                  human_accepted=human_accepted(saved), delta=delta)
+    if accepted:
+        review["outcome"] = f"accepted by the delta threshold of round {delta['round']}; not a PASS"
     result.update(scope=fingerprint, validation=saved.get("validation"),
                   next_step=f"Continue with ab-work; validate committed work with agent-box workflow validate {task.id} -- COMMAND ARGS, then follow ab-review and ab-land as applicable")
     return result
@@ -1126,7 +1179,8 @@ def finish(root, config, adapter, task_id):
         if saved.get("validation", {}).get("exit") != 0:
             raise AgentBoxError("Run workflow validate against this exact scope before completion")
         files, lines = diff_stats(root, base, config.workflow.review)
-        reasons = review_blockers(config.workflow.review, tasks, files, lines, saved,
+        reasons = review_blockers(config.workflow.review, tasks, files, lines,
+                                  {**saved, "delta_review": delta_review(root, config, task, tasks)},
                                   integrated=integrated_parent(root, task, parent, base))
         if reasons:
             raise AgentBoxError("; ".join(reasons))
@@ -1183,7 +1237,8 @@ def finish_child(root, config, adapter, task, parent, info, branch, tasks):
         if saved.get("validation", {}).get("exit") != 0:
             raise AgentBoxError("Run workflow validate against this exact scope before completion")
         files, lines = diff_stats(root, base, config.workflow.review)
-        reasons = review_blockers(config.workflow.review, tasks, files, lines, saved)
+        delta = delta_review(root, config, task, tasks)
+        reasons = review_blockers(config.workflow.review, tasks, files, lines, {**saved, "delta_review": delta})
         if reasons:
             raise AgentBoxError("; ".join(reasons))
         if not integrated and not gw._is_ancestor(root, base_head, head):
@@ -1194,6 +1249,7 @@ def finish_child(root, config, adapter, task, parent, info, branch, tasks):
                                      "scope": saved["scope"],
                                      "files": files, "lines": lines,
                                      "validation": saved["validation"], "review": saved.get("review", {}),
+                                     "delta_review": delta,
                                      "human_acceptance": saved.get("human_acceptance", {})}
         save_evidence(root, task, saved)
     if gw.local_branch_head(root, branch) != head or gw.local_branch_head(root, base) != base_head:
@@ -1268,7 +1324,13 @@ def review(args, root, binding, adapter, config, task, parent, tasks, base, fing
     files, lines = diff_stats(root, base, config.workflow.review)
     required = review_required(config.workflow.review, tasks, files, lines)
     review_context = ""
-    if integrated_parent(root, task, parent, base):
+    integrated = integrated_parent(root, task, parent, base)
+    if required and not integrated and delta_accepted(
+            {"delta_review": (delta := delta_review(root, config, task, tasks))}):
+        return {"task": task.id, "scope": fingerprint, "delta": delta,
+                "outcome": f"accepted by the delta threshold of round {delta['round']}; not a PASS, no round started",
+                "review_budget": read_review_budget(root, binding, task, config.workflow.review.max_rounds)}
+    if integrated:
         required = required or config.workflow.review.policy != "off"
         review_context = ("The task head is already included in the resolved base. The base diff "
                           "does not describe the original work: review the complete implementation "

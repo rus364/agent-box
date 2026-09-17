@@ -109,7 +109,7 @@ def operate(args, root, config, adapter, task):
 
     if current != branch:
         raise AgentBoxError(f"Switch to the parent branch {branch} before local landing")
-    from .workflow import configuration_summary, diff_stats, evidence, review_reasons, save_evidence, scope
+    from .workflow import configuration_summary, delta_review, diff_stats, evidence, review_reasons, save_evidence, scope
 
     reasons, tasks = _constraints(adapter, task)
     integrated = gw._is_ancestor(root, task_head, base_head)
@@ -120,6 +120,7 @@ def operate(args, root, config, adapter, task):
                 "files": files, "lines": lines, "integrated_scope": integrated,
                 "validation": accepted.get("validation", {}),
                 "review": accepted.get("review", {}),
+                "delta_review": delta_review(root, config, task, tasks),
                 "human_acceptance": accepted.get("human_acceptance", {})}
     reasons += _acceptance_reasons(config.workflow, tasks, snapshot)
     if not integrated and not gw._is_ancestor(root, base_head, task_head):
@@ -130,7 +131,8 @@ def operate(args, root, config, adapter, task):
                 "integrated": integrated, "blockers": reasons,
                 "configuration": configuration_summary(config), "scope": accepted.get("scope"),
                 "review": {"files": len(files), "lines": lines,
-                           "reasons": review_reasons(config.workflow.review, tasks, files, lines)},
+                           "reasons": review_reasons(config.workflow.review, tasks, files, lines),
+                           "verdict": snapshot["review"].get("verdict"), "delta": snapshot["delta_review"]},
                 "max_rounds": config.workflow.review.max_rounds}
     if reasons:
         raise AgentBoxError("Cannot merge locally: " + "; ".join(reasons))

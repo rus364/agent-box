@@ -186,6 +186,15 @@ class MergeAcceptanceTests(unittest.TestCase):
         self.assertTrue(any("CI" in reason for reason in reasons))
         self.assertTrue(any("approval" in reason for reason in reasons))
 
+    def test_a_delta_below_the_triggers_accepts_a_pull_request_like_a_local_pass(self):
+        """GitHub mode gets the same economy; a delta that still triggers review does not."""
+        from agent_box.github_workflow import acceptance_blockers
+        pr = {"state": "OPEN", "headRefOid": "new", "latestReviews": []}
+        saved = {"validation": {"exit": 0}, "delta_review": {"round": "r", "reasons": []}}
+        self.assertEqual(acceptance_blockers(pr, saved), [])
+        saved["delta_review"]["reasons"] = ["sensitive path auth/x matches **/auth/**"]
+        self.assertTrue(any("approval" in reason for reason in acceptance_blockers(pr, saved)))
+
 
 class LandingFreshnessTests(unittest.TestCase):
     """Provider responses are immutable snapshots, not shared live task objects."""

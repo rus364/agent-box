@@ -96,7 +96,7 @@ def blockers(pr, review_threads, saved):
 
 def acceptance_blockers(pr, saved):
     """A confirmed merge cannot replace the acceptance required before merging."""
-    from .workflow import human_accepted
+    from .workflow import delta_accepted, human_accepted
 
     reasons = []
     approved = current_approval(pr)
@@ -105,9 +105,10 @@ def acceptance_blockers(pr, saved):
         # approval observed before merge can be associated with that scope.
         approved = (approved and bool(saved.get("scope"))
                     and saved.get("github_approval") == approval_scope(pr, saved["scope"]))
-    if not approved and saved.get("review", {}).get("verdict") != "PASS" and not human_accepted(saved):
-        reasons.append("Need a current-head GitHub approval, a fresh local PASS or the user's workflow approve; "
-                       "silence is not approval")
+    if (not approved and saved.get("review", {}).get("verdict") != "PASS" and not human_accepted(saved)
+            and not delta_accepted(saved)):
+        reasons.append("Need a current-head GitHub approval, a fresh local PASS, a delta below the review "
+                       "triggers since an accepted round, or the user's workflow approve; silence is not approval")
         if pr["state"] == "MERGED":
             reasons.append("Merged GitHub approval needs a matching pre-merge scope snapshot; otherwise run a fresh independent local review")
     if saved.get("validation", {}).get("exit") != 0:
@@ -184,7 +185,7 @@ def _current_head(root, pr):
 
 
 def _operate(args, root, config, adapter, task, parent, info, saved, tasks):
-    from .workflow import evidence, save_evidence, scope
+    from .workflow import delta_review, evidence, save_evidence, scope
     if not (config.github.gh_token or config.github.gh_config):
         raise AgentBoxError("Enable the GitHub integration in agent-box config before workflow GitHub actions")
     if task.id != parent.id:
@@ -245,7 +246,7 @@ def _operate(args, root, config, adapter, task, parent, info, saved, tasks):
         if task.state != "Done":
             # A merged PR proves integration, not acceptance of the merged head.
             saved = evidence(root, task, scope(root, info["base"]))
-            reasons += acceptance_blockers(pr, saved)
+            reasons += acceptance_blockers(pr, {**saved, "delta_review": delta_review(root, config, task, tasks)})
         _current_head(root, pr)
         if reasons:
             raise AgentBoxError("Cannot complete merged task: " + "; ".join(reasons))
@@ -265,10 +266,12 @@ def _operate(args, root, config, adapter, task, parent, info, saved, tasks):
     task, tasks, reasons = _landing_tasks(root, adapter, task.id, info)
     saved = evidence(root, task, scope(root, info["base"]))
     _current_head(root, pr)
-    reasons += blockers(pr, feedback, saved)
+    delta = delta_review(root, config, task, tasks)
+    reasons += blockers(pr, feedback, {**saved, "delta_review": delta})
     if args.action == "inspect":
         return {"pr": pr, "threads": feedback, "comments": [c for page in comments for c in page],
-                "blockers": reasons, "max_rounds": config.workflow.review.max_rounds,
+                "blockers": reasons, "review": {"verdict": saved.get("review", {}).get("verdict"), "delta": delta},
+                "max_rounds": config.workflow.review.max_rounds,
                 "wait_seconds": config.workflow.review.wait_seconds}
     if reasons:
         raise AgentBoxError("Cannot merge: " + "; ".join(reasons))
@@ -288,7 +291,7 @@ def _operate(args, root, config, adapter, task, parent, info, saved, tasks):
     _current_head(root, merged)
     if current["scope"] != saved["scope"]:
         reasons.append("Code changed during merge; validate and review the current head")
-    reasons += blockers(pr, feedback, current)
+    reasons += blockers(pr, feedback, {**current, "delta_review": delta_review(root, config, task, tasks)})
     if reasons:
         raise AgentBoxError("Cannot complete merged task: " + "; ".join(reasons))
     adapter.set_state(task, "Done")

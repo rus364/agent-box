@@ -304,6 +304,20 @@ and light (10/500); all values and paths are editable. Apply the policy both to
 subtasks and the complete parent diff. SKIPPED, INCONCLUSIVE and provider errors
 are distinct from PASS. A new commit or a moved base invalidates acceptance.
 
+`workflow.review.incremental` (default `off`; `LOW`, `MEDIUM`, `HIGH` or
+`CRITICAL`) saves rounds on follow-up commits. When the task's own latest round was
+applied and was PASS, or NEEDS_WORK with no finding above the level (`CRITICAL`
+allows any), the triggers above run on the delta from that round's reviewed head to
+the current head instead of the whole diff. A delta that triggers nothing is
+*accepted by the delta threshold* of that round: `workflow review` starts no round,
+and finish, local landing and GitHub merge accept it in place of a PASS. It never
+becomes a PASS; `inspect` and `land inspect` report it under `delta` with the
+round. The delta always starts at the reviewed head, so small steps add up. Only
+the task's own rounds count: a parent's first review is always of its whole diff,
+and subtask rounds never shorten it. Without such a round (stale, superseded,
+INCONCLUSIVE, an expired result, or history that no longer descends from the
+reviewed head) and for an already-integrated parent, the whole diff decides.
+
 `max_rounds` (default 3) counts received verdicts: a round spends an attempt only
 when its verdict arrives, whether PASS, NEEDS_WORK or INCONCLUSIVE, managed or
 native. Known managed launch constraints (missing CLI, unsupported route, another

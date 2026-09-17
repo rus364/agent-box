@@ -9,7 +9,7 @@ import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 
-from .config import AGENT_EFFORTS, AGENT_PROVIDERS, IMAGE_TOOL_GROUP_HELP, LAUNCH_AGENTS, Config, EnvConfig, REVIEW_PRESETS, TRACKER_PROVIDERS, TrackerConnection, candidate_label, model_entry
+from .config import AGENT_EFFORTS, AGENT_PROVIDERS, IMAGE_TOOL_GROUP_HELP, LAUNCH_AGENTS, Config, EnvConfig, REVIEW_INCREMENTAL, REVIEW_PRESETS, TRACKER_PROVIDERS, TrackerConnection, candidate_label, model_entry
 from .errors import AgentBoxError
 from .external_config import API_EFFORTS, ExternalProvider, model_defaults, model_settings, valid_model, valid_name, validate_connections
 from .model_catalog import load_model_catalogs
@@ -19,6 +19,7 @@ CHOICES = {
     "tracker.provider": TRACKER_PROVIDERS,
     "workflow.merge_mode": ("github", "local"),
     "workflow.review.policy": ("off", "auto", "always"),
+    "workflow.review.incremental": REVIEW_INCREMENTAL,
     "workflow.review.github_provider": ("auto", "local", "codex", "claude"),
 }
 HELP = {
@@ -85,6 +86,7 @@ HELP = {
     "workflow.review.max_rounds": "Maximum local review attempts, including failed or abandoned attempts, before explicit user allowance is required.",
     "workflow.review.sensitive_paths": "JSON list of glob patterns that always trigger automatic review regardless of size thresholds, e.g. [\"**/auth/**\", \".github/**\"]. Paths are repository-relative and * also matches /.",
     "workflow.review.ignored_paths": "JSON list of glob patterns excluded from automatic-review file/line counts, e.g. [\"**/*.md\", \"docs/**\"]. Same matching as sensitive paths, which still win. The reviewer still sees the whole diff.",
+    "workflow.review.incremental": "After an applied review round, decide whether new commits need another round from their delta to that round's head instead of the whole task diff. Off uses the whole diff. A level accepts a NEEDS_WORK round whose findings are all at or below it; a PASS always counts. The delta uses the same triggers and records no PASS.",
     "workflow.review.label": "Tracker label that forces review for a task when the review policy is automatic.",
     "workflow.review.github_provider": "Provider requested for GitHub PR review: auto/local uses local review, Codex cannot pin model or effort, and Claude uses its configured Action.",
     "workflow.review.github_model": "Model expected in a Claude GitHub Action. Codex GitHub review rejects model overrides; leave empty unless the Claude Action pins it.",
@@ -135,7 +137,7 @@ MENU_GROUPS = {
         ("Models", ("models",)),
     ),
     ("workflow", "review"): (
-        ("Review triggers", ("policy", "max_files", "max_lines", "sensitive_paths", "ignored_paths", "label")),
+        ("Review triggers", ("policy", "max_files", "max_lines", "sensitive_paths", "ignored_paths", "label", "incremental")),
         ("Models", ("models", "tiers")),
         ("Review attempts", ("max_rounds",)),
         ("GitHub review", ("github_provider", "github_model", "github_effort", "wait_seconds")),
