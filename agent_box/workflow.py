@@ -51,9 +51,20 @@ REVIEW_EVIDENCE_FILES = ("descriptor.json", "handoff.txt", "manifest.json", "tas
                          *INSTRUCTION_FILES)
 
 
-def review_evidence_file(name):
-    """A parent round carries one description file per subtask, so their names are a pattern."""
-    return name in REVIEW_EVIDENCE_FILES or re.fullmatch(r"subtask-[1-9][0-9]*\.md", name) is not None
+def review_input_names(path, written=()):
+    """A parent round's subtask files vary, so the round's own manifest names them, never a pattern.
+
+    A pattern would claim any matching file someone else left in the package.
+    `written` covers a failed write that never reached the manifest.
+    """
+    names = {*REVIEW_EVIDENCE_FILES, *written}
+    manifest = Path(path) / "manifest.json"
+    try:
+        if manifest.is_file() and not manifest.is_symlink():
+            names.update(Path(item["path"]).name for item in json.loads(manifest.read_text())["artifacts"].values())
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        pass  # An unreadable manifest names nothing extra; its files stay unknown and untouched.
+    return names
 
 
 def repository_instructions(root):
@@ -923,12 +934,12 @@ def review_evidence_path(root, task_id, fingerprint, delegation):
             / fingerprint / round_key)
 
 
-def cleanup_review_evidence(path):
+def cleanup_review_evidence(path, written=()):
     """Remove only the files this workflow owns, leaving surprises untouched."""
-    cleanup_input_directory(path)
+    cleanup_input_directory(path, written=written)
 
 
-def check_input_directory(path, identity=None):
+def check_input_directory(path, identity=None, written=()):
     """Unknown contents and path indirections are never workflow cleanup targets."""
     path = Path(path)
     for parent in (path, *path.parents):
@@ -937,18 +948,19 @@ def check_input_directory(path, identity=None):
         if parent == WORKFLOW_STATE:
             break
     if path.exists():
+        names = review_input_names(path, written)
         if identity is not None and file_identity(path.lstat()) != identity:
             raise AgentBoxError("Delegation input package was replaced; leaving it untouched")
         if not path.is_dir():
             raise AgentBoxError(f"Delegation input directory is not a directory: {path}")
         for candidate in path.iterdir():
-            if not review_evidence_file(candidate.name) or not (candidate.is_file() or candidate.is_symlink()):
+            if candidate.name not in names or not (candidate.is_file() or candidate.is_symlink()):
                 raise AgentBoxError(f"Unknown delegation input content; leaving package untouched: {candidate}")
 
 
-def cleanup_input_directory(path, identity=None):
+def cleanup_input_directory(path, identity=None, written=()):
     path = Path(path)
-    check_input_directory(path, identity)
+    check_input_directory(path, identity, written)
     for candidate in path.iterdir() if path.is_dir() else ():
         candidate.unlink(missing_ok=True)
     for candidate in (path, path.parent, path.parent.parent):
@@ -1058,7 +1070,7 @@ def write_review_evidence(root, task_id, fingerprint, delegation, boundaries,
         atomic_write_text(path / "manifest.json", text, 0o400)
         return path, hashlib.sha256(text.encode()).hexdigest()
     except Exception:
-        cleanup_review_evidence(path)
+        cleanup_review_evidence(path, written=descriptions)
         raise
 
 

@@ -940,6 +940,11 @@ except AgentBoxError:
                               "recorded-validation.json", "subtask-1.md", "subtask-2.md", "task.md"])
             self.assertIn("Second acceptance", (path / "subtask-1.md").read_text())
             self.assertIn("First acceptance", (path / "subtask-2.md").read_text())
+            (path / "subtask-3.md").write_text("not written by this round")
+            with self.assertRaisesRegex(AgentBoxError, "Unknown delegation input content"):
+                workflow.cleanup_review_evidence(path)
+            self.assertTrue((path / "subtask-1.md").exists())
+            (path / "subtask-3.md").unlink()
             workflow.cleanup_review_evidence(path)
             self.assertFalse(path.exists())
 
