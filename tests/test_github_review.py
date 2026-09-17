@@ -155,10 +155,11 @@ class CloudReviewTests(unittest.TestCase):
         self.comments.append(bot(login, body.format(head=self.head, short=self.head[:7],
                                                     short10=self.head[:10]), created, len(self.comments) + 1))
 
-    def request_comment(self, created=None):
+    def request_comment(self, created=None, provider="claude"):
         created = created or when(60)
+        body = github_review.request_body(provider, self.head, gw.base_commit(self.root, "main"))
         return {"id": 100, "user": {"login": "rus364", "type": "User"}, "created_at": created,
-                "updated_at": created, "body": github_review.request_body("claude", self.head),
+                "updated_at": created, "body": body,
                 "html_url": "https://github.com/o/r/pull/9#issuecomment-100"}
 
     def test_the_first_run_publishes_one_request_and_later_runs_publish_none(self):
@@ -202,8 +203,7 @@ class CloudReviewTests(unittest.TestCase):
         """Codex answers in its own form: a review of the commit, with priorities inline."""
         self.config.workflow.review.github_provider = "codex"
         self.review()
-        request = {**self.request_comment(), "body": github_review.request_body("codex", self.head)}
-        self.comments.append(request)
+        self.comments.append(self.request_comment(provider="codex"))
         self.reviews.append({"user": {"login": "chatgpt-codex-connector[bot]", "type": "Bot"},
                              "state": "COMMENTED", "commit_id": self.head,
                              "submitted_at": when(),
@@ -223,12 +223,61 @@ class CloudReviewTests(unittest.TestCase):
         """Nothing attached to the head it reviewed is the whole no-findings signal."""
         self.config.workflow.review.github_provider = "codex"
         self.review()
-        self.comments.append({**self.request_comment(), "body": github_review.request_body("codex", self.head)})
+        self.comments.append(self.request_comment(provider="codex"))
         self.answer(CODEX_SUMMARY, login="chatgpt-codex-connector[bot]")
         self.answer(CODEX_NO_FINDINGS, login="chatgpt-codex-connector[bot]")
         result = self.review()
         self.assertEqual(result["verdict"], "PASS")
         self.assertEqual(result["findings"], {})
+
+    def test_only_the_configured_reviewer_answers_for_it(self):
+        """Another app's review of the same commit is not the verdict we asked for."""
+        self.config.workflow.review.github_provider = "codex"
+        self.review()
+        self.comments.append(self.request_comment(provider="codex"))
+        self.reviews.append({"user": {"login": "some-other-app[bot]", "type": "Bot"},
+                             "state": "COMMENTED", "commit_id": self.head, "submitted_at": when(),
+                             "body": "Looks fine to me.",
+                             "html_url": "https://github.com/o/r/pull/9#pullrequestreview-2"})
+        self.answer(CODEX_NO_FINDINGS, login="other-bot[bot]")
+        self.assertIn("no answer", self.review()["outcome"])
+        self.assertNotIn("review", workflow.read_evidence(self.root, self.parent))
+
+    def test_a_moved_base_is_a_different_question_and_is_asked_again(self):
+        """The bot judged the diff against one base; another base is another diff."""
+        self.review()
+        first = self.published()
+        self.comments.append({**self.request_comment(), "body": first})
+        # The base advanced along this branch, so the reviewed diff is no longer the one asked about.
+        gw.git(self.root, "branch", "-f", "main", "HEAD~1")
+        again = self.review()
+        self.assertNotEqual(self.published(), first)
+        self.assertIn(gw.base_commit(self.root, "main"), self.published())
+        self.assertIn("request published", again["outcome"])
+
+    def test_the_recorded_verdict_of_this_head_is_returned_without_a_new_round(self):
+        """Rerunning the command reads the answer; it never asks the same question twice."""
+        self.review()
+        self.comments.append(self.request_comment())
+        self.answer(CLAUDE_PASS)
+        first = self.review()
+        again = self.review()
+        self.assertEqual(again["round"], first["round"])
+        self.assertEqual(again["verdict"], "PASS")
+        self.assertIn("already answered", again["outcome"])
+        self.assertEqual(again["review_budget"]["used"], 1)
+        self.assertIsNone(self.published())
+
+    def test_an_ended_round_leaves_no_published_input_behind(self):
+        """A round nobody can answer keeps no read-only package for the next one to trip over."""
+        self.config.workflow.review.wait_seconds = 1
+        opened = self.review()
+        package = workflow.review_evidence_path(self.root, "7", opened["round"])
+        self.assertTrue(package.is_dir())
+        self.comments.append(self.request_comment(created=when(3600)))
+        with self.assertRaisesRegex(AgentBoxError, "published no verdict"):
+            self.review()
+        self.assertFalse(package.exists())
 
     def test_an_answer_about_another_commit_is_not_this_head_s_verdict(self):
         """A bot answering the previous push must not accept what was pushed after it."""
