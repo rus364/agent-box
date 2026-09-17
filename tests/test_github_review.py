@@ -533,6 +533,20 @@ class CloudReviewTests(unittest.TestCase):
         self.assertEqual(second["review_budget"]["used"], 1)
         self.assertIsNone(self.published())
 
+    def test_a_round_belongs_to_the_bot_it_asked(self):
+        """After the reviewer is changed, the other bot's question and answer are not this round's."""
+        self.review()
+        self.comments.append({**self.request_comment(), "body": self.published()})
+        self.answer(CLAUDE_PASS)
+        self.config.workflow.review.github_provider = "codex"
+        opened = self.review()
+        self.assertIn("@codex review", self.published())
+        self.assertIn("request published", opened["outcome"])
+        self.assertNotIn("review", workflow.read_evidence(self.root, self.parent))
+        # Claude's answer stays Claude's: only what Codex publishes can end this round.
+        self.comments.append({**self.request_comment(provider="codex"), "body": self.published()})
+        self.assertIn("no answer", self.review()["outcome"])
+
     def test_an_unpublished_head_has_no_reviewer_and_a_missing_pull_request_names_ab_pr(self):
         """The bot reads GitHub, so a head GitHub does not have cannot be the one reviewed."""
         from agent_box import github_workflow as github

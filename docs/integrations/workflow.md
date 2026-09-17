@@ -554,8 +554,11 @@ fresh PASS for GitHub landings.
 `workflow review PARENT` is the whole interface. On a head with no request it
 publishes one comment asking `@codex review` or `@claude review` for that exact
 commit and returns; every later run of the same command reads the answer back, so
-a rerun never asks twice. A request already in the thread is this round's only
-when its text is one this checkout published for this scope, word for word:
+a rerun never asks twice. A round belongs to the bot it asked: after the
+reviewer is changed the other bot's request and answer are not this round's, and the
+new reviewer is asked its own question. A request already in the thread is this
+round's only when its text is one this checkout published for this scope and this
+reviewer, word for word:
 anybody may comment on a pull request, and a question somebody else wrote, with
 instructions of its own, is not the question this round asked. The request offers
 no example verdict either, because an example is copied back sooner or later. A `--brief` note is published with the request, since

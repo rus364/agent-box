@@ -295,13 +295,16 @@ def configured_reviewer(root, config):
     return provider
 
 
-def published_requests(root, task, head, base):
-    """The request texts this task published from this checkout about this scope.
+def published_requests(root, task, provider, head, base):
+    """The request texts this task published from this checkout, for this reviewer
+    and this scope.
 
     A round that ended in failure leaves its request in the thread, and a rerun
     must recognise it even when a later run would word the brief differently:
     asking the bot the same question twice is the one thing this command must not
-    do. A request about another scope is another question and is not reused.
+    do. A request about another scope, or addressed to the other bot, is another
+    question: a Codex run must not read Claude's answer, nor stay silent because
+    Claude was already asked.
     """
     from .workflow import review_evidence_path
 
@@ -310,16 +313,18 @@ def published_requests(root, task, head, base):
     for path in sorted(rounds.glob("*/handoff.txt")):
         with contextlib.suppress(OSError):
             text = path.read_text()
-            if head in text and base in text:
+            if text.startswith(f"@{provider} review") and head in text and base in text:
                 texts.append(text)
     return texts
 
 
-def pending_round(root, task, state, fingerprint):
-    """The descriptor of the round a previous run left waiting for this same head.
+def pending_round(root, task, state, fingerprint, provider):
+    """The descriptor of the round a previous run left waiting for this same question.
 
     The stored descriptor is the round's own, including the input it bound, so a
-    later run records the answer against what the reviewer was actually given.
+    later run records the answer against what the reviewer was actually given. The
+    round's own request says which bot was asked, and the answer of the other one
+    cannot continue it.
     """
     from .workflow import review_evidence_path
 
@@ -327,11 +332,15 @@ def pending_round(root, task, state, fingerprint):
     if not round_id or state.get("pending_backend") != "cloud" or any(
             item["round"] == round_id for item in state.get("results", [])):
         return None
+    path = review_evidence_path(root, task.id, round_id)
     try:
-        descriptor = json.loads((review_evidence_path(root, task.id, round_id) / "descriptor.json").read_text())
+        descriptor = json.loads((path / "descriptor.json").read_text())
+        asked = (path / "handoff.txt").read_text()
     except (OSError, ValueError):
         return None
-    return descriptor if descriptor.get("scope") == fingerprint and descriptor.get("task") == task.id else None
+    if descriptor.get("scope") != fingerprint or descriptor.get("task") != task.id:
+        return None
+    return descriptor if asked.startswith(f"@{provider} review") else None
 
 
 def review(root, binding, adapter, config, task, parent, tasks, base, fingerprint, identity,
@@ -380,11 +389,9 @@ def _round(root, binding, adapter, config, task, parent, tasks, fingerprint, ide
     """Open or continue the one round this scope's published request belongs to."""
     from .github_workflow import gh
     from .workflow import (REVIEW_FAILURE_LIMIT, bind_delegation_input, lock, read_review_budget,
-                           read_review_state, review_descriptor,
+                           read_review_state, review_descriptions, review_descriptor,
                            review_evidence_path, review_result, save_review_state, start_review,
                            store_review_result)
-
-    from .workflow import review_descriptions
 
     comments = paginate(root, repo, f"issues/{number}/comments?per_page=100")
     provider = configured_reviewer(root, settings)
@@ -396,10 +403,10 @@ def _round(root, binding, adapter, config, task, parent, tasks, fingerprint, ide
             f"question. Commit this work again, or review this head with workflow review {task.id} --native")
     with lock(root, "review-budget"):
         state = read_review_state(root, binding, task)
-        descriptor = pending_round(root, task, state, fingerprint)
+        descriptor = pending_round(root, task, state, fingerprint, provider)
     # A request already in the thread is this round's only when its text is one of
     # ours; anything else is a stranger's question, and this run publishes its own.
-    request = find_request(comments, [*published_requests(root, task, head, base_head),
+    request = find_request(comments, [*published_requests(root, task, provider, head, base_head),
                                       request_body(provider, head, base_head, descriptions,
                                                    review_context, brief)])
     if request is not None and descriptor is not None:
