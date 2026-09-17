@@ -199,6 +199,7 @@ class LocalLandTests(unittest.TestCase):
         from agent_box import github_workflow as github
 
         self.config.workflow.merge_mode = "github"
+        self.config.workflow.review.policy = "always"
         self.config.github.gh_token = True
         self.saved["review"] = {"verdict": "PASS"}
         head = gw.head_sha(self.root)
@@ -225,7 +226,7 @@ class LocalLandTests(unittest.TestCase):
                     self.dispatch(["land", "7", "merge"])
                     self.assertEqual(gh.call_args.args[1:3], ("pr", "merge"))
                 else:
-                    with self.assertRaisesRegex(AgentBoxError, "fresh local PASS"):
+                    with self.assertRaisesRegex(AgentBoxError, "fresh independent PASS"):
                         self.dispatch(["land", "7", "merge"])
                     gh.assert_not_called()
 
@@ -555,15 +556,15 @@ class LocalLandTests(unittest.TestCase):
         result = self.operate("merge", saved=workflow.read_evidence(self.root, self.parent))
         self.assertEqual(result["merge"]["head"], task_head)
 
-    def test_local_mode_rejects_pr_cloud_review_and_merge_methods_without_github(self):
+    def test_local_mode_rejects_pull_requests_and_merge_methods_without_github(self):
+        """Local landing is fast-forward only, and a cloud reviewer has no pull request to answer in."""
         from agent_box import local_workflow
         with patch("agent_box.github_workflow.gh") as github:
             with self.assertRaisesRegex(AgentBoxError, "local merge mode"):
                 local_workflow.operate(SimpleNamespace(command="pr"), self.root, self.config,
                                        self.adapter, self.parent)
             self.config.workflow.review.github_provider = "codex"
-            with self.assertRaisesRegex(AgentBoxError, "Cloud review"):
-                self.operate("request-review")
+            self.assertFalse(workflow.cloud_review(self.config, self.parent, self.parent))
             with self.assertRaisesRegex(AgentBoxError, "--method"):
                 self.operate("merge", method="squash")
         github.assert_not_called()

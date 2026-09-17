@@ -6,12 +6,13 @@ from agent_box.tracker.core import Task
 
 class MergeAcceptanceTests(unittest.TestCase):
     def setUp(self):
-        # These unit tests isolate PR/ref identity; scope acceptance is exercised
-        # below against real temporary Git repositories and evidence files.
+        # These unit tests isolate PR/ref identity; scope acceptance, which reads
+        # the real diff, is exercised below against temporary Git repositories.
         from unittest.mock import patch
         for name, value in (("scope", "current"),
                             ("evidence", {"scope": "current", "validation": {"exit": 0},
-                                          "review": {"verdict": "PASS"}})):
+                                          "review": {"verdict": "PASS"}}),
+                            ("integrated_parent", False), ("diff_stats", ([], 0))):
             patcher = patch.object(workflow, name, return_value=value)
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -56,7 +57,7 @@ class MergeAcceptanceTests(unittest.TestCase):
                   "baseRefName": "main", "mergedAt": "2026-01-01T00:00:00Z",
                   "mergeCommit": {"oid": "mergecommit"}, "latestReviews": [], "statusCheckRollup": []}
         info = {"branch": "ab/task", "base": "main"}
-        args = SimpleNamespace(command="land", action="reconcile", method="squash")
+        args = SimpleNamespace(command="land", merged=True, method="squash")
         with patch.object(github.gw, "github_origin", return_value="o/r"), \
              patch.object(github.gw, "current_branch", return_value="ab/task"), \
              patch.object(github.gw, "require_clean"), \
@@ -99,7 +100,7 @@ class MergeAcceptanceTests(unittest.TestCase):
                   "baseRefName": "main", "mergedAt": "2026-01-01T00:00:00Z",
                   "mergeCommit": {"oid": "mergecommit"}, "latestReviews": [], "statusCheckRollup": []}
         info = {"branch": "ab/task", "base": "main"}
-        args = SimpleNamespace(command="land", action="reconcile", method="squash")
+        args = SimpleNamespace(command="land", merged=True, method="squash")
         with patch.object(github.gw, "github_origin", return_value="o/r"), \
              patch.object(github.gw, "current_branch", return_value="ab/task"), \
              patch.object(github.gw, "require_clean"), \
@@ -144,7 +145,7 @@ class MergeAcceptanceTests(unittest.TestCase):
                   "baseRefName": "main", "mergedAt": "2026-01-01T00:00:00Z",
                   "mergeCommit": {"oid": "mergecommit"}, "latestReviews": [], "statusCheckRollup": []}
         info = {"branch": "ab/task", "base": "main"}
-        args = SimpleNamespace(command="land", action="reconcile", method="squash")
+        args = SimpleNamespace(command="land", merged=True, method="squash")
         with patch.object(github.gw, "github_origin", return_value="o/r"), \
              patch.object(github.gw, "current_branch", return_value="ab/task"), \
              patch.object(github.gw, "require_clean"), \
@@ -177,23 +178,34 @@ class MergeAcceptanceTests(unittest.TestCase):
             with self.assertRaisesRegex(AgentBoxError, "Several pull requests"):
                 github.find_pr(Path("/tmp"), "o/r", "ab/task", "main")
 
-    def test_silence_pending_checks_and_stale_approval_block_merge(self):
-        from agent_box.github_workflow import blockers
+    def test_pending_checks_block_merge_and_an_approval_of_another_commit_is_not_acceptance(self):
+        """GitHub readiness and acceptance of this head are separate answers."""
+        from pathlib import Path
+        from agent_box.config import Config
+        from agent_box.github_workflow import acceptance_blockers, blockers
         pr = {"state": "OPEN", "isDraft": False, "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN", "headRefOid": "new",
               "latestReviews": [{"state": "APPROVED", "commit": {"oid": "old"}}],
               "statusCheckRollup": [{"status": "IN_PROGRESS", "name": "tests"}]}
-        reasons = blockers(pr, [], {"validation": {"exit": 0}})
-        self.assertTrue(any("CI" in reason for reason in reasons))
-        self.assertTrue(any("approval" in reason for reason in reasons))
+        self.assertTrue(any("CI" in reason for reason in blockers(pr, [])))
+        config = Config()
+        config.workflow.review.policy = "always"
+        saved = {"scope": "current", "validation": {"exit": 0}}
+        reasons = acceptance_blockers(Path("/tmp"), config, [], pr, saved, "main")
+        self.assertTrue(any("fresh independent PASS" in reason for reason in reasons))
 
     def test_a_delta_below_the_triggers_accepts_a_pull_request_like_a_local_pass(self):
         """GitHub mode gets the same economy; a delta that still triggers review does not."""
+        from pathlib import Path
+        from agent_box.config import Config
         from agent_box.github_workflow import acceptance_blockers
+        config = Config()
+        config.workflow.review.policy = "always"
         pr = {"state": "OPEN", "headRefOid": "new", "latestReviews": []}
         saved = {"validation": {"exit": 0}, "delta_review": {"round": "r", "reasons": []}}
-        self.assertEqual(acceptance_blockers(pr, saved), [])
+        self.assertEqual(acceptance_blockers(Path("/tmp"), config, [], pr, saved, "main"), [])
         saved["delta_review"]["reasons"] = ["sensitive path auth/x matches **/auth/**"]
-        self.assertTrue(any("approval" in reason for reason in acceptance_blockers(pr, saved)))
+        self.assertTrue(any("fresh independent PASS" in reason
+                            for reason in acceptance_blockers(Path("/tmp"), config, [], pr, saved, "main")))
 
 
 class LandingFreshnessTests(unittest.TestCase):
@@ -216,7 +228,7 @@ class LandingFreshnessTests(unittest.TestCase):
         self.merged = {**self.pr, "state": "MERGED", "mergedAt": "2026-01-01T00:00:00Z",
                        "mergeCommit": {"oid": "merged"}}
 
-    def run_land(self, phase=None, change=lambda: None, *, action="merge"):
+    def run_land(self, phase=None, change=lambda: None, *, action="merge", merged=False):
         from contextlib import ExitStack
         from types import SimpleNamespace
         from unittest.mock import patch
@@ -227,7 +239,8 @@ class LandingFreshnessTests(unittest.TestCase):
                 change()
             return value
 
-        views = iter((self.merged,) if action == "reconcile" else (self.pr, self.merged))
+        # `merged` is the repeat of a merge GitHub already completed: the only view is the merged PR.
+        views = iter((self.merged,) if merged else (self.pr, self.merged))
 
         def view(*args):
             value = next(views)
@@ -295,18 +308,18 @@ class LandingFreshnessTests(unittest.TestCase):
                 self.config.workflow.review.policy = policy
                 workflow.evidence_path(self.root, self.parent).unlink(missing_ok=True)
                 with self.assertRaisesRegex(AgentBoxError, "validation"):
-                    self.run_land(action="reconcile")
+                    self.run_land(merged=True)
                 self.dispatch(["validate", "7", "--", "true"])
                 inspected = self.dispatch(["inspect", "7"])
                 self.assertTrue(inspected["review"]["required"])
                 self.assertEqual(inspected["review"]["files"], 0)
                 with self.assertRaisesRegex(AgentBoxError, "PASS review"):
                     self.dispatch(["finish", "7"])
-                with self.assertRaisesRegex(AgentBoxError, "GitHub approval, a fresh local PASS"):
-                    self.run_land(action="reconcile")
+                with self.assertRaisesRegex(AgentBoxError, "fresh independent PASS"):
+                    self.run_land(merged=True)
                 self.adapter.set_state.assert_not_called()
                 self.recover_review(native=native)
-                self.assertEqual(self.run_land(action="reconcile")["state"], "Done")
+                self.assertEqual(self.run_land(merged=True)["state"], "Done")
                 self.command.assert_not_called()
                 self.adapter.set_state.assert_called_once_with(self.parent, "Done")
                 self.adapter.set_state.reset_mock()
@@ -319,42 +332,47 @@ class LandingFreshnessTests(unittest.TestCase):
         self.parent.labels = ["ab:tier:1"]
         workflow.evidence_path(self.root, self.parent).unlink()
         with self.assertRaisesRegex(AgentBoxError, "validation"):
-            self.run_land(action="reconcile")
+            self.run_land(merged=True)
         self.dispatch(["validate", "7", "--", "true"])
         self.assertEqual(self.dispatch(["review", "7"])["review"]["verdict"], "SKIPPED")
-        with self.assertRaisesRegex(AgentBoxError, "GitHub approval, a fresh local PASS"):
-            self.run_land(action="reconcile")
+        with self.assertRaisesRegex(AgentBoxError, "already integrated scope"):
+            self.run_land(merged=True)
         self.adapter.set_state.assert_not_called()
         self.merged["latestReviews"] = [{"state": "APPROVED", "commit": {"oid": self.pr["headRefOid"]}}]
         with self.assertRaisesRegex(AgentBoxError, "pre-merge scope snapshot"):
-            self.run_land(action="reconcile")
+            self.run_land(merged=True)
         self.config.workflow.review.policy = "always"
         self.recover_review()
-        self.assertEqual(self.run_land(action="reconcile")["state"], "Done")
+        self.assertEqual(self.run_land(merged=True)["state"], "Done")
         self.command.assert_not_called()
 
-    def test_reconcile_unbound_github_approval_requires_local_pass_regardless_of_local_policy(self):
-        """GitHub commit approval alone cannot establish acceptance of the current scope."""
+    def test_an_unbound_github_approval_leaves_acceptance_to_the_same_policy_as_local_mode(self):
+        """A merged approval GitHub cannot tie to this scope is not acceptance; the policy decides.
+
+        The rule that GitHub mode always demanded a fresh PASS is gone: one review
+        policy answers both modes, and a cloud verdict is recorded like any other.
+        """
         from agent_box.errors import AgentBoxError
-        for policy in ("off", "auto", "always"):
-            self.config.workflow.review.policy = policy
-            for approval, verdict, accepted in ((None, None, False), (None, "SKIPPED", False),
-                                                ("old-head", "SKIPPED", False),
-                                                (self.pr["headRefOid"], "SKIPPED", False),
-                                                (None, "PASS", True)):
+        for policy, accepted in (("off", True), ("auto", True), ("always", False)):
+            for approval, verdict in ((None, None), (None, "SKIPPED"), ("old-head", "SKIPPED"),
+                                      (self.pr["headRefOid"], "SKIPPED")):
                 with self.subTest(policy=policy, approval=approval, verdict=verdict):
+                    self.config.workflow.review.policy = policy
                     self.merged["latestReviews"] = ([{"state": "APPROVED", "commit": {"oid": approval}}]
                                                     if approval else [])
                     workflow.save_evidence(self.root, self.parent, {**self.saved, "review": {"verdict": verdict}})
                     if accepted:
-                        self.assertEqual(self.run_land(action="reconcile")["state"], "Done")
+                        self.assertEqual(self.run_land(merged=True)["state"], "Done")
                         self.adapter.set_state.assert_called_once_with(self.parent, "Done")
                     else:
-                        with self.assertRaisesRegex(AgentBoxError, "GitHub approval, a fresh local PASS"):
-                            self.run_land(action="reconcile")
+                        with self.assertRaisesRegex(AgentBoxError, "fresh independent PASS"):
+                            self.run_land(merged=True)
                         self.adapter.set_state.assert_not_called()
                     self.command.assert_not_called()
                     self.adapter.set_state.reset_mock()
+        # The same head with a recorded PASS completes under the strictest policy.
+        workflow.save_evidence(self.root, self.parent, {**self.saved, "review": {"verdict": "PASS"}})
+        self.assertEqual(self.run_land(merged=True)["state"], "Done")
 
     def test_reconcile_approval_cannot_replace_current_successful_validation(self):
         """Current-head cloud approval still needs a successful check of today's scope."""
@@ -364,7 +382,7 @@ class LandingFreshnessTests(unittest.TestCase):
             with self.subTest(validation=validation):
                 workflow.save_evidence(self.root, self.parent, {**self.saved, "validation": validation})
                 with self.assertRaisesRegex(AgentBoxError, "validation"):
-                    self.run_land(action="reconcile")
+                    self.run_land(merged=True)
                 self.adapter.set_state.assert_not_called()
                 self.command.assert_not_called()
 
@@ -379,7 +397,7 @@ class LandingFreshnessTests(unittest.TestCase):
             return value
         with patch.object(workflow, "evidence", side_effect=moving_evidence):
             with self.assertRaisesRegex(AgentBoxError, "heads differ"):
-                self.run_land(action="reconcile")
+                self.run_land(merged=True)
         self.adapter.set_state.assert_not_called()
 
     def test_same_scope_done_outage_retry_uses_current_acceptance_without_remerge(self):
@@ -392,7 +410,7 @@ class LandingFreshnessTests(unittest.TestCase):
         self.command.assert_called_once()
         self.adapter.set_state.side_effect = None
         self.adapter.set_state.reset_mock()
-        self.assertEqual(self.run_land(action="reconcile")["state"], "Done")
+        self.assertEqual(self.run_land(merged=True)["state"], "Done")
         self.command.assert_not_called()
         self.adapter.set_state.assert_called_once_with(self.parent, "Done")
 
@@ -423,7 +441,7 @@ class LandingFreshnessTests(unittest.TestCase):
             "branch": self.pr["headRefName"], "base": "main"})
         self.adapter.set_state.side_effect = None
         self.adapter.set_state.reset_mock()
-        self.assertEqual(self.run_land(action="reconcile")["state"], "Done")
+        self.assertEqual(self.run_land(merged=True)["state"], "Done")
         self.command.assert_not_called()
         self.adapter.set_state.assert_called_once_with(self.parent, "Done")
 
@@ -439,17 +457,20 @@ class LandingFreshnessTests(unittest.TestCase):
         self.adapter.set_state.reset_mock()
         self.parent = replace(self.parent, description="## Acceptance\n- [x] Clarified requirements",
                               labels=["ab:tier:3"])
-        self.assertEqual(self.run_land(action="reconcile")["state"], "Done")
+        self.assertEqual(self.run_land(merged=True)["state"], "Done")
         self.command.assert_not_called()
 
     def test_inspecting_open_approval_does_not_authorize_a_later_external_merge(self):
         """Read-only inspection must not bind approval to requirements on another merge path."""
+        # Under always the approval is the only acceptance on offer, so binding it
+        # during inspection would be the difference between refusing and merging.
+        self.config.workflow.review.policy = "always"
         self.approve_github()
         self.assertEqual(self.run_land(action="inspect")["blockers"], [])
         self.assertNotIn("github_approval", workflow.read_evidence(self.root, self.parent))
         from agent_box.errors import AgentBoxError
         with self.assertRaisesRegex(AgentBoxError, "pre-merge scope snapshot"):
-            self.run_land(action="reconcile")
+            self.run_land(merged=True)
         self.adapter.set_state.assert_not_called()
 
     def test_card_edits_during_network_keep_acceptance(self):
@@ -530,11 +551,11 @@ class LandingFreshnessTests(unittest.TestCase):
         from agent_box.errors import AgentBoxError
         with self.assertRaisesRegex(AgentBoxError, "checklist"):
             self.run_land("remote", lambda: setattr(self, "parent", replace(self.parent, description="- [ ] accepted")),
-                          action="reconcile")
+                          merged=True)
         self.adapter.set_state.assert_not_called()
         self.parent = replace(self.parent, description="- [x] accepted")
         with self.assertRaisesRegex(AgentBoxError, "not merged"):
-            self.run_land("remote", self.advance, action="reconcile")
+            self.run_land("remote", self.advance, merged=True)
         self.adapter.set_state.assert_not_called()
 
     def test_reconcile_rechecks_current_requirements_and_constraints_after_remote_lookup(self):
@@ -548,7 +569,7 @@ class LandingFreshnessTests(unittest.TestCase):
             with self.subTest(change=change):
                 with self.assertRaises(AgentBoxError):
                     self.run_land("remote", lambda: setattr(self, "parent", replace(original, **change)),
-                                  action="reconcile")
+                                  merged=True)
                 self.command.assert_not_called()
                 self.adapter.set_state.assert_not_called()
 
@@ -559,20 +580,20 @@ class LandingFreshnessTests(unittest.TestCase):
         workflow.evidence_path(self.root, self.parent).unlink()
         with patch.object(workflow, "evidence") as evidence:
             result = self.run_land("remote", lambda: setattr(self, "parent", replace(self.parent, state="Done")),
-                                   action="reconcile")
+                                   merged=True)
         self.assertEqual(result["state"], "Done")
         evidence.assert_not_called()
         self.adapter.set_state.assert_not_called()
         self.command.assert_not_called()
 
-    def test_review_request_and_reconcile_still_refuse_dirty_work(self):
+    def test_landing_an_open_or_an_already_merged_pull_request_refuses_dirty_work(self):
         """Dropping unused scope reads must retain their clean-worktree prerequisite."""
         from agent_box.errors import AgentBoxError
         (self.root / "change.py").write_text("uncommitted work\n")
-        for action in ("request-review", "reconcile"):
-            with self.subTest(action=action):
+        for merged in (False, True):
+            with self.subTest(merged=merged):
                 with self.assertRaisesRegex(AgentBoxError, "clean"):
-                    self.run_land(action=action)
+                    self.run_land(merged=merged)
                 self.command.assert_not_called()
                 self.adapter.set_state.assert_not_called()
 

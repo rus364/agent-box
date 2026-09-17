@@ -42,11 +42,6 @@ def operate(args, root, config, adapter, task):
     parent, info, _, _ = resolve(root, adapter, task)
     if task.id != parent.id:
         raise AgentBoxError("Land the parent task after all subtasks are integrated")
-    if args.action == "request-review":
-        provider = config.workflow.review.github_provider
-        if provider in ("codex", "claude"):
-            raise AgentBoxError("Cloud review is unavailable in local merge mode; run ab-review locally")
-        return {"provider": "local", "next": "Run ab-review in fresh context"}
     gw.require_clean(root)
     branch, base = info["branch"], info["base"]
     if branch == base:

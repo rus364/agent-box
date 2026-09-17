@@ -91,7 +91,7 @@ HELP = {
     "workflow.review.github_provider": "Provider requested for GitHub PR review: auto/local uses local review, Codex cannot pin model or effort, and Claude uses its configured Action.",
     "workflow.review.github_model": "Model expected in a Claude GitHub Action. Codex GitHub review rejects model overrides; leave empty unless the Claude Action pins it.",
     "workflow.review.github_effort": "Effort expected in a Claude GitHub Action. Codex GitHub review rejects effort overrides; leave empty unless the Claude Action pins it.",
-    "workflow.review.wait_seconds": "Wait budget in seconds for cloud review feedback. The workflow reports this budget to the coordinator; lack of a response never counts as approval. Must be a positive integer.",
+    "workflow.review.wait_seconds": "How long a cloud review round waits for the bot's answer in the pull request, in seconds (default 3600). Past it the round ends as a failure and the user decides; silence is never approval. Must be a positive integer.",
     "workflow.cleanup_local_branches": "Delete a proven merged local parent branch after Done. Checked-out and unproven branches are preserved.",
     "workflow.cleanup_remote_branches": "Delete a proven merged parent branch on origin with an exact head lease. Disabled by default.",
 }

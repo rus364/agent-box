@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import json
 import subprocess
-import tempfile
 from pathlib import Path
 
 from .errors import AgentBoxError
@@ -74,7 +73,8 @@ def threads(root, repo, number):
     return result
 
 
-def blockers(pr, review_threads, saved):
+def blockers(pr, review_threads):
+    """Whether GitHub itself is ready to merge; acceptance of the head is separate."""
     reasons = []
     if pr["state"] != "OPEN" or pr["isDraft"]:
         reasons.append("PR must be open and ready for review")
@@ -91,26 +91,32 @@ def blockers(pr, review_threads, saved):
             reasons.append("CI pending or failed: " + (check.get("name") or check.get("context") or "unknown check"))
     if any(not thread["isResolved"] for thread in review_threads):
         reasons.append("Unresolved review threads remain")
-    return reasons + acceptance_blockers(pr, saved)
+    return reasons
 
 
-def acceptance_blockers(pr, saved):
-    """A confirmed merge cannot replace the acceptance required before merging."""
-    from .workflow import delta_accepted, human_accepted
+def acceptance_blockers(root, config, tasks, pr, saved, base, *, integrated=False):
+    """Why this head is not accepted yet; a confirmed merge is not acceptance of what it merged.
+
+    The review policy decides here exactly as it does in local landing: a cloud
+    verdict read back from the pull request is recorded like any other verdict,
+    so a human approval on GitHub is the only acceptance that is special to this
+    mode.
+    """
+    from .workflow import diff_stats, review_blockers
 
     reasons = []
     approved = current_approval(pr)
-    if pr["state"] == "MERGED":
+    if approved and pr["state"] == "MERGED":
         # GitHub binds reviews to commits, not to local evidence. Only an
         # approval observed before merge can be associated with that scope.
-        approved = (approved and bool(saved.get("scope"))
+        approved = (bool(saved.get("scope"))
                     and saved.get("github_approval") == approval_scope(pr, saved["scope"]))
-    if (not approved and saved.get("review", {}).get("verdict") != "PASS" and not human_accepted(saved)
-            and not delta_accepted(saved)):
-        reasons.append("Need a current-head GitHub approval, a fresh local PASS, a delta below the review "
-                       "triggers since an accepted round, or the user's workflow approve; silence is not approval")
-        if pr["state"] == "MERGED":
-            reasons.append("Merged GitHub approval needs a matching pre-merge scope snapshot; otherwise run a fresh independent local review")
+    if not approved:
+        files, lines = diff_stats(root, base, config.workflow.review)
+        reasons = review_blockers(config.workflow.review, tasks, files, lines, saved, integrated=integrated)
+        if reasons and current_approval(pr):
+            reasons.append("Merged GitHub approval needs a matching pre-merge scope snapshot; "
+                           "otherwise accept this head again before completing it")
     if saved.get("validation", {}).get("exit") != 0:
         reasons.append("Local validation for the current scope is missing")
     return reasons
@@ -124,33 +130,6 @@ def current_approval(pr):
 def approval_scope(pr, fingerprint):
     return {"scope": fingerprint, "head": pr["headRefOid"], "url": pr["url"],
             "branch": pr["headRefName"], "base": pr["baseRefName"]}
-
-
-def request_review(root, repo, pr, config):
-    choice = config.github_provider
-    if choice in ("local", "auto"):
-        return {"provider": "local", "next": "Run ab-review in fresh context; configure codex or claude for explicit cloud review"}
-    if choice == "codex" and (config.github_model or config.github_effort):
-        raise AgentBoxError("GitHub @codex review cannot pin model/effort; clear cloud overrides or select local review")
-    if choice == "claude":
-        workflow = root / ".github/workflows/claude.yml"
-        if not workflow.is_file():
-            raise AgentBoxError("Configure a Claude GitHub Action first, or use local review")
-        source = workflow.read_text()
-        if "anthropics/claude-code-action@" not in source:
-            raise AgentBoxError("Cannot identify the Claude Action; use local review or inspect the workflow")
-        for flag, value in (("--model", config.github_model), ("--effort", config.github_effort)):
-            if value and f"{flag} {value}" not in source:
-                raise AgentBoxError(f"Claude Action must configure claude_args with {flag} {value}; comments cannot pin it")
-    body = (f"@{choice} review\n\nReview commit {pr['headRefOid']} against this PR's acceptance criteria. "
-            "Report actionable findings with file, line, evidence and requirement. Do not change code. "
-            "State explicitly when no issues are found.")
-    with tempfile.TemporaryDirectory(prefix="agent-box-pr-") as temporary:
-        file = Path(temporary) / "comment.md"
-        file.write_text(body)
-        gh(root, "pr", "comment", pr["number"], "--repo", repo, "--body-file", file)
-    return {"provider": choice, "requested_head": pr["headRefOid"], "wait_seconds": config.wait_seconds,
-            "next": "Read feedback; absence of a current-head approval requires local review"}
 
 
 def operate(args, root, config, adapter, task):
@@ -185,7 +164,7 @@ def _current_head(root, pr):
 
 
 def _operate(args, root, config, adapter, task, parent, info, saved, tasks):
-    from .workflow import delta_review, evidence, save_evidence, scope
+    from .workflow import delta_review, evidence, integrated_parent, review_route, save_evidence, scope
     if not (config.github.gh_token or config.github.gh_config):
         raise AgentBoxError("Enable the GitHub integration in agent-box config before workflow GitHub actions")
     if task.id != parent.id:
@@ -246,7 +225,9 @@ def _operate(args, root, config, adapter, task, parent, info, saved, tasks):
         if task.state != "Done":
             # A merged PR proves integration, not acceptance of the merged head.
             saved = evidence(root, task, scope(root, info["base"]), info["base"])
-            reasons += acceptance_blockers(pr, {**saved, "delta_review": delta_review(root, config, task, tasks)})
+            reasons += acceptance_blockers(
+                root, config, tasks, pr, {**saved, "delta_review": delta_review(root, config, task, tasks)},
+                info["base"], integrated=integrated_parent(root, task, parent, info["base"]))
         _current_head(root, pr)
         if reasons:
             raise AgentBoxError("Cannot complete merged task: " + "; ".join(reasons))
@@ -255,10 +236,6 @@ def _operate(args, root, config, adapter, task, parent, info, saved, tasks):
         return after_done({"task": task.id, "state": "Done", "merge": pr["mergeCommit"], "url": pr["url"]},
                           root, config, task, adapter, branch=info["branch"], base=info["base"],
                           expected_head=pr["headRefOid"])
-    if args.action == "request-review":
-        gw.require_clean(root)
-        _current_head(root, pr)
-        return request_review(root, repo, pr, config.workflow.review)
     feedback = threads(root, repo, pr["number"])
     if args.action == "inspect":
         comments = gh(root, "api", "--paginate", "--slurp", f"repos/{repo}/issues/{pr['number']}/comments", json_output=True)
@@ -267,10 +244,14 @@ def _operate(args, root, config, adapter, task, parent, info, saved, tasks):
     saved = evidence(root, task, scope(root, info["base"]), info["base"])
     _current_head(root, pr)
     delta = delta_review(root, config, task, tasks)
-    reasons += blockers(pr, feedback, {**saved, "delta_review": delta})
+    reasons += blockers(pr, feedback) + acceptance_blockers(
+        root, config, tasks, pr, {**saved, "delta_review": delta}, info["base"],
+        integrated=integrated_parent(root, task, parent, info["base"]))
     if args.action == "inspect":
         return {"pr": pr, "threads": feedback, "comments": [c for page in comments for c in page],
-                "blockers": reasons, "review": {"verdict": saved.get("review", {}).get("verdict"), "delta": delta},
+                "blockers": reasons,
+                "review": {"verdict": saved.get("review", {}).get("verdict"), "delta": delta,
+                           "route": review_route(config, task, parent)},
                 "max_rounds": config.workflow.review.max_rounds,
                 "wait_seconds": config.workflow.review.wait_seconds}
     if reasons:
@@ -291,7 +272,9 @@ def _operate(args, root, config, adapter, task, parent, info, saved, tasks):
     _current_head(root, merged)
     if current["scope"] != saved["scope"]:
         reasons.append("Code changed during merge; validate and review the current head")
-    reasons += blockers(pr, feedback, {**current, "delta_review": delta_review(root, config, task, tasks)})
+    reasons += blockers(pr, feedback) + acceptance_blockers(
+        root, config, tasks, pr, {**current, "delta_review": delta_review(root, config, task, tasks)},
+        info["base"], integrated=integrated_parent(root, task, parent, info["base"]))
     if reasons:
         raise AgentBoxError("Cannot complete merged task: " + "; ".join(reasons))
     adapter.set_state(task, "Done")

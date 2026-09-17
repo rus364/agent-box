@@ -670,7 +670,7 @@ class ReviewConfig:
     github_provider: str = "auto"
     github_model: str = ""
     github_effort: str = ""
-    wait_seconds: int = 600
+    wait_seconds: int = 3600
 
     def to_dict(self):
         from dataclasses import asdict

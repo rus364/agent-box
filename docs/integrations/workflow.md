@@ -116,8 +116,9 @@ explicit limitation.
 
 ### Reviewer rounds
 
-A review round runs managed or native. `workflow review TASK` runs the first
-available reviewer candidate as a managed CLI. `workflow review TASK --native`
+A review round runs managed, native or, for a parent whose route is a cloud
+reviewer, in its pull request (see [cloud review](#cloud-review-in-the-pull-request)).
+`workflow review TASK` runs the first available reviewer candidate as a managed CLI. `workflow review TASK --native`
 writes the same input package and prints `message`, the prompt for a fresh
 read-only subagent the coordinator starts without its own history; the
 coordinator saves the subagent's final message and records it with
@@ -125,7 +126,8 @@ coordinator saves the subagent's final message and records it with
 The native result is taken on trust: the named model and the freshness of the
 context are the coordinator's word, not something workflow can check. Only the
 latest round can be answered, and a new round removes the input of an unanswered
-native one.
+native one. `workflow inspect` names the route that will answer under
+`review.route`, so no skill has to infer it from settings.
 
 The reviewer answers in Markdown with exactly one line
 `Verdict: PASS|NEEDS_WORK|INCONCLUSIVE` and one bullet per finding,
@@ -364,7 +366,9 @@ exit status; the coordinator does not self-review.
 derive the base from origin's default branch and retain scoped validation,
 configured local review policy, ownership, dependency, subtask and checklist
 checks. `workflow finish PARENT` moves accepted parent work to Review and points
-the coordinator at the configured route.
+the coordinator at the configured route. With a cloud reviewer it asks for
+validation alone, because the reviewer reads a pull request that does not exist
+yet; the verdict is what the merge requires.
 
 Local mode keeps task publication and GitHub out of the workflow. It requires
 local task and base refs, a clean worktree and the exact parent branch before
@@ -435,9 +439,9 @@ history, can cover it, whatever the review policy says. If the scope cannot be
 established, review must be INCONCLUSIVE. Do not reset the base, invent a PASS,
 or edit tracker state to bypass recovery.
 
-Local mode rejects `workflow pr` before any GitHub call. `workflow land
-request-review` points `auto` and `local` review selection to `ab-review`, and
-rejects explicit cloud Codex or Claude review without contacting GitHub.
+Local mode rejects `workflow pr` before any GitHub call, and has no pull request
+for a cloud reviewer to answer in: every round is a local one, whatever
+`github_provider` says.
 
 ## GitHub landing
 
@@ -460,12 +464,16 @@ current-head acceptance and merges with `--match-head-commit`. Branch protection
 is never bypassed. Merge-queue entry is not completion. If the tracker write
 fails after merge, `workflow land PARENT merge` continues from there: a PR GitHub
 has already merged is never merged again. Before changing an unfinished parent to
-Done it requires successful validation and applicable independent review of the
-merged head. A merged PR proves integration, not acceptance. Missing local
+Done it requires successful validation and the acceptance its review policy asks
+for, of the merged head; with a cloud provider that verdict is the one
+`workflow review PARENT` read in the pull request. A merged PR proves
+integration, not acceptance, and a current-head human `APPROVED` is acceptance
+only when it was observed before the merge, since GitHub binds reviews to commits
+and not to local evidence. Missing local
 evidence, including in a new clone, requires fresh `workflow validate` and
-ab-review as required from the parent branch, then the same merge command again. If the base already contains the implementation, auto/always
-requires review of the complete implementation using requirements, code and Git
-history; an empty diff cannot justify skipping review. A merge of an already Done
+ab-review as required from the parent branch, then the same merge command again. If the base already contains the implementation, an
+empty diff describes no work: only an independent PASS or the user's explicit
+acceptance of the complete implementation covers it, whatever the policy says. A merge of an already Done
 parent runs cleanup alone and does not write lifecycle.
 
 ## Branch cleanup
@@ -529,16 +537,54 @@ reason instead of failing the command. Missing branches are safe no-ops,
 including after a partial cleanup or a title change.
 Keep cleanup failures separate from successful completion when reporting results.
 
-## GitHub review
+## Cloud review in the pull request
 
-`workflow.review.github_provider` selects auto/local/codex/claude. Auto uses local
-fresh review without assuming a cloud reviewer is installed. Explicit cloud Codex
-uses `@codex review`; its mention interface cannot pin a model or effort. Claude
-uses the repository's Claude Action; configure model/effort in `claude_args`, not
-in a comment pretending to override the Action. The command checks configured
-pins and reports unsupported configurations. `wait_seconds` bounds waiting.
-Silence or a stale review never means acceptance; allowed fallback uses local
-fresh review. GitHub approvals and required checks still follow repository policy.
+`workflow.review.github_provider` selects auto/local/codex/claude. With `auto` or
+`local` every round is a local one in both merge modes. With `codex` or `claude`
+in GitHub merge mode, one thing moves: the *parent's* final review happens in its
+pull request, where the bot already runs. Subtasks keep their local rounds, and
+the review policy is unchanged — `off` requires no review anywhere, `auto` applies
+the same triggers, `always` always asks. There is no separate rule demanding a
+fresh PASS for GitHub landings.
+
+`workflow review PARENT` is the whole interface. On a head with no request it
+publishes one comment asking `@codex review` or `@claude review` for that exact
+commit and returns; every later run of the same command reads the answer back, so
+a rerun never asks twice. A `--brief` note is published with the request, since
+that is where the reviewer reads it. The bot's answer becomes an ordinary round:
+the same budget, the same failure limit, the same receipt, `reconciliation.status`
+and `incremental` delta economy as a local verdict. `workflow review PARENT
+--native` still opens a local round when the user decides the bot cannot answer.
+
+Before publishing anything the command refuses a pin the reviewer cannot honour:
+`github_model`/`github_effort` are rejected for Codex, whose mention interface
+cannot pin them, and for Claude must already appear in `claude_args` in the
+repository's Claude Action. The pull request must exist (`ab-pr`) and its head
+must be the local head, because the bot reviews what GitHub has.
+
+Answers are read as the bots actually publish them, verified live against this
+repository's bots on 2026-09-17:
+
+- Claude answers in the reviewer's own form because the request asks for it: a
+  comment from `claude[bot]` ending in `Reviewed-Commit: <head>` and one
+  `Verdict:` line, with findings as `- [LOW|MEDIUM|HIGH|CRITICAL] path:line — …`.
+  Its progress checklist lines are not findings. An answer about this head with
+  no single verdict line ends the round at once instead of waiting.
+- Codex answers in its own: findings arrive as a COMMENTED review bound to the
+  commit, with the priority badge on each inline comment (P0 → CRITICAL, P1 →
+  HIGH, P2 → MEDIUM, P3 → LOW), and otherwise a comment naming the same
+  `Reviewed commit`. Nothing attached to the reviewed head is the no-findings
+  signal, so the verdict is PASS with findings absent and NEEDS_WORK with them;
+  its English is never parsed, and neither is its 👍 reaction, which only appears
+  once every review of the pull request has finished.
+
+Only an answer published after the request counts, and only for the commit it
+names, so a bot that reviewed the previous push cannot accept this one. Silence
+is never acceptance: until `wait_seconds` (default 3600) the command reports that
+there is no answer yet; past it the round ends as a failure that spends no
+attempt, and the user decides what to do. A human `APPROVED` on the current head
+remains acceptance in its own right, and GitHub approvals and required checks
+still follow repository policy.
 
 ## Saved review results and failed attempts
 

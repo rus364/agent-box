@@ -238,7 +238,7 @@ def read_review_state(root, binding, task):
                 or value["used"] < 0 or type(value.get("failures", 0)) is not int or value.get("failures", 0) < 0
                 or (value.get("pending") is not None
                     and (not isinstance(value["pending"], str) or not value["pending"]))
-                or ("pending_backend" in value and value["pending_backend"] not in ("native", "managed"))
+                or ("pending_backend" in value and value["pending_backend"] not in ("native", "managed", "cloud"))
                 or (("ceiling" in value or "ceiling_reason" in value)
                     and (type(value.get("ceiling")) is not int or value["ceiling"] < 0
                          or not isinstance(value.get("ceiling_reason"), str)
@@ -308,7 +308,7 @@ def start_review(root, binding, task, limit, round_id, fingerprint, backend):
         save_review_state(root, binding, task, state)
     unanswered = previous.get("pending")
     if unanswered and not any(item["round"] == unanswered for item in previous.get("results", [])) and (
-            previous.get("pending_backend") == "native" or backend == "managed"
+            previous.get("pending_backend") != "managed" or backend == "managed"
             or managed_round_status(root, previous) == "ended_without_response"):
         # Its answer can no longer be recorded, so nobody needs its input; foreign files stay. A managed
         # caller already holds the execution lock, so an earlier managed round cannot still be running.
@@ -611,6 +611,22 @@ def human_accepted(saved):
                 and accepted.get("actor") and accepted.get("reason"))
 
 
+def cloud_review(config, task, parent):
+    """Whether this task's final review belongs to its pull request instead of a local round.
+
+    Only the parent has a pull request, and only a cloud provider answers in it;
+    subtasks keep the same local rounds in either merge mode.
+    """
+    return (config.workflow.merge_mode == "github" and task.id == parent.id
+            and config.workflow.review.github_provider in ("codex", "claude"))
+
+
+def review_route(config, task, parent):
+    """Name the reviewer that will answer, so no skill has to infer it from settings."""
+    return (f"{config.workflow.review.github_provider} in the parent pull request"
+            if cloud_review(config, task, parent) else "local reviewer")
+
+
 def integrated_parent(root, task, parent, base):
     """An advanced base hides the original parent diff in either landing mode."""
     return (task.id == parent.id
@@ -618,8 +634,14 @@ def integrated_parent(root, task, parent, base):
 
 
 def review_blockers(config, tasks, files, lines, saved, *, integrated=False):
+    """Why this head still needs acceptance; an absorbed diff needs it whatever the policy.
+
+    Thresholds can only judge a diff that exists. Once the base contains the
+    head, the diff describes no work, so nothing but a PASS or the user's own
+    acceptance can cover what was actually implemented.
+    """
     reasons = review_reasons(config, tasks, files, lines)
-    if integrated and config.policy != "off":
+    if integrated:
         reasons.append("already integrated scope requires acceptance of the original work")
     if (not reasons or saved.get("review", {}).get("verdict") == "PASS" or human_accepted(saved)
             or (delta_accepted(saved) and not integrated)):
@@ -712,6 +734,7 @@ def inspect(root, binding, adapter, task, config):
         unavailable.append(gw.dirty_tree_reason(changes))
     review_state = read_review_state(root, binding, task)
     review = {"policy": config.workflow.review.policy,
+              "route": review_route(config, task, parent),
               "budget": review_budget_summary(review_state, config.workflow.review.max_rounds),
               "max_files": config.workflow.review.max_files, "max_lines": config.workflow.review.max_lines,
               "incremental": config.workflow.review.incremental,
@@ -723,10 +746,12 @@ def inspect(root, binding, adapter, task, config):
         review["result_command"] = f"agent-box workflow review-result {task.id} --round={latest['round']}"
     if status := managed_round_status(root, review_state):
         review["pending_round"] = {"round": review_state["pending"], "backend": "managed", "status": status}
-    elif review_state.get("pending_backend") == "native" and not any(
+    elif review_state.get("pending_backend") in ("native", "cloud") and not any(
             item["round"] == review_state["pending"] for item in review_state.get("results", [])):
-        review["pending_round"] = {"round": review_state["pending"], "backend": "native",
-                                   "status": "awaiting --result"}
+        backend = review_state["pending_backend"]
+        review["pending_round"] = {
+            "round": review_state["pending"], "backend": backend,
+            "status": "awaiting --result" if backend == "native" else "awaiting the pull request answer"}
     result = {"task": task.id, **info, "task_branch": expected, "current_branch": branch,
               "head": head, "scope": None, "configuration": configuration_summary(config),
               "acceptance": {"available": not unavailable, "reasons": unavailable},
@@ -752,7 +777,7 @@ def inspect(root, binding, adapter, task, config):
     files, lines = diff_stats(root, base, config.workflow.review)
     reasons = review_reasons(config.workflow.review, tasks, files, lines)
     integrated = integrated_parent(root, task, parent, base)
-    if integrated and config.workflow.review.policy != "off":
+    if integrated:
         reasons.append("already integrated scope requires acceptance of the original work")
     delta = delta_review(root, config, task, tasks)
     accepted = bool(reasons) and not integrated and delta_accepted({"delta_review": delta})
@@ -1193,7 +1218,7 @@ def parser():
             cmd.add_argument("--body-file", required=True)
             cmd.add_argument("--draft", action="store_true")
         if name == "land":
-            cmd.add_argument("action", choices=("inspect", "request-review", "merge", "cleanup"))
+            cmd.add_argument("action", choices=("inspect", "merge", "cleanup"))
             cmd.add_argument("--method", choices=("merge", "squash", "rebase"))
     return p
 
@@ -1236,16 +1261,22 @@ def finish(root, config, adapter, task_id):
         saved = evidence(root, task, scope(root, base), base)
         if saved.get("validation", {}).get("exit") != 0:
             raise AgentBoxError("Run workflow validate against this exact scope before completion")
-        files, lines = diff_stats(root, base, config.workflow.review)
-        reasons = review_blockers(config.workflow.review, tasks, files, lines,
-                                  {**saved, "delta_review": delta_review(root, config, task, tasks)},
-                                  integrated=integrated_parent(root, task, parent, base))
-        if reasons:
-            raise AgentBoxError("; ".join(reasons))
+        route = cloud_review(config, task, parent)
+        if not route:
+            # A cloud reviewer reads the pull request, which does not exist yet:
+            # its verdict is what the merge requires, not this transition.
+            files, lines = diff_stats(root, base, config.workflow.review)
+            reasons = review_blockers(config.workflow.review, tasks, files, lines,
+                                      {**saved, "delta_review": delta_review(root, config, task, tasks)},
+                                      integrated=integrated_parent(root, task, parent, base))
+            if reasons:
+                raise AgentBoxError("; ".join(reasons))
         adapter.set_state(task, "Review")
         next_step = ("Run ab-land for a local fast-forward into the base"
                      if config.workflow.merge_mode == "local" else
-                     "Open the pull request with ab-pr; Done follows the actual GitHub merge")
+                     "Open the pull request with ab-pr" + (
+                         f", then review its head with workflow review {task.id}" if route else "")
+                     + "; Done follows the actual GitHub merge")
         return {"task": task.id, "state": "Review", "next": next_step}
 
 
@@ -1399,6 +1430,10 @@ def review(args, root, binding, adapter, config, task, parent, tasks, base, fing
                                 "the working tree and record it with result_command, naming the provider and model "
                                 "that ran. A new commit before then makes the verdict stale.",
                 "result_command": f"agent-box workflow review {task.id} --result FILE --provider PROVIDER --model MODEL"}
+    if cloud_review(config, task, parent):
+        from .github_review import review as in_pull_request
+        return in_pull_request(root, binding, adapter, config, task, base, fingerprint,
+                               identity, brief, review_context)
     tier = config.workflow.effective_tier(task.tier)
     path, models = config.workflow.models_for("reviewer", tier)
     if not models:
