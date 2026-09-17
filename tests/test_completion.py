@@ -80,7 +80,7 @@ class CandidateTests(unittest.TestCase):
 
     def test_tracker_and_workflow_complete_from_their_parsers(self):
         self.assertEqual(words("tracker state 374 Re")[1], ["Ready", "Review"])
-        self.assertEqual(words("--no-tmux workflow land 374 ")[1], ["inspect", "request-review", "merge", "reconcile", "cleanup"])
+        self.assertEqual(words("--no-tmux workflow land 374 ")[1], ["inspect", "request-review", "merge", "cleanup"])
         self.assertEqual(words("workflow delegate 374 --role ")[1], ["worker", "scout"])
         self.assertIn("--brief", words("workflow delegate 374 --role scout --")[1])
         self.assertEqual(words("workflow validate 374 -- python3 ")[0], "files")

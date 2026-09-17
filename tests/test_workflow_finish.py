@@ -2,6 +2,7 @@
 import unittest
 from contextlib import contextmanager
 from dataclasses import replace
+from pathlib import Path
 from unittest.mock import patch
 
 from agent_box import git_workflow as gw
@@ -124,15 +125,15 @@ class ChildFinishTests(unittest.TestCase):
         self.commit("later.py")
         gw.git(self.root, "switch", "ab/7-parent")
         gw.git(self.root, "merge", "--ff-only", "ab/8-child")
-        with self.assertRaisesRegex(AgentBoxError, "head.*changed"):
+        with self.assertRaisesRegex(AgentBoxError, "No acceptance is recorded"):
             self.dispatch(["finish", "8"])
         self.adapter.set_state.assert_not_called()
 
-    def test_missing_snapshot_cannot_accept_an_already_integrated_empty_diff(self):
-        """Even a new validation of the empty diff cannot recover original acceptance."""
+    def test_revalidating_an_integrated_child_cannot_accept_its_empty_diff(self):
+        """Validation of a diff that is already empty proves nothing about the original work."""
         self.interrupted_finish()
         self.dispatch(["validate", "8", "--", "true"])
-        with self.assertRaisesRegex(AgentBoxError, "acceptance.*missing"):
+        with self.assertRaisesRegex(AgentBoxError, "original work is unproven"):
             self.dispatch(["finish", "8"])
         self.adapter.set_state.assert_not_called()
 
@@ -182,7 +183,7 @@ class ChildFinishTests(unittest.TestCase):
         def publish(root, branch, base):
             self.adapter.set_state.assert_not_called()
             self.assertEqual(gw.local_branch_head(root, branch), parent_head)
-            self.assertEqual(workflow.read_evidence(root, self.child)["local_acceptance"]["head"], self.head)
+            self.assertEqual(workflow.read_evidence(root, self.child)["head"], self.head)
             return {"pushed": True, "head": parent_head}
 
         with patch.object(gw, "push_parent", side_effect=publish) as push, \
@@ -219,7 +220,7 @@ class ChildFinishTests(unittest.TestCase):
         workflow.evidence_path(self.root, self.child).unlink()
         self.dispatch(["begin", "8", "--resume"])
         self.dispatch(["validate", "8", "--", "true"])
-        with self.assertRaisesRegex(AgentBoxError, "acceptance.*missing"):
+        with self.assertRaisesRegex(AgentBoxError, "original work is unproven"):
             self.dispatch(["finish", "8"])
         self.assertNotIn("child_start", workflow.read_evidence(self.root, self.child))
         self.adapter.set_state.assert_not_called()
@@ -241,7 +242,7 @@ class ChildFinishTests(unittest.TestCase):
         self.dispatch(["begin", "8", "--resume"])
         self.assertNotIn("child_start", workflow.read_evidence(self.root, self.child))
         self.dispatch(["validate", "8", "--", "true"])
-        with self.assertRaisesRegex(AgentBoxError, "acceptance.*missing"):
+        with self.assertRaisesRegex(AgentBoxError, "original work is unproven"):
             self.dispatch(["finish", "8"])
         self.adapter.set_state.assert_not_called()
 
@@ -253,19 +254,20 @@ class ChildFinishTests(unittest.TestCase):
         self.begin_ready_child()
         self.adapter.reset_mock()
         self.dispatch(["validate", "8", "--", "true"])
-        with self.assertRaisesRegex(AgentBoxError, "acceptance.*missing"):
+        with self.assertRaisesRegex(AgentBoxError, "original work is unproven"):
             self.dispatch(["finish", "8"])
         self.assertNotIn("child_start", workflow.read_evidence(self.root, self.child))
         self.adapter.set_state.assert_not_called()
 
-    def test_retry_rejects_retired_or_stale_snapshot(self):
-        """Neither evidence from another scope nor acceptance revoked by a review round survives."""
+    def test_retry_rejects_edited_evidence_or_a_pass_revoked_by_a_new_round(self):
+        """A pair that cannot reproduce its own scope, and a PASS a new round retired, both stop the retry."""
         self.interrupted_finish()
         saved = workflow.read_evidence(self.root, self.child)
-        saved["local_acceptance"]["scope"] = "stale"
-        workflow.save_evidence(self.root, self.child, saved)
-        with self.assertRaisesRegex(AgentBoxError, "scope is stale"):
+        workflow.save_evidence(self.root, self.child, {**saved, "base_head": "f" * 40})
+        with self.assertRaisesRegex(AgentBoxError, "No acceptance is recorded"):
             self.dispatch(["finish", "8"])
+        self.config.workflow.review.policy = "always"
+        workflow.save_evidence(self.root, self.child, {**saved, "review": {"verdict": "PASS"}})
         original_lock = workflow.lock
         revoked = []
 
@@ -278,7 +280,7 @@ class ChildFinishTests(unittest.TestCase):
                 yield
 
         with patch.object(workflow, "lock", interleave), \
-             self.assertRaisesRegex(AgentBoxError, "acceptance cache is missing"):
+             self.assertRaisesRegex(AgentBoxError, "PASS review"):
             self.dispatch(["finish", "8"])
         self.adapter.set_state.assert_not_called()
 
@@ -296,21 +298,76 @@ class ChildFinishTests(unittest.TestCase):
         self.assertEqual(gw.local_branch_head(self.root, "ab/7-parent"), base_head)
         self.adapter.set_state.assert_not_called()
 
-    def test_snapshot_is_saved_before_git_integration(self):
-        """A failure immediately after Git still leaves the accepted scope recoverable."""
+    def test_acceptance_names_the_child_head_before_git_integration(self):
+        """A failure immediately after Git still leaves the accepted head recoverable."""
         saved = workflow.read_evidence(self.root, self.child)
         original_git = gw.git
 
         def observe(root, *args, **kwargs):
             if args[0] == "merge":
-                snapshot = workflow.read_evidence(root, self.child)["local_acceptance"]
-                self.assertEqual(snapshot["head"], self.head)
-                self.assertEqual(snapshot["scope"], saved["scope"])
+                recorded = workflow.read_evidence(root, self.child)
+                self.assertEqual((recorded["head"], recorded["scope"]), (self.head, saved["scope"]))
             return original_git(root, *args, **kwargs)
 
         with patch.object(gw, "git", side_effect=observe):
             self.dispatch(["finish", "8"])
-        self.assertIn("local_acceptance", workflow.read_evidence(self.root, self.child))
+        self.assertEqual(workflow.read_evidence(self.root, self.child)["head"], self.head)
+
+
+class ChildBranchReleaseTests(unittest.TestCase):
+    """A finished subtask keeps nothing: its work is in the parent branch, so its branch goes."""
+
+    dispatch = test_local_workflow.LocalLandTests.dispatch
+    setUp = ChildFinishTests.setUp
+    commit = ChildFinishTests.commit
+
+    def branch_exists(self, root):
+        return gw._run(["git", "show-ref", "--verify", "--quiet", "refs/heads/ab/8-child"], cwd=root).returncode == 0
+
+    def test_finish_releases_the_child_branch_and_leaves_origin_alone_without_a_copy(self):
+        """Integration into the parent branch is the whole proof a subtask branch needs."""
+        self.config.workflow.cleanup_local_branches = True
+        self.config.workflow.cleanup_remote_branches = True
+        result = self.dispatch(["finish", "8"])
+        self.assertEqual(result["state"], "Done")
+        self.assertEqual(result["cleanup"]["local"], {"status": "deleted", "head": self.head})
+        self.assertEqual(result["cleanup"]["remote"], {"status": "absent"})
+        self.assertFalse(self.branch_exists(self.root))
+        self.assertEqual(gw.local_branch_head(self.root, "ab/7-parent"), self.head)
+
+    def test_finish_releases_a_published_child_branch_only_where_it_exists(self):
+        """A pushed subtask branch is released on origin too, and only then."""
+        self.config.workflow.merge_mode = "github"
+        self.config.workflow.cleanup_local_branches = True
+        self.config.workflow.cleanup_remote_branches = True
+        gw.git(self.root, "push", "origin", "refs/heads/ab/8-child")
+        result = self.dispatch(["finish", "8"])["cleanup"]
+        self.assertEqual([result[kind]["status"] for kind in ("local", "remote")], ["deleted", "deleted"])
+        self.assertFalse(self.branch_exists(Path(self.temporary.name) / "origin.git"))
+
+    def test_finish_preserves_a_child_branch_that_moved_after_its_work_was_integrated(self):
+        """New work on the branch is not what was merged, so the ref survives with its reason."""
+        self.config.workflow.cleanup_local_branches = True
+        moved = gw.local_branch_head(self.root, "ab/7-parent")
+        self.adapter.set_state.side_effect = lambda task, state: gw.git(
+            self.root, "update-ref", "refs/heads/ab/8-child", moved, self.head)
+        result = self.dispatch(["finish", "8"])
+        self.assertEqual(result["state"], "Done")
+        self.assertIn("moved since merge", result["cleanup"]["local"]["reason"])
+        self.assertEqual(gw.local_branch_head(self.root, "ab/8-child"), moved)
+
+    def test_finishing_a_done_subtask_again_reports_done_without_touching_git(self):
+        """The branch is gone by then, and a repeat must answer rather than fail."""
+        self.config.workflow.cleanup_local_branches = True
+        self.assertEqual(self.dispatch(["finish", "8"])["state"], "Done")
+        self.child.state = "Done"
+        self.adapter.reset_mock()
+        with patch.object(gw, "git", wraps=gw.git) as git:
+            result = self.dispatch(["finish", "8"])
+        self.assertEqual((result["state"], result["parent_branch"]), ("Done", "ab/7-parent"))
+        self.assertEqual(result["cleanup"]["local"], {"status": "absent"})
+        self.assertFalse(any("update-ref" in call.args or "merge" in call.args for call in git.call_args_list))
+        self.adapter.set_state.assert_not_called()
 
 
 class NoCodeChildFinishTests(unittest.TestCase):
@@ -384,7 +441,7 @@ class NoCodeChildFinishTests(unittest.TestCase):
                     reserve(attempted[0])
                 current = workflow.read_evidence(self.root, self.child)
                 self.assertNotIn("review", current)
-                self.assertNotIn("local_acceptance", current)
+                self.assertNotIn("human_acceptance", current)
                 self.assertEqual(current.get("scope"), attempted[0])
                 self.assertEqual(current["child_start"]["work_observed"], resume)
                 budget = workflow.read_review_state(self.root, BINDING, self.child)
@@ -481,7 +538,7 @@ class NoCodeChildFinishTests(unittest.TestCase):
                 self.assertNotIn("child_start", workflow.read_evidence(self.root, self.child))
                 self.adapter.reset_mock()
                 self.dispatch(["validate", ident, "--", "true"])
-                with self.assertRaisesRegex(AgentBoxError, "acceptance.*missing"):
+                with self.assertRaisesRegex(AgentBoxError, "original work is unproven"):
                     self.dispatch(["finish", ident])
                 self.adapter.set_state.assert_not_called()
 
@@ -573,7 +630,7 @@ class NoCodeChildFinishTests(unittest.TestCase):
         self.interrupted_finish()
         self.dispatch(["begin", "8", "--resume"])
         self.dispatch(["validate", "8", "--", "true"])
-        with self.assertRaisesRegex(AgentBoxError, "acceptance.*missing"):
+        with self.assertRaisesRegex(AgentBoxError, "original work is unproven"):
             self.dispatch(["finish", "8"])
         self.adapter.set_state.assert_not_called()
 
@@ -596,7 +653,7 @@ class NoCodeChildFinishTests(unittest.TestCase):
         elif retirement == "review":
             saved = workflow.read_evidence(self.root, self.child)
             workflow.start_review(self.root, BINDING, self.child, 3, "new-round", saved["scope"], "managed")
-        self.assertNotIn("local_acceptance", workflow.read_evidence(self.root, self.child))
+        self.assertNotIn("review", workflow.read_evidence(self.root, self.child))
         if remote:
             gw.git(self.root, "branch", "-D", "ab/8-child")
         else:
@@ -606,7 +663,7 @@ class NoCodeChildFinishTests(unittest.TestCase):
         self.assertEqual(gw.local_branch_head(self.root, "ab/7-parent"), self.head if integrate else origin)
         self.dispatch(["validate", "8", "--", "true"])
         self.assertEqual(gw.git(self.root, "diff", "ab/7-parent...HEAD", "--"), "")
-        with self.assertRaisesRegex(AgentBoxError, "acceptance.*missing"):
+        with self.assertRaisesRegex(AgentBoxError, "original work is unproven"):
             self.dispatch(["finish", "8"])
         self.adapter.set_state.assert_not_called()
 
@@ -619,9 +676,8 @@ class NoCodeChildFinishTests(unittest.TestCase):
         origin = self.head
         self.commit("child.py")
         self.head = gw.head_sha(self.root)
-        saved = workflow.read_evidence(self.root, self.child)
-        saved.update(scope=workflow.scope(self.root, "ab/7-parent"),
-                     validation={"command": ["true"], "exit": 0})
+        saved = {**workflow.evidence(self.root, self.child, workflow.scope(self.root, "ab/7-parent"), "ab/7-parent"),
+                 "validation": {"command": ["true"], "exit": 0}}
         workflow.save_evidence(self.root, self.child, saved)
         original_git = gw.git
 
@@ -630,7 +686,7 @@ class NoCodeChildFinishTests(unittest.TestCase):
                 before_merge = workflow.read_evidence(root, self.child)
                 self.assertEqual(before_merge["child_start"],
                                  {"head": origin, "parent": self.parent.id, "work_observed": True})
-                self.assertEqual(before_merge["local_acceptance"]["head"], self.head)
+                self.assertEqual(before_merge["head"], self.head)
             return original_git(root, *args, **kwargs)
 
         with patch.object(gw, "git", side_effect=observe):
@@ -657,7 +713,7 @@ class NoCodeChildFinishTests(unittest.TestCase):
         self.dispatch(["begin", "8", "--resume"])
         gw.git(self.root, "reset", "--hard", origin)
         self.dispatch(["validate", "8", "--", "true"])
-        with self.assertRaisesRegex(AgentBoxError, "acceptance.*missing"):
+        with self.assertRaisesRegex(AgentBoxError, "original work is unproven"):
             self.dispatch(["finish", "8"])
         self.adapter.set_state.assert_not_called()
 
@@ -673,7 +729,7 @@ class NoCodeChildFinishTests(unittest.TestCase):
         self.begin_ready_child(snapshot_state="Doing", resume=True)
         self.adapter.reset_mock()
         self.dispatch(["validate", "8", "--", "true"])
-        with self.assertRaisesRegex(AgentBoxError, "acceptance.*missing"):
+        with self.assertRaisesRegex(AgentBoxError, "original work is unproven"):
             self.dispatch(["finish", "8"])
         self.assertEqual(workflow.read_evidence(self.root, self.child)["child_start"],
                          {**original_start, "work_observed": True})
@@ -696,7 +752,7 @@ class NoCodeChildFinishTests(unittest.TestCase):
         workflow.evidence_path(self.root, self.child).unlink(missing_ok=True)
         self.dispatch(["begin", "8", "--resume"])
         self.dispatch(["validate", "8", "--", "true"])
-        with self.assertRaisesRegex(AgentBoxError, "acceptance.*missing"):
+        with self.assertRaisesRegex(AgentBoxError, "original work is unproven"):
             self.dispatch(["finish", "8"])
         self.adapter.set_state.assert_not_called()
 
@@ -708,7 +764,7 @@ class NoCodeChildFinishTests(unittest.TestCase):
         workflow.evidence_path(self.root, self.child).unlink(missing_ok=True)
         self.dispatch(["begin", "8", "--resume"])
         self.dispatch(["validate", "8", "--", "true"])
-        with self.assertRaisesRegex(AgentBoxError, "acceptance.*missing"):
+        with self.assertRaisesRegex(AgentBoxError, "original work is unproven"):
             self.dispatch(["finish", "8"])
         self.adapter.set_state.assert_not_called()
 
@@ -723,8 +779,8 @@ class TransitionReadTests(unittest.TestCase):
                     pass
         return self.parent
 
-    def test_local_reconcile_reads_recovery_root_once_under_both_locks(self):
-        """Recovery routing and acceptance must consume the same locked root snapshot."""
+    def test_a_repeated_local_merge_reads_the_root_once_under_both_locks(self):
+        """Routing and acceptance must consume the same locked root snapshot."""
         workflow.save_evidence(self.root, self.parent, self.saved)
         self.adapter.set_state.side_effect = AgentBoxError("tracker unavailable")
         with self.assertRaisesRegex(AgentBoxError, "tracker unavailable"):
@@ -735,13 +791,13 @@ class TransitionReadTests(unittest.TestCase):
         with patch.object(workflow, "tree", wraps=workflow.tree) as tree, \
              patch.object(workflow, "scope", wraps=workflow.scope) as scope, \
              patch.object(gw, "git", wraps=gw.git) as git:
-            self.assertEqual(self.dispatch(["land", "7", "reconcile"])["state"], "Done")
+            self.assertEqual(self.dispatch(["land", "7", "merge"])["state"], "Done")
         self.adapter.get.assert_called_once_with("7")
         tree.assert_called_once()
         scope.assert_not_called()
         self.assertFalse(any(call.args[1:2] == ("merge",) for call in git.call_args_list))
 
-    def test_github_reconcile_keeps_locked_root_refresh_after_network(self):
+    def test_a_repeated_github_merge_keeps_the_locked_root_refresh_after_network(self):
         """The routing snapshot cannot replace the acceptance read after remote queries."""
         from agent_box import github_workflow as github
 
@@ -769,26 +825,26 @@ class TransitionReadTests(unittest.TestCase):
              patch.object(gw, "remote_branch_head", side_effect=remote), \
              patch.object(workflow, "tree", wraps=workflow.tree) as tree, \
              patch.object(workflow, "scope", wraps=workflow.scope) as scope:
-            self.assertEqual(self.dispatch(["land", "7", "reconcile"])["state"], "Done")
+            self.assertEqual(self.dispatch(["land", "7", "merge"])["state"], "Done")
         self.assertEqual(events, ["task", "remote", "task"])
         tree.assert_called_once()
         scope.assert_called_once()
         self.adapter.set_state.assert_called_once_with(self.parent, "Done")
 
-    def test_done_reconcile_and_cleanup_read_root_under_the_action_locks(self):
+    def test_done_merge_and_cleanup_read_the_root_under_the_action_locks(self):
         """Done routing must obtain fresh lifecycle before inspecting or deleting refs."""
         gw.git(self.root, "switch", "main")
         gw.git(self.root, "merge", "--ff-only", "ab/7-parent")
         self.parent.state = "Done"
         self.adapter.get.side_effect = self.locked_task
-        for action in ("reconcile", "cleanup"):
+        for action in ("merge", "cleanup"):
             self.adapter.get.reset_mock()
             with self.subTest(action=action):
                 self.assertEqual(self.dispatch(["land", "7", action])["state"], "Done")
             self.adapter.get.assert_called_once_with("7")
         self.adapter.set_state.assert_not_called()
 
-    def test_reconcile_selects_route_from_lifecycle_at_lock_acquisition(self):
+    def test_merge_selects_its_route_from_the_lifecycle_at_lock_acquisition(self):
         """A lifecycle change before locking must select the corresponding recovery path."""
         from agent_box import branch_cleanup, local_workflow
 
@@ -812,9 +868,9 @@ class TransitionReadTests(unittest.TestCase):
 
             with self.subTest(initial=initial, fresh=fresh), \
                  patch.object(workflow, "lock", interleave), \
-                 patch.object(branch_cleanup, "reconcile", wraps=branch_cleanup.reconcile) as done, \
+                 patch.object(branch_cleanup, "retry", wraps=branch_cleanup.retry) as done, \
                  patch.object(local_workflow, "operate", wraps=local_workflow.operate) as active:
-                self.assertEqual(self.dispatch(["land", "7", "reconcile"])["state"], "Done")
+                self.assertEqual(self.dispatch(["land", "7", "merge"])["state"], "Done")
             (done if fresh == "Done" else active).assert_called_once()
             (active if fresh == "Done" else done).assert_not_called()
             if fresh == "Done":

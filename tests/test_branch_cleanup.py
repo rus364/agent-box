@@ -15,7 +15,7 @@ from agent_box.config import Config
 from agent_box.errors import AgentBoxError
 from agent_box.repo_binding import Binding
 from agent_box.tracker.core import Task
-from workflow_fixtures import BINDING, origin_path, repository
+from workflow_fixtures import BINDING, accepted_evidence, origin_path, repository
 
 
 class CleanupTests(unittest.TestCase):
@@ -56,16 +56,6 @@ class CleanupTests(unittest.TestCase):
 
     def run_cleanup(self, **kwargs):
         return cleanup.cleanup(self.root, self.config, self.task, self.adapter, **kwargs)
-
-    def accept_parent(self):
-        """Supply the same disposable snapshot as a successful local landing."""
-        base_head = gw.git(self.root, 'rev-parse', self.head + '^')
-        fingerprint = workflow.scope_fingerprint(self.head, base_head)
-        saved = {'scope': fingerprint, 'local_acceptance': {
-            'head': self.head, 'base': 'main', 'base_head': base_head, 'scope': fingerprint,
-            'validation': {'exit': 0}, 'review': {'verdict': 'PASS'}}}
-        workflow.save_evidence(self.root, self.task, saved)
-        return saved
 
     def exists(self, *, remote=False):
         root = self.origin if remote else self.root
@@ -108,7 +98,7 @@ class CleanupTests(unittest.TestCase):
         git.assert_not_called()
         gh.assert_not_called()
 
-    def dispatch_land(self, action='reconcile'):
+    def dispatch_land(self, action='merge'):
         adapter = self.adapter
         with patch.object(workflow, 'effective_config', return_value=self.config), \
              patch.object(workflow, 'repository_root', return_value=self.root), \
@@ -119,26 +109,29 @@ class CleanupTests(unittest.TestCase):
             finally:
                 adapter.set_state.assert_not_called()
 
-    def test_dispatch_done_reconcile_rejects_later_unmerged_work_with_any_cleanup_policy(self):
-        """Done cannot conceal new work even when automatic deletion is disabled."""
+    def test_done_merge_preserves_the_copy_holding_work_the_base_lacks(self):
+        """Later unmerged work keeps its branch; the published copy in the base is released."""
         self.integrated()
         self.github_proof()
         gw.git(self.root, 'switch', self.branch)
         gw.git(self.root, 'commit', '--allow-empty', '-m', 'later unmerged task work')
         moved = gw.head_sha(self.root)
+        gw.git(self.root, 'switch', 'main')
         for mode in ('local', 'github'):
             for enabled in (False, True):
                 with self.subTest(mode=mode, cleanup=enabled):
                     self.config.workflow.merge_mode = mode
                     self.config.workflow.cleanup_local_branches = enabled
                     self.config.workflow.cleanup_remote_branches = enabled
-                    with self.assertRaises(AgentBoxError):
-                        self.dispatch_land()
+                    result = self.dispatch_land()['cleanup']
+                    self.assertEqual(result['state'] if 'state' in result else 'Done', 'Done')
+                    self.assertEqual(result['local']['status'], 'error' if enabled else 'disabled')
                     self.assertEqual(gw.local_branch_head(self.root, self.branch), moved)
-                    self.assertTrue(self.exists(remote=True))
+                    if enabled:
+                        gw.git(self.origin, 'update-ref', self.ref, self.head)
 
-    def test_dispatch_done_surviving_refs_prove_integration_even_while_occupied(self):
-        """Current/worktree protection prevents deletion, not read-only reconciliation."""
+    def test_done_merge_keeps_the_branch_the_checkout_stands_on(self):
+        """An occupied branch survives a completed task, in both modes and without a PR query."""
         self.integrated()
         self.github_proof()
         gw.git(self.root, 'switch', self.branch)
@@ -148,14 +141,16 @@ class CleanupTests(unittest.TestCase):
                     self.config.workflow.merge_mode = mode
                     self.config.workflow.cleanup_local_branches = enabled
                     self.config.workflow.cleanup_remote_branches = enabled
-                    with patch.object(cleanup, '_merged_head', wraps=cleanup._merged_head) as proof, \
-                         patch.object(gw, '_is_ancestor', wraps=gw._is_ancestor) as ancestry:
-                        self.assertEqual(self.dispatch_land()['state'], 'Done')
-                    (proof if mode == 'github' else ancestry).assert_called()
+                    with patch.object(cleanup, '_merged_head', wraps=cleanup._merged_head) as proof:
+                        result = self.dispatch_land()
+                    self.assertEqual(result['state'], 'Done')
+                    if enabled:
+                        self.assertIn('current branch', result['cleanup']['local']['reason'])
+                    proof.assert_not_called()
                     self.assertTrue(self.exists())
                     self.assertTrue(self.exists(remote=True))
 
-    def test_dispatch_done_remote_only_moved_head_refuses_without_deleting(self):
+    def test_done_merge_preserves_a_remote_only_branch_that_moved_on(self):
         """Live origin must expose new work even after the local task ref is gone."""
         self.integrated()
         self.github_proof()
@@ -172,12 +167,12 @@ class CleanupTests(unittest.TestCase):
                     self.config.workflow.merge_mode = mode
                     self.config.workflow.cleanup_local_branches = enabled
                     self.config.workflow.cleanup_remote_branches = enabled
-                    with self.assertRaises(AgentBoxError):
-                        self.dispatch_land()
+                    result = self.dispatch_land()['cleanup']
+                    self.assertEqual(result['remote']['status'], 'error' if enabled else 'disabled')
                     self.assertEqual(gw.local_branch_head(self.origin, self.branch), moved)
 
-    def test_dispatch_done_checks_remote_before_deleting_a_proven_local_branch(self):
-        """A valid local head must not allow deletion before remote proof succeeds."""
+    def test_done_merge_releases_a_proven_local_copy_while_origin_keeps_its_new_work(self):
+        """Each copy answers for its own head; origin's newer work is never deleted for the local one."""
         self.integrated()
         self.github_proof()
         gw.git(self.root, 'switch', self.branch)
@@ -188,9 +183,9 @@ class CleanupTests(unittest.TestCase):
         for mode in ('local', 'github'):
             with self.subTest(mode=mode):
                 self.config.workflow.merge_mode = mode
-                with self.assertRaises(AgentBoxError):
-                    self.dispatch_land()
-                self.assertEqual(gw.local_branch_head(self.root, self.branch), self.head)
+                gw.git(self.root, 'update-ref', self.ref, self.head)
+                result = self.dispatch_land()['cleanup']
+                self.assertEqual([result[k]['status'] for k in ('local', 'remote')], ['deleted', 'error'])
                 self.assertTrue(self.exists(remote=True))
 
     def test_dispatch_done_github_squash_proof_allows_cleanup_and_absent_retry(self):
@@ -205,8 +200,8 @@ class CleanupTests(unittest.TestCase):
                          ['absent', 'absent'])
         self.assertNotIn('merge', result)
 
-    def test_dispatch_done_ambiguous_live_refs_refuse_with_any_cleanup_policy(self):
-        """A second live candidate cannot be ignored because deletion is disabled."""
+    def test_done_merge_preserves_every_candidate_of_an_ambiguous_namespace(self):
+        """A second live candidate makes the task's branch unknowable, so nothing is deleted."""
         self.integrated()
         self.github_proof()
         gw.git(self.origin, 'update-ref', 'refs/heads/ab/7-second', self.head)
@@ -216,8 +211,12 @@ class CleanupTests(unittest.TestCase):
                     self.config.workflow.merge_mode = mode
                     self.config.workflow.cleanup_local_branches = enabled
                     self.config.workflow.cleanup_remote_branches = enabled
-                    with self.assertRaisesRegex(AgentBoxError, 'Ambiguous'):
-                        self.dispatch_land()
+                    result = self.dispatch_land()['cleanup']
+                    for kind in ('local', 'remote'):
+                        if enabled:
+                            self.assertIn('Ambiguous', result[kind]['reason'])
+                        else:
+                            self.assertEqual(result[kind]['status'], 'disabled')
                     self.assertTrue(self.exists())
                     self.assertTrue(self.exists(remote=True))
 
@@ -240,7 +239,7 @@ class CleanupTests(unittest.TestCase):
                     gh.assert_not_called()
 
     def test_dispatch_explicit_disabled_cleanup_does_not_inspect_merge_proof(self):
-        """Only reconcile requires proof when the deletion policy is disabled."""
+        """A disabled deletion policy inspects nothing at all."""
         self.config.workflow.cleanup_local_branches = False
         self.config.workflow.cleanup_remote_branches = False
         with patch.object(cleanup, '_local_refs') as refs, patch.object(github, 'gh') as gh:
@@ -266,7 +265,6 @@ class CleanupTests(unittest.TestCase):
         child, _ = self.descendant('8')
         self.descendant('9')
         self.descendant('10', parent=child)
-        self.accept_parent()
         gw.git(self.root, 'branch', 'ab/80-unrelated', self.head)
         with patch.object(github, 'gh') as gh:
             result = self.dispatch_land('cleanup')['cleanup']
@@ -298,7 +296,6 @@ class CleanupTests(unittest.TestCase):
         self.integrated()
         _, branch = self.descendant('8')
         self.config.workflow.cleanup_remote_branches = False
-        self.accept_parent()
         with patch.object(cleanup, '_remote_refs') as remote:
             first = self.descendant_outcomes(self.run_cleanup())['8']
         self.assertEqual([first[k]['status'] for k in ('local', 'remote')], ['deleted', 'disabled'])
@@ -316,9 +313,8 @@ class CleanupTests(unittest.TestCase):
         gw.git(self.root, 'update-ref', '-d', 'refs/remotes/origin/' + self.branch)
         child, _ = self.descendant('8')
         self.descendant('9', parent=child)
-        self.accept_parent()
         for expected in ('deleted', 'absent'):
-            result = self.dispatch_land('reconcile')['cleanup']
+            result = self.dispatch_land()['cleanup']
             self.assertEqual(result['local']['status'], 'absent')
             for item in result['descendants']:
                 self.assertEqual([item[k]['status'] for k in ('local', 'remote')], [expected, expected])
@@ -328,7 +324,6 @@ class CleanupTests(unittest.TestCase):
         self.integrated()
         child, branch = self.descendant('8', state='Doing')
         self.descendant('9', parent=child)
-        self.accept_parent()
         result = self.descendant_outcomes(self.run_cleanup())
         for kind in ('local', 'remote'):
             self.assertEqual(result['8'][kind]['status'], 'preserved')
@@ -370,12 +365,12 @@ class CleanupTests(unittest.TestCase):
                     remote_effect = (AgentBoxError('origin unavailable') if scenario == 'remote-error'
                                      else original_remote)
                     with patch.object(cleanup, '_remote_refs', side_effect=remote_effect) as remote, \
-                         patch.object(cleanup, '_parent_proof') as parent_proof, \
+                         patch.object(cleanup, '_merged_parent') as merged_parent, \
                          patch.object(cleanup, '_merged_head') as merged, \
                          patch.object(cleanup, '_integrated_head') as integrated, \
                          patch.object(gw, 'git', wraps=gw.git) as git:
                         result = self.descendant_outcomes(self.dispatch_land('cleanup')['cleanup'])['8']
-                    parent_proof.assert_not_called()
+                    merged_parent.assert_not_called()
                     merged.assert_not_called()
                     integrated.assert_not_called()
                     self.assertFalse(any('update-ref' in call.args or 'push' in call.args
@@ -409,8 +404,7 @@ class CleanupTests(unittest.TestCase):
         gw.git(self.root, 'switch', self.branch)
         self.adapter.identity.return_value = {'id': 1}
         self.config.workflow.review.policy = 'off'
-        saved = {'scope': workflow.scope(self.root, 'main'), 'validation': {'exit': 0}}
-        workflow.save_evidence(self.root, self.task, saved)
+        accepted_evidence(self.root, self.task)
         args = SimpleNamespace(command='land', task=self.task.id, action='merge', method=None)
         result = workflow.landing(args, self.root, self.config, self.adapter)
         self.assertEqual(result['state'], 'Done')
@@ -422,64 +416,27 @@ class CleanupTests(unittest.TestCase):
         gw.git(self.root, 'worktree', 'remove', str(occupied))
         return branch
 
-    def test_absent_parent_retry_preserves_child_moved_to_later_published_base(self):
-        """Later base ancestry cannot enlarge the result accepted before parent deletion."""
+    def test_absent_parent_retry_releases_a_child_moved_inside_the_published_base(self):
+        """Deleting the parent refs does not end cleanup: each child answers for its own head."""
         branch = self.land_with_occupied_child()
         gw.git(self.root, 'commit', '--allow-empty', '-m', 'later base work')
         moved = gw.head_sha(self.root)
         gw.git(self.root, 'push', 'origin', 'refs/heads/main')
         gw.git(self.root, 'update-ref', 'refs/heads/' + branch, moved)
         gw.git(self.root, 'push', 'origin', 'refs/heads/' + branch)
-        for action in ('cleanup', 'reconcile', 'cleanup'):
-            result = self.dispatch_land(action)
-            self.assertEqual(result['state'], 'Done')
-            for kind in ('local', 'remote'):
-                self.assertEqual(result['cleanup'][kind]['status'], 'absent')
-                self.assertEqual(self.descendant_outcomes(result['cleanup'])['8'][kind]['status'], 'error')
-                self.assertIn('accepted parent result',
-                              self.descendant_outcomes(result['cleanup'])['8'][kind]['reason'])
-            for root in (self.root, self.origin):
-                self.assertEqual(gw.local_branch_head(root, branch), moved)
-
-    def test_invalid_acceptance_preserves_children_without_blocking_parent_or_done(self):
-        """Missing, stale or inconsistent evidence cannot authorize retry deletion."""
-        branch = self.land_with_occupied_child()
-        original = workflow.read_evidence(self.root, self.task)
-        changes = (
-            ('missing', None, None), ('base', 'base', 'other'),
-            ('head', 'head', 'f' * 40),
-            ('base_head', 'base_head', 'f' * 40), ('scope', 'scope', 'stale'),
-            ('nonexact head', 'head', 'main'), ('validation', 'validation', {'exit': 1}),
-            ('malformed', None, []), ('retired scope', None, 'retired'),
-        )
-        for label, key, value in changes:
-            with self.subTest(evidence=label):
-                saved = copy.deepcopy(original)
-                if key:
-                    saved['local_acceptance'][key] = value
-                elif label == 'retired scope':
-                    saved['scope'] = value
-                else:
-                    saved['local_acceptance'] = value
-                workflow.save_evidence(self.root, self.task, saved)
-                for root in (self.root, self.origin):
-                    gw.git(root, 'update-ref', self.ref, self.head)
-                for action, parent_status in (('cleanup', 'deleted'), ('reconcile', 'absent')):
-                    result = self.dispatch_land(action)
-                    self.assertEqual(result['state'], 'Done')
-                    for kind in ('local', 'remote'):
-                        self.assertEqual(result['cleanup'][kind]['status'], parent_status)
-                        self.assertIn('acceptance evidence',
-                                      self.descendant_outcomes(result['cleanup'])['8'][kind]['reason'])
-                    for root in (self.root, self.origin):
-                        self.assertEqual(gw.local_branch_head(root, branch), self.head)
-        workflow.save_evidence(self.root, self.task, original)
-        result = self.dispatch_land('cleanup')['cleanup']
+        result = self.dispatch_land('cleanup')
+        self.assertEqual(result['state'], 'Done')
         for kind in ('local', 'remote'):
-            self.assertEqual(self.descendant_outcomes(result)['8'][kind]['status'], 'deleted')
+            self.assertEqual(result['cleanup'][kind]['status'], 'absent')
+            self.assertEqual(self.descendant_outcomes(result['cleanup'])['8'][kind]['status'], 'deleted')
+        for root in (self.root, self.origin):
+            self.assertNotEqual(gw._run(['git', 'show-ref', '--verify', '--quiet',
+                                        'refs/heads/' + branch], cwd=root).returncode, 0)
+        repeated = self.dispatch_land()['cleanup']
+        self.assertEqual(self.descendant_outcomes(repeated)['8']['local']['status'], 'absent')
 
-    def test_absent_parent_acceptance_allows_local_cleanup_when_origin_is_unavailable(self):
-        """Recoverable local proof stays usable even after both parent refs were deleted."""
+    def test_absent_parent_refs_do_not_stop_local_child_cleanup_when_origin_fails(self):
+        """A missing parent branch and an unavailable origin leave base ancestry to answer."""
         branch = self.land_with_occupied_child()
         with patch.object(cleanup, '_remote_refs', side_effect=AgentBoxError('origin unavailable')):
             result = self.descendant_outcomes(self.dispatch_land('cleanup')['cleanup'])['8']
@@ -487,27 +444,19 @@ class CleanupTests(unittest.TestCase):
         self.assertIn('origin unavailable', result['remote']['reason'])
         self.assertEqual(gw.local_branch_head(self.origin, branch), self.head)
 
-    def test_card_edits_keep_absent_parent_cleanup_proof(self):
-        """Links, labels and a changed description cannot invalidate an accepted integration snapshot."""
-        self.land_with_occupied_child()
-        self.task.related.append('99')
-        self.task.labels.append('ordinary')
-        self.task.description += '\nClarified acceptance requirement'
-        result = self.descendant_outcomes(self.dispatch_land('cleanup')['cleanup'])['8']
-        for kind in ('local', 'remote'):
-            self.assertEqual(result[kind]['status'], 'deleted')
-
-    def test_descendant_new_work_outside_accepted_parent_is_preserved(self):
-        """Even later base work is outside a supplied accepted parent result."""
+    def test_descendant_work_the_base_does_not_contain_is_preserved(self):
+        """A child branch is released for being inside the base, never for being a child."""
         self.integrated()
-        gw.git(self.root, 'commit', '--allow-empty', '-m', 'later base work')
-        moved = gw.head_sha(self.root)
-        _, branch = self.descendant('8', head=moved)
+        gw.git(self.root, 'switch', self.branch)
+        gw.git(self.root, 'commit', '--allow-empty', '-m', 'work outside the base')
+        outside = gw.head_sha(self.root)
+        gw.git(self.root, 'switch', 'main')
+        _, branch = self.descendant('8', head=outside)
         result = self.descendant_outcomes(self.run_cleanup(expected_head=self.head))['8']
         for kind in ('local', 'remote'):
-            self.assertIn('accepted parent result', result[kind]['reason'])
-        self.assertEqual(gw.local_branch_head(self.root, branch), moved)
-        self.assertEqual(gw.local_branch_head(self.origin, branch), moved)
+            self.assertIn('not integrated into the local base', result[kind]['reason'])
+        self.assertEqual(gw.local_branch_head(self.root, branch), outside)
+        self.assertEqual(gw.local_branch_head(self.origin, branch), outside)
 
     def test_descendant_current_worktree_ambiguous_and_symbolic_refs_do_not_block_siblings(self):
         """Each protected namespace reports why it survives while siblings progress."""
@@ -517,7 +466,6 @@ class CleanupTests(unittest.TestCase):
         self.descendant('10')
         _, symbolic = self.descendant('11')
         self.descendant('12')
-        self.accept_parent()
         gw.git(self.root, 'branch', 'ab/10-second', self.head)
         gw.git(self.root, 'symbolic-ref', 'refs/heads/' + symbolic, 'refs/heads/main')
         gw.git(self.root, 'worktree', 'add', str(self.directory / 'occupied'), occupied)
@@ -574,7 +522,6 @@ class CleanupTests(unittest.TestCase):
         """Local success cannot authorize origin deletion until that head is published."""
         self.integrated(published=False)
         self.descendant('8')
-        self.accept_parent()
         child = self.descendant_outcomes(self.run_cleanup())['8']
         self.assertEqual(child['local']['status'], 'deleted')
         self.assertIn('published origin base', child['remote']['reason'])
@@ -586,7 +533,6 @@ class CleanupTests(unittest.TestCase):
         """An unavailable remote must not suppress proven local descendant deletion."""
         self.integrated()
         _, branch = self.descendant('8')
-        self.accept_parent()
         with patch.object(cleanup, '_remote_refs', side_effect=AgentBoxError('origin unavailable')):
             child = self.descendant_outcomes(self.run_cleanup())['8']
         self.assertEqual(child['local']['status'], 'deleted')
@@ -601,7 +547,7 @@ class CleanupTests(unittest.TestCase):
         _, branch = self.descendant('8', head=moved)
         child = self.descendant_outcomes(self.run_cleanup())['8']
         for kind in ('local', 'remote'):
-            self.assertIn('accepted parent result', child[kind]['reason'])
+            self.assertIn('exact merged PR head', child[kind]['reason'])
         self.assertEqual(gw.local_branch_head(self.root, branch), moved)
         self.assertEqual(gw.local_branch_head(self.origin, branch), moved)
 
@@ -642,7 +588,7 @@ class CleanupTests(unittest.TestCase):
         self.run_cleanup()
         gw.git(self.root, 'update-ref', '-d', 'refs/remotes/origin/' + self.branch)
         self.descendant('8')
-        first = self.dispatch_land('reconcile')['cleanup']
+        first = self.dispatch_land()['cleanup']
         self.assertEqual(first['local']['status'], 'absent')
         self.assertEqual(self.descendant_outcomes(first)['8']['remote']['status'], 'deleted')
         with patch.object(github, 'gh') as gh:
@@ -971,9 +917,7 @@ class CleanupTests(unittest.TestCase):
         adapter = self.adapter
         adapter.identity.return_value = {'id': 1}
         args = SimpleNamespace(command='land', task=self.task.id, action='merge', method=None)
-        saved = {'validation': {'exit': 0}, 'review': {'verdict': 'PASS'}}
-        saved['scope'] = workflow.scope(self.root, 'main')
-        workflow.save_evidence(self.root, self.task, saved)
+        accepted_evidence(self.root, self.task, review={'verdict': 'PASS'})
         with patch.object(gw, 'github_origin', return_value='o/r'), \
              patch.object(github, 'find_pr', return_value=9), \
              patch.object(github, 'threads', return_value=[]):
@@ -1010,8 +954,8 @@ class CleanupTests(unittest.TestCase):
 
     def test_github_ambiguous_prs_or_disabled_integration_preserve_branches(self):
         self.github_proof()
-        with patch.object(github, 'gh', return_value=[{'number': 9, 'state': 'MERGED'},
-                                                    {'number': 10, 'state': 'OPEN'}]):
+        with patch.object(github, 'gh', return_value=[{'number': 9, 'state': 'MERGED', 'headRefName': self.branch},
+                                                    {'number': 10, 'state': 'OPEN', 'headRefName': self.branch}]):
             self.assertIn('ambiguous', self.run_cleanup()['local']['reason'])
         self.config.github.gh_token = False
         with patch.object(github, 'gh') as gh:
@@ -1019,7 +963,7 @@ class CleanupTests(unittest.TestCase):
         gh.assert_not_called()
         self.assertTrue(self.exists(remote=True))
 
-    def test_done_retry_and_reconcile_bypass_resolution_after_all_refs_are_absent(self):
+    def test_done_cleanup_and_merge_bypass_resolution_after_all_refs_are_absent(self):
         self.integrated()
         self.run_cleanup()
         gw.git(self.root, 'update-ref', '-d', 'refs/remotes/origin/' + self.branch)
@@ -1031,7 +975,7 @@ class CleanupTests(unittest.TestCase):
              patch.object(workflow, 'make_adapter', return_value=adapter), \
              patch.object(workflow, 'resolve', side_effect=AssertionError('must not resolve absent branch')), \
              patch.object(github, 'gh') as gh:
-            for action in ('cleanup', 'reconcile'):
+            for action in ('cleanup', 'merge'):
                 result = workflow.dispatch(workflow.parser().parse_args(['land', '7', action]))
                 self.assertEqual(result['cleanup']['local']['status'], 'absent')
                 self.assertNotIn('merge', result)
@@ -1052,8 +996,7 @@ class CleanupTests(unittest.TestCase):
         adapter = self.adapter
         adapter.identity.return_value = {'id': 1}
         self.config.workflow.review.policy = 'off'
-        saved = {'scope': workflow.scope(self.root, 'main'), 'validation': {'exit': 0}}
-        workflow.save_evidence(self.root, self.task, saved)
+        accepted_evidence(self.root, self.task)
         args = SimpleNamespace(command='land', task=self.task.id, action='merge', method=None)
         adapter.set_state.side_effect = AgentBoxError('tracker unavailable')
         with patch.object(cleanup, 'cleanup') as clean:
@@ -1062,7 +1005,6 @@ class CleanupTests(unittest.TestCase):
         clean.assert_not_called()
         self.assertTrue(self.exists())
         adapter.set_state.side_effect = None
-        args.action = 'reconcile'
         with patch.object(cleanup, '_local_refs', side_effect=RuntimeError('unexpected failure')):
             result = workflow.landing(args, self.root, self.config, adapter)
         self.assertEqual(result['state'], 'Done')
@@ -1073,7 +1015,7 @@ class CleanupTests(unittest.TestCase):
         self.assertEqual(result['cleanup']['local']['status'], 'deleted')
         self.assertEqual(self.descendant_outcomes(result['cleanup'])['8']['local']['status'], 'deleted')
 
-    def test_local_landing_discovers_child_attached_at_done_despite_stale_snapshot(self):
+    def test_local_landing_discovers_a_child_attached_at_done_despite_a_stale_card(self):
         """Adapters return new snapshots; a late Done child must not escape cleanup."""
         self.task.state = 'Review'
         fresh = replace(self.task, state='Done', children=[])
@@ -1089,8 +1031,7 @@ class CleanupTests(unittest.TestCase):
         gw.git(self.root, 'switch', self.branch)
         self.adapter.identity.return_value = {'id': 1}
         self.config.workflow.review.policy = 'off'
-        saved = {'scope': workflow.scope(self.root, 'main'), 'validation': {'exit': 0}}
-        workflow.save_evidence(self.root, self.task, saved)
+        accepted_evidence(self.root, self.task)
         args = SimpleNamespace(command='land', task=self.task.id, action='merge', method=None)
         original = cleanup.cleanup
 

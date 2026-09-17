@@ -1,7 +1,6 @@
-"""Optional task-tree cleanup with exact acceptance and live integration proof."""
+"""Optional task-tree cleanup with live integration proof for every ref it deletes."""
 from __future__ import annotations
 
-import re
 import subprocess
 
 from . import git_workflow as gw
@@ -82,55 +81,38 @@ def _merged_head(root, url, branch, base, *, prefix=None):
                            branch or relevant[0]["headRefName"], base)
 
 
-def _integrated_head(root, head, base, merged_head=None):
-    if merged_head is not None:
-        if head != merged_head:
-            raise AgentBoxError("Branch head differs from exact merged PR head")
-    elif not gw._is_ancestor(root, head, gw.local_branch_head(root, base)):
-        raise AgentBoxError("Task head is not integrated into the local base; fetch missing objects if needed")
+def _integrated_head(root, head, base, merged_head=None, *, exact=True):
+    """A deletable branch is in the base: exactly what landed, or history that head contains.
 
-
-def reconcile(root, config, task, adapter):
-    """Recheck Done under workflow.landing locks, never infer proof from lifecycle.
-
-    Unlike optional deletion, reconciliation must inspect live origin even when
-    cleanup is disabled. Tracking refs can disambiguate names but cannot prove
-    that a deleted branch survives, or supply a missing merge identity.
+    A squash or rebase merge rewrites the commit, so in GitHub mode only the
+    merged PR head names what landed; the parent branch has to be it, and a
+    subtask branch has to be inside it.
     """
-    if task.parent or task.state != "Done":
-        raise AgentBoxError("Reconciliation retry requires a Done parent task")
-    prefix = gw.branch_prefix(task.id)
-    local, names = _local_refs(root, prefix)
-    url = gw.push_destination(root)
-    remote, symbols, base, _ = _remote_refs(root, url, prefix)
-    names.update(remote)
-    if len(names) > 1:
-        raise AgentBoxError("Ambiguous task namespace; preserving all candidates: " + ", ".join(sorted(names)))
-    branch = next(iter(names), None)
-    result = {"task": task.id, "state": "Done"}
-    if not local and not remote:
-        return after_done(result, root, config, task, adapter)
-    merged_head = None
-    if config.workflow.merge_mode == "github":
-        if not (config.github.gh_token or config.github.gh_config):
-            raise AgentBoxError("Enable GitHub integration before GitHub-mode reconciliation")
-        merged_head = _merged_head(root, url, branch, base)
-    candidates = list(local.values())
-    candidates.extend((head, f"refs/heads/{name}" in symbols)
-                      for name, head in remote.items())
-    for head, symbolic in candidates:
-        if symbolic:
-            raise AgentBoxError("Preserving symbolic ref")
-        _integrated_head(root, head, base, merged_head)
-    return after_done(result, root, config, task, adapter, branch=branch, base=base)
+    if merged_head is None:
+        if not gw._is_ancestor(root, head, gw.local_branch_head(root, base)):
+            raise AgentBoxError("Task head is not integrated into the local base; fetch missing objects if needed")
+    elif head != merged_head and (exact or not gw._is_ancestor(root, head, merged_head)):
+        raise AgentBoxError("Branch head is not part of the exact merged PR head")
+
+
+def _merged_parent(root, config, task, branch, base, expected_head):
+    """The parent head GitHub actually merged; local mode proves inclusion from the base itself."""
+    if config.workflow.merge_mode != "github":
+        return None
+    if expected_head is not None:
+        return expected_head
+    if not (config.github.gh_token or config.github.gh_config):
+        raise AgentBoxError("Enable GitHub integration before GitHub-mode cleanup")
+    return _merged_head(root, gw.push_destination(root), branch, base or gw.default_base(root),
+                        prefix=gw.branch_prefix(task.id))
 
 
 def _cleanup_branch(root, config, task, *, branch=None, base=None, expected_head=None,
-                    parent_proof=None, preserve_reason=None):
+                    merged=None, exact=True, preserve_reason=None):
     """Return independent outcomes, including failures, after a successful Done write.
 
-    A missing ref permits only a no-op; every surviving candidate must prove
-    integration again, within the accepted result for descendants.
+    A missing ref permits only a no-op; every surviving candidate proves its own
+    inclusion in the base again, whatever the caller already established.
     """
     enabled = {"local": config.workflow.cleanup_local_branches,
                "remote": config.workflow.cleanup_remote_branches}
@@ -144,9 +126,6 @@ def _cleanup_branch(root, config, task, *, branch=None, base=None, expected_head
         remote, symbols, url, published, remote_base = {}, set(), None, None, None
         if enabled["remote"]:
             try:
-                if preserve_reason is None and config.workflow.merge_mode == "github" and not (
-                        config.github.gh_token or config.github.gh_config):
-                    raise AgentBoxError("Enable GitHub integration before GitHub-mode cleanup")
                 url = gw.push_destination(root)
                 remote, symbols, remote_base, published = _remote_refs(root, url, prefix)
                 names.update(remote)
@@ -184,12 +163,7 @@ def _cleanup_branch(root, config, task, *, branch=None, base=None, expected_head
         if branch in (base, default):
             raise AgentBoxError("Preserving the base/default branch")
         _unoccupied(root, branch, base)
-        merged_head = None
-        if config.workflow.merge_mode == "github" and parent_proof is None:
-            if not (config.github.gh_token or config.github.gh_config):
-                raise AgentBoxError("Enable GitHub integration before GitHub-mode cleanup")
-            url = url or gw.push_destination(root)
-            merged_head = _merged_head(root, url, branch, base)
+        merged_head = merged() if merged is not None else None
         for kind in enabled:
             if result[kind]["status"] != "pending":
                 continue
@@ -200,16 +174,10 @@ def _cleanup_branch(root, config, task, *, branch=None, base=None, expected_head
                     raise AgentBoxError("Preserving symbolic ref")
                 if expected_head is not None and head != expected_head:
                     raise AgentBoxError("Branch head moved since merge; preserving new work")
-                if parent_proof is None:
-                    _integrated_head(root, head, base, merged_head)
-                else:
-                    accepted_head = parent_proof()
-                    if not gw._is_ancestor(root, head, accepted_head):
-                        raise AgentBoxError("Descendant head is not integrated into the accepted parent result; "
-                                            "preserving moved or unproven work; fetch missing objects if needed")
-                if config.workflow.merge_mode == "local":
-                    if kind == "remote" and (remote_base != base or not gw._is_ancestor(root, head, published)):
-                        raise AgentBoxError("Task head is not proven in the live published origin base; publish the base or fetch missing objects, then retry")
+                _integrated_head(root, head, base, merged_head, exact=exact)
+                if config.workflow.merge_mode == "local" and kind == "remote" and (
+                        remote_base != gw.default_base(root) or not gw._is_ancestor(root, head, published)):
+                    raise AgentBoxError("Task head is not proven in the live published origin base; publish the base or fetch missing objects, then retry")
                 _unoccupied(root, branch, base)
                 if kind == "local":
                     gw.git(root, "update-ref", "--no-deref", "-d", ref, head)
@@ -229,72 +197,6 @@ def _cleanup_branch(root, config, task, *, branch=None, base=None, expected_head
     return result
 
 
-def _accepted_local_head(root, config, task, tasks, base):
-    """The disposable landing snapshot pins acceptance after Git refs disappear."""
-    from .local_workflow import _acceptance_reasons
-    from .workflow import read_evidence, scope_fingerprint
-
-    saved = read_evidence(root, task)
-    accepted = saved.get("local_acceptance")
-    if not isinstance(accepted, dict) or not accepted:
-        raise AgentBoxError("Local parent acceptance evidence is missing; preserving descendant refs")
-    if any(not isinstance(accepted.get(key), str)
-           or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", accepted[key])
-           for key in ("head", "base_head")):
-        raise AgentBoxError("Local parent acceptance evidence has no exact commit identity; preserving descendant refs")
-    fingerprint = scope_fingerprint(accepted["head"], accepted["base_head"])
-    if accepted.get("base") != base or accepted.get("scope") != fingerprint or saved.get("scope") != fingerprint:
-        raise AgentBoxError("Local parent acceptance evidence is stale or inconsistent with the task/base scope; "
-                            "preserving descendant refs")
-    reasons = _acceptance_reasons(config.workflow, tasks, accepted)
-    if reasons:
-        raise AgentBoxError("Local parent acceptance evidence is stale or inconsistent; preserving descendant refs: "
-                            + "; ".join(reasons))
-    return accepted["head"]
-
-
-def _parent_proof(root, config, task, tasks, *, branch=None, base=None, expected_head=None):
-    """Acceptance evidence and PRs retain exact heads after parent refs disappear."""
-    prefix = gw.branch_prefix(task.id)
-    local, names = _local_refs(root, prefix)
-    remote = {}
-    symbols = set()
-    url = None
-    if config.workflow.cleanup_remote_branches:
-        try:
-            url = gw.push_destination(root)
-            remote, symbols, remote_base, _ = _remote_refs(root, url, prefix)
-            names.update(remote)
-            base = base or remote_base
-        except (AgentBoxError, OSError, subprocess.TimeoutExpired):
-            # Origin failure must not disable local acceptance and integration
-            # proof. Each remote deletion reports its own transport failure.
-            pass
-    if branch:
-        names.add(branch)
-    if len(names) > 1:
-        raise AgentBoxError("Ambiguous parent namespace; cannot prove descendant integration")
-    branch = next(iter(names), None)
-    base = base or gw.default_base(root)
-    if branch == base:
-        raise AgentBoxError("Parent namespace identifies the base/default branch")
-    if config.workflow.merge_mode == "github":
-        if not (config.github.gh_token or config.github.gh_config):
-            raise AgentBoxError("Enable GitHub integration before GitHub-mode cleanup")
-        head = _merged_head(root, url or gw.push_destination(root), branch, base, prefix=prefix)
-        if expected_head is not None and head != expected_head:
-            raise AgentBoxError("Parent merged PR head differs from the accepted head")
-        return head
-    # A surviving ref or the base can advance after landing. Only the original
-    # acceptance snapshot can replace the head supplied by initial landing.
-    if expected_head is None and ((branch in local and local[branch][1])
-                                  or f"refs/heads/{branch}" in symbols):
-        raise AgentBoxError("Symbolic parent ref cannot prove descendant integration")
-    head = expected_head if expected_head is not None else _accepted_local_head(root, config, task, tasks, base)
-    _integrated_head(root, head, base)
-    return head
-
-
 def cleanup(root, config, task, adapter, **identity):
     """Discover only live descendants and isolate optional failures from Done."""
     descendants = []
@@ -311,23 +213,27 @@ def cleanup(root, config, task, adapter, **identity):
         except Exception as exc:
             discovery_error = str(exc)
 
-    accepted_head = None
+    merged_head = None
+    resolved = False
 
-    def proof():
-        nonlocal accepted_head
-        if accepted_head is None:
-            accepted_head = _parent_proof(root, config, task, tasks, **identity)
-        return accepted_head
+    def merged():
+        # One live lookup serves every branch, and only if one actually survives.
+        nonlocal merged_head, resolved
+        if not resolved:
+            merged_head = _merged_parent(root, config, task, identity.get("branch"),
+                                         identity.get("base"), identity.get("expected_head"))
+            resolved = True
+        return merged_head
 
     outcomes = []
-    # Descendants consume the parent proof while its refs still exist; each ref
-    # has independent deletion/lease checks and cannot prevent sibling cleanup.
+    # Each ref has independent deletion and lease checks, so one failure cannot
+    # prevent sibling cleanup; an unfinished subtask keeps its branch either way.
     for child in descendants:
         reason = f"Task {child.id} is {child.state}, not Done" if child.state != "Done" else None
         outcome = _cleanup_branch(root, config, child, base=identity.get("base"),
-                                  parent_proof=proof, preserve_reason=reason)
+                                  merged=merged, exact=False, preserve_reason=reason)
         outcomes.append({"task": child.id, **outcome})
-    result = _cleanup_branch(root, config, task, **identity)
+    result = _cleanup_branch(root, config, task, merged=merged, **identity)
     result.update(scope="parent and descendant task branches", descendants=outcomes)
     if discovery_error is not None:
         result["descendants_error"] = discovery_error
@@ -357,5 +263,5 @@ def after_done(result, root, config, task, adapter, **identity):
 def retry(root, config, task, adapter):
     """Retry parent cleanup with the fresh task and locks owned by workflow.landing."""
     if task.parent or task.state != "Done":
-        raise AgentBoxError("Cleanup requires a Done parent task; reconcile a proven merge first")
+        raise AgentBoxError("Cleanup requires a Done parent task; complete the merge with workflow land ID merge")
     return {"task": task.id, "state": "Done", "cleanup": cleanup(root, config, task, adapter)}

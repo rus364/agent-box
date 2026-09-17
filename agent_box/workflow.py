@@ -188,12 +188,23 @@ def read_evidence(root, task):
         return {}
 
 
-def evidence(root, task, fingerprint):
-    """The one place acceptance is retired: evidence of another head or base is dropped here."""
+def evidence(root, task, fingerprint, base=None):
+    """The one place acceptance is retired: evidence of another head or base is dropped here.
+
+    With the base branch it also records the two commits the fingerprint stands
+    for. Acceptance keeps naming its own head and fork point that way after the
+    base has fast-forwarded past them, where Git can no longer derive either and
+    landing would otherwise need a snapshot of its own. Retiring evidence needs
+    no base: a re-keyed scope drops the pair with everything else it described.
+    """
     saved = read_evidence(root, task)
     if saved.get("scope") != fingerprint:
         saved = {key: saved[key] for key in DURABLE_EVIDENCE if key in saved}
         saved["scope"] = fingerprint
+    if base is not None:
+        head, base_head = gw.head_sha(root), gw.base_commit(root, base)
+        if scope_fingerprint(head, base_head) == fingerprint:
+            saved["head"], saved["base_head"] = head, base_head
     return saved
 
 
@@ -287,7 +298,7 @@ def start_review(root, binding, task, limit, round_id, fingerprint, backend):
                 f"Read their streams with workflow review-result {task.id}; after the user's decision run "
                 f"workflow review-budget {task.id} --reason TEXT")
         saved = evidence(root, task, fingerprint)
-        for key in ("human_acceptance", "local_acceptance", "review"):
+        for key in ("human_acceptance", "review"):
             saved.pop(key, None)
         # Retire acceptance before publishing a new round; result ingestion uses
         # this same lock so a late verdict cannot slip between these writes.
@@ -445,7 +456,7 @@ def review_result(root, binding, adapter, task, config, round_id=None, *, reconc
                                           reason="Current workflow conditions prevent application")
                         else:
                             stage = "evidence write"
-                            saved = evidence(root, task, descriptor["scope"])
+                            saved = evidence(root, task, descriptor["scope"], base)
                             accepted = {"verdict": output["report"]["verdict"], **{key: output[key] for key in (
                                 "route", "failures") if key in output},
                                 "result": record["receipt"]["id"], "round": record["round"]}
@@ -496,16 +507,17 @@ def path_matches(path, pattern):
     return fnmatch.fnmatch(path, pattern) or fnmatch.fnmatch("/" + path, pattern)
 
 
-def diff_stats(root, base, review, since=None):
+def diff_stats(root, base, review, span=None):
     """Ignored paths leave only the trigger counts, never the reviewed diff; a
     sensitive match keeps a path counted so a broad ignore cannot silence it.
-    `-z` yields real names: the default output quotes non-ASCII paths and joins
+    An explicit `span` replaces the default diff against the base. `-z` yields
+    real names: the default output quotes non-ASCII paths and joins
     a rename as `old => new`, which globs would match wrongly. A rename leaves
     the counts only when both names are ignored, and a counted one is listed
     under its sensitive name so moving a file out of a sensitive path still
     triggers review."""
     files, lines = [], 0
-    span = f"{since}..HEAD" if since else f"{gw.base_ref(root, base)}...HEAD"
+    span = span or f"{gw.base_ref(root, base)}...HEAD"
     fields = gw.git(root, "diff", "--numstat", "-z", span, "--").split("\0")
     index = 0
     while index < len(fields) and fields[index]:
@@ -545,13 +557,14 @@ def review_reasons(config, tasks, files, lines):
     return reasons
 
 
-def delta_review(root, config, task, tasks):
+def delta_review(root, config, task, tasks, head=None):
     """Whether commits after this task's latest applied round need another one, judged on their delta.
 
     Only the task's own rounds count, so a parent's first review is always of its
     whole diff and a subtask's reviewed head never shortens it. The delta runs
     from the reviewed head, not from a head accepted this way, so small steps add
-    up. None means the whole diff decides: the setting is off, the latest round
+    up; `head` names the commit to judge when it is no longer the checkout's own.
+    None means the whole diff decides: the setting is off, the latest round
     is unapplied, inconclusive or has a finding above the level, its receipt is
     gone, or history no longer descends from it.
     """
@@ -576,11 +589,11 @@ def delta_review(root, config, task, tasks):
             return None
     elif report["verdict"] != "PASS":
         return None
-    head = gw.head_sha(root)
+    head = head or gw.head_sha(root)
     if (not isinstance(reviewed, str) or not re.fullmatch(r"[0-9a-f]{40,64}", reviewed)
             or reviewed == head or not gw._is_ancestor(root, reviewed, head)):
         return None
-    files, lines = diff_stats(root, None, review, since=reviewed)
+    files, lines = diff_stats(root, None, review, span=f"{reviewed}..{head}")
     return {"round": records[-1]["round"], "verdict": report["verdict"],
             "reviewed_head": reviewed, "head": head, "files": len(files), "lines": lines,
             "reasons": review_reasons(review, tasks, files, lines)}
@@ -615,6 +628,44 @@ def review_blockers(config, tasks, files, lines, saved, *, integrated=False):
         reasons.append(f"its delta from round {delta['round']} still triggers review: " + "; ".join(delta["reasons"]))
     return ["This head requires a fresh independent PASS review: " + "; ".join(reasons)
             + ". The user's explicit acceptance of this head can instead be recorded with workflow approve"]
+
+
+RECOVERY = ("Acceptance is recorded for one exact commit: switch to the task branch, run "
+            "workflow validate ID -- COMMAND ARGS and ab-review as required, then retry")
+
+
+def acceptance_reasons(root, review, tasks, saved, head, base_head=None, *, no_work=False):
+    """Why the recorded acceptance does not cover exactly this head over its own fork point.
+
+    The same reasons answer the question before and after the merge: the diff is
+    recomputed from the two commits the acceptance names, so an advanced base
+    hides nothing and no landing snapshot has to carry the numbers. `base_head`
+    is the fork point Git can still derive; after the base has moved past the
+    head only the recorded pair names it. `no_work` states that an empty diff is
+    a branch that never moved, rather than work the base absorbed elsewhere.
+    """
+    accepted, fork = saved.get("head"), saved.get("base_head")
+    if (not isinstance(accepted, str) or not isinstance(fork, str) or accepted != head
+            or (base_head is not None and fork != base_head)
+            or scope_fingerprint(accepted, fork) != saved.get("scope")):
+        if base_head is None:
+            return [f"No acceptance is recorded for head {head[:12]}; " + RECOVERY]
+        # Git still names the original diff here, so the usual triggers can say
+        # what this head is missing instead of only that nothing accepted it.
+        saved, accepted, fork = {"delta_review": saved.get("delta_review")}, head, base_head
+    reasons = []
+    if saved.get("validation", {}).get("exit") != 0:
+        reasons.append("Local validation for this head is missing; " + RECOVERY)
+    if fork == accepted and not no_work:
+        # An empty accepted diff describes no work at all: something else carried
+        # it into the base, so nothing but an explicit acceptance can cover it.
+        if saved.get("review", {}).get("verdict") != "PASS" and not human_accepted(saved):
+            reasons.append("This head was already in the base when it was accepted, so the original work is "
+                           "unproven: review the complete implementation with ab-review for a PASS, or record "
+                           "the user's acceptance with workflow approve")
+        return reasons
+    files, lines = diff_stats(root, None, review, span=f"{fork}..{accepted}")
+    return reasons + review_blockers(review, tasks, files, lines, saved)
 
 
 def configuration_summary(config):
@@ -697,7 +748,7 @@ def inspect(root, binding, adapter, task, config):
         result["next_step"] = next_step
         return result
     fingerprint = scope(root, base)
-    saved = evidence(root, task, fingerprint)
+    saved = evidence(root, task, fingerprint, base)
     files, lines = diff_stats(root, base, config.workflow.review)
     reasons = review_reasons(config.workflow.review, tasks, files, lines)
     integrated = integrated_parent(root, task, parent, base)
@@ -1051,8 +1102,7 @@ def begin(root, adapter, task, resume):
         if starting and not existing_child:
             # Reopening a deleted branch must not reclassify prior work as a
             # new no-code start. Unrelated scout scope evidence is harmless.
-            prior_work = ("child_start", "child_begin", "validation", "review",
-                          "human_acceptance", "local_acceptance")
+            prior_work = ("child_start", "child_begin", "validation", "review", "human_acceptance")
             if not any(key in saved for key in prior_work):
                 # Preserve the authoritative Ready claim before fallible Git
                 # creation; a retry must use this head even if the parent moves.
@@ -1143,7 +1193,7 @@ def parser():
             cmd.add_argument("--body-file", required=True)
             cmd.add_argument("--draft", action="store_true")
         if name == "land":
-            cmd.add_argument("action", choices=("inspect", "request-review", "merge", "reconcile", "cleanup"))
+            cmd.add_argument("action", choices=("inspect", "request-review", "merge", "cleanup"))
             cmd.add_argument("--method", choices=("merge", "squash", "rebase"))
     return p
 
@@ -1152,13 +1202,12 @@ def landing(args, root, config, adapter):
     # Routing and acceptance share one snapshot and the same retirement ordering.
     with lock(root, "review-budget"), lock(root, "work"):
         task = adapter.get(args.task)
-        if args.command == "land":
-            if args.action == "cleanup":
-                from .branch_cleanup import retry
-                return retry(root, config, task, adapter)
-            if args.action == "reconcile" and task.state == "Done":
-                from .branch_cleanup import reconcile
-                return reconcile(root, config, task, adapter)
+        if args.command == "land" and (args.action == "cleanup"
+                                       or args.action == "merge" and task.state == "Done"):
+            # Merging is idempotent, and a Done parent has only its branches left
+            # to release; each deletion proves integration for itself.
+            from .branch_cleanup import retry
+            return retry(root, config, task, adapter)
         if config.workflow.merge_mode == "local":
             from .local_workflow import operate
         else:
@@ -1169,6 +1218,12 @@ def landing(args, root, config, adapter):
 def finish(root, config, adapter, task_id):
     with lock(root, "review-budget"), lock(root, "work"):
         task = adapter.get(task_id)
+        if task.parent and task.state == "Done":
+            # Finishing is idempotent: an integrated subtask has only its branch
+            # left to release, and a repeat after that release must still answer.
+            parent, info, current, _ = resolve(root, adapter, task, allow_missing=True)
+            return {"task": task.id, "state": "Done", "parent_branch": info["branch"],
+                    "cleanup": release_branch(root, config, task, current.get("branch"), info["branch"])}
         parent, info, current, base = resolve(root, adapter, task)
         tasks = tree(adapter, task)
         reasons = completion_reasons(task, tasks, str(adapter.identity()["id"])) + blocking_reasons(task, adapter.get)
@@ -1178,7 +1233,7 @@ def finish(root, config, adapter, task_id):
             return finish_child(root, config, adapter, task, parent, info, current["branch"], tasks)
         if gw.current_branch(root) != info["branch"]:
             raise AgentBoxError("Switch to the parent branch before finishing parent work")
-        saved = evidence(root, task, scope(root, base))
+        saved = evidence(root, task, scope(root, base), base)
         if saved.get("validation", {}).get("exit") != 0:
             raise AgentBoxError("Run workflow validate against this exact scope before completion")
         files, lines = diff_stats(root, base, config.workflow.review)
@@ -1190,12 +1245,12 @@ def finish(root, config, adapter, task_id):
         adapter.set_state(task, "Review")
         next_step = ("Run ab-land for a local fast-forward into the base"
                      if config.workflow.merge_mode == "local" else
-                     "Offer ab-pr; Done follows the actual GitHub merge")
+                     "Open the pull request with ab-pr; Done follows the actual GitHub merge")
         return {"task": task.id, "state": "Review", "next": next_step}
 
 
 def finish_child(root, config, adapter, task, parent, info, branch, tasks):
-    """Carry original acceptance over the parent's fast-forward, never infer it from ancestry."""
+    """Integrate an accepted subtask into its parent branch and release the branch it used."""
     gw.require_clean(root)
     base = info["branch"]
     current = gw.current_branch(root)
@@ -1205,55 +1260,26 @@ def finish_child(root, config, adapter, task, parent, info, branch, tasks):
     base_head = gw.local_branch_head(root, base)
     integrated = gw._is_ancestor(root, head, base_head)
     saved = observe_child_head(root, task, head)
-    unchanged_child = saved.get("child_start") == {"head": head, "parent": parent.id,
-                                                  "work_observed": False}
-    if integrated and ("local_acceptance" in saved or not unchanged_child):
-        accepted = saved.get("local_acceptance", {})
-        recovery = (f"Preserve both branches; restore the original acceptance evidence or "
-                    f"reconstruct and validate the original child change before retrying workflow finish {task.id}")
-        reasons = []
-        required = {"head", "base", "base_head", "scope", "files", "lines", "validation"}
-        if not required.issubset(accepted) or not accepted.get("scope"):
-            reasons.append("Pre-merge acceptance cache is missing")
-            if not unchanged_child:
-                reasons.append("No-code origin is unproven: child creation evidence is missing, "
-                               "its head/parent changed, or non-origin work was observed; "
-                               "begin --resume does not recreate it")
-        else:
-            if accepted.get("head") != head:
-                reasons.append("Accepted child head has changed")
-            if accepted.get("base") != base:
-                reasons.append("Accepted parent branch has changed")
-            original_scope = scope_fingerprint(head, accepted["base_head"])
-            if accepted["scope"] != saved.get("scope") or accepted["scope"] != original_scope:
-                reasons.append("Original child acceptance scope is stale")
-            if accepted.get("validation", {}).get("exit") != 0:
-                reasons.append("Original child validation is missing")
-            reasons += review_blockers(config.workflow.review, tasks, accepted.get("files", []),
-                                       accepted.get("lines", 0), accepted)
+    # A branch still at the commit it was created on holds no work to accept.
+    no_work = saved.get("child_start") == {"head": head, "parent": parent.id, "work_observed": False}
+    delta = delta_review(root, config, task, tasks, head=head)
+    if integrated:
+        # The parent already contains this head, so Git no longer knows where the
+        # child left it; the acceptance recorded for that exact commit still does.
+        reasons = acceptance_reasons(root, config.workflow.review, tasks,
+                                     {**saved, "delta_review": delta}, head, no_work=no_work)
         if reasons:
-            raise AgentBoxError("Cannot finish integrated child: " + "; ".join(reasons) + ". " + recovery)
+            raise AgentBoxError("Cannot finish integrated child: " + "; ".join(reasons))
     else:
         if current != branch:
             raise AgentBoxError(f"Switch to child branch {branch} before validating and finishing its work")
-        saved = evidence(root, task, scope(root, base))
-        if saved.get("validation", {}).get("exit") != 0:
-            raise AgentBoxError("Run workflow validate against this exact scope before completion")
-        files, lines = diff_stats(root, base, config.workflow.review)
-        delta = delta_review(root, config, task, tasks)
-        reasons = review_blockers(config.workflow.review, tasks, files, lines, {**saved, "delta_review": delta})
+        if not gw._is_ancestor(root, base_head, head):
+            raise AgentBoxError("Parent and child branches have diverged; rebase the child before completion")
+        saved = evidence(root, task, scope(root, base), base)
+        reasons = acceptance_reasons(root, config.workflow.review, tasks,
+                                     {**saved, "delta_review": delta}, head, base_head, no_work=no_work)
         if reasons:
             raise AgentBoxError("; ".join(reasons))
-        if not integrated and not gw._is_ancestor(root, base_head, head):
-            raise AgentBoxError("Parent and child branches have diverged; reconcile before completion")
-        # The existing disposable acceptance slot is retired on new worker/review
-        # activity and survives only the Git change this completion authorized.
-        saved["local_acceptance"] = {"head": head, "base": base, "base_head": head if integrated else base_head,
-                                     "scope": saved["scope"],
-                                     "files": files, "lines": lines,
-                                     "validation": saved["validation"], "review": saved.get("review", {}),
-                                     "delta_review": delta,
-                                     "human_acceptance": saved.get("human_acceptance", {})}
         save_evidence(root, task, saved)
     if gw.local_branch_head(root, branch) != head or gw.local_branch_head(root, base) != base_head:
         raise AgentBoxError("Child or parent head changed after acceptance; inspect before retrying")
@@ -1274,8 +1300,16 @@ def finish_child(root, config, adapter, task, parent, info, branch, tasks):
         if gw.local_branch_head(root, branch) != head or gw.local_branch_head(root, base) != parent_head:
             raise AgentBoxError("Child or parent head changed during publication; inspect before completion")
     adapter.set_state(task, "Done")
+    result["cleanup"] = release_branch(root, config, task, branch, base, expected_head=head)
     from .branch_cleanup import discard_review_streams
     return discard_review_streams(result, root, task)
+
+
+def release_branch(root, config, task, branch, base, *, expected_head=None):
+    """Return the branch a finished subtask used; its work is in the parent branch now."""
+    from .branch_cleanup import _cleanup_branch
+
+    return _cleanup_branch(root, config, task, branch=branch, base=base, expected_head=expected_head)
 
 
 def scout_diagnostics(config):
@@ -1341,7 +1375,7 @@ def review(args, root, binding, adapter, config, task, parent, tasks, base, fing
                           "not acceptance; return INCONCLUSIVE if the scope cannot be established. ")
     if not required:
         with lock(root, "review-budget"):
-            saved = evidence(root, task, fingerprint)
+            saved = evidence(root, task, fingerprint, base)
             saved["review"] = {"verdict": "SKIPPED", "reason": "Configured review policy"}
             save_evidence(root, task, saved)
         return {**saved, "review_budget": read_review_budget(root, binding, task, config.workflow.review.max_rounds)}
@@ -1350,7 +1384,7 @@ def review(args, root, binding, adapter, config, task, parent, tasks, base, fing
     round_id = secrets.token_urlsafe(18)
     if args.native:
         budget = start_review(root, binding, task, limit, round_id, fingerprint, "native")
-        saved = evidence(root, task, fingerprint)
+        saved = evidence(root, task, fingerprint, base)
         prompt = reviewer_handoff(root, base, task, parent, tasks, brief, saved, review_context, round_id)
         descriptor = review_descriptor(identity, task, fingerprint, round_id)
         bind_delegation_input(root, descriptor, prompt)
@@ -1385,7 +1419,7 @@ def review(args, root, binding, adapter, config, task, parent, tasks, base, fing
                 raise AgentBoxError("Code or base changed before review; start a review of the current head")
             start_review(root, binding, task, limit, round_id, fingerprint, "managed")
             started = True
-            saved = evidence(root, task, fingerprint)
+            saved = evidence(root, task, fingerprint, base)
             prompt = reviewer_handoff(root, base, task, parent, tasks, brief, saved, review_context, round_id)
             descriptor = review_descriptor(identity, task, fingerprint, round_id)
             bind_delegation_input(root, descriptor, prompt)
@@ -1502,7 +1536,7 @@ def dispatch(args):
     # A subtask merges back into its parent branch, so that tip is part of what
     # the delegation was prepared against; a parent task integrates nowhere else.
     identity = delegation_identity(root, binding, current.get("branch") and info["branch"])
-    saved = evidence(root, task, fingerprint)
+    saved = evidence(root, task, fingerprint, base)
     if args.command == "approve":
         if not args.reason.strip():
             raise AgentBoxError("Human acceptance requires a non-empty reason from the user")
@@ -1517,7 +1551,7 @@ def dispatch(args):
             reasons += blocking_reasons(task, adapter.get)
             if reasons:
                 raise AgentBoxError("Cannot accept: " + "; ".join(reasons))
-            saved = evidence(root, task, fingerprint)
+            saved = evidence(root, task, fingerprint, base)
             if saved.get("validation", {}).get("exit") != 0:
                 raise AgentBoxError("Successful validation for this exact scope is required before human acceptance")
             saved["human_acceptance"] = {"scope": fingerprint, "head": gw.head_sha(root),
@@ -1536,7 +1570,7 @@ def dispatch(args):
                 raise AgentBoxError("Validation failed or changed the committed code; no success recorded")
             if task.id != parent.id and identity["branch"] == current["branch"]:
                 observe_child_head(root, task, identity["head"])
-            saved = evidence(root, task, fingerprint)
+            saved = evidence(root, task, fingerprint, base)
             saved["validation"] = {"command": command, "exit": 0}
             save_evidence(root, task, saved)
         return saved

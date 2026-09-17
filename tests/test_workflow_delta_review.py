@@ -61,8 +61,6 @@ class DeltaReviewTests(WorkflowCase):
         self.assertEqual((inspected["blockers"], inspected["review"]["delta"]["round"]), ([], round_id))
         self.assertIsNone(inspected["review"]["verdict"])
         self.assertEqual(self.run_workflow("land", "1", "merge")["state"], "Done")
-        snapshot = workflow.read_evidence(self.root, self.task)["local_acceptance"]
-        self.assertEqual(snapshot["delta_review"]["round"], round_id)
 
     def test_a_finding_above_the_level_requires_a_round_whatever_the_delta(self):
         """The setting bounds what may stay unreviewed; a HIGH finding's fix is exactly what review must see."""

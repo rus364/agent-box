@@ -161,7 +161,7 @@ def operate(args, root, config, adapter, task):
     tasks, saved = [], {}
     if args.command == "pr":
         tasks = tree(adapter, task)
-        saved = evidence(root, task, scope(root, info["base"]))
+        saved = evidence(root, task, scope(root, info["base"]), info["base"])
     return _operate(args, root, config, adapter, task, parent, info, saved, tasks)
 
 
@@ -216,7 +216,7 @@ def _operate(args, root, config, adapter, task, parent, info, saved, tasks):
     pr = view(root, repo, number)
     if pr["headRefName"] != info["branch"] or pr["baseRefName"] != info["base"]:
         raise AgentBoxError("PR branch identity differs from the tracked parent")
-    if args.action == "reconcile" or pr["state"] == "MERGED":
+    if pr["state"] == "MERGED":
         if pr["state"] != "MERGED" or not pr.get("mergedAt") or not pr.get("mergeCommit"):
             raise AgentBoxError("GitHub has not confirmed an actual merge")
         # A reused branch keeps matching an old merged PR by head and base, so
@@ -231,21 +231,21 @@ def _operate(args, root, config, adapter, task, parent, info, saved, tasks):
         # may not have fetched since another machine did, so origin is asked live
         # rather than through a remote-tracking ref that predates the push. A
         # branch origin no longer has is the normal case, not a problem: GitHub
-        # deletes the head branch on merge when the repository asks it to, and
-        # reconcile exists precisely for the run that failed after that merge.
+        # deletes the head branch on merge when the repository asks it to, and a
+        # repeated merge exists precisely for the run that failed after that merge.
         # Being unable to read origin at all still refuses, because then nothing
         # rules out a branch that moved on.
         remote_head = gw.remote_branch_head(root, info["branch"])
         if remote_head is not None and remote_head != pr["headRefOid"]:
             raise AgentBoxError(
                 f"origin/{info['branch']} is at {remote_head[:12]}, not the merged "
-                f"{pr['headRefOid'][:12]}; another checkout advanced the branch, so reconcile first")
+                f"{pr['headRefOid'][:12]}; another checkout advanced the branch, so reconcile them first")
         merged_identity(pr, info["branch"], info["base"])
         task, tasks, reasons = _landing_tasks(root, adapter, task.id, info, states=("Review", "Done"))
         gw.require_clean(root)
         if task.state != "Done":
             # A merged PR proves integration, not acceptance of the merged head.
-            saved = evidence(root, task, scope(root, info["base"]))
+            saved = evidence(root, task, scope(root, info["base"]), info["base"])
             reasons += acceptance_blockers(pr, {**saved, "delta_review": delta_review(root, config, task, tasks)})
         _current_head(root, pr)
         if reasons:
@@ -264,7 +264,7 @@ def _operate(args, root, config, adapter, task, parent, info, saved, tasks):
         comments = gh(root, "api", "--paginate", "--slurp", f"repos/{repo}/issues/{pr['number']}/comments", json_output=True)
     # Acceptance belongs after network feedback, immediately before the action.
     task, tasks, reasons = _landing_tasks(root, adapter, task.id, info)
-    saved = evidence(root, task, scope(root, info["base"]))
+    saved = evidence(root, task, scope(root, info["base"]), info["base"])
     _current_head(root, pr)
     delta = delta_review(root, config, task, tasks)
     reasons += blockers(pr, feedback, {**saved, "delta_review": delta})
@@ -287,7 +287,7 @@ def _operate(args, root, config, adapter, task, parent, info, saved, tasks):
     # GitHub can merge the accepted head while local work or tracker acceptance
     # advances during the request. That successful merge cannot finish new work.
     task, tasks, reasons = _landing_tasks(root, adapter, task.id, info)
-    current = evidence(root, task, scope(root, info["base"]))
+    current = evidence(root, task, scope(root, info["base"]), info["base"])
     _current_head(root, merged)
     if current["scope"] != saved["scope"]:
         reasons.append("Code changed during merge; validate and review the current head")

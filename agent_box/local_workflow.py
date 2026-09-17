@@ -9,54 +9,16 @@ from .errors import AgentBoxError
 from .tracker.core import blocking_reasons, completion_reasons
 
 
-def _constraints(adapter, task, *, states=("Review",)):
+def _constraints(adapter, task):
     from .workflow import tree
 
     tasks = tree(adapter, task)
-    reasons = completion_reasons(task, tasks, str(adapter.identity()["id"]), states=states)
+    reasons = completion_reasons(task, tasks, str(adapter.identity()["id"]), states=("Review",))
     reasons += blocking_reasons(task, adapter.get)
     return reasons, tasks
 
 
-def _acceptance_reasons(config, tasks, accepted):
-    from .workflow import review_blockers
-
-    reasons = []
-    if not accepted.get("validation") or accepted["validation"].get("exit") != 0:
-        reasons.append("Local validation for the current scope is missing")
-    # An already-integrated scope has lost its original diff. Auto cannot infer
-    # that the work was small from an empty diff against the advanced base.
-    reasons += review_blockers(config.review, tasks, accepted.get("files", []), accepted.get("lines", 0),
-                               accepted, integrated=accepted.get("integrated_scope", False))
-    return reasons
-
-
-def _recovery_reasons(config, tasks, saved, base, task_head):
-    accepted = saved.get("local_acceptance", {})
-    recovery = ("Switch to the task branch, run fresh validation with workflow validate "
-                "and independent review with ab-review as required, then run workflow land "
-                "PARENT merge; it rechecks acceptance before returning to the base")
-    if not accepted:
-        return ["Pre-merge acceptance cache is missing; " + recovery]
-    reasons = []
-    if accepted.get("head") != task_head:
-        reasons.append("Accepted task head has changed; " + recovery)
-    if accepted.get("base") != base:
-        reasons.append("Accepted base identity has changed; " + recovery)
-    reasons += _acceptance_reasons(config, tasks, accepted)
-    return reasons
-
-
-def _identity(root, info):
-    branch, base = info["branch"], info["base"]
-    if branch == base:
-        raise AgentBoxError("Task branch cannot be the base branch")
-    return branch, base, gw.local_branch_head(root, branch), gw.local_branch_head(root, base)
-
-
 def _publish(root, config, task, base, task_head):
-    if task.state == "Done":
-        return {"status": "not-required", "pushed": False}
     if not config.workflow.auto_push:
         return {"status": "disabled", "pushed": False}
     try:
@@ -64,8 +26,8 @@ def _publish(root, config, task, base, task_head):
     except (AgentBoxError, OSError, subprocess.TimeoutExpired) as exc:
         raise AgentBoxError(
             f"Local merge succeeded, but base publication failed: {exc}. "
-            f"Task remains Review; preserve its branch and retry workflow land {task.id} reconcile "
-            "after resolving the publication failure") from None
+            f"Task remains Review; preserve its branch and run workflow land {task.id} merge "
+            "again after resolving the publication failure; it continues from the merge") from None
 
 
 def operate(args, root, config, adapter, task):
@@ -74,7 +36,8 @@ def operate(args, root, config, adapter, task):
         raise AgentBoxError("Pull requests are unavailable in local merge mode")
     if getattr(args, "method", None) is not None:
         raise AgentBoxError("--method is incompatible with local merge mode; local merge is fast-forward-only")
-    from .workflow import read_evidence, resolve
+    from .workflow import (acceptance_reasons, configuration_summary, delta_review, diff_stats,
+                           evidence, read_evidence, review_reasons, resolve, scope)
 
     parent, info, _, _ = resolve(root, adapter, task)
     if task.id != parent.id:
@@ -84,77 +47,53 @@ def operate(args, root, config, adapter, task):
         if provider in ("codex", "claude"):
             raise AgentBoxError("Cloud review is unavailable in local merge mode; run ab-review locally")
         return {"provider": "local", "next": "Run ab-review in fresh context"}
-    saved = read_evidence(root, task)
     gw.require_clean(root)
-    branch, base, task_head, base_head = _identity(root, info)
+    branch, base = info["branch"], info["base"]
+    if branch == base:
+        raise AgentBoxError("Task branch cannot be the base branch")
+    task_head, base_head = gw.local_branch_head(root, branch), gw.local_branch_head(root, base)
     current = gw.current_branch(root)
-    if args.action == "reconcile":
-        if current != base:
-            raise AgentBoxError(f"Switch to local base branch {base} before reconciling")
-        reasons, tasks = _constraints(adapter, task, states=("Review", "Done"))
-        reasons += _recovery_reasons(config.workflow, tasks, saved, base, task_head)
-        if gw.local_branch_head(root, branch) != task_head:
-            reasons.append("Task head has changed during reconciliation; inspect it again")
-        if not gw._is_ancestor(root, task_head, gw.local_branch_head(root, base)):
-            reasons.append(
-                f"Current task branch {branch} is not integrated into local base {base}")
-        if reasons:
-            raise AgentBoxError("Cannot reconcile local merge: " + "; ".join(reasons))
-        publication = _publish(root, config, task, base, task_head)
-        if task.state != "Done":
-            adapter.set_state(task, "Done")
-        return after_done({"task": task.id, "state": "Done",
-                           "merge": {"base": base, "head": task_head}, "publication": publication},
-                          root, config, task, adapter, branch=branch, base=base, expected_head=task_head)
-
-    if current != branch:
-        raise AgentBoxError(f"Switch to the parent branch {branch} before local landing")
-    from .workflow import configuration_summary, delta_review, diff_stats, evidence, review_reasons, save_evidence, scope
-
-    reasons, tasks = _constraints(adapter, task)
+    # Merging is one idempotent step: an accepted head the base already contains
+    # skips it and the run continues with publication, Done and cleanup.
     integrated = gw._is_ancestor(root, task_head, base_head)
-    accepted = evidence(root, task, scope(root, base))
-    files, lines = diff_stats(root, base, config.workflow.review)
-    snapshot = {"head": task_head, "base": base, "base_head": base_head,
-                "scope": accepted.get("scope"),
-                "files": files, "lines": lines, "integrated_scope": integrated,
-                "validation": accepted.get("validation", {}),
-                "review": accepted.get("review", {}),
-                "delta_review": delta_review(root, config, task, tasks),
-                "human_acceptance": accepted.get("human_acceptance", {})}
-    reasons += _acceptance_reasons(config.workflow, tasks, snapshot)
+    if not integrated and current != branch:
+        raise AgentBoxError(f"Switch to the parent branch {branch} before local landing")
+    if integrated and current not in (branch, base):
+        raise AgentBoxError(f"Switch to {base} or {branch} before completing the merged parent")
+    # Before the merge Git still names the fork point and must agree with what
+    # acceptance recorded; afterwards only that record names the original diff.
+    fork = None if integrated else gw.base_commit(root, base)
+    saved = read_evidence(root, task) if integrated else evidence(root, task, scope(root, base), base)
+    reasons, tasks = _constraints(adapter, task)
+    delta = delta_review(root, config, task, tasks, head=task_head)
+    reasons += acceptance_reasons(root, config.workflow.review, tasks,
+                                  {**saved, "delta_review": delta}, task_head, fork)
     if not integrated and not gw._is_ancestor(root, base_head, task_head):
         reasons.append(f"Local base {base} and task branch {branch} have diverged")
     if args.action == "inspect":
+        files, lines = diff_stats(root, base, config.workflow.review)
         return {"task": task.id, "branch": branch, "base": base,
                 "head": task_head, "base_head": base_head,
                 "integrated": integrated, "blockers": reasons,
-                "configuration": configuration_summary(config), "scope": accepted.get("scope"),
+                "configuration": configuration_summary(config), "scope": saved.get("scope"),
                 "review": {"files": len(files), "lines": lines,
                            "reasons": review_reasons(config.workflow.review, tasks, files, lines),
-                           "verdict": snapshot["review"].get("verdict"), "delta": snapshot["delta_review"]},
+                           "verdict": saved.get("review", {}).get("verdict"), "delta": delta},
                 "max_rounds": config.workflow.review.max_rounds}
     if reasons:
         raise AgentBoxError("Cannot merge locally: " + "; ".join(reasons))
     if gw.local_branch_head(root, branch) != task_head:
         raise AgentBoxError("Task branch moved after acceptance was checked; inspect it again")
-    # This single disposable snapshot carries acceptance across the base
-    # fast-forward. It never establishes integration or selects a Git ref.
-    saved["local_acceptance"] = snapshot
-    save_evidence(root, task, saved)
+    if current != base:
+        gw.git(root, "switch", base)
     if not integrated:
-        gw.git(root, "switch", base)
         gw.git(root, "merge", "--ff-only", task_head)
-        base_head = gw.local_branch_head(root, base)
-        if base_head != task_head:
+        if gw.local_branch_head(root, base) != task_head:
             raise AgentBoxError("Local base did not advance to the validated task head")
-    elif current != base:
-        gw.git(root, "switch", base)
     if gw.local_branch_head(root, branch) != task_head:
-        raise AgentBoxError("Task branch moved during local merge; reconcile before completion")
+        raise AgentBoxError("Task branch moved during local merge; inspect it before completion")
     publication = _publish(root, config, task, base, task_head)
-    if task.state != "Done":
-        adapter.set_state(task, "Done")
+    adapter.set_state(task, "Done")
     return after_done({"task": task.id, "state": "Done",
                        "merge": {"base": base, "head": task_head}, "publication": publication},
                       root, config, task, adapter, branch=branch, base=base, expected_head=task_head)

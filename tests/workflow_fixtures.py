@@ -100,6 +100,14 @@ def answer(text="Verdict: PASS\n\nReviewed.\n"):
 
 
 
+def accepted_evidence(root, task, base="main", **extra):
+    """Evidence as validate and review write it: acceptance bound to the exact commits."""
+    saved = {**workflow.evidence(root, task, workflow.scope(root, base), base),
+             "validation": {"command": ["true"], "exit": 0}, **extra}
+    workflow.save_evidence(root, task, saved)
+    return saved
+
+
 class WorkflowCase(unittest.TestCase):
     """A bound task on its own branch, dispatched through the real parser with a fake tracker."""
 

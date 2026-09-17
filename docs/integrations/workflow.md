@@ -240,9 +240,11 @@ agent-box workflow finish TASK
 ```
 
 Acceptance belongs to code: validation, review and human acceptance are recorded
-for the task's head and base commits. A new commit or a moved base retires all
-three; editing the description, checking items, changing the tier, relations or
-hierarchy retires nothing. Move anything important from a discussion into the
+for the task's head and base commits, and those two commits are recorded with
+them. A new commit or a moved base retires all three; editing the description,
+checking items, changing the tier, relations or hierarchy retires nothing. The
+recorded pair is what still names the original diff once the base has
+fast-forwarded past the head, where Git can no longer derive the fork point. Move anything important from a discussion into the
 task description, since that is what the reviewer reads.
 
 `--brief FILE` is optional for review: a short English note on what the tracker
@@ -405,36 +407,33 @@ moved base or a later review round retires the decision. Ownership, checklists,
 dependencies, validation and merge proof remain mandatory, and the normal
 post-merge cleanup still runs.
 
-If publication or the tracker update fails after the fast-forward, the local merge
-and task branch are preserved and the task stays Review. Remain on the base and run
-`workflow land PARENT reconcile`. With auto-push enabled it retries publication
-of the exact accepted head without repeating the merge; an advanced local base
-is refused, and an already-published exact head safely permits retry after a
-tracker failure. An explicit auto-push=false permits local-only recovery.
-Done reconciliation and cleanup never opportunistically publish the base.
-It rereads completion constraints and marks
-Done only when the current local task-branch tip is contained in the current
-local base **and** the pre-merge acceptance still covers that exact head and base
-identity. Before changing Git, landing saves one disposable
-acceptance snapshot with the validated scope, original diff size/paths and review
-result, including any explicit human acceptance. Recovery applies the current
-off/auto/always review policy to that original diff, accepting the original scoped
-human decision when present, so advancing the base cannot manufacture acceptance.
-A changed task head invalidates acceptance even if the new head is also integrated. Git remains the authority for integration; the snapshot neither
-records lifecycle nor selects branch refs. A refusal leaves the parent in Review.
+`workflow land PARENT merge` is one idempotent command: it checks acceptance of
+the task head, fast-forwards the base, publishes it, marks the task Done and runs
+cleanup. If any step fails, the merge and the task branch are preserved, the task
+stays Review, and running the same command again continues from the step that
+failed. A head the base already contains is not merged a second time; publication
+of anything but the accepted head is refused, so an advanced local base stops the
+retry, and an already-published exact head lets it finish after a tracker
+failure. An explicit auto_push=false permits local-only recovery, and a merge of
+an already Done parent only retries cleanup, never publication.
 
-Manual merge or ancestry alone cannot complete an unaccepted parent. If the
-acceptance cache is lost or stale, switch to the current task branch, run
-`workflow validate PARENT -- COMMAND ARGS`, obtain fresh independent review with
-`ab-review` as required, then run `workflow land PARENT merge` again. It rechecks
-acceptance and returns to the base without repeating an already-completed merge.
-For this fresh acceptance of already-integrated work, auto and always require an
-independent PASS or new explicit human acceptance. The reviewer or user must
-examine the complete implementation against requirements using code and Git
-history, since the now-empty base diff cannot describe the original work.
-If the scope cannot be established, review must be
-INCONCLUSIVE. Policy off still requires fresh validation. Do not reset the base,
-invent a PASS, or edit tracker state to bypass recovery.
+The retry proves acceptance again from the two commits the acceptance names, so
+the current off/auto/always policy applies to the original diff rather than to
+the empty one the advanced base now shows. A changed task head invalidates
+acceptance even if the new head is also integrated. Git remains the authority for
+integration; the recorded pair neither records lifecycle nor selects branch refs.
+A refusal leaves the parent in Review.
+
+Manual merge or ancestry alone cannot complete an unaccepted parent. When no
+acceptance is recorded for the head, including in a new clone, switch to the
+current task branch, run `workflow validate PARENT -- COMMAND ARGS`, obtain fresh
+independent review with `ab-review` as required, then run `workflow land PARENT
+merge` again. If the base already contained the accepted head, its diff is empty
+and describes no work at all: only an independent PASS or explicit human
+acceptance of the complete implementation, read from requirements, code and Git
+history, can cover it, whatever the review policy says. If the scope cannot be
+established, review must be INCONCLUSIVE. Do not reset the base, invent a PASS,
+or edit tracker state to bypass recovery.
 
 Local mode rejects `workflow pr` before any GitHub call. `workflow land
 request-review` points `auto` and `local` review selection to `ab-review`, and
@@ -448,10 +447,10 @@ completed subtask. Push checks the live
 remote default branch, unique effective destination, clean worktree and ancestry;
 no forced repair, tag/submodule side pushes or child-branch auto-push.
 
-After parent acceptance, offer `ab-pr`. On user request it opens one PR, following
-repository templates. Later commands find that PR on GitHub by head branch and
-base rather than from a stored number: an open one wins, a single merged one
-answers a reconcile, and several of either stop the command. Completion from a
+After parent acceptance the configured route continues without asking: `ab-pr`
+opens one PR, following repository templates. Later commands find that PR on GitHub by head branch and
+base rather than from a stored number: an open one wins, a single merged
+one answers a repeated merge, and several of either stop the command. Completion from a
 merged PR additionally requires its merged head to be the branch's current head,
 so commits added after an old merge on a reused branch cannot ride that merge to
 Done - squash and rebase merges rewrite the commit, which leaves head equality as
@@ -459,24 +458,22 @@ the only honest test. `ab-land` reads
 CI, comments and paginated unresolved threads, fixes sequentially, obtains
 current-head acceptance and merges with `--match-head-commit`. Branch protection
 is never bypassed. Merge-queue entry is not completion. If the tracker write
-fails after merge, `workflow land PARENT reconcile` retries only reconciliation.
-Before changing an unfinished parent to Done, reconciliation requires successful
-validation and applicable independent review of the merged head.
-A merged PR proves integration, not acceptance. Missing
-local evidence, including in a new clone, requires fresh `workflow validate`
-and ab-review as required from the parent branch, then another reconcile without
-another merge. If the base already contains the implementation, auto/always
+fails after merge, `workflow land PARENT merge` continues from there: a PR GitHub
+has already merged is never merged again. Before changing an unfinished parent to
+Done it requires successful validation and applicable independent review of the
+merged head. A merged PR proves integration, not acceptance. Missing local
+evidence, including in a new clone, requires fresh `workflow validate` and
+ab-review as required from the parent branch, then the same merge command again. If the base already contains the implementation, auto/always
 requires review of the complete implementation using requirements, code and Git
-history; an empty diff cannot justify skipping review. Already-Done reconciliation
-checks surviving refs and does not write lifecycle.
+history; an empty diff cannot justify skipping review. A merge of an already Done
+parent runs cleanup alone and does not write lifecycle.
 
 ## Branch cleanup
 
 `workflow.cleanup_local_branches` and `workflow.cleanup_remote_branches` are
 independent booleans, both off by default. They are editable in the workflow
-config menu and visible in `config show`. With either enabled, landing and
-reconciliation attempt cleanup only after proving the merge and successfully
-marking the parent Done. Cleanup outcomes appear separately under `cleanup` in
+config menu and visible in `config show`. With either enabled, landing attempts
+cleanup only after proving the merge and successfully marking the parent Done. Cleanup outcomes appear separately under `cleanup` in
 the result; a cleanup failure never reverses merge or Done. With both disabled,
 cleanup performs no additional Git or GitHub operations.
 
@@ -503,15 +500,12 @@ their integration proof. A missing parent ref can recover proof from a unique
 merged PR in its task namespace; missing or ambiguous PR evidence preserves
 descendants. After GitHub landing, the parent may still be checked out: switch
 to the base yourself and run `workflow land PARENT cleanup`.
-In local mode, the parent head must be an ancestor of the local base, and each
-descendant head must be an ancestor of the exact accepted parent head supplied
-by landing or unfinished-parent reconciliation. Done cleanup retries recover
-that head from the existing local acceptance snapshot, checking the task/base
-context, original scope, validation and applicable review. This works after
-parent refs disappear; a later base or moved parent ref cannot widen the accepted
-result. Missing, stale or inconsistent evidence preserves descendants with a
-reason, without blocking independent parent cleanup or undoing Done.
-Remote deletion additionally requires the candidate head in the
+In local mode, every head, the parent's and each descendant's, must be an
+ancestor of the local base, which works after parent refs disappear and needs no
+acceptance evidence: the base itself is the proof that nothing is lost.
+`workflow finish` releases a finished subtask's own branch the same way, against
+the parent branch that just absorbed it, and preserves it with a reason when its
+head moved afterwards. Remote deletion additionally requires the candidate head in the
 live published base on the same effective origin destination. An unpublished local merge, or a missing
 commit object, preserves the remote branch with publish/fetch guidance; cleanup
 never publishes the base or fetches objects implicitly.
@@ -526,19 +520,13 @@ command, without editing user config. Worktree occupancy is checked again near
 deletion. As with other workflow operations, concurrent agents cooperate;
 expected-head comparison protects against refs moving during the operation.
 
-`workflow land PARENT cleanup` retries the same configured policy for a Done
-parent and its live descendants without merging or writing tracker state.
-Remaining descendants are considered even when the parent ref is absent.
-Each surviving branch must prove integration again; Done alone is never merge evidence. Missing branches
-are safe no-ops, including after a partial cleanup or a title change.
-Reconciliation of an already Done parent checks surviving local and live origin
-refs independently of cleanup settings, without rewriting tracker state. Each
-head must match the exact merged PR in GitHub mode or be integrated into the
-local base in local mode. Ambiguous or unmerged refs refuse reconciliation;
-current-branch and worktree protections apply only to deletion. If parent
-refs are absent, reconciliation reports no merge identity and still attempts
-configured descendant cleanup. When all eligible refs are absent, cleanup is a
-safe no-op.
+`workflow land PARENT cleanup`, and a merge of an already Done parent, retry the
+same configured policy for the parent and its live descendants without merging or
+writing tracker state. Remaining descendants are considered even when the parent
+ref is absent. Each surviving branch proves its own integration again; Done alone
+is never merge evidence, and a branch that cannot prove it survives with its
+reason instead of failing the command. Missing branches are safe no-ops,
+including after a partial cleanup or a title change.
 Keep cleanup failures separate from successful completion when reporting results.
 
 ## GitHub review
