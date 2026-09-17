@@ -132,7 +132,8 @@ class ReviewRoutingTests(unittest.TestCase):
                         if category in allowed and fallback:
                             result = workflow.execute(config, route, "reviewer", Path("/unused"), "test")
                             self.assertEqual(result["route"]["provider"], writer)
-                            self.assertEqual(result["failures"], [{"provider": primary, "category": category}])
+                            self.assertEqual(result["failures"], [{"provider": primary, "category": category,
+                                                                  "stage": "execution", "reason": "Failure"}])
                         else:
                             with self.assertRaises(AgentBoxError):
                                 workflow.execute(config, route, "reviewer", Path("/unused"), "test")
