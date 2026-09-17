@@ -1432,7 +1432,7 @@ def review(args, root, binding, adapter, config, task, parent, tasks, base, fing
                 "result_command": f"agent-box workflow review {task.id} --result FILE --provider PROVIDER --model MODEL"}
     if cloud_review(config, task, parent):
         from .github_review import review as in_pull_request
-        return in_pull_request(root, binding, adapter, config, task, base, fingerprint,
+        return in_pull_request(root, binding, adapter, config, task, parent, tasks, base, fingerprint,
                                identity, brief, review_context)
     tier = config.workflow.effective_tier(task.tier)
     path, models = config.workflow.models_for("reviewer", tier)

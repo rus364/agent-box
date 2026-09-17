@@ -161,7 +161,8 @@ class CloudReviewTests(unittest.TestCase):
 
     def request_comment(self, created=None, provider="claude"):
         created = created or when(60)
-        body = github_review.request_body(provider, self.head, gw.base_commit(self.root, "main"))
+        body = github_review.request_body(provider, self.head, gw.base_commit(self.root, "main"),
+                                          workflow.review_descriptions(self.parent, self.parent, [self.parent]))
         return {"id": 100, "user": {"login": "rus364", "type": "User"}, "created_at": created,
                 "updated_at": created, "body": body,
                 "html_url": "https://github.com/o/r/pull/9#issuecomment-100"}
@@ -268,20 +269,29 @@ class CloudReviewTests(unittest.TestCase):
         again = self.review()
         self.assertEqual(again["round"], first["round"])
         self.assertEqual(again["verdict"], "PASS")
-        self.assertIn("already answered", again["outcome"])
+        self.assertIn("already has a recorded verdict", again["outcome"])
         self.assertEqual(again["review_budget"]["used"], 1)
         self.assertIsNone(self.published())
 
-    def test_an_ended_round_leaves_no_published_input_behind(self):
-        """A round nobody can answer keeps no read-only package for the next one to trip over."""
+    def test_an_ended_round_keeps_its_published_question_and_loses_its_binding(self):
+        """Nothing may resume the round, and nothing may make the next one pay for the
+        same question: the request text is public on GitHub already, its binding is not."""
         self.config.workflow.review.wait_seconds = 1
         opened = self.review()
+        asked = self.published()
         package = workflow.review_evidence_path(self.root, "7", opened["round"])
         self.assertTrue(package.is_dir())
-        self.comments.append(self.request_comment(created=when(3600)))
+        self.comments.append({**self.request_comment(created=when(3600)), "body": asked})
         with self.assertRaisesRegex(AgentBoxError, "published no verdict"):
             self.review()
-        self.assertFalse(package.exists())
+        self.assertFalse((package / "descriptor.json").exists())
+        self.assertEqual((package / "handoff.txt").read_text(), asked)
+        # The retry adopts that published question instead of asking the bot again.
+        self.answer(CLAUDE_PASS)
+        reopened = self.review()
+        self.assertNotEqual(reopened["round"], opened["round"])
+        self.assertIsNone(self.published())
+        self.assertEqual(self.review()["verdict"], "PASS")
 
     def test_an_answer_about_another_commit_is_not_this_head_s_verdict(self):
         """A bot answering the previous push must not accept what was pushed after it."""
@@ -462,6 +472,66 @@ class CloudReviewTests(unittest.TestCase):
                 else:
                     with self.assertRaisesRegex(AgentBoxError, "claude_args with --model opus"):
                         self.review()
+
+    def test_a_pin_belongs_to_the_action_s_own_step(self):
+        """Another job's arguments are not this Action's, however the same file spells them."""
+        self.config.workflow.review.github_model = "opus"
+        self.commit_action("jobs:\n"
+                           "  lint:\n"
+                           "    steps:\n"
+                           "      - uses: acme/other@v1\n"
+                           "        with:\n"
+                           "          claude_args: '--model opus'\n"
+                           "      - uses: anthropics/claude-code-action@v1\n")
+        with self.assertRaisesRegex(AgentBoxError, "claude_args with --model opus"):
+            self.review()
+        self.commit_action("jobs:\n"
+                           "  review:\n"
+                           "    steps:\n"
+                           "      - uses: anthropics/claude-code-action@v1\n"
+                           "        with:\n"
+                           "          claude_args: '--model opus'\n")
+        self.assertEqual(self.review()["provider"], "claude")
+
+    def test_the_request_carries_the_requirements_and_not_only_the_pull_request(self):
+        """The bot reads no tracker: what this comment omits, its verdict cannot measure."""
+        self.parent.description = "The parent must keep the passwd-derived host home."
+        self.review()
+        self.assertIn("The parent must keep the passwd-derived host home.", self.published())
+        self.assertIn(f"# Task {self.parent.id}: {self.parent.title}", self.published())
+
+    def test_a_request_longer_than_a_comment_is_refused_before_publishing(self):
+        """A truncated requirement is a requirement nobody read, so nothing is published."""
+        self.parent.description = "x" * github_review.COMMENT_LIMIT
+        with self.assertRaisesRegex(AgentBoxError, "GitHub accepts"):
+            self.review()
+        self.assertIsNone(self.published())
+        self.assertIsNone(workflow.read_review_state(self.root, BINDING, self.parent).get("pending"))
+
+    def test_a_verdict_recorded_before_the_lock_was_taken_opens_no_second_round(self):
+        """Two runs reading one answer would otherwise spend two rounds of one budget."""
+        import contextlib
+        from agent_box import workflow as flow
+        self.review()
+        self.comments.append(self.request_comment())
+        self.answer(CLAUDE_PASS)
+        original, raced, done = flow.lock, [], []
+
+        @contextlib.contextmanager
+        def lock(root, name, *args, **kwargs):
+            # The other run finishes between this one's GitHub reads and its lock.
+            if name == "review" and not raced:
+                raced.append(True)
+                done.append(self.review())
+            with original(root, name, *args, **kwargs):
+                yield
+
+        with patch.object(flow, "lock", lock):
+            second = self.review()
+        self.assertEqual(done[0]["verdict"], "PASS")
+        self.assertEqual(second["round"], done[0]["round"])
+        self.assertEqual(second["review_budget"]["used"], 1)
+        self.assertIsNone(self.published())
 
     def test_an_unpublished_head_has_no_reviewer_and_a_missing_pull_request_names_ab_pr(self):
         """The bot reads GitHub, so a head GitHub does not have cannot be the one reviewed."""

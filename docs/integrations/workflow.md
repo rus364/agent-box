@@ -355,8 +355,9 @@ Every new round retires previous PASS and human acceptance under the budget lock
 including one that later fails. Result ingestion uses the same lock and accepts
 only the latest pending round; late or replayed results cannot restore acceptance.
 Finish/landing consume freshly reread evidence under that lock; validation rereads
-before saving so a revoked PASS cannot return. Remote GitHub review requests remain
-coordinated separately. Skills stop on ambiguity or no progress and retain human
+before saving so a revoked PASS cannot return. A request published in a pull request
+runs through the same locks, budget and receipts as a local round. Skills stop on
+ambiguity or no progress and retain human
 iteration history in the tracker. Validation is a real command with an observed
 exit status; the coordinator does not self-review.
 
@@ -558,7 +559,11 @@ when its text is one this checkout published for this scope, word for word:
 anybody may comment on a pull request, and a question somebody else wrote, with
 instructions of its own, is not the question this round asked. The request offers
 no example verdict either, because an example is copied back sooner or later. A `--brief` note is published with the request, since
-that is where the reviewer reads it. The bot's answer becomes an ordinary round:
+that is where the reviewer reads it, and so are the task descriptions themselves: a
+local reviewer is handed them as files, while the bot reads only this comment, and a
+pull request body is the author's summary rather than the requirements a verdict is
+measured against. A request that would exceed GitHub's comment limit is refused before
+anything is published, because a truncated requirement is a requirement nobody read. The bot's answer becomes an ordinary round:
 the same budget, the same failure limit, the same receipt, `reconciliation.status`
 and `incremental` delta economy as a local verdict. `workflow review PARENT
 --native` still opens a local round when the user decides the bot cannot answer.

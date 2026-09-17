@@ -39,11 +39,14 @@ CODEX_COMMIT = re.compile(r"\*\*Reviewed commit:\*\*\s*`([0-9a-f]{7,64})`")
 #: The Action's own arguments, inline or as a block scalar, and nothing else in the file.
 CLAUDE_ARGS = re.compile(r"^(\s*)claude_args\s*:\s*(.*)$")
 
+#: GitHub refuses a longer comment, and a truncated requirement is a requirement nobody read.
+COMMENT_LIMIT = 65536
+
 REQUEST_FORM = """@{provider} review
 
-Review commit {head}, as this pull request stands against base commit {base}, against its
-description and the repository's guidance. Read only: change no files, push nothing, and
-answer in this pull request.
+Review commit {head}, as this pull request stands against base commit {base}, against the
+requirements quoted below, the repository's guidance and this pull request's description.
+Read only: change no files, push nothing, and answer in this pull request.
 
 Report every finding on its own line as
 
@@ -58,12 +61,23 @@ Verdict: PASS|NEEDS_WORK|INCONCLUSIVE
 
 A PASS lists no findings. Write exactly one Verdict line and no example verdicts anywhere
 in the answer.{context}{brief}
+
+---
+
+The requirements, quoted from the tracker; the first card is the task under review. They
+carry no comments and no checkmarks, and the bot has no other access to them.
+
+{cards}
 """
 
 
-def request_body(provider, head, base, review_context="", brief=None):
+def request_body(provider, head, base, descriptions, review_context="", brief=None):
     """The request names both commits of the scope it asks about, because that is the
     only place a published request can record which diff the answer will describe.
+
+    It also carries the task descriptions themselves. A local reviewer is handed
+    them as files; the bot reads only what this comment says, and a pull request
+    body is the author's summary, not the requirements a verdict is measured against.
 
     The verdict line keeps its alternatives: a spelled-out example is copied back
     sooner or later, and a copied `PASS|NEEDS_WORK|INCONCLUSIVE` ends the round as
@@ -71,7 +85,9 @@ def request_body(provider, head, base, review_context="", brief=None):
     """
     context = f"\n\n{review_context.strip()}" if review_context else ""
     note = f"\n\nContext from the coordinator:\n\n{brief.strip()}" if brief else ""
-    return REQUEST_FORM.format(provider=provider, head=head, base=base, context=context, brief=note)
+    cards = "\n\n---\n\n".join(text.strip() for text in descriptions.values())
+    return REQUEST_FORM.format(provider=provider, head=head, base=base, context=context,
+                               brief=note, cards=cards)
 
 
 def paginate(root, repo, path):
@@ -206,14 +222,33 @@ def read_answer(root, repo, number, provider, comments, head, base, since):
     return codex_answer(root, repo, number, comments, head, since)
 
 
+def action_step(lines):
+    """The lines of the step that runs the Claude Action, and nothing after it.
+
+    Another job in the same workflow may carry its own `claude_args`, and reading
+    that one would report a pin this Action never receives.
+    """
+    start = next((index for index, line in enumerate(lines)
+                  if "anthropics/claude-code-action@" in line), None)
+    if start is None:
+        return []
+    indent = len(lines[start]) - len(lines[start].lstrip())
+    step = [lines[start]]
+    for line in lines[start + 1:]:
+        if line.strip() and (len(line) - len(line.lstrip()) < indent or line.lstrip().startswith("- ")):
+            break
+        step.append(line)
+    return step
+
+
 def claude_args(source):
-    """The arguments the Claude Action is configured with, read out of its workflow.
+    """The arguments the Claude Action is configured with, read out of its own step.
 
     A search over the whole YAML would accept a flag written in a comment or in
     another step, so the `claude_args` value itself is extracted, in both the
     inline and the block form, and split into whole arguments.
     """
-    lines = source.splitlines()
+    lines = action_step(source.splitlines())
     for index, line in enumerate(lines):
         found = CLAUDE_ARGS.match(line)
         if not found:
@@ -299,7 +334,8 @@ def pending_round(root, task, state, fingerprint):
     return descriptor if descriptor.get("scope") == fingerprint and descriptor.get("task") == task.id else None
 
 
-def review(root, binding, adapter, config, task, base, fingerprint, identity, brief, review_context):
+def review(root, binding, adapter, config, task, parent, tasks, base, fingerprint, identity,
+           brief, review_context):
     """Publish one request per head, then read that head's verdict back.
 
     Waiting is not a failure and spends nothing: the same command reads the
@@ -325,30 +361,34 @@ def review(root, binding, adapter, config, task, base, fingerprint, identity, br
     if pr["headRefOid"] != head:
         raise AgentBoxError(f"PR #{number} is at {pr['headRefOid'][:12]}, not the local {head[:12]}; "
                             "publish this head before asking its reviewer")
-    saved = read_evidence(root, task)
-    if saved.get("scope") == fingerprint and saved.get("review", {}).get("round"):
-        # This scope already has its answer. Asking a bot the same question again
-        # is not another review, and re-reading the same comment is not a round.
-        return {**review_result(root, binding, adapter, task, config, saved["review"]["round"]),
-                "outcome": "the reviewer already answered this head; no request published, no round started"}
     # One published request per scope: the lock keeps a second invocation on this
-    # checkout from asking again between the lookup and the comment.
+    # checkout from asking again, or from starting a second round on one answer,
+    # between reading the recorded verdict and acting on it.
     with lock(root, "review"):
-        return _round(root, binding, adapter, config, task, fingerprint, identity, brief, review_context,
-                      repo, number, pr, head, base_head, settings)
+        saved = read_evidence(root, task)
+        if saved.get("scope") == fingerprint and saved.get("review", {}).get("round"):
+            # This scope already has its answer. Asking a bot the same question again
+            # is not another review, and re-reading the same comment is not a round.
+            return {**review_result(root, binding, adapter, task, config, saved["review"]["round"]),
+                    "outcome": "this head already has a recorded verdict; no request published, no round started"}
+        return _round(root, binding, adapter, config, task, parent, tasks, fingerprint, identity,
+                      brief, review_context, repo, number, pr, head, base_head, settings)
 
 
-def _round(root, binding, adapter, config, task, fingerprint, identity, brief, review_context,
-           repo, number, pr, head, base_head, settings):
+def _round(root, binding, adapter, config, task, parent, tasks, fingerprint, identity, brief,
+           review_context, repo, number, pr, head, base_head, settings):
     """Open or continue the one round this scope's published request belongs to."""
     from .github_workflow import gh
-    from .workflow import (REVIEW_FAILURE_LIMIT, bind_delegation_input, cleanup_delegation_input,
-                           lock, read_review_budget, read_review_state, review_descriptor,
+    from .workflow import (REVIEW_FAILURE_LIMIT, bind_delegation_input, lock, read_review_budget,
+                           read_review_state, review_descriptor,
                            review_evidence_path, review_result, save_review_state, start_review,
                            store_review_result)
 
+    from .workflow import review_descriptions
+
     comments = paginate(root, repo, f"issues/{number}/comments?per_page=100")
     provider = configured_reviewer(root, settings)
+    descriptions = review_descriptions(task, parent, tasks)
     if provider == "codex" and stale_request(comments, provider, head, base_head):
         raise AgentBoxError(
             f"{head[:12]} was already asked about another base, and Codex names only the commit it "
@@ -360,7 +400,8 @@ def _round(root, binding, adapter, config, task, fingerprint, identity, brief, r
     # A request already in the thread is this round's only when its text is one of
     # ours; anything else is a stranger's question, and this run publishes its own.
     request = find_request(comments, [*published_requests(root, task, head, base_head),
-                                      request_body(provider, head, base_head, review_context, brief)])
+                                      request_body(provider, head, base_head, descriptions,
+                                                   review_context, brief)])
     if request is not None and descriptor is not None:
         round_id = descriptor["delegation"]
         report, url, note = read_answer(root, repo, number, provider, comments, head, base_head,
@@ -386,16 +427,22 @@ def _round(root, binding, adapter, config, task, fingerprint, identity, brief, r
                 state.pop("pending_backend", None)
                 save_review_state(root, binding, task, state)
             failures = state.get("failures", 0)
-        # Nobody can answer this round any more, so its published input is waste.
-        with contextlib.suppress(AgentBoxError, OSError):
-            cleanup_delegation_input(root, descriptor)
+        # The binding goes, so nothing can resume this round, but the request text
+        # stays: it is already published on GitHub, and it is what keeps the next
+        # round from paying the bot for a question it was asked once.
+        with contextlib.suppress(OSError):
+            (review_evidence_path(root, task.id, round_id) / "descriptor.json").unlink(missing_ok=True)
         raise AgentBoxError(
             f"{provider} published no verdict for {head[:12]} in " + (url or pr["url"])
             + (f"; {note}. " if note else f" within {settings.wait_seconds}s. ")
             + f"The round ended as failure {failures} of {REVIEW_FAILURE_LIMIT} without spending an attempt. "
             f"Ask the user before rerunning workflow review {task.id} or reviewing this head another way")
     body = (request["body"] if request is not None
-            else request_body(provider, head, base_head, review_context, brief))
+            else request_body(provider, head, base_head, descriptions, review_context, brief))
+    if request is None and len(body) > COMMENT_LIMIT:
+        raise AgentBoxError(
+            f"The request for {head[:12]} is {len(body)} characters and GitHub accepts {COMMENT_LIMIT}; "
+            f"shorten the task descriptions or review this head with workflow review {task.id} --native")
     round_id = secrets.token_urlsafe(18)
     budget = start_review(root, binding, task, settings.max_rounds, round_id, fingerprint, "cloud")
     descriptor = review_descriptor(identity, task, fingerprint, round_id)
