@@ -218,7 +218,7 @@ class DelegateContractTests(unittest.TestCase):
     def test_claude_delegation_keeps_the_isolated_safe_mode_context(self):
         """Safe mode is why the instructions must travel; it stays deliberately on."""
         command = provider_runner.build_command({"fast": False, "provider": "claude", "model": "m", "effort": "high"},
-                                                "worker", Path("/tmp"), None, Path("/tmp/out"))
+                                                "worker", Path("/tmp"), Path("/tmp/out"))
         self.assertIn("--safe-mode", command)
 
 

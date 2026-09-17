@@ -157,15 +157,15 @@ class InspectTests(unittest.TestCase):
             self.inspect_readonly()
 
     def test_in_tree_brief_blocks_acceptance_without_spending_review_budget(self):
-        """The early dirty refusal leaves evidence intact; moving the same brief enables prepare."""
+        """The early dirty refusal leaves evidence intact; moving the same brief enables a native round."""
         # Completion owns its lock before checking cleanliness; lock-file creation
         # does not spend review budget or change acceptance evidence.
         with workflow.lock(self.root, "review-budget"), workflow.lock(self.root, "work"):
             pass
         brief = self.root / ".review-brief.md"
         brief.write_text("Changes/reasons: implementation. Risks: none known. Validation: tests only.")
-        for args in (("prepare", "1", "--role", "reviewer", "--primary", "codex", "--brief", str(brief)),
-                     ("review", "1", "--primary", "codex", "--brief", str(brief)),
+        for args in (("review", "1", "--native", "--brief", str(brief)),
+                     ("review", "1", "--brief", str(brief)),
                      ("approve", "1", "--reason", "User accepts"),
                      ("validate", "1", "--", "true"), ("finish", "1"), ("land", "1", "merge")):
             with self.subTest(command=args[0]):
@@ -177,9 +177,9 @@ class InspectTests(unittest.TestCase):
                 self.assertEqual(self.snapshot(), before)
         external = Path(self.temporary.name) / "review-brief.md"
         brief.rename(external)
-        prepared = self.dispatch("prepare", "1", "--role", "reviewer", "--primary", "codex", "--brief", str(external))
-        self.assertEqual(prepared["scope"], self.scope)
-        self.assertEqual(prepared["review_budget"]["used"], 2)
+        opened = self.dispatch("review", "1", "--native", "--brief", str(external))
+        self.assertEqual(opened["scope"], self.scope)
+        self.assertEqual(opened["review_budget"]["used"], 1)
 
     def test_dirty_filenames_are_quoted_bounded_and_keep_status_columns(self):
         """Unusual names remain recognizable without allowing an unbounded diagnostic."""

@@ -2443,7 +2443,6 @@ def runtime_main(
     # mounted, so flipping browser.enabled never recreates a compatible box.
     browser_dir = browser_session(config, workspace, runtime_state, agent)
     channel, extra_env = claude_channel_args(agent, config, workspace, rest, session)
-    extra_env += [f"AGENT_BOX_PRIMARY_PROVIDER={agent}"]
     if getattr(config, "_launch", {}).get("notify") is False:
         extra_env += [f"{notify_module.NOTIFY_OFF_ENV}=1"]
     snapshot = session_runtime(config, runtime_state=runtime_state)
@@ -2848,7 +2847,6 @@ def host_main(
     # the values are present already.
     env.update(config.env.set)
     # Owned metadata describes this launch, even when env.set names these keys.
-    env["AGENT_BOX_PRIMARY_PROVIDER"] = agent
     env["AGENT_BOX_RUNTIME_CONFIG"] = str(session_runtime(config, container=False))
     if getattr(config, "_launch", {}).get("notify") is False:
         env[notify_module.NOTIFY_OFF_ENV] = "1"

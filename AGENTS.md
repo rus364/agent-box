@@ -91,9 +91,9 @@ deliberately share one contract rather than one of them acquiring private
 restrictions. Workers and scouts are therefore only launched (`workflow
 delegate`), never tracked: guards that only existed because the contract was
 wide belong deleted, not tightened. A reviewer round is still bound to its
-repository, project, task, scope, role and tier by `workflow prepare`'s handoff
-descriptor, which is plain readable JSON and is deliberately not treated as
-unforgeable.
+repository, project, task and scope by the descriptor workflow keeps beside the
+round's input, which is plain readable JSON and is deliberately not treated as
+unforgeable; a native reviewer's model and context are taken on trust.
 
 **Secrets travel by name.** `--env=NAME` (Podman inherits the value) for
 anything secret; `--env=NAME=VALUE` puts the value in an argv that `/proc`

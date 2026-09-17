@@ -18,9 +18,6 @@ from .paths import SESSION_TEMP_ROOT
 
 API_ENV = 'AGENT_BOX_EXTERNAL_API_KEY'
 BASELINE_ENV = 'AGENT_BOX_API_BASELINE'
-PROVIDER_ENV = 'AGENT_BOX_API_PROVIDER'
-FINGERPRINT_ENV = 'AGENT_BOX_API_FINGERPRINT'
-CLI_ENV = 'AGENT_BOX_API_CLI'
 _AUTH_NAMES = {
     'OPENAI_API_KEY', 'OPENAI_BASE_URL', 'OPENAI_ORG_ID', 'OPENAI_ORGANIZATION',
     'OPENAI_PROJECT_ID', 'CODEX_API_KEY', API_ENV,
@@ -78,9 +75,6 @@ def builtin_environment(environment):
     """Restore the environment before ext, including opt-in built-in API keys."""
     env = dict(environment)
     baseline = env.pop(BASELINE_ENV, None)
-    env.pop(PROVIDER_ENV, None)
-    env.pop(FINGERPRINT_ENV, None)
-    env.pop(CLI_ENV, None)
     if baseline:
         try:
             original = json.loads(Path(baseline).read_text())
@@ -126,22 +120,6 @@ def check_model_effort(config, route):
         error = model_effort_error(endpoint, route['model'], route['provider'], route.get('effort'))
         if error:
             raise AgentBoxError(error)
-
-
-def session_identity(cli):
-    name = os.environ.get(PROVIDER_ENV, '')
-    fingerprint = os.environ.get(FINGERPRINT_ENV, '')
-    if (not valid_name(name) or re.fullmatch(r'[0-9a-f]{64}', fingerprint) is None
-            or os.environ.get(CLI_ENV) != cli):
-        raise AgentBoxError('Active external API identity is missing or differs from the CLI; restart through agent-box ext')
-    return {'api_provider': name, 'api_fingerprint': fingerprint}
-
-
-def session_matches(route):
-    """A native child sends its requests to the active session's API, so only that identity qualifies."""
-    return (bool(route.get('api_fingerprint')) and os.environ.get(PROVIDER_ENV) == route.get('api_provider')
-            and os.environ.get(CLI_ENV) == route.get('provider')
-            and os.environ.get(FINGERPRINT_ENV) == route['api_fingerprint'])
 
 
 def value_options(cli):
@@ -310,8 +288,7 @@ def prepare(command, name, cli, config, directory, environment, *, model=None):
     atomic_write_json(baseline, {**{k: v for k, v in original.items() if auth_name(k)},
                                  **{k: original.get(k) for k in custom_env}}, 0o600)
     env = {k: v for k, v in original.items() if not auth_name(k)}
-    env.update({PROVIDER_ENV: name, BASELINE_ENV: str(baseline), CLI_ENV: cli,
-                FINGERPRINT_ENV: route_identity(config, name, cli)['api_fingerprint']})
+    env[BASELINE_ENV] = str(baseline)
     env.update(custom_env)
     models = {**endpoint.models, model: settings}
     args = list(command[1:])

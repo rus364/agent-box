@@ -13,14 +13,6 @@ def candidate(provider, model, **fields):
     return model_entry({"provider": provider, "model": model, **fields})
 
 
-def prepared(config, role, tier, primary="claude"):
-    with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {}, clear=True), \
-         patch.object(workflow, "WORKFLOW_STATE", Path(directory)), \
-         patch.object(workflow.shutil, "which", side_effect=lambda name: name), \
-         patch.object(workflow, "usage_snapshot", return_value={}):
-        return workflow.route(config, role, tier, primary)
-
-
 class RoutingTests(unittest.TestCase):
     def test_a_lone_exhausted_candidate_is_refused_before_launch(self):
         """Usage is read for a single candidate too, so a known exhausted model is not launched to fail."""
@@ -51,27 +43,6 @@ class RoutingTests(unittest.TestCase):
                 routing.select(c, "scout", tier)
         with self.assertRaisesRegex(Exception, "worker has no tier 0"):
             routing.select(c, "worker", 0)
-
-    def test_a_prepared_route_marks_another_clis_candidate_managed_only(self):
-        """The coordinator must see that it cannot spawn the candidate natively, and why."""
-        config = Config()
-        config.workflow.review.models = [candidate("codex", "gpt-5.6-luna", effort="high"),
-                                         candidate("claude", "opus", effort="high")]
-        route = prepared(config, "reviewer", None)
-        self.assertEqual((route["provider"], route["model"], route["managed_only"]), ("codex", "gpt-5.6-luna", True))
-        self.assertIn("claude session cannot run a native codex agent", route["native_limitation"])
-        fallback = route["fallbacks"][0]
-        self.assertFalse(fallback.get("managed_only"))
-        self.assertEqual(fallback["native_profile"], "ab-reviewer")
-
-    def test_the_native_profile_is_the_one_installed_for_the_selected_list(self):
-        """Profiles exist for a role's own list and each nonempty tier list; naming another one would not resolve."""
-        config = Config()
-        config.workflow.review.models = [candidate("claude", "sonnet", effort="high")]
-        config.workflow.review.tiers["3"] = [candidate("claude", "opus", effort="high")]
-        self.assertEqual(prepared(config, "reviewer", 3)["native_profile"], "ab-reviewer-3")
-        self.assertEqual(prepared(config, "reviewer", 2)["native_profile"], "ab-reviewer")
-        self.assertEqual(prepared(config, "reviewer", None)["native_profile"], "ab-reviewer")
 
     def test_the_first_candidate_wins_and_the_rest_are_ordered_fallbacks(self):
         c = WorkflowConfig()

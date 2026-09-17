@@ -154,3 +154,53 @@ def read(state, repository, receipt):
     if time.time() - record["created_at"] > MAX_AGE:
         raise AgentBoxError("Review result expired; no acceptance recorded")
     return record, path
+
+
+def streams_root(state, repository, task_id):
+    return directory(state, repository) / "streams" / hashlib.sha256(task_id.encode()).hexdigest()[:24]
+
+
+def stream_path(state, repository, task_id, round_id):
+    return streams_root(state, repository, task_id) / hashlib.sha256(round_id.encode()).hexdigest()[:24]
+
+
+def remove_tree(path):
+    for candidate in sorted(path.rglob("*"), key=lambda item: len(item.parts), reverse=True):
+        if candidate.is_dir() and not candidate.is_symlink():
+            candidate.rmdir()
+        else:
+            candidate.unlink()
+    path.rmdir()
+
+
+def save_streams(state, repository, task_id, round_id, source):
+    """Keep a round's raw provider streams for diagnosis until its task is Done.
+
+    Each launched candidate gets a numbered run directory. The same 20-run,
+    seven-day bound as receipts caps what a task that never finishes leaves.
+    """
+    target = stream_path(state, repository, task_id, round_id)
+    for path in (target.parent.parent, target.parent, target):
+        path.mkdir(mode=0o700, exist_ok=True)
+    runs = sorted((run for task in target.parent.parent.iterdir() if task.is_dir()
+                   for round_dir in task.iterdir() if round_dir.is_dir() for run in round_dir.iterdir()),
+                  key=lambda path: path.lstat().st_mtime, reverse=True)
+    now = time.time()
+    for index, run in enumerate(runs):
+        if index >= MAX_FILES - 1 or now - run.lstat().st_mtime > MAX_AGE:
+            remove_tree(run)
+    number = 1 + max((int(path.name) for path in target.iterdir() if path.name.isdigit()), default=0)
+    run = target / str(number)
+    run.mkdir(mode=0o700)
+    for name in ("stdout", "stderr", "result.json"):
+        if (source / name).is_file():
+            with (source / name).open("rb") as stream:
+                (run / name).write_bytes(stream.read(MAX_BYTES))
+            (run / name).chmod(0o400)
+    return run
+
+
+def discard_streams(state, repository, task_id):
+    path = streams_root(state, repository, task_id)
+    if path.is_dir() and not path.is_symlink():
+        remove_tree(path)

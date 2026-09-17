@@ -3,9 +3,7 @@
 Test modules import these from here rather than from each other, so deleting
 one module's tests never breaks another's setup.
 """
-import base64
 import inspect
-import json
 import subprocess
 import tempfile
 import unittest
@@ -85,10 +83,20 @@ def candidate(provider, model, effort):
     return {"provider": provider, "model": model, "effort": effort, "fast": False, "api_provider": ""}
 
 
-def selected_route(_config, role, tier, _primary):
-    """What `workflow.route` would return: the delegation it was asked for."""
+def selected_route(_config, role, tier):
+    """What `workflow.candidates` would return: the delegation it was asked for."""
     return {"fast": False, "provider": "claude", "model": "m", "effort": "high", "tier": tier, "role": role,
             "fallbacks": []}
+
+
+def reviewer_route(config, role, tier, candidates=workflow.candidates):
+    """A fixed reviewer route; delegates still select from their configured lists."""
+    return selected_route(config, role, tier) if role == "reviewer" else candidates(config, role, tier)
+
+
+def answer(text="Verdict: PASS\n\nReviewed.\n"):
+    """A reviewer's Markdown as the managed runner returns it."""
+    return {**provider_runner.review_report(text), "text": text}
 
 
 
@@ -106,11 +114,12 @@ class WorkflowCase(unittest.TestCase):
         self.config.workflow.enabled = True
         # The task is labelled tier 1; with tiers on, its reviewer routes at that tier.
         self.config.workflow.use_tiers = True
+        self.config.workflow.review.models = [candidate("claude", "m", "high")]
         self.adapter = Mock()
         self.adapter.get.return_value = self.task
         self.adapter.identity.return_value = {"id": 1}
-        self.report = Path(self.directory.name) / "report.json"
-        self.report.write_text(json.dumps({"verdict": "PASS", "summary": "Reviewed", "findings": []}))
+        self.report = Path(self.directory.name) / "report.md"
+        self.report.write_text("Verdict: PASS\n\nReviewed.\n")
         self.review_brief = Path(self.directory.name) / "review-brief.md"
         self.review_brief.write_text(
             "Changes and reasons: implemented the current scope.\n"
@@ -123,7 +132,7 @@ class WorkflowCase(unittest.TestCase):
             patch.object(Binding, "load", return_value=BINDING),
             patch.object(workflow, "make_adapter", return_value=self.adapter),
             patch.object(workflow, "resolve", return_value=(self.task, info, {}, "main")),
-            patch.object(workflow, "route", side_effect=selected_route),
+            patch.object(workflow, "candidates", side_effect=reviewer_route),
             patch.object(provider_runner.shutil, "which", side_effect=lambda name: name),
             patch.object(workflow, "WORKFLOW_STATE", Path(self.directory.name) / "state"),
             patch.object(workflow_state, "WORKFLOW_STATE", Path(self.directory.name) / "state"),
@@ -136,28 +145,14 @@ class WorkflowCase(unittest.TestCase):
     def run_workflow(self, *argv):
         return workflow.dispatch(workflow.parser().parse_args(list(argv)))
 
-    def delegation_input(self, prepared):
-        descriptor = json.loads(base64.urlsafe_b64decode(prepared["handoff"]))
-        return Path(descriptor["input"]["path"])
+    def native_round(self, *flags):
+        return self.run_workflow("review", "1", "--native", *flags)
 
-    def prepared_review(self):
-        return self.run_workflow("prepare", "1", "--role", "reviewer", "--primary", "codex",
-                                 "--brief", str(self.review_brief))
+    def delegation_input(self, opened):
+        """The handoff a native or managed round published."""
+        return workflow.review_evidence_path(self.root, "1", opened["round"]) / "handoff.txt"
 
-    def managed_fallback(self, prepared):
-        return self.run_workflow("review", "1", "--handoff", prepared["handoff"],
-                                 "--brief", str(self.review_brief),
-                                 "--fallback-reason", "Native interface cannot express the route")
-
-    def prepare_review_input(self):
-        self.config.workflow.review.max_rounds = 10
-        return self.run_workflow("prepare", "1", "--role", "reviewer", "--brief", str(self.review_brief))
-
-    def consume_review_input(self, prepared, *, managed):
-        if managed:
-            return self.managed_fallback(prepared)
-        self.report.write_text(json.dumps({"verdict": "PASS", "summary": "Checked", "findings": []}))
-        return self.run_workflow(
-            "report", "1", "--role", "reviewer", "--handoff", prepared["handoff"], "--scope", prepared["scope"],
-            "--provider", "claude", "--model", "m", "--effort", "high", "--file", str(self.report),
-            "--fresh-context")
+    def native_result(self, text="Verdict: PASS\n\nReviewed.\n", *flags):
+        self.report.write_text(text)
+        return self.run_workflow("review", "1", "--result", str(self.report),
+                                 "--provider", "claude", "--model", "m", *flags)

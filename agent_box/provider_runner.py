@@ -1,4 +1,4 @@
-"""Fresh CLI contexts with explicit models: a checked reviewer report, or a delegate's Markdown."""
+"""Fresh CLI contexts with explicit models: a reviewer's verdict, or a delegate's Markdown."""
 from __future__ import annotations
 
 import base64
@@ -53,50 +53,29 @@ def invalid(stage, reason):
                           "invalid-report", stage=stage, reason=reason)
 
 
-def report_schema():
-    """The reviewer's report; workers and scouts answer in unchecked Markdown."""
-    nonblank = {"type": "string", "pattern": r"\S"}
-    finding = {"type": "object", "properties": {
-        **{key: dict(nonblank) for key in ("severity", "path", "message", "evidence", "requirement")},
-        "line": {"type": "integer", "minimum": 0}},
-        "required": ["severity", "path", "line", "message", "evidence", "requirement"], "additionalProperties": False}
-    properties = {"verdict": {"type": "string", "enum": ["PASS", "NEEDS_WORK", "INCONCLUSIVE"]},
-                  "summary": nonblank, "findings": {"type": "array", "items": finding}}
-    # Claude rejects top-level conditional schemas; keep cross-field rules
-    # explicit for generation and enforce them locally before acceptance.
-    properties["findings"]["description"] = "Must be empty for PASS and nonempty for NEEDS_WORK."
-    return {"type": "object", "properties": properties, "required": list(properties), "additionalProperties": False}
+VERDICT_LINE = re.compile(r"^[ \t>#*_]*Verdict[*_]*:")
+VERDICT = re.compile(r"^[ \t>#*_]*Verdict[*_]*:[*_ \t]*(PASS|NEEDS_WORK|INCONCLUSIVE)[*_ \t.]*$")
+FINDING = re.compile(r"^[ \t]*[-*][ \t]+\[(LOW|MEDIUM|HIGH|CRITICAL)\][ \t]+(\S+)")
+SEVERITIES = ("LOW", "MEDIUM", "HIGH", "CRITICAL")
 
 
-def validate_report(report):
-    # Reasons use schema-owned field names, never values or unknown provider keys.
-    if not isinstance(report, dict):
-        invalid("schema", "report must be an object")
-    if report.keys() - {"summary", "verdict", "findings"}:
-        invalid("schema", "report has unexpected fields")
-    if not isinstance(report.get("summary"), str) or not report["summary"].strip():
-        invalid("schema", "summary must be a nonblank string")
-    if report.get("verdict") not in ("PASS", "NEEDS_WORK", "INCONCLUSIVE"):
-        invalid("schema", "verdict must be PASS, NEEDS_WORK or INCONCLUSIVE")
-    findings = report.get("findings")
-    if not isinstance(findings, list):
-        invalid("schema", "findings must be an array")
-    for index, finding in enumerate(findings):
-        field = f"findings[{index}]"
-        if not isinstance(finding, dict):
-            invalid("schema", f"{field} must be an object")
-        if finding.keys() - {"severity", "path", "line", "message", "evidence", "requirement"}:
-            invalid("schema", f"{field} has unexpected fields")
-        for key in ("severity", "path", "message", "evidence", "requirement"):
-            if not isinstance(finding.get(key), str) or not finding[key].strip():
-                invalid("schema", f"{field}.{key} must be a nonblank string")
-        if type(finding.get("line")) is not int or finding["line"] < 0:
-            invalid("schema", f"{field}.line must be a nonnegative integer")
-    if report["verdict"] == "PASS" and findings:
-        invalid("schema", "PASS requires empty findings")
-    if report["verdict"] == "NEEDS_WORK" and not findings:
-        invalid("schema", "NEEDS_WORK requires findings")
-    return report
+def review_report(text):
+    """Read the one verdict line and finding severities from a reviewer's Markdown.
+
+    A JSON schema was the rejected alternative: external APIs ignored it, and a
+    valid verdict wrapped in prose then cost a whole paid round. Everything but
+    the verdict stays prose for the coordinator; several or no verdict lines are
+    ambiguous and fail instead of choosing one.
+    """
+    lines = [line for line in text.splitlines() if VERDICT_LINE.match(line)]
+    if len(lines) != 1:
+        invalid("verdict", "response has no Verdict line" if not lines else "response has more than one Verdict line")
+    verdict = VERDICT.match(lines[0])
+    if not verdict:
+        invalid("verdict", "Verdict must be PASS, NEEDS_WORK or INCONCLUSIVE")
+    findings = [{"severity": match[1], "location": match[2]}
+                for match in map(FINDING.match, text.splitlines()) if match]
+    return {"verdict": verdict[1], "findings": findings}
 
 
 def response_metadata(result):
@@ -114,44 +93,17 @@ def response_metadata(result):
                             ("server_tool_use", ("web_search_requests", "web_fetch_requests"))):
             if isinstance(usage.get(key), dict):
                 safe[key] = {field: number(usage[key].get(field)) for field in fields}
-    return {"usage": safe or None, "total_cost_usd": number(result.get("total_cost_usd"))}
+    # A CLI's own cost figure is priced by the CLI, not billed by an external API; only counters are facts.
+    return {"usage": safe or None}
 
 
-FENCED_JSON = re.compile(r"^ {0,3}```json[ \t]*\n(.*?)\n {0,3}```[ \t]*$", re.MULTILINE | re.DOTALL)
-
-
-def report_json(text, reason="response is not valid JSON"):
-    """Read a whole JSON response or the single fenced json block beside prose.
-
-    External APIs do not always honour an output schema, and a model that wraps a
-    valid report in narration has still done the paid work. Exactly one fenced
-    block is unambiguous; anything else is refused, and the extracted object
-    still passes validate_report, so no verdict is read from the prose itself.
-    """
-    try:
-        return json.loads(text)
-    except (ValueError, TypeError, RecursionError):
-        pass
-    blocks = FENCED_JSON.findall(text) if isinstance(text, str) else []
-    if len(blocks) > 1:
-        invalid("json", "response has more than one fenced JSON block")
-    if not blocks:
-        invalid("json", reason)
-    try:
-        return json.loads(blocks[0])
-    except (ValueError, RecursionError):
-        invalid("json", "fenced JSON block is not valid JSON")
-
-
-def parse_result(provider, returncode, output, stderr, *, metadata=None, text=False):
-    """The reviewer's JSON report, or with ``text`` a delegate's final message as written."""
+def parse_result(provider, returncode, output, stderr, *, metadata=None):
+    """An agent's final message as written; Claude wraps it in a JSON envelope."""
     metadata = metadata if metadata is not None else {}
     try:
-        result = json.loads(output)
+        result = json.loads(output) if provider == "claude" else None
     except (ValueError, TypeError, RecursionError):
         result = None
-        if not returncode and not text:
-            result = report_json(output)
     if isinstance(result, dict):
         metadata.update(response_metadata(result))
     envelope = result if isinstance(result, dict) else {}
@@ -171,33 +123,14 @@ def parse_result(provider, returncode, output, stderr, *, metadata=None, text=Fa
         reason = subtype if subtype in ("error_max_structured_output_retries", "error_max_turns", "error_during_execution", "error_max_budget_usd") else "provider error envelope" if failed_envelope else "nonzero exit"
         raise ProviderFailure(f"{provider} failed ({category}: {reason}, exit {returncode}); no task verdict",
                               category, stage="envelope" if failed_envelope else "execution", reason=reason)
-    if text:
-        if provider == "claude":
-            if not isinstance(result, dict) or not isinstance(result.get("result"), str):
-                invalid("envelope", "Claude envelope has no result text")
-            metadata["response_source"] = "stdout.result"
-            output = result["result"]
-        if not output.strip():
-            invalid("response", "the final message is empty")
-        return output
-    if provider == "claude" and isinstance(result, dict):
-        if "structured_output" in result:
-            metadata["response_source"] = "stdout.structured_output"
-            result = result["structured_output"]
-            if not isinstance(result, dict):
-                invalid("envelope", "structured_output must be an object")
-        elif "result" in result:
-            metadata["response_source"] = "stdout.result"
-            result = result["result"]
-            if isinstance(result, str):
-                result = report_json(result, "result string is not valid JSON")
-            if not isinstance(result, dict):
-                invalid("envelope", "result must contain a JSON object")
-        elif result.get("type") == "result" or "subtype" in result:
-            invalid("envelope", "Claude envelope has no structured_output or result")
-    if not isinstance(result, dict):
-        invalid("envelope", "response must be a JSON object")
-    return result
+    if provider == "claude":
+        if not isinstance(result, dict) or not isinstance(result.get("result"), str):
+            invalid("envelope", "Claude envelope has no result text")
+        metadata["response_source"] = "stdout.result"
+        output = result["result"]
+    if not output.strip():
+        invalid("response", "the final message is empty")
+    return output
 
 
 def failure_metadata(route, role):
@@ -208,7 +141,7 @@ def failure_metadata(route, role):
             "fast": route.get("fast") if type(route.get("fast")) is bool else None,
             "role": identifier(role), "exit_code": None, "duration_seconds": None,
             "response_source": None, "stdout_bytes": None, "stderr_bytes": None,
-            "result_bytes": None, "usage": None, "total_cost_usd": None}
+            "result_bytes": None, "usage": None}
 
 
 def save_private(kind, suffix, write):
@@ -258,11 +191,7 @@ def check_settings(route):
     if route.get("provider") not in ("codex", "claude"):
         raise ProviderFailure("Unsupported managed provider", "unsupported")
     if not route.get("model") or not route.get("effort"):
-        raise ProviderFailure(
-            "Managed execution requires known model and effort; without configured reviewer candidates pass verified "
-            "--session-model and --session-effort before dispatch",
-            "unsupported",
-        )
+        raise ProviderFailure("Managed execution requires a candidate with a model and an effort", "unsupported")
     from .fast_mode import configuration_error
     error = configuration_error(route["provider"], route)
     if error:
@@ -292,8 +221,7 @@ def preflight(route):
         raise ProviderFailure(f"Cannot find {route['provider']} CLI", "unavailable")
 
 
-def build_command(route, role, root, schema_path, result_path, read_paths=()):
-    """``schema_path`` is None for a delegate, whose final message is free Markdown."""
+def build_command(route, role, root, result_path, read_paths=()):
     check_settings(route)
     readonly = role != "worker"
     if route["provider"] == "codex":
@@ -304,7 +232,7 @@ def build_command(route, role, root, schema_path, result_path, read_paths=()):
         if route.get("fast", False):
             command += ["-c", 'service_tier="fast"', "-c", "features.fast_mode=true"]
         command += [*([] if readonly else ["-c", "sandbox_workspace_write.network_access=true"]),
-                    *(["--output-schema", str(schema_path)] if schema_path else []), "-o", str(result_path), "-"]
+                    "-o", str(result_path), "-"]
         return command
     # Excluding Bash prevents a read-only reviewer from gaining shell write access.
     command = ["claude", "-p", "--model", route["model"]]
@@ -318,8 +246,6 @@ def build_command(route, role, root, schema_path, result_path, read_paths=()):
                "--mcp-config", '{"mcpServers":{}}', "--permission-mode", "dontAsk",
                "--tools", "Read,Grep,Glob" if readonly else "Read,Grep,Glob,Bash,Edit,Write",
                "--allowedTools", "Read,Grep,Glob" if readonly else "Read,Grep,Glob,Bash,Edit,Write"]
-    if schema_path and schema_path.exists():
-        command += ["--json-schema", schema_path.read_text()]
     return command
 
 
@@ -347,8 +273,13 @@ def codex_usage(path):
     return response_metadata({"usage": totals or None})
 
 
-def run(route, role, root, prompt, *, timeout=3600, read_paths=(), diagnostics=None, on_completed=None):
-    """A reviewer returns its validated report; a worker or scout its Markdown text."""
+def run(route, role, root, prompt, *, timeout=3600, read_paths=(), diagnostics=None, on_completed=None,
+        on_streams=None):
+    """A reviewer returns its verdict and text; a worker or scout its Markdown text.
+
+    ``on_streams(directory)`` sees the raw stdout, stderr and result files of a
+    launched process, whether it answered or failed, before they are discarded.
+    """
     from .external_launch import builtin_environment, prepare
     env = builtin_environment(os.environ)
     for key in ("CLAUDE_CODE_SUBAGENT_MODEL", "CLAUDE_CODE_EFFORT_LEVEL", "CLAUDECODE"):
@@ -361,9 +292,7 @@ def run(route, role, root, prompt, *, timeout=3600, read_paths=(), diagnostics=N
     with tempfile.TemporaryDirectory(prefix="agent-box-run-") as directory:
         directory = Path(directory)
         reviewer = role == "reviewer"
-        schema, result = (directory / "schema.json" if reviewer else None), directory / "result.json"
-        if reviewer:
-            schema.write_text(json.dumps(report_schema(), ensure_ascii=False), encoding="utf-8")
+        result = directory / "result.json"
         def record(exc):
             metadata.update(category=exc.category, stage=exc.stage, reason=exc.reason,
                             duration_seconds=round(time.monotonic() - started, 3),
@@ -377,7 +306,7 @@ def run(route, role, root, prompt, *, timeout=3600, read_paths=(), diagnostics=N
             exc.diagnostic = metadata
 
         try:
-            command = build_command(route, role, Path(root), schema, result, read_paths)
+            command = build_command(route, role, Path(root), result, read_paths)
             if route.get("api_provider"):
                 from .config import effective_config
                 from .external_launch import check_model_effort, check_route
@@ -427,14 +356,14 @@ def run(route, role, root, prompt, *, timeout=3600, read_paths=(), diagnostics=N
                         signal.signal(signum, handler)
                 stdout.flush()
                 stderr.flush()
-                if route["provider"] == "codex" and not reviewer and not result.exists() and not process.returncode:
+                if route["provider"] == "codex" and not result.exists() and not process.returncode:
                     invalid("response", "Codex wrote no final message")
                 source = result if route["provider"] == "codex" and result.exists() else directory / "stdout"
                 metadata["response_source"] = "result-file" if source == result else "stdout"
                 with source.open("rb") as stream:
                     output = stream.read(RESPONSE_LIMIT + 1)
                 if len(output) > RESPONSE_LIMIT and not process.returncode:
-                    invalid("json", "response exceeds 4 MiB parse limit")
+                    invalid("response", "response exceeds 4 MiB limit")
                 with (directory / "stderr").open("rb") as stream:
                     error = stream.read(STDERR_LIMIT)
                 try:
@@ -443,15 +372,15 @@ def run(route, role, root, prompt, *, timeout=3600, read_paths=(), diagnostics=N
                     if process.returncode:
                         output = ""
                     else:
-                        invalid("json", "response is not valid UTF-8")
+                        invalid("response", "response is not valid UTF-8")
                 report = parse_result(route["provider"], process.returncode, output,
-                                      error.decode("utf-8", errors="replace"), metadata=metadata, text=not reviewer)
+                                      error.decode("utf-8", errors="replace"), metadata=metadata)
                 if reviewer:
-                    report = validate_report(report)
+                    report = {**review_report(report), "text": report}
                 if route["provider"] == "codex":
                     metadata.update(codex_usage(directory / "stdout"))
                 if diagnostics is not None:
-                    diagnostics.update({key: metadata[key] for key in ("usage", "total_cost_usd")})
+                    diagnostics["usage"] = metadata["usage"]
                 if on_completed is not None:
                     on_completed(report)
                 return report
@@ -460,3 +389,9 @@ def run(route, role, root, prompt, *, timeout=3600, read_paths=(), diagnostics=N
                 stderr.flush()
                 record(exc)
                 raise
+            finally:
+                stdout.flush()
+                stderr.flush()
+                if on_streams is not None and process is not None:
+                    with contextlib.suppress(OSError, AgentBoxError):
+                        on_streams(directory)

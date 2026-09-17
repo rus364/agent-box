@@ -231,34 +231,29 @@ be entered for any enabled API. An empty model disables that candidate. For exam
 ```
 
 A native subagent always runs on its parent's API: both CLIs send the child's
-requests to the session's endpoint with the session's credentials. A candidate
-whose identity (CLI, API name and endpoint/catalog fingerprint) equals the
-active `ext` session's may therefore run natively. Any other external candidate
-requires a separate managed `codex exec` or `claude -p` process, and a built-in
-candidate called from an external session uses one with the original API
-environment restored. Prepared routes expose CLI, API name, model and an
-endpoint/catalog fingerprint; keys and key fingerprints are absent. Changed
-endpoints, deleted/disabled definitions and missing credentials fail before
-execution. Changing a prepared endpoint or catalog requires fresh preparation.
-A native report is accepted only from a session that still has the prepared
-identity, and the accepted route records `api_provider` and `api_fingerprint`.
+requests to the session's endpoint with the session's credentials. A candidate on
+another API therefore runs as a separate managed `codex exec` or `claude -p`
+process, and a built-in candidate called from an external session uses one with
+the original API environment restored. `workflow delegate` and `workflow review`
+always run managed, so a worker, scout or reviewer reaches its candidate's API.
+Routes expose CLI, API name, model and an endpoint/catalog fingerprint; keys and
+key fingerprints are absent. Changed endpoints, deleted/disabled definitions and
+missing credentials fail before execution, and the accepted route records
+`api_provider` and `api_fingerprint`.
 
-Native model and effort follow the live tool. Codex `spawn_agent` takes catalog
-`model` and `reasoning_effort` of the session's API. Claude's Agent tool accepts
-only model aliases, which `ext` maps to the session model, and the session's
-`CLAUDE_CODE_EFFORT_LEVEL` overrides a profile's effort; a Claude candidate whose
-model or effort differs from the session's uses managed CLI.
+A native review (`workflow review --native`) is recorded on trust with the
+provider and model the coordinator names; it runs wherever the coordinator's own
+subagent runs. Native model and effort follow the live tool. Codex `spawn_agent`
+takes catalog `model` and `reasoning_effort` of the session's API. Claude's Agent
+tool accepts only model aliases, which `ext` maps to the session model, and the
+session's `CLAUDE_CODE_EFFORT_LEVEL` overrides a profile's effort.
 
-`managed_only` reviewer routes return a managed command and refuse native
-reports; `workflow delegate` always runs a managed process, so a worker or
-scout reaches its candidate's API either way. Owned native profiles are removed
-for external candidates when configuration is applied. Existing role contracts,
-reviewer report validation, review budgets and fallback rules still apply. Candidate order keeps its meaning; subscription
-usage and exhaustion are ignored for external candidates.
-Subscription fast mode is unsupported for external workflow candidates.
-
-Review from an external session needs configured reviewer models, or verified
-`--session-model` and `--session-effort`. See
+Owned native profiles are removed for external candidates when configuration is
+applied. Existing role contracts, the reviewer's verdict format, review budgets
+and fallback rules still apply. Candidate order keeps its meaning; subscription
+usage and exhaustion are ignored for external candidates. Subscription fast mode
+is unsupported for external workflow candidates. Managed review from an external
+session needs configured reviewer models. See
 [workflow models](workflow.md#models-and-routing).
 
 ## API and Remote Control boundaries

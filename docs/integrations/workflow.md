@@ -116,28 +116,30 @@ explicit limitation.
 
 ### Reviewer rounds
 
-`prepare --role reviewer` returns a `handoff` descriptor: plain, readable JSON,
-deliberately not treated as unforgeable and not a security token. It ties a later
-report to the repository, tracker project, task, scope, role, tier and route the
-round was prepared for; the coordinator passes it back to `report --handoff`. The
-round's `delegate_handoff` points at one read-only input with the reviewer report
-schema, repository instructions and labeled normative source evidence.
+A review round runs managed or native. `workflow review TASK` runs the first
+available reviewer candidate as a managed CLI. `workflow review TASK --native`
+writes the same input package and prints `message`, the prompt for a fresh
+read-only subagent the coordinator starts without its own history; the
+coordinator saves the subagent's final message and records it with
+`workflow review TASK --result FILE --provider PROVIDER --model MODEL [--effort EFFORT]`.
+The native result is taken on trust: the named model and the freshness of the
+context are the coordinator's word, not something workflow can check. Only the
+latest round can be answered, and a new round removes the input of an unanswered
+native one.
 
-Every reviewer verdict requires a new instance. Codex native explicitly passes
-`fork_turns="none"` or a verified equivalent (`fork_context=false` in
-`multi_agent_v1`); omitted inheritance, `all` and reuse of completed agents violate
-the contract. Claude native requires a verified equivalent through the available
-interface; unknown support uses managed execution. Reviewer provider order takes
-precedence over native preference. Capabilities and actual calls are evidence, not
-independent attestation of hidden context; a missing full-context receipt alone
-does not prohibit native.
+The reviewer answers in Markdown with exactly one line
+`Verdict: PASS|NEEDS_WORK|INCONCLUSIVE` and one bullet per finding,
+`- [LOW|MEDIUM|HIGH|CRITICAL] path:line — text`; its instructions define each
+severity. Workflow reads only the verdict line and the finding severities, and
+the rest stays prose for the coordinator. No verdict line, or more than one, is a
+failure rather than a guess. A JSON schema was the rejected alternative: external
+APIs ignored it, and a valid verdict wrapped in narration then cost a whole round.
 
-Successful managed runs return optional `diagnostics.usage` and `total_cost_usd`
-through workflow output; native and unavailable counters remain null. Codex turn
-counters, including cache-write input and reasoning output tokens, come from JSONL;
-Claude counters come from the result envelope. These diagnostics
-do not change acceptance or create another telemetry store. Input bytes/words are
-separate measures, never exact tokens; compare identical scenarios and mandatory reads.
+Successful managed runs return `usage` token counters through workflow output;
+native and unavailable counters remain null. Codex turn counters, including
+cache-write input and reasoning output tokens, come from JSONL; Claude counters
+come from the result envelope. A CLI's own cost figure is not kept: for an
+external API it is the CLI's price estimate, not the provider's bill.
 
 ## Models and routing
 
@@ -154,10 +156,9 @@ wrote the code and whichever CLI coordinates. A candidate is unavailable when it
 CLI is not installed or, for a subscription model, a known usage window is
 exhausted with a future reset. `workflow delegate` runs a Codex scout from a Claude
 session, and a Claude worker from a Codex session, as a managed `codex exec` /
-`claude -p` process. In a prepared reviewer route such a candidate is
-`managed_only` and `native_limitation` says why; native reports for it are refused.
-A reviewer candidate of the session's own CLI, or on the active `ext` session's own
-API, may run natively; other API identities run managed (see [external providers](external-providers.md#workflow)).
+`claude -p` process, and `workflow review` does the same for the reviewer list
+(see [external providers](external-providers.md#workflow) for candidates on an
+external API).
 
 The lists are edited in the configuration menu (add, reorder, change effort or
 fast, remove; the picker offers every CLI's models together), shown in
@@ -181,33 +182,12 @@ ab-plan.
 | Session pin (`--worker SPEC`, `--reviewer SPEC`) | The pinned model only |
 | Tiers on, task tier N with a nonempty `tiers.N` | `tiers.N` |
 | Otherwise, nonempty `models` | `models` |
-| Otherwise | Reviewer: active session; `delegate` refuses |
+| Otherwise | Reviewer: native review only (`review --native`); `delegate` refuses |
 
 Scouts run `workflow.scout.models`, or `--scout SPEC`. Model selection never
 changes tracker labels or invents a tier. If no candidate is eligible, selection
 fails with an explicit error; it never falls back to another list, to the session
-(except the unconfigured reviewer above) or to another role's list.
-
-### Session-inherited review
-
-When no reviewer list applies, review uses the active session provider/model/effort in an independent
-fresh read-only context. Without exact session facts, `review` returns
-`action: review-in-fresh-context`; use native inheritance without a named agent-box
-profile. The returned route keeps unknown model/effort as JSON null. To ingest
-an actual inherited report, use `report --provider PROVIDER --session-inherited
---fresh-context --role reviewer --file FILE --scope SCOPE --handoff DESCRIPTOR`.
-The flags affirm preserved settings and independent context; they do not turn
-an action, silence or provider error into PASS. If inheritance cannot be
-ensured, obtain verified session facts before running a reviewer.
-
-When both actual settings are known, `prepare` and `review` accept
-`--session-model MODEL --session-effort EFFORT`. Values must come from the active
-session, not configured profiles; models outside every candidate list are valid.
-With those facts, managed review launches a fresh CLI with that exact
-provider/model/effort and no fallback. Native reports must match the prepared
-concrete settings and affirm `--fresh-context` for review. Independent
-review and validation/finish gates remain required by policy; SKIPPED is
-resolved before asking for session settings.
+or to another role's list.
 
 `agent-box usage --json --no-cache` requests live usage. A failed refresh has
 `fresh: false`, retains any useful cached exhaustion evidence and exits nonzero.
@@ -218,21 +198,14 @@ remove server-side lag.
 
 ### Reviewer fallback
 
-Reviewer provider order precedes native preference. If native cannot run the
-selected provider, use its managed CLI in the same prepared round. Native reports
-cannot select fallback candidates on the strength of a free-text reason. Managed
-execution advances only after observed CLI/model unavailability, authentication,
-quota or expiration of `timeout_seconds`. Unknown errors, unsupported primary settings
-and invalid reports stop review for diagnosis. Unusable backups do not block the primary. Speed, cost, preference, silence
+A managed round advances to the next reviewer candidate only after observed
+CLI/model unavailability, authentication, quota or expiration of
+`timeout_seconds`, all within the same round. Unknown errors, unsupported primary
+settings and an answer without a verdict line stop that run as a failure.
+Unusable backups do not block the primary. Speed, cost, preference, silence
 before timeout and review verdicts never justify switching provider. Missing CLIs
-and explicitly empty models may exclude candidates during route preparation.
-`--primary` on `prepare` and `review` names the session's CLI only so the route can
-say which candidates may run natively.
-
-`workflow delegate` and `review` execute the selected route through managed CLI;
-`prepare --role reviewer` returns it for native execution. Every reviewer needs a
-fresh independent context, and an unsupported model is an error, not permission to
-guess a cheaper one.
+and explicitly empty models may exclude candidates before the round starts. An
+unsupported model is an error, not permission to guess a cheaper one.
 
 A project can replace any role list in `.agent-box.json` without
 changing the global configuration; a project list replaces the global list whole.
@@ -241,29 +214,17 @@ changing the global configuration; a project list replaces the global list whole
 per CLI for each role's `models` (`ab-scout`, `ab-worker`, `ab-reviewer`) and for
 each nonempty worker or reviewer tier list (`ab-worker-N`, `ab-reviewer-N`); each
 takes the first candidate of that CLI on its built-in API. A profile agent-box no
-longer defines is removed while its content is unedited. A prepared reviewer route
-names the profile of the list it selected in `native_profile`. A native subagent
-can use that exact profile, or explicit spawn parameters supported by the current
-tool without an overriding custom agent; an installed profile is a convenience,
-not proof of the live tool's capabilities.
+longer defines is removed while its content is unedited. A profile is a
+convenience for native subagents, not proof of the live tool's capabilities.
 
-The coordinator checks the live tool's provider, model availability, effort
-support, profile precedence, defaults and inheritance. A matching file, role name
-or prompt is not sufficient. For Codex explicit spawn, pass both `model` and
-`reasoning_effort` and use fresh context (`fork_turns="none"` or a verified
-equivalent). Unknown or unsupported capabilities require managed CLI with the exact
-selected settings. Reviewers always require independent fresh read-only context.
-
-Effort `default` omits agent-box's override; native omission can inherit one, so
-such a reviewer uses managed CLI, retaining the existing protection against
-inherited Claude effort. This is not a literal provider effort value or a promise
-to disable thinking.
+Effort `default` omits agent-box's effort override. This is not a literal provider
+effort value or a promise to disable thinking.
 
 `workflow delegate` and `workflow review` execute managed `codex exec` or
 `claude -p` inside the existing host/container. They cannot invoke the
-coordinator's native tool; a native reviewer uses `prepare`, coordinator spawn,
-then `report`. See [native research and smoke evidence](../native-launch.md) for
-verified interfaces and limits. Provider errors, including Claude exit-zero error
+coordinator's native tool; a native reviewer uses `review --native`, a coordinator
+spawn, then `review --result`. See [native research and smoke evidence](../native-launch.md)
+for observed interfaces. Provider errors, including Claude exit-zero error
 envelopes, are not review findings. A worker failure after possible side effects
 requires reconciliation.
 
@@ -274,7 +235,7 @@ agent-box workflow begin TASK
 agent-box workflow delegate TASK --role worker --brief /tmp/brief.md
 # The coordinator verifies the answer against the code and commits what it accepts.
 agent-box workflow validate TASK -- python3 -m unittest discover -s tests
-agent-box workflow review TASK --primary codex
+agent-box workflow review TASK
 agent-box workflow finish TASK
 ```
 
@@ -288,11 +249,11 @@ task description, since that is what the reviewer reads.
 lacks, such as technical risks or validation limits. Keep it outside the working
 tree (`mktemp /tmp/agent-box-review.XXXXXX`) and remove it after the round.
 Acceptance operations require a clean tree including untracked files; an untracked in-tree
-brief blocks prepare/review even when no branch switch is needed.
-Every native verdict uses a newly spawned reviewer with no inherited coordinator or
-reviewer history (`fork_turns="none"` for Codex), never followup/resume. Pass the
-returned `delegate_handoff` unchanged as the initial message. Managed commands remain
-ephemeral/no-session-persistence and do not resume a prior review. The bounded handoff
+brief blocks review even when no branch switch is needed.
+Every native verdict uses a newly started reviewer in fresh context without the
+parent's history, never a resumed one; pass the returned `message` unchanged as its
+whole prompt. Managed commands remain ephemeral/no-session-persistence and do not
+resume a prior review. The bounded handoff
 names base/head boundaries, a diff shortstat and a manifest (path and SHA-256) of temporary
 read-only files: `task.md` with the complete task description, `parent.md` for a subtask or
 one `subtask-N.md` per subtask for a parent, the full diff, the changed-path list, recorded
@@ -301,7 +262,8 @@ Descriptions keep their language and headings; checkmarks are cleared, and comme
 history and earlier verdicts are never included. A description of any size stays in its
 file, outside the handoff limit. The reviewer reads descriptions and diff before the brief.
 Workflow state keeps native and managed paths shared and removes the generated
-artifacts after report ingestion or managed review; oversized index metadata fails closed.
+artifacts once the round's result is recorded or its managed run fails; oversized
+index metadata fails closed.
 
 The shared prompt checks correctness and unnecessary complexity against current requirements
 and consumers. Complexity findings need a concrete present maintenance/cognitive cost or
@@ -311,18 +273,10 @@ and style preferences or hypothetical futures do not block PASS. The coordinator
 findings before fixing, challenges them with evidence and escalates material disagreement
 without inventing independent acceptance. No extra review stage or finding quota is added.
 
-Native reviewer handoffs use `prepare`, then `report --file FILE --scope DIGEST --handoff
-DESCRIPTOR --provider ACTUAL_PROVIDER --model ACTUAL_MODEL --effort ACTUAL_EFFORT`
-for the returned structured report, with `--fresh-context` for every native reviewer. Native reviewer
-reports must match the selected primary candidate; unknown
-model or effort is a reason to use managed CLI,
-never to guess report fields. Report ingestion checks role/tier and exact
-provider/model/effort against the allowed prepared route before changing acceptance.
-Accepted reviewer evidence records the full route and any managed fallback
-reason or provider failures. These are coordinator-supplied execution
-facts, not provider attestation. Evidence is
-disposable local cache bound to the head and base; another device may need to
-rerun validation/review.
+Accepted reviewer evidence records the route that ran and any provider failures
+of earlier candidates. A native route is the coordinator's statement, not provider
+attestation. Evidence is disposable local cache bound to the head and base; another
+device may need to rerun validation/review.
 
 Review policy is off/auto/always. Auto considers explicit review labels, sensitive
 paths, changed-file count and added/deleted lines (binary changes require review).
@@ -350,56 +304,42 @@ and light (10/500); all values and paths are editable. Apply the policy both to
 subtasks and the complete parent diff. SKIPPED, INCONCLUSIVE and provider errors
 are distinct from PASS. A new commit or a moved base invalidates acceptance.
 
-`max_rounds` (default 3) is enforced for local reviewer `prepare` and
-`review`: a new round reserves one attempt under a local lock before handoff or provider
-execution. Known managed launch constraints are checked first; their refusal
-publishes no handoff, reserves nothing and runs no provider.
-Preflight checks local executables and supported routes, without guessing live model,
-account or native tool availability. A failed budget write dispatches nothing and allocates no attempt;
-after durable reservation, packaging/execution failures still consume it.
-Choose the reviewer provider first, then prefer native when the live interface
-supports that route and common role contract. If native cannot run after `prepare`,
-use the returned descriptor to try the same provider through managed CLI:
+`max_rounds` (default 3) counts received verdicts: a round spends an attempt only
+when its verdict arrives, whether PASS, NEEDS_WORK or INCONCLUSIVE, managed or
+native. Known managed launch constraints (missing CLI, unsupported route, another
+local review running) are checked first; their refusal opens no round and counts
+nothing. Preflight checks local executables and supported routes, without guessing
+live model or account availability.
 
-```bash
-agent-box workflow review TASK --handoff DESCRIPTOR --fallback-reason REASON
-```
+A failure spends no attempt and may be rerun: the process was killed, the provider
+failed or timed out, or the answer had no verdict line. Failures are counted in a
+row, and a managed start counts as one until its verdict clears it, so a killed
+run that could record nothing still counts. After 2 failures in a row every review
+of the task stops until the user decides; a received verdict resets the count.
+The limit is fixed.
 
-This runs managed fallback once within
-the latest pending round, preserving its configured route, role, tier and exact scope.
-It requires known model/effort; unknown inherited session settings cannot run managed.
-The durable dispatch claim precedes execution, so failure, abandonment or restart
-cannot allow repeated managed dispatch or a late native report on that descriptor.
-Completed and superseded rounds cannot be reused. Omit `--handoff` to request an
-independent new round, which reserves another attempt. Reuse may finish an already
-reserved round with no remaining allowance; it never increases the ceiling.
-
-Provider fallback belongs to that same attempt. Failed/abandoned
-attempts consume budget; report ingestion and policy SKIPPED do not. Separate
-budget state is keyed by checkout, tracker provider/server/project and task,
+Budget state is keyed by checkout, tracker provider/server/project and task,
 survives scope changes and coordinator restarts, and never resets automatically.
 `workflow inspect` exposes `review.budget` with configured_limit, effective
-limit, used and remaining; reviewer
-command results expose `review_budget` for the coordinator, outside the neutral
-reviewer prompt. The assigned coordinator can persist the user's explicit
-decision for a Doing/Review task with
-`workflow review-budget ID --limit TOTAL --reason TEXT`. TOTAL is an absolute
-nonnegative ceiling: with three attempts used and three more authorized, set six.
-Repeating the command does not add attempts. It preserves used attempts, pending
-review and acceptance evidence. The explicit
+limit, used, remaining, failures and failure_limit; reviewer command results
+expose `review_budget` for the coordinator, outside the neutral reviewer prompt.
+On the user's explicit decision the assigned coordinator of a Doing/Review task
+runs `workflow review-budget ID --reason TEXT [--limit TOTAL]`. It always clears
+the failure count; `--limit` sets an absolute nonnegative ceiling (with three
+attempts used and three more authorized, set six), so repeating it adds nothing.
+It preserves used attempts, a pending round and acceptance evidence. The explicit
 ceiling overrides configured max_rounds for this task, including after scope or
-configuration changes; zero stops further attempts without erasing usage.
-Every reviewer invocation obeys that ceiling; only the standalone budget command
-changes the task allowance.
-Every new review retires previous PASS and human acceptance under the reservation
-lock, including provider failures. Result ingestion uses the
-same lock and accepts only the latest pending round; late or replayed results
-cannot restore acceptance. Finish/landing consume freshly reread evidence under
-that lock; validation rereads before saving so a revoked PASS cannot return.
-Remote GitHub review requests remain coordinated
-separately. Skills stop on ambiguity or no progress and retain human iteration
-history in the tracker. Validation is a real command with an observed exit
-status; the coordinator does not self-review.
+configuration changes; zero stops further attempts without erasing usage. There
+is no other way to reset either counter.
+
+Every new round retires previous PASS and human acceptance under the budget lock,
+including one that later fails. Result ingestion uses the same lock and accepts
+only the latest pending round; late or replayed results cannot restore acceptance.
+Finish/landing consume freshly reread evidence under that lock; validation rereads
+before saving so a revoked PASS cannot return. Remote GitHub review requests remain
+coordinated separately. Skills stop on ambiguity or no progress and retain human
+iteration history in the tracker. Validation is a real command with an observed
+exit status; the coordinator does not self-review.
 
 ## Landing mode
 
@@ -601,27 +541,27 @@ fresh review. GitHub approvals and required checks still follow repository polic
 
 Completed native and managed reviews save a private immutable receipt before
 input cleanup or applicability checks. `workflow review-result TASK --round=ROUND`
-reads its summary without tracker access; `result_path` contains the original
-report, findings, route, scope/head/base, fallback failures and available usage/cost.
-Unknown counters remain null. Public output contains the verdict and finding count,
-not private report text. `workflow inspect` names the last received result.
+reads its summary without tracker access: the verdict, finding counts by severity,
+route, usage, `result_path` with the complete Markdown answer and scope/head/base,
+and `stream_path` when raw streams exist. Public output never carries the answer's
+text. `workflow inspect` names the last received result and a pending round.
 
 `workflow review-result TASK --round=ROUND --reconcile` retries application after
-tracker/evidence errors without dispatching a model or spending an attempt. It
-preserves route and freshness facts; applied rounds do not apply twice. Changed
-code or base and superseded rounds retain their reports but cannot accept
-new work, even after old refs are restored. Check `reconciliation.status` separately
-from the provider verdict: `saved`, `error` and `blocked` may be retried; `stale`,
-`superseded` and `invalid_input` cannot be accepted. CLI application failures exit 2
-with the saved-result summary. A receipt is operational evidence, not an
-unforgeable credential; editing workflow state is not a recovery procedure.
+tracker/evidence errors without dispatching a model or spending an attempt. Applied
+rounds do not apply twice. Changed code or base and superseded rounds retain their
+answers but cannot accept new work, even after old refs are restored. Check
+`reconciliation.status` separately from the verdict: `saved`, `error` and `blocked`
+may be retried; `stale`, `superseded` and `invalid_input` cannot be accepted. CLI
+application failures exit 2 with the saved-result summary. A receipt is operational
+evidence, not an unforgeable credential; editing workflow state is not a recovery
+procedure.
 
 Uncommitted/untracked files or a different checked-out branch temporarily block
-application; restore a clean task checkout, then reconcile the same round. If the first budget-index
-write failed, the command discovers the receipt by its task/round identity and
-checks its private `.seal` before restoring the index. An unavailable budget stays
-unknown and prevents application; it is never reset. A missing or modified receipt
-or recovery seal refuses acceptance.
+application; restore a clean task checkout, then reconcile the same round. If the
+first budget-index write failed, the command discovers the receipt by its task/round
+identity, checks its private `.seal` before restoring the index, and counts the
+verdict then. An unavailable budget stays unknown and prevents application; it is
+never reset. A missing or modified receipt or recovery seal refuses acceptance.
 
 Task edits never make a saved result stale: only the head and base do. Review
 labels still trigger live review policy, and reconciliation checks current lifecycle
@@ -632,29 +572,34 @@ Receipts use `WORKFLOW_STATE/review-results`, outside the checkout, with 0700
 directories and 0400 files. Per checkout, retention is 20 receipts, 32 MiB total,
 8 MiB each and seven days. Saving prunes only verified owned files; unknown files
 and symlinks stay untouched. No background cleanup or automatic paid rerun occurs.
-Read the full report locally and journal only necessary findings/evidence.
+Read the full answer locally and journal only necessary findings/evidence.
 
-Managed provider failures record the configured provider/model/effort/role,
-exit code, elapsed seconds, response source, stream byte sizes, numeric usage
-and cost when supplied, and a specific JSON, envelope or report-field reason.
-Missing counters remain null. Fallback evidence keeps each failed attempt and
-the accepted report's actual route. Error envelopes never supply a task verdict,
-even when they contain a report; null structured output and Markdown wrappers
-remain invalid. These diagnostics do not establish the cause of older failures
-whose original responses were lost. The provider schema includes nonblank strings
-and nonnegative line numbers. PASS/NEEDS_WORK findings invariants are described
-in the schema and enforced locally: Claude rejects top-level conditional schemas,
-so provider schema conformance alone cannot establish acceptance.
+Every launched managed reviewer keeps its raw provider streams (Codex JSONL or the
+Claude envelope as stdout, stderr, and Codex's final message file) beside the
+receipts under `review-results/<checkout>/streams/<task>/<round>/<run>`, one
+numbered run per candidate, up to 8 MiB each. They exist to diagnose an
+INCONCLUSIVE, a failure or a disputed result, for example a reviewer that claims
+its input files were missing although workflow verified them; the coordinator does
+not read them in normal work. They are removed when the task becomes Done (`finish`
+of a subtask, landing of a parent) and otherwise bounded like receipts: 20 runs and
+seven days per checkout.
 
-Raw output stays in private `WORKFLOW_STATE/provider-failures/<id>.json` files
-(directory 0700, files 0600). Each contains safe metadata and base64 byte prefixes
-for offline decoding: at most 1 MiB each of stdout and the final result file,
-and 64 KiB stderr, with truncation flags. Parsing is limited to 4 MiB. Prompts
-and commands are not retained. Public results carry only safe metadata and a
-relative artifact reference, never raw output. Up to 20 artifacts are retained
-(about 55 MiB maximum); files older than seven days and excess oldest files are
-removed when the next failure is saved. Delete individual artifact files to
-remove them sooner; inactive state is not cleaned by a background service.
+Managed provider failures also record the configured provider/model/effort/role,
+exit code, elapsed seconds, response source, stream byte sizes, numeric usage and a
+specific envelope, response or verdict reason. Missing counters remain null.
+Fallback evidence keeps each failed attempt and the accepted answer's actual route.
+Error envelopes never supply a task verdict, even when they contain one.
+
+Raw output of any failed managed run, worker and scout included, stays in private
+`WORKFLOW_STATE/provider-failures/<id>.json` files (directory 0700, files 0600).
+Each contains safe metadata and base64 byte prefixes for offline decoding: at most
+1 MiB each of stdout and the final result file, and 64 KiB stderr, with truncation
+flags. Responses are limited to 4 MiB. Prompts and commands are not retained.
+Public results carry only safe metadata and a relative artifact reference, never
+raw output. Up to 20 artifacts are retained (about 55 MiB maximum); files older
+than seven days and excess oldest files are removed when the next failure is saved.
+Delete individual artifact files to remove them sooner; inactive state is not
+cleaned by a background service.
 
 ## Fast mode
 
@@ -681,18 +626,13 @@ Support checked 2026-09-11:
   switches. Requires account access and usage credits or paid API access;
   third-party cloud backends are unsupported. Source:
   [Claude fast mode](https://code.claude.com/docs/en/fast-mode).
-- A native reviewer remains available when fast is false, with its original
-  profile and no speed assertion in the report. When true,
-  verify fast through effective profile settings, explicit live tool parameters,
-  or verified inherited speed. Append `--fast on` to the shared report command
-  only for the candidate that actually ran and requests fast. Codex's priority service
-  tier represents Fast. Claude profiles cannot independently pin speed, but
-  remain installed and usable with verified inherited fast. Profile presence
-  alone does not prove fast; use managed CLI only when the requested fast cannot
-  be established natively. Model/effort and fresh-context checks still apply.
+- Codex's priority service tier represents Fast. Claude profiles cannot
+  independently pin speed; a native subagent inherits the session's. A native
+  review result records no speed, so a configured fast request is delivered only
+  by the managed run.
 
-The coordinator's own work, native subagents it spawns without a route, and
-managed session-inherited routes retain their previous speed behavior. Ordinary interactive launcher commands
+The coordinator's own work and the native subagents it spawns retain their
+previous speed behavior. Ordinary interactive launcher commands
 keep provider-owned settings and user CLI arguments; workflow matrices do not
 change the coordinator's session. GitHub-hosted reviews have no independent
 fast control here; use local workflow review for configured speed.

@@ -1,5 +1,6 @@
 """Completion retries retain acceptance of the work that actually advanced Git."""
 import unittest
+from pathlib import Path
 from contextlib import contextmanager
 from dataclasses import replace
 from unittest.mock import patch
@@ -83,6 +84,19 @@ class ChildFinishTests(unittest.TestCase):
         self.adapter.set_state.side_effect = None
         self.assertEqual(self.dispatch(["finish", "8"])["state"], "Done")
         self.assertNotIn("review", workflow.read_evidence(self.root, self.child))
+
+    def test_finishing_a_subtask_discards_its_raw_review_streams(self):
+        """Done ends the need to diagnose the subtask's review rounds; an interrupted finish keeps them."""
+        from agent_box import review_results
+        source = Path(self.temporary.name) / "streams-source"
+        source.mkdir()
+        (source / "stderr").write_text("warning\n")
+        streams = review_results.save_streams(workflow.WORKFLOW_STATE, workflow.repository_key(self.root),
+                                              "8", "round", source).parent
+        self.interrupted_finish()
+        self.assertTrue(streams.is_dir())
+        self.assertEqual(self.dispatch(["finish", "8"])["state"], "Done")
+        self.assertFalse(streams.exists())
 
     def test_tracker_outage_retry_finishes_original_work_without_merge_or_validation(self):
         """The advanced parent must not turn the accepted child into an empty diff."""
@@ -262,7 +276,7 @@ class ChildFinishTests(unittest.TestCase):
         def interleave(root, purpose):
             if not revoked:
                 revoked.append(True)
-                workflow.reserve_review(root, BINDING, self.child, 3, "new-round", saved["scope"])
+                workflow.start_review(root, BINDING, self.child, 3, "new-round", saved["scope"], "managed")
             with original_lock(root, purpose):
                 yield
 
@@ -351,8 +365,8 @@ class NoCodeChildFinishTests(unittest.TestCase):
                 attempted, busy = [], []
 
                 def reserve(fingerprint):
-                    return workflow.reserve_review(self.root, BINDING, self.child, 3,
-                                                   "new-round", fingerprint)
+                    return workflow.start_review(self.root, BINDING, self.child, 3,
+                                                   "new-round", fingerprint, "managed")
 
                 def interleave(root, task):
                     value = original_read(root, task)
@@ -377,7 +391,7 @@ class NoCodeChildFinishTests(unittest.TestCase):
                 self.assertEqual(current.get("scope"), attempted[0])
                 self.assertEqual(current["child_start"]["work_observed"], resume)
                 budget = workflow.read_review_state(self.root, BINDING, self.child)
-                self.assertEqual((budget["used"], budget["pending"]), (1, "new-round"))
+                self.assertEqual((budget["failures"], budget["pending"]), (1, "new-round"))
 
     def test_claimed_child_recovers_creation_and_switch_failures_at_original_parent(self):
         """A successful Ready claim survives Git failure without substituting the later parent tip."""
@@ -498,7 +512,7 @@ class NoCodeChildFinishTests(unittest.TestCase):
             self.dispatch(["finish", "8"])
         self.dispatch(["begin", "8", "--resume"])
         saved = workflow.read_evidence(self.root, self.child)
-        workflow.reserve_review(self.root, BINDING, self.child, 3, "new-round", saved["scope"])
+        workflow.start_review(self.root, BINDING, self.child, 3, "new-round", saved["scope"], "managed")
         with self.assertRaisesRegex(AgentBoxError, "PASS review"):
             self.dispatch(["finish", "8"])
         saved = workflow.read_evidence(self.root, self.child)
@@ -584,7 +598,7 @@ class NoCodeChildFinishTests(unittest.TestCase):
             gw.git(self.root, "switch", "ab/7-parent")
         elif retirement == "review":
             saved = workflow.read_evidence(self.root, self.child)
-            workflow.reserve_review(self.root, BINDING, self.child, 3, "new-round", saved["scope"])
+            workflow.start_review(self.root, BINDING, self.child, 3, "new-round", saved["scope"], "managed")
         self.assertNotIn("local_acceptance", workflow.read_evidence(self.root, self.child))
         if remote:
             gw.git(self.root, "branch", "-D", "ab/8-child")

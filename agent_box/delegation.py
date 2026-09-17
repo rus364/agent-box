@@ -1,25 +1,9 @@
 """Instructions for delegated agents; provider settings describe a separate choice."""
 import json
 
-from .provider_runner import report_schema
-
 # Workers and scouts answer in these sections; nothing parses them, so a
 # different shape costs the coordinator a reread, never a paid run.
 RESPONSE_SECTIONS = ("Done", "Evidence", "Limitations")
-
-LAUNCH_CONTEXT = (
-    "managed_only routes require managed CLI; native agents run on the session's API and cannot switch API identity. "
-    "In an external session Claude Agent model aliases resolve to the session model and session effort overrides "
-    "profile effort, so native Claude needs the route's model and effort to equal the session's; otherwise use managed CLI. "
-    "Follow prepared provider order; prefer native when the live interface satisfies the route. "
-    "Append --fast on to report_command only if the candidate that ran requests fast and native fast is verified; otherwise omit --fast. "
-    "Codex native requires fork_turns=none or a verified equivalent; omitted inheritance, all, "
-    "and completed-agent reuse fail the contract. Claude native needs a verified fresh conversation "
-    "without parent history; otherwise use managed CLI. Profiles, prepare, scope and coordinator claims "
-    "do not attest hidden context; record observed facts and limitations. Every review verdict requires "
-    "a new instance. Pass only delegate_handoff as the initial bootstrap message; never inline, summarize "
-    "or reconstruct its canonical input file. "
-)
 
 COORDINATOR_OWNS = ("The coordinator owns branches, commits, task lifecycle, requirements, the tracker and GitHub; "
                     "never write to any of them or edit .agent-box.json. ")
@@ -33,11 +17,20 @@ def reviewer_instructions():
         "repository instruction to read the tracked task; do not query its history. "
         "Read AGENTS.md or CLAUDE.md in directories you touch and files they import with @path. "
         "Read every chunk; report missing, unreadable or truncated instructions explicitly. "
-        "Your final message is the report: one JSON object matching report_schema, with concrete evidence "
-        "and limitations, and no prose or Markdown around it. "
-        "Read-only: change nothing. Review findings require location, evidence and violated requirement; "
-        "distinguish verified consequences from uncertainty."
+        "Read-only: change nothing. Distinguish verified consequences from uncertainty. " + REPORT_FORMAT
     )
+
+
+# The workflow reads only the verdict line and finding severities; the rest is for the coordinator.
+REPORT_FORMAT = (
+    "Your final message is the report in Markdown. It has exactly one line `Verdict: PASS`, `Verdict: NEEDS_WORK` "
+    "or `Verdict: INCONCLUSIVE`, and no other line starting with `Verdict:`. Give each finding as one bullet "
+    "`- [SEVERITY] path:line — problem, concrete scenario, evidence and violated requirement`. SEVERITY is one of: "
+    "CRITICAL — data loss, a security breach or the task's core goal broken; HIGH — a stated requirement or a safety "
+    "check fails in a normal scenario; MEDIUM — a real defect in an edge or error path, or a test gap hiding one; "
+    "LOW — a minor defect, misleading text, or needless complexity with a simpler alternative. PASS has no findings; "
+    "INCONCLUSIVE states what could not be established. Add a short summary and limitations after the verdict line."
+)
 
 
 def delegate_rules(role):
@@ -67,13 +60,13 @@ def profile_instructions(role):
         return ("Act only as the assigned reviewer. Follow the complete current handoff and repository instructions. "
                 "Use English for reports. " + COORDINATOR_OWNS + "Do not load parent conversation, tracker comments "
                 "or previous-agent history. Read all instructions and report missing, unreadable or truncated "
-                "instructions. Read only; Review findings require location, evidence and violated requirement.")
+                "instructions. Read only. " + REPORT_FORMAT)
     return delegate_rules(role)
 
 
 def render_handoff(role, payload, instructions=""):
     """One logical reviewer input for native and managed runs."""
-    handoff = {"role": role, **payload, "report_schema": report_schema()}
+    handoff = {"role": role, **payload}
     return (reviewer_instructions() + "\n" + instructions + "\nDelegation handoff:\n"
             + json.dumps(handoff, ensure_ascii=False, indent=2) + "\n")
 
@@ -84,7 +77,7 @@ def bootstrap(role, artifact):
         f"Assigned role: {role}. Read the complete UTF-8 delegation input at "
         f"{json.dumps(artifact['path'], ensure_ascii=False)} in chunks without truncation. "
         f"Verify SHA-256 {artifact['sha256']} before acting. Follow that input's role, "
-        "scope, repository instructions, evidence policy and report schema. Do not load "
+        "scope, repository instructions, evidence policy and report format. Do not load "
         "parent conversation, tracker comments or previous-agent history. If the file is "
         "missing, unreadable, truncated or its digest differs, stop and report blocked "
         "with the concrete limitation; never reconstruct the assignment."

@@ -71,7 +71,7 @@ class ReviewRoutingTests(unittest.TestCase):
                  patch.object(workflow.shutil, "which", side_effect=lambda p: p), \
                  patch.object(workflow, "run") as run:
                 with self.assertRaisesRegex(AgentBoxError, "No reviewer candidate configured in workflow.review.models"):
-                    workflow.route(Config(workflow=config), "reviewer", 2, "codex")
+                    workflow.candidates(Config(workflow=config), "reviewer", 2)
                 run.assert_not_called()
 
     def test_provider_fallback_requires_observed_unavailability(self):

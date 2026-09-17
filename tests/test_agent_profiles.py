@@ -23,11 +23,12 @@ class AgentProfileTests(unittest.TestCase):
                     self.assertIn("English", instructions)
                     self.assertIn("never write to any of them", instructions)
                     if role == "reviewer":
-                        self.assertIn("Review findings require location, evidence and violated requirement", instructions)
+                        self.assertIn("exactly one line `Verdict: PASS`", instructions)
+                        self.assertIn("`- [SEVERITY] path:line", instructions)
                         self.assertIn("do not load parent conversation", instructions.lower())
                     else:
                         self.assertIn("## Done, ## Evidence, ## Limitations", instructions)
-                        self.assertNotIn("Review findings require", instructions)
+                        self.assertNotIn("Verdict:", instructions)
                         self.assertEqual("Read-only: change nothing" in instructions, role == "scout")
                         self.assertEqual("Change project files only within the assigned scope" in instructions,
                                          role == "worker")

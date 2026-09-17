@@ -3,12 +3,10 @@ import json
 import os
 from pathlib import Path
 import tempfile
-from types import SimpleNamespace
 import unittest
 from unittest.mock import patch, Mock
 
 from agent_box import agent_profiles, external_launch, provider_runner, routing, workflow, workflow_state
-from agent_box.errors import AgentBoxError
 from test_external_config import external_config
 import workflow_fixtures
 
@@ -36,12 +34,12 @@ class ExternalRoutingTests(unittest.TestCase):
         for first, second in ((native, external), (external, native)):
             selected = {**first, 'fallbacks': [second]}
             with patch.object(workflow, 'run', side_effect=[provider_runner.ProviderFailure('quota', 'quota'),
-                              {'verdict': 'PASS', 'summary': 'Reviewed', 'findings': []}]):
+                              workflow_fixtures.answer()]):
                 output = workflow.execute(config.workflow, selected, 'reviewer', Path.cwd(), 'review')
             self.assertEqual(output['route'], second)
             self.assertEqual(output['failures'][0].get('api_provider'), first.get('api_provider'))
 
-    def test_all_roles_and_role_lists_bind_the_api_without_native_profiles(self):
+    def test_all_roles_and_role_lists_bind_the_api(self):
         """A model name alone cannot identify which API should receive its request."""
         for cli in ('codex', 'claude'):
             for role, tier, override in [('worker', 1, False), ('reviewer', 2, False),
@@ -54,15 +52,12 @@ class ExternalRoutingTests(unittest.TestCase):
                          patch.object(workflow, 'WORKFLOW_STATE', Path(tmp)), \
                          patch.object(workflow_state, 'WORKFLOW_STATE', Path(tmp)), \
                          patch.object(workflow.shutil, 'which', return_value='/bin/cli'):
-                        route = workflow.route(config, role, tier, cli)
+                        route = workflow.candidates(config, role, tier)
                     self.assertEqual(route['api_provider'], 'deepseek')
                     self.assertEqual(route['provider'], cli)
-                    self.assertTrue(route['managed_only'])
-                    self.assertIsNone(route['native_profile'])
+                    self.assertEqual(route['api_fingerprint'],
+                                     external_launch.route_identity(config, 'deepseek', cli)['api_fingerprint'])
                     self.assertNotIn('private-api-key', json.dumps(route))
-                    args = SimpleNamespace(provider=cli, model='external-small', effort='high')
-                    with self.assertRaisesRegex(AgentBoxError, 'managed CLI'):
-                        workflow.native_output(args, route, tier)
 
     def test_subscription_exhaustion_never_excludes_an_external_candidate(self):
         """Subscription capacity is not the budget of a separately billed API."""
@@ -75,98 +70,8 @@ class ExternalRoutingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {}, clear=True), \
              patch.object(workflow, 'WORKFLOW_STATE', Path(tmp)), patch.object(workflow_state, 'WORKFLOW_STATE', Path(tmp)), \
              patch.object(workflow.shutil, 'which', return_value='/bin/cli'), patch.object(workflow, 'usage_snapshot') as usage:
-            workflow.route(config, 'worker', 1, 'codex')
+            workflow.candidates(config, 'worker', 1)
         usage.assert_not_called()
-
-    def test_native_builtin_candidates_are_disabled_inside_an_external_session(self):
-        """A native child would inherit its parent's external endpoint despite the built-in ID."""
-        config = external_config()
-        spec = {'provider': 'codex', 'model': 'native-model', 'effort': 'high', 'tier': 1, 'fallbacks': []}
-        identity = external_launch.route_identity(config, 'deepseek', 'codex')
-        with patch.dict(os.environ, {'AGENT_BOX_API_PROVIDER': 'deepseek',
-                                   'AGENT_BOX_API_CLI': 'codex',
-                                   'AGENT_BOX_API_FINGERPRINT': identity['api_fingerprint']}):
-            workflow.bind_api_route(spec, config)
-            self.assertTrue(spec['managed_only'])
-            self.assertNotIn('api_provider', spec)
-            args = SimpleNamespace(provider='codex', model='native-model', effort='high')
-            with self.assertRaisesRegex(AgentBoxError, 'managed CLI'):
-                workflow.native_output(args, spec, 1)
-            args = SimpleNamespace(primary='codex', session_model=None, session_effort=None)
-            with self.assertRaisesRegex(AgentBoxError, 'verified --session-model'):
-                workflow.session_route(args, 'worker', config)
-
-    def test_candidate_on_the_sessions_own_api_stays_native(self):
-        """A native child reaches exactly the session's API, so a separate process buys nothing there.
-
-        Any other identity still needs one: the child cannot switch endpoints, and a
-        report from a session without the prepared identity cannot show where it ran.
-        """
-        for cli, other in (('codex', 'claude'), ('claude', 'codex')):
-            for role, tier, override in [('worker', 1, False), ('reviewer', 2, False),
-                                         ('worker', None, True), ('scout', None, True), ('reviewer', None, True)]:
-                with self.subTest(cli=cli, role=role, override=override), tempfile.TemporaryDirectory() as tmp:
-                    config = external_config()
-                    policy = config.workflow
-                    _, env = external_launch.prepare([cli], 'deepseek', cli, config, tmp, {})
-                    with patch.dict(os.environ, env, clear=True), \
-                         patch.object(workflow, 'WORKFLOW_STATE', Path(tmp)), \
-                         patch.object(workflow_state, 'WORKFLOW_STATE', Path(tmp)), \
-                         patch.object(workflow.shutil, 'which', return_value='/bin/cli'):
-                        configure(policy, role, tier, [candidate(cli), candidate(other)])
-                        route = workflow.route(config, role, tier, cli)
-                        configure(policy, role, tier, [candidate(other), candidate(cli)])
-                        elsewhere = workflow.route(config, role, tier, other)
-                    self.assertFalse(route.get('managed_only'))
-                    self.assertEqual(route['api_fingerprint'], env[external_launch.FINGERPRINT_ENV])
-                    self.assertTrue(elsewhere['managed_only'])
-                    self.assertNotEqual(elsewhere['api_fingerprint'], route['api_fingerprint'])
-                    if role != 'reviewer':
-                        continue
-                    path = Path(tmp) / 'report.json'
-                    path.write_text(json.dumps({'verdict': 'PASS', 'summary': 'Reviewed', 'findings': []}))
-                    args = SimpleNamespace(provider=cli, model='external-small', effort='high', role=role,
-                                           file=str(path), fresh_context=True)
-                    with patch.dict(os.environ, env, clear=True):
-                        output = workflow.native_output(args, route, tier)
-                    self.assertEqual((output['route']['api_provider'], output['route']['api_fingerprint']),
-                                     (route['api_provider'], route['api_fingerprint']))
-                    with patch.dict(os.environ, {}, clear=True), self.assertRaisesRegex(AgentBoxError, 'managed CLI'):
-                        workflow.native_output(args, route, tier)
-
-    def test_session_route_from_the_same_external_session_stays_native(self):
-        """Current-session delegation inherits the session's API; only a session without it is refused."""
-        config = external_config()
-        with tempfile.TemporaryDirectory() as tmp:
-            _, env = external_launch.prepare(['codex'], 'deepseek', 'codex', config, tmp, {})
-            report = Path(tmp) / 'report.json'
-            report.write_text(json.dumps({'verdict': 'PASS', 'summary': 'Reviewed', 'findings': []}))
-            session = SimpleNamespace(primary='codex', session_model='external-small', session_effort='high')
-            args = SimpleNamespace(provider='codex', model='external-small', effort='high', role='reviewer',
-                                   file=str(report), fallback_reason=None, fresh_context=True, session_inherited=False)
-            with patch.dict(os.environ, env, clear=True):
-                route = workflow.session_route(session, 'reviewer', config)
-                self.assertFalse(route.get('managed_only'))
-                output = workflow.native_output(args, route, None)
-            self.assertEqual(output['route']['api_fingerprint'], env[external_launch.FINGERPRINT_ENV])
-            with patch.dict(os.environ, {}, clear=True), self.assertRaisesRegex(AgentBoxError, 'session API differs'):
-                workflow.native_output(args, route, None)
-
-    def test_active_api_identity_survives_config_edits_and_rejects_other_sessions(self):
-        """Delegation from an external session binds the launched endpoint; config edits cannot substitute it."""
-        config = external_config()
-        with tempfile.TemporaryDirectory() as tmp:
-            _, env = external_launch.prepare(['codex'], 'deepseek', 'codex', config, tmp, {})
-            args = SimpleNamespace(primary='codex', session_model='external-small', session_effort='high')
-            config.external_providers['deepseek'].codex.url = 'https://changed.example/v1'
-            with patch.dict(os.environ, env, clear=True):
-                with self.assertRaisesRegex(AgentBoxError, 'definition changed'):
-                    workflow.session_route(args, 'worker', config)
-                with patch.dict(os.environ, {external_launch.CLI_ENV: 'claude'}):
-                    with self.assertRaisesRegex(AgentBoxError, 'differs from the CLI'):
-                        workflow.session_route(args, 'worker', config)
-            self.assertFalse(any(k in external_launch.builtin_environment(env) for k in
-                                 (external_launch.PROVIDER_ENV, external_launch.FINGERPRINT_ENV, external_launch.CLI_ENV)))
 
     def test_reverse_claude_fast_checks_the_restored_cloud_environment(self):
         """Preflight must check the same provider environment that the managed process receives."""
@@ -223,7 +128,7 @@ class ExternalRoutingTests(unittest.TestCase):
             def popen(command, **kwargs):
                 self.assertEqual(kwargs['env']['OPENAI_API_KEY'], 'original-key')
                 self.assertNotIn(external_launch.API_ENV, kwargs['env'])
-                self.assertNotIn(external_launch.PROVIDER_ENV, kwargs['env'])
+                self.assertNotIn(external_launch.BASELINE_ENV, kwargs['env'])
                 Path(command[command.index('-o') + 1]).write_text(report)
                 return Mock(returncode=0)
             with patch.dict(os.environ, env, clear=True), patch.object(provider_runner.subprocess, 'Popen', side_effect=popen):

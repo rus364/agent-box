@@ -270,88 +270,30 @@ class NotifyLogicTests(unittest.TestCase):
             },
         })])
 
-    def test_review_notifications_keep_all_findings_and_their_fields(self):
-        """A failed review must carry actionable evidence, not just its verdict."""
-        findings = [
-            {"severity": "high", "path": "agent_box/notify.py", "line": 0,
-             "message": "First issue.", "evidence": "First evidence.",
-             "requirement": "Keep **all fields**."},
-            {"severity": "medium", "path": "tests/test_notify.py", "line": 12,
-             "message": "Second issue.", "evidence": "Second evidence.\nMore evidence.",
-             "requirement": "Cover failures."},
-        ]
-        for verdict, items in (("PASS", []), ("INCONCLUSIVE", []),
-                               ("NEEDS_WORK", findings), ("INCONCLUSIVE", findings)):
-            with self.subTest(verdict=verdict, findings=len(items)):
-                sent = self._codex_requests(json.dumps({
-                    "verdict": verdict, "summary": "Review summary.", "findings": items,
-                }))
-                markdown = sent[0][1]["rich_message"]["markdown"]
-                self.assertIn(f"**Verdict:** {verdict}", markdown)
-                self.assertIn("Review summary.", markdown)
-                if not items:
-                    self.assertIn("No findings reported.", markdown)
-                for index, finding in enumerate(items, 1):
-                    self.assertIn(f"### Finding {index}", markdown)
-                    self.assertIn(f"**Severity:** {finding['severity']}", markdown)
-                    location = notify._escape_markdown_inline(f"{finding['path']}:{finding['line']}")
-                    self.assertIn(f"**Location:** {location}", markdown)
-                    for field in ("message", "evidence", "requirement"):
-                        self.assertIn(finding[field], markdown)
-
-    def test_unrecognized_json_and_invalid_reports_keep_the_original_message(self):
-        """Do not discard unknown fields or reinterpret examples or delegate answers as reports."""
-        report = {"verdict": "PASS", "summary": "Summary.", "findings": []}
-        samples = [
-            "Ordinary **Markdown**.", '{"verdict":', '["PASS"]', 'null',
-            json.dumps({"verdict": "PASS", "summary": "Summary."}),
-            json.dumps({**report, "extra": "Must survive."}),
-            json.dumps({**report, "verdict": "unknown"}),
-            json.dumps({"verdict": "NEEDS_WORK", "summary": "Summary.", "findings": []}),
-            json.dumps({"verdict": "PASS", "summary": "Summary.", "findings": [{}]}),
-            json.dumps({"status": "completed", "summary": "Summary.", "evidence": ["edited"]}),
-            "```json\n" + json.dumps(report) + "\n```",
-        ]
-        for detail in samples:
-            with self.subTest(detail=detail):
-                sent = self._codex_requests(detail)
-                self.assertEqual(sent[0][1]["rich_message"]["markdown"],
-                                 "✅ **Codex · infrado**\nTurn finished\n\n" +
-                                 notify.sanitize_rich_markdown(detail))
-
-    def test_protocol_display_uses_existing_sanitizer_and_readable_plain_fallback(self):
-        """Formatting must not bypass markup safety or revert to JSON on failure."""
-        finding = {"severity": "high", "path": "a.py", "line": 1, "message": "<b>Issue</b>",
-                   "evidence": "tg://resolve and ![image](https://example.test/a.png)", "requirement": "Safe."}
-        report = {"verdict": "NEEDS_WORK", "summary": "Summary.", "findings": [finding]}
-        sent = self._codex_requests(json.dumps(report), responses=[b'{"ok": false}'])
+    def test_a_reviewer_markdown_report_is_delivered_whole_and_sanitized(self):
+        """The reviewer already answers in Markdown: its verdict line and every finding arrive as written."""
+        report = ("Verdict: NEEDS_WORK\n\n- [HIGH] agent_box/notify.py:1 — <b>Issue</b> tg://resolve\n"
+                  "- [LOW] tests/test_notify.py:12 — Second issue.")
+        sent = self._codex_requests(report, responses=[b'{"ok": false}'])
         rich = sent[0][1]["rich_message"]["markdown"]
+        self.assertEqual(rich, "✅ **Codex · infrado**\nTurn finished\n\n" + notify.sanitize_rich_markdown(report))
+        self.assertIn("Verdict: NEEDS_WORK", rich)
         self.assertNotIn("<b>Issue</b>", rich)
         self.assertNotIn("tg://", rich)
-        self.assertNotIn("![image]", rich)
-        self.assertEqual(sent[1][0], "sendMessage")
         plain = notify.html.unescape(sent[1][1]["text"])
-        self.assertIn("**Verdict:** NEEDS_WORK", plain)
-        self.assertIn(finding["message"], plain)
-        self.assertIn(finding["evidence"], plain)
-        self.assertNotIn('"verdict":', plain)
+        self.assertIn("[LOW] tests/test_notify.py:12", plain)
 
-    def test_long_protocol_report_preserves_all_findings_within_delivery_limits(self):
-        """Formatting must retain the tail when a complete report needs chunks."""
+    def test_long_review_report_preserves_all_findings_within_delivery_limits(self):
+        """A complete report that needs chunks keeps its tail."""
         evidence = "x" * notify.TELEGRAM_RICH_TEXT_LIMIT
-        def report(*items):
-            return json.dumps({"verdict": "NEEDS_WORK", "summary": "Full report.", "findings": [
-                {"severity": "low", "path": "a.py", "line": 1, "message": message, "evidence": text,
-                 "requirement": "Req."} for message, text in items]})
-        sent = self._codex_requests(report(("First.", evidence), ("Final issue.", "Final proof.")))
+        report = f"Verdict: NEEDS_WORK\n\n- [LOW] a.py:1 — First. {evidence}\n\n- [LOW] a.py:2 — Final proof.\n"
+        sent = self._codex_requests(report)
         self.assertEqual([method for method, _body in sent], ["sendRichMessage"] * 2)
         markdown = "".join(body["rich_message"]["markdown"] for _method, body in sent)
         self.assertIn(evidence, markdown)
-        self.assertIn("### Finding 2", markdown)
         self.assertIn("Final proof.", markdown)
-        oversized = report(("First.", evidence * notify.MAX_TELEGRAM_REPORT_MESSAGES))
-        self.assertEqual(self._codex_requests(oversized)[0][1]["text"],
-                         self._codex_oversized_notice())
+        oversized = "Verdict: NEEDS_WORK\n\n" + evidence * notify.MAX_TELEGRAM_REPORT_MESSAGES
+        self.assertEqual(self._codex_requests(oversized)[0][1]["text"], self._codex_oversized_notice())
 
     def test_codex_sends_github_style_markdown_as_a_rich_message(self):
         detail = (

@@ -1,14 +1,9 @@
-"""Review rounds: one neutral input, a bounded attempt budget, and reports bound to their round."""
-import base64
+"""Review rounds: one neutral input, attempts spent only by verdicts, and results bound to their round."""
 import hashlib
-import io
 import json
 import stat
-import subprocess
-import sys
 import tempfile
 import unittest
-from contextlib import redirect_stderr
 from pathlib import Path
 from unittest.mock import patch
 
@@ -19,7 +14,7 @@ from agent_box import workflow_state
 from agent_box.errors import AgentBoxError
 from agent_box.repo_binding import Binding
 from agent_box.tracker.core import Task
-from workflow_fixtures import (BINDING, WorkflowCase, candidate, managed_runner, repository,
+from workflow_fixtures import (BINDING, WorkflowCase, answer, candidate, managed_runner, repository,
                                selected_route)
 
 
@@ -31,15 +26,77 @@ def package(payload):
                       *(Path(item["artifact_path"]) for item in manifest["repository_instructions"])]
 
 
+def payload_of(prompt):
+    return json.loads(prompt.split("Delegation handoff:\n", 1)[1])
+
+
+def timeout(*args, **kwargs):
+    raise provider_runner.ProviderFailure("mock timeout", "timeout")
+
+
 class ReviewWorkflowTests(WorkflowCase):
 
-    def test_review_input_damage_blocks_both_backends_without_consuming(self):
-        """Native and managed reviewers require the same intact package before dispatch or acceptance."""
+    def setUp(self):
+        super().setUp()
+        self.config.workflow.review.policy = "always"
+
+    def budget(self):
+        return workflow.read_review_budget(self.root, BINDING, self.task, self.config.workflow.review.max_rounds)
+
+    def test_native_result_is_recorded_on_trust_for_the_round_it_opened(self):
+        """The coordinator's word names the reviewer; no descriptor, model check or context flag stands in for it."""
+        opened = self.native_round()
+        handoff = self.delegation_input(opened)
+        self.assertIn(str(handoff), opened["message"])
+        self.assertIn(hashlib.sha256(handoff.read_bytes()).hexdigest(), opened["message"])
+        self.assertIn("fresh context without the parent's history", opened["instructions"])
+        self.assertNotIn("fork_turns", json.dumps(opened))
+        self.assertEqual(self.budget()["used"], 0)
+        self.assertEqual(self.run_workflow("inspect", "1")["review"]["pending_round"],
+                         {"round": opened["round"], "backend": "native", "status": "awaiting --result"})
+        with self.assertRaisesRegex(AgentBoxError, "--provider PROVIDER --model MODEL"):
+            self.run_workflow("review", "1", "--result", str(self.report))
+        result = self.native_result("Summary first.\n\n**Verdict:** PASS\n\nNo findings.\n", "--effort", "high")
+        self.assertEqual((result["verdict"], result["reconciliation"]["status"]), ("PASS", "applied"))
+        self.assertEqual(result["route"], {"provider": "claude", "model": "m", "effort": "high", "backend": "native"})
+        self.assertEqual(result["review_budget"]["used"], 1)
+        self.assertEqual(workflow.read_evidence(self.root, self.task)["review"]["verdict"], "PASS")
+        self.assertFalse(handoff.parent.exists())
+        with self.assertRaisesRegex(AgentBoxError, "No native review round is pending"):
+            self.native_result()
+        with self.assertRaisesRegex(AgentBoxError, "pass them with --result"):
+            self.run_workflow("review", "1", "--native", "--model", "m")
+
+    def test_an_answer_without_exactly_one_verdict_line_keeps_the_native_round_open(self):
+        """An unreadable verdict is a failure to record, not a spent round."""
+        self.native_round()
+        for text in ("Looks fine to me.\n", "Verdict: PASS\nVerdict: NEEDS_WORK\n", "Verdict: MAYBE\n"):
+            with self.subTest(text=text), self.assertRaisesRegex(AgentBoxError, "round stays pending"):
+                self.native_result(text)
+        self.assertEqual(self.budget()["used"], 0)
+        self.assertNotIn("review", workflow.read_evidence(self.root, self.task))
+        result = self.native_result("Verdict: NEEDS_WORK\n\n- [HIGH] change.py:1 — bound the value\n"
+                                    "- [LOW] docs.md:3 — typo\n")
+        self.assertEqual((result["verdict"], result["findings"]), ("NEEDS_WORK", {"HIGH": 1, "LOW": 1}))
+        self.assertEqual(result["review_budget"]["used"], 1)
+
+    def test_a_commit_after_the_native_round_opened_makes_its_verdict_stale(self):
+        """The verdict still cost a round, but it describes code that is no longer the head."""
+        self.native_round()
+        gw.git(self.root, "commit", "--allow-empty", "-m", "later work")
+        result = self.native_result()
+        self.assertEqual((result["reconciliation"]["status"], result["reconciliation"]["changes"]), ("stale", ["head"]))
+        self.assertEqual(result["review_budget"]["used"], 1)
+        self.assertNotIn("review", workflow.read_evidence(self.root, self.task))
+
+    def test_damaged_native_input_refuses_the_answer_without_spending(self):
+        """A reviewer that may have read other bytes cannot record a verdict; owned cleanup stays exact."""
         for damage in ("missing", "modified", "symlink", "replaced-package", "unknown-file"):
             with self.subTest(damage=damage):
-                prepared = self.prepare_review_input()
-                descriptor = json.loads(base64.urlsafe_b64decode(prepared["handoff"]))
-                path = self.delegation_input(prepared)
+                self.config.workflow.review.max_rounds = 10
+                opened = self.native_round()
+                path = self.delegation_input(opened)
+                descriptor = json.loads((path.parent / "descriptor.json").read_text())
                 original = path.read_bytes()
                 target = path.parent.with_name(path.parent.name + "-original")
                 if damage == "missing":
@@ -58,48 +115,40 @@ class ReviewWorkflowTests(WorkflowCase):
                         item.rename(path.parent / item.name)
                 else:
                     (path.parent / "user-notes.txt").write_text("keep")
-                before = workflow.read_evidence(self.root, self.task)
-                review_state = workflow.read_review_state(self.root, BINDING, self.task)
-                with patch.object(workflow, "execute") as execute:
-                    for managed in (False, True):
-                        with self.assertRaisesRegex(AgentBoxError, "[Dd]elegation input"):
-                            self.consume_review_input(prepared, managed=managed)
-                    execute.assert_not_called()
-                self.assertEqual(workflow.read_evidence(self.root, self.task), before)
-                self.assertEqual(workflow.read_review_state(self.root, BINDING, self.task), review_state)
+                used = self.budget()["used"]
+                with self.assertRaisesRegex(AgentBoxError, "[Dd]elegation input|native round"):
+                    self.native_result()
+                self.assertEqual(self.budget()["used"], used)
+                self.assertNotIn("review", workflow.read_evidence(self.root, self.task))
                 if damage in ("replaced-package", "unknown-file"):
                     with self.assertRaisesRegex(AgentBoxError, "replaced|Unknown delegation input"):
                         workflow.cleanup_delegation_input(self.root, descriptor)
                     self.assertEqual(path.read_bytes(), original)
                     if damage == "unknown-file":
-                        notes = path.parent / "user-notes.txt"
-                        self.assertEqual(notes.read_text(), "keep")
-                        notes.unlink()
-                        self.consume_review_input(prepared, managed=False)
+                        (path.parent / "user-notes.txt").unlink()
+                        self.assertEqual(self.native_result()["reconciliation"]["status"], "applied")
                         self.assertFalse(path.parent.exists())
-                else:
+                elif damage != "missing":
                     workflow.cleanup_delegation_input(self.root, descriptor)
                     self.assertFalse(path.parent.exists())
                     if damage == "symlink":
                         self.assertEqual(target.read_bytes(), original)
 
     def test_managed_reviews_use_exact_bytes_and_clean_only_owned_packages(self):
-        """Failures retire each started input; replacement packages and unknown files remain untouched."""
-        packages = set()
+        """A changed input after dispatch keeps the verdict private; a failure retires its input unspent."""
         for outcome in ("success", "failure", "symlink", "replaced-package", "unknown-file"):
             with self.subTest(outcome=outcome):
-                prepared = self.prepare_review_input()
-                path = self.delegation_input(prepared)
-                self.assertNotIn(path.parent, packages)
-                packages.add(path.parent)
-                raw = path.read_bytes()
-                target = path.parent.with_name(path.parent.name + "-original")
+                workflow.save_review_state(self.root, BINDING, self.task, {"used": 0})
+                seen = {}
 
                 def provider(route, actual_role, root, prompt, **kwargs):
+                    path = Path(kwargs["read_paths"][0]) / "handoff.txt"
+                    seen["path"] = path
                     self.assertEqual(actual_role, "reviewer")
-                    self.assertEqual(prompt.encode("utf-8"), raw)
+                    self.assertEqual(prompt.encode("utf-8"), path.read_bytes())
+                    target = path.parent.with_name(path.parent.name + "-original")
                     if outcome == "failure":
-                        raise provider_runner.ProviderFailure("mock timeout", "timeout")
+                        timeout()
                     if outcome == "symlink":
                         path.rename(target)
                         path.symlink_to(target)
@@ -110,35 +159,27 @@ class ReviewWorkflowTests(WorkflowCase):
                             item.rename(path.parent / item.name)
                     elif outcome == "unknown-file":
                         (path.parent / "user-notes.txt").write_text("keep")
-                    return {"verdict": "PASS", "summary": "Checked", "findings": []}
+                    return answer()
 
                 with patch.object(workflow, "run", side_effect=managed_runner(provider)) as runner:
-                    if outcome == "success":
-                        self.consume_review_input(prepared, managed=True)
-                    elif outcome != "failure":
-                        result = self.consume_review_input(prepared, managed=True)
-                        self.assertEqual(result["reconciliation"]["status"], "invalid_input")
-                        self.assertTrue(Path(result["result_path"]).exists())
-                        self.assertNotIn("review", workflow.read_evidence(self.root, self.task))
+                    if outcome == "failure":
+                        with self.assertRaisesRegex(AgentBoxError, "no attempt spent"):
+                            self.run_workflow("review", "1")
+                        self.assertEqual(self.budget()["used"], 0)
                     else:
-                        with self.assertRaises(AgentBoxError):
-                            self.consume_review_input(prepared, managed=True)
-                        self.assertNotIn("review", workflow.read_evidence(self.root, self.task))
+                        result = self.run_workflow("review", "1")
+                        self.assertEqual(result["reconciliation"]["status"],
+                                         "applied" if outcome == "success" else "invalid_input")
+                        self.assertEqual(result["review_budget"]["used"], 1)
                     self.assertEqual(runner.call_count, 1)
+                path = seen["path"]
                 if outcome == "symlink":
                     self.assertTrue(path.is_symlink())
                 elif outcome in ("replaced-package", "unknown-file"):
-                    self.assertEqual(path.read_bytes(), raw)
-                    if outcome == "unknown-file":
-                        self.assertEqual((path.parent / "user-notes.txt").read_text(), "keep")
+                    self.assertTrue(path.exists())
                 else:
                     self.assertFalse(path.parent.exists())
-                    if outcome == "symlink":
-                        self.assertEqual(target.read_bytes(), raw)
-                with patch.object(workflow, "execute") as execute:
-                    with self.assertRaisesRegex(AgentBoxError, "stale|already started"):
-                        self.consume_review_input(prepared, managed=True)
-                    execute.assert_not_called()
+                self.assertEqual("review" in workflow.read_evidence(self.root, self.task), outcome == "success")
 
     def test_unpublished_review_input_is_cleaned_after_write_failure(self):
         """A descriptor write failure must not strand an unpublished input."""
@@ -150,760 +191,331 @@ class ReviewWorkflowTests(WorkflowCase):
             return write(path, *args, **kwargs)
         with patch.object(workflow, "atomic_write_text", side_effect=fail):
             with self.assertRaisesRegex(OSError, "disk full"):
-                self.prepare_review_input()
+                self.native_round()
         self.assertFalse(list(workflow.WORKFLOW_STATE.rglob("handoff.txt")))
 
-    def test_reviewer_models_prepare_and_report_bind_real_candidates_without_fabricating_a_tier(self):
-        """Config changes cannot rewrite a prepared review's parameters or admit stale reports."""
-        self.patches[5].stop()  # Exercise the real route, not the generic handoff fixture.
-        self.task.labels = []
-        self.config.workflow.review.models = [candidate("claude", "claude-global", "high"),
-                                              candidate("codex", "codex-global", "medium")]
-        with patch.object(workflow.shutil, "which", side_effect=lambda name: name):
-            prepared = self.run_workflow("prepare", "1", "--role", "reviewer", "--primary", "claude",
-                                         "--brief", str(self.review_brief))
-        route = prepared["route"]
-        self.assertEqual((route["provider"], route["model"], route["tier"]), ("claude", "claude-global", None))
-        self.assertEqual(route["native_profile"], "ab-reviewer")
-        self.assertFalse(route.get("managed_only"))
-        self.assertEqual([fallback["model"] for fallback in route["fallbacks"]], ["codex-global"])
-        self.config.workflow.review.models[0]["model"] = "changed-after-prepare"
-        self.report.write_text(json.dumps({"verdict": "PASS", "summary": "Reviewed", "findings": []}))
-        argv = ["report", "1", "--role", "reviewer", "--scope", prepared["scope"],
-                "--handoff", prepared["handoff"], "--file", str(self.report)]
-        with self.assertRaisesRegex(AgentBoxError, "outside the configured route"):
-            self.run_workflow(*argv, "--provider", "claude", "--model", "changed-after-prepare", "--effort", "high", "--fresh-context")
-        with self.assertRaisesRegex(AgentBoxError, "requires managed CLI execution"):
-            self.run_workflow(*argv, "--provider", "codex", "--model", "codex-global", "--effort", "medium", "--fresh-context")
-        with self.assertRaisesRegex(AgentBoxError, "fresh-context"):
-            self.run_workflow(*argv, "--provider", "claude", "--model", "claude-global", "--effort", "high")
-        result = self.run_workflow(*argv, "--provider", "claude", "--model", "claude-global", "--effort", "high", "--fresh-context")
-        self.assertEqual(result["report"]["verdict"], "PASS")
-        self.assertIsNone(result["route"]["tier"])
-        self.assertEqual(self.task.labels, [])
-
     def test_the_task_tier_selects_reviewer_models_only_while_tiers_are_on(self):
-        """Tiers off run the role's own list for a tier-labelled task; with no list, the session is inherited."""
-        self.patches[5].stop()
+        """Tiers off run the role's own list for a tier-labelled task; with no list, review is native only."""
+        self.patches[5].stop()  # Exercise the real candidate selection.
         self.task.labels = ["ab:tier:2"]
         self.config.workflow.review.max_rounds = 30
-        self.config.workflow.review.policy = "always"
         review = self.config.workflow.review
         for provider in ("codex", "claude"):
-            for use_tiers, models, tier_list, expected in ((False, False, True, "session"), (False, True, True, "global"),
+            for use_tiers, models, tier_list, expected in ((False, False, True, None), (False, True, True, "global"),
                                                            (True, False, True, "tier"), (True, True, True, "tier"),
                                                            (True, True, False, "global")):
                 self.config.workflow.use_tiers = use_tiers
                 review.models = [candidate(provider, provider + "-global", "default")] if models else []
                 review.tiers["2"] = [candidate(provider, provider + "-tier", "high")] if tier_list else []
-                argv = ["review", "1", "--primary", provider, "--brief", str(self.review_brief),
-                        "--session-model", provider + "-session", "--session-effort", "medium"]
                 with self.subTest(provider=provider, use_tiers=use_tiers, models=models, tier_list=tier_list), \
                      patch.object(workflow.shutil, "which", side_effect=lambda name: name), \
-                     patch.object(workflow, "run", return_value={"verdict": "PASS", "summary": "Reviewed", "findings": []}) as run:
-                    result = self.run_workflow(*argv)
+                     patch.object(workflow, "run", return_value=answer()) as run:
+                    if expected is None:
+                        with self.assertRaisesRegex(AgentBoxError, "No reviewer candidates.*--native"):
+                            self.run_workflow("review", "1")
+                        run.assert_not_called()
+                        continue
+                    result = self.run_workflow("review", "1")
                     route = run.call_args.args[0]
                     self.assertEqual(route["model"], provider + "-" + expected)
-                    self.assertEqual(route["tier"], 2 if use_tiers and expected != "session" else None)
+                    self.assertEqual(route["tier"], 2 if use_tiers else None)
                     if expected == "global":
-                        self.assertEqual(route["effort"], "default")
-                        cmd = provider_runner.build_command(route, "reviewer", self.root, self.report, self.report)
+                        cmd = provider_runner.build_command(route, "reviewer", self.root, self.report)
                         self.assertNotIn("--effort", cmd)
                         self.assertFalse(any("model_reasoning_effort=" in arg for arg in cmd))
-                    self.assertEqual(result["report"]["verdict"], "PASS")
+                    self.assertEqual(result["verdict"], "PASS")
 
-    def test_untiered_native_review_requires_inheritance_and_fresh_context(self):
-        """Unknown session settings stay unknown, with explicit coordinator evidence."""
-        self.task.labels = []
-        self.task.description = "## Acceptance\n- [x] requirement"
-        self.config.workflow.review.policy = "always"
-        fingerprint = workflow.scope(self.root, "main")
-        workflow.save_evidence(self.root, self.task, {
-            "scope": fingerprint, "review": {"verdict": "PASS"}, "validation": {"exit": 0}})
-        with patch.object(workflow, "route", side_effect=AssertionError("matrix consulted")), \
-             patch.object(workflow, "run", side_effect=AssertionError("provider launched")):
-            prepared = self.run_workflow("review", "1", "--primary", "codex",
-                                         "--brief", str(self.review_brief))
-        self.assertEqual(prepared["action"], "review-in-fresh-context")
-        self.assertIn("--session-inherited --fresh-context", prepared["report_command"])
-        self.assertIn("--session-model MODEL --session-effort EFFORT", prepared["instructions"])
-        self.assertIn("cannot run managed", prepared["instructions"])
-        self.assertIn(workflow.LAUNCH_CONTEXT, prepared["instructions"])
-        self.assertNotIn("review", workflow.read_evidence(self.root, self.task))
-        self.report.write_text(json.dumps({"verdict": "PASS", "summary": "Reviewed", "findings": []}))
-        argv = ["report", "1", "--role", "reviewer", "--provider", "codex",
-                "--scope", prepared["scope"], "--handoff", prepared["handoff"], "--file", str(self.report)]
-        with self.assertRaisesRegex(AgentBoxError, "session-inherited"):
-            self.run_workflow(*argv)
-        with self.assertRaisesRegex(AgentBoxError, "fresh-context"):
-            self.run_workflow(*argv, "--session-inherited")
-        with self.assertRaisesRegex(AgentBoxError, "provider differs"):
-            self.run_workflow(*argv, "--provider", "claude", "--session-inherited", "--fresh-context")
-        with self.assertRaisesRegex(AgentBoxError, "PASS review"):
-            self.run_workflow("finish", "1")
-        result = self.run_workflow(*argv, "--session-inherited", "--fresh-context")
-        self.assertEqual(result["report"]["verdict"], "PASS")
-        self.assertIsNone(result["route"]["model"])
-        self.assertIsNone(result["route"]["effort"])
-        self.assertTrue(result["route"]["fresh_context"])
-
-    def test_untiered_review_with_verified_settings_uses_fresh_managed_runner(self):
-        """Concrete settings permit a CLI review without consulting reviewer tiers."""
-        self.task.labels = []
-        self.config.workflow.review.policy = "always"
-        with patch.object(workflow, "route", side_effect=AssertionError("matrix consulted")), \
-             patch.object(workflow, "run", return_value={"verdict": "PASS", "summary": "Reviewed", "findings": []}) as run:
-            result = self.run_workflow("review", "1", "--primary", "codex",
-                                       "--session-model", "session-only", "--session-effort", "high",
-                                       "--brief", str(self.review_brief))
-        self.assertEqual(run.call_args.args[0]["model"], "session-only")
-        self.assertEqual(run.call_args.args[0]["provider"], "codex")
-        self.assertEqual(result["report"]["verdict"], "PASS")
-        self.assertIsNone(result["route"]["tier"])
-
-    def test_untiered_review_policy_skip_needs_no_session_settings(self):
-        """Disabled review remains SKIPPED instead of requesting execution facts."""
-        self.task.labels = []
-        self.config.workflow.review.policy = "off"
-        self.assertEqual(self.run_workflow("review", "1")["review"]["verdict"], "SKIPPED")
-
-    def test_untiered_session_facts_must_be_complete(self):
-        """Partial facts cannot imply the missing session setting."""
-        self.task.labels = []
-        for flags in (["--session-model", "session-only"], ["--session-effort", "high"]):
-            with self.subTest(flags=flags), self.assertRaisesRegex(AgentBoxError, "Supply both"):
-                self.run_workflow("prepare", "1", "--primary", "codex", "--brief", str(self.review_brief), *flags)
-        args = workflow.parser().parse_args(["prepare", "1", "--brief", str(self.review_brief)])
-        args.primary = None
-        with self.assertRaisesRegex(AgentBoxError, "active session provider"):
-            workflow.dispatch(args)
-
-    def test_the_cli_reviewer_path_reaches_the_managed_runner_too(self):
-        """`workflow review` calls the same runner, so it breaks on the same mismatch."""
-        self.config.workflow.review.policy = "always"
+    def test_a_managed_verdict_replaces_earlier_human_acceptance(self):
+        """Starting a review retires acceptance; its PASS becomes the evidence."""
         fingerprint = workflow.scope(self.root, "main")
         workflow.save_evidence(self.root, self.task, {
             "scope": fingerprint, "human_acceptance": {
                 "scope": fingerprint, "actor": "1", "reason": "Earlier human decision"}})
-
-        def provider(route, role, root, prompt, *, timeout, read_paths, diagnostics):
-            self.assertEqual(role, "reviewer")
-            return {"verdict": "PASS", "summary": "Reads correctly", "findings": []}
-
-        with patch.object(workflow, "run", side_effect=managed_runner(provider)):
-            result = self.run_workflow("review", "1", "--primary", "codex",
-                                       "--brief", str(self.review_brief))
-        self.assertEqual(result["report"]["verdict"], "PASS")
-        self.assertEqual(workflow.read_evidence(self.root, self.task)["review"]["verdict"], "PASS")
-        self.assertNotIn("human_acceptance", workflow.read_evidence(self.root, self.task))
+        with patch.object(workflow, "run", side_effect=managed_runner(lambda *a, **k: answer())):
+            result = self.run_workflow("review", "1", "--brief", str(self.review_brief))
+        self.assertEqual(result["verdict"], "PASS")
+        saved = workflow.read_evidence(self.root, self.task)
+        self.assertEqual(saved["review"]["verdict"], "PASS")
+        self.assertNotIn("human_acceptance", saved)
 
     def test_native_and_managed_rounds_share_one_neutral_complete_handoff(self):
         """A post-fix verdict gets the updated diff, not the first review's story."""
-        self.config.workflow.review.policy = "always"
         self.task.description = (
-            "## Goal\nCurrent goal.\n\n"
-            "### Compatibility\nKeep the supporting behavior.\n\n"
-            "## Context\nPrevious verdict found an obsolete problem.\n\n"
-            "## Acceptance\n- [ ] Current behavior works.\n\n"
-            "### Edge cases\n- [ ] Fixed values remain bounded.\n\n"
-            "## Validation\nRun the focused unittest.\n")
+            "## Goal\nCurrent goal.\n\n## Context\nPrevious verdict found an obsolete problem.\n\n"
+            "## Acceptance\n- [ ] Current behavior works.\n")
         (self.root / "change.py").write_text("value = 1\n")
-        (self.root / "support.py").write_text("stable = True\n")
         gw.git(self.root, "add", ".")
         gw.git(self.root, "commit", "-m", "current implementation")
-        first = self.run_workflow("prepare", "1", "--role", "reviewer", "--primary", "codex",
-                                  "--brief", str(self.review_brief))
-        first_payload = json.loads(self.delegation_input(first).read_bytes().decode("utf-8").split("Delegation handoff:\n", 1)[1])
-        _, first_artifacts = package(first_payload)
+        first = self.native_round("--brief", str(self.review_brief))
+        _, first_artifacts = package(payload_of(self.delegation_input(first).read_text()))
         self.assertTrue(all(path.is_file() for path in first_artifacts))
         finding = "value must be bounded before release"
-        review = Path(self.directory.name) / "first-review.json"
-        review.write_text(json.dumps({
-            "verdict": "NEEDS_WORK", "summary": "Fix the boundary", "findings": [{
-                "severity": "high", "path": "change.py", "line": 1,
-                "message": finding, "evidence": "value is still 1",
-                "requirement": "Fixed values remain bounded"}]}))
-        result = self.run_workflow(
-            "report", "1", "--role", "reviewer",
-            "--provider", "claude", "--model", "m", "--effort", "high",
-            "--scope", first["scope"], "--handoff", first["handoff"],
-            "--file", str(review), "--fresh-context")
-        self.assertEqual(result["report"]["verdict"], "NEEDS_WORK")
+        self.native_result(f"Verdict: NEEDS_WORK\n\n- [HIGH] change.py:1 — {finding}\n")
         self.assertTrue(all(not path.exists() for path in first_artifacts))
 
         (self.root / "change.py").write_text("value = 2\n")
         gw.git(self.root, "add", ".")
         gw.git(self.root, "commit", "-m", "fix review finding")
-        second = self.run_workflow("prepare", "1", "--role", "reviewer", "--primary", "codex",
-                                   "--brief", str(self.review_brief))
+        second = self.native_round("--brief", str(self.review_brief))
         self.assertNotEqual(first["scope"], second["scope"])
-        self.assertNotEqual(first["handoff"], second["handoff"])
-        self.assertNotIn("repository_instructions", second)
-        prompt = self.delegation_input(second).read_bytes().decode("utf-8")
-        payload = json.loads(prompt.split("Delegation handoff:\n", 1)[1])
+        prompt = self.delegation_input(second).read_text()
+        payload = payload_of(prompt)
         manifest, _ = package(payload)
-        requirements_text = Path(payload["task_description"]).read_text()
         self.assertEqual(Path(manifest["artifacts"]["task.md"]["path"]), Path(payload["task_description"]))
-        author_text = Path(manifest["artifacts"]["author-report.md"]["path"]).read_text()
-        self.assertEqual(requirements_text, "# Task 1: Task\n\n" + self.task.description.strip() + "\n")
-        self.assertNotIn("Current goal", prompt)
-        self.assertNotIn("Previous verdict", prompt)
-        self.assertNotIn(finding, prompt)
-        self.assertIn("Changes and reasons", author_text)
-        self.assertNotIn("Changes and reasons", prompt)
-        self.assertIn(gw.head_sha(self.root), prompt)
-        self.assertIn("diff_range", prompt)
-        self.assertIn("manifest", prompt)
-        self.assertNotIn("diff --git", prompt)
-        self.assertNotIn("+value = 2", prompt)
-        self.assertNotIn("+stable = True", prompt)
-        self.assertIn("untrusted English brief", prompt)
-        self.assertIn("Use English for all commentary and the final report; preserve source quotations.", prompt)
-        self.assertIn("counterexamples", prompt)
-        self.assertIn("Successful tests", prompt)
-        self.assertIn("actual consumers and requirements", prompt)
-        self.assertIn("current cost of understanding/change", prompt)
-        self.assertIn("simpler behavior-preserving alternative", prompt)
-        self.assertIn("a runtime bug is not required", prompt)
-        self.assertIn("Preserve required error, safety and compatibility checks", prompt)
-        self.assertNotIn("without a concrete failure mode", prompt)
-        self.assertIn("fork_turns=none", second["instructions"])
-        self.assertIn(workflow.LAUNCH_CONTEXT, second["instructions"])
-        self.assertIn("never use followup_task or resume", second["instructions"])
+        self.assertEqual(Path(payload["task_description"]).read_text(),
+                         "# Task 1: Task\n\n" + self.task.description.strip() + "\n")
+        self.assertIn("Changes and reasons", Path(manifest["artifacts"]["author-report.md"]["path"]).read_text())
+        for absent in ("Current goal", "Previous verdict", finding, "Changes and reasons", "diff --git",
+                       "+value = 2", "report_schema"):
+            self.assertNotIn(absent, prompt)
+        for present in (gw.head_sha(self.root), "diff_range", "untrusted English brief", "counterexamples",
+                        "Verdict: PASS", "[SEVERITY] path:line", "CRITICAL —", "LOW —"):
+            self.assertIn(present, prompt)
         self.adapter.comments.assert_not_called()
+        self.native_result()
 
-        seen, seen_manifests = [], []
+        seen = []
 
-        def provider(route, role, root, managed_prompt, *, timeout, read_paths, diagnostics):
+        def provider(route, role, root, managed_prompt, **kwargs):
             seen.append(managed_prompt)
-            seen_manifests.append(package(json.loads(managed_prompt.split("Delegation handoff:\n", 1)[1]))[0])
-            return {"verdict": "PASS", "summary": "Reviewed", "findings": []}
+            return answer()
 
         with patch.object(workflow, "run", side_effect=managed_runner(provider)):
-            self.run_workflow("review", "1", "--primary", "codex",
-                              "--brief", str(self.review_brief))
-        self.assertEqual(len(seen), 1)
-        self.assertEqual(seen[0].split("Delegation handoff:\n", 1)[0],
-                         prompt.split("Delegation handoff:\n", 1)[0])
-        managed_payload = json.loads(seen[0].split("Delegation handoff:\n", 1)[1])
-        self.assertEqual(managed_payload["boundaries"], payload["boundaries"])
-        self.assertEqual(managed_payload["change_summary"], payload["change_summary"])
-        self.assertEqual(
-            {key: item["sha256"] for key, item in seen_manifests[0]["artifacts"].items()},
-            {key: item["sha256"] for key, item in manifest["artifacts"].items()})
-        self.assertNotEqual(Path(managed_payload["manifest"]["path"]).parent,
-                            Path(payload["manifest"]["path"]).parent)
+            self.run_workflow("review", "1", "--brief", str(self.review_brief))
+        self.assertEqual(seen[0].split("Delegation handoff:\n", 1)[0], prompt.split("Delegation handoff:\n", 1)[0])
+        self.assertEqual(payload_of(seen[0])["boundaries"], payload["boundaries"])
 
-    def test_same_scope_native_review_rounds_keep_and_clean_their_own_packages(self):
-        """Concurrent verdict rounds must not overwrite or retire each other's evidence."""
-        self.config.workflow.review.policy = "always"
-        first = self.run_workflow(
-            "prepare", "1", "--role", "reviewer", "--primary", "codex",
-            "--brief", str(self.review_brief))
-        second = self.run_workflow(
-            "prepare", "1", "--role", "reviewer", "--primary", "codex",
-            "--brief", str(self.review_brief))
-
-        def round_package(prepared):
-            payload = json.loads(
-                self.delegation_input(prepared).read_bytes().decode("utf-8").split("Delegation handoff:\n", 1)[1])
-            _, paths = package(payload)
-            return paths[0].parent, paths
-
-        first_dir, first_paths = round_package(first)
-        second_dir, second_paths = round_package(second)
-        self.assertEqual(first["scope"], second["scope"])
-        self.assertNotEqual(first["handoff"], second["handoff"])
-        self.assertNotEqual(first_dir, second_dir)
-        self.assertEqual(first_dir.parent, second_dir.parent)
-        self.assertTrue(all(path.is_file() for path in (*first_paths, *second_paths)))
-
-        report = Path(self.directory.name) / "same-scope-review.json"
-        report.write_text(json.dumps({
-            "verdict": "PASS", "summary": "Reviewed independently", "findings": []}))
-        def report_round(prepared):
-            return self.run_workflow(
-                "report", "1", "--role", "reviewer",
-                "--provider", "claude", "--model", "m", "--effort", "high",
-                "--scope", prepared["scope"], "--handoff", prepared["handoff"],
-                "--file", str(report), "--fresh-context")
-
-        retired = report_round(first)
-        self.assertEqual(retired["reconciliation"]["status"], "superseded")
-        self.assertTrue(Path(retired["result_path"]).exists())
-        self.assertNotIn("review", workflow.read_evidence(self.root, self.task))
-        self.assertTrue(workflow.review_blockers(
-            self.config.workflow.review, [self.task], [], 0,
-            workflow.read_evidence(self.root, self.task)))
-        self.assertFalse(first_dir.exists())
-        self.assertTrue(all(path.is_file() for path in second_paths))
-        accepted = report_round(second)
-        self.assertEqual(accepted["review_budget"]["used"], 2)
-        self.assertNotIn("pending", accepted["review_budget"])
-        for cleaned_dir, cleaned_paths in ((first_dir, first_paths), (second_dir, second_paths)):
-            self.assertFalse(cleaned_dir.exists())
-            self.assertTrue(all(not path.exists() for path in cleaned_paths))
-        report.write_text(json.dumps({"verdict": "INCONCLUSIVE", "summary": "Replay", "findings": []}))
-        for old in (first, second):
-            with self.assertRaisesRegex(AgentBoxError, "Review round is stale"):
-                report_round(old)
-        self.assertEqual(workflow.read_evidence(self.root, self.task)["review"]["verdict"], "PASS")
-
-    def test_managed_result_cannot_overwrite_newer_native_round(self):
-        """A managed provider returning after native prepare cannot restore acceptance."""
-        self.config.workflow.review.policy = "always"
-        pending = []
-
-        def provider(route, role, root, prompt, *, timeout, read_paths, diagnostics):
-            pending.append(self.run_workflow(
-                "prepare", "1", "--role", "reviewer", "--primary", "codex",
-                "--brief", str(self.review_brief)))
-            return {"verdict": "PASS", "summary": "Older managed round", "findings": []}
+    def test_a_managed_result_cannot_overwrite_a_newer_native_round(self):
+        """A provider returning after another round opened keeps its verdict private."""
+        def provider(*args, **kwargs):
+            self.native_round()
+            return answer("Verdict: PASS\n\nOlder managed round.\n")
 
         with patch.object(workflow, "run", side_effect=managed_runner(provider)):
-            result = self.run_workflow("review", "1", "--primary", "codex", "--brief", str(self.review_brief))
+            result = self.run_workflow("review", "1")
         self.assertEqual(result["reconciliation"]["status"], "superseded")
         self.assertTrue(Path(result["result_path"]).exists())
         self.assertNotIn("review", workflow.read_evidence(self.root, self.task))
-        prepared = pending[0]
-        self.report.write_text(json.dumps({"verdict": "PASS", "summary": "Latest native", "findings": []}))
-        result = self.run_workflow(
-            "report", "1", "--role", "reviewer",
-            "--provider", "claude", "--model", "m", "--effort", "high",
-            "--scope", prepared["scope"], "--handoff", prepared["handoff"],
-            "--file", str(self.report), "--fresh-context")
-        self.assertEqual(result["review_budget"]["used"], 2)
-        private = json.loads(Path(result["result_path"]).read_text())
-        self.assertEqual(private["output"]["report"]["summary"], "Latest native")
+        latest = self.native_result("Verdict: PASS\n\nLatest native.\n")
+        self.assertEqual((latest["reconciliation"]["status"], latest["review_budget"]["used"]), ("applied", 2))
+        private = json.loads(Path(latest["result_path"]).read_text())
+        self.assertIn("Latest native", private["output"]["report"]["text"])
 
-    def test_managed_reviewer_reads_ephemeral_evidence_before_cleanup(self):
-        self.config.workflow.review.policy = "always"
+    def test_managed_reviewer_reads_its_own_evidence_before_cleanup(self):
         marker = "MANAGED_REVIEW_DIFF_EVIDENCE"
         (self.root / "managed.py").write_text(marker + "\n")
         gw.git(self.root, "add", "managed.py")
         gw.git(self.root, "commit", "-m", "managed evidence fixture")
-        pending = self.run_workflow(
-            "prepare", "1", "--role", "reviewer", "--primary", "codex",
-            "--brief", str(self.review_brief))
-        pending_payload = json.loads(
-            self.delegation_input(pending).read_bytes().decode("utf-8").split("Delegation handoff:\n", 1)[1])
-        pending_path = Path(pending_payload["manifest"]["path"]).parent
         artifact_paths = []
 
-        def provider(route, role, root, prompt, *, timeout, read_paths, diagnostics):
-            payload = json.loads(prompt.split("Delegation handoff:\n", 1)[1])
-            manifest, paths = package(payload)
+        def provider(route, role, root, prompt, *, read_paths, **kwargs):
+            manifest, paths = package(payload_of(prompt))
             artifact_paths.extend(paths)
-            self.assertEqual(list(read_paths), [artifact_paths[0].parent])
-            self.assertNotEqual(read_paths[0], pending_path)
-            self.assertTrue((pending_path / "manifest.json").is_file())
-            self.assertTrue(all(path.is_file() for path in artifact_paths))
+            self.assertEqual(list(read_paths), [paths[0].parent])
+            self.assertTrue(all(path.is_file() for path in paths))
             self.assertIn(marker, Path(manifest["artifacts"]["full.diff"]["path"]).read_text())
-            self.assertEqual(manifest["boundaries"], payload["boundaries"])
-            return {"verdict": "PASS", "summary": "Read exact evidence", "findings": []}
+            return answer()
 
         with patch.object(workflow, "run", side_effect=managed_runner(provider)):
-            result = self.run_workflow("review", "1", "--primary", "codex",
-                                       "--brief", str(self.review_brief))
-        self.assertEqual(result["report"]["verdict"], "PASS")
-        self.assertTrue(all(not path.exists() for path in artifact_paths))
-        self.assertTrue((pending_path / "manifest.json").is_file())
-        self.report.write_text(json.dumps({"verdict": "INCONCLUSIVE", "summary": "Older native", "findings": []}))
-        retired = self.run_workflow(
-                "report", "1", "--role", "reviewer",
-                "--provider", "claude", "--model", "m", "--effort", "high",
-                "--scope", pending["scope"], "--handoff", pending["handoff"],
-                "--file", str(self.report), "--fresh-context")
-        self.assertEqual(retired["reconciliation"]["status"], "superseded")
-        self.assertTrue(Path(retired["result_path"]).exists())
-        self.assertFalse(pending_path.exists())
-        self.assertEqual(workflow.read_evidence(self.root, self.task)["review"]["verdict"], "PASS")
-        self.assertEqual(workflow.read_review_budget(self.root, BINDING, self.task, 3)["used"], 2)
+            self.assertEqual(self.run_workflow("review", "1")["verdict"], "PASS")
+        self.assertTrue(artifact_paths and all(not path.exists() for path in artifact_paths))
 
-    def test_known_managed_launch_refusals_precede_reservation(self):
-        """Only observed local process constraints may block a round before spending it."""
-        self.config.workflow.review.policy = "always"
+    def test_known_managed_launch_refusals_precede_the_round(self):
+        """Local constraints observed before launch neither open a round nor count as failures."""
         for cause in ("unavailable", "unsupported", "busy"):
             with self.subTest(cause=cause), \
-                 patch.object(workflow, "reserve_review", wraps=workflow.reserve_review) as reserve, \
                  patch.object(workflow, "reviewer_handoff") as handoff, \
-                 patch.object(workflow, "run") as provider:
-                with patch.object(provider_runner.shutil, "which", return_value=None if cause == "unavailable" else "cli"):
-                    if cause == "unsupported":
-                        self.task.labels = []
-                        args = ["--session-model", "m", "--session-effort", "high"]
-                        with patch.object(workflow, "session_route", return_value={
-                                "mode": "current-session", "provider": "other", "model": "m",
-                                "effort": "high", "tier": None, "role": "reviewer", "fallbacks": []}), \
-                             self.assertRaisesRegex(AgentBoxError, "Unsupported managed provider"):
-                            self.run_workflow("review", "1", "--primary", "codex", *args,
-                                              "--brief", str(self.review_brief))
-                        self.task.labels = ["ab:tier:1"]
-                    elif cause == "busy":
-                        with workflow_state.lock(self.root, "review"), \
-                             self.assertRaisesRegex(AgentBoxError, "Another local review"):
-                            self.run_workflow("review", "1", "--primary", "codex",
-                                              "--brief", str(self.review_brief))
-                    else:
-                        with self.assertRaisesRegex(AgentBoxError, "Cannot find claude CLI"):
-                            self.run_workflow("review", "1", "--primary", "codex",
-                                              "--brief", str(self.review_brief))
-                reserve.assert_not_called()
+                 patch.object(workflow, "run") as provider, \
+                 patch.object(provider_runner.shutil, "which", return_value=None if cause == "unavailable" else "cli"):
+                if cause == "unsupported":
+                    with patch.object(workflow, "candidates", return_value={
+                            **selected_route(None, "reviewer", 1), "provider": "other"}), \
+                         self.assertRaisesRegex(AgentBoxError, "Unsupported managed provider"):
+                        self.run_workflow("review", "1")
+                elif cause == "busy":
+                    with workflow_state.lock(self.root, "review"), \
+                         self.assertRaisesRegex(AgentBoxError, "Another local review"):
+                        self.run_workflow("review", "1")
+                else:
+                    with self.assertRaisesRegex(AgentBoxError, "Cannot find claude CLI"):
+                        self.run_workflow("review", "1")
                 handoff.assert_not_called()
                 provider.assert_not_called()
-        self.assertEqual(workflow.read_review_state(self.root, BINDING, self.task), {"used": 0})
+        self.assertFalse(workflow.review_budget_path(self.root, BINDING, self.task).exists())
 
-    def test_prepared_managed_fallback_spends_once_and_cannot_be_replayed(self):
-        """Changing backend is part of the reserved round, even with no remaining allowance."""
-        self.config.workflow.review.max_rounds = 1
-        with patch.object(workflow, "reserve_review", wraps=workflow.reserve_review) as reserve, \
-             patch.object(workflow, "run", return_value={
-                 "verdict": "PASS", "summary": "Mock independent review", "findings": []}) as provider:
-            prepared = self.prepared_review()
-            self.assertEqual(reserve.call_count, 1)
-            provider.assert_not_called()
-            # Policy off must not skip a round explicitly selected by its descriptor.
-            self.config.workflow.review.policy = "off"
-            result = self.managed_fallback(prepared)
-            self.assertEqual((reserve.call_count, provider.call_count), (1, 1))
-            self.assertEqual((result["review_budget"]["used"], result["review_budget"]["remaining"]), (1, 0))
-            self.assertIn("Native interface", result["fallback_reason"])
-            with self.assertRaisesRegex(AgentBoxError, "stale or already reported"):
-                self.managed_fallback(prepared)
-            self.assertEqual((reserve.call_count, provider.call_count), (1, 1))
-            self.run_workflow("review-budget", "1", "--limit", "2", "--reason", "User grants one new round")
-            self.prepared_review()
-            self.assertEqual((reserve.call_count, provider.call_count), (2, 1))
+    def test_failures_spend_nothing_and_two_in_a_row_stop_review_until_the_user_decides(self):
+        """A kill, a timeout or a missing verdict line is retried free, but never forever."""
+        with patch.object(workflow, "run", side_effect=timeout) as provider:
+            for count in (1, 2):
+                with self.assertRaisesRegex(AgentBoxError, f"no attempt spent, failure {count} of 2"):
+                    self.run_workflow("review", "1")
+            self.assertEqual((self.budget()["used"], self.budget()["failures"]), (0, 2))
+            for flags in ((), ("--native",)):
+                with self.subTest(flags=flags), self.assertRaisesRegex(AgentBoxError, "Review stopped.*user must decide"):
+                    self.run_workflow("review", "1", *flags)
+            self.assertEqual(provider.call_count, 2)
+        budget = self.run_workflow("review-budget", "1", "--reason", "User allows another try")["review_budget"]
+        self.assertEqual((budget["failures"], budget["limit"]), (0, 3))
+        self.assertNotIn("ceiling", workflow.read_review_state(self.root, BINDING, self.task))
+        with patch.object(workflow, "run", side_effect=timeout), self.assertRaises(AgentBoxError):
+            self.run_workflow("review", "1")
+        with patch.object(workflow, "run", return_value=answer()):
+            result = self.run_workflow("review", "1")
+        self.assertEqual((result["review_budget"]["used"], result["review_budget"]["failures"]), (1, 0))
 
-    def test_failed_managed_fallback_stays_spent_and_rejects_native_report(self):
-        """A provider failure cannot turn a pending descriptor into an unlimited retry token."""
-        with patch.object(workflow, "reserve_review", wraps=workflow.reserve_review) as reserve, \
-             patch.object(workflow, "run", side_effect=provider_runner.ProviderFailure("mock failure", "timeout")) as provider:
-            prepared = self.prepared_review()
-            workflow.save_evidence(self.root, self.task, {
-                "scope": prepared["scope"], "human_acceptance": {"reason": "Accepted while pending"}})
-            with self.assertRaisesRegex(AgentBoxError, "No provider produced"):
-                self.managed_fallback(prepared)
-            with self.assertRaisesRegex(AgentBoxError, "already started managed"):
-                self.managed_fallback(prepared)
-            self.report.write_text(json.dumps({"verdict": "PASS", "summary": "Late native", "findings": []}))
-            with self.assertRaisesRegex(AgentBoxError, "native report is stale"):
-                self.run_workflow("report", "1", "--role", "reviewer", "--provider", "claude",
-                                  "--model", "m", "--effort", "high", "--fresh-context",
-                                  "--scope", prepared["scope"], "--handoff", prepared["handoff"],
-                                  "--file", str(self.report))
-            self.assertEqual((reserve.call_count, provider.call_count), (1, 1))
-            self.assertNotIn("review", workflow.read_evidence(self.root, self.task))
-            self.assertNotIn("human_acceptance", workflow.read_evidence(self.root, self.task))
+    def test_a_managed_answer_without_a_verdict_line_is_a_failure_with_readable_streams(self):
+        """The runner's parse refuses the answer; the round costs nothing and its raw streams stay private."""
+        def provider(route, role, root, prompt, *, on_streams, **kwargs):
+            source = Path(self.directory.name) / "run"
+            source.mkdir(exist_ok=True)
+            (source / "stdout").write_text('{"type": "turn.completed"}\n')
+            (source / "stderr").write_text("warning\n")
+            on_streams(source)
+            return provider_runner.review_report("No verdict here.\n")
 
-    def test_interrupted_managed_review_reads_back_as_ended_not_as_an_older_round(self):
-        """A killed run left no result, and review-result showed the previous verdict
-        while pointing at diagnostics that were never written."""
-        with patch.object(workflow, "run", return_value={
-                "verdict": "PASS", "summary": "Earlier round", "findings": []}):
-            self.managed_fallback(self.prepared_review())
-        prepared = self.prepared_review()
-        with patch.object(workflow, "run", side_effect=provider_runner.ProviderFailure("signal", "interrupted")), \
-             self.assertRaisesRegex(AgentBoxError, "interrupted by a signal.*attempt stays spent"):
-            self.managed_fallback(prepared)
-        self.assertFalse(self.delegation_input(prepared).exists())
+        with patch.object(workflow, "run", side_effect=provider), \
+             self.assertRaisesRegex(AgentBoxError, r"no attempt spent, failure 1 of 2 in a row\. Raw streams: ") as raised:
+            self.run_workflow("review", "1")
+        streams = Path(raised.exception.message.rsplit("Raw streams: ", 1)[1])
+        self.assertEqual((streams / "1" / "stderr").read_text(), "warning\n")
+        self.assertEqual(stat.S_IMODE((streams / "1" / "stdout").stat().st_mode), 0o400)
+        self.assertEqual(self.budget()["used"], 0)
+
+    def test_a_killed_managed_review_reads_back_as_an_ended_failure(self):
+        """No code runs after a kill, so the round was already counted as a failure when it started."""
+        with patch.object(workflow, "run", return_value=answer()):
+            self.run_workflow("review", "1")
+        with patch.object(workflow, "run", side_effect=KeyboardInterrupt), self.assertRaises(KeyboardInterrupt):
+            self.run_workflow("review", "1")
         state = workflow.read_review_state(self.root, BINDING, self.task)
-        self.assertEqual(state["used"], 2)
-        with self.assertRaisesRegex(AgentBoxError, "ended without a saved provider response.*stays spent"):
+        self.assertEqual((state["used"], state["failures"]), (1, 1))
+        with self.assertRaisesRegex(AgentBoxError, "ended without a verdict.*spent no attempt.*failure 1 of 2"):
             self.run_workflow("review-result", "1")
         self.assertEqual(self.run_workflow("inspect", "1")["review"]["pending_round"],
                          {"round": state["pending"], "backend": "managed", "status": "ended_without_response"})
-        # The lock is what a live `workflow review` holds for its whole execution.
         with workflow_state.lock(self.root, "review"):
             with self.assertRaisesRegex(AgentBoxError, "still running"):
                 self.run_workflow("review-result", "1", "--round=" + state["pending"])
-            self.assertEqual(self.run_workflow("inspect", "1")["review"]["pending_round"]["status"], "running")
 
-    def test_managed_fallback_preserves_prepared_prompt_and_artifact_hashes(self):
-        """Brief and validation edits cannot rewrite files a native reviewer may still read."""
-        prepared = self.prepared_review()
-        prompt = self.delegation_input(prepared).read_bytes().decode("utf-8")
-        payload = json.loads(prompt.split("Delegation handoff:\n", 1)[1])
-        manifest, _ = package(payload)
-        directory = Path(payload["manifest"]["path"]).parent
-        before = {path: (path.read_bytes(), path.stat().st_ino, path.stat().st_mtime_ns)
-                  for path in directory.iterdir()}
-        self.review_brief.write_text("Goal: changed after prepare")
-        saved = workflow.read_evidence(self.root, self.task)
-        saved["validation"] = {"command": ["changed-after-prepare"], "exit": 0}
-        workflow.save_evidence(self.root, self.task, saved)
-
-        def provider(route, role, root, managed_prompt, **kwargs):
-            self.assertEqual(managed_prompt, prompt)
-            self.assertEqual(hashlib.sha256(managed_prompt.encode()).hexdigest(),
-                             hashlib.sha256(prompt.encode()).hexdigest())
-            for path, snapshot in before.items():
-                self.assertEqual((path.read_bytes(), path.stat().st_ino, path.stat().st_mtime_ns), snapshot)
-            for artifact in manifest["artifacts"].values():
-                self.assertEqual(hashlib.sha256(Path(artifact["path"]).read_bytes()).hexdigest(),
-                                 artifact["sha256"])
-            return {"verdict": "PASS", "summary": "Mock preserved input", "findings": []}
-
-        with patch.object(workflow, "run", side_effect=managed_runner(provider)) as runner:
-            result = self.managed_fallback(prepared)
-        self.assertEqual(runner.call_count, 1)
-        self.assertEqual(result["review_budget"]["used"], 1)
-        self.assertFalse(directory.exists())
-
-    def test_provider_fallbacks_share_the_claim_without_new_reservations(self):
-        """Runtime provider failures may try configured alternatives once within the same round."""
-        selected = selected_route(None, "reviewer", 1, "codex")
+    def test_provider_fallbacks_run_within_one_round(self):
+        """An unavailable first candidate hands the same round to the next one."""
+        selected = selected_route(None, "reviewer", 1)
         selected["fallbacks"] = [{**selected, "provider": "codex", "fallbacks": []}]
-        with patch.object(workflow, "route", return_value=selected), \
-             patch.object(workflow, "reserve_review", wraps=workflow.reserve_review) as reserve, \
+        with patch.object(workflow, "candidates", return_value=selected), \
              patch.object(workflow, "run", side_effect=[
-                 provider_runner.ProviderFailure("Mock timeout", "timeout"),
-                 {"verdict": "PASS", "summary": "Mock fallback", "findings": []}]) as provider:
-            result = self.managed_fallback(self.prepared_review())
-        self.assertEqual((reserve.call_count, provider.call_count), (1, 2))
+                 provider_runner.ProviderFailure("Mock timeout", "timeout"), answer()]) as provider:
+            result = self.run_workflow("review", "1")
         self.assertEqual([call.args[0]["provider"] for call in provider.call_args_list], ["claude", "codex"])
-        self.assertEqual(result["review_budget"]["used"], 1)
+        self.assertEqual((result["review_budget"]["used"], result["review_budget"]["failures"]), (1, 0))
         self.assertEqual(result["route"]["provider"], "codex")
+        self.assertEqual(result["failures"][0]["category"], "timeout")
 
-    def test_fallback_preflight_failure_keeps_native_round_available(self):
-        """An unavailable CLI or unknown inherited settings must not claim the prepared round."""
-        prepared = self.prepared_review()
-        with patch.object(provider_runner.shutil, "which", return_value=None), \
-             patch.object(workflow, "run") as provider, \
-             self.assertRaisesRegex(AgentBoxError, "No managed review route"):
-            self.managed_fallback(prepared)
-        provider.assert_not_called()
-        self.assertEqual(workflow.read_review_state(self.root, BINDING, self.task)["pending_backend"], "native")
-        self.task.labels = []
-        prepared = self.prepared_review()
-        with patch.object(workflow, "run") as provider, \
-             self.assertRaisesRegex(AgentBoxError, "known model and effort"):
-            self.managed_fallback(prepared)
-        provider.assert_not_called()
-        self.assertEqual(workflow.read_review_state(self.root, BINDING, self.task)["pending_backend"], "native")
+    def test_raw_streams_stay_until_the_task_is_done(self):
+        """A verdict's streams explain an INCONCLUSIVE later; Done is when nobody needs them."""
+        def provider(route, role, root, prompt, *, on_streams, **kwargs):
+            source = Path(self.directory.name) / "streams-source"
+            source.mkdir(exist_ok=True)
+            (source / "stdout").write_text("events\n")
+            on_streams(source)
+            return answer("Verdict: INCONCLUSIVE\n\nInput files not found.\n")
 
-    def test_stale_or_wrong_role_descriptor_cannot_start_managed_review(self):
-        """Fallback must validate the same exact scope and role as native acceptance."""
-        with patch.object(workflow, "run") as provider:
-            first = self.prepared_review()
-            payload = json.loads(base64.urlsafe_b64decode(first["handoff"]))
-            payload["route"] = {**payload["route"], "tier": 3}
-            with self.assertRaisesRegex(AgentBoxError, "different role or tier"):
-                self.managed_fallback({"handoff": base64.urlsafe_b64encode(json.dumps(payload).encode()).decode()})
-            old = self.prepared_review()
-            current = self.prepared_review()
-            with self.assertRaisesRegex(AgentBoxError, "stale or already reported"):
-                self.managed_fallback(old)
-            gw.git(self.root, "commit", "--allow-empty", "-m", "new work")
-            with self.assertRaisesRegex(AgentBoxError, "different scope"):
-                self.managed_fallback(current)
-            provider.assert_not_called()
-        self.assertEqual(workflow.read_review_state(self.root, BINDING, self.task)["used"], 3)
+        with patch.object(workflow, "run", side_effect=managed_runner(provider)):
+            self.run_workflow("review", "1")
+        result = self.run_workflow("review-result", "1")
+        self.assertEqual(result["verdict"], "INCONCLUSIVE")
+        self.assertEqual((Path(result["stream_path"]) / "1" / "stdout").read_text(), "events\n")
+        from agent_box.branch_cleanup import discard_review_streams
+        discard_review_streams(self.root, self.task)
+        self.assertFalse(Path(result["stream_path"]).exists())
+        self.assertNotIn("stream_path", self.run_workflow("review-result", "1"))
 
-    def test_restart_and_concurrent_claim_keep_one_dispatch_per_prepared_round(self):
-        """Separate coordinator processes share the durable claim, including after abandonment."""
-        prepared = self.prepared_review()
-        descriptor = json.loads(base64.urlsafe_b64decode(prepared["handoff"]))
-        script = '''
-import sys
-from pathlib import Path
-from agent_box import workflow, workflow_state
-from agent_box.errors import AgentBoxError
-from agent_box.repo_binding import Binding
-from agent_box.tracker.core import Task
-workflow.WORKFLOW_STATE = workflow_state.WORKFLOW_STATE = Path(sys.argv[1])
-try:
-    binding = Binding("vikunja", "https://tasks.example", "1")
-    if sys.argv[5] == "claim":
-        workflow.claim_managed_review(Path(sys.argv[2]), binding, Task("1", "1", "Task"),
-                                      sys.argv[3], sys.argv[4])
-    else:
-        workflow.reserve_review(Path(sys.argv[2]), binding, Task("2", "1", "Task"),
-                                1, sys.argv[3], sys.argv[4])
-except AgentBoxError:
-    sys.exit(2)
-'''
-        command = [sys.executable, "-c", script, str(workflow.WORKFLOW_STATE), str(self.root),
-                   descriptor["delegation"], prepared["scope"], "claim"]
-        processes = [subprocess.Popen(command) for _ in range(2)]
-        self.assertEqual(sorted(process.wait(timeout=10) for process in processes), [0, 2])
-        self.assertEqual(subprocess.run(command, timeout=10).returncode, 2)
-        self.assertEqual(workflow.read_review_state(self.root, BINDING, self.task)["used"], 1)
-        with patch.object(workflow, "run") as provider, \
-             self.assertRaisesRegex(AgentBoxError, "already started managed"):
-            self.managed_fallback(prepared)
-        provider.assert_not_called()
-        command[-1] = "reserve"
-        processes = [subprocess.Popen(command) for _ in range(2)]
-        self.assertEqual(sorted(process.wait(timeout=10) for process in processes), [0, 2])
-        self.assertEqual(subprocess.run(command, timeout=10).returncode, 2)
-        self.assertEqual(workflow.read_review_state(self.root, BINDING, Task("2", "1", "Task"))["used"], 1)
-
-    def test_review_budget_spans_native_managed_scope_changes_and_reports(self):
-        """Retries cannot replenish the task budget by changing scope or ingesting a report."""
+    def test_review_budget_counts_verdicts_across_scope_changes(self):
+        """Neither a new commit nor the backend replenishes the attempts a task has spent."""
         self.config.workflow.review.max_rounds = 1
-        self.config.workflow.review.policy = "always"
-        first = self.run_workflow("prepare", "1", "--role", "reviewer", "--primary", "codex",
-                                  "--brief", str(self.review_brief))
-        self.assertEqual(first["review_budget"]["used"], 1)
-        self.assertNotIn("review_budget", self.delegation_input(first).read_bytes().decode("utf-8"))
-        self.report.write_text(json.dumps({"verdict": "PASS", "summary": "Checked", "findings": []}))
-        report = self.run_workflow("report", "1", "--role", "reviewer",
-                                  "--provider", "claude", "--model", "m", "--effort", "high",
-                                  "--fresh-context", "--scope", first["scope"], "--handoff", first["handoff"],
-                                  "--file", str(self.report))
-        self.assertEqual(report["review_budget"]["used"], 1)
-        self.assertEqual(report["review_budget"]["remaining"], 0)
-        self.task.description += "\nNew requirement."
-        self.run_workflow("review-budget", "1", "--limit", "2", "--reason", "User authorizes retry")
-        with patch.object(workflow, "run", side_effect=AgentBoxError("provider unavailable")), \
-             self.assertRaisesRegex(AgentBoxError, "provider unavailable"):
-            self.run_workflow("review", "1", "--primary", "codex", "--brief", str(self.review_brief))
-        budget = self.run_workflow("inspect", "1")["review"]["budget"]
-        self.assertEqual((budget["used"], budget["limit"], budget["remaining"]), (2, 2, 0))
-        for command, flags in (("prepare", ("--role", "reviewer")), ("review", ())):
-            with self.subTest(command=command), patch.object(workflow, "run") as provider, \
-                 self.assertRaisesRegex(AgentBoxError, "budget exhausted"):
-                self.run_workflow(command, "1", *flags, "--primary", "codex", "--brief", str(self.review_brief))
+        with patch.object(workflow, "run", return_value=answer()):
+            first = self.run_workflow("review", "1")
+        self.assertEqual((first["review_budget"]["used"], first["review_budget"]["remaining"]), (1, 0))
+        gw.git(self.root, "commit", "--allow-empty", "-m", "new work")
+        for flags in ((), ("--native",)):
+            with self.subTest(flags=flags), patch.object(workflow, "run") as provider, \
+                 self.assertRaisesRegex(AgentBoxError, "budget exhausted.*review-budget 1 --limit TOTAL"):
+                self.run_workflow("review", "1", *flags)
             provider.assert_not_called()
-        self.run_workflow("review-budget", "1", "--limit", "3", "--reason", "User requests one more")
-        extra = self.run_workflow("prepare", "1", "--role", "reviewer", "--primary", "codex",
-                                  "--brief", str(self.review_brief))
-        self.assertEqual(extra["review_budget"]["used"], 3)
-        self.assertNotIn("User requests one more", self.delegation_input(extra).read_bytes().decode("utf-8"))
-        with self.assertRaisesRegex(AgentBoxError, "budget exhausted"):
-            self.run_workflow("prepare", "1", "--role", "reviewer", "--primary", "codex",
-                              "--brief", str(self.review_brief))
+        self.run_workflow("review-budget", "1", "--limit", "2", "--reason", "User grants one round")
+        opened = self.native_round()
+        self.assertNotIn("User grants one round", self.delegation_input(opened).read_text())
+        self.assertEqual(self.native_result()["review_budget"]["used"], 2)
 
     def test_review_budget_lock_corruption_and_binding_isolation(self):
-        """Concurrent reservation and unreadable counters fail closed; other projects are distinct."""
+        """Concurrent rounds and unreadable counters fail closed; other projects are distinct."""
         with workflow_state.lock(self.root, "review-budget"), \
              self.assertRaisesRegex(AgentBoxError, "Another local review-budget"):
-            workflow.reserve_review(self.root, BINDING, self.task, 1, "round", "scope")
-        self.assertEqual(workflow.read_review_budget(self.root, BINDING, self.task, 1)["used"], 0)
-        workflow.reserve_review(self.root, BINDING, self.task, 1, "round", "scope")
+            workflow.start_review(self.root, BINDING, self.task, 1, "round", "scope", "managed")
+        workflow.start_review(self.root, BINDING, self.task, 1, "round", "scope", "managed")
+        self.assertEqual(self.budget()["failures"], 1)
         other = Binding("vikunja", "https://tasks.example", "other")
-        self.assertEqual(workflow.read_review_budget(self.root, other, self.task, 1)["used"], 0)
+        self.assertEqual(workflow.read_review_budget(self.root, other, self.task, 1)["failures"], 0)
         path = workflow.review_budget_path(self.root, BINDING, self.task)
-        for malformed in ("broken", "{}", '{"used":true}', '{"used":-1}'):
+        for malformed in ("broken", "{}", '{"used":true}', '{"used":-1}', '{"used":0,"failures":-1}'):
             path.write_text(malformed)
             with self.subTest(malformed=malformed), self.assertRaisesRegex(AgentBoxError, "Cannot read review budget"):
-                workflow.reserve_review(self.root, BINDING, self.task, 1, "round", "scope")
-
-    def test_per_attempt_override_flag_is_rejected_before_reservation(self):
-        """An invocation cannot bypass the persistent absolute ceiling."""
-        self.config.workflow.review.policy = "always"
-        self.run_workflow("review-budget", "1", "--limit", "0", "--reason", "No further attempts")
-        for command, flags in (("prepare", ("--role", "reviewer")), ("review", ())):
-            with self.subTest(command=command), redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
-                self.run_workflow(command, "1", *flags, "--primary", "codex", "--brief", str(self.review_brief),
-                                  "--review-override-reason", "Replayable excuse")
-            with self.assertRaisesRegex(AgentBoxError, "used=0, limit=0"):
-                self.run_workflow(command, "1", *flags, "--primary", "codex", "--brief", str(self.review_brief))
-        self.assertEqual(workflow.read_review_state(self.root, BINDING, self.task)["used"], 0)
+                workflow.start_review(self.root, BINDING, self.task, 1, "round", "scope", "managed")
 
     def test_failed_budget_write_cannot_dispatch_an_unaccounted_review(self):
-        """A failed reservation never publishes a handoff or reaches a provider."""
-        self.config.workflow.review.policy = "always"
-        self.config.workflow.review.max_rounds = 1
-        for command, flags in (("prepare", ("--role", "reviewer")), ("review", ())):
-            with self.subTest(command=command), \
+        """A failed round start never publishes a handoff or reaches a provider."""
+        for flags in ((), ("--native",)):
+            with self.subTest(flags=flags), \
                  patch.object(workflow, "save_review_state", side_effect=OSError("disk failure")), \
                  patch.object(workflow, "reviewer_handoff") as handoff, \
                  patch.object(workflow, "run") as provider, \
                  self.assertRaisesRegex(OSError, "disk failure"):
-                self.run_workflow(command, "1", *flags, "--primary", "codex",
-                                  "--brief", str(self.review_brief))
+                self.run_workflow("review", "1", *flags)
             handoff.assert_not_called()
             provider.assert_not_called()
-        allocated = self.run_workflow("prepare", "1", "--role", "reviewer", "--primary", "codex",
-                                      "--brief", str(self.review_brief))
-        self.assertEqual(allocated["review_budget"]["used"], 1)
-        with self.assertRaisesRegex(AgentBoxError, "budget exhausted"):
-            self.run_workflow("prepare", "1", "--role", "reviewer", "--primary", "codex",
-                              "--brief", str(self.review_brief))
 
-    def test_absolute_review_budget_is_idempotent_and_preserves_pending_and_acceptance(self):
-        """Retrying a budget decision must never grant more attempts or alter review evidence."""
-        state = {"used": 3, "pending": "existing-round", "annotation": "Preserved opaque state"}
+    def test_budget_decision_is_absolute_idempotent_and_preserves_acceptance(self):
+        """Retrying a budget decision never grants more attempts or alters review evidence."""
+        state = {"used": 3, "failures": 2, "pending": "existing-round", "annotation": "Preserved opaque state"}
         workflow.save_review_state(self.root, BINDING, self.task, state)
-        accepted = {"scope": workflow.scope(self.root, "main"),
-                    "validation": {"exit": 0}, "review": {"verdict": "PASS"}}
+        accepted = {"scope": workflow.scope(self.root, "main"), "validation": {"exit": 0}, "review": {"verdict": "PASS"}}
         workflow.save_evidence(self.root, self.task, accepted)
         for task_state in ("Doing", "Review"):
             self.task.state = task_state
-            result = self.run_workflow("review-budget", "1", "--limit", "6", "--reason", "User grants three more")
-            budget = result["review_budget"]
+            budget = self.run_workflow("review-budget", "1", "--limit", "6", "--reason", "User grants three more")["review_budget"]
             self.assertEqual((budget["used"], budget["configured_limit"], budget["limit"], budget["remaining"]),
                              (3, 3, 6, 3))
             self.assertEqual(workflow.read_review_state(self.root, BINDING, self.task),
-                             {**state, "ceiling": 6, "ceiling_reason": "User grants three more"})
+                             {**state, "failures": 0, "ceiling": 6, "ceiling_reason": "User grants three more"})
             self.assertEqual(workflow.read_evidence(self.root, self.task), accepted)
-        self.config.workflow.review.max_rounds = 2
-        budget = self.run_workflow("inspect", "1")["review"]["budget"]
-        self.assertEqual((budget["configured_limit"], budget["limit"]), (2, 6))
         limited = self.run_workflow("review-budget", "1", "--limit", "0", "--reason", "User stops further attempts")
         self.assertEqual((limited["review_budget"]["used"], limited["review_budget"]["remaining"]), (3, 0))
 
-    def test_absolute_allowance_is_shared_by_native_and_managed_across_scope_changes(self):
-        """Three additional attempts means a ceiling of six, even after failure and repeated setters."""
-        self.config.workflow.review.policy = "always"
-        fingerprint = workflow.scope(self.root, "main")
-        for attempt in range(3):
-            workflow.reserve_review(self.root, BINDING, self.task, 3, f"abandoned-{attempt}", fingerprint)
-        self.run_workflow("review-budget", "1", "--limit", "6", "--reason", "THREE_EXTRA_AUTHORIZED")
-        for attempt in (4, 5, 6):
-            self.task.description += f"\nRequirement {attempt}."
-            if attempt == 5:
-                with patch.object(workflow, "run", side_effect=AgentBoxError("provider unavailable")), \
-                     self.assertRaisesRegex(AgentBoxError, "provider unavailable"):
-                    self.run_workflow("review", "1", "--primary", "codex", "--brief", str(self.review_brief))
-            else:
-                result = self.run_workflow("prepare", "1", "--role", "reviewer", "--primary", "codex",
-                                           "--brief", str(self.review_brief))
-                self.assertNotIn("THREE_EXTRA_AUTHORIZED", self.delegation_input(result).read_bytes().decode("utf-8"))
-                self.assertNotIn("configured_limit", self.delegation_input(result).read_bytes().decode("utf-8"))
-            budget = self.run_workflow("review-budget", "1", "--limit", "6", "--reason", "THREE_EXTRA_AUTHORIZED")["review_budget"]
-            self.assertEqual((budget["used"], budget["limit"], budget["remaining"]), (attempt, 6, 6 - attempt))
-        for command, flags in (("prepare", ("--role", "reviewer")), ("review", ())):
-            with self.subTest(command=command), self.assertRaisesRegex(AgentBoxError, "used=6, limit=6"):
-                self.run_workflow(command, "1", *flags, "--primary", "codex", "--brief", str(self.review_brief))
-        self.report.write_text(json.dumps({"verdict": "PASS", "summary": "Complete review", "findings": []}))
-        report = self.run_workflow("report", "1", "--role", "reviewer",
-                                  "--provider", "claude", "--model", "m", "--effort", "high", "--fresh-context",
-                                  "--scope", result["scope"], "--handoff", result["handoff"], "--file", str(self.report))
-        self.assertEqual((report["review_budget"]["used"], report["review_budget"]["limit"]), (6, 6))
-
     def test_budget_decision_refuses_invalid_input_ownership_and_corrupt_state(self):
         """Only the assigned coordinator can change a valid budget for active work."""
-        for limit, reason in (("-1", "User decision"), ("6", " ")):
-            with self.subTest(limit=limit), self.assertRaisesRegex(AgentBoxError, "nonnegative limit and non-empty reason"):
-                self.run_workflow("review-budget", "1", "--limit", limit, "--reason", reason)
+        for flags in (("--limit", "-1", "--reason", "User decision"), ("--limit", "6", "--reason", " ")):
+            with self.subTest(flags=flags), self.assertRaisesRegex(AgentBoxError, "non-empty reason.*nonnegative limit"):
+                self.run_workflow("review-budget", "1", *flags)
         for state, assignees in (("Done", ["1"]), ("Doing", ["someone-else"]), ("Review", [])):
             self.task.state, self.task.assignees = state, assignees
             with self.subTest(state=state, assignees=assignees), self.assertRaisesRegex(AgentBoxError, "current user's Doing or Review"):
-                self.run_workflow("review-budget", "1", "--limit", "6", "--reason", "User decision")
+                self.run_workflow("review-budget", "1", "--reason", "User decision")
         self.task.state, self.task.assignees = "Doing", ["1"]
         self.assertFalse(workflow.review_budget_path(self.root, BINDING, self.task).exists())
-        with workflow_state.lock(self.root, "review-budget"), \
-             self.assertRaisesRegex(AgentBoxError, "Another local review-budget"):
-            self.run_workflow("review-budget", "1", "--limit", "6", "--reason", "User decision")
         for bad in ({"ceiling": True, "ceiling_reason": "Reason"}, {"ceiling": 6},
                     {"ceiling": -1, "ceiling_reason": "Reason"}):
             workflow.save_review_state(self.root, BINDING, self.task, {"used": 0, **bad})
             with self.subTest(bad=bad), self.assertRaisesRegex(AgentBoxError, "Cannot read review budget"):
                 self.run_workflow("review-budget", "1", "--limit", "6", "--reason", "Must not repair corruption")
 
-    def test_policy_skipped_review_does_not_reserve_an_attempt(self):
+    def test_policy_skipped_review_opens_no_round(self):
         """A policy decision is not an independent review attempt."""
         self.config.workflow.review.policy = "off"
-        result = self.run_workflow("review", "1", "--primary", "codex")
-        self.assertEqual(result["review"]["verdict"], "SKIPPED")
-        self.assertEqual(result["review_budget"]["used"], 0)
+        for flags in ((), ("--native",)):
+            result = self.run_workflow("review", "1", *flags)
+            self.assertEqual((result["review"]["verdict"], result["review_budget"]["used"]), ("SKIPPED", 0))
 
     def test_a_card_with_any_sections_is_reviewed_with_its_parent_and_without_comments(self):
         """Headings are not parsed: every card reaches the reviewer whole, and discussion never does."""
-        self.config.workflow.review.policy = "always"
         parent = Task("7", "1", "Parent", description="Free-form parent goal.\n\n## Release Conditions\nKeep hidden rule.")
         self.task.parent = "7"
         self.task.description = "No headings at all.\n- [x] checked item\n## Mystery\n```python\nunclosed fence"
@@ -911,16 +523,13 @@ except AgentBoxError:
         gw.git(self.root, "branch", "ab/7-parent")
         with patch.object(workflow, "resolve", return_value=(parent, {"branch": "ab/7-parent", "base": "main"},
                                                              {"branch": "ab/1-task"}, "main")):
-            prepared = self.run_workflow("prepare", "1", "--role", "reviewer", "--primary", "codex")
-        payload = json.loads(self.delegation_input(prepared).read_bytes().decode("utf-8").split("Delegation handoff:\n", 1)[1])
-        manifest, paths = package(payload)
+            opened = self.native_round()
+        manifest, paths = package(payload_of(self.delegation_input(opened).read_text()))
         self.assertEqual(sorted(manifest["artifacts"]), ["changed-paths.txt", "full.diff", "parent.md",
                                                          "recorded-validation.json", "task.md"])
-        task_text = Path(manifest["artifacts"]["task.md"]["path"]).read_text()
-        parent_text = Path(manifest["artifacts"]["parent.md"]["path"]).read_text()
-        self.assertIn("unclosed fence", task_text)
-        self.assertIn("- [ ] checked item", task_text)
-        self.assertIn("Keep hidden rule.", parent_text)
+        self.assertIn("unclosed fence", Path(manifest["artifacts"]["task.md"]["path"]).read_text())
+        self.assertIn("- [ ] checked item", Path(manifest["artifacts"]["task.md"]["path"]).read_text())
+        self.assertIn("Keep hidden rule.", Path(manifest["artifacts"]["parent.md"]["path"]).read_text())
         self.assertTrue(all("PRIVATE_DISCUSSION" not in path.read_text() for path in paths))
         self.adapter.comments.assert_not_called()
 
@@ -933,8 +542,8 @@ except AgentBoxError:
             children = [Task("8", "1", "First", description="First acceptance", parent="7"),
                         Task("9", "1", "Second", description="Second acceptance", parent="7")]
             workflow.reviewer_handoff(root, "main", parent, parent, [children[1], parent, children[0]],
-                                      None, {}, "", "e" * 64, "parent")
-            path = workflow.review_evidence_path(root, "7", "e" * 64, "parent")
+                                      None, {}, "", "parent")
+            path = workflow.review_evidence_path(root, "7", "parent")
             self.assertEqual(sorted(item.name for item in path.iterdir()),
                              ["changed-paths.txt", "full.diff", "handoff.txt", "manifest.json",
                               "recorded-validation.json", "subtask-1.md", "subtask-2.md", "task.md"])
@@ -950,53 +559,33 @@ except AgentBoxError:
 
     def test_review_runs_without_a_brief(self):
         """The tracker already holds the requirements; a brief only adds what it lacks."""
-        self.config.workflow.review.policy = "always"
-        with patch.object(workflow, "run", side_effect=managed_runner(
-                lambda *args, **kwargs: {"verdict": "PASS", "summary": "Reviewed", "findings": []})):
-            result = self.run_workflow("review", "1", "--primary", "codex")
-        self.assertEqual(result["reconciliation"]["status"], "applied")
+        with patch.object(workflow, "run", side_effect=managed_runner(lambda *args, **kwargs: answer())):
+            self.assertEqual(self.run_workflow("review", "1")["reconciliation"]["status"], "applied")
         self.review_brief.write_text(" \n")
         with self.assertRaisesRegex(AgentBoxError, "handoff brief is empty"):
-            self.run_workflow("review", "1", "--primary", "codex", "--brief", str(self.review_brief))
+            self.run_workflow("review", "1", "--brief", str(self.review_brief))
 
-    def test_starting_review_retires_human_acceptance_before_a_report_exists(self):
-        """A pending native review or failed provider must not leave human approval usable."""
+    def test_starting_review_retires_human_acceptance_before_a_verdict_exists(self):
+        """A pending native round or a failed provider must not leave earlier acceptance usable."""
         self.config.workflow.merge_mode = "local"
-        self.config.workflow.review.policy = "always"
         self.task.description = "## Acceptance\n- [x] accepted"
         fingerprint = workflow.scope(self.root, "main")
-        for command in ("prepare", "review"):
-            with self.subTest(command=command):
+        for flags in (("--native",), ()):
+            with self.subTest(flags=flags):
                 workflow.save_evidence(self.root, self.task, {
-                    "scope": fingerprint, "validation": {"exit": 0},
-                    "review": {"verdict": "PASS"},
+                    "scope": fingerprint, "validation": {"exit": 0}, "review": {"verdict": "PASS"},
                     "human_acceptance": {"scope": fingerprint, "actor": "1", "reason": "User accepted"}})
-                if command == "prepare":
-                    self.run_workflow("prepare", "1", "--role", "reviewer", "--primary", "codex",
-                                      "--brief", str(self.review_brief))
-                else:
-                    with patch.object(workflow, "run", side_effect=AgentBoxError("provider unavailable")), \
-                         self.assertRaisesRegex(AgentBoxError, "provider unavailable"):
-                        self.run_workflow("review", "1", "--primary", "codex",
-                                          "--brief", str(self.review_brief))
-                self.assertNotIn("human_acceptance", workflow.read_evidence(self.root, self.task))
-                self.assertNotIn("review", workflow.read_evidence(self.root, self.task))
-                self.assertEqual(self.run_workflow("inspect", "1")["review"]["budget"]["used"],
-                                 1 if command == "prepare" else 2)
+                with patch.object(workflow, "run", side_effect=timeout):
+                    if flags:
+                        self.run_workflow("review", "1", *flags)
+                    else:
+                        with self.assertRaisesRegex(AgentBoxError, "no attempt spent"):
+                            self.run_workflow("review", "1")
+                saved = workflow.read_evidence(self.root, self.task)
+                self.assertNotIn("human_acceptance", saved)
+                self.assertNotIn("review", saved)
                 with self.assertRaisesRegex(AgentBoxError, "PASS review"):
                     self.run_workflow("finish", "1")
-
-    def test_a_reviewer_reports_at_the_role_and_tier_it_was_prepared_for(self):
-        prepared = self.run_workflow("prepare", "1", "--role", "reviewer", "--primary", "codex",
-                                     "--brief", str(self.review_brief))
-        self.assertEqual(prepared["route"]["role"], "reviewer")
-        review = Path(self.directory.name) / "review.json"
-        review.write_text(json.dumps({"verdict": "PASS", "summary": "Fine", "findings": []}))
-        result = self.run_workflow("report", "1", "--role", "reviewer",
-                                   "--provider", "claude", "--model", "m", "--effort", "high", "--file", str(review),
-                                   "--scope", prepared["scope"], "--handoff", prepared["handoff"], "--fresh-context")
-        self.assertEqual(result["report"]["verdict"], "PASS")
-
 
 
 class ReviewerInputTests(unittest.TestCase):
@@ -1014,8 +603,7 @@ class ReviewerInputTests(unittest.TestCase):
             root = repository(directory)
             (root / "AGENTS.md").write_text("Mandatory review rule.\n")
             task = Task("1", "1", "Review", description="## Goal\nReview it.\n")
-            evidence_path = workflow.review_evidence_path(
-                root, task.id, "a" * 64, "unreadable-instruction")
+            evidence_path = workflow.review_evidence_path(root, task.id, "unreadable-instruction")
             original_read_text = Path.read_text
 
             def fail_instruction_read(path, *args, **kwargs):
@@ -1025,9 +613,8 @@ class ReviewerInputTests(unittest.TestCase):
 
             with patch.object(Path, "read_text", new=fail_instruction_read), \
                  self.assertRaisesRegex(AgentBoxError, "Cannot read repository instruction AGENTS.md"):
-                workflow.reviewer_handoff(
-                    root, "main", task, task, [task], "Validation: not run.", {}, "",
-                    "a" * 64, "unreadable-instruction")
+                workflow.reviewer_handoff(root, "main", task, task, [task], "Validation: not run.", {}, "",
+                                          "unreadable-instruction")
             self.assertFalse(evidence_path.exists())
 
     def test_reviewer_handoff_points_at_checkout_evidence_without_copying_large_bodies(self):
@@ -1044,10 +631,8 @@ class ReviewerInputTests(unittest.TestCase):
             task = Task("1", "1", "Review", description="## Goal\nReview it.\n")
             brief = "Changes and reasons: fixture. Validation: not run. Limitations: synthetic."
 
-            small_fingerprint = "a" * 64
-            small = workflow.reviewer_handoff(
-                root, "main", task, task, [task], brief, {}, "", small_fingerprint, "small")
-            small_payload = json.loads(small.split("Delegation handoff:\n", 1)[1])
+            small = workflow.reviewer_handoff(root, "main", task, task, [task], brief, {}, "", "small")
+            small_payload = payload_of(small)
             manifest, _ = package(small_payload)
             self.assertEqual([item["source_path"] for item in manifest["repository_instructions"]],
                              ["AGENTS.md", "CLAUDE.md"])
@@ -1055,38 +640,29 @@ class ReviewerInputTests(unittest.TestCase):
             self.assertEqual(small_payload["manifest"]["sha256"],
                              hashlib.sha256(manifest_path.read_bytes()).hexdigest())
             diff_path = Path(manifest["artifacts"]["full.diff"]["path"])
-            instruction_paths = [Path(item["artifact_path"])
-                                 for item in manifest["repository_instructions"]]
+            instruction_paths = [Path(item["artifact_path"]) for item in manifest["repository_instructions"]]
             diff_evidence = diff_path.read_text()
             self.assertEqual(manifest["boundaries"], small_payload["boundaries"])
             self.assertEqual(manifest["artifacts"]["full.diff"]["sha256"],
                              hashlib.sha256(diff_evidence.encode()).hexdigest())
-            self.assertEqual([item["sha256"] for item in manifest["repository_instructions"]],
-                             [hashlib.sha256(path.read_text().encode()).hexdigest()
-                              for path in instruction_paths])
             self.assertIn(diff_marker, diff_evidence)
             self.assertEqual(instruction_paths[0].read_text(), instruction_marker + "\n")
             evidence_paths = [Path(item["path"]) for item in manifest["artifacts"].values()]
             self.assertTrue(all(stat.S_IMODE(path.stat().st_mode) == 0o400
                                 for path in (manifest_path, *evidence_paths, *instruction_paths)))
             self.assertEqual(small_payload["boundaries"]["head_commit"], gw.head_sha(root))
-            self.assertEqual(small_payload["boundaries"]["base_commit"], gw.base_commit(root, "main"))
             self.assertIn("large.py", (manifest_path.parent / "changed-paths.txt").read_text())
             self.assertRegex(small_payload["change_summary"], "files? changed")
-            self.assertNotIn(instruction_marker, small)
-            self.assertNotIn(diff_marker, small)
-            self.assertNotIn("diff --git", small)
+            for absent in (instruction_marker, diff_marker, "diff --git"):
+                self.assertNotIn(absent, small)
 
             (root / "large.py").write_text((diff_marker + "\n") * 12000)
             gw.git(root, "add", "large.py")
             gw.git(root, "commit", "-m", "large review fixture")
-            large_fingerprint = "b" * 64
-            large = workflow.reviewer_handoff(
-                root, "main", task, task, [task], brief, {}, "", large_fingerprint, "large")
+            large = workflow.reviewer_handoff(root, "main", task, task, [task], brief, {}, "", "large")
             self.assertNotIn(diff_marker, large)
             self.assertLess(abs(len(large) - len(small)), 100)
-            self.assertTrue(manifest_path.exists())
-            large_manifest, _ = package(json.loads(large.split("Delegation handoff:\n", 1)[1]))
+            large_manifest, _ = package(payload_of(large))
             large_path = Path(large_manifest["artifacts"]["full.diff"]["path"])
             self.assertGreater(len(large_path.read_text()), 100000)
             workflow.cleanup_review_evidence(large_path.parent)
@@ -1105,31 +681,22 @@ class ReviewerInputTests(unittest.TestCase):
             author_marker = "UNTRUSTED_AUTHOR_CLAIM_" * 8000
             task = Task("task-" + "i" * 1000, "1", "Title " + "t" * 1000,
                         description="## Goal\n" + requirement_marker + "\n")
-            prompt = workflow.reviewer_handoff(
-                root, "main", task, task, [task], author_marker, {}, "", "c" * 64, "bounded")
-            payload = json.loads(prompt.split("Delegation handoff:\n", 1)[1])
+            prompt = workflow.reviewer_handoff(root, "main", task, task, [task], author_marker, {}, "", "bounded")
+            payload = payload_of(prompt)
             manifest, _ = package(payload)
-
             self.assertLessEqual(len(prompt.encode()), workflow.REVIEW_HANDOFF_MAX_BYTES)
-            self.assertNotIn(requirement_marker, prompt)
-            self.assertNotIn(author_marker, prompt)
-            self.assertNotIn("changed-042.txt", prompt)
-            requirements = Path(manifest["artifacts"]["task.md"]["path"]).read_text()
-            author = Path(manifest["artifacts"]["author-report.md"]["path"]).read_text()
-            changed = Path(manifest["artifacts"]["changed-paths.txt"]["path"]).read_text().splitlines()
-            self.assertIn(requirement_marker, requirements)
-            self.assertEqual(author, author_marker)
-            self.assertEqual(len(changed), 250)
+            for absent in (requirement_marker, author_marker, "changed-042.txt"):
+                self.assertNotIn(absent, prompt)
+            self.assertIn(requirement_marker, Path(manifest["artifacts"]["task.md"]["path"]).read_text())
+            self.assertEqual(Path(manifest["artifacts"]["author-report.md"]["path"]).read_text(), author_marker)
+            self.assertEqual(len(Path(manifest["artifacts"]["changed-paths.txt"]["path"]).read_text().splitlines()), 250)
             workflow.cleanup_review_evidence(Path(payload["manifest"]["path"]).parent)
 
-            rejected_path = workflow.review_evidence_path(root, task.id, "d" * 64, "rejected")
+            rejected_path = workflow.review_evidence_path(root, task.id, "rejected")
             with patch.object(workflow, "REVIEW_HANDOFF_MAX_BYTES", 1), \
                  self.assertRaisesRegex(AgentBoxError, "Compact reviewer handoff exceeds"):
-                workflow.reviewer_handoff(
-                    root, "main", task, task, [task], author_marker, {}, "", "d" * 64,
-                    "rejected")
+                workflow.reviewer_handoff(root, "main", task, task, [task], author_marker, {}, "", "rejected")
             self.assertFalse(rejected_path.exists())
-
 
 
 if __name__ == "__main__":

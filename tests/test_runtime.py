@@ -795,7 +795,7 @@ class HostModeTests(IsolatedRuntimeTest):
         config = Config()
         config.workflow.review.max_lines = 47
         config.env.set = {'AGENT_BOX_RUNTIME_CONFIG': '/missing/wrong.json',
-                          'AGENT_BOX_PRIMARY_PROVIDER': 'wrong', 'CUSTOM_ENV': 'retained'}
+                          'CUSTOM_ENV': 'retained'}
         with tempfile.TemporaryDirectory() as tmp, \
              mock.patch.object(runtime.shutil, 'which', return_value='/usr/bin/codex'), \
              mock.patch.object(runtime, 'resolve_workspace', return_value=Workspace(Path(tmp), Path(tmp))), \
@@ -804,7 +804,6 @@ class HostModeTests(IsolatedRuntimeTest):
             self.assertEqual(runtime.host_main('codex', []), 0)
             env = call.call_args.kwargs['env']
             self.assertEqual(env['CUSTOM_ENV'], 'retained')
-            self.assertEqual(env['AGENT_BOX_PRIMARY_PROVIDER'], 'codex')
             self.assertTrue(Path(env['AGENT_BOX_RUNTIME_CONFIG']).is_file())
             with mock.patch.dict(os.environ, env, clear=True):
                 self.assertEqual(effective_config(include_project=False).workflow.review.max_lines, 47)

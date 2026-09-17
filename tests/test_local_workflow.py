@@ -13,7 +13,7 @@ from agent_box.config import Config
 from agent_box.errors import AgentBoxError
 from agent_box.repo_binding import Binding
 from agent_box.tracker.core import Task
-from workflow_fixtures import BINDING, candidate, repository, selected_route
+from workflow_fixtures import BINDING, answer, candidate, repository, selected_route
 
 
 class LocalLandTests(unittest.TestCase):
@@ -71,6 +71,25 @@ class LocalLandTests(unittest.TestCase):
         github.assert_not_called()
         push.assert_not_called()
 
+    def test_landing_a_parent_discards_its_raw_review_streams_only_once_it_is_done(self):
+        """Streams explain open review rounds; a failed Done write still needs them, a landed parent does not."""
+        from agent_box import review_results
+        source = Path(self.temporary.name) / "streams-source"
+        source.mkdir()
+        (source / "stdout").write_text("events\n")
+        streams = review_results.save_streams(workflow.WORKFLOW_STATE, workflow.repository_key(self.root),
+                                              "7", "round", source).parent
+        other = review_results.save_streams(workflow.WORKFLOW_STATE, workflow.repository_key(self.root),
+                                            "9", "round", source)
+        self.adapter.set_state.side_effect = AgentBoxError("tracker unavailable")
+        with self.assertRaisesRegex(AgentBoxError, "tracker unavailable"):
+            self.operate("merge")
+        self.assertTrue(streams.is_dir())
+        self.adapter.set_state.side_effect = None
+        self.assertEqual(self.operate("reconcile", saved=workflow.read_evidence(self.root, self.parent))["state"], "Done")
+        self.assertFalse(streams.exists())
+        self.assertTrue(other.is_dir())
+
     def test_reservation_between_dispatch_and_acceptance_blocks_finish_and_landing(self):
         """A cached PASS cannot survive a new round before the acceptance lock is acquired."""
         self.config.workflow.review.policy = "always"
@@ -86,8 +105,8 @@ class LocalLandTests(unittest.TestCase):
             def interleave(root, purpose):
                 if not reserved:
                     reserved.append(True)
-                    workflow.reserve_review(root, BINDING, self.parent, 3,
-                                            "new-round", self.saved["scope"])
+                    workflow.start_review(root, BINDING, self.parent, 3,
+                                            "new-round", self.saved["scope"], "managed")
                 with original_lock(root, purpose):
                     yield
 
@@ -106,8 +125,8 @@ class LocalLandTests(unittest.TestCase):
 
         def run(command, *args, **kwargs):
             if command == ["validation-fixture"]:
-                workflow.reserve_review(self.root, BINDING, self.parent, 3,
-                                        "validation-round", self.saved["scope"])
+                workflow.start_review(self.root, BINDING, self.parent, 3,
+                                        "validation-round", self.saved["scope"], "managed")
                 return SimpleNamespace(returncode=0)
             return original_run(command, *args, **kwargs)
 
@@ -147,8 +166,8 @@ class LocalLandTests(unittest.TestCase):
 
         def publish(*args):
             with self.assertRaisesRegex(AgentBoxError, "Another local review-budget"):
-                workflow.reserve_review(self.root, BINDING, self.parent, 3,
-                                        "too-late", self.saved["scope"])
+                workflow.start_review(self.root, BINDING, self.parent, 3,
+                                        "too-late", self.saved["scope"], "managed")
             return original_publish(*args)
 
         with patch.object(local_workflow, "_publish", publish):
@@ -169,8 +188,8 @@ class LocalLandTests(unittest.TestCase):
         original_landing = workflow.landing
 
         def interleave(*args):
-            workflow.reserve_review(self.root, BINDING, self.parent, 3,
-                                    "recovery-round", workflow.scope(self.root, "main"))
+            workflow.start_review(self.root, BINDING, self.parent, 3,
+                                    "recovery-round", workflow.scope(self.root, "main"), "managed")
             return original_landing(*args)
 
         with patch.object(workflow, "landing", interleave), \
@@ -193,8 +212,8 @@ class LocalLandTests(unittest.TestCase):
         original_landing = workflow.landing
 
         def interleave(*args):
-            workflow.reserve_review(self.root, BINDING, self.parent, 3,
-                                    "github-round", self.saved["scope"])
+            workflow.start_review(self.root, BINDING, self.parent, 3,
+                                    "github-round", self.saved["scope"], "managed")
             return original_landing(*args)
 
         for approved in (False, True):
@@ -510,13 +529,13 @@ class LocalLandTests(unittest.TestCase):
         self.dispatch(["validate", "7", "--", "true"])
         with self.assertRaisesRegex(AgentBoxError, "PASS review"):
             self.dispatch(["land", "7", "merge"])
-        report = {"verdict": "PASS", "summary": "Reviewed complete implementation", "findings": []}
+        report = answer("Verdict: PASS\n\nReviewed complete implementation.\n")
         brief = Path(self.temporary.name) / "review-brief.md"
         brief.write_text("Changes/reasons: integrated implementation. Risks: recovered history. Validation: true passed; no live proof.\n")
-        with patch.object(workflow, "route", side_effect=selected_route), \
+        with patch.object(workflow, "candidates", side_effect=selected_route), \
              patch.object(workflow.shutil, "which", return_value="provider-cli"), \
              patch.object(workflow, "execute", return_value={"report": report, "route": {"provider": "claude", "model": "m", "effort": "high", "tier": 1}}) as reviewer:
-            self.dispatch(["review", "7", "--primary", "codex", "--brief", str(brief)])
+            self.dispatch(["review", "7", "--brief", str(brief)])
         reviewer.assert_called_once()
         self.assertIn("review the complete implementation", reviewer.call_args.args[-1])
         result = self.dispatch(["land", "7", "merge"])

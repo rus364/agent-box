@@ -1,6 +1,5 @@
 """Completed review responses survive applicability failures without paid retries."""
 import json
-import base64
 import os
 import shlex
 from pathlib import Path
@@ -18,33 +17,28 @@ class ReviewResultTests(unittest.TestCase):
     setUp = fixtures.WorkflowCase.setUp
     run_workflow = fixtures.WorkflowCase.run_workflow
 
+    native_round = fixtures.WorkflowCase.native_round
+    native_result = fixtures.WorkflowCase.native_result
+
     def review(self):
-        return self.run_workflow("review", "1", "--primary", "codex", "--brief", str(self.review_brief))
+        return self.run_workflow("review", "1", "--brief", str(self.review_brief))
 
     def response(self, verdict="PASS"):
-        findings = [] if verdict != "NEEDS_WORK" else [{"severity": "high", "path": "file", "line": 1,
-            "message": "private finding", "evidence": "private evidence", "requirement": "acceptance"}]
-        return {"verdict": verdict, "summary": "private-completed-marker", "findings": findings}
+        finding = "\n- [HIGH] file:1 — private finding\n" if verdict == "NEEDS_WORK" else ""
+        return fixtures.answer(f"private-completed-marker\n\nVerdict: {verdict}\n{finding}")
 
     def retry(self, result):
         return self.run_workflow("review-result", "1", "--round=" + result["round"], "--reconcile")
 
-    def prepare(self):
-        return self.run_workflow("prepare", "1", "--role", "reviewer", "--primary", "codex",
-                                 "--brief", str(self.review_brief))
-
-    def native(self, prepared):
-        self.report.write_text(json.dumps(self.response()))
-        return self.run_workflow("report", "1", "--role", "reviewer", "--provider", "claude",
-            "--model", "m", "--effort", "high", "--fresh-context", "--scope", prepared["scope"],
-            "--handoff", prepared["handoff"], "--file", str(self.report))
+    def native(self):
+        return self.native_result(self.response()["text"])
 
     def test_related_edit_during_provider_preserves_response_and_one_attempt(self):
         """Informational links cannot discard a completed response or charge a second round."""
         def provider(*args, **kwargs):
             self.task.related.append("99")
-            kwargs["diagnostics"].update(usage={"input_tokens": 17}, total_cost_usd=0.12)
-            return {"verdict": "PASS", "summary": "private-completed-marker", "findings": []}
+            kwargs["diagnostics"].update(usage={"input_tokens": 17})
+            return self.response()
         original = workflow.scope(self.root, "main")
         with patch.object(workflow, "run", side_effect=provider) as run:
             result = self.review()
@@ -67,7 +61,7 @@ class ReviewResultTests(unittest.TestCase):
         self.assertEqual(result["reconciliation"]["status"], "stale")
         self.assertEqual(result["reconciliation"]["changes"], ["head"])
         gw.git(self.root, "reset", "--hard", original_head)
-        with patch.object(workflow, "run") as run, patch.object(workflow, "reserve_review") as reserve:
+        with patch.object(workflow, "run") as run, patch.object(workflow, "start_review") as reserve:
             repeated = self.retry(result)
         self.assertEqual(repeated["reconciliation"]["status"], "stale")
         run.assert_not_called()
@@ -98,7 +92,7 @@ class ReviewResultTests(unittest.TestCase):
         offline = self.run_workflow("review-result", "1")
         self.assertEqual(offline["result_path"], result["result_path"])
         self.adapter.get.side_effect = None
-        with patch.object(workflow, "run") as run, patch.object(workflow, "reserve_review") as reserve:
+        with patch.object(workflow, "run") as run, patch.object(workflow, "start_review") as reserve:
             repeated = self.retry(offline)
             with patch.object(workflow, "save_evidence") as save:
                 self.retry(repeated)
@@ -132,32 +126,26 @@ class ReviewResultTests(unittest.TestCase):
                 self.assertEqual(recovered["reconciliation"]["status"], "applied")
                 self.assertEqual(workflow.read_evidence(self.root, self.task)["review"]["verdict"], verdict)
 
-    def test_newer_round_cannot_destroy_or_accept_late_native_response(self):
-        """A late report is history, while its newer round retains the right to report."""
-        first = self.prepare()
-        second = self.prepare()
-        old = self.native(first)
-        self.assertEqual(old["reconciliation"]["status"], "superseded")
-        self.assertTrue(Path(old["result_path"]).exists())
-        latest = self.native(second)
-        self.assertEqual(latest["reconciliation"]["status"], "applied")
-        with self.assertRaisesRegex(AgentBoxError, "already reported"):
-            self.native(second)
-        self.assertEqual(self.retry(old)["reconciliation"]["status"], "superseded")
-        self.assertEqual(latest["review_budget"]["used"], 2)
-        state = workflow.read_review_state(self.root, BINDING, self.task)
-        state.update(pending=old["round"], pending_backend="native")
-        state["results"][0]["status"] = "saved"
-        workflow.save_review_state(self.root, BINDING, self.task, state)
-        self.assertEqual(self.retry(old)["reconciliation"]["status"], "superseded")
+    def test_a_new_round_retires_an_unanswered_native_round(self):
+        """Only the latest round can be answered, so an earlier unanswered input is removed, not stranded."""
+        first = self.native_round()
+        first_input = workflow.review_evidence_path(self.root, "1", first["round"])
+        self.assertTrue(first_input.is_dir())
+        second = self.native_round()
+        self.assertFalse(first_input.exists())
+        latest = self.native()
+        self.assertEqual((latest["round"], latest["reconciliation"]["status"]), (second["round"], "applied"))
+        self.assertEqual(latest["review_budget"]["used"], 1)
+        with self.assertRaisesRegex(AgentBoxError, "No native review round is pending"):
+            self.native()
 
     def test_missing_modified_or_replaced_receipts_never_apply(self):
         """A receipt seal detects content edits and same-byte replacements before acceptance."""
         for damage in ("missing", "modified", "replaced"):
             with self.subTest(damage=damage):
-                prepared = self.prepare()
-                self.adapter.get.side_effect = AgentBoxError("offline")
-                result = self.native(prepared)
+                self.native_round()
+                self.adapter.get.side_effect = [self.task, AgentBoxError("offline")]
+                result = self.native()
                 self.adapter.get.side_effect = None
                 path = Path(result["result_path"])
                 raw = path.read_bytes()
@@ -185,18 +173,18 @@ class ReviewResultTests(unittest.TestCase):
 
     def test_tampered_input_retains_response_without_accepting_or_deleting_replacement(self):
         """Canonical-input corruption is distinct from provider failure and scope drift."""
-        prepared = self.prepare()
-        descriptor = json.loads(base64.urlsafe_b64decode(prepared["handoff"]))
-        path = Path(descriptor["input"]["path"])
         target = Path(self.directory.name) / "user-file"
         target.write_text("user-owned")
-        def provider(*args, **kwargs):
+        seen = []
+        def provider(*args, read_paths, **kwargs):
+            path = Path(read_paths[0]) / "handoff.txt"
+            seen.append(path)
             path.unlink()
             path.symlink_to(target)
             return self.response()
         with patch.object(workflow, "run", side_effect=provider):
-            result = self.run_workflow("review", "1", "--handoff", prepared["handoff"],
-                "--brief", str(self.review_brief), "--fallback-reason", "Native unavailable")
+            result = self.review()
+        path = seen[0]
         self.assertEqual(result["reconciliation"]["status"], "invalid_input")
         self.assertEqual(target.read_text(), "user-owned")
         self.assertTrue(path.is_symlink())
@@ -223,6 +211,25 @@ class ReviewResultTests(unittest.TestCase):
         self.assertTrue(link.is_symlink())
         self.assertEqual(target.read_text(), "keep")
         self.assertEqual(os.stat(newer["result_path"]).st_mode & 0o777, 0o400)
+
+    def test_raw_stream_retention_keeps_twenty_recent_runs(self):
+        """A task that never reaches Done cannot grow stream storage without bound."""
+        source = Path(self.directory.name) / "streams-source"
+        source.mkdir()
+        (source / "stdout").write_bytes(b"x" * 10)
+        (source / "result.json").write_text("Verdict: PASS")
+        repository = workflow.repository_key(self.root)
+        first = review_results.save_streams(workflow.WORKFLOW_STATE, repository, "1", "old", source)
+        os.utime(first, (0, 0))
+        second = review_results.save_streams(workflow.WORKFLOW_STATE, repository, "2", "round", source)
+        self.assertFalse(first.exists())
+        self.assertEqual(sorted(path.name for path in second.iterdir()), ["result.json", "stdout"])
+        self.assertEqual((second.stat().st_mode & 0o777, (second / "stdout").stat().st_mode & 0o777), (0o700, 0o400))
+        runs = [review_results.save_streams(workflow.WORKFLOW_STATE, repository, "2", "round", source)
+                for _ in range(review_results.MAX_FILES)]
+        self.assertEqual([run.name for run in runs[-2:]], ["20", "21"])
+        self.assertFalse(second.exists())
+        self.assertEqual(len(list(second.parent.iterdir())), review_results.MAX_FILES)
 
     def test_information_changes_keep_validation_while_policy_labels_still_trigger_review(self):
         """Metadata is not a test input, but a review-trigger label still has its live consumer."""
@@ -257,27 +264,27 @@ class ReviewResultTests(unittest.TestCase):
 
     def test_expired_and_oversized_receipts_do_not_become_acceptance(self):
         """Retention limits are enforced before reuse; failed persistence preserves canonical input."""
-        prepared = self.prepare()
-        descriptor = json.loads(base64.urlsafe_b64decode(prepared["handoff"]))
+        opened = self.native_round()
         with patch.object(review_results, "MAX_BYTES", 1):
             with self.assertRaisesRegex(AgentBoxError, "8 MiB"):
-                self.native(prepared)
-        self.assertTrue(Path(descriptor["input"]["path"]).exists())
-        result = self.native(prepared)
+                self.native()
+        self.assertTrue(workflow.review_evidence_path(self.root, "1", opened["round"]).is_dir())
+        result = self.native()
+        self.assertEqual(result["review_budget"]["used"], 1)
         with patch.object(review_results.time, "time", return_value=10**12):
             with self.assertRaisesRegex(AgentBoxError, "expired"):
                 self.retry(result)
 
     def test_dirty_tree_blocks_only_application_and_can_reconcile_the_same_round(self):
         """A report file in the checkout does not change the committed review scope."""
-        prepared = self.prepare()
-        untracked = self.root / "REPORT.json"
-        untracked.write_text(json.dumps(self.response()))
-        result = self.native(prepared)
+        self.native_round()
+        untracked = self.root / "REPORT.md"
+        untracked.write_text(self.response()["text"])
+        result = self.native()
         self.assertEqual(result["reconciliation"]["status"], "blocked")
         self.assertEqual(result["reconciliation"]["changes"], ["working_tree"])
         untracked.unlink()
-        with patch.object(workflow, "run") as run, patch.object(workflow, "reserve_review") as reserve:
+        with patch.object(workflow, "run") as run, patch.object(workflow, "start_review") as reserve:
             recovered = self.retry(result)
         self.assertEqual(recovered["reconciliation"]["status"], "applied")
         self.assertEqual(recovered["review_budget"]["used"], 1)
@@ -310,10 +317,11 @@ class ReviewResultTests(unittest.TestCase):
                 self.assertFalse(any(item["round"] == result["round"] for item in state.get("results", [])))
                 discovered = self.run_workflow("review-result", "1")
                 self.assertEqual(discovered["round"], result["round"])
-                with patch.object(workflow, "run") as run, patch.object(workflow, "reserve_review") as reserve:
+                with patch.object(workflow, "run") as run, patch.object(workflow, "start_review") as reserve:
                     recovered = self.retry(discovered)
                 self.assertEqual(recovered["reconciliation"]["status"], "applied")
-                self.assertEqual(recovered["review_budget"]["used"], state["used"])
+                # The verdict the failed index write did not count is counted once on recovery.
+                self.assertEqual(recovered["review_budget"]["used"], state["used"] + 1)
                 run.assert_not_called()
                 reserve.assert_not_called()
 
@@ -341,30 +349,24 @@ class ReviewResultTests(unittest.TestCase):
             self.retry(result)
         self.assertNotIn("review", workflow.read_evidence(self.root, self.task))
 
-    def test_saved_native_response_refuses_paid_fallback_after_index_or_cleanup_error(self):
-        """A completed native response cannot become another dispatch after application failure."""
-        for failure in ("save_review_state", "cleanup_delegation_input"):
-            with self.subTest(failure=failure):
-                prepared = self.prepare()
-                with patch.object(workflow, failure, side_effect=OSError("temporary failure")):
-                    result = self.native(prepared)
-                self.assertEqual(result["reconciliation"]["status"], "error")
-                with patch.object(workflow, "execute") as execute, \
-                     patch.object(workflow, "reserve_review") as reserve:
-                    with self.assertRaisesRegex(AgentBoxError, "already has a saved result"):
-                        self.run_workflow("review", "1", "--handoff", prepared["handoff"],
-                            "--brief", str(self.review_brief), "--fallback-reason", "Native unavailable")
-                execute.assert_not_called()
-                reserve.assert_not_called()
-                self.assertEqual(self.retry(result)["reconciliation"]["status"], "applied")
+    def test_saved_native_response_is_reconciled_not_recorded_twice_after_cleanup_error(self):
+        """A completed native answer whose cleanup failed is finished by reconcile, never by a second record."""
+        self.native_round()
+        with patch.object(workflow, "cleanup_delegation_input", side_effect=OSError("temporary failure")):
+            result = self.native()
+        self.assertEqual(result["reconciliation"]["status"], "error")
+        with self.assertRaisesRegex(AgentBoxError, "No native review round is pending"):
+            self.native()
+        recovered = self.retry(result)
+        self.assertEqual((recovered["reconciliation"]["status"], recovered["review_budget"]["used"]), ("applied", 1))
 
     def test_generated_recovery_commands_accept_rounds_starting_with_a_dash(self):
         """URL-safe random IDs can begin with '-' and must not be parsed as CLI options."""
         with patch.object(workflow.secrets, "token_urlsafe", return_value="-round"):
-            prepared = self.prepare()
-        untracked = self.root / "REPORT.json"
+            self.native_round()
+        untracked = self.root / "REPORT.md"
         untracked.write_text("temporary")
-        result = self.native(prepared)
+        result = self.native()
         args = workflow.parser().parse_args(shlex.split(result["next_step"])[2:])
         self.assertEqual(args.round, "-round")
         inspected = self.run_workflow("inspect", "1")
@@ -377,24 +379,24 @@ class ReviewResultTests(unittest.TestCase):
         """Checkout selection is an application condition, not a change to the task's code."""
         for checkout in ("main", "--detach"):
             with self.subTest(checkout=checkout):
-                prepared = self.prepare()
+                self.native_round()
                 gw.git(self.root, "switch", checkout)
-                result = self.native(prepared)
+                result = self.native()
                 self.assertEqual(result["reconciliation"]["status"], "blocked")
                 self.assertEqual(result["reconciliation"]["changes"], ["branch"])
                 gw.git(self.root, "switch", "ab/1-task")
-                with patch.object(workflow, "run") as run, patch.object(workflow, "reserve_review") as reserve:
+                with patch.object(workflow, "run") as run, patch.object(workflow, "start_review") as reserve:
                     self.assertEqual(self.retry(result)["reconciliation"]["status"], "applied")
                 run.assert_not_called()
                 reserve.assert_not_called()
 
     def test_wrong_checkout_does_not_hide_a_real_task_ref_change(self):
         """Returning to the task branch must still detect its moved commit before acceptance."""
-        prepared = self.prepare()
+        self.native_round()
         original = gw.head_sha(self.root)
         gw.git(self.root, "commit", "--allow-empty", "-m", "new task head")
         gw.git(self.root, "switch", "main")
-        result = self.native(prepared)
+        result = self.native()
         self.assertEqual(result["reconciliation"]["status"], "blocked")
         gw.git(self.root, "switch", "ab/1-task")
         result = self.retry(result)
@@ -422,17 +424,17 @@ class ReviewResultTests(unittest.TestCase):
 
     def test_unindexed_response_edits_are_detected_when_input_and_owner_checks_pass(self):
         """Input integrity cannot substitute for the missing index's response-byte identity."""
-        prepared = self.prepare()
+        self.native_round()
         with patch.object(workflow, "save_review_state", side_effect=OSError("index unavailable")):
-            result = self.native(prepared)
+            result = self.native()
         path = Path(result["result_path"])
         value = json.loads(path.read_text())
-        value["output"]["report"]["summary"] = "replaced response"
+        value["output"]["report"]["text"] = "replaced response"
         path.unlink()
         path.write_text(json.dumps(value))
         path.chmod(0o400)
         # The simpler owner/mode/id and input checks all pass for this substituted response.
-        self.assertEqual(review_results.read_file(path)[0]["output"]["report"]["summary"], "replaced response")
+        self.assertEqual(review_results.read_file(path)[0]["output"]["report"]["text"], "replaced response")
         self.assertTrue(workflow.read_delegation_input(self.root, value["descriptor"]))
         with self.assertRaisesRegex(AgentBoxError, "seal.*changed"):
             self.retry(result)

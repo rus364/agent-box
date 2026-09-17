@@ -107,7 +107,6 @@ class WorkflowGitTests(unittest.TestCase):
         from agent_box import workflow
         from agent_box.config import Config
         from agent_box.repo_binding import Binding
-        import json
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "repo"
             root.mkdir()
@@ -117,14 +116,15 @@ class WorkflowGitTests(unittest.TestCase):
             task = Task("1", "1", "Task", description="## Acceptance\n- [ ] requirement", state="Doing", assignees=["1"], labels=["ab:tier:1"])
             config = Config()
             config.workflow.enabled = True
+            config.workflow.review.policy = "always"
             config.workflow.use_tiers = True
             adapter = Mock()
             adapter.get.return_value = task
             adapter.identity.return_value = {"id": 1}
             route = {"fast": False, "provider": "claude", "tier": 1, "role": "reviewer", "model": "exact-model", "effort": "high", "fallbacks": []}
             info = {"branch": "ab/task", "base": "main"}
-            report = Path(temporary) / "report.json"
-            report.write_text(json.dumps({"verdict": "PASS", "summary": "Reviewed", "findings": []}))
+            report = Path(temporary) / "report.md"
+            report.write_text("Verdict: PASS\n")
             brief = Path(temporary) / "review-brief.md"
             brief.write_text("Changes/reasons: code change. Risks: values. Validation: static only; no live proof.\n")
             (root / "change.py").write_text("value = 1\n")
@@ -134,11 +134,11 @@ class WorkflowGitTests(unittest.TestCase):
                  patch.object(Binding, "load", return_value=Binding("vikunja", "https://tasks.example", "1")), \
                  patch.object(workflow, "make_adapter", return_value=adapter), \
                  patch.object(workflow, "resolve", return_value=(task, info, {}, "main")), \
-                 patch.object(workflow, "route", return_value=route), patch.object(workflow, "WORKFLOW_STATE", Path(temporary) / "state"):
-                prepared = workflow.dispatch(workflow.parser().parse_args([
-                    "prepare", "1", "--role", "reviewer", "--primary", "codex", "--brief", str(brief)]))
+                 patch.object(workflow, "candidates", return_value=route), patch.object(workflow, "WORKFLOW_STATE", Path(temporary) / "state"):
+                workflow.dispatch(workflow.parser().parse_args(["review", "1", "--native", "--brief", str(brief)]))
                 (root / "change.py").write_text("value = 2\n")
-                result = workflow.dispatch(workflow.parser().parse_args(["report", "1", "--role", "reviewer", "--provider", "claude", "--model", "exact-model", "--effort", "high", "--fresh-context", "--file", str(report), "--scope", prepared["scope"], "--handoff", prepared["handoff"]]))
+                result = workflow.dispatch(workflow.parser().parse_args([
+                    "review", "1", "--result", str(report), "--provider", "claude", "--model", "exact-model"]))
                 self.assertEqual(result["reconciliation"]["status"], "blocked")
                 self.assertIn("working_tree", result["reconciliation"]["changes"])
                 self.assertNotIn("review", workflow.read_evidence(root, task))

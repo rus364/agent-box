@@ -18,21 +18,28 @@ class ProviderRunnerTests(unittest.TestCase):
             r.parse_result("claude", 0, json.dumps({"is_error": True, "result": "model is unavailable", "api_error_status": 404}), "")
         self.assertEqual(caught.exception.category, "model-unavailable")
 
-    def test_success_without_valid_review_schema_is_inconclusive(self):
+    def test_a_verdict_is_the_one_verdict_line_among_prose(self):
+        """Formatting around the line is tolerated; zero, several or an unknown value is ambiguous and fails."""
         r = importlib.import_module("agent_box.provider_runner")
-        with self.assertRaises(r.ProviderFailure):
-            r.validate_report({"verdict": "PASS", "findings": [{"severity": "high"}]})
-        report = r.validate_report({"verdict": "NEEDS_WORK", "summary": "Missing guard", "findings": [
-            {"severity": "high", "path": "api.py", "line": 5, "message": "Missing guard", "evidence": "Unauthenticated path", "requirement": "Access control"}]})
-        self.assertEqual(report["verdict"], "NEEDS_WORK")
+        report = r.review_report("I read the diff.\n\n**Verdict:** NEEDS_WORK\n\n"
+                                 "- [HIGH] api.py:5 — missing guard\n* [LOW] README.md — typo\n- [P1] x.py:1 — not a severity\n")
+        self.assertEqual(report, {"verdict": "NEEDS_WORK", "findings": [
+            {"severity": "HIGH", "location": "api.py:5"}, {"severity": "LOW", "location": "README.md"}]})
+        self.assertEqual(r.review_report("## Verdict: PASS\n")["verdict"], "PASS")
+        for text, reason in (("The verdict is PASS.\n", "response has no Verdict line"),
+                             ("Verdict: PASS\nVerdict: PASS\n", "response has more than one Verdict line"),
+                             ("Verdict: PASS, mostly\n", "Verdict must be PASS, NEEDS_WORK or INCONCLUSIVE")):
+            with self.subTest(text=text), self.assertRaises(r.ProviderFailure) as caught:
+                r.review_report(text)
+            self.assertEqual((caught.exception.category, caught.exception.stage, caught.exception.reason),
+                             ("invalid-report", "verdict", reason))
 
     def test_read_only_claude_reviewer_has_tool_restrictions_and_no_model_guess(self):
         r = importlib.import_module("agent_box.provider_runner")
         from pathlib import Path
         evidence = Path("/tmp/exact-review-evidence")
         command = r.build_command({"provider": "claude", "model": "chosen-model", "effort": "high"},
-                                  "reviewer", Path("/tmp"), Path("/tmp/schema.json"), Path("/tmp/result.json"),
-                                  [evidence])
+                                  "reviewer", Path("/tmp"), Path("/tmp/result.json"), [evidence])
         self.assertEqual(command[command.index("--model") + 1], "chosen-model")
         self.assertEqual(command[command.index("--effort") + 1], "high")
         self.assertIn("--tools", command)
@@ -44,21 +51,19 @@ class ProviderRunnerTests(unittest.TestCase):
         self.assertIn("--strict-mcp-config", command)
 
     def test_each_managed_role_starts_without_resume_or_parent_transcript(self):
-        """All roles use fresh CLI entrypoints; only a reviewer is held to a report schema."""
+        """All roles use fresh CLI entrypoints and answer in plain text; no role is held to a JSON schema."""
         r = importlib.import_module("agent_box.provider_runner")
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         root = Path(directory.name)
-        schema = root / "schema.json"
-        schema.write_text("{}")
         result = root / "result.json"
         for role in ("worker", "scout", "reviewer"):
             for provider, flag in (("codex", "--ephemeral"), ("claude", "--no-session-persistence")):
                 with self.subTest(role=role, provider=provider):
                     command = r.build_command({"provider": provider, "model": "m", "effort": "high"},
-                                              role, root, schema if role == "reviewer" else None, result)
+                                              role, root, result)
                     self.assertIn(flag, command)
-                    self.assertEqual(bool({"--output-schema", "--json-schema"} & set(command)), role == "reviewer")
+                    self.assertFalse({"--output-schema", "--json-schema"} & set(command))
                     self.assertFalse({"resume", "--resume", "--continue", "--fork-session", "--session-id"} & set(command))
 
     def test_expired_oauth_is_authentication_failure_not_a_review(self):
@@ -71,19 +76,18 @@ class ProviderRunnerTests(unittest.TestCase):
     def test_default_effort_is_omitted_from_provider_commands(self):
         r = importlib.import_module("agent_box.provider_runner")
         root = Path("/tmp")
-        schema = None
         result = Path("/tmp/result.json")
         codex = r.build_command(
             {"provider": "codex", "model": "chosen-model", "effort": "default"},
-            "worker", root, schema, result)
+            "worker", root, result)
         claude = r.build_command(
             {"provider": "claude", "model": "chosen-model", "effort": "default"},
-            "worker", root, schema, result)
+            "worker", root, result)
         self.assertFalse(any("model_reasoning_effort" in value for value in codex))
         self.assertNotIn("--effort", claude)
         explicit_codex = r.build_command(
             {"provider": "codex", "model": "chosen-model", "effort": "high"},
-            "worker", root, schema, result)
+            "worker", root, result)
         self.assertIn('model_reasoning_effort="high"', explicit_codex)
 
     def test_managed_claude_default_does_not_inherit_effort_environment(self):
@@ -101,24 +105,6 @@ class ProviderRunnerTests(unittest.TestCase):
         self.assertNotIn("CLAUDE_CODE_EFFORT_LEVEL", popen.call_args.kwargs["env"])
         self.assertNotIn("--effort", popen.call_args.args[0])
 
-    def test_native_report_file_uses_the_same_extraction_and_refusals(self):
-        """A coordinator may save a native reviewer reply verbatim; both backends share one report contract."""
-        import argparse
-        from agent_box import workflow
-        report = {"verdict": "PASS", "summary": "Checked", "findings": []}
-        block = "```json\n" + json.dumps(report) + "\n```"
-        selected = {"provider": "claude", "model": "m", "effort": "high", "fast": False, "tier": 1, "fallbacks": []}
-        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {}, clear=True):
-            path = Path(directory) / "report.json"
-            args = argparse.Namespace(provider="claude", model="m", effort="high", fast=None, role="reviewer",
-                                      fresh_context=True, file=str(path))
-            path.write_text("Reviewed the parser.\n" + block)
-            self.assertEqual(workflow.native_output(args, selected, 1)["report"], report)
-            path.write_text(block + "\n" + block)
-            with self.assertRaises(workflow.AgentBoxError) as caught:
-                workflow.native_output(args, selected, 1)
-        self.assertIn("more than one fenced JSON block", str(caught.exception))
-
 
 class FailureDiagnosticsTests(unittest.TestCase):
     """Lost outputs must be inspectable offline without entering public evidence."""
@@ -133,10 +119,12 @@ class FailureDiagnosticsTests(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
         self.route = {"provider": "claude", "model": "haiku", "effort": "low", "tier": 1}
-        self.report = {"verdict": "PASS", "summary": "Checked", "findings": []}
+        self.text = "Checked the diff.\n\nVerdict: PASS\n"
+        self.report = {"verdict": "PASS", "findings": [], "text": self.text}
+        self.envelope = json.dumps({"result": self.text}).encode()
 
     def run_response(self, output, *, stderr=b"", code=0, route=None, result=None, timeout=False, diagnostics=None,
-                     on_completed=None, role="reviewer"):
+                     on_completed=None, role="reviewer", on_streams=None):
         def popen(command, **kwargs):
             kwargs["stdout"].buffer.write(output)
             kwargs["stderr"].buffer.write(stderr)
@@ -149,7 +137,7 @@ class FailureDiagnosticsTests(unittest.TestCase):
         with patch.object(self.r.subprocess, "Popen", side_effect=popen), \
              patch.object(self.r.os, "killpg"):
             return self.r.run(route or self.route, role, self.root, "private prompt",
-                              diagnostics=diagnostics, on_completed=on_completed)
+                              diagnostics=diagnostics, on_completed=on_completed, on_streams=on_streams)
 
     def test_completion_hook_runs_with_diagnostics_before_temporary_files_are_removed(self):
         """Workflow must save a successful response before the provider's temporary context exits."""
@@ -164,7 +152,7 @@ class FailureDiagnosticsTests(unittest.TestCase):
             self.assertEqual(report, self.report)
             self.assertTrue((active[-1] / "stdout").is_file())
             self.assertEqual(diagnostics["usage"]["input_tokens"], 17)
-        envelope = {"structured_output": self.report, "usage": {"input_tokens": 17}}
+        envelope = {"result": self.text, "usage": {"input_tokens": 17}}
         with patch.object(self.r.tempfile, "TemporaryDirectory", side_effect=temporary):
             self.run_response(json.dumps(envelope).encode(), diagnostics=diagnostics, on_completed=completed)
         self.assertFalse(active[-1].exists())
@@ -176,7 +164,7 @@ class FailureDiagnosticsTests(unittest.TestCase):
         for provider in ("codex", "claude"):
             with self.subTest(provider=provider):
                 route = {**self.route, "provider": provider, "fallbacks": []}
-                envelope = {"structured_output": self.report, "usage": {"input_tokens": 17, "output_tokens": 3},
+                envelope = {"result": self.text, "usage": {"input_tokens": 17, "output_tokens": 3},
                             "total_cost_usd": 0.002, "private-key": "private-value"}
                 events = [{"type": "item.completed", "item": {"text": "private-value"}},
                           {"type": "turn.completed", "usage": {"input_tokens": 17, "output_tokens": 3,
@@ -191,7 +179,7 @@ class FailureDiagnosticsTests(unittest.TestCase):
 
                 def runner(*args, diagnostics, **kwargs):
                     return self.run_response(output, route=route, diagnostics=diagnostics,
-                                             result=json.dumps(self.report).encode() if provider == "codex" else None)
+                                             result=self.text.encode() if provider == "codex" else None)
 
                 with patch.object(workflow, "run", side_effect=runner):
                     result = workflow.execute(SimpleNamespace(timeout_seconds=1), route, "reviewer", self.root, "prompt")
@@ -202,7 +190,8 @@ class FailureDiagnosticsTests(unittest.TestCase):
                 self.assertEqual(metadata["usage"]["cached_input_tokens"], 5 if provider == "codex" else None)
                 self.assertEqual(metadata["usage"]["cache_write_input_tokens"], 10 if provider == "codex" else None)
                 self.assertEqual(metadata["usage"]["reasoning_output_tokens"], 3 if provider == "codex" else None)
-                self.assertEqual(metadata["total_cost_usd"], 0.002 if provider == "claude" else None)
+                # The CLI's own price estimate is not an external API's bill, so it is not kept.
+                self.assertNotIn("total_cost_usd", json.dumps(result))
                 self.assertNotIn("private", json.dumps(metadata))
         self.assertFalse((self.state / "provider-failures").exists())
 
@@ -232,29 +221,28 @@ class FailureDiagnosticsTests(unittest.TestCase):
         """No usage event or envelope value must not turn into zero cost/tokens."""
         for provider in ("codex", "claude"):
             diagnostics = {}
-            self.run_response(json.dumps(self.report).encode(),
+            self.run_response(self.envelope, result=self.text.encode() if provider == "codex" else None,
                               route={**self.route, "provider": provider}, diagnostics=diagnostics)
-            self.assertEqual(diagnostics, {"usage": None, "total_cost_usd": None})
+            self.assertEqual(diagnostics, {"usage": None})
 
     def fail_response(self, output, **kwargs):
         with self.assertRaises(self.r.ProviderFailure) as caught:
             self.run_response(output, **kwargs)
         return caught.exception
 
-    def test_invalid_json_keeps_raw_private_bytes_and_safe_metadata(self):
-        """Invalid provider prose and stderr survive privately, not in the error/evidence."""
+    def test_unreadable_output_keeps_raw_private_bytes_and_safe_metadata(self):
+        """Invalid provider output and stderr survive privately, not in the error/evidence."""
         import base64
         failure = self.fail_response(b"secret-stdout\xff", stderr=b"secret-stderr")
         public = json.dumps(failure.diagnostic) + str(failure)
         self.assertNotIn("secret", public)
-        self.assertEqual(failure.diagnostic["stage"], "json")
+        self.assertEqual(failure.diagnostic["stage"], "response")
         self.assertEqual(failure.diagnostic["exit_code"], 0)
         self.assertEqual(failure.diagnostic["stdout_bytes"], 14)
         self.assertEqual(failure.diagnostic["stderr_bytes"], 13)
         self.assertEqual(failure.diagnostic["model"], "haiku")
         self.assertEqual(failure.diagnostic["role"], "reviewer")
         self.assertIsNone(failure.diagnostic["usage"])
-        self.assertIsNone(failure.diagnostic["total_cost_usd"])
         self.assertGreaterEqual(failure.diagnostic["duration_seconds"], 0)
         artifact = self.state / failure.diagnostic["artifact"]
         self.assertEqual(artifact.stat().st_mode & 0o777, 0o600)
@@ -263,65 +251,53 @@ class FailureDiagnosticsTests(unittest.TestCase):
         self.assertEqual(base64.b64decode(data["streams"]["stdout"]["base64"]), b"secret-stdout\xff")
         self.assertNotIn("private prompt", artifact.read_text())
 
-    def test_parse_and_envelope_failures_remain_distinct_and_ambiguous_prose_is_refused(self):
-        """Null outputs, unfenced prose and ambiguous Markdown cannot silently become PASS."""
-        block = "```json\n" + json.dumps(self.report) + "\n```"
-        cases = [(b"not json", "json", "response is not valid JSON"),
-                 (b"[]", "envelope", "response must be a JSON object"),
-                 (b"null", "envelope", "response must be a JSON object"),
-                 (json.dumps({"structured_output": None, "result": json.dumps(self.report)}).encode(),
-                  "envelope", "structured_output must be an object"),
-                 (b'{"structured_output":[]}', "envelope", "structured_output must be an object"),
-                 (b'{"result":42}', "envelope", "result must contain a JSON object"),
-                 (b'{"result":"```json secret ```"}', "json", "result string is not valid JSON"),
-                 (json.dumps({"result": "Verdict below.\n" + json.dumps(self.report)}).encode(),
-                  "json", "result string is not valid JSON"),
-                 (json.dumps({"result": f"First:\n{block}\nSecond:\n{block}"}).encode(),
-                  "json", "response has more than one fenced JSON block"),
-                 (json.dumps({"result": "Done.\n```json\n{\"verdict\": PASS}\n```"}).encode(),
-                  "json", "fenced JSON block is not valid JSON"),
-                 (json.dumps({"result": "Done.\n```json\n[]\n```"}).encode(),
-                  "envelope", "result must contain a JSON object"),
-                 (json.dumps({"result": "Done.\n```json\n" + json.dumps(
-                     {**self.report, "findings": [{"severity": "high"}]}) + "\n```"}).encode(),
-                  "schema", "findings[0].path must be a nonblank string"),
-                 (b'{"type":"result","subtype":"success"}', "envelope", "Claude envelope has no structured_output or result")]
+    def test_envelope_and_verdict_failures_remain_distinct(self):
+        """A missing answer, an empty one and an ambiguous verdict each fail with their own stage."""
+        cases = [(b"not json", "envelope", "Claude envelope has no result text"),
+                 (b"[]", "envelope", "Claude envelope has no result text"),
+                 (b'{"result":42}', "envelope", "Claude envelope has no result text"),
+                 (json.dumps({"structured_output": {"verdict": "PASS"}}).encode(), "envelope",
+                  "Claude envelope has no result text"),
+                 (json.dumps({"result": " \n"}).encode(), "response", "the final message is empty"),
+                 (json.dumps({"result": "Looks good."}).encode(), "verdict", "response has no Verdict line"),
+                 (json.dumps({"result": "Verdict: PASS\nVerdict: NEEDS_WORK"}).encode(), "verdict",
+                  "response has more than one Verdict line")]
         for output, stage, reason in cases:
-            with self.subTest(reason=reason):
+            with self.subTest(reason=reason, output=output):
                 failure = self.fail_response(output)
                 self.assertEqual(failure.category, "invalid-report")
-                self.assertEqual(failure.diagnostic["stage"], stage)
-                self.assertEqual(failure.diagnostic["reason"], reason)
+                self.assertEqual((failure.diagnostic["stage"], failure.diagnostic["reason"]), (stage, reason))
 
-    def test_one_fenced_report_beside_prose_is_accepted_for_both_providers(self):
-        """Task 388: a paid review wrapped its valid PASS in narration and lost the round.
-
-        The single fenced block is unambiguous and still passes the schema, so the
-        verdict comes from the model's object, never from the surrounding text.
-        """
-        prose = ("I have completed the review. **Artifacts read:** manifest.json, full.diff.\n\n"
-                 "**Limitations:** the sandbox is read-only.\n\n```json\n"
-                 + json.dumps(self.report) + "\n```\n")
-        self.assertEqual(self.run_response(json.dumps({"result": prose}).encode()), self.report)
+    def test_a_verdict_beside_prose_is_accepted_for_both_providers(self):
+        """Task 388: a paid review wrapped its valid PASS in narration and lost the round."""
+        prose = "I have completed the review.\n\n**Verdict:** PASS\n\n**Limitations:** read-only sandbox.\n"
+        expected = {"verdict": "PASS", "findings": [], "text": prose}
+        self.assertEqual(self.run_response(json.dumps({"result": prose}).encode()), expected)
         self.assertEqual(self.run_response(b"codex events", route={**self.route, "provider": "codex"},
-                                           result=prose.encode()), self.report)
+                                           result=prose.encode()), expected)
         self.assertFalse((self.state / "provider-failures").exists())
 
-    def test_successful_direct_structured_and_string_reports_create_no_artifacts(self):
-        """Established successful formats retain their exact reports."""
-        for envelope in (self.report, {"structured_output": self.report}, {"result": json.dumps(self.report)}):
-            with self.subTest(envelope=envelope):
-                self.assertEqual(self.run_response(json.dumps(envelope).encode()), self.report)
-        self.assertEqual(self.run_response(b"codex events", route={**self.route, "provider": "codex"},
-                                           result=json.dumps(self.report).encode()), self.report)
-        self.assertFalse((self.state / "provider-failures").exists())
+    def test_streams_are_offered_after_every_launched_process(self):
+        """Raw streams explain a confusing verdict or a failure; a refusal before launch has none."""
+        seen = []
+
+        def keep(directory):
+            seen.append({name: (directory / name).read_bytes() for name in ("stdout", "stderr")})
+
+        self.run_response(self.envelope, stderr=b"note", on_streams=keep)
+        self.fail_response(json.dumps({"result": "no verdict"}).encode(), on_streams=keep)
+        self.assertEqual([item["stderr"] for item in seen], [b"note", b""])
+        self.assertEqual(seen[0]["stdout"], self.envelope)
+        with self.assertRaises(self.r.ProviderFailure):
+            self.r.run({**self.route, "provider": "other"}, "reviewer", self.root, "prompt", on_streams=keep)
+        self.assertEqual(len(seen), 2)
 
     def test_error_subtypes_or_errors_cannot_smuggle_valid_verdict(self):
         """Reproduce the observed parser defect with explicitly synthetic envelopes."""
         for extra in ({"subtype": "error_max_turns"}, {"subtype": "error_max_structured_output_retries"},
                       {"errors": ["private-provider-error"]}, {"subtype": "error_secret-value"}):
             failure = self.fail_response(json.dumps({"type": "result", "is_error": False,
-                                                    "structured_output": self.report, **extra}).encode())
+                                                    "result": self.text, **extra}).encode())
             self.assertEqual(failure.category, "provider-error")
             self.assertEqual(failure.stage, "envelope")
             self.assertNotIn("secret", json.dumps(failure.diagnostic))
@@ -339,33 +315,6 @@ class FailureDiagnosticsTests(unittest.TestCase):
                 failure = self.fail_response(json.dumps(envelope).encode(), code=code, stderr=stderr)
                 self.assertEqual(failure.category, category)
 
-    def test_schema_reasons_identify_fields_and_invariants_without_values(self):
-        """A schema mismatch identifies the actionable field without leaking its value."""
-        finding = {"severity": "high", "path": "a.py", "line": 1, "message": "Bug", "evidence": "Proof", "requirement": "Rule"}
-        cases = [({**self.report, "summary": " "}, "summary"),
-                 ({**self.report, "findings": [finding]}, "PASS requires empty findings"),
-                 ({**self.report, "verdict": "NEEDS_WORK"}, "NEEDS_WORK requires findings"),
-                 ({**self.report, "secret-key": "secret"}, "unexpected fields"),
-                 ({**self.report, "verdict": "NEEDS_WORK", "findings": [{**finding, "line": True}]}, "findings[0].line"),
-                 ({**self.report, "verdict": "NEEDS_WORK", "findings": [{**finding, "line": -1}]}, "findings[0].line")]
-        for report, reason in cases:
-            with self.subTest(reason=reason):
-                failure = self.fail_response(json.dumps({"structured_output": report}).encode())
-                self.assertEqual(failure.diagnostic["stage"], "schema")
-                self.assertIn(reason, failure.diagnostic["reason"])
-                self.assertNotIn("secret", json.dumps(failure.diagnostic))
-                self.assertEqual(failure.diagnostic["response_source"], "stdout.structured_output")
-        schema = self.r.report_schema()
-        self.assertEqual(schema["properties"]["summary"]["pattern"], r"\S")
-        self.assertEqual(schema["properties"]["findings"]["items"]["properties"]["line"]["minimum"], 0)
-        self.assertIn("nonempty for NEEDS_WORK", schema["properties"]["findings"]["description"])
-
-    def test_schema_avoids_claude_rejected_top_level_conditionals(self):
-        """The live Claude 400 fixture proves top-level combinators prevent any review."""
-        schema = self.r.report_schema()
-        self.assertFalse({"oneOf", "allOf", "anyOf"} & schema.keys())
-        self.assertEqual(schema["type"], "object")
-
     def test_delegate_answers_are_the_final_markdown_message_without_a_schema(self):
         """A worker or scout answer is returned as written; only an empty or missing answer fails."""
         answer = "## Done\nEdited parser.\n\n## Evidence\n- tests passed\n\n## Limitations\nNone."
@@ -375,13 +324,10 @@ class FailureDiagnosticsTests(unittest.TestCase):
                                                    role=role), answer)
                 self.assertEqual(self.run_response(b"codex events", route={**self.route, "provider": "codex"},
                                                    result=answer.encode(), role=role), answer)
-                self.assertEqual(self.run_response(b"codex events", route={**self.route, "provider": "codex"},
-                                                   result=json.dumps(self.report).encode(), role=role),
-                                 json.dumps(self.report))
         self.assertFalse((self.state / "provider-failures").exists())
         for output, route, result, reason in (
                 (json.dumps({"result": " \n"}).encode(), self.route, None, "the final message is empty"),
-                (json.dumps({"structured_output": self.report}).encode(), self.route, None,
+                (json.dumps({"structured_output": {"verdict": "PASS"}}).encode(), self.route, None,
                  "Claude envelope has no result text"),
                 (b"codex events", {**self.route, "provider": "codex"}, None, "Codex wrote no final message")):
             with self.subTest(reason=reason):
@@ -392,7 +338,7 @@ class FailureDiagnosticsTests(unittest.TestCase):
 
     def test_usage_allowlist_preserves_numeric_counters_and_unknowns(self):
         """Provider-controlled labels and text cannot enter safe usage metadata."""
-        envelope = {"structured_output": {**self.report, "summary": ""}, "total_cost_usd": 0.001,
+        envelope = {"result": "No verdict line.", "total_cost_usd": 0.001,
                     "usage": {"input_tokens": 7, "output_tokens": "secret", "cache_read_input_tokens": True,
                               "cache_creation_input_tokens": float("inf"), "secret-key": 99,
                               "server_tool_use": {"web_search_requests": 2, "secret": "secret"}}}
@@ -401,7 +347,7 @@ class FailureDiagnosticsTests(unittest.TestCase):
         self.assertIsNone(failure.diagnostic["usage"]["output_tokens"])
         self.assertIsNone(failure.diagnostic["usage"]["cache_read_input_tokens"])
         self.assertIsNone(failure.diagnostic["usage"]["cache_creation_input_tokens"])
-        self.assertEqual(failure.diagnostic["total_cost_usd"], 0.001)
+        self.assertNotIn("total_cost_usd", failure.diagnostic)
         self.assertNotIn("secret", json.dumps(failure.diagnostic))
 
     def test_codex_result_file_is_bounded_and_its_source_and_size_are_recorded(self):
@@ -409,7 +355,7 @@ class FailureDiagnosticsTests(unittest.TestCase):
         import base64
         output = b"x" * (self.r.RESPONSE_LIMIT + 1)
         failure = self.fail_response(b"events", route={**self.route, "provider": "codex"}, result=output)
-        self.assertIn("parse limit", failure.reason)
+        self.assertEqual(failure.reason, "response exceeds 4 MiB limit")
         self.assertEqual(failure.diagnostic["response_source"], "result-file")
         self.assertEqual(failure.diagnostic["result_bytes"], len(output))
         artifact = json.loads((self.state / failure.diagnostic["artifact"]).read_text())

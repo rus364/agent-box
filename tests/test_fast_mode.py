@@ -1,5 +1,4 @@
 """Speed requests stay independent and never silently select another model."""
-import argparse
 import json
 import os
 from pathlib import Path
@@ -10,12 +9,11 @@ from unittest.mock import patch
 
 from agent_box import agent_profiles, config_menu, provider_runner, routing, runtime, workflow
 from agent_box.config import Config, load_config, model_entry, save_config
-from agent_box.errors import AgentBoxError
 
 
 class FastModeTests(unittest.TestCase):
-    def test_disabled_fast_preserves_native_profiles_and_reviewer_reports(self):
-        """An unused speed option must not add speed settings to profiles or force a native reviewer into CLI."""
+    def test_disabled_fast_preserves_native_profiles(self):
+        """An unused speed option must not add speed settings to any role's profile."""
         for provider, model in [('codex', 'gpt-6-astra'), ('claude', 'claude-opus-5')]:
             for role, tier in [('worker', 1), ('scout', None), ('reviewer', 1)]:
                 with self.subTest(provider=provider, role=role), tempfile.TemporaryDirectory() as directory:
@@ -31,20 +29,6 @@ class FastModeTests(unittest.TestCase):
                     content = agent_profiles.body(provider, role, tier, spec)
                     self.assertNotIn('service_tier', content)
                     self.assertNotIn('fast_mode', content)
-                    if role != 'reviewer':
-                        continue
-                    with patch.dict(os.environ, {}, clear=True), \
-                         patch.object(workflow, 'WORKFLOW_STATE', root / 'state'), \
-                         patch.object(workflow.shutil, 'which', return_value='provider-cli'):
-                        routed = workflow.route(config, role, tier, provider)
-                        self.assertIsNone(routed['native_limitation'])
-                    report = root / 'report.json'
-                    payload = {'verdict': 'PASS', 'summary': 'Reviewed', 'findings': []}
-                    report.write_text(json.dumps(payload))
-                    args = argparse.Namespace(provider=provider, model=model, effort='high', fast=None,
-                        role=role, fresh_context=True, file=str(report))
-                    selected = dict(provider=provider, model=model, effort='high', fast=False, tier=tier, fallbacks=[])
-                    self.assertEqual(workflow.native_output(args, selected, tier)['report'], payload)
 
     def test_fast_roundtrips_without_leaking_to_other_candidates(self):
         """Each candidate keeps its own opt-in across save and rendering."""
@@ -72,9 +56,9 @@ class FastModeTests(unittest.TestCase):
         self.assertIn('higher provider usage/cost', config_menu.help_for(('workflow', 'fast')))
         self.assertEqual(config.workflow.validate(), [])
 
-    def test_unconfigured_session_speed_is_preserved_and_unsupported_claude_fast_is_refused(self):
-        """An opt-in speed request must not add requirements to existing session routes."""
-        route = dict(provider='codex', model='gpt-6-astra', effort='high', mode='current-session')
+    def test_speed_is_only_checked_when_requested_and_unsupported_claude_fast_is_refused(self):
+        """An opt-in speed request must not add requirements to a candidate that does not ask for it."""
+        route = dict(provider='codex', model='gpt-6-astra', effort='high')
         provider_runner.check_settings(route)
         route['fast'] = True
         provider_runner.check_settings(route)
@@ -89,7 +73,7 @@ class FastModeTests(unittest.TestCase):
                                 ('claude', 'opus'), ('claude', 'claude-opus-4-7')]:
             spec = dict(provider=provider, model=model, effort='high', fast=True)
             with self.subTest(provider=provider, model=model), self.assertRaisesRegex(provider_runner.ProviderFailure, 'supported model'):
-                provider_runner.build_command(spec, 'worker', Path('/tmp'), Path('/missing'), Path('/tmp/result'))
+                provider_runner.build_command(spec, 'worker', Path('/tmp'), Path('/tmp/result'))
         for value in ('true', 1, None, []):
             config = Config.from_dict({'workflow': {'worker': {'tiers': {'1': [
                 {'provider': 'codex', 'model': 'gpt-6-astra', 'fast': value}]}}}})
@@ -102,7 +86,7 @@ class FastModeTests(unittest.TestCase):
                 for fast in (False, True):
                     with self.subTest(provider=provider, role=role, fast=fast):
                         cmd = provider_runner.build_command(dict(provider=provider, model=model, effort='high', fast=fast),
-                            role, Path('/tmp'), Path('/missing'), Path('/tmp/result'))
+                            role, Path('/tmp'), Path('/tmp/result'))
                         self.assertEqual(cmd[cmd.index('--model') + 1], model)
                         if provider == 'codex':
                             self.assertEqual('service_tier="fast"' in cmd, fast)
@@ -131,28 +115,6 @@ class FastModeTests(unittest.TestCase):
             result = workflow.execute(config, selected, 'worker', Path('/tmp'), 'brief')
         self.assertFalse(run.call_args_list[1].args[0]['fast'])
         self.assertFalse(result['route']['fast'])
-
-    def test_native_reviewer_report_requires_speed_only_for_the_candidate_that_ran(self):
-        """A primary's speed policy must not constrain the fallback, which a native report cannot claim anyway."""
-        for primary_fast in (False, True):
-            with self.subTest(primary_fast=primary_fast), tempfile.TemporaryDirectory() as directory:
-                report = Path(directory) / 'report.json'
-                report.write_text(json.dumps({'verdict': 'PASS', 'summary': 'Reviewed', 'findings': []}))
-                fallback = dict(provider='claude', model='claude-opus-5', effort='high', tier=1, fast=not primary_fast)
-                selected = dict(provider='codex', model='gpt-6-astra', effort='high', tier=1,
-                                fast=primary_fast, fallbacks=[fallback])
-                for index, candidate in enumerate((selected, fallback)):
-                    args = argparse.Namespace(provider=candidate['provider'], model=candidate['model'], effort='high',
-                        fast=None, role='reviewer', fresh_context=True, file=str(report))
-                    if candidate['fast']:
-                        with self.assertRaisesRegex(AgentBoxError, '--fast on'):
-                            workflow.native_output(args, selected, 1)
-                        args.fast = 'on'
-                    if index:
-                        with self.assertRaisesRegex(AgentBoxError, 'Native reviewer fallback'):
-                            workflow.native_output(args, selected, 1)
-                        continue
-                    self.assertEqual(workflow.native_output(args, selected, 1)['route']['fast'], candidate['fast'])
 
     def test_native_profiles_request_codex_fast_and_preserve_claude_with_inheritance_notice(self):
         """Claude profiles remain usable when fast is verified through session inheritance."""
@@ -199,18 +161,6 @@ class FastModeTests(unittest.TestCase):
                 self.assertTrue(edited.read_text().endswith('# user edit\n'))
                 self.assertTrue(any('ab-worker-1.toml' in m for m in messages))
 
-    def test_native_fast_reviewer_requires_evidence_for_both_providers(self):
-        """Verified inherited fast is valid; model/effort alone cannot attest an opt-in."""
-        for provider, model in [('codex', 'gpt-6-astra'), ('claude', 'claude-opus-5')]:
-            with self.subTest(provider=provider), tempfile.TemporaryDirectory() as directory:
-                selected = dict(provider=provider, model=model, effort='high', fast=True, tier=1, fallbacks=[])
-                args = argparse.Namespace(provider=provider, model=model, effort='high', fast=None,
-                                          role='reviewer', fresh_context=True)
-                for speed in (None, 'off'):
-                    args.fast = speed
-                    with self.assertRaisesRegex(AgentBoxError, '--fast on'):
-                        workflow.native_output(args, selected, 1)
-                report = Path(directory) / 'report.json'
-                report.write_text(json.dumps({'verdict': 'PASS', 'summary': 'Reviewed', 'findings': []}))
-                args.file, args.fast = str(report), 'on'
-                self.assertTrue(workflow.native_output(args, selected, 1)['route']['fast'])
+
+if __name__ == "__main__":
+    unittest.main()

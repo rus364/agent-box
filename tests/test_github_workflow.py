@@ -246,34 +246,29 @@ class LandingFreshnessTests(unittest.TestCase):
         return LocalLandTests.dispatch(self, arguments)
 
     def recover_review(self, *, native=False, integrated=True):
-        import base64
         import json
         from pathlib import Path
         from unittest.mock import patch
-        from workflow_fixtures import candidate, selected_route
+        from workflow_fixtures import answer, candidate, selected_route
         # A configured reviewer list routes the round; without one it would inherit the session.
         self.config.workflow.review.models = [candidate("claude", "m", "high")]
         brief = Path(self.temporary.name) / "recovery-brief.md"
         brief.write_text("Changes: original implementation. Risks: lost acceptance. Validation: true passed; no live proof.")
-        report = {"verdict": "PASS", "summary": "Reviewed current implementation and requirements", "findings": []}
-        with patch.object(workflow, "route", side_effect=selected_route):
+        report = answer("Verdict: PASS\n\nReviewed current implementation and requirements.\n")
+        with patch.object(workflow, "candidates", side_effect=selected_route):
             if native:
-                prepared = self.dispatch(["prepare", "7", "--role", "reviewer", "--primary", "codex",
-                                          "--brief", str(brief)])
-                descriptor = json.loads(base64.urlsafe_b64decode(prepared["handoff"]))
-                prompt = Path(descriptor["input"]["path"]).read_bytes().decode("utf-8")
+                opened = self.dispatch(["review", "7", "--native", "--brief", str(brief)])
+                prompt = (workflow.review_evidence_path(self.root, "7", opened["round"]) / "handoff.txt").read_text()
                 handoff = json.loads(prompt.split("Delegation handoff:\n", 1)[1])
                 self.assertIn("review the complete implementation", handoff["scope_note"])
                 self.assertEqual(handoff["change_summary"], "")
-                output = Path(self.temporary.name) / "review.json"
-                output.write_text(json.dumps(report))
-                self.dispatch(["report", "7", "--role", "reviewer", "--scope", prepared["scope"],
-                               "--handoff", prepared["handoff"], "--file", str(output),
-                               "--provider", "claude", "--model", "m", "--effort", "high", "--fast", "off", "--fresh-context"])
+                output = Path(self.temporary.name) / "review.md"
+                output.write_text(report["text"])
+                self.dispatch(["review", "7", "--result", str(output), "--provider", "claude", "--model", "m"])
             else:
                 with patch.object(workflow, "preflight", return_value=None), \
                      patch.object(workflow, "execute", return_value={"report": report, "route": {"provider": "claude", "model": "m", "effort": "high", "tier": 1}}) as reviewer:
-                    self.dispatch(["review", "7", "--primary", "codex", "--brief", str(brief)])
+                    self.dispatch(["review", "7", "--brief", str(brief)])
                 reviewer.assert_called_once()
                 if integrated:
                     self.assertIn("review the complete implementation", reviewer.call_args.args[-1])
@@ -317,7 +312,7 @@ class LandingFreshnessTests(unittest.TestCase):
         with self.assertRaisesRegex(AgentBoxError, "validation"):
             self.run_land(action="reconcile")
         self.dispatch(["validate", "7", "--", "true"])
-        self.assertEqual(self.dispatch(["review", "7", "--primary", "codex"])["review"]["verdict"], "SKIPPED")
+        self.assertEqual(self.dispatch(["review", "7"])["review"]["verdict"], "SKIPPED")
         with self.assertRaisesRegex(AgentBoxError, "GitHub approval, a fresh local PASS"):
             self.run_land(action="reconcile")
         self.adapter.set_state.assert_not_called()

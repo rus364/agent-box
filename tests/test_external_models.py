@@ -150,10 +150,10 @@ class ExternalModelTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp, patch.object(workflow, 'WORKFLOW_STATE', Path(temp)), \
                 patch.object(workflow.shutil, 'which', return_value='/bin/codex'):
             with self.assertRaisesRegex(AgentBoxError, 'not supported'):
-                workflow.route(config, 'worker', 1, 'codex')
+                workflow.candidates(config, 'worker', 1)
             candidate['effort'] = 'default'
             self.assertEqual(validate_connections(config), [])
-            selected = workflow.route(config, 'worker', 1, 'codex')
+            selected = workflow.candidates(config, 'worker', 1)
             self.assertEqual(selected['effort'], 'default')
 
     def test_invalid_model_metadata_and_owned_environment_fail_privately(self):

@@ -11,14 +11,14 @@ No user configuration or installed profiles were changed.
 | Claude native | Documentation describes per-call model selection, profile effort and session effort inheritance. This Codex session exposes no Claude native tool, so explicit per-call effort and fresh-context controls were not verified here. CLI `--agents` creates launch-time definitions; it is not proof that an existing session can pass both native parameters. |
 | Claude overrides | Documentation describes model forcing, allowlist substitution, and version-dependent precedence. Safe mode, force mode and conflicting model/effort environment settings can override a profile, so the coordinator checks live settings and substitutions; exact file contents alone are insufficient. |
 | Default effort | Preserve task 298: omit the managed override and clear inherited Claude effort. Native omission is not proof of no inherited override, so `default` stays managed. |
-| Fresh context | Every verdict round launches a new independent read-only reviewer. Codex uses `fork_turns="none"`; followup/resume of an earlier reviewer is forbidden. All native reviewer reports require `--fresh-context`; session-inherited review additionally preserves the prepared session settings. A new prepare/descriptor or profile name does not prove a new instance. Managed Codex is ephemeral and managed Claude disables session persistence. |
+| Fresh context | Every verdict round launches a new independent read-only reviewer in fresh context without the parent's history; followup/resume of an earlier reviewer is forbidden. The parameter that achieves it differs between tool versions (`fork_turns="none"` here, `fork_context=false` in Codex 0.154.0), so instructions state the requirement, not a parameter. A native result is recorded on trust (task 413). Managed Codex is ephemeral and managed Claude disables session persistence. |
 | Model availability | The live tool must support the selected provider/model/effort. A configured name or successful prepare is not account availability. Unsupported/unknown native capabilities use the managed route; errors never authorize an unconfigured model or tier. |
 
 Sources: [Codex subagents](https://learn.chatgpt.com/docs/agent-configuration/subagents),
 [Claude subagents](https://code.claude.com/docs/en/sub-agents), locally inspected
 `codex exec --help`, `claude --help`, and the active `collaboration.spawn_agent`
-schema. A native reviewer is coordinated through prepare/spawn/report, and the
-coordinator spawns native workers and scouts itself. Managed delegate/review do not
+schema. A native reviewer is coordinated through `review --native`, a coordinator
+spawn and `review --result`, and the coordinator spawns native workers and scouts itself. Managed delegate/review do not
 choose a native backend, and provider selection remains separate.
 
 ## External API sessions
@@ -29,7 +29,7 @@ Messages/Responses stub with a fake key, then one short live DeepSeek run per CL
 
 | Interface | Evidence and decision |
 | --- | --- |
-| API identity | Native children of both CLIs sent requests to the session's endpoint with the session's key. A route on the session's identity may run natively; any other identity stays managed. |
+| API identity | Native children of both CLIs sent requests to the session's endpoint with the session's key. A candidate on another API identity runs managed. |
 | Claude model/effort | A profile's `model` pinned an external ID. Agent `model` accepts only aliases, which `ext` maps to the session model. The session's `CLAUDE_CODE_EFFORT_LEVEL` overrode profile effort; without it the profile effort applied. |
 | Codex model/effort | `multi_agent_v1` `spawn_agent` pinned catalog `model` and `reasoning_effort`; `fork_context=false` started the child with only repository instructions and its message. This version has no agent-type selection. |
 | Evidence | The stub logged each request's model and effort. Live Claude stream-json child events carried the provider-returned model; the live Codex child rollout recorded provider, parent thread, model, effort and read-only sandbox. Keys were not logged. |

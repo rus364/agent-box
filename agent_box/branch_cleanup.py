@@ -1,6 +1,7 @@
 """Optional task-tree cleanup with exact acceptance and live integration proof."""
 from __future__ import annotations
 
+import contextlib
 import re
 import subprocess
 
@@ -334,7 +335,15 @@ def cleanup(root, config, task, adapter, **identity):
     return result
 
 
+def discard_review_streams(root, task):
+    """Raw review streams serve diagnosis while a task is open; Done ends that."""
+    from . import review_results, workflow
+    with contextlib.suppress(OSError, AgentBoxError):
+        review_results.discard_streams(workflow.WORKFLOW_STATE, workflow.repository_key(root), task.id)
+
+
 def after_done(result, root, config, task, adapter, **identity):
+    discard_review_streams(root, task)
     if config.workflow.cleanup_local_branches or config.workflow.cleanup_remote_branches:
         result["cleanup"] = cleanup(root, config, task, adapter, **identity)
     return result
