@@ -583,8 +583,9 @@ become read-only and are cut to 8 MiB each; a linked stream directory is refused
 INCONCLUSIVE, a failure or a disputed result, for example a reviewer that claims
 its input files were missing although workflow verified them; the coordinator does
 not read them in normal work. They are removed when the task becomes Done (`finish`
-of a subtask, landing of a parent) and otherwise bounded like receipts: 20 runs and
-seven days per checkout.
+of a subtask, landing of a parent) and otherwise bounded like receipts: 20 runs,
+32 MiB and seven days per checkout. A failed removal is reported as
+`review_streams_error` beside the completed result, which stays Done.
 
 Managed provider failures also record the configured provider/model/effort/role,
 exit code, elapsed seconds, response source, stream byte sizes, numeric usage and a

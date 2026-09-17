@@ -157,7 +157,11 @@ def read(state, repository, receipt):
 
 
 def streams_root(state, repository, task_id):
-    return directory(state, repository) / "streams" / hashlib.sha256(task_id.encode()).hexdigest()[:24]
+    """The task's stream directory; ``directory`` already refuses linked parents up to the checkout."""
+    streams = directory(state, repository) / "streams"
+    if streams.is_symlink():
+        raise AgentBoxError("Review stream directory is a symlink; leaving it untouched")
+    return streams / hashlib.sha256(task_id.encode()).hexdigest()[:24]
 
 
 def stream_path(state, repository, task_id, round_id):
@@ -179,7 +183,8 @@ def stream_run(state, repository, task_id, round_id):
 
     Each candidate a round launches gets a numbered run, kept for diagnosis until
     the task is Done; the same 20-run, seven-day bound as receipts caps what a task
-    that never finishes leaves. A linked directory is refused like a linked receipt
+    that never finishes leaves, together with the receipts' 32 MiB total for the
+    runs already kept. A linked directory is refused like a linked receipt
     directory, so provider output cannot be written or pruned outside workflow state.
     """
     target = stream_path(state, repository, task_id, round_id)
@@ -191,9 +196,10 @@ def stream_run(state, repository, task_id, round_id):
                    for round_dir in task.iterdir() if round_dir.is_dir() and not round_dir.is_symlink()
                    for run in round_dir.iterdir() if run.is_dir() and not run.is_symlink()),
                   key=lambda path: path.lstat().st_mtime, reverse=True)
-    now = time.time()
+    now, total = time.time(), 0
     for index, run in enumerate(runs):
-        if index >= MAX_FILES - 1 or now - run.lstat().st_mtime > MAX_AGE:
+        total += sum(path.lstat().st_size for path in run.iterdir())
+        if index >= MAX_FILES - 1 or total > MAX_TOTAL_BYTES or now - run.lstat().st_mtime > MAX_AGE:
             remove_tree(run)
     number = 1 + max((int(path.name) for path in target.iterdir() if path.name.isdigit()), default=0)
     run = target / str(number)

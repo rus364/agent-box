@@ -1,7 +1,6 @@
 """Optional task-tree cleanup with exact acceptance and live integration proof."""
 from __future__ import annotations
 
-import contextlib
 import re
 import subprocess
 
@@ -335,15 +334,21 @@ def cleanup(root, config, task, adapter, **identity):
     return result
 
 
-def discard_review_streams(root, task):
-    """Raw review streams serve diagnosis while a task is open; Done ends that."""
+def discard_review_streams(result, root, task):
+    """Raw review streams serve diagnosis while a task is open; Done ends that.
+
+    Removal cannot undo Done, so a failure is reported beside the result instead of raised.
+    """
     from . import review_results, workflow
-    with contextlib.suppress(OSError, AgentBoxError):
+    try:
         review_results.discard_streams(workflow.WORKFLOW_STATE, workflow.repository_key(root), task.id)
+    except (OSError, AgentBoxError) as exc:
+        result["review_streams_error"] = f"Raw review streams were not removed: {exc}"
+    return result
 
 
 def after_done(result, root, config, task, adapter, **identity):
-    discard_review_streams(root, task)
+    discard_review_streams(result, root, task)
     if config.workflow.cleanup_local_branches or config.workflow.cleanup_remote_branches:
         result["cleanup"] = cleanup(root, config, task, adapter, **identity)
     return result

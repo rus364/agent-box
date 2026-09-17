@@ -1213,8 +1213,7 @@ def finish_child(root, config, adapter, task, parent, info, branch, tasks):
             raise AgentBoxError("Child or parent head changed during publication; inspect before completion")
     adapter.set_state(task, "Done")
     from .branch_cleanup import discard_review_streams
-    discard_review_streams(root, task)
-    return result
+    return discard_review_streams(result, root, task)
 
 
 def scout_diagnostics(config):

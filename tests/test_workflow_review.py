@@ -427,7 +427,7 @@ class ReviewWorkflowTests(WorkflowCase):
         self.assertEqual(result["verdict"], "INCONCLUSIVE")
         self.assertEqual((Path(result["stream_path"]) / "1" / "stdout").read_text(), "events\n")
         from agent_box.branch_cleanup import discard_review_streams
-        discard_review_streams(self.root, self.task)
+        self.assertNotIn("review_streams_error", discard_review_streams({}, self.root, self.task))
         self.assertFalse(Path(result["stream_path"]).exists())
         self.assertNotIn("stream_path", self.run_workflow("review-result", "1"))
 

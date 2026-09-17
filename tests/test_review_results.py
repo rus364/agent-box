@@ -235,6 +235,33 @@ class ReviewResultTests(unittest.TestCase):
             review_results.stream_run(workflow.WORKFLOW_STATE, repository, "3", "round")
         self.assertEqual(list(outside.iterdir()), [])
 
+    def test_stream_retention_also_bounds_total_bytes(self):
+        """Twenty large runs would otherwise keep hundreds of MiB; the receipts' byte ceiling applies too."""
+        repository = workflow.repository_key(self.root)
+        old = review_results.stream_run(workflow.WORKFLOW_STATE, repository, "1", "round")
+        (old / "stdout").write_bytes(b"x" * 20)
+        os.utime(old, (old.stat().st_mtime - 60,) * 2)
+        newer = review_results.stream_run(workflow.WORKFLOW_STATE, repository, "1", "round")
+        (newer / "stdout").write_bytes(b"x" * 20)
+        with patch.object(review_results, "MAX_TOTAL_BYTES", 30):
+            review_results.stream_run(workflow.WORKFLOW_STATE, repository, "1", "round")
+        self.assertEqual((old.exists(), newer.exists()), (False, True))
+
+    def test_done_never_deletes_through_a_linked_streams_directory_and_reports_it(self):
+        """Removal on Done follows no link out of workflow state, and its failure is returned, not swallowed."""
+        from agent_box.branch_cleanup import discard_review_streams
+        repository = workflow.repository_key(self.root)
+        outside = Path(self.directory.name) / "outside"
+        victim = outside / review_results.streams_root(workflow.WORKFLOW_STATE, repository, "1").name
+        victim.mkdir(parents=True)
+        (victim / "keep").write_text("user data")
+        review_results.directory(workflow.WORKFLOW_STATE, repository)
+        (workflow.WORKFLOW_STATE / "review-results" / repository / "streams").symlink_to(outside, target_is_directory=True)
+        result = discard_review_streams({"state": "Done"}, self.root, self.task)
+        self.assertEqual((victim / "keep").read_text(), "user data")
+        self.assertIn("symlink", result["review_streams_error"])
+        self.assertEqual(result["state"], "Done")
+
     def test_information_changes_keep_validation_while_policy_labels_still_trigger_review(self):
         """Metadata is not a test input, but a review-trigger label still has its live consumer."""
         self.run_workflow("validate", "1", "--", "true")
