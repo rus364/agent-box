@@ -941,20 +941,26 @@ def effective_config(base=None, *, include_project=True) -> Config:
             from .errors import AgentBoxError
             try:
                 rendered = read_json(Path(runtime_file))
-                base = Config.from_dict(rendered)
-                if "global_tracker_urls" in rendered:
-                    base._global_tracker_urls = rendered["global_tracker_urls"]
-                launch = rendered.get("launch") if isinstance(rendered.get("launch"), dict) else {}
-            except (OSError, ValueError, TypeError):
+            except (OSError, ValueError):
                 raise AgentBoxError("Cannot read rendered workflow configuration") from None
             # The snapshot is rendered once at launch; after a schema change in the
-            # checkout it fails validation although nothing the user saved is wrong.
-            errors = base.workflow.validate()
+            # checkout it no longer loads or validates although nothing the user saved is wrong.
+            try:
+                base = Config.from_dict(rendered)
+                # Only agent-box's own messages are shown: other exceptions may quote values.
+                errors = base.workflow.validate()
+            except AgentBoxError as exc:
+                errors = [str(exc)]
+            except (ValueError, TypeError, AttributeError):
+                errors = ["the snapshot has an unexpected shape"]
             if errors:
                 raise AgentBoxError(
                     "This session's configuration snapshot was rendered at launch for an older "
                     f"agent-box configuration schema ({'; '.join(errors)}). Restart the agent-box "
-                    "session to render a current snapshot")
+                    "session to render a current snapshot") from None
+            if "global_tracker_urls" in rendered:
+                base._global_tracker_urls = rendered["global_tracker_urls"]
+            launch = rendered.get("launch") if isinstance(rendered.get("launch"), dict) else {}
     import copy
     base = copy.deepcopy(base)
     # The editor needs the original URLs, but a session must not retain an

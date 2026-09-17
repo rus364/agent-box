@@ -320,14 +320,17 @@ class ProjectConfigTests(unittest.TestCase):
     def test_stale_session_snapshot_names_itself_and_restart_instead_of_a_bad_setting(self):
         """A schema change after launch must not look like a mistake in the user's configuration."""
         snapshot = self.root / 'snapshot.json'
-        rendered = Config().to_dict()
-        rendered['workflow']['review']['tiers'] = {'1': {'provider': 'codex'}}  # an older shape
-        snapshot.write_text(json.dumps(rendered))
-        with patch.dict(os.environ, {'AGENT_BOX_RUNTIME_CONFIG': str(snapshot)}), \
-             patch.object(project_config, 'load', return_value={}):
-            with self.assertRaisesRegex(AgentBoxError, r"snapshot was rendered at launch.*"
-                                        r"workflow\.review\.tiers\.1.*Restart the agent-box session"):
-                effective_config()
+        # Older shapes fail either while validating or already while loading.
+        validating = Config().to_dict()
+        validating['workflow']['review']['tiers'] = {'1': {'provider': 'codex'}}
+        loading = {**Config().to_dict(), 'external_providers': {'legacy': 'openai'}}
+        for rendered, cause in ((validating, r"workflow\.review\.tiers\.1"), (loading, r"external_providers\.legacy")):
+            snapshot.write_text(json.dumps(rendered))
+            with self.subTest(cause=cause), patch.dict(os.environ, {'AGENT_BOX_RUNTIME_CONFIG': str(snapshot)}), \
+                 patch.object(project_config, 'load', return_value={}):
+                with self.assertRaisesRegex(AgentBoxError, r"snapshot was rendered at launch.*"
+                                            + cause + r".*Restart the agent-box session"):
+                    effective_config()
 
     def test_runtime_transport_matches_selected_account_without_reusing_old_endpoint(self):
         data = {'tracker': self.config.tracker.to_dict(),
