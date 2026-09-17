@@ -135,6 +135,19 @@ class DelegateCommandTests(WorkflowCase):
         self.assertEqual(output["failures"][1]["category"], "model-unavailable")
         self.assertNotIn("diagnostic", output["failures"][1])
 
+    def test_refusal_before_launch_still_names_its_reason(self):
+        """Unsupported settings stop before a process starts, so no artifact exists; the reason must not vanish."""
+        refusal = provider_runner.ProviderFailure("Claude fast is unsupported with CLAUDE_CODE_DISABLE_FAST_MODE",
+                                                  "unsupported")
+        self.config.workflow.scout.models = self.config.workflow.scout.models[:1]
+        with patch.object(workflow, "run", side_effect=refusal), \
+             contextlib.redirect_stdout(io.StringIO()) as stdout:
+            self.assertEqual(workflow.main(["delegate", "1", "--role", "scout", "--brief", str(self.review_brief)]), 2)
+        failure = json.loads(stdout.getvalue())["failures"][0]
+        self.assertEqual(failure["category"], "unsupported")
+        self.assertIn("CLAUDE_CODE_DISABLE_FAST_MODE", failure["reason"])
+        self.assertNotIn("diagnostic", failure)
+
     def test_worker_needs_its_task_branch_and_a_configured_candidate(self):
         """A managed worker edits the checkout, so it must be the task's; with no candidate the coordinator runs one natively."""
         gw.git(self.root, "switch", "main")
