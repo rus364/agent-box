@@ -547,6 +547,34 @@ class CloudReviewTests(unittest.TestCase):
         self.comments.append({**self.request_comment(provider="codex"), "body": self.published()})
         self.assertIn("no answer", self.review()["outcome"])
 
+    def test_a_round_whose_request_is_not_listed_yet_publishes_no_second_one(self):
+        """GitHub may accept the comment and report an error, or list it a moment later;
+        either way the bot was already asked, and asking again is what costs money."""
+        opened = self.review()
+        waiting = self.review()
+        self.assertIsNone(self.published())
+        self.assertEqual(waiting["round"], opened["round"])
+        self.assertIn("not in the pull request", waiting["outcome"])
+        # It cannot wait forever either: past the budget the round ends and the next one asks.
+        import os
+        self.config.workflow.review.wait_seconds = 1
+        handoff = workflow.review_evidence_path(self.root, "7", opened["round"]) / "handoff.txt"
+        os.utime(handoff, (0, handoff.stat().st_mtime - 3600))
+        with self.assertRaisesRegex(AgentBoxError, "not in the pull request"):
+            self.review()
+        reopened = self.review()
+        self.assertNotEqual(reopened["round"], opened["round"])
+        self.assertIsNotNone(self.published())
+
+    def test_codex_must_name_the_commit_it_read_by_more_than_a_short_prefix(self):
+        """Seven characters name too many commits to tell this head from an older one."""
+        self.config.workflow.review.github_provider = "codex"
+        self.review()
+        self.comments.append({**self.request_comment(provider="codex"), "body": self.published()})
+        self.answer(CODEX_NO_FINDINGS.replace("{short10}", "{short}"),
+                    login="chatgpt-codex-connector[bot]")
+        self.assertIn("no answer", self.review()["outcome"])
+
     def test_an_unpublished_head_has_no_reviewer_and_a_missing_pull_request_names_ab_pr(self):
         """The bot reads GitHub, so a head GitHub does not have cannot be the one reviewed."""
         from agent_box import github_workflow as github

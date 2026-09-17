@@ -35,7 +35,9 @@ BOT = {"claude": "claude[bot]", "codex": "chatgpt-codex-connector[bot]"}
 CODEX_PRIORITY = re.compile(r"!\[(P[0-3]) Badge\]")
 CODEX_SEVERITY = {"P0": "CRITICAL", "P1": "HIGH", "P2": "MEDIUM", "P3": "LOW"}
 #: Both Codex answers, the summary comment and the review, name what they read.
-CODEX_COMMIT = re.compile(r"\*\*Reviewed commit:\*\*\s*`([0-9a-f]{7,64})`")
+#: It abbreviates to ten characters; a shorter prefix names too many commits to
+#: tell this head from an older one.
+CODEX_COMMIT = re.compile(r"\*\*Reviewed commit:\*\*\s*`([0-9a-f]{10,64})`")
 #: The Action's own arguments, inline or as a block scalar, and nothing else in the file.
 CLAUDE_ARGS = re.compile(r"^(\s*)claude_args\s*:\s*(.*)$")
 
@@ -409,22 +411,35 @@ def _round(root, binding, adapter, config, task, parent, tasks, fingerprint, ide
     request = find_request(comments, [*published_requests(root, task, provider, head, base_head),
                                       request_body(provider, head, base_head, descriptions,
                                                    review_context, brief)])
-    if request is not None and descriptor is not None:
+    if descriptor is not None:
         round_id = descriptor["delegation"]
-        report, url, note = read_answer(root, repo, number, provider, comments, head, base_head,
-                                        moment(request["created_at"]))
+        report, url, note = None, None, None
+        if request is not None:
+            asked = moment(request["created_at"])
+            report, url, note = read_answer(root, repo, number, provider, comments, head, base_head, asked)
+        else:
+            # GitHub may have accepted the comment while gh reported an error, and a
+            # fresh comment may not be listed yet. Publishing a second request would
+            # pay twice for one question, so this round waits for its own to appear.
+            asked = datetime.datetime.now(datetime.timezone.utc)
+            with contextlib.suppress(OSError):
+                asked = datetime.datetime.fromtimestamp(
+                    (review_evidence_path(root, task.id, round_id) / "handoff.txt").stat().st_mtime,
+                    datetime.timezone.utc)
+            note = "the request this round published is not in the pull request"
         if report is not None:
             store_review_result(root, binding, task, descriptor,
                                 {"route": {"provider": provider, "model": settings.github_model or "cloud",
                                            "backend": "cloud", "answer": url},
                                  "report": report, "diagnostics": {"usage": None}}, "cloud")
             return review_result(root, binding, adapter, task, config, round_id, reconcile=True)
-        waited = (datetime.datetime.now(datetime.timezone.utc) - moment(request["created_at"])).total_seconds()
+        waited = (datetime.datetime.now(datetime.timezone.utc) - asked).total_seconds()
         if url is None and waited <= settings.wait_seconds:
             return {"task": task.id, "round": round_id, "scope": fingerprint, "provider": provider,
                     "pull_request": pr["url"], "requested_head": head,
                     "waited_seconds": int(waited), "wait_seconds": settings.wait_seconds,
-                    "outcome": "no answer for this head yet; silence is not approval",
+                    "outcome": ("no answer for this head yet; silence is not approval" if request is not None
+                                else f"{note}; no second request published"),
                     "next": f"Run agent-box workflow review {task.id} again to read the answer",
                     "review_budget": read_review_budget(root, binding, task, settings.max_rounds)}
         with lock(root, "review-budget"):

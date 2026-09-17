@@ -601,6 +601,10 @@ repository's bots on 2026-09-17:
   about another base cannot be asked again: the command refuses and the work is
   committed again or reviewed locally.
 
+A round whose own request is not in the thread yet publishes no second one: GitHub
+may have accepted the comment while `gh` reported an error, or may list it a moment
+later, and the wait budget ends that round if it never appears.
+
 Only an answer published after the request counts, and only for the commit it
 names, so a bot that reviewed the previous push cannot accept this one. Silence
 is never acceptance: until `wait_seconds` (default 3600) the command reports that
