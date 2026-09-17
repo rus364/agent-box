@@ -503,9 +503,9 @@ to the base yourself and run `workflow land PARENT cleanup`.
 In local mode, every head, the parent's and each descendant's, must be an
 ancestor of the local base, which works after parent refs disappear and needs no
 acceptance evidence: the base itself is the proof that nothing is lost.
-`workflow finish` releases a finished subtask's own branch the same way, against
-the parent branch that just absorbed it, and preserves it with a reason when its
-head moved afterwards. Remote deletion additionally requires the candidate head in the
+`workflow finish` releases a finished subtask's own branch the same way and
+under the same two settings, against the parent branch that just absorbed it,
+and preserves it with a reason when its head moved afterwards. Remote deletion additionally requires the candidate head in the
 live published base on the same effective origin destination. An unpublished local merge, or a missing
 commit object, preserves the remote branch with publish/fetch guidance; cleanup
 never publishes the base or fetches objects implicitly.

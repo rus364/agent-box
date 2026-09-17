@@ -335,6 +335,12 @@ class ChildBranchReleaseTests(unittest.TestCase):
         self.assertFalse(self.branch_exists(self.root))
         self.assertEqual(gw.local_branch_head(self.root, "ab/7-parent"), self.head)
 
+    def test_finish_keeps_the_child_branch_while_branch_cleanup_is_off(self):
+        """Deleting branches is the cleanup opt-in; finishing a subtask does not bypass it."""
+        result = self.dispatch(["finish", "8"])
+        self.assertEqual(result["cleanup"], {"local": {"status": "disabled"}, "remote": {"status": "disabled"}})
+        self.assertTrue(self.branch_exists(self.root))
+
     def test_finish_releases_a_published_child_branch_only_where_it_exists(self):
         """A pushed subtask branch is released on origin too, and only then."""
         self.config.workflow.merge_mode = "github"

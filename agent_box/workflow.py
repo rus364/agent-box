@@ -1306,7 +1306,11 @@ def finish_child(root, config, adapter, task, parent, info, branch, tasks):
 
 
 def release_branch(root, config, task, branch, base, *, expected_head=None):
-    """Return the branch a finished subtask used; its work is in the parent branch now."""
+    """Return the branch a finished subtask used; its work is in the parent branch now.
+
+    Deleting a branch stays the opt-in the cleanup settings describe, here as
+    much as at landing: a user who keeps task branches keeps these too.
+    """
     from .branch_cleanup import _cleanup_branch
 
     return _cleanup_branch(root, config, task, branch=branch, base=base, expected_head=expected_head)
