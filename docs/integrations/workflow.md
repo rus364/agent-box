@@ -469,7 +469,10 @@ for, of the merged head; with a cloud provider that verdict is the one
 `workflow review PARENT` read in the pull request. A merged PR proves
 integration, not acceptance, and a current-head human `APPROVED` is acceptance
 only when it was observed before the merge, since GitHub binds reviews to commits
-and not to local evidence. Missing local
+and not to local evidence. Approvals are read from the reviews endpoint, which
+alone reports both the reviewed commit and whether the account is a person: an
+app's `APPROVED` is not acceptance, or a cloud reviewer could accept the work it
+was asked to judge by pressing a button instead of answering. Missing local
 evidence, including in a new clone, requires fresh `workflow validate` and
 ab-review as required from the parent branch, then the same merge command again. If the base already contains the implementation, an
 empty diff describes no work: only an independent PASS or the user's explicit
@@ -566,17 +569,23 @@ Answers are read as the bots actually publish them, verified live against this
 repository's bots on 2026-09-17:
 
 - Claude answers in the reviewer's own form because the request asks for it: a
-  comment from `claude[bot]` ending in `Reviewed-Commit: <head>` and one
-  `Verdict:` line, with findings as `- [LOW|MEDIUM|HIGH|CRITICAL] path:line — …`.
-  Its progress checklist lines are not findings. An answer about this head with
-  no single verdict line ends the round at once instead of waiting.
+  comment from `claude[bot]` ending in `Reviewed-Commit: <head>`,
+  `Reviewed-Base: <base>` and one `Verdict:` line, with findings as
+  `- [LOW|MEDIUM|HIGH|CRITICAL] path:line — …`. Its progress checklist lines are
+  not findings. Both commits must be echoed back, so an answer still in flight
+  when the base moved answers the older question and not this one. An answer
+  about this head with no single verdict line ends the round at once instead of
+  waiting.
 - Codex answers in its own: findings arrive as a COMMENTED review bound to the
   commit, with the priority badge on each inline comment (P0 → CRITICAL, P1 →
   HIGH, P2 → MEDIUM, P3 → LOW), and otherwise a comment naming the same
   `Reviewed commit`. Nothing attached to the reviewed head is the no-findings
   signal, so the verdict is PASS with findings absent and NEEDS_WORK with them;
   its English is never parsed, and neither is its 👍 reaction, which only appears
-  once every review of the pull request has finished.
+  once every review of the pull request has finished. A review in any other state
+  is not its answer. Because Codex names only the commit, a head already asked
+  about another base cannot be asked again: the command refuses and the work is
+  committed again or reviewed locally.
 
 Only an answer published after the request counts, and only for the commit it
 names, so a bot that reviewed the previous push cannot accept this one. Silence

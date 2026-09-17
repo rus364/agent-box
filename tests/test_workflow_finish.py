@@ -805,7 +805,7 @@ class TransitionReadTests(unittest.TestCase):
 
     def test_a_repeated_github_merge_keeps_the_locked_root_refresh_after_network(self):
         """The routing snapshot cannot replace the acceptance read after remote queries."""
-        from agent_box import github_workflow as github
+        from agent_box import github_review, github_workflow as github
 
         self.config.workflow.merge_mode = "github"
         self.config.github.gh_token = True
@@ -828,6 +828,7 @@ class TransitionReadTests(unittest.TestCase):
         with patch.object(gw, "github_origin", return_value="o/r"), \
              patch.object(github, "find_pr", return_value=9), \
              patch.object(github, "view", return_value=merged), \
+             patch.object(github_review, "paginate", return_value=[]), \
              patch.object(gw, "remote_branch_head", side_effect=remote), \
              patch.object(workflow, "tree", wraps=workflow.tree) as tree, \
              patch.object(workflow, "scope", wraps=workflow.scope) as scope:
@@ -911,7 +912,7 @@ class TransitionReadTests(unittest.TestCase):
         workflow.save_evidence(self.root, self.parent, self.saved)
         pr = {"number": 9, "url": "https://github.com/o/r/pull/9", "state": "OPEN", "isDraft": False,
               "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN", "headRefOid": gw.head_sha(self.root),
-              "headRefName": "ab/7-parent", "baseRefName": "main", "latestReviews": [], "statusCheckRollup": []}
+              "headRefName": "ab/7-parent", "baseRefName": "main", "statusCheckRollup": []}
         for arguments in (["pr", "7", "--title", "Parent", "--body-file", "/unused"],
                           ["land", "7", "inspect"], ["land", "7", "merge"]):
             self.adapter.get.reset_mock()

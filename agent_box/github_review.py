@@ -18,6 +18,7 @@ import datetime
 import json
 import re
 import secrets
+import shlex
 import tempfile
 from pathlib import Path
 
@@ -35,6 +36,8 @@ CODEX_PRIORITY = re.compile(r"!\[(P[0-3]) Badge\]")
 CODEX_SEVERITY = {"P0": "CRITICAL", "P1": "HIGH", "P2": "MEDIUM", "P3": "LOW"}
 #: Both Codex answers, the summary comment and the review, name what they read.
 CODEX_COMMIT = re.compile(r"\*\*Reviewed commit:\*\*\s*`([0-9a-f]{7,64})`")
+#: The Action's own arguments, inline or as a block scalar, and nothing else in the file.
+CLAUDE_ARGS = re.compile(r"^(\s*)claude_args\s*:\s*(.*)$")
 
 REQUEST_FORM = """@{provider} review
 
@@ -46,10 +49,11 @@ Report every finding on its own line as
 
 - [LOW|MEDIUM|HIGH|CRITICAL] path:line — what is wrong and why it matters
 
-and end the answer with exactly these two lines, the verdict being one of PASS,
+and end the answer with exactly these three lines, the verdict being one of PASS,
 NEEDS_WORK or INCONCLUSIVE:
 
 Reviewed-Commit: {head}
+Reviewed-Base: {base}
 Verdict: NEEDS_WORK
 
 A PASS lists no findings. Write exactly one Verdict line and no example verdicts anywhere
@@ -76,8 +80,11 @@ def moment(value):
     return datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
-def is_bot(user):
-    return (user or {}).get("type") == "Bot"
+def ours(comment):
+    """Our request cannot be told apart by account type: `gh` authenticated as a
+    GitHub App posts it as a bot. Only the reviewers' own accounts are excluded,
+    so a bot quoting the request back is never mistaken for the request itself."""
+    return comment["user"]["login"] not in set(BOT.values())
 
 
 def find_request(comments, provider, head, base):
@@ -90,17 +97,36 @@ def find_request(comments, provider, head, base):
     """
     mention = f"@{provider} review"
     for comment in comments:
-        if (not is_bot(comment.get("user")) and mention in comment["body"]
+        if (ours(comment) and mention in comment["body"]
                 and head in comment["body"] and base in comment["body"]):
             return comment
     return None
 
 
-def claude_answer(root, repo, number, comments, head, since):
-    """Claude answers in the reviewer's own form, so its comment is read as one."""
+def stale_request(comments, provider, head, base):
+    """A request already published for this same head, about another base.
+
+    Codex names only the commit it read, so after the base moves its answer to
+    the older question is indistinguishable from an answer to the new one, and
+    accepting either would accept a verdict about a diff nobody asked about.
+    Claude echoes the base back and needs no such rule.
+    """
+    mention = f"@{provider} review"
+    return any(ours(comment) and mention in comment["body"]
+               and head in comment["body"] and base not in comment["body"]
+               for comment in comments)
+
+
+def claude_answer(root, repo, number, comments, head, base, since):
+    """Claude answers in the reviewer's own form, so its comment is read as one.
+
+    Both commits of the scope must be echoed back: an answer in flight when the
+    base moved describes the diff of the question it was asked, not this one.
+    """
     for comment in comments:
-        if (comment["user"]["login"] != BOT["claude"] or moment(comment["created_at"]) < since
-                or f"Reviewed-Commit: {head}" not in comment["body"]):
+        if (comment["user"]["login"] != BOT["claude"] or moment(comment["created_at"]) <= since
+                or f"Reviewed-Commit: {head}" not in comment["body"]
+                or f"Reviewed-Base: {base}" not in comment["body"]):
             continue
         try:
             return {**review_report(comment["body"]), "text": comment["body"]}, comment["html_url"]
@@ -135,12 +161,14 @@ def codex_answer(root, repo, number, comments, head, since):
     answers = [(moment(review["submitted_at"]), review["body"], review["html_url"])
                for review in paginate(root, repo, f"pulls/{number}/reviews?per_page=100")
                if review["user"]["login"] == BOT["codex"] and review.get("commit_id") == head
-               and review.get("submitted_at")]
+               and review.get("state") == "COMMENTED" and review.get("submitted_at")]
     answers += [(moment(comment["created_at"]), comment["body"], comment["html_url"])
                 for comment in comments
                 if comment["user"]["login"] == BOT["codex"]
                 and (named := CODEX_COMMIT.search(comment["body"])) and head.startswith(named[1])]
-    answers = [item for item in answers if item[0] >= since]
+    # GitHub timestamps are whole seconds, so an answer stamped with the request's
+    # own second may predate it; the reviewer needs minutes, not one second.
+    answers = [item for item in answers if item[0] > since]
     if not answers:
         return None, None
     findings, rendered = codex_findings(root, repo, number, head)
@@ -151,9 +179,45 @@ def codex_answer(root, repo, number, comments, head, since):
             sorted(answers)[0][2])
 
 
-def read_answer(root, repo, number, provider, comments, head, since):
-    reader = claude_answer if provider == "claude" else codex_answer
-    return reader(root, repo, number, comments, head, since)
+def read_answer(root, repo, number, provider, comments, head, base, since):
+    if provider == "claude":
+        return claude_answer(root, repo, number, comments, head, base, since)
+    return codex_answer(root, repo, number, comments, head, since)
+
+
+def claude_args(source):
+    """The arguments the Claude Action is configured with, read out of its workflow.
+
+    A search over the whole YAML would accept a flag written in a comment or in
+    another step, so the `claude_args` value itself is extracted, in both the
+    inline and the block form, and split into whole arguments.
+    """
+    lines = source.splitlines()
+    for index, line in enumerate(lines):
+        found = CLAUDE_ARGS.match(line)
+        if not found:
+            continue
+        indent, value = found[1], found[2].strip()
+        if value in ("|", ">", "|-", ">-", "|+", ">+"):
+            block = []
+            for following in lines[index + 1:]:
+                if following.strip() and not following.startswith(indent + " "):
+                    break
+                block.append(following.strip())
+            value = " ".join(block)
+        elif len(value) > 1 and value[0] == value[-1] and value[0] in "'\"":
+            value = value[1:-1]
+        try:
+            return shlex.split(value)
+        except ValueError:
+            return []
+    return []
+
+
+def pinned(args, flag, value):
+    """`--model opus` is not pinned by `--model opus-v2`, so arguments are compared whole."""
+    return any(item == f"{flag}={value}" or (item == flag and args[index + 1:index + 2] == [value])
+               for index, item in enumerate(args))
 
 
 def configured_reviewer(root, config):
@@ -168,8 +232,9 @@ def configured_reviewer(root, config):
         source = workflow.read_text()
         if "anthropics/claude-code-action@" not in source:
             raise AgentBoxError("Cannot identify the Claude Action; use local review or inspect the workflow")
+        args = claude_args(source)
         for flag, value in (("--model", config.github_model), ("--effort", config.github_effort)):
-            if value and f"{flag} {value}" not in source:
+            if value and not pinned(args, flag, value):
                 raise AgentBoxError(f"Claude Action must configure claude_args with {flag} {value}; comments cannot pin it")
     return provider
 
@@ -243,13 +308,19 @@ def _round(root, binding, adapter, config, task, fingerprint, identity, brief, r
 
     comments = paginate(root, repo, f"issues/{number}/comments?per_page=100")
     provider = configured_reviewer(root, settings)
+    if provider == "codex" and stale_request(comments, provider, head, base_head):
+        raise AgentBoxError(
+            f"{head[:12]} was already asked about another base, and Codex names only the commit it "
+            f"read, so an answer for {base_head[:12]} cannot be told from an answer to that older "
+            f"question. Commit this work again, or review this head with workflow review {task.id} --native")
     request = find_request(comments, provider, head, base_head)
     with lock(root, "review-budget"):
         state = read_review_state(root, binding, task)
         descriptor = pending_round(root, task, state, fingerprint)
     if request is not None and descriptor is not None:
         round_id = descriptor["delegation"]
-        report, url = read_answer(root, repo, number, provider, comments, head, moment(request["created_at"]))
+        report, url = read_answer(root, repo, number, provider, comments, head, base_head,
+                                  moment(request["created_at"]))
         if report is not None:
             store_review_result(root, binding, task, descriptor,
                                 {"route": {"provider": provider, "model": settings.github_model or "cloud",

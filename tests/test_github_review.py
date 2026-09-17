@@ -4,7 +4,8 @@ The fixtures below are the answers this repository's own bots published on a
 probe pull request on 2026-09-17, with the commit replaced by the test's head.
 They are kept verbatim in shape because reading them is the whole feature: the
 checklist lines, the badge image and the abbreviated commit are exactly what a
-parser has to survive.
+parser has to survive. The one addition is Claude's `Reviewed-Base` line: the
+request asks for it now, and the probe answers predate that request form.
 """
 import datetime
 import unittest
@@ -30,6 +31,7 @@ CLAUDE_PASS = """**Claude finished @rus364's task in 32s** —— [View job](htt
 introduces is the one the rest of the documentation already uses.
 
 Reviewed-Commit: {head}
+Reviewed-Base: {base}
 Verdict: PASS"""
 
 CLAUDE_NEEDS_WORK = """**Claude finished @rus364's task in 33s** —— [View job](https://github.com/o/r/actions/runs/2)
@@ -45,6 +47,7 @@ AGENTS.md is explicit on this point, and this edit does what that rule forbids.
   before the passwd-derived path, so a poisoned environment can redirect bind mounts.
 
 Reviewed-Commit: {head}
+Reviewed-Base: {base}
 Verdict: NEEDS_WORK"""
 
 CODEX_NO_FINDINGS = """Codex Review: Didn't find any major issues. Another round soon, please!
@@ -151,8 +154,9 @@ class CloudReviewTests(unittest.TestCase):
         """The request body this run posted, if it posted one."""
         return self.requests[-1] if self.requests else None
 
-    def answer(self, body, *, login="claude[bot]", created=None):
-        self.comments.append(bot(login, body.format(head=self.head, short=self.head[:7],
+    def answer(self, body, *, login="claude[bot]", created=None, base=None):
+        base = base or gw.base_commit(self.root, "main")
+        self.comments.append(bot(login, body.format(head=self.head, short=self.head[:7], base=base,
                                                     short10=self.head[:10]), created, len(self.comments) + 1))
 
     def request_comment(self, created=None, provider="claude"):
@@ -284,8 +288,8 @@ class CloudReviewTests(unittest.TestCase):
         self.review()
         self.comments.append(self.request_comment())
         other = "0" * 40
-        self.comments.append(bot("claude[bot]", CLAUDE_PASS.format(head=other, short=other[:7]),
-                                 when(), 7))
+        self.comments.append(bot("claude[bot]", CLAUDE_PASS.format(
+            head=other, short=other[:7], base=gw.base_commit(self.root, "main")), when(), 7))
         self.assertIn("no answer", self.review()["outcome"])
         self.assertNotIn("review", workflow.read_evidence(self.root, self.parent))
 
@@ -303,6 +307,52 @@ class CloudReviewTests(unittest.TestCase):
         self.comments.append(self.request_comment(created=when()))
         self.answer(CLAUDE_PASS, created=when(60))
         self.assertIn("no answer", self.review()["outcome"])
+
+    def test_an_answer_stamped_with_the_request_s_own_second_is_not_its_answer(self):
+        """GitHub stamps whole seconds; a reviewer needs minutes, so that second belongs to the past."""
+        self.review()
+        self.comments.append(self.request_comment(created=when(120)))
+        self.answer(CLAUDE_PASS, created=when(120))
+        self.assertIn("no answer", self.review()["outcome"])
+
+    def test_an_answer_echoing_another_base_answered_the_older_question(self):
+        """An answer in flight while the base moved describes the diff it was asked about."""
+        self.review()
+        self.comments.append(self.request_comment())
+        self.answer(CLAUDE_PASS, base="0" * 40)
+        self.assertIn("no answer", self.review()["outcome"])
+        self.assertNotIn("review", workflow.read_evidence(self.root, self.parent))
+
+    def test_codex_is_not_asked_again_about_a_head_whose_base_moved(self):
+        """Codex names only the commit it read, so its two answers about one head look alike."""
+        self.config.workflow.review.github_provider = "codex"
+        self.review()
+        self.comments.append({**self.request_comment(provider="codex"), "body": self.published()})
+        gw.git(self.root, "branch", "-f", "main", "HEAD~1")
+        with self.assertRaisesRegex(AgentBoxError, "another base"):
+            self.review()
+        self.assertIsNone(self.published())
+
+    def test_a_codex_review_in_another_state_is_not_its_answer(self):
+        """Codex answers by commenting; an approval or a dismissal judges nothing we asked about."""
+        self.config.workflow.review.github_provider = "codex"
+        self.review()
+        self.comments.append(self.request_comment(provider="codex"))
+        for state in ("APPROVED", "DISMISSED", "CHANGES_REQUESTED"):
+            with self.subTest(state=state):
+                self.reviews = [{"user": {"login": "chatgpt-codex-connector[bot]", "type": "Bot"},
+                                 "state": state, "commit_id": self.head, "submitted_at": when(),
+                                 "body": "", "html_url": "https://github.com/o/r/pull/9#pullrequestreview-3"}]
+                self.assertIn("no answer", self.review()["outcome"])
+
+    def test_our_own_request_is_recognised_when_gh_posts_it_as_an_app(self):
+        """A GitHub App token makes our request a bot's comment; a rerun must still not ask twice."""
+        self.review()
+        self.comments.append({**self.request_comment(), "body": self.published(),
+                              "user": {"login": "agent-box-app[bot]", "type": "Bot"}})
+        waiting = self.review()
+        self.assertIsNone(self.published())
+        self.assertIn("no answer", waiting["outcome"])
 
     def test_silence_past_the_wait_budget_ends_the_round_and_asks_the_user(self):
         """Absence of an answer is never approval, and the coordinator must not decide alone."""
@@ -337,6 +387,23 @@ class CloudReviewTests(unittest.TestCase):
         self.commit_action()
         with self.assertRaisesRegex(AgentBoxError, "Claude GitHub Action"):
             self.review()
+
+    def test_a_pin_must_be_a_whole_argument_of_claude_args(self):
+        """A flag named anywhere else in the workflow, or a longer model name, pins nothing."""
+        self.config.workflow.review.github_model = "opus"
+        for source, honoured in (
+                ("uses: anthropics/claude-code-action@v1\n  # --model opus once we can afford it\n", False),
+                ("uses: anthropics/claude-code-action@v1\n  claude_args: '--model opus-v2'\n", False),
+                ("uses: anthropics/claude-code-action@v1\n  claude_args: '--model=opus'\n", True),
+                ("uses: anthropics/claude-code-action@v1\n  claude_args: |\n    --model opus\n    --effort high\n",
+                 True)):
+            with self.subTest(source=source):
+                self.commit_action(source)
+                if honoured:
+                    self.assertEqual(self.review()["provider"], "claude")
+                else:
+                    with self.assertRaisesRegex(AgentBoxError, "claude_args with --model opus"):
+                        self.review()
 
     def test_an_unpublished_head_has_no_reviewer_and_a_missing_pull_request_names_ab_pr(self):
         """The bot reads GitHub, so a head GitHub does not have cannot be the one reviewed."""

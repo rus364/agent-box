@@ -9,6 +9,7 @@ from unittest.mock import Mock, patch
 
 from agent_box import branch_cleanup as cleanup
 from agent_box import git_workflow as gw
+from agent_box import github_review
 from agent_box import github_workflow as github
 from agent_box import workflow, workflow_state
 from agent_box.config import Config
@@ -911,7 +912,7 @@ class CleanupTests(unittest.TestCase):
         merged = self.github_proof()
         merged['url'] = 'https://github.com/o/r/pull/9'
         opened = {**merged, 'state': 'OPEN', 'isDraft': False, 'mergeable': 'MERGEABLE',
-                  'mergeStateStatus': 'CLEAN', 'latestReviews': [], 'statusCheckRollup': []}
+                  'mergeStateStatus': 'CLEAN', 'statusCheckRollup': []}
         gw.git(self.root, 'switch', self.branch)
         self.task.state = 'Review'
         adapter = self.adapter
@@ -920,6 +921,7 @@ class CleanupTests(unittest.TestCase):
         accepted_evidence(self.root, self.task, review={'verdict': 'PASS'})
         with patch.object(gw, 'github_origin', return_value='o/r'), \
              patch.object(github, 'find_pr', return_value=9), \
+             patch.object(github_review, 'paginate', return_value=[]), \
              patch.object(github, 'threads', return_value=[]):
             for change in ({'headRefOid': 'f' * 40}, {'baseRefName': 'other'},
                            {'mergedAt': None}, {'mergeCommit': None}):

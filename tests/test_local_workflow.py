@@ -196,7 +196,7 @@ class LocalLandTests(unittest.TestCase):
 
     def test_github_refreshes_local_acceptance_but_retains_current_head_remote_approval(self):
         """A new local round removes cached PASS without invalidating GitHub's own approval."""
-        from agent_box import github_workflow as github
+        from agent_box import github_review, github_workflow as github
 
         self.config.workflow.merge_mode = "github"
         self.config.workflow.review.policy = "always"
@@ -206,7 +206,7 @@ class LocalLandTests(unittest.TestCase):
         opened = {"number": 9, "url": "https://github.com/o/r/pull/9", "state": "OPEN",
                   "isDraft": False, "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN",
                   "headRefOid": head, "headRefName": self.info["branch"], "baseRefName": "main",
-                  "latestReviews": [], "statusCheckRollup": []}
+                  "statusCheckRollup": []}
         original_landing = workflow.landing
 
         def interleave(*args):
@@ -216,8 +216,10 @@ class LocalLandTests(unittest.TestCase):
 
         for approved in (False, True):
             workflow.save_evidence(self.root, self.parent, self.saved)
-            opened["latestReviews"] = [{"state": "APPROVED", "commit": {"oid": head}}] if approved else []
+            reviews = [{"user": {"login": "maintainer", "type": "User"},
+                        "state": "APPROVED", "commit_id": head}] if approved else []
             with self.subTest(approved=approved), patch.object(workflow, "landing", interleave), \
+                 patch.object(github_review, "paginate", return_value=reviews), \
                  patch.object(gw, "github_origin", return_value="o/r"), \
                  patch.object(github, "find_pr", return_value=9), \
                  patch.object(github, "threads", return_value=[]), \

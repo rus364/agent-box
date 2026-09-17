@@ -48,7 +48,7 @@ def find_pr(root, repo, branch, base):
 
 def view(root, repo, reference):
     return gh(root, "pr", "view", reference, "--repo", repo, "--json",
-              "number,url,state,isDraft,headRefName,headRefOid,baseRefName,mergeStateStatus,mergeable,reviewDecision,latestReviews,statusCheckRollup,mergeCommit,mergedAt", json_output=True)
+              "number,url,state,isDraft,headRefName,headRefOid,baseRefName,mergeStateStatus,mergeable,reviewDecision,statusCheckRollup,mergeCommit,mergedAt", json_output=True)
 
 
 def threads(root, repo, number):
@@ -94,7 +94,7 @@ def blockers(pr, review_threads):
     return reasons
 
 
-def acceptance_blockers(root, config, tasks, pr, saved, base, *, integrated=False):
+def acceptance_blockers(root, config, tasks, pr, saved, base, *, approved, integrated=False):
     """Why this head is not accepted yet; a confirmed merge is not acceptance of what it merged.
 
     The review policy decides here exactly as it does in local landing: a cloud
@@ -105,16 +105,16 @@ def acceptance_blockers(root, config, tasks, pr, saved, base, *, integrated=Fals
     from .workflow import diff_stats, review_blockers
 
     reasons = []
-    approved = current_approval(pr)
+    accepted = approved
     if approved and pr["state"] == "MERGED":
         # GitHub binds reviews to commits, not to local evidence. Only an
         # approval observed before merge can be associated with that scope.
-        approved = (bool(saved.get("scope"))
+        accepted = (bool(saved.get("scope"))
                     and saved.get("github_approval") == approval_scope(pr, saved["scope"]))
-    if not approved:
+    if not accepted:
         files, lines = diff_stats(root, base, config.workflow.review)
         reasons = review_blockers(config.workflow.review, tasks, files, lines, saved, integrated=integrated)
-        if reasons and current_approval(pr):
+        if reasons and approved:
             reasons.append("Merged GitHub approval needs a matching pre-merge scope snapshot; "
                            "otherwise accept this head again before completing it")
     if saved.get("validation", {}).get("exit") != 0:
@@ -122,9 +122,26 @@ def acceptance_blockers(root, config, tasks, pr, saved, base, *, integrated=Fals
     return reasons
 
 
-def current_approval(pr):
-    return any(review.get("state") == "APPROVED" and (review.get("commit") or {}).get("oid") == pr["headRefOid"]
-               for review in pr.get("latestReviews") or [])
+def human_approval(root, repo, pr):
+    """An approval GitHub attributes to a person and to exactly this head.
+
+    The reviews REST endpoint is read instead of the pull request's own
+    `latestReviews`, which carries neither fact: its `commit.oid` is empty for
+    every review, and its author login does not say whether the account is an
+    app. A bot's approval is not acceptance here, or the cloud reviewer could
+    accept the work it was asked to judge by pressing a button instead of
+    answering. A later review by the same person supersedes an earlier one.
+    """
+    from .github_review import paginate
+
+    verdicts = {}
+    for review in paginate(root, repo, f"pulls/{pr['number']}/reviews?per_page=100"):
+        user = review.get("user") or {}
+        if user.get("type") == "Bot" or review.get("commit_id") != pr["headRefOid"]:
+            continue
+        if review.get("state") in ("APPROVED", "CHANGES_REQUESTED", "DISMISSED"):
+            verdicts[user.get("login")] = review["state"]
+    return "APPROVED" in verdicts.values()
 
 
 def approval_scope(pr, fingerprint):
@@ -227,7 +244,8 @@ def _operate(args, root, config, adapter, task, parent, info, saved, tasks):
             saved = evidence(root, task, scope(root, info["base"]), info["base"])
             reasons += acceptance_blockers(
                 root, config, tasks, pr, {**saved, "delta_review": delta_review(root, config, task, tasks)},
-                info["base"], integrated=integrated_parent(root, task, parent, info["base"]))
+                info["base"], approved=human_approval(root, repo, pr),
+                integrated=integrated_parent(root, task, parent, info["base"]))
         _current_head(root, pr)
         if reasons:
             raise AgentBoxError("Cannot complete merged task: " + "; ".join(reasons))
@@ -244,8 +262,9 @@ def _operate(args, root, config, adapter, task, parent, info, saved, tasks):
     saved = evidence(root, task, scope(root, info["base"]), info["base"])
     _current_head(root, pr)
     delta = delta_review(root, config, task, tasks)
+    approved = human_approval(root, repo, pr)
     reasons += blockers(pr, feedback) + acceptance_blockers(
-        root, config, tasks, pr, {**saved, "delta_review": delta}, info["base"],
+        root, config, tasks, pr, {**saved, "delta_review": delta}, info["base"], approved=approved,
         integrated=integrated_parent(root, task, parent, info["base"]))
     if args.action == "inspect":
         return {"pr": pr, "threads": feedback, "comments": [c for page in comments for c in page],
@@ -256,7 +275,7 @@ def _operate(args, root, config, adapter, task, parent, info, saved, tasks):
                 "wait_seconds": config.workflow.review.wait_seconds}
     if reasons:
         raise AgentBoxError("Cannot merge: " + "; ".join(reasons))
-    if current_approval(pr):
+    if approved:
         saved["github_approval"] = approval_scope(pr, saved["scope"])
         save_evidence(root, task, saved)
     gh(root, "pr", "merge", pr["number"], "--repo", repo, "--" + (args.method or "squash"),
@@ -274,7 +293,8 @@ def _operate(args, root, config, adapter, task, parent, info, saved, tasks):
         reasons.append("Code changed during merge; validate and review the current head")
     reasons += blockers(pr, feedback) + acceptance_blockers(
         root, config, tasks, pr, {**current, "delta_review": delta_review(root, config, task, tasks)},
-        info["base"], integrated=integrated_parent(root, task, parent, info["base"]))
+        info["base"], approved=approved,
+        integrated=integrated_parent(root, task, parent, info["base"]))
     if reasons:
         raise AgentBoxError("Cannot complete merged task: " + "; ".join(reasons))
     adapter.set_state(task, "Done")

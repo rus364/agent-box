@@ -4,6 +4,11 @@ from agent_box import workflow
 from agent_box.tracker.core import Task
 
 
+def approval(commit, *, login="maintainer", kind="User"):
+    """One entry of the reviews endpoint: a person's APPROVED review of that commit."""
+    return {"user": {"login": login, "type": kind}, "state": "APPROVED", "commit_id": commit}
+
+
 class MergeAcceptanceTests(unittest.TestCase):
     def setUp(self):
         # These unit tests isolate PR/ref identity; scope acceptance, which reads
@@ -55,7 +60,7 @@ class MergeAcceptanceTests(unittest.TestCase):
         merged = {"number": 9, "url": "https://github.com/o/r/pull/9", "state": "MERGED",
                   "isDraft": False, "headRefOid": "oldhead", "headRefName": "ab/task",
                   "baseRefName": "main", "mergedAt": "2026-01-01T00:00:00Z",
-                  "mergeCommit": {"oid": "mergecommit"}, "latestReviews": [], "statusCheckRollup": []}
+                  "mergeCommit": {"oid": "mergecommit"}, "statusCheckRollup": []}
         info = {"branch": "ab/task", "base": "main"}
         args = SimpleNamespace(command="land", merged=True, method="squash")
         with patch.object(github.gw, "github_origin", return_value="o/r"), \
@@ -98,7 +103,7 @@ class MergeAcceptanceTests(unittest.TestCase):
         merged = {"number": 9, "url": "https://github.com/o/r/pull/9", "state": "MERGED",
                   "isDraft": False, "headRefOid": "A", "headRefName": "ab/task",
                   "baseRefName": "main", "mergedAt": "2026-01-01T00:00:00Z",
-                  "mergeCommit": {"oid": "mergecommit"}, "latestReviews": [], "statusCheckRollup": []}
+                  "mergeCommit": {"oid": "mergecommit"}, "statusCheckRollup": []}
         info = {"branch": "ab/task", "base": "main"}
         args = SimpleNamespace(command="land", merged=True, method="squash")
         with patch.object(github.gw, "github_origin", return_value="o/r"), \
@@ -143,7 +148,7 @@ class MergeAcceptanceTests(unittest.TestCase):
         merged = {"number": 9, "url": "https://github.com/o/r/pull/9", "state": "MERGED",
                   "isDraft": False, "headRefOid": "A", "headRefName": "ab/task",
                   "baseRefName": "main", "mergedAt": "2026-01-01T00:00:00Z",
-                  "mergeCommit": {"oid": "mergecommit"}, "latestReviews": [], "statusCheckRollup": []}
+                  "mergeCommit": {"oid": "mergecommit"}, "statusCheckRollup": []}
         info = {"branch": "ab/task", "base": "main"}
         args = SimpleNamespace(command="land", merged=True, method="squash")
         with patch.object(github.gw, "github_origin", return_value="o/r"), \
@@ -178,20 +183,40 @@ class MergeAcceptanceTests(unittest.TestCase):
             with self.assertRaisesRegex(AgentBoxError, "Several pull requests"):
                 github.find_pr(Path("/tmp"), "o/r", "ab/task", "main")
 
-    def test_pending_checks_block_merge_and_an_approval_of_another_commit_is_not_acceptance(self):
+    def test_pending_checks_block_merge_and_an_unapproved_head_is_not_acceptance(self):
         """GitHub readiness and acceptance of this head are separate answers."""
         from pathlib import Path
         from agent_box.config import Config
         from agent_box.github_workflow import acceptance_blockers, blockers
         pr = {"state": "OPEN", "isDraft": False, "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN", "headRefOid": "new",
-              "latestReviews": [{"state": "APPROVED", "commit": {"oid": "old"}}],
               "statusCheckRollup": [{"status": "IN_PROGRESS", "name": "tests"}]}
         self.assertTrue(any("CI" in reason for reason in blockers(pr, [])))
         config = Config()
         config.workflow.review.policy = "always"
         saved = {"scope": "current", "validation": {"exit": 0}}
-        reasons = acceptance_blockers(Path("/tmp"), config, [], pr, saved, "main")
+        reasons = acceptance_blockers(Path("/tmp"), config, [], pr, saved, "main", approved=False)
         self.assertTrue(any("fresh independent PASS" in reason for reason in reasons))
+
+    def test_only_a_person_approving_this_exact_head_counts_as_an_approval(self):
+        """An app's approval would let the cloud reviewer accept the work it was asked to judge,
+        and a pull request's own latestReviews reports neither the account type nor the commit."""
+        from pathlib import Path
+        from unittest.mock import patch
+        from agent_box import github_review, github_workflow
+        person = {"login": "maintainer", "type": "User"}
+        cases = (([], False),
+                 ([{"user": {"login": "claude", "type": "Bot"}, "state": "APPROVED", "commit_id": "new"}], False),
+                 ([{"user": person, "state": "APPROVED", "commit_id": "old"}], False),
+                 ([{"user": person, "state": "COMMENTED", "commit_id": "new"}], False),
+                 ([{"user": person, "state": "APPROVED", "commit_id": "new"}], True),
+                 ([{"user": person, "state": "APPROVED", "commit_id": "new"},
+                   {"user": person, "state": "CHANGES_REQUESTED", "commit_id": "new"}], False))
+        for reviews, approved in cases:
+            with self.subTest(reviews=reviews):
+                with patch.object(github_review, "paginate", return_value=reviews) as read:
+                    self.assertIs(github_workflow.human_approval(
+                        Path("/tmp"), "o/r", {"number": 9, "headRefOid": "new"}), approved)
+                self.assertIn("pulls/9/reviews", read.call_args.args[-1])
 
     def test_a_delta_below_the_triggers_accepts_a_pull_request_like_a_local_pass(self):
         """GitHub mode gets the same economy; a delta that still triggers review does not."""
@@ -200,12 +225,13 @@ class MergeAcceptanceTests(unittest.TestCase):
         from agent_box.github_workflow import acceptance_blockers
         config = Config()
         config.workflow.review.policy = "always"
-        pr = {"state": "OPEN", "headRefOid": "new", "latestReviews": []}
+        pr = {"state": "OPEN", "headRefOid": "new"}
         saved = {"validation": {"exit": 0}, "delta_review": {"round": "r", "reasons": []}}
-        self.assertEqual(acceptance_blockers(Path("/tmp"), config, [], pr, saved, "main"), [])
+        self.assertEqual(acceptance_blockers(Path("/tmp"), config, [], pr, saved, "main", approved=False), [])
         saved["delta_review"]["reasons"] = ["sensitive path auth/x matches **/auth/**"]
         self.assertTrue(any("fresh independent PASS" in reason
-                            for reason in acceptance_blockers(Path("/tmp"), config, [], pr, saved, "main")))
+                            for reason in acceptance_blockers(Path("/tmp"), config, [], pr, saved, "main",
+                                                              approved=False)))
 
 
 class LandingFreshnessTests(unittest.TestCase):
@@ -224,7 +250,9 @@ class LandingFreshnessTests(unittest.TestCase):
         self.adapter.get.side_effect = lambda ident: deepcopy({"7": self.parent, "8": self.child}[ident])
         self.pr = {"number": 9, "url": "https://github.com/o/r/pull/9", "state": "OPEN", "isDraft": False,
                    "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN", "headRefOid": gw.head_sha(self.root),
-                   "headRefName": "ab/7-parent", "baseRefName": "main", "latestReviews": [], "statusCheckRollup": []}
+                   "headRefName": "ab/7-parent", "baseRefName": "main", "statusCheckRollup": []}
+        #: What the reviews endpoint returns; approvals are read from there, not from the PR view.
+        self.reviews = []
         self.merged = {**self.pr, "state": "MERGED", "mergedAt": "2026-01-01T00:00:00Z",
                        "mergeCommit": {"oid": "merged"}}
 
@@ -232,7 +260,7 @@ class LandingFreshnessTests(unittest.TestCase):
         from contextlib import ExitStack
         from types import SimpleNamespace
         from unittest.mock import patch
-        from agent_box import github_workflow as github, workflow
+        from agent_box import github_review, github_workflow as github, workflow
 
         def event(name, value):
             if phase == name:
@@ -253,6 +281,7 @@ class LandingFreshnessTests(unittest.TestCase):
             stack.enter_context(patch.object(github, "threads", side_effect=lambda *a: event("threads", [])))
             stack.enter_context(patch.object(github.gw, "remote_branch_head",
                                             side_effect=lambda *a: event("remote", self.pr["headRefOid"])))
+            stack.enter_context(patch.object(github_review, "paginate", side_effect=lambda *a: list(self.reviews)))
             self.command = stack.enter_context(patch.object(github, "gh"))
             return workflow.landing(SimpleNamespace(command="land", task=self.parent.id, action=action, method="squash"),
                                     self.root, self.config, self.adapter)
@@ -302,7 +331,7 @@ class LandingFreshnessTests(unittest.TestCase):
         gw.git(self.root, "update-ref", "refs/remotes/origin/main", self.pr["headRefOid"])
         gw.git(self.root, "branch", "-D", "main")
         self.parent.labels = ["ab:tier:1"]
-        self.merged["latestReviews"] = [{"state": "APPROVED", "commit": {"oid": self.pr["headRefOid"]}}]
+        self.reviews = [approval(self.pr["headRefOid"])]
         for native, policy in ((False, "auto"), (True, "always")):
             with self.subTest(native=native, policy=policy):
                 self.config.workflow.review.policy = policy
@@ -338,7 +367,7 @@ class LandingFreshnessTests(unittest.TestCase):
         with self.assertRaisesRegex(AgentBoxError, "already integrated scope"):
             self.run_land(merged=True)
         self.adapter.set_state.assert_not_called()
-        self.merged["latestReviews"] = [{"state": "APPROVED", "commit": {"oid": self.pr["headRefOid"]}}]
+        self.reviews = [approval(self.pr["headRefOid"])]
         with self.assertRaisesRegex(AgentBoxError, "pre-merge scope snapshot"):
             self.run_land(merged=True)
         self.config.workflow.review.policy = "always"
@@ -354,12 +383,11 @@ class LandingFreshnessTests(unittest.TestCase):
         """
         from agent_box.errors import AgentBoxError
         for policy, accepted in (("off", True), ("auto", True), ("always", False)):
-            for approval, verdict in ((None, None), (None, "SKIPPED"), ("old-head", "SKIPPED"),
+            for reviewed, verdict in ((None, None), (None, "SKIPPED"), ("old-head", "SKIPPED"),
                                       (self.pr["headRefOid"], "SKIPPED")):
-                with self.subTest(policy=policy, approval=approval, verdict=verdict):
+                with self.subTest(policy=policy, approval=reviewed, verdict=verdict):
                     self.config.workflow.review.policy = policy
-                    self.merged["latestReviews"] = ([{"state": "APPROVED", "commit": {"oid": approval}}]
-                                                    if approval else [])
+                    self.reviews = [approval(reviewed)] if reviewed else []
                     workflow.save_evidence(self.root, self.parent, {**self.saved, "review": {"verdict": verdict}})
                     if accepted:
                         self.assertEqual(self.run_land(merged=True)["state"], "Done")
@@ -377,7 +405,7 @@ class LandingFreshnessTests(unittest.TestCase):
     def test_reconcile_approval_cannot_replace_current_successful_validation(self):
         """Current-head cloud approval still needs a successful check of today's scope."""
         from agent_box.errors import AgentBoxError
-        self.merged["latestReviews"] = [{"state": "APPROVED", "commit": {"oid": self.pr["headRefOid"]}}]
+        self.reviews = [approval(self.pr["headRefOid"])]
         for validation in ({}, {"exit": 1}, {"command": ["true"]}):
             with self.subTest(validation=validation):
                 workflow.save_evidence(self.root, self.parent, {**self.saved, "validation": validation})
@@ -415,8 +443,7 @@ class LandingFreshnessTests(unittest.TestCase):
         self.adapter.set_state.assert_called_once_with(self.parent, "Done")
 
     def approve_github(self):
-        self.pr["latestReviews"] = [{"state": "APPROVED", "commit": {"oid": self.pr["headRefOid"]}}]
-        self.merged["latestReviews"] = self.pr["latestReviews"]
+        self.reviews = [approval(self.pr["headRefOid"])]
         workflow.save_evidence(self.root, self.parent, {**self.saved, "review": {"verdict": "SKIPPED"}})
 
     def test_github_approval_is_saved_before_merge_and_recovers_same_scope_tracker_failure(self):
