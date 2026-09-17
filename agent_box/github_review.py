@@ -49,12 +49,12 @@ Report every finding on its own line as
 
 - [LOW|MEDIUM|HIGH|CRITICAL] path:line — what is wrong and why it matters
 
-and end the answer with exactly these three lines, the verdict being one of PASS,
-NEEDS_WORK or INCONCLUSIVE:
+and end the answer with exactly these three lines, replacing the alternatives with the
+one verdict that holds:
 
 Reviewed-Commit: {head}
 Reviewed-Base: {base}
-Verdict: NEEDS_WORK
+Verdict: PASS|NEEDS_WORK|INCONCLUSIVE
 
 A PASS lists no findings. Write exactly one Verdict line and no example verdicts anywhere
 in the answer.{context}{brief}
@@ -63,7 +63,12 @@ in the answer.{context}{brief}
 
 def request_body(provider, head, base, review_context="", brief=None):
     """The request names both commits of the scope it asks about, because that is the
-    only place a published request can record which diff the answer will describe."""
+    only place a published request can record which diff the answer will describe.
+
+    The verdict line keeps its alternatives: a spelled-out example is copied back
+    sooner or later, and a copied `PASS|NEEDS_WORK|INCONCLUSIVE` ends the round as
+    a failure the user sees, while a copied `NEEDS_WORK` would be a verdict nobody gave.
+    """
     context = f"\n\n{review_context.strip()}" if review_context else ""
     note = f"\n\nContext from the coordinator:\n\n{brief.strip()}" if brief else ""
     return REQUEST_FORM.format(provider=provider, head=head, base=base, context=context, brief=note)
@@ -81,24 +86,30 @@ def moment(value):
 
 
 def ours(comment):
-    """Our request cannot be told apart by account type: `gh` authenticated as a
-    GitHub App posts it as a bot. Only the reviewers' own accounts are excluded,
-    so a bot quoting the request back is never mistaken for the request itself."""
+    """Anyone may comment on a pull request, and our own request is not even
+    recognisable by account type: `gh` authenticated as a GitHub App posts it as a
+    bot. Only the reviewers' own accounts are excluded, so a bot quoting a request
+    back is never mistaken for one."""
     return comment["user"]["login"] not in set(BOT.values())
 
 
-def find_request(comments, provider, head, base):
-    """Our own published request for this exact scope, whoever's session posted it.
+def same(body, other):
+    """GitHub returns a comment as it stores it, and line endings are the one
+    difference it may introduce in text we posted ourselves."""
+    return body.replace("\r\n", "\n").strip() == other.replace("\r\n", "\n").strip()
 
-    Identity is the visible text, not a hidden marker: a comment that mentions
-    the bot and names both commits is a request, and one is enough per scope. A
-    request that named another base asked about another diff, so a base that has
-    moved is asked again rather than answered from the older round.
+
+def find_request(comments, bodies):
+    """The published comment that is one of our own request texts, word for word.
+
+    Provenance cannot come from the author: anybody may comment, and a stranger
+    could otherwise publish `@claude review` naming this scope, with instructions
+    of their own, and the answer to that question would be read as our round's.
+    An identical text is our question whoever pressed the button, and a different
+    one is somebody else's, so this run publishes its own.
     """
-    mention = f"@{provider} review"
     for comment in comments:
-        if (ours(comment) and mention in comment["body"]
-                and head in comment["body"] and base in comment["body"]):
+        if ours(comment) and any(same(comment["body"], body) for body in bodies):
             return comment
     return None
 
@@ -112,8 +123,9 @@ def stale_request(comments, provider, head, base):
     Claude echoes the base back and needs no such rule.
     """
     mention = f"@{provider} review"
-    return any(ours(comment) and mention in comment["body"]
-               and head in comment["body"] and base not in comment["body"]
+    return any(ours(comment) and comment["body"].startswith(mention)
+               and f"Reviewed-Commit: {head}" in comment["body"]
+               and f"Reviewed-Base: {base}" not in comment["body"]
                for comment in comments)
 
 
@@ -125,25 +137,34 @@ def claude_answer(root, repo, number, comments, head, base, since):
     """
     for comment in comments:
         if (comment["user"]["login"] != BOT["claude"] or moment(comment["created_at"]) <= since
-                or f"Reviewed-Commit: {head}" not in comment["body"]
-                or f"Reviewed-Base: {base}" not in comment["body"]):
+                or f"Reviewed-Commit: {head}" not in comment["body"]):
             continue
+        if f"Reviewed-Base: {base}" not in comment["body"]:
+            if "Reviewed-Base:" in comment["body"]:
+                # It answered the question this head was asked before the base moved.
+                continue
+            return None, comment["html_url"], "its answer does not echo the base the request named"
         try:
-            return {**review_report(comment["body"]), "text": comment["body"]}, comment["html_url"]
+            return {**review_report(comment["body"]), "text": comment["body"]}, comment["html_url"], None
         except ProviderFailure:
             # It answered about this head and its answer carries no single verdict.
             # Waiting an hour for a finished comment to improve helps nobody.
-            return None, comment["html_url"]
-    return None, None
+            return None, comment["html_url"], "its answer carries no single Verdict line"
+    return None, None, None
 
 
-def codex_findings(root, repo, number, head):
-    """Codex attaches its priorities to inline comments on the commit it reviewed."""
+def codex_findings(root, repo, number, head, since):
+    """Codex attaches its priorities to inline comments on the commit it reviewed.
+
+    Codex also reviews on its own, so this head may already carry findings from a
+    review nobody asked for; counting those would turn its "no major issues" into
+    a NEEDS_WORK for the question we did ask.
+    """
     findings, text = [], []
     for comment in paginate(root, repo, f"pulls/{number}/comments?per_page=100"):
         priority = CODEX_PRIORITY.search(comment["body"])
         if (comment["user"]["login"] != BOT["codex"] or comment.get("commit_id") != head
-                or not priority):
+                or not priority or moment(comment["created_at"]) <= since):
             continue
         location = f"{comment['path']}:{comment.get('line') or comment.get('original_line') or 0}"
         findings.append({"severity": CODEX_SEVERITY[priority[1]], "location": location})
@@ -170,13 +191,13 @@ def codex_answer(root, repo, number, comments, head, since):
     # own second may predate it; the reviewer needs minutes, not one second.
     answers = [item for item in answers if item[0] > since]
     if not answers:
-        return None, None
-    findings, rendered = codex_findings(root, repo, number, head)
+        return None, None, None
+    findings, rendered = codex_findings(root, repo, number, head, since)
     body = "\n\n".join(text for _, text, _ in sorted(answers))
     verdict = "NEEDS_WORK" if findings else "PASS"
     return ({"verdict": verdict, "findings": findings,
              "text": "\n\n".join([body, *rendered, f"Verdict: {verdict}"])},
-            sorted(answers)[0][2])
+            sorted(answers)[0][2], None)
 
 
 def read_answer(root, repo, number, provider, comments, head, base, since):
@@ -237,6 +258,26 @@ def configured_reviewer(root, config):
             if value and not pinned(args, flag, value):
                 raise AgentBoxError(f"Claude Action must configure claude_args with {flag} {value}; comments cannot pin it")
     return provider
+
+
+def published_requests(root, task, head, base):
+    """The request texts this task published from this checkout about this scope.
+
+    A round that ended in failure leaves its request in the thread, and a rerun
+    must recognise it even when a later run would word the brief differently:
+    asking the bot the same question twice is the one thing this command must not
+    do. A request about another scope is another question and is not reused.
+    """
+    from .workflow import review_evidence_path
+
+    rounds = review_evidence_path(root, task.id, "round").parent
+    texts = []
+    for path in sorted(rounds.glob("*/handoff.txt")):
+        with contextlib.suppress(OSError):
+            text = path.read_text()
+            if head in text and base in text:
+                texts.append(text)
+    return texts
 
 
 def pending_round(root, task, state, fingerprint):
@@ -313,14 +354,17 @@ def _round(root, binding, adapter, config, task, fingerprint, identity, brief, r
             f"{head[:12]} was already asked about another base, and Codex names only the commit it "
             f"read, so an answer for {base_head[:12]} cannot be told from an answer to that older "
             f"question. Commit this work again, or review this head with workflow review {task.id} --native")
-    request = find_request(comments, provider, head, base_head)
     with lock(root, "review-budget"):
         state = read_review_state(root, binding, task)
         descriptor = pending_round(root, task, state, fingerprint)
+    # A request already in the thread is this round's only when its text is one of
+    # ours; anything else is a stranger's question, and this run publishes its own.
+    request = find_request(comments, [*published_requests(root, task, head, base_head),
+                                      request_body(provider, head, base_head, review_context, brief)])
     if request is not None and descriptor is not None:
         round_id = descriptor["delegation"]
-        report, url = read_answer(root, repo, number, provider, comments, head, base_head,
-                                  moment(request["created_at"]))
+        report, url, note = read_answer(root, repo, number, provider, comments, head, base_head,
+                                        moment(request["created_at"]))
         if report is not None:
             store_review_result(root, binding, task, descriptor,
                                 {"route": {"provider": provider, "model": settings.github_model or "cloud",
@@ -347,8 +391,7 @@ def _round(root, binding, adapter, config, task, fingerprint, identity, brief, r
             cleanup_delegation_input(root, descriptor)
         raise AgentBoxError(
             f"{provider} published no verdict for {head[:12]} in " + (url or pr["url"])
-            + ("; its answer carries no single Verdict line. " if url else
-               f" within {settings.wait_seconds}s. ")
+            + (f"; {note}. " if note else f" within {settings.wait_seconds}s. ")
             + f"The round ended as failure {failures} of {REVIEW_FAILURE_LIMIT} without spending an attempt. "
             f"Ask the user before rerunning workflow review {task.id} or reviewing this head another way")
     body = (request["body"] if request is not None

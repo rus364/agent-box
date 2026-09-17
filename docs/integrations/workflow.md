@@ -553,7 +553,11 @@ fresh PASS for GitHub landings.
 `workflow review PARENT` is the whole interface. On a head with no request it
 publishes one comment asking `@codex review` or `@claude review` for that exact
 commit and returns; every later run of the same command reads the answer back, so
-a rerun never asks twice. A `--brief` note is published with the request, since
+a rerun never asks twice. A request already in the thread is this round's only
+when its text is one this checkout published for this scope, word for word:
+anybody may comment on a pull request, and a question somebody else wrote, with
+instructions of its own, is not the question this round asked. The request offers
+no example verdict either, because an example is copied back sooner or later. A `--brief` note is published with the request, since
 that is where the reviewer reads it. The bot's answer becomes an ordinary round:
 the same budget, the same failure limit, the same receipt, `reconciliation.status`
 and `incremental` delta economy as a local verdict. `workflow review PARENT
@@ -573,14 +577,16 @@ repository's bots on 2026-09-17:
   `Reviewed-Base: <base>` and one `Verdict:` line, with findings as
   `- [LOW|MEDIUM|HIGH|CRITICAL] path:line — …`. Its progress checklist lines are
   not findings. Both commits must be echoed back, so an answer still in flight
-  when the base moved answers the older question and not this one. An answer
-  about this head with no single verdict line ends the round at once instead of
-  waiting.
+  when the base moved answers the older question and not this one; an answer that
+  echoes no base at all ends the round at once, since that is the request form
+  going unanswered rather than a question of scope. An answer about this head
+  with no single verdict line ends the round at once as well.
 - Codex answers in its own: findings arrive as a COMMENTED review bound to the
   commit, with the priority badge on each inline comment (P0 → CRITICAL, P1 →
   HIGH, P2 → MEDIUM, P3 → LOW), and otherwise a comment naming the same
   `Reviewed commit`. Nothing attached to the reviewed head is the no-findings
-  signal, so the verdict is PASS with findings absent and NEEDS_WORK with them;
+  signal, so the verdict is PASS with findings absent and NEEDS_WORK with them.
+  Codex also reviews on its own, so only what it attached after the request counts;
   its English is never parsed, and neither is its 👍 reaction, which only appears
   once every review of the pull request has finished. A review in any other state
   is not its answer. Because Codex names only the commit, a head already asked
