@@ -1,4 +1,4 @@
-"""Fresh CLI contexts with explicit models and machine-checked reports."""
+"""Fresh CLI contexts with explicit models: a checked reviewer report, or a delegate's Markdown."""
 from __future__ import annotations
 
 import base64
@@ -53,62 +53,49 @@ def invalid(stage, reason):
                           "invalid-report", stage=stage, reason=reason)
 
 
-def report_schema(role):
+def report_schema():
+    """The reviewer's report; workers and scouts answer in unchecked Markdown."""
     nonblank = {"type": "string", "pattern": r"\S"}
-    if role == "reviewer":
-        finding = {"type": "object", "properties": {
-            **{key: dict(nonblank) for key in ("severity", "path", "message", "evidence", "requirement")},
-            "line": {"type": "integer", "minimum": 0}},
-            "required": ["severity", "path", "line", "message", "evidence", "requirement"], "additionalProperties": False}
-        properties = {"verdict": {"type": "string", "enum": ["PASS", "NEEDS_WORK", "INCONCLUSIVE"]},
-                      "summary": nonblank, "findings": {"type": "array", "items": finding}}
-    else:
-        properties = {"status": {"type": "string", "enum": ["completed", "blocked", "needs-human"]},
-                      "summary": nonblank, "evidence": {"type": "array", "items": {"type": "string"}}}
-    schema = {"type": "object", "properties": properties, "required": list(properties), "additionalProperties": False}
-    if role == "reviewer":
-        # Claude rejects top-level conditional schemas; keep cross-field rules
-        # explicit for generation and enforce them locally before acceptance.
-        properties["findings"]["description"] = "Must be empty for PASS and nonempty for NEEDS_WORK."
-    return schema
+    finding = {"type": "object", "properties": {
+        **{key: dict(nonblank) for key in ("severity", "path", "message", "evidence", "requirement")},
+        "line": {"type": "integer", "minimum": 0}},
+        "required": ["severity", "path", "line", "message", "evidence", "requirement"], "additionalProperties": False}
+    properties = {"verdict": {"type": "string", "enum": ["PASS", "NEEDS_WORK", "INCONCLUSIVE"]},
+                  "summary": nonblank, "findings": {"type": "array", "items": finding}}
+    # Claude rejects top-level conditional schemas; keep cross-field rules
+    # explicit for generation and enforce them locally before acceptance.
+    properties["findings"]["description"] = "Must be empty for PASS and nonempty for NEEDS_WORK."
+    return {"type": "object", "properties": properties, "required": list(properties), "additionalProperties": False}
 
 
-def validate_report(report, role):
+def validate_report(report):
     # Reasons use schema-owned field names, never values or unknown provider keys.
     if not isinstance(report, dict):
         invalid("schema", "report must be an object")
-    expected = {"summary", "verdict", "findings"} if role == "reviewer" else {"summary", "status", "evidence"}
-    if report.keys() - expected:
+    if report.keys() - {"summary", "verdict", "findings"}:
         invalid("schema", "report has unexpected fields")
     if not isinstance(report.get("summary"), str) or not report["summary"].strip():
         invalid("schema", "summary must be a nonblank string")
-    if role == "reviewer":
-        if report.get("verdict") not in ("PASS", "NEEDS_WORK", "INCONCLUSIVE"):
-            invalid("schema", "verdict must be PASS, NEEDS_WORK or INCONCLUSIVE")
-        findings = report.get("findings")
-        if not isinstance(findings, list):
-            invalid("schema", "findings must be an array")
-        for index, finding in enumerate(findings):
-            field = f"findings[{index}]"
-            if not isinstance(finding, dict):
-                invalid("schema", f"{field} must be an object")
-            if finding.keys() - {"severity", "path", "line", "message", "evidence", "requirement"}:
-                invalid("schema", f"{field} has unexpected fields")
-            for key in ("severity", "path", "message", "evidence", "requirement"):
-                if not isinstance(finding.get(key), str) or not finding[key].strip():
-                    invalid("schema", f"{field}.{key} must be a nonblank string")
-            if type(finding.get("line")) is not int or finding["line"] < 0:
-                invalid("schema", f"{field}.line must be a nonnegative integer")
-        if report["verdict"] == "PASS" and findings:
-            invalid("schema", "PASS requires empty findings")
-        if report["verdict"] == "NEEDS_WORK" and not findings:
-            invalid("schema", "NEEDS_WORK requires findings")
-    else:
-        if report.get("status") not in ("completed", "blocked", "needs-human"):
-            invalid("schema", "status must be completed, blocked or needs-human")
-        evidence = report.get("evidence")
-        if not isinstance(evidence, list) or any(not isinstance(v, str) for v in evidence):
-            invalid("schema", "evidence must be an array of strings")
+    if report.get("verdict") not in ("PASS", "NEEDS_WORK", "INCONCLUSIVE"):
+        invalid("schema", "verdict must be PASS, NEEDS_WORK or INCONCLUSIVE")
+    findings = report.get("findings")
+    if not isinstance(findings, list):
+        invalid("schema", "findings must be an array")
+    for index, finding in enumerate(findings):
+        field = f"findings[{index}]"
+        if not isinstance(finding, dict):
+            invalid("schema", f"{field} must be an object")
+        if finding.keys() - {"severity", "path", "line", "message", "evidence", "requirement"}:
+            invalid("schema", f"{field} has unexpected fields")
+        for key in ("severity", "path", "message", "evidence", "requirement"):
+            if not isinstance(finding.get(key), str) or not finding[key].strip():
+                invalid("schema", f"{field}.{key} must be a nonblank string")
+        if type(finding.get("line")) is not int or finding["line"] < 0:
+            invalid("schema", f"{field}.line must be a nonnegative integer")
+    if report["verdict"] == "PASS" and findings:
+        invalid("schema", "PASS requires empty findings")
+    if report["verdict"] == "NEEDS_WORK" and not findings:
+        invalid("schema", "NEEDS_WORK requires findings")
     return report
 
 
@@ -156,13 +143,14 @@ def report_json(text, reason="response is not valid JSON"):
         invalid("json", "fenced JSON block is not valid JSON")
 
 
-def parse_result(provider, returncode, output, stderr, *, metadata=None):
+def parse_result(provider, returncode, output, stderr, *, metadata=None, text=False):
+    """The reviewer's JSON report, or with ``text`` a delegate's final message as written."""
     metadata = metadata if metadata is not None else {}
     try:
         result = json.loads(output)
     except (ValueError, TypeError, RecursionError):
         result = None
-        if not returncode:
+        if not returncode and not text:
             result = report_json(output)
     if isinstance(result, dict):
         metadata.update(response_metadata(result))
@@ -183,6 +171,15 @@ def parse_result(provider, returncode, output, stderr, *, metadata=None):
         reason = subtype if subtype in ("error_max_structured_output_retries", "error_max_turns", "error_during_execution", "error_max_budget_usd") else "provider error envelope" if failed_envelope else "nonzero exit"
         raise ProviderFailure(f"{provider} failed ({category}: {reason}, exit {returncode}); no task verdict",
                               category, stage="envelope" if failed_envelope else "execution", reason=reason)
+    if text:
+        if provider == "claude":
+            if not isinstance(result, dict) or not isinstance(result.get("result"), str):
+                invalid("envelope", "Claude envelope has no result text")
+            metadata["response_source"] = "stdout.result"
+            output = result["result"]
+        if not output.strip():
+            invalid("response", "the final message is empty")
+        return output
     if provider == "claude" and isinstance(result, dict):
         if "structured_output" in result:
             metadata["response_source"] = "stdout.structured_output"
@@ -214,9 +211,13 @@ def failure_metadata(route, role):
             "result_bytes": None, "usage": None, "total_cost_usd": None}
 
 
-def save_failure(metadata, directory):
-    """Keep at most 20 private artifacts for seven days; prune on each failure."""
-    target = WORKFLOW_STATE / "provider-failures"
+def save_private(kind, suffix, write):
+    """Keep at most 20 private artifacts of a kind for seven days; prune on each save.
+
+    ``write(path, reference)`` creates the artifact; the returned reference is
+    relative to workflow state, the form diagnostics name it by.
+    """
+    target = WORKFLOW_STATE / kind
     target.mkdir(parents=True, exist_ok=True, mode=0o700)
     target.chmod(0o700)
     # A blocking local lock keeps retention bounded even for overlapping scouts.
@@ -224,26 +225,32 @@ def save_failure(metadata, directory):
     try:
         fcntl.flock(fd, fcntl.LOCK_EX)
         now = time.time()
-        files = sorted(target.glob("*.json"), key=lambda path: path.lstat().st_mtime, reverse=True)
+        files = sorted(target.glob("*" + suffix), key=lambda path: path.lstat().st_mtime, reverse=True)
         for index, path in enumerate(files):
             if index >= DIAGNOSTIC_MAX_FILES - 1 or now - path.lstat().st_mtime > DIAGNOSTIC_MAX_AGE:
                 path.unlink()
-        ident = uuid.uuid4().hex + ".json"
-        reference = "provider-failures/" + ident
-        streams = {}
-        for name in ("stdout", "stderr", "result.json"):
-            path = directory / name
-            if path.exists():
-                limit = STDERR_LIMIT if name == "stderr" else DIAGNOSTIC_STREAM_LIMIT
-                with path.open("rb") as stream:
-                    data = stream.read(limit)
-                streams[name] = {"base64": base64.b64encode(data).decode("ascii"),
-                                 "truncated": path.stat().st_size > len(data)}
-        atomic_write_json(target / ident, {"metadata": {**metadata, "artifact": reference},
-                                          "created_at": now, "streams": streams}, 0o600)
+        ident = uuid.uuid4().hex + suffix
+        reference = f"{kind}/{ident}"
+        write(target / ident, reference)
         return reference
     finally:
         os.close(fd)
+
+
+def save_failure(metadata, directory):
+    def write(path, reference):
+        streams = {}
+        for name in ("stdout", "stderr", "result.json"):
+            source = directory / name
+            if source.exists():
+                limit = STDERR_LIMIT if name == "stderr" else DIAGNOSTIC_STREAM_LIMIT
+                with source.open("rb") as stream:
+                    data = stream.read(limit)
+                streams[name] = {"base64": base64.b64encode(data).decode("ascii"),
+                                 "truncated": source.stat().st_size > len(data)}
+        atomic_write_json(path, {"metadata": {**metadata, "artifact": reference},
+                                 "created_at": time.time(), "streams": streams}, 0o600)
+    return save_private("provider-failures", ".json", write)
 
 
 def check_settings(route):
@@ -286,6 +293,7 @@ def preflight(route):
 
 
 def build_command(route, role, root, schema_path, result_path, read_paths=()):
+    """``schema_path`` is None for a delegate, whose final message is free Markdown."""
     check_settings(route)
     readonly = role != "worker"
     if route["provider"] == "codex":
@@ -296,7 +304,7 @@ def build_command(route, role, root, schema_path, result_path, read_paths=()):
         if route.get("fast", False):
             command += ["-c", 'service_tier="fast"', "-c", "features.fast_mode=true"]
         command += [*([] if readonly else ["-c", "sandbox_workspace_write.network_access=true"]),
-                    "--output-schema", str(schema_path), "-o", str(result_path), "-"]
+                    *(["--output-schema", str(schema_path)] if schema_path else []), "-o", str(result_path), "-"]
         return command
     # Excluding Bash prevents a read-only reviewer from gaining shell write access.
     command = ["claude", "-p", "--model", route["model"]]
@@ -310,7 +318,7 @@ def build_command(route, role, root, schema_path, result_path, read_paths=()):
                "--mcp-config", '{"mcpServers":{}}', "--permission-mode", "dontAsk",
                "--tools", "Read,Grep,Glob" if readonly else "Read,Grep,Glob,Bash,Edit,Write",
                "--allowedTools", "Read,Grep,Glob" if readonly else "Read,Grep,Glob,Bash,Edit,Write"]
-    if schema_path.exists():
+    if schema_path and schema_path.exists():
         command += ["--json-schema", schema_path.read_text()]
     return command
 
@@ -340,6 +348,7 @@ def codex_usage(path):
 
 
 def run(route, role, root, prompt, *, timeout=3600, read_paths=(), diagnostics=None, on_completed=None):
+    """A reviewer returns its validated report; a worker or scout its Markdown text."""
     from .external_launch import builtin_environment, prepare
     env = builtin_environment(os.environ)
     for key in ("CLAUDE_CODE_SUBAGENT_MODEL", "CLAUDE_CODE_EFFORT_LEVEL", "CLAUDECODE"):
@@ -351,8 +360,10 @@ def run(route, role, root, prompt, *, timeout=3600, read_paths=(), diagnostics=N
     process = None
     with tempfile.TemporaryDirectory(prefix="agent-box-run-") as directory:
         directory = Path(directory)
-        schema, result = directory / "schema.json", directory / "result.json"
-        schema.write_text(json.dumps(report_schema(role), ensure_ascii=False), encoding="utf-8")
+        reviewer = role == "reviewer"
+        schema, result = (directory / "schema.json" if reviewer else None), directory / "result.json"
+        if reviewer:
+            schema.write_text(json.dumps(report_schema(), ensure_ascii=False), encoding="utf-8")
         command = build_command(route, role, Path(root), schema, result, read_paths)
         if route.get("api_provider"):
             from .config import effective_config
@@ -397,6 +408,8 @@ def run(route, role, root, prompt, *, timeout=3600, read_paths=(), diagnostics=N
                         signal.signal(signum, handler)
                 stdout.flush()
                 stderr.flush()
+                if route["provider"] == "codex" and not reviewer and not result.exists() and not process.returncode:
+                    invalid("response", "Codex wrote no final message")
                 source = result if route["provider"] == "codex" and result.exists() else directory / "stdout"
                 metadata["response_source"] = "result-file" if source == result else "stdout"
                 with source.open("rb") as stream:
@@ -412,8 +425,10 @@ def run(route, role, root, prompt, *, timeout=3600, read_paths=(), diagnostics=N
                         output = ""
                     else:
                         invalid("json", "response is not valid UTF-8")
-                report = validate_report(parse_result(route["provider"], process.returncode, output,
-                                                     error.decode("utf-8", errors="replace"), metadata=metadata), role)
+                report = parse_result(route["provider"], process.returncode, output,
+                                      error.decode("utf-8", errors="replace"), metadata=metadata, text=not reviewer)
+                if reviewer:
+                    report = validate_report(report)
                 if route["provider"] == "codex":
                     metadata.update(codex_usage(directory / "stdout"))
                 if diagnostics is not None:

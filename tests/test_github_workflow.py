@@ -250,7 +250,7 @@ class LandingFreshnessTests(unittest.TestCase):
         import json
         from pathlib import Path
         from unittest.mock import patch
-        from test_workflow_handoff import selected_route
+        from workflow_fixtures import selected_route
         brief = Path(self.temporary.name) / "recovery-brief.md"
         brief.write_text("Changes: original implementation. Risks: lost acceptance. Validation: true passed; no live proof.")
         report = {"verdict": "PASS", "summary": "Reviewed current implementation and requirements", "findings": []}

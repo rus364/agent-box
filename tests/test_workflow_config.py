@@ -90,17 +90,16 @@ class ConfigShowTests(unittest.TestCase):
 
 
 class WorkflowConfigTests(unittest.TestCase):
-    def test_execution_and_role_models_survive_global_save_and_minimal_runtime(self):
-        """Saved execution and candidate lists reach the container without host secrets."""
+    def test_role_models_survive_global_save_and_minimal_runtime(self):
+        """Saved candidate lists reach the container without host secrets."""
         from agent_box import runtime
         from agent_box.config import load_config, save_config
-        self.assertEqual(Config().workflow.worker.execution, "auto")
         models = [{"provider": "codex", "model": "gpt-5.6-luna", "effort": "high"},
                   {"provider": "claude", "model": "deepseek-v4-flash", "effort": "high", "api_provider": "deepseek"}]
-        for execution in ("auto", "direct", "delegated"):
-            with self.subTest(execution=execution), tempfile.TemporaryDirectory() as directory:
+        for tier in ("1", "3"):
+            with self.subTest(tier=tier), tempfile.TemporaryDirectory() as directory:
                 config = Config.from_dict({"workflow": {"enabled": True,
-                    "worker": {"execution": execution, "tiers": {"3": models[:1]}},
+                    "worker": {"tiers": {tier: models[:1]}},
                     "scout": {"models": models}, "review": {"models": models[::-1]}}})
                 config.notifications.telegram_token = "host-secret"
                 path = Path(directory) / "global.json"
@@ -114,13 +113,11 @@ class WorkflowConfigTests(unittest.TestCase):
                 self.assertNotIn("host-secret", raw)
                 self.assertEqual(Config.from_dict(json.loads(raw)).workflow, config.workflow)
 
-    def test_invalid_execution_and_candidates_cannot_become_defaults(self):
-        """Unknown enums and unusable candidates must fail global and runtime validation."""
+    def test_invalid_candidates_cannot_become_defaults(self):
+        """Unusable candidates must fail global and runtime validation."""
         from agent_box.config import effective_config, load_config
         from agent_box.errors import AgentBoxError
-        cases = [({"worker": {"execution": invalid}}, "workflow.worker.execution")
-                 for invalid in ("invalid", "", " all ", None, True, 1, [], {})]
-        cases += [({"scout": {"models": [{"provider": "gemini", "model": "x"}]}}, "workflow.scout.models.0: provider"),
+        cases = [({"scout": {"models": [{"provider": "gemini", "model": "x"}]}}, "workflow.scout.models.0: provider"),
                   ({"worker": {"tiers": {"2": [{"provider": "codex"}]}}}, "workflow.worker.tiers.2.0: model"),
                   # Malformed entries stay in place so a hand edit cannot silently empty a list.
                   ({"worker": {"models": ["codex:gpt-5.5"]}}, "workflow.worker.models.0: provider"),
@@ -149,16 +146,6 @@ class WorkflowConfigTests(unittest.TestCase):
         rows = shown(config)
         self.assertEqual(rows['workflow.scout.models'], 'codex:gpt-5.6-luna:high, claude@deepseek:v4:high')
         self.assertEqual(rows['workflow.review.models'], '(none)')
-
-    def test_show_marks_only_worker_models_unused_under_direct(self):
-        """Direct reports the active-session source; scout and reviewer lists still apply, so they carry no mark."""
-        config = Config()
-        config.workflow.worker.execution = "direct"
-        rows = shown(config)
-        self.assertEqual(rows['workflow.worker.execution'], 'direct (worker model: active session)')
-        self.assertIn('(unused while execution is direct)', rows['workflow.worker.models'])
-        self.assertIn('(unused while execution is direct)', rows['workflow.worker.tiers'])
-        self.assertNotIn('unused', rows['workflow.scout.models'] + rows['workflow.scout.tiers'])
 
     def test_show_reads_the_runtime_artifact_instead_of_host_defaults(self):
         """A container shows the merge route workflow dispatch uses, and no host section as defaults."""

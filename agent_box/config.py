@@ -630,14 +630,13 @@ def model_tiers(numbers, data=None):
 
 @dataclass
 class WorkerConfig:
-    execution: str = "auto"
     models: list[dict] = field(default_factory=list)
     tiers: dict[str, list] = field(default_factory=lambda: model_tiers(ROLE_TIERS["worker"]))
 
     @classmethod
     def from_dict(cls, data):
         data = _mapping(data)
-        return cls(data.get("execution", "auto"), model_list(data.get("models")),
+        return cls(model_list(data.get("models")),
                    model_tiers(ROLE_TIERS["worker"], data.get("tiers")))
 
 
@@ -749,8 +748,6 @@ class WorkflowConfig:
         errors = []
         if self.merge_mode not in ("github", "local"):
             errors.append("workflow.merge_mode must be github or local")
-        if self.worker.execution not in ("auto", "direct", "delegated"):
-            errors.append("workflow.worker.execution must be auto, direct, or delegated")
         value = self.timeout_seconds
         if not isinstance(value, int) or not math.isfinite(value) or not 30 <= value <= 86400:
             errors.append("workflow.timeout_seconds must be between 30 and 86400")

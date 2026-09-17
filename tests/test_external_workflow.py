@@ -1,5 +1,4 @@
 """API identity must survive routing, preparation and accepted managed evidence."""
-import base64
 import json
 import os
 from pathlib import Path
@@ -11,7 +10,7 @@ from unittest.mock import patch, Mock
 from agent_box import agent_profiles, external_launch, provider_runner, routing, workflow, workflow_state
 from agent_box.errors import AgentBoxError
 from test_external_config import external_config
-import test_workflow_handoff as handoff_tests
+import workflow_fixtures
 
 
 def candidate(provider='codex'):
@@ -56,12 +55,11 @@ class ExternalRoutingTests(unittest.TestCase):
                          patch.object(workflow, 'WORKFLOW_STATE', Path(tmp)), \
                          patch.object(workflow_state, 'WORKFLOW_STATE', Path(tmp)), \
                          patch.object(workflow.shutil, 'which', return_value='/bin/cli'):
-                        route = workflow.route(config, role, tier, cli, cli)
+                        route = workflow.route(config, role, tier, cli)
                     self.assertEqual(route['api_provider'], 'deepseek')
                     self.assertEqual(route['provider'], cli)
                     self.assertTrue(route['managed_only'])
-                    self.assertIsNone(route['native_explicit_settings'])
-                    self.assertFalse(route['native_profile_ready'])
+                    self.assertIsNone(route['native_profile'])
                     self.assertNotIn('private-api-key', json.dumps(route))
                     args = SimpleNamespace(provider=cli, model='external-small', effort='high')
                     with self.assertRaisesRegex(AgentBoxError, 'managed CLI'):
@@ -105,8 +103,6 @@ class ExternalRoutingTests(unittest.TestCase):
         Any other identity still needs one: the child cannot switch endpoints, and a
         report from a session without the prepared identity cannot show where it ran.
         """
-        reports = {'worker': {'status': 'completed', 'summary': 'Done', 'evidence': []},
-                   'reviewer': {'verdict': 'PASS', 'summary': 'Reviewed', 'findings': []}}
         for cli, other in (('codex', 'claude'), ('claude', 'codex')):
             for role, tier, override in [('worker', 1, False), ('scout', 0, False), ('reviewer', 2, False),
                                          ('worker', None, True), ('reviewer', None, True)]:
@@ -120,21 +116,19 @@ class ExternalRoutingTests(unittest.TestCase):
                          patch.object(workflow_state, 'WORKFLOW_STATE', Path(tmp)), \
                          patch.object(workflow.shutil, 'which', return_value='/bin/cli'):
                         configure(policy, role, tier, [candidate(cli), candidate(other)])
-                        route = workflow.route(config, role, tier, cli, cli)
+                        route = workflow.route(config, role, tier, cli)
                         configure(policy, role, tier, [candidate(other), candidate(cli)])
-                        elsewhere = workflow.route(config, role, tier, other, other)
+                        elsewhere = workflow.route(config, role, tier, other)
                     self.assertFalse(route.get('managed_only'))
                     self.assertEqual(route['api_fingerprint'], env[external_launch.FINGERPRINT_ENV])
-                    self.assertEqual(route['native_explicit_settings'],
-                                     {'provider': cli, 'model': 'external-small', 'effort': 'high'})
                     self.assertTrue(elsewhere['managed_only'])
                     self.assertNotEqual(elsewhere['api_fingerprint'], route['api_fingerprint'])
-                    if role not in reports:
+                    if role != 'reviewer':
                         continue
                     path = Path(tmp) / 'report.json'
-                    path.write_text(json.dumps(reports[role]))
+                    path.write_text(json.dumps({'verdict': 'PASS', 'summary': 'Reviewed', 'findings': []}))
                     args = SimpleNamespace(provider=cli, model='external-small', effort='high', role=role,
-                                           file=str(path), fallback_reason=None, fresh_context=True)
+                                           file=str(path), fresh_context=True)
                     with patch.dict(os.environ, env, clear=True):
                         output = workflow.native_output(args, route, tier)
                     self.assertEqual((output['route']['api_provider'], output['route']['api_fingerprint']),
@@ -219,7 +213,7 @@ class ExternalRoutingTests(unittest.TestCase):
     def test_managed_builtin_reverse_call_restores_the_original_auth(self):
         """The managed runner must not send an external API token to the built-in provider."""
         config = external_config()
-        report = {'status': 'completed', 'summary': 'Done', 'evidence': []}
+        report = '## Done\nWorked.'
         with tempfile.TemporaryDirectory() as tmp:
             _, env = external_launch.prepare(['codex'], 'deepseek', 'codex', config, tmp,
                                               {'OPENAI_API_KEY': 'original-key', 'PATH': os.environ['PATH']})
@@ -227,36 +221,28 @@ class ExternalRoutingTests(unittest.TestCase):
                 self.assertEqual(kwargs['env']['OPENAI_API_KEY'], 'original-key')
                 self.assertNotIn(external_launch.API_ENV, kwargs['env'])
                 self.assertNotIn(external_launch.PROVIDER_ENV, kwargs['env'])
-                Path(command[command.index('-o') + 1]).write_text(json.dumps(report))
+                Path(command[command.index('-o') + 1]).write_text(report)
                 return Mock(returncode=0)
             with patch.dict(os.environ, env, clear=True), patch.object(provider_runner.subprocess, 'Popen', side_effect=popen):
                 self.assertEqual(provider_runner.run({'provider': 'codex', 'model': 'native-model', 'effort': 'high'},
                                                       'worker', Path.cwd(), 'work'), report)
 
 
-class ExternalDescriptorTests(unittest.TestCase):
-    def test_prepared_api_survives_managed_execution_and_native_report_is_refused(self):
-        """Exercise the lifecycle descriptor, not just the route dictionary helper."""
-        real_route = workflow.route
-        fixture = handoff_tests.WorkerHandoffTests()
+class ExternalDelegateTests(unittest.TestCase):
+    def test_delegated_worker_runs_its_external_candidate_through_that_api(self):
+        """The candidate's API travels to the managed run; the key stays out of the answer and its metadata."""
+        fixture = workflow_fixtures.WorkflowCase()
         fixture.setUp()
         self.addCleanup(fixture.doCleanups)
         fixture.config.external_providers = external_config().external_providers
         fixture.config.workflow.worker.tiers['1'] = [candidate()]
-        with patch.object(workflow, 'route', side_effect=real_route):
-            prepared = fixture.run_workflow('prepare', '1', '--primary', 'codex')
-        descriptor = json.loads(base64.urlsafe_b64decode(prepared['handoff']))
-        self.assertEqual(descriptor['route']['api_provider'], 'deepseek')
-        self.assertNotIn('private-api-key', json.dumps(descriptor))
-        with self.assertRaisesRegex(AgentBoxError, 'managed CLI'):
-            fixture.run_workflow('report', '1', '--role', 'worker', '--provider', 'codex', '--model', 'external-small',
-                                 '--effort', 'high', '--file', str(fixture.report), '--scope', prepared['scope'],
-                                 '--handoff', prepared['handoff'])
         def run(route, *args, **kwargs):
             self.assertEqual(route['api_provider'], 'deepseek')
-            return {'status': 'completed', 'summary': 'Done', 'evidence': []}
+            return '## Done\nWorked.'
         with patch.object(workflow, 'run', side_effect=run):
-            output = fixture.run_workflow('run', '1', '--handoff', prepared['handoff'], '--brief', str(fixture.review_brief))
-        self.assertEqual(output['route']['api_fingerprint'], descriptor['route']['api_fingerprint'])
+            output = fixture.run_workflow('delegate', '1', '--role', 'worker', '--brief', str(fixture.review_brief))
         self.assertEqual(output['route']['api_provider'], 'deepseek')
-        self.assertEqual(workflow.read_evidence(fixture.root, fixture.task)['worker']['route'], output['route'])
+        self.assertEqual(output['route']['api_fingerprint'],
+                         external_launch.route_identity(fixture.config, 'deepseek', 'codex')['api_fingerprint'])
+        self.assertNotIn('private-api-key', json.dumps(output))
+

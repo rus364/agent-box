@@ -69,7 +69,7 @@ class ConfigMenuTests(unittest.TestCase):
                  'skills', 'notifications'],
             ('workflow',): ['enabled', 'merge_mode', 'auto_push', 'cleanup_local_branches',
                            'cleanup_remote_branches', 'worker', 'scout', 'review', 'timeout_seconds'],
-            ('workflow', 'worker'): ['execution', 'models', 'tiers'],
+            ('workflow', 'worker'): ['models', 'tiers'],
             ('workflow', 'scout'): ['limit', 'models', 'tiers'],
             ('workflow', 'review'): ['policy', 'max_files', 'max_lines', 'sensitive_paths',
                                     'ignored_paths', 'label', 'routing', 'models', 'tiers', 'max_rounds',
@@ -100,10 +100,10 @@ class ConfigMenuTests(unittest.TestCase):
                 screen = Screen(keys, sizes=[size])
                 self.edit(Config(), [], screen=screen)
                 for frame, writes in zip(screen.frames, screen.attributes):
-                    if 'Worker execution' not in frame or 'Models by tier' not in frame:
+                    if 'Models  ' not in frame or 'Models by tier' not in frame:
                         continue
                     columns = [text.index(':') for _, x, text, _ in writes
-                               if x == 0 and re.match(r'(Worker execution|Models|Models by tier) *: ', text)]
+                               if x == 0 and re.match(r'(Models|Models by tier) *: ', text)]
                     self.assertEqual(len(set(columns)), 1)
                 full_help = next(frame for frame in screen.frames if 'Help: workflow.worker.tiers' in frame)
                 self.assertIn('Optional worker', full_help)
@@ -208,71 +208,6 @@ class ConfigMenuTests(unittest.TestCase):
 
     def test_merge_mode_is_an_explicit_menu_choice(self):
         self.assertEqual(config_menu.CHOICES["workflow.merge_mode"], ("github", "local"))
-
-    def test_worker_execution_choices_save_globally_and_as_project_overrides(self):
-        """Execution can be chosen independently while worker models remain inherited."""
-        import curses
-        for project in (None, {}):
-            for steps, execution in enumerate(("auto", "direct", "delegated")):
-                keys = [*select("workflow"), '\n', *select("worker", ("workflow",)), '\n',
-                        *select("execution", ("workflow", "worker")), *[' '] * (steps or 3),
-                        '\x1b', '\x1b', curses.KEY_END, curses.KEY_UP, '\n']
-                with self.subTest(project=project, execution=execution):
-                    result, _ = self.edit(Config(), keys, project=project)
-                    self.assertEqual(result.config.workflow.worker.execution, execution)
-                    if project is not None:
-                        self.assertEqual(result.project, {"workflow": {"worker": {"execution": execution}}})
-
-    def test_muted_worker_models_still_open_and_save_an_edit_under_direct(self):
-        """Muting explains; it must not stop someone preparing worker models for a later switch to delegated."""
-        import curses
-        config = Config()
-        config.workflow.worker.execution = "direct"
-        path = ("workflow", "worker")
-        keys = [*select("workflow"), "\n", *select("worker", path[:1]), "\n", *select("models", path), "\n",
-                "\n", curses.KEY_HOME, "\n", *"gpt-5.5", "\n", "\x1b", "\x1b", "\x1b", curses.KEY_END, curses.KEY_UP, "\n"]
-        result, _ = self.edit(config, keys)
-        self.assertEqual([spec["model"] for spec in result.config.workflow.worker.models], ["gpt-5.5"])
-        self.assertEqual(result.config.workflow.worker.execution, "direct")
-
-    def test_direct_mutes_only_worker_models_under_one_note(self):
-        """Direct bypasses only worker model selection; scout and reviewer lists still apply."""
-        import curses
-
-        def dim_edit(config, keys):
-            # Without initscr curses.termattrs raises curses.error, which is the no-dim fallback below.
-            with patch.object(curses, "termattrs", return_value=curses.A_DIM):
-                return self.edit(config, keys, screen=Screen(keys, sizes=[(40, 160)]))
-
-        note = "-- unused while execution is direct --"
-        keys = [*select("workflow"), "\n", *select("worker", ("workflow",)), "\n",
-                *select("models", ("workflow", "worker")), "\x1b", "\x1b", "\x1b"]
-
-        def rows(screen, prefix):
-            return [attr for _, x, text, attr in screen.writes if x == 0 and text.startswith(prefix)]
-
-        config = Config()
-        config.workflow.worker.execution = "direct"
-        _, screen = dim_edit(config, keys)
-        rendered = "\n".join(screen.frames)
-        self.assertEqual(max(frame.count(note) for frame in screen.frames), 1)
-        self.assertNotIn("(unused)", rendered)
-        for muted in ("Models  ", "Models by tier"):
-            self.assertTrue(rows(screen, muted))
-            self.assertTrue(all(attr & curses.A_DIM for attr in rows(screen, muted)))
-        self.assertFalse(any(attr & curses.A_DIM for attr in rows(screen, "Worker execution")))
-        help_text = " ".join(" ".join(text for _, x, text, _ in screen.writes if x > 80).split())
-        self.assertIn("The value is kept and applies again under auto or delegated execution.", help_text)
-
-        _, screen = self.edit(config, keys, screen=Screen(keys, sizes=[(40, 160)]))
-        self.assertIn(note, "\n".join(screen.frames))
-        self.assertTrue(any(text.startswith("Models") and "(unused)" in text for _, _, text, _ in screen.writes))
-
-        config.workflow.worker.execution = "auto"
-        _, screen = dim_edit(config, keys)
-        rendered = "\n".join(screen.frames)
-        self.assertNotIn(note, rendered)
-        self.assertNotIn("(unused)", rendered)
 
     def edit(self, config, keys, choices=(), link=None, screen=None, project=None, catalogs=None):
         import curses

@@ -44,11 +44,10 @@ class RoutingTests(unittest.TestCase):
              patch.object(workflow, "usage_snapshot", return_value={}):
             route = workflow.route(config, "scout", 0, "claude")
         self.assertEqual((route["provider"], route["model"], route["managed_only"]), ("codex", "gpt-5.6-luna", True))
-        self.assertIsNone(route["native_explicit_settings"])
         self.assertIn("claude session cannot run a native codex agent", route["native_limitation"])
         fallback = route["fallbacks"][0]
         self.assertFalse(fallback.get("managed_only"))
-        self.assertEqual(fallback["native_explicit_settings"], {"provider": "claude", "model": "haiku", "effort": "low"})
+        self.assertEqual(fallback["native_profile"], "ab-scout-0")
 
     def test_the_first_candidate_wins_and_the_rest_are_ordered_fallbacks(self):
         c = WorkflowConfig()

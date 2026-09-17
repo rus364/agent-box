@@ -248,17 +248,17 @@ only model aliases, which `ext` maps to the session model, and the session's
 `CLAUDE_CODE_EFFORT_LEVEL` overrides a profile's effort; a Claude candidate whose
 model or effort differs from the session's uses managed CLI.
 
-`managed_only` routes return a managed command and refuse native reports. Owned
-native profiles are removed for external candidates when configuration is
-applied. Existing role contracts, structured report validation, review budgets
-and fallback rules still apply. Candidate order keeps its meaning; subscription
+`managed_only` reviewer routes return a managed command and refuse native
+reports; `workflow delegate` always runs a managed process, so a worker or
+scout reaches its candidate's API either way. Owned native profiles are removed
+for external candidates when configuration is applied. Existing role contracts,
+reviewer report validation, review budgets and fallback rules still apply. Candidate order keeps its meaning; subscription
 usage and exhaustion are ignored for external candidates.
 Subscription fast mode is unsupported for external workflow candidates.
 
-Direct worker policy still means work in the active coordinator session; it
-does not consult model candidates. Untiered delegated work from an external
-session needs verified `--session-model` and `--session-effort`, or configured
-role models. See [workflow models](workflow.md#models-and-routing).
+Untiered review from an external session needs verified `--session-model` and
+`--session-effort`, or configured reviewer models. See
+[workflow models](workflow.md#models-and-routing).
 
 ## API and Remote Control boundaries
 

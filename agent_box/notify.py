@@ -453,36 +453,30 @@ def telegram_send_plain_report(
 
 
 def format_protocol_report(detail: str) -> str:
-    """Render known reports for notifications without changing the wire contract.
+    """Render a reviewer's JSON report for notifications without changing the wire contract.
 
     Validate with the protocol's own rules so unrelated JSON and reports with
     unknown fields stay intact instead of losing content to partial rendering.
+    Workers and scouts already answer in Markdown.
     """
     from .provider_runner import ProviderFailure, validate_report
 
     try:
-        report = json.loads(detail)
-        role = "reviewer" if isinstance(report, dict) and "verdict" in report else "worker"
-        validate_report(report, role)
+        report = validate_report(json.loads(detail))
     except (ValueError, RecursionError, ProviderFailure):
         return detail
-    if role == "reviewer":
-        parts = [f"**Verdict:** {report['verdict']}", report["summary"]]
-        for index, finding in enumerate(report["findings"], 1):
-            location = _escape_markdown_inline(f"{finding['path']}:{finding['line']}")
-            parts.extend([
-                f"### Finding {index}",
-                f"**Severity:** {_escape_markdown_inline(finding['severity'])}",
-                f"**Location:** {location}", finding["message"],
-                "**Evidence:**", finding["evidence"],
-                "**Requirement:**", finding["requirement"],
-            ])
-        if not report["findings"]:
-            parts.append("No findings reported.")
-    else:
-        parts = [f"**Result:** {report['status']}", report["summary"]]
-        for index, evidence in enumerate(report["evidence"], 1):
-            parts.extend([f"### Evidence {index}", evidence])
+    parts = [f"**Verdict:** {report['verdict']}", report["summary"]]
+    for index, finding in enumerate(report["findings"], 1):
+        location = _escape_markdown_inline(f"{finding['path']}:{finding['line']}")
+        parts.extend([
+            f"### Finding {index}",
+            f"**Severity:** {_escape_markdown_inline(finding['severity'])}",
+            f"**Location:** {location}", finding["message"],
+            "**Evidence:**", finding["evidence"],
+            "**Requirement:**", finding["requirement"],
+        ])
+    if not report["findings"]:
+        parts.append("No findings reported.")
     return "\n\n".join(parts)
 
 

@@ -124,18 +124,18 @@ class SessionPrecedenceTests(IsolatedLaunchTest):
             runtime.launch_config(LaunchOptions(overrides={"notify": True}))
 
     def test_config_show_names_the_session_options(self):
-        _, snapshot = self.launch(workflow_config(), {"execution": "direct", "push": False})
+        _, snapshot = self.launch(workflow_config(), {"worker": "codex:gpt-5.5:high", "push": False})
         with patch.dict(os.environ, {"AGENT_BOX_RUNTIME_CONFIG": str(snapshot)}), \
              patch.object(cli, "_image_note", return_value=""), \
              patch.object(cli, "_statusline_note", return_value=""), \
              contextlib.redirect_stdout(io.StringIO()) as output:
             cli.config_show()
-        self.assertIn("Session options: --worker direct --no-push", output.getvalue())
+        self.assertIn("Session options: --no-push --worker codex:gpt-5.5:high", output.getvalue())
 
     def test_options_that_need_a_disabled_integration_are_refused(self):
         for config, overrides, message in (
                 (Config(), {"review": "always"}, "--review needs workflow"),
-                (workflow_config(), {"workflow": False, "execution": "direct"}, "drop --no-workflow"),
+                (workflow_config(), {"workflow": False, "rounds": 2}, "drop --no-workflow"),
                 (workflow_config(), {"tracker": "https://tasks.example", "workflow": False}, "contradict --no-workflow"),
                 (Config(), {"project": "12"}, "--project needs the tracker"),
                 (workflow_config(), {"tracker": "https://tasks.example"}, "--tracker needs the tracker"),
@@ -167,9 +167,9 @@ class SessionPrecedenceTests(IsolatedLaunchTest):
         launch.assert_not_called()
 
     def test_describe_spells_overrides_as_the_flags_that_set_them(self):
-        self.assertEqual(launch_options.describe({"execution": "direct", "push": False, "gh-token": True,
+        self.assertEqual(launch_options.describe({"worker": "codex:gpt-5.5:high", "push": False, "gh-token": True,
                                                   "rounds": 4, "notify": False}),
-                         "--worker direct --no-push --gh-token --rounds 4 --no-notify")
+                         "--worker codex:gpt-5.5:high --no-push --gh-token --rounds 4 --no-notify")
 
 
 class PinnedRouteTests(unittest.TestCase):

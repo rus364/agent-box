@@ -98,7 +98,7 @@ class ReviewRoutingTests(unittest.TestCase):
                          patch.object(workflow.shutil, "which", side_effect=lambda p: None if p == writer and missing == "executable" else p), \
                          patch.object(workflow, "run") as run:
                         with self.assertRaisesRegex(AgentBoxError, "No allowed reviewer"):
-                            route = workflow.route(Config(workflow=config), "reviewer", 2, other, writer)
+                            route = workflow.route(Config(workflow=config), "reviewer", 2, writer)
                             workflow.execute(config, route, "reviewer", Path(directory), "test")
                         run.assert_not_called()
 

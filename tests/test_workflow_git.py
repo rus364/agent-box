@@ -98,7 +98,8 @@ class WorkflowGitTests(unittest.TestCase):
             self.assertIn("sensitive path agent_box/api/handler.py matches **/api/**",
                           review_reasons(config, [Task("1", "1", "Task")], files, lines))
 
-    def test_native_worker_report_accepts_its_code_changes_but_reviewer_report_does_not(self):
+    def test_reviewer_report_is_refused_once_working_files_change(self):
+        """A reviewer reads a committed scope; an uncommitted edit blocks applying its verdict."""
         from unittest.mock import Mock, patch
         from agent_box import workflow
         from agent_box.config import Config
@@ -116,38 +117,28 @@ class WorkflowGitTests(unittest.TestCase):
             adapter = Mock()
             adapter.get.return_value = task
             adapter.identity.return_value = {"id": 1}
-            route = {"fast": False, "provider": "claude", "tier": 1, "role": "worker", "model": "exact-model", "effort": "high", "fallbacks": []}
-            info = {"branch": "ab/task", "base": "main", "writer": "codex"}
+            route = {"fast": False, "provider": "claude", "tier": 1, "role": "reviewer", "model": "exact-model", "effort": "high", "fallbacks": []}
+            info = {"branch": "ab/task", "base": "main"}
             report = Path(temporary) / "report.json"
-            report.write_text(json.dumps({"status": "completed", "summary": "Implemented", "evidence": ["Changed code"]}))
+            report.write_text(json.dumps({"verdict": "PASS", "summary": "Reviewed", "findings": []}))
             brief = Path(temporary) / "review-brief.md"
             brief.write_text("Changes/reasons: code change. Risks: values. Validation: static only; no live proof.\n")
+            (root / "change.py").write_text("value = 1\n")
+            subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "change"], cwd=root, check=True, capture_output=True)
             with patch.object(workflow, "effective_config", return_value=config), patch.object(workflow, "repository_root", return_value=root), \
                  patch.object(Binding, "load", return_value=Binding("vikunja", "https://tasks.example", "1")), \
                  patch.object(workflow, "make_adapter", return_value=adapter), \
-                 patch.object(workflow, "resolve", return_value=(task, info, info, "main")), \
+                 patch.object(workflow, "resolve", return_value=(task, info, {}, "main")), \
                  patch.object(workflow, "route", return_value=route), patch.object(workflow, "WORKFLOW_STATE", Path(temporary) / "state"):
-                prepared = workflow.dispatch(workflow.parser().parse_args(["prepare", "1", "--primary", "codex", "--reason", "Git fixture", "--brief", str(brief)]))
-                (root / "change.py").write_text("value = 1\n")
-                result = workflow.dispatch(workflow.parser().parse_args(["report", "1", "--role", "worker", "--primary", "codex", "--provider", "claude", "--model", "exact-model", "--effort", "high", "--fast", "off", "--file", str(report), "--scope", prepared["scope"], "--handoff", prepared["handoff"]]))
-                self.assertEqual(result["route"]["provider"], "claude")
-                # The writer is local evidence; nothing about it reaches the tracker.
-                self.assertEqual(workflow.read_evidence(root, task)["writer"], "claude")
-                adapter.comment.assert_not_called()
-                workflow.dispatch(workflow.parser().parse_args(["writer", "1", "--provider", "codex", "--reason", "Coordinator fix"]))
-                self.assertEqual(workflow.read_evidence(root, task)["writer"], "codex")
-                writer = workflow.read_evidence(root, task)["writer"]
-                from agent_box.routing import select
-                config.workflow.review.tiers["1"] = [{"provider": provider, "api_provider": "", "fast": False, "model": provider + "-model", "effort": "high"} for provider in ("codex", "claude")]
-                self.assertEqual(select(config.workflow, "reviewer", 1, "codex", writer=writer)["provider"], "claude")
-                subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
-                subprocess.run(["git", "commit", "-m", "change"], cwd=root, check=True, capture_output=True)
                 prepared = workflow.dispatch(workflow.parser().parse_args([
                     "prepare", "1", "--role", "reviewer", "--primary", "codex", "--brief", str(brief)]))
                 (root / "change.py").write_text("value = 2\n")
-                from agent_box.errors import AgentBoxError
-                with self.assertRaises(AgentBoxError):
-                    workflow.dispatch(workflow.parser().parse_args(["report", "1", "--role", "reviewer", "--primary", "codex", "--provider", "claude", "--model", "exact-model", "--effort", "high", "--fast", "off", "--file", str(report), "--scope", prepared["scope"], "--handoff", prepared["handoff"]]))
+                result = workflow.dispatch(workflow.parser().parse_args(["report", "1", "--role", "reviewer", "--primary", "codex", "--provider", "claude", "--model", "exact-model", "--effort", "high", "--fresh-context", "--file", str(report), "--scope", prepared["scope"], "--handoff", prepared["handoff"]]))
+                self.assertEqual(result["reconciliation"]["status"], "blocked")
+                self.assertIn("working_tree", result["reconciliation"]["changes"])
+                self.assertNotIn("review", workflow.read_evidence(root, task))
+                adapter.comment.assert_not_called()
 
     def test_origin_identity_follows_the_url_rewrite_a_push_would_follow(self):
         """`insteadOf` makes `remote.origin.url` and the real destination differ.

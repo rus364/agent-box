@@ -34,15 +34,12 @@ def select(config, role, tier, primary, usage=None, *, now=None, writer=None, av
     pinned = role in config.pins
     if tier is None and not models:
         raise AgentBoxError("Tier 0 is reserved for scouts; workers and reviewers require tier 1-3")
-    if primary not in AGENT_PROVIDERS:
-        raise AgentBoxError("Specify the primary provider: codex or claude")
     now = time.time() if now is None else now
     usage = usage or {}
     available = set(AGENT_PROVIDERS if available is None else available)
     allowed = [spec for spec in models if spec["provider"] in available]
     if not allowed and models:
         raise AgentBoxError(f"No configured candidate in {path} has its CLI installed here")
-    writer = writer or primary
     if not pinned:
         # A pin names its model outright; a list skips a known exhausted subscription window.
         usable = [spec for spec in allowed if spec.get("api_provider") or not any(
@@ -55,8 +52,10 @@ def select(config, role, tier, primary, usage=None, *, now=None, writer=None, av
         order = allowed
         reason = f"Pinned for this session by --{role}"
     elif role == "reviewer":
+        # Until reviewers take their list's first candidate, the session provider stands in for the writer.
+        writer = writer or primary
         if writer not in AGENT_PROVIDERS:
-            raise AgentBoxError("Reviewer routing requires the actual writer provider")
+            raise AgentBoxError("Specify the primary provider: codex or claude")
         own = [spec for spec in allowed if spec["provider"] == writer]
         if config.review.routing == "same-provider":
             order = own

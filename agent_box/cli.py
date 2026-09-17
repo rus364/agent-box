@@ -259,15 +259,10 @@ def _show_notes(config) -> dict[str, str]:
     so a new setting appears in ``config show`` without code here; the
     rejected alternative, one print per field, silently lost fields.
     """
-    direct = config.workflow.worker.execution == "direct"
     notes = {
         "claude.statusline.enabled": _statusline_note(config),
         "image.tools": _image_note(config),
         "browser.enabled": _browser_note(config),
-        "workflow.worker.execution": " (worker model: active session)" if direct else "",
-        # Only worker candidates lose their consumer; scout and reviewer lists still apply.
-        "workflow.worker.models": "  (unused while execution is direct)" if direct else "",
-        "workflow.worker.tiers": "  (unused while execution is direct)" if direct else "",
         "workflow.auto_push": (" (accepted base after local merge)" if config.workflow.merge_mode == "local"
                                else " (parent task branch after subtask integration)"),
     }

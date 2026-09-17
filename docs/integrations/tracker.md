@@ -110,8 +110,8 @@ task content.
 Task content uses its language. Markdown checkboxes represent evidenced progress;
 only independent review can provide review acceptance. The coordinator is the
 only writer of the tracker: requirements, lifecycle, assignees, relations,
-progress comments and checkboxes. A worker changes project files and reports
-back; reviewers and scouts only read. That is a contract, not credential
+progress comments and checkboxes. A worker changes project files and answers
+the coordinator; reviewers and scouts only read. That is a contract, not credential
 isolation, and it is the same for a native subagent and a managed CLI run.
 
 ## Product extensions

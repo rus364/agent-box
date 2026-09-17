@@ -100,29 +100,3 @@ def sync(config, codex_home, claude_home):
                 atomic_write_text(path, content, 0o644)
                 atomic_write_text(marker, hashlib.sha256(content.encode()).hexdigest() + "\n", 0o644)
     return messages
-
-
-def available(provider, role, tier, spec):
-    """Inspect the installed profile only; the coordinator checks the live tool.
-
-    Project/custom agents can shadow this file and explicit spawn can work
-    without it. Neither capability is discoverable from the host profile.
-    """
-    import os
-    from .paths import CODEX_HOME, CLAUDE_HOME
-    # A native subagent may inherit the coordinator's effort when its profile
-    # omits the field, so only the managed CLI can promise the configured default.
-    if (spec.get("api_provider") or os.environ.get("AGENT_BOX_API_PROVIDER") or
-            spec["effort"] == "default" or native_limitation(provider, spec.get("fast", False))):
-        return False
-    if provider == "claude" and (os.environ.get("CLAUDE_CODE_SAFE_MODE") or
-            os.environ.get("CLAUDE_CODE_SUBAGENT_MODEL_FORCE") or
-            os.environ.get("CLAUDE_CODE_SUBAGENT_MODEL", spec["model"]) != spec["model"] or
-            os.environ.get("CLAUDE_CODE_EFFORT_LEVEL", spec["effort"]) != spec["effort"]):
-        return False
-    home = CODEX_HOME if provider == "codex" else CLAUDE_HOME
-    path = home / "agents" / (f"ab-{role}-{tier}" + (".toml" if provider == "codex" else ".md"))
-    try:
-        return not path.is_symlink() and path.read_text() == content_for(provider, role, tier, spec)
-    except OSError:
-        return False

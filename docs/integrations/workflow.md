@@ -51,74 +51,86 @@ prevents claiming that an already-integrated child began without commits.
 The coordinator is the only writer. It alone writes tracker requirements,
 lifecycle state, assignees, relations and dependencies, progress comments and
 checkboxes; it alone creates branches, commits and pushes; it alone touches
-GitHub, pull requests and merges. The coordinator may also do tiny work itself.
-Larger tasks use explicit English handoffs; tracker comments and descriptions
-use the task's language.
+GitHub, pull requests and merges. Tracker comments and descriptions use the
+task's language; everything handed to an agent is English.
 
-A worker reads its task and the repository, changes project files in the working
-tree, and returns a structured report. It never commits, pushes, switches or
-creates a branch, never writes the tracker, and never writes GitHub. Progress
-and evidence travel back in the report, and the coordinator decides from it what
-to record. Reviewers and scouts are read-only: they change no project file and
-no tracker, Git or GitHub state either, and return English reports. Scouts report facts, sources and uncertainty; reviewers
-return violated-requirement findings for the coordinator to journal and reconcile. A checkbox is not a PASS.
+A worker reads its brief and the repository, changes project files in the working
+tree, and answers in Markdown. It never commits, pushes, switches or creates a
+branch, never writes the tracker, and never writes GitHub. Scouts are read-only
+and answer with facts, sources and uncertainty. Reviewers are read-only and return
+violated-requirement findings for the coordinator to journal and reconcile. A
+checkbox is not a PASS.
 
 A native subagent of the coordinator's session and a managed `codex exec` /
 `claude -p` run share exactly this logical contract. It is a contract boundary,
 not credential isolation - a native delegation inherits the coordinator's
 workspace, `.git` and credentials - so neither backend gets private
-restrictions, and what follows a worker report is detection of an obvious
-contract violation rather than a perimeter. Five cheap facts are compared
-against what the delegation was prepared with: the repository checkout and its
-tracker binding, the branch, HEAD, the tip of the branch a subtask integrates
-into, and that the task is still Doing and assigned to the coordinator's own
-user. There is no digest of the ref store, the requirements or the task tree.
-Accepting a worker report also drops any validation or review acceptance
-recorded before it, so a later PASS always describes code the worker actually
-left behind; acceptance is retired when the delegation starts as well, so a
-worker that fails or never answers leaves no stale PASS standing.
+restrictions.
 
 Tracker comments carry no workflow state at all. Branch, base and pull request
-come from Git and GitHub, lifecycle comes from the tracker's own fields, and the
-provider that actually wrote the code is local evidence.
+come from Git and GitHub, and lifecycle comes from the tracker's own fields.
 
-`prepare` returns a `handoff` descriptor: plain, readable JSON, deliberately not
-treated as unforgeable and not a security token. It ties a later report to the
-repository, tracker project, task, scope, role, tier and route the delegation
-was prepared for, so the coordinator cannot ingest a report against the wrong
-one of several delegations in flight. The coordinator holds the descriptor and
-passes it back to `report --handoff`; each delegation needs its own `prepare`.
+### Workers and scouts
 
-Claude workers and reviewers run with `--safe-mode`, which is what keeps the
-context free of the user's hooks, skills, MCP servers and agents - and which also
-disables CLAUDE.md discovery. The repository's own `AGENTS.md` and `CLAUDE.md`
-therefore travel completely in `delegate_handoff` (or its mandatory review evidence),
-together with instructions to read nested files and @path imports relative to the
-checkout source. Read errors and invalid UTF-8 fail explicitly; text is not silently
-truncated. Symlinked instruction files are excluded with an explicit limitation.
+Small bounded edits are the coordinator's own work: commit, validate, review by
+policy; nothing else is recorded. For a separate implementation assignment or a
+bounded research question the coordinator either spawns a native subagent itself
+(its profile sets the model) or launches a managed one:
 
-For every role, `prepare --brief FILE` and managed execution compose the same
-`delegate_handoff`: one UTF-8 English assignment, role report schema, repository
-instructions and backend-neutral `context_policy`. The coordinator translates current
-Goal/Acceptance/Validation faithfully, adds only necessary technical context, and keeps
-tracker text in its original language. Review includes labeled normative source
-evidence; worker/scout input does not repeat raw task descriptions or task trees.
-Delegated worker and scout preparation require a brief; scout preparation also requires a separate `--question "ONE QUESTION"` (one nonempty line, at most 500 characters).
-Never send the full prepare result, descriptor, parent transcript, tracker comments
-or previous-agent history to a delegate. Reports are English, with role-specific fields.
+```bash
+agent-box workflow delegate TASK --role worker --brief /tmp/brief.md
+agent-box workflow delegate TASK --role scout --brief /tmp/question.md
+```
 
-One new delegation requires one new context. Clarifications and ordinary file edits
-stay with the active worker; changed files/hashes alone do not create a delegation.
-New scope or task, work after completion (including review fixes), and every reviewer
-verdict require a new instance. Untiered direct coordinator work is not a delegation.
-Codex native explicitly passes `fork_turns="none"` or a verified equivalent
-(`fork_context=false` in `multi_agent_v1`); omitted
-inheritance, `all` and reuse of completed agents violate the contract. Claude native
-requires a verified equivalent through the available interface; unknown support uses
-managed execution. Prefer native when route and context requirements are supported;
-reviewer provider order takes precedence over native preference.
-Capabilities and actual calls are evidence, not independent attestation of hidden
-context; a missing full-context receipt alone does not prohibit native.
+`delegate` takes the role's first available candidate (see
+[models and routing](#models-and-routing)), runs it once as a fresh managed CLI
+process and prints its Markdown answer on stdout. The route, token usage and the
+path of a private copy of the answer follow on stderr as one JSON line. The prompt
+asks for `## Done`, `## Evidence` and `## Limitations`; nothing parses the answer.
+A failure prints JSON naming each tried candidate's category and the path of its
+private diagnostic. Workflow records nothing about the run and checks nothing
+afterwards, so editing the task card, committing or validating while a delegate
+works affects no later command.
+
+A managed worker needs the task branch checked out and holds the local work lock,
+so validation cannot run under it. A worker failure other than an unavailable CLI
+or model never falls back to another candidate, because files may already have
+changed. Managed scouts may overlap up to `workflow.scout.limit` (default 3),
+counted by per-repository slot locks that a finished or killed process releases;
+the coordinator counts its own native scouts. With no candidate configured for the
+role, `delegate` refuses and the coordinator runs a native subagent instead.
+
+The brief is a compact English file outside the working tree: goal, scope and
+relevant paths, decisions and limitations, and for a scout its one question. Never
+pass conversation, tracker comments or other agents' history. Every assignment gets
+a fresh agent. The coordinator verifies the answer against the code, commits what
+it accepts and reverts the rest.
+
+Claude managed runs use `--safe-mode`, which keeps the context free of the user's
+hooks, skills, MCP servers and agents - and also disables CLAUDE.md discovery. The
+repository's own `AGENTS.md` and `CLAUDE.md` therefore travel completely in the
+prompt (or a reviewer's mandatory evidence), together with instructions to read
+nested files and @path imports. Read errors and invalid UTF-8 fail explicitly; text
+is not silently truncated. Symlinked instruction files are excluded with an
+explicit limitation.
+
+### Reviewer rounds
+
+`prepare --role reviewer` returns a `handoff` descriptor: plain, readable JSON,
+deliberately not treated as unforgeable and not a security token. It ties a later
+report to the repository, tracker project, task, scope, role, tier and route the
+round was prepared for; the coordinator passes it back to `report --handoff`. The
+round's `delegate_handoff` points at one read-only input with the reviewer report
+schema, repository instructions and labeled normative source evidence.
+
+Every reviewer verdict requires a new instance. Codex native explicitly passes
+`fork_turns="none"` or a verified equivalent (`fork_context=false` in
+`multi_agent_v1`); omitted inheritance, `all` and reuse of completed agents violate
+the contract. Claude native requires a verified equivalent through the available
+interface; unknown support uses managed execution. Reviewer provider order takes
+precedence over native preference. Capabilities and actual calls are evidence, not
+independent attestation of hidden context; a missing full-context receipt alone
+does not prohibit native.
 
 Successful managed runs return optional `diagnostics.usage` and `total_cost_usd`
 through workflow output; native and unavailable counters remain null. Codex turn
@@ -140,12 +152,12 @@ role's `models` for that tier; an empty tier list, or work without a tier, uses
 The first available candidate runs and the rest are ordered fallbacks. A candidate
 is unavailable when its CLI is not installed or, for a subscription model with a
 fallback behind it, a known usage window is exhausted with a future reset. Which
-CLI coordinates never filters the list: a Claude session runs a Codex scout, and a
-Codex session a Claude worker, as a managed `codex exec` / `claude -p` process.
-Such a route is `managed_only` and `native_limitation` says why; native reports
-for it are refused. A candidate of the session's own CLI may run natively. A
-candidate on the active `ext` session's own API may run natively; other API
-identities run managed (see [external providers](external-providers.md#workflow)).
+CLI coordinates never filters the list: `workflow delegate` runs a Codex scout from
+a Claude session, and a Claude worker from a Codex session, as a managed
+`codex exec` / `claude -p` process. In a prepared reviewer route such a candidate is
+`managed_only` and `native_limitation` says why; native reports for it are refused.
+A reviewer candidate of the session's own CLI, or on the active `ext` session's own
+API, may run natively; other API identities run managed (see [external providers](external-providers.md#workflow)).
 
 The lists are edited in the configuration menu (add, reorder, change effort or
 fast, remove; the picker offers every CLI's models together), shown in
@@ -158,42 +170,6 @@ for facts, scouting and structuring; task difficulty remains 1-3, represented in
 Vikunja by one `ab:tier:1`, `ab:tier:2` or `ab:tier:3` label. A user-set task tier
 wins over a coordinator suggestion. Each subtask may have its own explicit tier. Without a task tier, no assessment or label is required for readiness, audit, claim, validation, review or completion; malformed/conflicting explicit labels remain invalid. An explicit `--tier` invocation override selects configured routing when the card has no tier and never changes its labels.
 
-Worker execution is decided before provider/model routing. Direct work is the
-coordinator's own edit in the active session and creates no order, descriptor or
-report: edit, commit, record
-`agent-box workflow writer TASK --provider ACTUAL --reason "Small bounded edit"`,
-then continue to `validate` and review. Editing the task text or committing
-before recording blocks nothing; validation and review of the committed scope
-are the acceptance. Direct keeps the active provider/model/effort even when the
-task has a tier or worker models are configured, and never consults candidate lists
-or profiles. Delegation is prepared with
-`agent-box workflow prepare TASK --primary PROVIDER --reason "Separate implementation assignment" --brief /tmp/brief.md`;
-for an untiered delegation supply verified `--session-model MODEL --session-effort EFFORT`
-together, or inherit unknown settings. In auto policy both commands require the
-reason, one non-empty line of at most 500 characters; forced direct/delegated
-policies supply it and refuse the other command.
-
-A delegation's durable descriptor binds policy, effective choice, reason, task scope
-and route. `workflow inspect TASK` exposes the latest execution evidence, the direct
-record or the descriptor, and its model source:
-`active-session`, `--worker`, `workflow.worker.models`, or `workflow.worker.tiers.N`.
-Later configuration changes cannot reschedule prepared work. Native delegation
-uses the complete bounded `delegate_handoff`; managed execution uses the returned
-`managed_command`: `agent-box workflow run TASK --handoff DESCRIPTOR --brief /tmp/brief.md`
-(repeat a supplied `--tier`). It consumes the same assignment and route once.
-Never replace an active delegated worker; late, repeated or mismatched reports fail.
-
-Direct work escalates to delegation at a clean checkpoint: commit the edits, then
-prepare. Preparation on a dirty tree fails without changing files; it never
-stashes, resets or adopts them, and it retires validation/review acceptance.
-While a delegation is prepared, `workflow writer` refuses direct work until the
-report is ingested or the order is cancelled.
-
-Every `prepare` result also returns `report_command`, an exact role/tier/scope
-template for native result ingestion. Replace the ACTUAL route values, descriptor
-and report path with observed execution facts; native worker/scout fallback also
-supplies its reason. Reviewer provider fallback requires managed dispatch.
-
 When no reviewer list applies (untiered work and empty `workflow.review.models`), review uses the active session provider/model/effort in an independent
 fresh read-only context, even when explicit-tier review routing prefers another
 provider. Without exact session facts, `review` returns
@@ -205,13 +181,12 @@ The flags affirm preserved settings and independent context; they do not turn
 an action, silence or provider error into PASS. If inheritance cannot be
 ensured, obtain verified session facts before running a reviewer.
 
-When both actual settings are known, `prepare`, `run` and `review` accept
+When both actual settings are known, `prepare` and `review` accept
 `--session-model MODEL --session-effort EFFORT`. Values must come from the active
 session, not configured profiles; models outside every candidate list are valid.
 With those facts, managed untiered review launches a fresh CLI with that exact
 provider/model/effort and no fallback. Native reports must match the prepared
-concrete settings and affirm `--fresh-context` for review. For inherited worker
-reports, use `--session-inherited` and omit unknown model/effort. Independent
+concrete settings and affirm `--fresh-context` for review. Independent
 review and validation/finish gates remain required by policy; SKIPPED is
 resolved before asking for session settings.
 
@@ -225,11 +200,11 @@ remove server-side lag.
 Set `workflow.review.routing` in `agent-box config` under workflow / review:
 
 - **cross-provider** (default): use the first available candidate of the other
-  provider than the **actual writer**, then the writer's own candidates in fresh
-  context only when the other provider's are unavailable.
-- **same-provider**: use only the actual writer provider's candidates in fresh context.
-  An unavailable writer executable, no writer candidate or provider failure
-  stops review without calling the other provider.
+  provider than the **session's** (`--primary`), then the session provider's own
+  candidates in fresh context only when the other provider's are unavailable.
+- **same-provider**: use only the session provider's candidates in fresh context.
+  An unavailable executable, no such candidate or provider failure stops review
+  without calling the other provider.
 
 Reviewer candidates come from `workflow.review` alone; worker lists and usage do
 not select reviewers. Routing changes neither review policy nor worker/scout
@@ -244,13 +219,7 @@ and invalid reports stop review for diagnosis. Unusable backups do not block the
 before timeout and review verdicts never justify switching provider. Missing CLIs
 and explicitly empty models may exclude candidates during route preparation.
 
-### Worker execution and role models
-
-In `agent-box config`, workflow / worker separates execution from model selection.
-`workflow.worker.execution` accepts `auto` (default), `direct` or `delegated`.
-Auto requires an explicit coordinator choice and reason; forced policies determine
-the choice. Direct bypasses model selection, so worker lists are shown as unused
-under direct and apply again under auto or delegated.
+### Role models
 
 | Worker or reviewer work | Candidates |
 | --- | --- |
@@ -258,7 +227,7 @@ under direct and apply again under auto or delegated.
 | Effective tier with a nonempty tier list | `tiers.N` |
 | Effective tier with an empty tier list | `models` |
 | No effective tier, nonempty `models` | `models` |
-| No effective tier, empty `models` | Active session |
+| No effective tier, empty `models` | Reviewer: active session; `delegate` refuses |
 
 Scouts always run at a tier (0 unless given) and follow the same first three rows.
 The effective tier remains the card's tier, otherwise explicit `--tier`, otherwise
@@ -268,28 +237,22 @@ to a lower tier, to the session, or to another role's list.
 `agent-box --reviewer SPEC` pins one reviewer for a session, whatever routing and
 tiers say; `--worker SPEC` and `--scout SPEC` pin those roles.
 
-`prepare` returns the selected route for native execution; `run --handoff` and
-`review` execute it through managed CLI. A new worker `run` applies the same
-execution policy and reason rule as prepare. Reports record actual
-provider/model/effort against the prepared route, including permitted fallback
-candidates and their reasons, even if configuration changes later. Running
-workers are not rescheduled. Untiered work has no native tier profile: use
-supported explicit native model/effort settings, or managed CLI if capabilities
-are unknown or effort is `default`; omitting native effort can inherit a session
-override. For tiered work, profile readiness still requires an exact match to the
-chosen candidate. Every reviewer still needs a fresh independent context, and an
-unsupported model is an error, not permission to guess a cheaper one.
+`workflow delegate` and `review` execute the selected route through managed CLI;
+`prepare --role reviewer` returns it for native execution. Untiered review has no
+native tier profile: use supported explicit native model/effort settings, or
+managed CLI if capabilities are unknown or effort is `default`; omitting native
+effort can inherit a session override. Every reviewer still needs a fresh
+independent context, and an unsupported model is an error, not permission to guess
+a cheaper one.
 
-A project can replace execution or any role list in `.agent-box.json` without
+A project can replace any role list in `.agent-box.json` without
 changing the global configuration; a project list replaces the global list whole.
 
 `config apply` installs owned native agent profiles with exact model/effort: for each
 role, tier and CLI, the first candidate of that CLI on its built-in API.
-Native execution has two options: an exact available profile, or explicit spawn
-parameters supported by the current tool without an overriding custom agent.
-`native_profile_ready` checks only the installed profile; false does not forbid
-explicit spawn. Each candidate's `native_explicit_settings` lists required
-provider/model/effort, not discovered capabilities or proof of execution.
+A native subagent can use that exact profile, or explicit spawn parameters
+supported by the current tool without an overriding custom agent; an installed
+profile is a convenience, not proof of the live tool's capabilities.
 
 The coordinator checks the live tool's provider, model availability, effort
 support, profile precedence, defaults and inheritance. A matching file, role name
@@ -299,41 +262,29 @@ avoid named tier profiles; even built-in names can be shadowed. Unknown or
 unsupported capabilities require managed CLI with the exact selected settings.
 Reviewers always require independent fresh read-only context.
 
-Effort `default` omits agent-box's override; native omission can inherit one.
-It therefore has `native_profile_ready=false` and `native_explicit_settings=null`
-and uses managed CLI, retaining the existing protection against inherited Claude
-effort. This is not a literal provider effort value or a promise to disable thinking.
+Effort `default` omits agent-box's override; native omission can inherit one, so
+such a reviewer uses managed CLI, retaining the existing protection against
+inherited Claude effort. This is not a literal provider effort value or a promise
+to disable thinking.
 
-Concrete `workflow run` and `workflow review` routes execute managed `codex exec`
-or `claude -p` inside the existing host/container. They cannot invoke the
-coordinator's native tool. Native execution uses `prepare`, coordinator spawn,
-then `report`. Provider routing (same/cross-provider) is independent of this
-backend choice; neither a new configuration matrix nor a persistent capability
-registry is needed. Untiered current-session actions retain their behavior above.
-See [native research and smoke evidence](../native-launch.md) for verified
-interfaces and limits.
-Provider errors, including Claude exit-zero error envelopes, are not review
-findings. A worker failure after possible side effects requires reconciliation.
+`workflow delegate` and `workflow review` execute managed `codex exec` or
+`claude -p` inside the existing host/container. They cannot invoke the
+coordinator's native tool; a native reviewer uses `prepare`, coordinator spawn,
+then `report`. See [native research and smoke evidence](../native-launch.md) for
+verified interfaces and limits. Provider errors, including Claude exit-zero error
+envelopes, are not review findings. A worker failure after possible side effects
+requires reconciliation.
 
 ## Validation, review and completion
 
 ```bash
 agent-box workflow begin TASK --primary codex
-agent-box workflow prepare TASK --role worker --primary codex --reason "Bounded implementation" --brief /tmp/brief.md
-agent-box workflow run TASK --handoff DESCRIPTOR --brief /tmp/brief.md
-# The primary ingests the report, then checks evidence and commits the resulting work.
+agent-box workflow delegate TASK --role worker --brief /tmp/brief.md
+# The coordinator verifies the answer against the code and commits what it accepts.
 agent-box workflow validate TASK -- python3 -m unittest discover -s tests
 agent-box workflow review TASK --primary codex --brief /tmp/review-brief.md
 agent-box workflow finish TASK
 ```
-
-A delegated worker's report is accepted only at the HEAD, branch, integration tip
-and requirements the order was prepared at, and ingesting it clears the validation and review recorded for the
-scope, so `report` precedes the commit and both precede `validate`. A prepared
-order whose HEAD moved cannot be reported: `workflow validate` refuses it before
-running the command and names both exits. `agent-box workflow prepare TASK --abort
---reason TEXT` cancels the order, leaves the cancelled descriptor refused and lets
-`prepare` start a new assignment.
 
 The review brief is ephemeral per-round English input with a faithful current
 Goal/Acceptance/Validation translation, changes/reasons, technical risks,
@@ -363,18 +314,16 @@ without inventing independent acceptance. No extra review stage or finding quota
 
 Explicit-tier native handoffs use `prepare --brief FILE`, then `report --file FILE --scope DIGEST --handoff
 DESCRIPTOR --provider ACTUAL_PROVIDER --model ACTUAL_MODEL --effort ACTUAL_EFFORT`
-for the returned structured report. Supply `--fallback-reason REASON` for native worker/scout
-fallback candidates, and `--fresh-context` for every native reviewer. Native reviewer
+for the returned structured report, with `--fresh-context` for every native reviewer. Native reviewer
 reports must match the selected primary candidate; unknown
 model or effort is a reason to use managed CLI,
 never to guess report fields. Report ingestion checks role/tier and exact
 provider/model/effort against the allowed prepared route before changing acceptance.
-Accepted worker/reviewer evidence records the full route and any native fallback
-reason or managed provider failures. These are coordinator-supplied execution
+Accepted reviewer evidence records the full route and any managed fallback
+reason or provider failures. These are coordinator-supplied execution
 facts, not provider attestation. Evidence is
 disposable local cache, bound to code, task requirements and scope; another
-device may need to rerun validation/review. Only the actual writer provider survives a scope change,
-because it decides who reviews the result.
+device may need to rerun validation/review.
 
 Review policy is off/auto/always. Auto considers explicit review labels, sensitive
 paths, changed-file count and added/deleted lines (binary changes require review).
@@ -402,7 +351,7 @@ and light (10/500); all values and paths are editable. Apply the policy both to
 subtasks and the complete parent diff. SKIPPED, INCONCLUSIVE and provider errors
 are distinct from PASS. Code or requirement changes invalidate acceptance.
 
-`max_rounds` (default 3) is enforced for local reviewer `prepare`, `run` and
+`max_rounds` (default 3) is enforced for local reviewer `prepare` and
 `review`: a new round reserves one attempt under a local lock before handoff or provider
 execution. Normative headings/fences and known managed launch constraints are checked
 first; their refusal publishes no handoff, reserves nothing and runs no provider.
@@ -497,9 +446,9 @@ agent-box workflow land PARENT merge
 Use the exact scope returned by inspect, after successful validation and completed
 acceptance checks. `approve` records the actor and reason separately as human
 acceptance; it does not write a reviewer PASS, change policy or mark the task Done.
-As with delegated reports, this is a coordinator contract, not authentication of
+As with reviewer reports, this is a coordinator contract, not authentication of
 the human's identity. A request to avoid delegation alone is not approval. Code
-or requirement changes, a worker, or a later independent review retire the
+or requirement changes, or a later independent review retire the
 decision. GitHub mode and subtasks do not accept this exception. Ownership,
 checklists, dependencies, validation and merge proof remain mandatory, and the
 normal post-merge cleanup still runs.
@@ -681,7 +630,7 @@ or recovery seal refuses acceptance.
 Ordinary related links and labels do not invalidate validation/review content.
 Descriptions, titles, hierarchy, blockers and routing tier labels remain in that scope.
 A tier escalation retires applied acceptance. Review labels still trigger live review
-policy, and reconciliation checks current execution policy, lifecycle and ownership. Completion gates continue
+policy, and reconciliation checks current lifecycle and ownership. Completion gates continue
 checking dependencies and hierarchy independently.
 
 Receipts use `WORKFLOW_STATE/review-results`, outside the checkout, with 0700
@@ -712,35 +661,6 @@ relative artifact reference, never raw output. Up to 20 artifacts are retained
 removed when the next failure is saved. Delete individual artifact files to
 remove them sooner; inactive state is not cleaned by a background service.
 
-
-Scouts answer distinct bounded unanswered questions that materially affect a decision
-or avoid substantial repeated reading. Quick lookups stay with the coordinator;
-duplicate scouts are prohibited. Only the coordinator launches scouts; workers and
-scouts must not launch nested scouts. Fresh read-only scouts may overlap up to the
-effective `workflow.scout.limit`, reported as `scout_limit` by prepare and inspect. Managed
-runs enforce the shared repository slot lock. Native launches are coordinator-counted:
-CLI processes cannot safely own native subagent leases; prepare reserves no slot.
-
-Use `workflow prepare TASK --role scout --question "ONE QUESTION" --brief FILE`,
-then the returned native report command or `workflow run TASK --role scout
---handoff DESCRIPTOR --brief FILE` (repeat the prepared tier). Run consumes the
-prepared route and question, without rescheduling. Changed context, scope, route,
-identity and already consumed descriptors refuse. Pending descriptor metadata is
-removed after terminal consumption; raw scout reports or conversations are never stored.
-
-Delegated worker prepare/run optionally accept `--facts FILE`, a coordinator-owned
-UTF-8 JSON object with exactly `task` (task ID string), `scope` (current scope digest)
-and `facts` (1–12 objects). Each fact has exactly `text` (nonempty, at most 1000
-characters), `sources` (1–6 nonempty path/source reference strings, at most 300
-characters each), and optional `limitations` (nonempty, at most 500 characters).
-The file is limited to 16384 bytes. Wrong keys/types, task or scope refuse before
-routing. Scouts and reviewers reject facts; direct work takes none. Managed consumption requires
-the same validated bytes. The descriptor/evidence bind digest, count and scope;
-worker `delegate_handoff.selected_source_evidence` carries the validated object.
-These selected facts reduce repeated reading/context without promising token savings.
-Never supply raw scout output, transcripts, comments or agent history. Facts do not
-change normative requirements and reviewer handoffs remain independent.
-
 ## Fast mode
 
 `fast` is an independent boolean on each candidate of every role list. It defaults to `false`: agent-box adds no
@@ -766,8 +686,8 @@ Support checked 2026-09-11:
   switches. Requires account access and usage credits or paid API access;
   third-party cloud backends are unsupported. Source:
   [Claude fast mode](https://code.claude.com/docs/en/fast-mode).
-- Native worker, scout and reviewer remain available when fast is false, with
-  their original profiles and no speed assertion in the report. When true,
+- A native reviewer remains available when fast is false, with its original
+  profile and no speed assertion in the report. When true,
   verify fast through effective profile settings, explicit live tool parameters,
   or verified inherited speed. Append `--fast on` to the shared report command
   only for the candidate that actually ran and requests fast. Codex's priority service
@@ -776,8 +696,8 @@ Support checked 2026-09-11:
   alone does not prove fast; use managed CLI only when the requested fast cannot
   be established natively. Model/effort and fresh-context checks still apply.
 
-Direct work, native session inheritance, and managed untiered session
-routes retain their previous speed behavior. Ordinary interactive launcher commands
+The coordinator's own work, native subagents it spawns without a route, and
+managed untiered session routes retain their previous speed behavior. Ordinary interactive launcher commands
 keep provider-owned settings and user CLI arguments; workflow matrices do not
 change the coordinator's session. GitHub-hosted reviews have no independent
 fast control here; use local workflow review for configured speed.

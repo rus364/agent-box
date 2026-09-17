@@ -15,7 +15,7 @@ from agent_box.config import Config
 from agent_box.errors import AgentBoxError
 from agent_box.repo_binding import Binding
 from agent_box.tracker.core import Task
-from test_workflow_handoff import BINDING, origin_path, repository
+from workflow_fixtures import BINDING, origin_path, repository
 
 
 class CleanupTests(unittest.TestCase):

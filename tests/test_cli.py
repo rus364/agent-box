@@ -40,11 +40,11 @@ class LaunchOptionParsingTests(unittest.TestCase):
         self.assertEqual(rest, ["codex"])
 
     def test_session_options_become_overrides_in_one_normalized_form(self):
-        options, _ = parse(["--worker", "direct", "--worker", "codex:gpt-5.5:high",
+        options, _ = parse(["--worker", "codex:gpt-5.5:high",
                             "--reviewer", "claude@deepseek:deepseek-v4", "--rounds", "5", "--no-push",
                             "--gh-token", "--no-notify", "--tracker", "HTTPS://Tasks.Example.org/", "--project", "12"])
         self.assertEqual(options.overrides, {
-            "execution": "direct", "worker": "codex:gpt-5.5:high", "reviewer": "claude@deepseek:deepseek-v4",
+            "worker": "codex:gpt-5.5:high", "reviewer": "claude@deepseek:deepseek-v4",
             "rounds": 5, "push": False, "gh-token": True, "notify": False,
             "tracker": "https://tasks.example.org", "project": "12"})
 

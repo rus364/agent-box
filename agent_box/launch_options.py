@@ -16,7 +16,6 @@ from .config import AGENT_EFFORTS, AGENT_PROVIDERS, API_EFFORTS, TrackerConnecti
 from .errors import AgentBoxError
 
 SPEC = "PROVIDER[@API]:MODEL[:EFFORT]"
-EXECUTION = ("auto", "direct", "delegated")
 
 
 @dataclass(frozen=True)
@@ -41,7 +40,7 @@ OPTIONS = (
     Option("env", LAUNCH, "Set NAME, or forward it from this shell by name; repeatable", "NAME[=VALUE]", session=False),
     Option("tmux", LAUNCH, "Start directly, without a detachable tmux session", form="negated", session=False),
     Option("kvm", LAUNCH, "Do not pass /dev/kvm through", form="negated", container=True, session=False),
-    Option("worker", WORKFLOW, "Worker execution policy, or pin the delegated worker", "auto|direct|delegated|SPEC"),
+    Option("worker", WORKFLOW, "Pin the managed worker model", "SPEC"),
     Option("reviewer", WORKFLOW, "Pin the reviewer, whatever review routing and tiers say", "SPEC"),
     Option("scout", WORKFLOW, "Pin the scout model", "SPEC"),
     Option("review", WORKFLOW, "When review is required", "off|auto|always", choices=("off", "auto", "always")),
@@ -63,7 +62,7 @@ OPTIONS = (
 BY_NAME = {option.name: option for option in OPTIONS}
 FLAGS = {**{f"--{o.name}": (o, True) for o in OPTIONS if o.form != "negated"},
          **{f"--no-{o.name}": (o, False) for o in OPTIONS if o.form != "switch"}}
-WORKFLOW_KEYS = {"execution", *(o.name for o in OPTIONS if o.group == WORKFLOW and o.name != "workflow")}
+WORKFLOW_KEYS = {o.name for o in OPTIONS if o.group == WORKFLOW and o.name != "workflow"}
 
 
 @dataclass
@@ -81,12 +80,8 @@ class LaunchOptions:
         """The options used, for refusing those that cannot apply where they were given."""
         used = {"host": self.host, "workspace": self.workspace, "mount": self.mounts,
                 "env": self.env, "tmux": not self.tmux, "kvm": not self.kvm}
-        names = [name for name, value in used.items() if value] + [option_key(key) for key in self.overrides]
+        names = [name for name, value in used.items() if value] + list(self.overrides)
         return [BY_NAME[name] for name in dict.fromkeys(names)]
-
-
-def option_key(key):
-    return "worker" if key == "execution" else key
 
 
 def spelling(option):
@@ -109,7 +104,7 @@ def parse_spec(flag, text):
 def convert(option, flag, text):
     if option.choices and text not in option.choices:
         raise AgentBoxError(f"{flag} expects {option.metavar}")
-    if option.name in ("reviewer", "scout") or option.name == "worker" and text not in EXECUTION:
+    if option.name in ("worker", "reviewer", "scout"):
         parse_spec(flag, text)
     if option.name == "rounds":
         if not text.isdigit() or int(text) < 1:
@@ -161,10 +156,9 @@ def parse(argv: list[str]) -> tuple[LaunchOptions, list[str]]:
         elif not option.session:
             setattr(options, option.name, value)
         else:
-            key = "execution" if option.name == "worker" and value in EXECUTION else option.name
-            if key in options.overrides:
+            if option.name in options.overrides:
                 raise AgentBoxError(f"{flag} is given twice")
-            options.overrides[key] = value
+            options.overrides[option.name] = value
     return options, argv[index:]
 
 
@@ -174,9 +168,7 @@ def apply(config, overrides):
     if "workflow" in overrides and overrides.keys() & {"tracker", "project"}:
         raise AgentBoxError("--tracker and --project contradict --no-workflow")
     for key, value in overrides.items():
-        if key == "execution":
-            workflow.worker.execution = value
-        elif key in ("worker", "reviewer", "scout"):
+        if key in ("worker", "reviewer", "scout"):
             workflow.pins[key] = parse_spec(f"--{key}", value)
         elif key == "review":
             workflow.review.policy = value
@@ -207,7 +199,7 @@ def apply(config, overrides):
             config.notifications.enabled = False
     used = [key for key in overrides if key in WORKFLOW_KEYS]
     if used and not workflow.enabled:
-        raise AgentBoxError(f"--{option_key(used[0])} needs workflow; enable it in agent-box config"
+        raise AgentBoxError(f"--{used[0]} needs workflow; enable it in agent-box config"
                             + (" and drop --no-workflow" if "workflow" in overrides else ""))
     tracker_keys = [key for key in ("tracker", "project") if key in overrides]
     if tracker_keys and not config.tracker.enabled:
@@ -247,9 +239,8 @@ def describe(overrides):
     """The session's overrides as the flags that set them."""
     parts = []
     for key, value in overrides.items():
-        name = option_key(key)
-        parts.append(f"--{name} {value}" if BY_NAME[name].metavar else
-                     f"--{name}" if value is True else f"--no-{name}")
+        parts.append(f"--{key} {value}" if BY_NAME[key].metavar else
+                     f"--{key}" if value is True else f"--no-{key}")
     return " ".join(parts)
 
 

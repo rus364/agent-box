@@ -18,7 +18,6 @@ CHOICES = {
     "default_agent": LAUNCH_AGENTS,
     "tracker.provider": TRACKER_PROVIDERS,
     "workflow.merge_mode": ("github", "local"),
-    "workflow.worker.execution": ("auto", "direct", "delegated"),
     "workflow.review.routing": ("cross-provider", "same-provider"),
     "workflow.review.policy": ("off", "auto", "always"),
     "workflow.review.github_provider": ("auto", "local", "codex", "claude"),
@@ -75,8 +74,7 @@ HELP = {
     "workflow.scout.tiers": "Optional scout candidates per tier 0-3. A nonempty tier list replaces Models for that tier; an empty one uses Models.",
     "workflow.auto_push": "Within the opt-in workflow, publish the parent task in GitHub mode or the accepted base after a local fast-forward. Turning this off keeps completion local.",
     "workflow.timeout_seconds": "Maximum delegated agent runtime in seconds, from 30 through 86400.",
-    "workflow.worker": "Worker execution preference and the models delegated workers run.",
-    "workflow.worker.execution": "Worker execution policy: auto requires the coordinator to choose with a reason; direct works in the active session; delegated launches a bounded worker assignment.",
+    "workflow.worker": "The models managed workers run when the coordinator delegates with workflow delegate.",
     "workflow.worker.models": "Delegated worker candidates in preference order; the first available one runs and the rest are fallbacks. Used for untiered tasks and tiers whose own list is empty; with no candidates an untiered worker inherits the active session. A candidate of the other CLI than the coordinator's runs as a managed CLI process.",
     "workflow.worker.tiers": "Optional worker candidates per task tier 1-3. A nonempty tier list replaces Models for that tier; an empty one uses Models.",
     "workflow.review": "Review routing, thresholds, provider selection, and reviewer candidates.",
@@ -111,7 +109,7 @@ LABELS = {
     "url": "URL", "token": "Access token", "effort": "Reasoning effort",
     "github_model": "GitHub review model", "github_effort": "GitHub review effort",
     "telegram_chat_id": "Telegram chat ID",
-    "execution": "Worker execution", "worker": "Workers", "scout": "Scouts",
+    "worker": "Workers", "scout": "Scouts",
     "github_provider": "GitHub review provider",
     "external_providers": "External API providers", "api_provider": "API provider", "api_key": "API key",
 }
@@ -132,7 +130,6 @@ MENU_GROUPS = {
         ("Delegation", ("timeout_seconds",)),
     ),
     ("workflow", "worker"): (
-        ("Execution", ("execution",)),
         ("Models", ("models", "tiers")),
     ),
     ("workflow", "scout"): (
@@ -430,8 +427,6 @@ def edit(config, *, project=None):
         return result
 
     global_only_color = 0
-    #: A_DIM where the terminal renders it; None marks muted rows with text instead.
-    unused_attr = None
 
     def add_line(screen, y, value, width, attr=0, x=0):
         try:
@@ -441,7 +436,7 @@ def edit(config, *, project=None):
             # A resize can arrive between measuring the screen and drawing it.
             pass
 
-    def paint(screen, rows, selected, title, help_text="", notice="", controls=None, group="", muted=None):
+    def paint(screen, rows, selected, title, help_text="", notice="", controls=None, group=""):
         screen.erase()
         height, width = screen.getmaxyx()
         if height < 8 or width < 40:
@@ -466,25 +461,11 @@ def edit(config, *, project=None):
         add_line(screen, 2, group, list_width, curses.A_BOLD)
         label_width = min(max((display_width(row[0]) for row in rows if isinstance(row, tuple)), default=0),
                           32, list_width // 2 - 2)
-        muted = muted or {}
-        # One unselectable note precedes each run of rows muted for the same
-        # reason, so selection keeps row indices and the reason is said once.
-        lines = []
-        for index, row in enumerate(rows):
-            if index in muted and muted.get(index - 1) != muted[index]:
-                lines.append((None, f"-- {muted[index]} --"))
-            lines.append((index, row))
-        position = next(line for line, (index, _) in enumerate(lines) if index == selected)
-        offset = min(max(0, position - list_height + 1), max(0, len(lines) - list_height))
-        for y, (index, row) in enumerate(lines[offset:offset + list_height], 3):
-            if index is None:
-                add_line(screen, y, row, list_width, unused_attr or 0)
-                continue
+        offset = min(max(0, selected - list_height + 1), max(0, len(rows) - list_height))
+        for y, (index, row) in enumerate(list(enumerate(rows))[offset:offset + list_height], 3):
             attr = curses.A_REVERSE | curses.A_BOLD if index == selected else 0
             if "Global only" in (row[1] if isinstance(row, tuple) else row):
                 attr = global_only_color | (curses.A_BOLD | curses.A_UNDERLINE if index == selected else 0)
-            if index in muted and unused_attr is not None:
-                attr |= unused_attr
             if isinstance(row, tuple):
                 label, value = row
                 row = padded(clipped(label, label_width), label_width) + ": " + clipped(value, list_width - label_width - 3)
@@ -764,19 +745,6 @@ def edit(config, *, project=None):
             return f"PATH integration: found {link.found}, kept by you, not agent-box"
         return "PATH integration: agent-box is not on PATH yet"
 
-    def unused(path):
-        """Why ``path`` has no effect in this draft, as (note, explanation), or None.
-
-        Only a setting with no remaining consumer is muted: under direct
-        execution scout and reviewer candidates still apply, and marking them
-        made every delegation row look disabled.
-        """
-        if path[:3] in (("workflow", "worker", "models"), ("workflow", "worker", "tiers")) and draft["workflow"]["worker"]["execution"] == "direct":
-            return ("unused while execution is direct",
-                    "Unused while execution is direct: workers edit in the active session. "
-                    "The value is kept and applies again under auto or delegated execution.")
-        return None
-
     def menu(screen, data, path=()):
         selected, notice = (len(data), "Setup starts here: agent-box is not on PATH yet") if not path and path_pending() else (0, "")
         while True:
@@ -797,7 +765,7 @@ def edit(config, *, project=None):
                 if project_mode:
                     extras = [("PATH integration: Global only", "global", "Global only: configure host integration in agent-box config."), ("Save project", "save", "Save explicit project overrides without applying host integrations."), ("Cancel", "cancel", ACTION_HELP["cancel"])]
             labels = [label_for(key, path) for key in keys]
-            rows, muted = [], {}
+            rows = []
             for key, label in zip(keys, labels):
                 value, full = data[key], (*path, key)
                 if isinstance(value, dict) and not json_field(full):
@@ -818,11 +786,6 @@ def edit(config, *, project=None):
                         shown = (">  " if isinstance(value, dict) else "") + "[Global only]"
                     else:
                         shown += "  [" + status + "]"
-                reason = unused(full)
-                if reason:
-                    muted[len(rows)] = reason[0]
-                    if unused_attr is None:
-                        shown += "  (unused)"
                 rows.append((label, shown))
             rows += [entry[0] for entry in extras]
             selected = min(selected, len(rows) - 1)
@@ -837,9 +800,6 @@ def edit(config, *, project=None):
                                else "G: Copy current global (copy and pin current effective global values). ")) + hint
                 else:
                     hint = "R: Reset to default (built-in program values; remove global override on save). " + hint
-                reason = unused(selected_path)
-                if reason:
-                    hint = reason[1] + " " + hint
                 hint = labels[selected] + "\n" + hint
             else:
                 hint, help_title = extras[selected - len(keys)][2], extras[selected - len(keys)][0]
@@ -847,7 +807,7 @@ def edit(config, *, project=None):
             controls = ("Enter R reset G copy " if project_mode else "Enter open R reset ") + "? help Esc back"
             group = next((heading for heading, fields in MENU_GROUPS.get(path, ())
                           if selected < len(keys) and keys[selected] in fields), "")
-            usable = paint(screen, rows, selected, title, hint, notice, controls=controls, group=group, muted=muted)
+            usable = paint(screen, rows, selected, title, hint, notice, controls=controls, group=group)
             key = screen.get_wch()
             if key in ("\x1b", curses.KEY_LEFT):
                 return None
@@ -1037,12 +997,7 @@ def edit(config, *, project=None):
         return path_state["bin"] is not None
 
     def start(screen):
-        nonlocal global_only_color, unused_attr
-        try:
-            if curses.termattrs() & curses.A_DIM:
-                unused_attr = curses.A_DIM
-        except curses.error:
-            pass
+        nonlocal global_only_color
         try:
             curses.use_default_colors()
             if project_mode and curses.has_colors():

@@ -10,44 +10,27 @@ from unittest.mock import patch
 from agent_box import routing, workflow, workflow_state
 from agent_box.config import Config
 from test_agent_profiles import entry
-from agent_box.agent_profiles import sync
 from agent_box.errors import AgentBoxError
-import test_workflow_handoff as handoff_tests
+import workflow_fixtures
 
 
 class NativePreparationTests(unittest.TestCase):
-    def test_profile_presence_never_claims_explicit_tool_capabilities(self):
-        """Missing, exact and overridden profiles retain independent explicit requirements."""
+    def test_another_clis_reviewer_is_managed_only_and_says_why(self):
+        """A Codex session cannot spawn a Claude reviewer; the session's own CLI keeps its native profile."""
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {}, clear=True):
             root = Path(directory)
             config = Config()
             config.workflow.enabled = True
             config.workflow.review.tiers["1"] = [entry("codex", "review-model", "high"), entry("claude", "other-review", "medium")]
-            config.workflow.worker.tiers["1"] = [entry("codex", "worker-model", "low")]
-            profile = root / "codex/agents/ab-reviewer-1.toml"
-            with patch("agent_box.paths.CODEX_HOME", root / "codex"), \
-                 patch("agent_box.paths.CLAUDE_HOME", root / "claude"), \
-                 patch.object(workflow, "WORKFLOW_STATE", root / "state"), \
+            with patch.object(workflow, "WORKFLOW_STATE", root / "state"), \
                  patch.object(workflow_state, "WORKFLOW_STATE", root / "state"), \
                  patch.object(workflow.shutil, "which", return_value="provider-cli"):
-                for state, ready in (("missing", False), ("exact", True), ("overridden", False)):
-                    with self.subTest(state=state):
-                        if state == "exact":
-                            sync(config, root / "codex", root / "claude")
-                        elif state == "overridden":
-                            profile.write_text(profile.read_text().replace('"high"', '"low"'))
-                        selected = workflow.route(config, "reviewer", 1, "codex", "claude")
-                        self.assertEqual(selected["native_profile_ready"], ready)
-                        self.assertEqual(selected["native_explicit_settings"], {"provider": "codex", "model": "review-model", "effort": "high"})
-                        # The writer's own fallback belongs to the other CLI than this Codex session: managed only.
-                        fallback = selected["fallbacks"][0]
-                        self.assertTrue(fallback["managed_only"])
-                        self.assertIsNone(fallback["native_explicit_settings"])
-                        self.assertIn("managed CLI", fallback["native_limitation"])
-                config.workflow.review.tiers["1"][0]["effort"] = "default"
-                selected = workflow.route(config, "reviewer", 1, "codex", "claude")
-                self.assertFalse(selected["native_profile_ready"])
-                self.assertIsNone(selected["native_explicit_settings"])
+                selected = workflow.route(config, "reviewer", 1, "codex")
+            self.assertEqual((selected["provider"], selected["managed_only"]), ("claude", True))
+            self.assertIn("managed CLI", selected["native_limitation"])
+            fallback = selected["fallbacks"][0]
+            self.assertEqual((fallback["provider"], fallback["native_profile"]), ("codex", "ab-reviewer-1"))
+            self.assertFalse(fallback.get("managed_only"))
 
 
 class ReviewerMatrixTests(unittest.TestCase):
@@ -106,42 +89,23 @@ class ReviewerMatrixTests(unittest.TestCase):
 
 
 class NativeRouteTests(unittest.TestCase):
-    setUp = handoff_tests.WorkerHandoffTests.setUp
-    run_workflow = handoff_tests.WorkerHandoffTests.run_workflow
+    setUp = workflow_fixtures.WorkflowCase.setUp
+    run_workflow = workflow_fixtures.WorkflowCase.run_workflow
 
     def test_mixed_speed_routes_do_not_put_candidate_specific_flags_in_shared_reports(self):
         """A fast fallback must not impose speed assertions on a default-speed primary."""
-        for role in ('reviewer', 'scout', 'worker'):
-            for primary_fast in (False, True):
-                with self.subTest(role=role, primary_fast=primary_fast):
-                    selected = handoff_tests.selected_route(None, role, 1, 'codex')
-                    selected.update(model='claude-opus-5', fast=primary_fast, fallbacks=[{
-                        'provider': 'codex', 'model': 'gpt-6-astra', 'effort': 'high',
-                        'tier': 1, 'fast': not primary_fast}])
-                    extra = ['--question', 'Which file implements routing?'] if role == 'scout' else []
-                    with patch.object(workflow, 'route', return_value=selected):
-                        prepared = self.run_workflow('prepare', '1', '--role', role, '--primary', 'codex',
-                                                    '--brief', str(self.review_brief), *extra)
-                    self.assertNotIn('--fast ', prepared['report_command'])
-                    self.assertIn('candidate that ran requests fast', prepared['instructions'])
-                    if role == 'worker':
-                        self.run_workflow('report', '1', '--role', role, '--provider', 'claude',
-                            '--model', 'claude-opus-5', '--effort', 'high', '--file', str(self.report),
-                            '--scope', prepared['scope'], '--handoff', prepared['handoff'],
-                            *(['--fast', 'on'] if primary_fast else []))
-
-    def test_missing_profile_does_not_require_cli_when_explicit_spawn_is_enforced(self):
-        """Profile readiness is one option, not permission to reject exact tool settings."""
-        selected = handoff_tests.selected_route(None, "worker", 1, "codex")
-        selected.update(native_profile="ab-worker-1", native_profile_ready=False)
-        with patch.object(workflow, "route", return_value=selected):
-            prepared = self.run_workflow("prepare", "1", "--primary", "codex")
-        self.assertIn("explicit spawn parameters", prepared["instructions"])
-        self.assertIn("without an overriding custom agent", prepared["instructions"])
-        self.assertIn("unknown or unsupported", prepared["instructions"])
-        with patch.object(workflow, "run") as managed:
-            self.assertEqual(self.report_route(prepared)["report"]["status"], "completed")
-        managed.assert_not_called()
+        for primary_fast in (False, True):
+            with self.subTest(primary_fast=primary_fast):
+                selected = workflow_fixtures.selected_route(None, 'reviewer', 1, 'codex')
+                selected.update(model='claude-opus-5', fast=primary_fast, fallbacks=[{
+                    'provider': 'codex', 'model': 'gpt-6-astra', 'effort': 'high',
+                    'tier': 1, 'fast': not primary_fast}])
+                self.config.workflow.review.max_rounds = 5
+                with patch.object(workflow, 'route', return_value=selected):
+                    prepared = self.run_workflow('prepare', '1', '--role', 'reviewer', '--primary', 'codex',
+                                                '--brief', str(self.review_brief))
+                self.assertNotIn('--fast ', prepared['report_command'])
+                self.assertIn('candidate that ran requests fast', prepared['instructions'])
 
     def test_tiered_native_review_requires_fresh_context_before_acceptance(self):
         """Exact model/effort cannot make a reused reviewer independent."""
@@ -158,23 +122,16 @@ class NativeRouteTests(unittest.TestCase):
 
     def test_native_report_requires_actual_model_and_effort(self):
         """Explicit tiers still reject unknown facts after route-aware parsing."""
-        prepared = self.run_workflow("prepare", "1", "--primary", "codex")
+        prepared = self.run_workflow("prepare", "1", "--primary", "codex", "--brief", str(self.review_brief))
         for missing in ("--model", "--effort"):
             argv = ["report", "1", "--provider", "claude", "--model", "m", "--effort", "high",
                     "--scope", prepared["scope"], "--handoff", prepared["handoff"],
-                    "--file", str(self.report)]
+                    "--file", str(self.report), "--fresh-context"]
             index = argv.index(missing)
             del argv[index:index + 2]
             with self.subTest(missing=missing):
                 with self.assertRaisesRegex(AgentBoxError, "outside the configured route"):
                     self.run_workflow(*argv)
-
-    def test_native_worker_saves_the_full_route(self):
-        prepared = self.run_workflow("prepare", "1", "--primary", "codex")
-        result = self.report_route(prepared)
-        expected = {"fast": False, "provider": "claude", "model": "m", "effort": "high", "tier": 1}
-        self.assertEqual(result["route"], expected)
-        self.assertEqual(workflow.read_evidence(self.root, self.task)["worker"]["route"], expected)
 
     def test_managed_review_fallback_failures_are_kept_with_acceptance(self):
         self.config.workflow.review.policy = "always"
@@ -199,27 +156,19 @@ class NativeRouteTests(unittest.TestCase):
                                                **failure.diagnostic}])
         self.assertEqual(saved["failures"], result["failures"])
 
-    def report_route(self, prepared, *, role="worker", provider="claude", model="m",
-                     effort="high", reason=None):
-        argv = ["report", "1", "--role", role, "--provider", provider,
-                "--model", model, "--effort", effort, "--file", str(self.report),
-                "--scope", prepared["scope"], "--handoff", prepared["handoff"]]
-        if reason is not None:
-            argv += ["--fallback-reason", reason]
-        if role == "reviewer":
-            argv += ["--fresh-context"]
-        return self.run_workflow(*argv)
+    def report_route(self, prepared, *, provider="claude", model="m", effort="high"):
+        return self.run_workflow("report", "1", "--role", "reviewer", "--provider", provider,
+                                 "--model", model, "--effort", effort, "--file", str(self.report),
+                                 "--scope", prepared["scope"], "--handoff", prepared["handoff"], "--fresh-context")
 
     def test_wrong_native_route_is_refused_before_acceptance_changes(self):
-        for role in ("worker", "reviewer"):
-            extra = ["--brief", str(self.review_brief)] if role == "reviewer" else []
-            prepared = self.run_workflow("prepare", "1", "--role", role, "--primary", "codex", *extra)
-            for change in ({"model": "wrong"}, {"effort": "medium"}, {"provider": "codex"}):
-                with self.subTest(role=role, change=change), \
-                     patch.object(workflow, "save_evidence") as save:
-                    with self.assertRaisesRegex(AgentBoxError, "configured route"):
-                        self.report_route(prepared, role=role, **change)
-                    save.assert_not_called()
+        prepared = self.run_workflow("prepare", "1", "--role", "reviewer", "--primary", "codex",
+                                     "--brief", str(self.review_brief))
+        for change in ({"model": "wrong"}, {"effort": "medium"}, {"provider": "codex"}):
+            with self.subTest(change=change), patch.object(workflow, "save_evidence") as save:
+                with self.assertRaisesRegex(AgentBoxError, "configured route"):
+                    self.report_route(prepared, **change)
+                save.assert_not_called()
 
     def test_native_review_cannot_bypass_primary_and_managed_keeps_the_round(self):
         """Prose cannot authorize a backup; the same round must still try the primary CLI."""
@@ -236,14 +185,12 @@ class NativeRouteTests(unittest.TestCase):
         descriptor = json.loads(base64.urlsafe_b64decode(prepared["handoff"]))
         input_path = Path(descriptor["input"]["path"])
         original_input = input_path.read_text()
-        for reason in (None, " ", "Codex is faster", "Claude has no native tool", "Claude unavailable"):
-            with self.subTest(reason=reason), patch.object(workflow, "save_evidence") as save:
-                with self.assertRaisesRegex(AgentBoxError, "Native reviewer fallback"):
-                    self.report_route(prepared, role="reviewer", provider="codex",
-                                      model="fallback", effort="medium", reason=reason)
-                save.assert_not_called()
-            self.assertEqual(workflow.read_evidence(self.root, self.task), saved)
-            self.assertEqual(input_path.read_text(), original_input)
+        with patch.object(workflow, "save_evidence") as save:
+            with self.assertRaisesRegex(AgentBoxError, "Native reviewer fallback"):
+                self.report_route(prepared, provider="codex", model="fallback", effort="medium")
+            save.assert_not_called()
+        self.assertEqual(workflow.read_evidence(self.root, self.task), saved)
+        self.assertEqual(input_path.read_text(), original_input)
         with patch.object(workflow, "run", return_value=report) as run:
             result = self.run_workflow("review", "1", "--handoff", prepared["handoff"],
                                        "--brief", str(self.review_brief), "--fallback-reason",

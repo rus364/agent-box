@@ -94,10 +94,9 @@ notifications or uninstalling removes only the exact unchanged leading block;
 moved or edited blocks and manually configured settings remain user-owned.
 The JSON formatter and Telegram sender are shared with Claude's existing hooks.
 
-Completion notifications render agent-box JSON reports as readable Markdown:
-worker/scout results include the summary and every evidence item; reviews include
-the verdict, summary and every finding's severity, location, message, evidence
-and requirement. Empty review findings are stated explicitly. Text keeps its
+Completion notifications render an agent-box reviewer's JSON report as readable
+Markdown: the verdict, summary and every finding's severity, location, message,
+evidence and requirement. Workers and scouts already answer in Markdown. Empty review findings are stated explicitly. Text keeps its
 original language, with English section labels. This changes only Telegram
 presentation, not the agents' report protocol. Ordinary Markdown, unrelated JSON
 and invalid reports keep their original content. The formatted report uses the

@@ -268,10 +268,10 @@ class ExternalProcessTests(unittest.TestCase):
                     self.assertIn('model="external-small"', command)
                     self.assertNotIn('--model', command)
 
-    def test_managed_runner_uses_shared_api_preparation_and_keeps_report_protocol(self):
+    def test_managed_runner_uses_shared_api_preparation_and_keeps_the_answer(self):
         """Managed calls need the same auth boundary without an interactive RC wrapper."""
         config = external_config()
-        report = {'status': 'completed', 'summary': 'Done', 'evidence': []}
+        report = '## Done\nEdited.' 
         for cli in ('codex', 'claude'):
             def popen(command, **kwargs):
                 self.assertNotIn('_session', command)
@@ -279,9 +279,9 @@ class ExternalProcessTests(unittest.TestCase):
                 key = ext.API_ENV if cli == 'codex' else 'ANTHROPIC_API_KEY'
                 self.assertEqual(kwargs['env'][key], 'private-api-key')
                 if cli == 'codex':
-                    Path(command[command.index('-o') + 1]).write_text(json.dumps(report))
+                    Path(command[command.index('-o') + 1]).write_text(report)
                 else:
-                    kwargs['stdout'].write(json.dumps({'structured_output': report, 'is_error': False}))
+                    kwargs['stdout'].write(json.dumps({'result': report, 'is_error': False}))
                 return Mock(returncode=0)
             with self.subTest(cli=cli), patch('agent_box.config.effective_config', return_value=config), \
                     patch.object(provider_runner.subprocess, 'Popen', side_effect=popen):

@@ -10,7 +10,7 @@ from agent_box.config import Config
 from agent_box.errors import AgentBoxError
 from agent_box.repo_binding import Binding
 from agent_box.tracker.core import Task, TrackerError
-from test_workflow_handoff import BINDING, repository
+from workflow_fixtures import BINDING, repository
 
 
 class InspectTests(unittest.TestCase):
@@ -166,7 +166,6 @@ class InspectTests(unittest.TestCase):
         brief.write_text("Changes/reasons: implementation. Risks: none known. Validation: tests only.")
         for args in (("prepare", "1", "--role", "reviewer", "--primary", "codex", "--brief", str(brief)),
                      ("review", "1", "--primary", "codex", "--brief", str(brief)),
-                     ("run", "1", "--role", "reviewer", "--primary", "codex", "--brief", str(brief)),
                      ("approve", "1", "--scope", self.scope, "--reason", "User accepts"),
                      ("validate", "1", "--", "true"), ("finish", "1"), ("land", "1", "merge")):
             with self.subTest(command=args[0]):

@@ -21,9 +21,9 @@ class ProviderRunnerTests(unittest.TestCase):
     def test_success_without_valid_review_schema_is_inconclusive(self):
         r = importlib.import_module("agent_box.provider_runner")
         with self.assertRaises(r.ProviderFailure):
-            r.validate_report({"verdict": "PASS", "findings": [{"severity": "high"}]}, "reviewer")
+            r.validate_report({"verdict": "PASS", "findings": [{"severity": "high"}]})
         report = r.validate_report({"verdict": "NEEDS_WORK", "summary": "Missing guard", "findings": [
-            {"severity": "high", "path": "api.py", "line": 5, "message": "Missing guard", "evidence": "Unauthenticated path", "requirement": "Access control"}]}, "reviewer")
+            {"severity": "high", "path": "api.py", "line": 5, "message": "Missing guard", "evidence": "Unauthenticated path", "requirement": "Access control"}]})
         self.assertEqual(report["verdict"], "NEEDS_WORK")
 
     def test_read_only_claude_reviewer_has_tool_restrictions_and_no_model_guess(self):
@@ -44,17 +44,21 @@ class ProviderRunnerTests(unittest.TestCase):
         self.assertIn("--strict-mcp-config", command)
 
     def test_each_managed_role_starts_without_resume_or_parent_transcript(self):
-        """All roles use fresh CLI entrypoints; flags do not attest hidden context."""
+        """All roles use fresh CLI entrypoints; only a reviewer is held to a report schema."""
         r = importlib.import_module("agent_box.provider_runner")
-        root = Path("/tmp")
-        schema = Path("/tmp/schema.json")
-        result = Path("/tmp/result.json")
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        schema = root / "schema.json"
+        schema.write_text("{}")
+        result = root / "result.json"
         for role in ("worker", "scout", "reviewer"):
             for provider, flag in (("codex", "--ephemeral"), ("claude", "--no-session-persistence")):
                 with self.subTest(role=role, provider=provider):
                     command = r.build_command({"provider": provider, "model": "m", "effort": "high"},
-                                              role, root, schema, result)
+                                              role, root, schema if role == "reviewer" else None, result)
                     self.assertIn(flag, command)
+                    self.assertEqual(bool({"--output-schema", "--json-schema"} & set(command)), role == "reviewer")
                     self.assertFalse({"resume", "--resume", "--continue", "--fork-session", "--session-id"} & set(command))
 
     def test_expired_oauth_is_authentication_failure_not_a_review(self):
@@ -67,7 +71,7 @@ class ProviderRunnerTests(unittest.TestCase):
     def test_default_effort_is_omitted_from_provider_commands(self):
         r = importlib.import_module("agent_box.provider_runner")
         root = Path("/tmp")
-        schema = Path("/nonexistent")
+        schema = None
         result = Path("/tmp/result.json")
         codex = r.build_command(
             {"provider": "codex", "model": "chosen-model", "effort": "default"},
@@ -86,7 +90,7 @@ class ProviderRunnerTests(unittest.TestCase):
         r = importlib.import_module("agent_box.provider_runner")
         process = unittest.mock.Mock(returncode=0)
         process.communicate.return_value = (None, None)
-        report = {"status": "completed", "summary": "done", "evidence": []}
+        report = "## Done\nEdited."
         with tempfile.TemporaryDirectory() as directory, \
              patch.dict(os.environ, {"CLAUDE_CODE_EFFORT_LEVEL": "high"}), \
              patch.object(r.subprocess, "Popen", return_value=process) as popen, \
@@ -98,17 +102,17 @@ class ProviderRunnerTests(unittest.TestCase):
         self.assertNotIn("--effort", popen.call_args.args[0])
 
     def test_native_report_file_uses_the_same_extraction_and_refusals(self):
-        """A coordinator may save a native reply verbatim; both backends share one report contract."""
+        """A coordinator may save a native reviewer reply verbatim; both backends share one report contract."""
         import argparse
         from agent_box import workflow
-        report = {"status": "completed", "summary": "Done", "evidence": []}
+        report = {"verdict": "PASS", "summary": "Checked", "findings": []}
         block = "```json\n" + json.dumps(report) + "\n```"
         selected = {"provider": "claude", "model": "m", "effort": "high", "fast": False, "tier": 1, "fallbacks": []}
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {}, clear=True):
             path = Path(directory) / "report.json"
-            args = argparse.Namespace(provider="claude", model="m", effort="high", fast=None, role="worker",
-                                      fallback_reason=None, fresh_context=False, file=str(path))
-            path.write_text("Changed the parser.\n" + block)
+            args = argparse.Namespace(provider="claude", model="m", effort="high", fast=None, role="reviewer",
+                                      fresh_context=True, file=str(path))
+            path.write_text("Reviewed the parser.\n" + block)
             self.assertEqual(workflow.native_output(args, selected, 1)["report"], report)
             path.write_text(block + "\n" + block)
             with self.assertRaises(workflow.AgentBoxError) as caught:
@@ -131,7 +135,8 @@ class FailureDiagnosticsTests(unittest.TestCase):
         self.route = {"provider": "claude", "model": "haiku", "effort": "low", "tier": 1}
         self.report = {"verdict": "PASS", "summary": "Checked", "findings": []}
 
-    def run_response(self, output, *, stderr=b"", code=0, route=None, result=None, timeout=False, diagnostics=None, on_completed=None):
+    def run_response(self, output, *, stderr=b"", code=0, route=None, result=None, timeout=False, diagnostics=None,
+                     on_completed=None, role="reviewer"):
         def popen(command, **kwargs):
             kwargs["stdout"].buffer.write(output)
             kwargs["stderr"].buffer.write(stderr)
@@ -143,7 +148,7 @@ class FailureDiagnosticsTests(unittest.TestCase):
             return process
         with patch.object(self.r.subprocess, "Popen", side_effect=popen), \
              patch.object(self.r.os, "killpg"):
-            return self.r.run(route or self.route, "reviewer", self.root, "private prompt",
+            return self.r.run(route or self.route, role, self.root, "private prompt",
                               diagnostics=diagnostics, on_completed=on_completed)
 
     def test_completion_hook_runs_with_diagnostics_before_temporary_files_are_removed(self):
@@ -350,18 +355,40 @@ class FailureDiagnosticsTests(unittest.TestCase):
                 self.assertIn(reason, failure.diagnostic["reason"])
                 self.assertNotIn("secret", json.dumps(failure.diagnostic))
                 self.assertEqual(failure.diagnostic["response_source"], "stdout.structured_output")
-        schema = self.r.report_schema("reviewer")
+        schema = self.r.report_schema()
         self.assertEqual(schema["properties"]["summary"]["pattern"], r"\S")
         self.assertEqual(schema["properties"]["findings"]["items"]["properties"]["line"]["minimum"], 0)
         self.assertIn("nonempty for NEEDS_WORK", schema["properties"]["findings"]["description"])
 
     def test_schema_avoids_claude_rejected_top_level_conditionals(self):
         """The live Claude 400 fixture proves top-level combinators prevent any review."""
-        for role in ("reviewer", "worker"):
+        schema = self.r.report_schema()
+        self.assertFalse({"oneOf", "allOf", "anyOf"} & schema.keys())
+        self.assertEqual(schema["type"], "object")
+
+    def test_delegate_answers_are_the_final_markdown_message_without_a_schema(self):
+        """A worker or scout answer is returned as written; only an empty or missing answer fails."""
+        answer = "## Done\nEdited parser.\n\n## Evidence\n- tests passed\n\n## Limitations\nNone."
+        for role in ("worker", "scout"):
             with self.subTest(role=role):
-                schema = self.r.report_schema(role)
-                self.assertFalse({"oneOf", "allOf", "anyOf"} & schema.keys())
-                self.assertEqual(schema["type"], "object")
+                self.assertEqual(self.run_response(json.dumps({"result": answer, "usage": {"input_tokens": 3}}).encode(),
+                                                   role=role), answer)
+                self.assertEqual(self.run_response(b"codex events", route={**self.route, "provider": "codex"},
+                                                   result=answer.encode(), role=role), answer)
+                self.assertEqual(self.run_response(b"codex events", route={**self.route, "provider": "codex"},
+                                                   result=json.dumps(self.report).encode(), role=role),
+                                 json.dumps(self.report))
+        self.assertFalse((self.state / "provider-failures").exists())
+        for output, route, result, reason in (
+                (json.dumps({"result": " \n"}).encode(), self.route, None, "the final message is empty"),
+                (json.dumps({"structured_output": self.report}).encode(), self.route, None,
+                 "Claude envelope has no result text"),
+                (b"codex events", {**self.route, "provider": "codex"}, None, "Codex wrote no final message")):
+            with self.subTest(reason=reason):
+                with self.assertRaises(self.r.ProviderFailure) as caught:
+                    self.run_response(output, route=route, result=result, role="scout")
+                self.assertEqual(caught.exception.category, "invalid-report")
+                self.assertEqual(caught.exception.diagnostic["reason"], reason)
 
     def test_usage_allowlist_preserves_numeric_counters_and_unknowns(self):
         """Provider-controlled labels and text cannot enter safe usage metadata."""

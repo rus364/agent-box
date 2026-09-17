@@ -9,14 +9,14 @@ from unittest.mock import patch
 
 from agent_box import workflow, review_results, git_workflow as gw
 from agent_box.errors import AgentBoxError
-import test_workflow_handoff as fixtures
+import workflow_fixtures as fixtures
 
 BINDING = fixtures.BINDING
 
 
 class ReviewResultTests(unittest.TestCase):
-    setUp = fixtures.WorkerHandoffTests.setUp
-    run_workflow = fixtures.WorkerHandoffTests.run_workflow
+    setUp = fixtures.WorkflowCase.setUp
+    run_workflow = fixtures.WorkflowCase.run_workflow
 
     def review(self):
         return self.run_workflow("review", "1", "--primary", "codex", "--brief", str(self.review_brief))
@@ -172,21 +172,6 @@ class ReviewResultTests(unittest.TestCase):
                 with self.assertRaisesRegex(AgentBoxError, "missing|modified"):
                     self.retry(result)
                 self.assertNotIn("review", workflow.read_evidence(self.root, self.task))
-
-    def test_execution_policy_is_a_condition_not_a_fabricated_route_change(self):
-        """Restoring execution conditions reuses the exact route and original response."""
-        def provider(*args, **kwargs):
-            self.config.workflow.worker.execution = "direct"
-            return self.response()
-        original = self.config.workflow.worker.execution
-        with patch.object(workflow, "run", side_effect=provider):
-            result = self.review()
-        self.assertEqual(result["reconciliation"]["status"], "blocked")
-        self.assertIn("execution_policy", result["reconciliation"]["changes"])
-        self.config.workflow.worker.execution = original
-        recovered = self.retry(result)
-        self.assertEqual(recovered["route"], result["route"])
-        self.assertEqual(recovered["reconciliation"]["status"], "applied")
 
     def test_provider_callback_saves_before_runner_cleanup(self):
         """The real runner's completion hook publishes a receipt while its files still exist."""

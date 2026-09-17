@@ -1,11 +1,9 @@
 """Native profile pins and local edits survive the apply/remove lifecycle."""
 import tempfile
-import os
 import unittest
 from pathlib import Path
 import tomllib
-from unittest.mock import patch
-from agent_box.agent_profiles import available, body, sync
+from agent_box.agent_profiles import body, sync
 from agent_box.config import Config
 
 
@@ -15,36 +13,24 @@ def entry(provider, model, effort, **fields):
 
 class AgentProfileTests(unittest.TestCase):
     def test_both_providers_keep_report_language_and_role_evidence_semantics(self):
-        """An installed scout must not inherit the reviewer's findings contract."""
+        """An installed scout must not inherit the reviewer's findings contract, nor a worker its read-only rule."""
         for provider in ("codex", "claude"):
             for role in ("worker", "scout", "reviewer"):
                 with self.subTest(provider=provider, role=role):
                     content = body(provider, role, 1, {"model": "chosen-model", "effort": "high"})
                     instructions = (tomllib.loads(content)["developer_instructions"]
                                     if provider == "codex" else content.split("---\n", 2)[2])
-                    self.assertIn("English for handoffs, reports", instructions)
-                    self.assertIn("do not load parent conversation", instructions)
-                    self.assertIn("report missing, unreadable or truncated instructions", instructions)
-                    if role == "scout":
-                        self.assertIn("facts with source locations and uncertainty", instructions)
-                        self.assertNotIn("Review findings require", instructions)
-                    elif role == "reviewer":
+                    self.assertIn("English", instructions)
+                    self.assertIn("never write to any of them", instructions)
+                    if role == "reviewer":
                         self.assertIn("Review findings require location, evidence and violated requirement", instructions)
-
-    def test_forced_parent_model_cannot_be_proven_by_an_exact_claude_profile(self):
-        """Claude can force the parent model even without SUBAGENT_MODEL being set."""
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            config = Config()
-            config.workflow.enabled = True
-            spec = entry("claude", "chosen-model", "high")
-            config.workflow.worker.tiers["1"] = [spec]
-            sync(config, root / "codex", root / "claude")
-            with patch("agent_box.paths.CLAUDE_HOME", root / "claude"), \
-                 patch.dict(os.environ, {}, clear=True):
-                self.assertTrue(available("claude", "worker", 1, spec))
-                with patch.dict(os.environ, {"CLAUDE_CODE_SUBAGENT_MODEL_FORCE": "1"}):
-                    self.assertFalse(available("claude", "worker", 1, spec))
+                        self.assertIn("do not load parent conversation", instructions.lower())
+                    else:
+                        self.assertIn("## Done, ## Evidence, ## Limitations", instructions)
+                        self.assertNotIn("Review findings require", instructions)
+                        self.assertEqual("Read-only: change nothing" in instructions, role == "scout")
+                        self.assertEqual("Change project files only within the assigned scope" in instructions,
+                                         role == "worker")
 
     def test_empty_reviewer_models_never_install_worker_models_as_reviewers(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -135,20 +121,15 @@ class AgentProfileTests(unittest.TestCase):
             self.assertTrue(profile.read_text().endswith("# user customization\n"))
             self.assertFalse((claude / "agents/ab-worker-1.md").exists())
 
-    def test_default_effort_is_omitted_and_native_readiness_is_conservative(self):
+    def test_default_effort_is_omitted_from_profiles(self):
         with tempfile.TemporaryDirectory() as directory:
             codex, claude = Path(directory) / "codex", Path(directory) / "claude"
             config = Config()
             config.workflow.enabled = True
             config.workflow.worker.tiers["1"] = [entry("codex", "chosen-model", "default"),
                                                  entry("claude", "chosen-model", "default")]
-            spec = {"model": "chosen-model", "effort": "default"}
             self.assertEqual(sync(config, codex, claude), [])
             codex_profile = codex / "agents/ab-worker-1.toml"
             claude_profile = claude / "agents/ab-worker-1.md"
             self.assertNotIn("model_reasoning_effort", tomllib.loads(codex_profile.read_text()))
             self.assertNotIn("effort:", claude_profile.read_text())
-            with patch("agent_box.paths.CODEX_HOME", codex), \
-                 patch("agent_box.paths.CLAUDE_HOME", claude):
-                self.assertFalse(available("codex", "worker", 1, spec))
-                self.assertFalse(available("claude", "worker", 1, spec))

@@ -60,7 +60,7 @@ class ProjectConfigTests(unittest.TestCase):
                          {"provider": "claude", "model": "global-claude", "effort": "medium", "fast": False, "api_provider": ""}]
         self.config.workflow.worker.models = global_models
         original = self.config.to_dict()
-        data = {'workflow': {'worker': {'execution': 'delegated', 'models': [{'provider': 'claude', 'model': 'opus', 'effort': 'default'}]}}}
+        data = {'workflow': {'worker': {'models': [{'provider': 'claude', 'model': 'opus', 'effort': 'default'}]}}}
         project_config.save(self.path, data)
         result = project_config.apply(self.config, project_config.load(self.path))
         runtime.sync_tracker_runtime(result, self.root / 'rendered')
@@ -69,7 +69,6 @@ class ProjectConfigTests(unittest.TestCase):
              patch.object(project_config, 'load', return_value=project_config.load(self.path)):
             rendered = effective_config()
             self.assertEqual(effective_config(include_project=False).workflow.worker.models, global_models)
-        self.assertEqual(rendered.workflow.worker.execution, "delegated")
         self.assertEqual(rendered.workflow.worker.models,
                          [{"provider": "claude", "model": "opus", "effort": "default", "fast": False, "api_provider": ""}])
         self.assertEqual(rendered.workflow.review, self.config.workflow.review)
@@ -96,9 +95,9 @@ class ProjectConfigTests(unittest.TestCase):
             project_config.load(self.path)
         self.assertNotIn('secret-value', str(caught.exception))
 
-    def test_project_execution_and_role_scopes_reject_invalid_enums(self):
+    def test_project_role_scopes_reject_invalid_enums(self):
         """Project overrides must not silently restore global or default enum choices."""
-        for path in (("worker", "execution"), ("worker", "override", "scope"),
+        for path in (("worker", "override", "scope"),
                      ("review", "override", "scope")):
             for invalid in ("invalid", "", None, False, 1, [], {}):
                 data = {"workflow": {}}

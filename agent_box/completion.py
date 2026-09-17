@@ -103,7 +103,7 @@ def option_values(option, environ):
         return "dirs", []
     if option.metavar.startswith("NAME"):
         return "words", [(name, "") for name in sorted(environ)]
-    # `auto|direct|delegated|SPEC` offers its literal alternatives, never the placeholder.
+    # `off|auto|always` offers its literal alternatives, never a placeholder such as SPEC.
     return "words", [(choice, "") for choice in option.choices or option.metavar.split("|") if choice.islower()]
 
 

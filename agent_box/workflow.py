@@ -1,17 +1,15 @@
 """Small deterministic boundaries for skills; the tracker retains authoritative state.
 
 The coordinator is the only writer: of the tracker, of Git, of GitHub. A worker
-reads its task, changes project files in the working tree and returns a report;
-a reviewer or scout reads and reports without changing anything. The coordinator
-decides from that report what to record. That division is the whole contract,
-and it is identical whether the delegate is a native subagent of the
-coordinator's session or a managed CLI run, which is why nothing here
-inventories the tracker or the ref store to work out afterwards what a delegate
-did.
+changes project files in the working tree and answers; a reviewer or scout reads
+and answers without changing anything. The coordinator decides from that answer
+what to record. That division is the whole contract, and it is identical whether
+the delegate is a native subagent of the coordinator's session or a managed CLI
+run, which is why workers and scouts are only launched here, never tracked.
 
 Nothing machine-readable is written into a tracker comment either. The branch
 comes from the task's own Git ref namespace, the base from origin's default
-branch, the pull request from GitHub, and the writer from local evidence.
+branch, and the pull request from GitHub.
 """
 from __future__ import annotations
 
@@ -29,18 +27,17 @@ import stat
 import subprocess
 import sys
 from pathlib import Path
-from contextlib import nullcontext
 from types import SimpleNamespace
 
 from .atomicio import atomic_write_text
 from .config import effective_config, effective_config_source
-from .delegation import bootstrap, context_policy, LAUNCH_CONTEXT, render_handoff
+from .delegation import bootstrap, delegate_prompt, LAUNCH_CONTEXT, render_handoff
 from .errors import AgentBoxError
 from . import git_workflow as gw
 from .paths import WORKFLOW_STATE
-from .provider_runner import ProviderFailure, preflight, report_json, run, validate_report, report_schema
+from .provider_runner import ProviderFailure, preflight, report_json, run, save_private, validate_report, report_schema
 from .repo_binding import Binding, repository_root, server_identity
-from .routing import select, validate_role_tier
+from .routing import select
 from .tracker.core import claim, checkboxes, root_task, completion_reasons, blocking_reasons
 from .tracker.registry import make_adapter
 from .usage import usage_snapshot
@@ -51,8 +48,7 @@ INSTRUCTION_FILES = ("AGENTS.md", "CLAUDE.md")
 REVIEW_HANDOFF_MAX_BYTES = 32768
 REVIEW_SAMPLE_ITEMS = 20
 REVIEW_SAMPLE_CHARS = 200
-INPUT_FILES = ("descriptor.json", "handoff.txt")
-REVIEW_EVIDENCE_FILES = (*INPUT_FILES, "manifest.json", "requirements.json", "full.diff",
+REVIEW_EVIDENCE_FILES = ("descriptor.json", "handoff.txt", "manifest.json", "requirements.json", "full.diff",
                          "changed-paths.txt", "author-report.md", "recorded-validation.json",
                          *INSTRUCTION_FILES)
 
@@ -101,18 +97,6 @@ def repository_instruction_evidence(root):
     return result
 
 
-def assignment_handoff(root, task, base, brief, role, *, question=None, facts=None):
-    """The coordinator translates current requirements once, without task history."""
-    return render_handoff(role, {
-        "task": {"id": task.id, "project": task.project},
-        "base": base,
-        "assignment": brief,
-        **({"question": question} if question is not None else {}),
-        **({"selected_source_evidence": facts} if facts is not None else {}),
-        "repository_instructions": repository_instructions(root),
-    })
-
-
 def tree(adapter, task):
     pending, seen, tasks = [task], set(), []
     while pending:
@@ -137,19 +121,6 @@ def requirements(tasks):
              "blockers": sorted(task.blockers), "labels": sorted(task.labels)} for task in tasks]
 
 
-def same_worker_requirements(current, prepared):
-    """Tracker reserialization of checkbox separators is progress, not changed work."""
-    def canonical(record):
-        body = record["description"]
-        for item in reversed(checkboxes(body)):
-            line = re.sub(r"(\[[ xX]\])[ \t]+", r"\1 ", item["line"], count=1)
-            offset = item["offset"]
-            body = body[:offset] + line + body[offset + len(item["line"]):]
-        return {**record, "description": body}
-    return scope_requirements([canonical(item) for item in current]) == scope_requirements(
-        [canonical(item) for item in prepared])
-
-
 def scope_requirements(records):
     """Ordinary links/labels are metadata; tier, hierarchy and blockers affect acceptance.
 
@@ -161,14 +132,13 @@ def scope_requirements(records):
             for item in records]
 
 
-def review_scope(root, base, tasks, config):
+def review_scope(root, base, tasks):
     components = {"head": gw.head_sha(root), "base": gw.base_commit(root, base)}
     for task in scope_requirements(requirements(tasks)):
         for key, value in task.items():
             components[f"task:{task['id']}.{key}"] = hashlib.sha256(
                 json.dumps(value, sort_keys=True).encode()).hexdigest()
-    return {"components": components, "base_branch": base,
-            "conditions": {"execution_policy": config.workflow.worker.execution}}
+    return {"components": components, "base_branch": base, "conditions": {}}
 
 
 REVIEW_REQUIREMENT_SECTIONS = {
@@ -238,7 +208,7 @@ def review_requirements(tasks):
 
 def read_brief(path):
     if not path:
-        raise AgentBoxError("Pass --brief with the current English Goal/Acceptance/Validation and technical context")
+        raise AgentBoxError("Pass --brief FILE with the current English assignment: goal, scope, paths and limitations")
     try:
         value = Path(path).read_text(encoding="utf-8").strip()
     except (OSError, UnicodeError) as exc:
@@ -246,52 +216,6 @@ def read_brief(path):
     if not value:
         raise AgentBoxError("The handoff brief is empty; include current requirements, technical context and validation limitations")
     return value
-
-
-def read_facts(path, task, fingerprint):
-    """Selected evidence is bounded input, never a substitute for requirements."""
-    if not path:
-        return None, None
-    def unique_keys(pairs):
-        result = {}
-        for key, item in pairs:
-            if key in result:
-                raise ValueError(f"duplicate key: {key}")
-            result[key] = item
-        return result
-    try:
-        with Path(path).open("rb") as stream:
-            raw = stream.read(16385)
-        if len(raw) > 16384:
-            raise AgentBoxError("Facts file exceeds 16384 bytes")
-        value = json.loads(raw.decode("utf-8"), object_pairs_hook=unique_keys)
-    except (OSError, UnicodeError, ValueError) as exc:
-        raise AgentBoxError(f"Cannot read UTF-8 facts JSON: {exc}") from exc
-    if not isinstance(value, dict) or set(value) != {"task", "scope", "facts"}:
-        raise AgentBoxError("Facts must contain exactly task, scope and facts")
-    if not isinstance(value["task"], str) or value["task"] != task.id:
-        raise AgentBoxError("Facts task does not match the current task")
-    if not isinstance(value["scope"], str) or value["scope"] != fingerprint:
-        raise AgentBoxError("Facts scope does not match the current scope")
-    items = value["facts"]
-    if not isinstance(items, list) or not 1 <= len(items) <= 12:
-        raise AgentBoxError("Facts must be an array of 1 to 12 facts")
-    def compact(value, limit):
-        return isinstance(value, str) and bool(value.strip()) and len(value) <= limit
-    for index, fact in enumerate(items):
-        prefix = f"Fact {index + 1}"
-        if (not isinstance(fact, dict) or not {"text", "sources"} <= set(fact)
-                or set(fact) - {"text", "sources", "limitations"}):
-            raise AgentBoxError(prefix + " must contain text, sources and optional limitations only")
-        if not compact(fact["text"], 1000):
-            raise AgentBoxError(prefix + " text must be a nonempty string of at most 1000 characters")
-        sources = fact["sources"]
-        if not isinstance(sources, list) or not 1 <= len(sources) <= 6 or not all(compact(x, 300) for x in sources):
-            raise AgentBoxError(prefix + " sources must contain 1 to 6 nonempty references of at most 300 characters")
-        if "limitations" in fact and not compact(fact["limitations"], 500):
-            raise AgentBoxError(prefix + " limitations must be a nonempty string of at most 500 characters")
-    return value, {"digest": hashlib.sha256(raw).hexdigest(), "count": len(items),
-                   "scope": fingerprint}
 
 
 def scope_fingerprint(head, base, task_requirements, *, working_diff=None):
@@ -338,9 +262,9 @@ def evidence_path(root, task):
     return WORKFLOW_STATE / "evidence" / repository_key(root) / f"{ident}.json"
 
 
-# Writer identity and child provenance describe observed history, not acceptance.
-# They survive scope changes; validation and review do not.
-DURABLE_EVIDENCE = ("writer", "child_start", "child_begin", "execution")
+# Child provenance describes observed history, not acceptance. It survives
+# scope changes; validation and review do not.
+DURABLE_EVIDENCE = ("child_start", "child_begin")
 
 
 def read_evidence(root, task):
@@ -591,7 +515,7 @@ def review_result(root, binding, adapter, task, config, round_id=None, *, reconc
                         save_review_state(root, binding, task, state)
                         return review_result_summary(task, config, state, record, value, path)
                     tasks = tree(adapter, current_task)
-                    current = review_scope(root, base, tasks, config)
+                    current = review_scope(root, base, tasks)
                     prepared = descriptor["review_scope"]
                     changed = sorted(key for key in current["components"].keys() | prepared["components"].keys()
                                      if current["components"].get(key) != prepared["components"].get(key))
@@ -793,7 +717,6 @@ def inspect(root, binding, adapter, task, config):
         unavailable.append(f"Current branch {branch or '(detached HEAD)'} is not task branch {expected}")
     if changes:
         unavailable.append(gw.dirty_tree_reason(changes))
-    execution = read_evidence(root, task).get("execution")
     review_state = read_review_state(root, binding, task)
     review = {"policy": config.workflow.review.policy,
               "budget": review_budget_summary(review_state, config.workflow.review.max_rounds),
@@ -809,12 +732,7 @@ def inspect(root, binding, adapter, task, config):
     result = {"task": task.id, **info, "task_branch": expected, "current_branch": branch,
               "head": head, "scope": None, "configuration": configuration_summary(config),
               "acceptance": {"available": not unavailable, "reasons": unavailable},
-              "review": review, "validation": None,
-              "execution": (None if not execution else
-                            {**execution["execution"], "status": execution["status"]} if "execution" in execution else
-                            {**execution["descriptor"]["execution"], "status": execution["status"],
-                             "scope": execution["descriptor"]["scope"], "route": execution["descriptor"]["route"]}),
-              "execution_policy": config.workflow.worker.execution}
+              "review": review, "validation": None}
     if unavailable:
         if changes:
             next_step = f"Commit intended changes or preserve unrelated work outside the working tree, then rerun agent-box workflow inspect {task.id}"
@@ -893,29 +811,21 @@ def read_handoff_descriptor(identity, task, fingerprint, value):
     return payload
 
 
-def delegation_tier(args, task, role):
-    """A scout's tier is the caller's; everyone else works at the task's own."""
-    if role == "scout":
-        return args.tier if args.tier is not None else 0
+def delegation_tier(args, task):
+    """A reviewer works at the task's own tier, else the caller's."""
     return task.tier if task.tier is not None else args.tier
 
 
 def check_handoff_route(descriptor, role, tier):
     """One descriptor names one delegation, so another report path cannot use it.
 
-    Without this comparison a worker handoff would still admit a reviewer report,
-    and a worker's own verdict on its own code is exactly what review exists to
-    avoid.
+    Without this comparison a round prepared at one tier would admit a report
+    from a reviewer routed at another.
     """
     route = descriptor.get("route") or {}
     if route.get("role") != role or route.get("tier") != tier:
         raise AgentBoxError("Handoff descriptor was prepared for a different role or tier; "
                             "prepare this delegation before reporting it")
-
-
-def check_worker_assignment(adapter, task):
-    if task.state != "Doing" or task.assignees != [str(adapter.identity()["id"])]:
-        raise AgentBoxError("Worker delegation requires the current user's assigned Doing task")
 
 
 def native_output(args, selected, tier):
@@ -937,15 +847,11 @@ def native_output(args, selected, tier):
                 raise AgentBoxError("Confirm --session-inherited and omit unknown --model/--effort")
         elif args.model != selected["model"] or args.effort != selected["effort"]:
             raise AgentBoxError("Reported model/effort differs from the prepared current session")
-        if args.role == "reviewer" and not args.fresh_context:
+        if not args.fresh_context:
             raise AgentBoxError("Confirm --fresh-context for independent current-session review")
-        if args.fallback_reason:
-            raise AgentBoxError("Current-session execution has no fallback route")
-        actual.update(mode="current-session", session_inherited=args.session_inherited,
+        actual.update(mode="current-session", session_inherited=args.session_inherited, fresh_context=True,
                       **{key: selected[key] for key in ("api_provider", "api_fingerprint") if selected.get(key)})
-        if args.role == "reviewer":
-            actual["fresh_context"] = True
-        return {"route": actual, "report": validate_report(report_json(Path(args.file).read_text(), "report file is not valid JSON"), args.role),
+        return {"route": actual, "report": validate_report(report_json(Path(args.file).read_text(), "report file is not valid JSON")),
                 "diagnostics": {"usage": None, "total_cost_usd": None}}
     candidates = [selected, *selected["fallbacks"]]
     match = next((i for i, candidate in enumerate(candidates)
@@ -961,121 +867,45 @@ def native_output(args, selected, tier):
     actual["fast"] = candidates[match].get("fast", False)
     if actual["fast"] and getattr(args, "fast", None) != "on":
         raise AgentBoxError("The configured fast request requires verified native fast; report --fast on or use managed CLI")
-    reason = (args.fallback_reason or "").strip()
-    if match and args.role == "reviewer":
+    if match:
         raise AgentBoxError(
             "Native reviewer fallback requires managed dispatch: workflow review TASK "
             "--handoff DESCRIPTOR --brief FILE --fallback-reason REASON to continue this round")
-    if match and not reason:
-        raise AgentBoxError("A native fallback reason is required; explain why the preferred route could not run")
-    if args.role == "reviewer" and not args.fresh_context:
+    if not args.fresh_context:
         raise AgentBoxError("Confirm --fresh-context for independent native review")
-    report = validate_report(report_json(Path(args.file).read_text(), "report file is not valid JSON"), args.role)
-    output = {"route": actual, "report": report, "diagnostics": {"usage": None, "total_cost_usd": None}}
-    if args.role == "reviewer":
-        output["fresh_context"] = True
-    if reason:
-        output["fallback_reason"] = reason
-    return output
+    report = validate_report(report_json(Path(args.file).read_text(), "report file is not valid JSON"))
+    return {"route": actual, "report": report, "diagnostics": {"usage": None, "total_cost_usd": None},
+            "fresh_context": True}
 
 
-def reconcile_abandoned_managed(root, task, saved):
-    """The work lock makes persisted managed evidence an interrupted prior run."""
-    execution = saved.get("execution")
-    if execution and execution.get("status") == "managed":
-        execution["status"] = "failed"
-        save_evidence(root, task, saved)
-        cleanup_delegation_input(root, execution["descriptor"])
-    return execution
-
-
-def abort_worker_execution(root, task, execution, reason):
-    """Cancel an order no report can satisfy, before it costs a review round.
-
-    A report is accepted only at the identity the order was prepared at, so a
-    coordinator who commits first has no command that can clear it: report
-    refuses, prepare refuses a second active execution, and finish is the only
-    place the deadlock surfaces. Cancelling is explicit and recorded, and the
-    cancelled descriptor stays refused because its status is no longer prepared.
-    """
-    status = (execution or {}).get("status", "none")
-    if status != "prepared":
-        raise AgentBoxError(f"No prepared worker execution is waiting for a report (status: {status}); "
-                            "nothing to cancel")
-    reason = reason.strip()
-    if not reason or len(reason) > 500 or "\n" in reason:
-        raise AgentBoxError("Cancelling a prepared worker execution requires one compact --reason line "
-                            "of at most 500 characters")
-    saved = read_evidence(root, task)
-    saved["execution"] = {"descriptor": execution["descriptor"], "status": "aborted", "reason": reason}
-    save_evidence(root, task, saved)
-    cleanup_delegation_input(root, execution["descriptor"])
-    return {"task": task.id, "execution": {"status": "aborted", "reason": reason},
-            "next": f"Prepare a fresh assignment with agent-box workflow prepare {task.id}"}
-
-
-def check_open_worker_execution(root, task, identity):
-    """A prepared order is reportable at one identity; validating another wastes the run.
-
-    Ingesting the report clears the validation and review recorded for the
-    scope, and the report is bound to the branch, HEAD and integration tip the
-    order was prepared at. Both facts are free to check here and expensive to
-    discover at finish, so validation refuses a moved order and warns about a
-    pending report it is about to invalidate.
-    """
-    execution = read_evidence(root, task).get("execution")
-    if not execution or execution.get("status") != "prepared":
-        return None
-    descriptor = execution["descriptor"]
-    moved = [(key, label) for key, label in (("head", "HEAD"), ("branch", "the task branch"),
-                                             ("integration", "the integration branch"))
-             if identity[key] != descriptor[key]]
-    if moved:
-        restore = (f"Restore the prepared commit with git reset --mixed {descriptor['head']} and submit the "
-                   "report command prepare returned" if any(key == "head" for key, _ in moved) else
-                   "Restore the prepared branch and integration tip and submit the report command prepare returned")
-        raise AgentBoxError(
-            "A prepared worker execution is still open, but " + " and ".join(label for _, label in moved) +
-            " moved since it was prepared; no validation was run. " + restore +
-            f", or cancel the order with agent-box workflow prepare {task.id} --abort --reason TEXT")
-    return ("A prepared worker execution is still open at this scope; its report is accepted only at the prepared "
-            "HEAD, and accepting it clears the validation and review recorded for this scope. "
-            "Submit the report before validating.")
-
-
-def route(config, role, tier, primary, writer=None):
-    policy = config.workflow
-    _, models = policy.models_for(role, tier)
+def candidates(config, role, tier, primary):
+    """The role's first available candidate with ordered fallbacks, bound to their APIs."""
+    _, models = config.workflow.models_for(role, tier)
     # Every role skips a subscription candidate whose known window is exhausted;
     # external API candidates have no subscription usage to read.
     subscribed = {spec["provider"] for spec in models if not spec.get("api_provider")}
     usage = {p: usage_snapshot(p, no_cache=True) for p in sorted(subscribed)}
-    result = select(policy, role, tier, primary, usage, writer=writer,
+    result = select(config.workflow, role, tier, primary, usage,
                     available=[p for p in ("codex", "claude") if shutil.which(p)])
     for candidate in [result, *result["fallbacks"]]:
         bind_api_route(candidate, config)
-        if candidate["provider"] != primary and not candidate.get("managed_only"):
-            candidate.update(managed_only=True, native_profile=None, native_profile_ready=False,
-                             native_explicit_settings=None,
-                             native_limitation=f"A {primary} session cannot run a native {candidate['provider']} agent; "
-                                               "run it through the managed CLI")
-    from .agent_profiles import available as native_available
-    from .fast_mode import native_limitation
-    for candidate in [result, *result["fallbacks"]]:
-        if candidate.get("managed_only"):
-            continue
-        candidate["native_profile"] = f"ab-{role}-{tier}" if tier is not None else None
-        candidate["native_profile_ready"] = (tier is not None and
-                                             native_available(candidate["provider"], role, tier, candidate))
-        # These are requirements for the coordinator's live tool, not discovered
-        # capabilities. A missing installed profile says nothing about that tool.
-        candidate["native_explicit_settings"] = (
-            {**{key: candidate[key] for key in ("provider", "model", "effort")},
-             **({"fast": True} if candidate["fast"] else {})}
-            if candidate["effort"] != "default" else None)
-        candidate["native_limitation"] = native_limitation(candidate["provider"], candidate["fast"])
     from .external_launch import check_model_effort
     check_model_effort(config, result)
+    return result
+
+
+def route(config, role, tier, primary):
+    """A reviewer route, annotated with whether the coordinator can run it natively."""
+    result = candidates(config, role, tier, primary)
+    from .fast_mode import native_limitation
+    for candidate in [result, *result["fallbacks"]]:
+        if candidate["provider"] != primary and not candidate.get("managed_only"):
+            candidate.update(managed_only=True, native_profile=None,
+                             native_limitation=f"A {primary} session cannot run a native {candidate['provider']} agent; "
+                                               "run it through the managed CLI")
+        if not candidate.get("managed_only"):
+            candidate["native_profile"] = f"ab-{role}-{tier}" if tier is not None else None
+            candidate["native_limitation"] = native_limitation(candidate["provider"], candidate["fast"])
     return result
 
 
@@ -1097,8 +927,7 @@ def bind_api_route(candidate, config):
     if candidate.get("api_provider"):
         candidate.update(route_identity(config, candidate["api_provider"], candidate["provider"]))
     if not same_api(candidate):
-        candidate.update(managed_only=True, native_profile=None, native_profile_ready=False,
-                         native_explicit_settings=None,
+        candidate.update(managed_only=True, native_profile=None,
                          native_limitation="API selection requires a separate managed CLI process")
 
 
@@ -1128,6 +957,14 @@ def session_route(args, role, config=None):
     return result
 
 
+class ProviderFailures(AgentBoxError):
+    """No candidate produced an answer; ``failures`` names each category and diagnostic."""
+
+    def __init__(self, message, failures):
+        super().__init__(message + ": " + json.dumps(failures))
+        self.message, self.failures = message, failures
+
+
 def execute(config, selected, role, root, prompt, read_paths=(), on_completed=None):
     failures = []
     for candidate in [selected, *selected["fallbacks"]]:
@@ -1145,21 +982,23 @@ def execute(config, selected, role, root, prompt, read_paths=(), on_completed=No
                              **({"api_provider": candidate["api_provider"]} if candidate.get("api_provider") else {}),
                              "category": exc.category, **exc.diagnostic})
             if exc.category == "interrupted":
-                raise AgentBoxError(
+                raise ProviderFailures(
                     f"Managed {role} was interrupted by a signal; no provider fallback runs"
                     + {"worker": "; reconcile files and task progress before retrying",
-                       "reviewer": "; its review attempt stays spent, start a new round within budget"}.get(role, "")
-                    + ": " + json.dumps(failures)) from None
+                       "reviewer": "; its review attempt stays spent, start a new round within budget"}.get(role, ""),
+                    failures) from None
             if role == "reviewer" and exc.category not in (
                     "unavailable", "model-unavailable", "authentication", "quota", "timeout"):
-                raise AgentBoxError("Reviewer failure does not establish provider unavailability; "
-                                    "no provider fallback: " + json.dumps(failures)) from None
+                raise ProviderFailures("Reviewer failure does not establish provider unavailability; "
+                                       "no provider fallback", failures) from None
             # A worker may have edited files before an error; never restart it blindly.
             if role == "worker" and exc.category not in ("unavailable", "model-unavailable"):
-                raise AgentBoxError(f"Worker failed ({exc.category}); reconcile files and task progress before retrying") from None
+                raise ProviderFailures(f"Worker failed ({exc.category}); reconcile files and task progress "
+                                       "before retrying", failures) from None
             if role == "worker" and not gw._worktree_clean(root):
-                raise AgentBoxError("Worker left changes before failure; reconcile before retrying") from None
-    raise AgentBoxError("No provider produced a valid report: " + json.dumps(failures))
+                raise ProviderFailures("Worker left changes before failure; reconcile before retrying",
+                                       failures) from None
+    raise ProviderFailures("No provider produced a valid answer", failures)
 
 
 def managed_review_route(selected):
@@ -1227,36 +1066,25 @@ def cleanup_input_directory(path, names, identity=None):
 
 
 def delegation_input_path(root, descriptor):
-    role = descriptor["route"]["role"]
-    if role == "reviewer":
-        return review_evidence_path(root, descriptor["task"], descriptor["scope"], descriptor["delegation"])
-    if role not in ("worker", "scout"):
-        raise AgentBoxError("Unknown delegation input role")
-    task_key = hashlib.sha256(descriptor["task"].encode()).hexdigest()[:24]
-    key = hashlib.sha256(descriptor["delegation"].encode()).hexdigest()
-    return WORKFLOW_STATE / "delegation-inputs" / repository_key(root) / task_key / key
-
-
-def input_files(descriptor):
-    return REVIEW_EVIDENCE_FILES if descriptor["route"]["role"] == "reviewer" else INPUT_FILES
+    if descriptor["route"]["role"] != "reviewer":
+        raise AgentBoxError("Only a reviewer round has a delegation input")
+    return review_evidence_path(root, descriptor["task"], descriptor["scope"], descriptor["delegation"])
 
 
 def cleanup_delegation_input(root, descriptor):
     if "input" in descriptor:
         path = delegation_input_path(root, descriptor)
-        cleanup_input_directory(path, input_files(descriptor), descriptor["input"]["directory"])
+        cleanup_input_directory(path, REVIEW_EVIDENCE_FILES, descriptor["input"]["directory"])
 
 
 def bind_delegation_input(root, descriptor, prompt):
-    """All roles publish one owner-read-only input bound to the prepared descriptor."""
+    """A reviewer round publishes one owner-read-only input bound to its descriptor."""
     path = delegation_input_path(root, descriptor)
     if path.resolve().is_relative_to(Path(root).resolve()):
         raise AgentBoxError("Delegation input must be outside the repository; relocate workflow state")
-    check_input_directory(path, input_files(descriptor))
-    path.mkdir(mode=0o700, parents=True, exist_ok=descriptor["route"]["role"] == "reviewer")
+    check_input_directory(path, REVIEW_EVIDENCE_FILES)
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
     try:
-        if descriptor["route"]["role"] != "reviewer":
-            atomic_write_text(path / "handoff.txt", prompt, 0o400)
         descriptor["input"] = {"path": str(path / "handoff.txt"),
                                "sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
                                **file_identity((path / "handoff.txt").lstat()),
@@ -1268,7 +1096,7 @@ def bind_delegation_input(root, descriptor, prompt):
         if "input" in descriptor:
             cleanup_delegation_input(root, descriptor)
         else:
-            cleanup_input_directory(path, input_files(descriptor))
+            cleanup_input_directory(path, REVIEW_EVIDENCE_FILES)
         raise
     return base64.urlsafe_b64encode(json.dumps(descriptor, sort_keys=True).encode()).decode()
 
@@ -1279,7 +1107,7 @@ def read_delegation_input(root, descriptor):
     artifact = descriptor.get("input")
     if not isinstance(artifact, dict) or artifact.get("path") != str(path / "handoff.txt"):
         raise AgentBoxError("Delegation input path differs from the prepared package")
-    check_input_directory(path, input_files(descriptor), artifact["directory"])
+    check_input_directory(path, REVIEW_EVIDENCE_FILES, artifact["directory"])
     try:
         saved = path / "descriptor.json"
         if saved.is_symlink() or not saved.is_file() or stat.S_IMODE(saved.stat().st_mode) != 0o400:
@@ -1448,7 +1276,7 @@ def begin(root, adapter, task, resume):
         if starting and not existing_child:
             # Reopening a deleted branch must not reclassify prior work as a
             # new no-code start. Unrelated scout scope evidence is harmless.
-            prior_work = ("child_start", "child_begin", "writer", "worker", "validation", "review",
+            prior_work = ("child_start", "child_begin", "validation", "review",
                           "human_acceptance", "local_acceptance")
             if not any(key in saved for key in prior_work):
                 # Preserve the authoritative Ready claim before fallible Git
@@ -1497,24 +1325,24 @@ class WorkflowParser(argparse.ArgumentParser):
 def parser():
     p = WorkflowParser(prog="agent-box workflow")
     sub = p.add_subparsers(dest="command", required=True)
-    for name in ("begin", "inspect", "approve", "prepare", "run", "review", "review-result", "review-budget", "validate", "report", "finish", "pr", "land", "writer"):
+    for name in ("begin", "inspect", "approve", "delegate", "prepare", "review", "review-result", "review-budget", "validate", "report", "finish", "pr", "land"):
         description = {
             "inspect": "Read branch, acceptance availability, review budget and next step; works before begin or with uncommitted files",
-            "prepare": "Prepare a delegated worker, scout or reviewer on a clean task branch; auto worker policy requires --reason. --abort cancels a prepared worker order with --reason",
-            "writer": "Record the coordinator's own direct work and provider; auto policy requires --reason. No preparation or report",
+            "delegate": "Run a managed worker or scout on the role's first available candidate and print its Markdown answer; "
+                        "records nothing. A worker needs the task branch",
+            "prepare": "Prepare a native reviewer round on a clean task branch",
+            "report": "Submit a native reviewer's report for its prepared round",
             "review": "Apply review policy to the clean task scope and dispatch a required review",
             "review-result": "Read a private completed result or retry reconciliation without a model call or attempt",
             "validate": f"Run the project validation command on the clean task scope: {VALIDATE_FORM}",
         }.get(name)
         cmd = sub.add_parser(name, **({"help": description, "description": description} if description else {}))
         cmd.add_argument("task")
-        cmd.add_argument("--primary", choices=("codex", "claude"), default=os.environ.get("AGENT_BOX_PRIMARY_PROVIDER"))
+        if name != "delegate":
+            cmd.add_argument("--primary", choices=("codex", "claude"), default=os.environ.get("AGENT_BOX_PRIMARY_PROVIDER"))
         if name == "review-result":
             cmd.add_argument("--round", help="Saved round identifier; defaults to the last received result")
             cmd.add_argument("--reconcile", action="store_true", help="Apply a still-pending result to its original scope")
-        if name == "writer":
-            cmd.add_argument("--provider", choices=("codex", "claude"), required=True)
-            cmd.add_argument("--reason", help="Compact reason for choosing direct work; required in auto policy")
         if name == "review-budget":
             cmd.add_argument("--limit", type=int, required=True, help="Absolute task review attempt ceiling, including attempts already used")
             cmd.add_argument("--reason", required=True, help="The user's explicit budget decision")
@@ -1523,25 +1351,18 @@ def parser():
         if name == "approve":
             cmd.add_argument("--scope", required=True, help="Exact scope returned by workflow inspect")
             cmd.add_argument("--reason", required=True, help="The user's explicit acceptance, recorded by the coordinator")
-        if name in ("prepare", "run"):
-            cmd.add_argument("--reason", help="Compact reason for delegating the worker; required in auto policy")
-        if name == "prepare":
-            cmd.add_argument("--abort", action="store_true", help="Cancel the prepared worker execution; requires --reason and records why no report can be accepted")
-        if name in ("prepare", "run"):
-            cmd.add_argument("--facts", help="Bounded coordinator-selected facts JSON; delegated workers only; reuse the same file for run")
-            cmd.add_argument("--question", help="One compact scout question, separate from the brief; required at scout prepare")
-        if name == "run":
-            cmd.add_argument("--handoff", help="Execute the exact prepared worker or scout route/context once")
-        if name in ("prepare", "run", "report"):
-            cmd.add_argument("--role", choices=("worker", "reviewer", "scout"), default="worker")
-        if name in ("prepare", "run", "review", "report"):
+        if name == "delegate":
+            cmd.add_argument("--role", choices=("worker", "scout"), required=True)
+        if name in ("prepare", "report"):
+            cmd.add_argument("--role", choices=("reviewer",), default="reviewer")
+        if name in ("prepare", "review", "report"):
             cmd.add_argument("--tier", type=int, choices=range(4))
-        if name in ("prepare", "run", "review"):
+        if name in ("prepare", "review"):
             cmd.add_argument("--session-model", help="Verified active session model for untiered execution")
             cmd.add_argument("--session-effort", help="Verified active session effort for untiered execution")
-        if name in ("prepare", "run", "review"):
-            cmd.add_argument("--brief", required=name == "run", help=(
-                "UTF-8 English Goal/Acceptance/Validation and technical context; required for delegation handoffs. Keep briefs outside the working tree"))
+        if name in ("prepare", "review", "delegate"):
+            cmd.add_argument("--brief", required=name == "delegate", help=(
+                "UTF-8 English assignment: goal, scope, relevant paths, decisions and limitations. Keep briefs outside the working tree"))
         if name == "report":
             cmd.add_argument("--file", required=True)
             cmd.add_argument("--scope", required=True)
@@ -1551,7 +1372,6 @@ def parser():
             cmd.add_argument("--fast", choices=("on", "off"), help="Verified native speed; on is required only when the candidate requests fast")
             cmd.add_argument("--session-inherited", action="store_true", help="Affirm unchanged inherited session settings")
             cmd.add_argument("--fresh-context", action="store_true", help="Affirm independent fresh reviewer context")
-            cmd.add_argument("--fallback-reason", help="Native worker/scout fallback reason; reviewer fallback requires managed dispatch")
             cmd.add_argument("--handoff", help="Handoff descriptor returned by prepare")
         if name == "review":
             cmd.add_argument("--handoff", help="Run managed fallback once within this prepared pending review round")
@@ -1592,12 +1412,6 @@ def finish(root, config, adapter, task_id):
         reasons = completion_reasons(task, tasks, str(adapter.identity()["id"])) + blocking_reasons(task, adapter.get)
         if reasons:
             raise AgentBoxError("Cannot finish: " + "; ".join(reasons))
-        saved = read_evidence(root, task)
-        status = (reconcile_abandoned_managed(root, task, saved) or {}).get("status")
-        if status == "prepared":
-            raise AgentBoxError("Cannot finish: worker execution is prepared; submit its report with workflow report before completion")
-        # Failed assignments are terminal, not reports; current acceptance is
-        # still required, but a provider failure must not block work forever.
         if task.id != parent.id:
             return finish_child(root, config, adapter, task, parent, info, current["branch"], tasks)
         if gw.current_branch(root) != info["branch"]:
@@ -1687,11 +1501,6 @@ def finish_child(root, config, adapter, task, parent, info, branch, tasks):
     if (gw.local_branch_head(root, branch) != head
             or gw.local_branch_head(root, base) != (base_head if integrated else head)):
         raise AgentBoxError("Child or parent head changed during integration; reconcile before completion")
-    writer = saved.get("writer")
-    if writer:
-        parent_state = read_evidence(root, parent)
-        parent_state["writer"] = writer
-        save_evidence(root, parent, parent_state)
     result = {"task": task.id, "state": "Done", "parent_branch": base}
     if (config.workflow.merge_mode == "github" and config.workflow.auto_push
             and (config.github.gh_token or config.github.gh_config)):
@@ -1705,286 +1514,62 @@ def finish_child(root, config, adapter, task, parent, info, branch, tasks):
     return result
 
 
-def execution_reason(policy, reason, choice):
-    """Auto makes the coordinator state why; a forced policy is its own reason."""
-    reason = (reason or "").strip()
-    if policy == "auto":
-        if not reason:
-            raise AgentBoxError(f"Auto worker execution requires --reason TEXT for {choice} work")
-    elif policy != choice:
-        raise AgentBoxError(f"Worker execution policy {policy} rejects {choice} work")
-    reason = reason or f"Configured {policy} policy"
-    if len(reason) > 500 or "\n" in reason:
-        raise AgentBoxError("Execution reason must be one compact line of at most 500 characters")
-    return reason
-
-
-def record_direct_writer(args, root, adapter, task, config):
-    """Direct work is the coordinator's own edit, so it records a decision, not an order.
-
-    A report binds a delegate to the requirements, HEAD and scope it was given;
-    the coordinator in the same session is the author and reads the current
-    requirements, so the binding protected nothing and blocked edits to the task
-    text and commits before a report. Validation and review on the committed
-    scope remain the acceptance.
-    """
-    if task.state != "Doing" or task.assignees != [str(adapter.identity()["id"])]:
-        raise AgentBoxError("Writer recording requires the current user’s Doing task")
-    policy = config.workflow.worker.execution
-    reason = execution_reason(policy, args.reason, "direct")
-    with lock(root, "review-budget"), lock(root, "work"):
-        saved = read_evidence(root, task)
-        previous = reconcile_abandoned_managed(root, task, saved)
-        if previous and previous["status"] == "prepared":
-            raise AgentBoxError("A delegated worker execution is still prepared; report it or cancel it with "
-                                f"agent-box workflow prepare {task.id} --abort --reason TEXT before direct work")
-        decision = {"policy": policy, "choice": "direct", "reason": reason, "model_source": "active-session"}
-        saved["writer"] = args.provider
-        saved["execution"] = {"status": "direct", "execution": decision}
-        save_evidence(root, task, saved)
-    return {"task": task.id, "writer": args.provider, "execution": decision}
-
-
-def worker_dispatch(args, root, binding, adapter, task, config):
-    """Bind scheduling before routing; an outstanding worker cannot be replaced."""
-    check_worker_assignment(adapter, task)
-    parent, info, current, base = resolve(root, adapter, task)
-    expected = current.get("branch") or info["branch"]
-    if args.command != "report" and gw.current_branch(root) != expected:
-        raise AgentBoxError(f"Switch to task branch {expected} before worker execution")
-    tasks = tree(adapter, task)
-    identity = delegation_identity(root, binding, current.get("branch") and info["branch"])
-    saved = read_evidence(root, task)
-    previous = reconcile_abandoned_managed(root, task, saved)
-    if getattr(args, "abort", False):
-        return abort_worker_execution(root, task, previous, getattr(args, "reason", "") or "")
-    handed = getattr(args, "handoff", None)
-    if args.command == "report" or handed:
-        if not handed:
-            raise AgentBoxError("Pass --handoff with the descriptor prepare returned for this delegation")
-        fingerprint = args.scope if args.command == "report" else scope(root, base, tasks)
-        descriptor = read_handoff_descriptor(identity, task, fingerprint, handed)
-        check_handoff_route(descriptor, "worker", delegation_tier(args, task, "worker"))
-        if previous and previous.get("status") == "aborted" and previous.get("descriptor") == descriptor:
-            raise AgentBoxError("This worker execution was cancelled (" + previous.get("reason", "no reason recorded") +
-                                "); prepare a new assignment before reporting")
-        if (not previous or previous.get("descriptor") != descriptor
-                or previous.get("status") != "prepared"):
-            raise AgentBoxError("Worker descriptor is stale, already started/reported, or execution/route mismatched")
-        if getattr(args, "reason", None):
-            raise AgentBoxError("Prepared execution is bound; omit --reason")
-        for key, description in (("branch", "the branch changed"), ("head", "HEAD moved"),
-                                 ("integration", "the branch this work integrates into moved")):
-            if identity[key] != descriptor[key]:
-                raise AgentBoxError(f"Since this delegation was prepared, {description}; reconcile before accepting the report")
-        if not same_worker_requirements(requirements(tasks), previous["requirements"]):
-            raise AgentBoxError("Worker requirements changed; report is stale")
-        selected = descriptor["route"]
-        decision = descriptor["execution"]
-        try:
-            prompt = read_delegation_input(root, descriptor)
-        except (AgentBoxError, OSError):
-            # Retire before cleanup: a replaced or unknown package must be
-            # preserved without stranding the task behind a prepared worker.
-            previous["status"] = "failed"
-            try:
-                save_evidence(root, task, saved)
-            finally:
-                cleanup_delegation_input(root, descriptor)
-            raise
-        if args.command == "report":
-            output = native_output(args, selected, selected["tier"])
-        else:
-            if selected["model"] is None or selected["effort"] is None:
-                raise AgentBoxError("Prepared inherited worker requires native execution; managed execution needs verified session model and effort at prepare")
-            facts, facts_binding = read_facts(getattr(args, "facts", None), task, fingerprint)
-            if facts_binding != descriptor.get("facts"):
-                raise AgentBoxError("Worker facts changed; use the same prepared facts file")
-            current_prompt = assignment_handoff(root, task, base, read_brief(args.brief), "worker", facts=facts)
-            if current_prompt != prompt:
-                raise AgentBoxError("Worker brief or repository instructions changed; prepared handoff must match")
-            for key in ("validation", "review", "human_acceptance", "local_acceptance"):
-                saved.pop(key, None)
-            previous["status"] = "managed"
-            save_evidence(root, task, saved)
-            try:
-                output = execute(config.workflow, selected, "worker", root, prompt)
-                if delegation_identity(root, binding, current.get("branch") and info["branch"]) != identity:
-                    raise AgentBoxError("Worker branch changed, HEAD moved or integration changed; reconcile before accepting the report")
-                if not same_worker_requirements(requirements(tree(adapter, adapter.get(task.id))), previous["requirements"]):
-                    raise AgentBoxError("Worker requirements changed during execution; report is stale")
-                read_delegation_input(root, descriptor)
-            except BaseException:
-                previous["status"] = "failed"
-                try:
-                    save_evidence(root, task, saved)
-                finally:
-                    cleanup_delegation_input(root, descriptor)
-                raise
-        previous["status"] = "reported"
-        for key in ("validation", "review", "human_acceptance", "local_acceptance"):
-            saved.pop(key, None)
-        saved["writer"] = output["route"]["provider"]
-        saved["worker"] = {key: output[key] for key in ("route", "fallback_reason", "failures") if key in output}
-        save_evidence(root, task, saved)
-        cleanup_delegation_input(root, descriptor)
-        return {**output, "scope": fingerprint, "execution": decision}
-    policy = config.workflow.worker.execution
-    reason = execution_reason(policy, getattr(args, "reason", None), "delegated")
-    if previous and previous["status"] in ("prepared", "managed"):
-        raise AgentBoxError("An active worker execution already exists; use its descriptor, do not replace it")
-    fingerprint = scope(root, base, tasks)
-    tier = delegation_tier(args, task, "worker")
-    validate_role_tier("worker", tier)
-    facts, facts_binding = read_facts(getattr(args, "facts", None), task, fingerprint)
-    prompt = assignment_handoff(root, task, base, read_brief(args.brief), "worker", facts=facts)
-    source, models = config.workflow.models_for("worker", tier)
-    selected = (session_route(args, "worker", config) if tier is None and not models
-                else route(config, "worker", tier, args.primary, saved.get("writer")))
-    model_source = "active-session" if selected.get("mode") == "current-session" else source
-    if args.command == "run" and selected["model"] is None:
-        raise AgentBoxError("Managed worker needs verified --session-model and --session-effort; use prepare for native inheritance")
-    decision = {"policy": policy, "choice": "delegated", "reason": reason, "model_source": model_source}
-    token = handoff_descriptor(identity, task, fingerprint, selected)
-    descriptor = json.loads(base64.urlsafe_b64decode(token))
-    descriptor["execution"] = decision
-    descriptor["facts"] = facts_binding
-    token = bind_delegation_input(root, descriptor, prompt)
-    saved = evidence(root, task, fingerprint)
-    for key in ("validation", "review", "human_acceptance", "local_acceptance"):
-        saved.pop(key, None)
-    saved["execution"] = {"descriptor": descriptor, "requirements": requirements(tasks),
-                          "status": "prepared"}
-    # Dispatch holds review-budget through publication. Retire the round first
-    # so even a failed evidence write cannot leave a late verdict admissible.
-    try:
-        state = read_review_state(root, binding, task)
-        state.pop("pending", None)
-        state.pop("pending_backend", None)
-        save_review_state(root, binding, task, state)
-        save_evidence(root, task, saved)
-    except BaseException:
-        cleanup_delegation_input(root, descriptor)
-        raise
-    report = ["agent-box", "workflow", "report", task.id, "--role", "worker", "--provider", "ACTUAL_PROVIDER",
-              "--scope", fingerprint, "--handoff", "DESCRIPTOR", "--file", "REPORT.json"]
-    if tier is not None:
-        report += ["--tier", str(tier)]
-    report += (["--session-inherited"] if selected["model"] is None else
-               ["--model", "ACTUAL_MODEL", "--effort", "ACTUAL_EFFORT"])
-    result = {"scope": fingerprint, "route": selected, "execution": decision, **scout_diagnostics(config),
-              "action": "delegate",
-              "task": {"id": task.id, "title": task.title, "state": task.state, "tier": task.tier},
-              "base": base, "handoff": token, "report_command": shlex.join(report),
-              "report_schema": report_schema("worker"), "context_policy": context_policy(),
-              "delegate_handoff": bootstrap("worker", descriptor["input"]),
-              "instructions": "Spawn a fresh worker with delegate_handoff as the complete initial message. "
-                              "Use an exact profile or explicit spawn parameters for provider/model/effort/fast without an overriding custom agent. Profile readiness is not live capability proof; "
-                              "unknown or unsupported required capabilities or effort=default require managed_command; fast=false preserves native inheritance. Honor managed_only and native_limitation. " + LAUNCH_CONTEXT + " "
-                              "Report before committing: the report is accepted only at the prepared HEAD, and accepting it clears "
-                              "the validation and review recorded for this scope. "
-                              "Return actual execution facts with report_command; permitted native fallback requires --fallback-reason TEXT."}
-    if selected["model"] is None:
-        result["instructions"] += " Inherit the active session in a fresh native worker without a tier profile; unknown session settings cannot run managed."
-    else:
-        result["managed_command"] = shlex.join(["agent-box", "workflow", "run", task.id,
-                                                "--handoff", token, "--brief", args.brief])
-        if getattr(args, "facts", None):
-            result["managed_command"] += " --facts " + shlex.quote(args.facts)
-        if tier is not None:
-            result["managed_command"] += f" --tier {tier}"
-    if args.command == "run":
-        args.handoff = token
-        args.reason = None
-        return worker_dispatch(args, root, binding, adapter, task, config)
-    return result
-
-
 def scout_diagnostics(config):
     return {"scout_limit": config.workflow.scout.limit,
-            "scout_slots": "Managed runs enforce shared repository slots; native scouts are coordinator-counted. CLI processes cannot own native subagent leases."}
+            "scout_slots": "Managed scouts started by workflow delegate share these repository slots; "
+                           "the coordinator counts its own native scouts."}
 
 
-def scout_dispatch(args, root, binding, adapter, task, config):
-    """Separate metadata per scout keeps concurrent reports out of task evidence."""
-    fingerprint = scope(root, "HEAD", tree(adapter, task), allow_dirty=True)
-    identity = delegation_identity(root, binding)
-    tier = delegation_tier(args, task, "scout")
-    if args.command == "prepare":
-        question = (getattr(args, "question", None) or "").strip()
-        if not question or len(question) > 500 or "\n" in question:
-            raise AgentBoxError("Scout --question must be one nonempty line of at most 500 characters")
-        prompt = assignment_handoff(root, task, "HEAD", read_brief(args.brief), "scout", question=question)
-        selected = route(config, "scout", tier, args.primary)
-        descriptor = json.loads(base64.urlsafe_b64decode(handoff_descriptor(identity, task, fingerprint, selected)))
-        descriptor.update(question=question)
-        token = bind_delegation_input(root, descriptor, prompt)
-        path = scout_metadata_path(root, descriptor)
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-            atomic_write_text(path, json.dumps({"descriptor": descriptor, "status": "prepared"}), 0o600)
-        except BaseException:
-            cleanup_delegation_input(root, descriptor)
-            raise
-        return {"scope": fingerprint, "route": selected, "handoff": token,
-                "task": {"id": task.id, "title": task.title, "state": task.state, "tier": task.tier},
-                "delegate_handoff": bootstrap("scout", descriptor["input"]), "context_policy": context_policy(),
-                "report_schema": report_schema("scout"), **scout_diagnostics(config),
-                "managed_command": shlex.join(["agent-box", "workflow", "run", task.id, "--role", "scout",
-                                                "--tier", str(tier), "--handoff", token, "--brief", args.brief]),
-                "report_command": f"agent-box workflow report {task.id} --role scout --tier {tier} --scope {fingerprint} --provider ACTUAL_PROVIDER --model ACTUAL_MODEL --effort ACTUAL_EFFORT --handoff DESCRIPTOR --file REPORT.json",
-                "instructions": "Only the coordinator dispatches distinct bounded questions; never duplicate scouts. Count active native scouts against scout_limit (workflow.scout.limit); preparation reserves no native slot. " + LAUNCH_CONTEXT}
-    if not getattr(args, "handoff", None):
-        raise AgentBoxError("Scout execution requires --handoff from prepare")
-    descriptor = read_handoff_descriptor(identity, task, fingerprint, args.handoff)
-    check_handoff_route(descriptor, "scout", tier)
-    if identity != {key: descriptor.get(key) for key in identity}:
-        raise AgentBoxError("Scout repository identity changed; prepare the current scope")
-    if args.command == "report" and args.scope != fingerprint:
-        raise AgentBoxError("Scout report scope is stale")
-    path = scout_metadata_path(root, descriptor)
-    with lock(root, "scout-report-" + path.stem):
-        try:
-            saved = json.loads(path.read_text())
-        except (OSError, ValueError):
-            raise AgentBoxError("Scout descriptor is stale or unknown") from None
-        if saved != {"descriptor": descriptor, "status": "prepared"}:
-            raise AgentBoxError("Scout descriptor is stale, already started/reported, or route/context mismatched")
-        prompt = read_delegation_input(root, descriptor)
-        if args.command == "run":
-            question = getattr(args, "question", None)
-            if question is not None and question != descriptor["question"]:
-                raise AgentBoxError("Scout question changed; use the prepared question")
-            current_prompt = assignment_handoff(root, task, "HEAD", read_brief(args.brief), "scout", question=descriptor["question"])
-            if current_prompt != prompt:
-                raise AgentBoxError("Scout brief or repository instructions changed; prepared handoff must match")
-        execution_lock = scout_slot(root, config.workflow.scout.limit) if args.command == "run" else nullcontext()
-        with execution_lock:
-            atomic_write_text(path, json.dumps({"descriptor": descriptor, "status": "consumed"}), 0o600)
-            try:
-                output = (execute(config.workflow, descriptor["route"], "scout", root, prompt)
-                          if args.command == "run" else native_output(args, descriptor["route"], tier))
-                if scope(root, "HEAD", tree(adapter, adapter.get(task.id)), allow_dirty=True) != fingerprint:
-                    raise AgentBoxError("Scout code or requirements changed; report is stale")
-                read_delegation_input(root, descriptor)
-            finally:
-                path.unlink(missing_ok=True)
-                cleanup_delegation_input(root, descriptor)
-        return {**output, "scope": fingerprint, **scout_diagnostics(config)}
+def delegate(args, root, adapter, config):
+    """Launch one managed worker or scout and return its Markdown answer.
+
+    Nothing about the run is recorded: the coordinator reads the answer and
+    decides what to commit. Binding the answer to a prepared descriptor, scope
+    and HEAD was the rejected alternative; most of its refusals fired after a
+    paid run, on edits that changed nothing the delegate relied on.
+    """
+    task = adapter.get(args.task)
+    brief = read_brief(args.brief)
+    if args.role == "worker":
+        _, info, current, _ = resolve(root, adapter, task)
+        branch = current.get("branch") or info["branch"]
+        if gw.current_branch(root) != branch:
+            raise AgentBoxError(f"Switch to task branch {branch} before delegating a worker")
+    tier = task.tier if args.role == "worker" else 0
+    path, models = config.workflow.models_for(args.role, tier)
+    if not models:
+        raise AgentBoxError(f"No {args.role} candidates in {path}; configure them, or launch a native subagent instead")
+    # Only reviewer routing reads the session provider; a managed delegate runs any CLI.
+    selected = candidates(config, args.role, tier, None)
+    prompt = delegate_prompt(args.role, task, brief, repository_instructions(root))
+    # A worker shares the working tree with validation; scouts only read, up to their limit.
+    slot = lock(root, "work") if args.role == "worker" else scout_slot(root, config.workflow.scout.limit)
+    try:
+        with slot:
+            output = execute(config.workflow, selected, args.role, root, prompt)
+    except ProviderFailures as exc:
+        exc.failures = [diagnostic_path(item) for item in exc.failures]
+        raise
+    reference = save_private("delegate-responses", ".md",
+                             lambda target, _: atomic_write_text(target, output["report"], 0o600))
+    return {"response": output["report"], "route": output["route"],
+            "failures": [diagnostic_path(item) for item in output["failures"]],
+            "usage": output["diagnostics"]["usage"], "response_path": str(private_path(reference))}
 
 
-def scout_metadata_path(root, descriptor):
-    key = hashlib.sha256(str(descriptor.get("delegation")).encode()).hexdigest()
-    return WORKFLOW_STATE / "scouts" / repository_key(root) / (key + ".json")
+def private_path(reference):
+    from . import provider_runner
+    return provider_runner.WORKFLOW_STATE / reference
+
+
+def diagnostic_path(failure):
+    """Name a failure's private artifact by the path the coordinator can read."""
+    artifact = failure.get("artifact")
+    return {key: failure[key] for key in ("provider", "api_provider", "model", "category", "stage", "reason")
+            if failure.get(key) is not None} | ({"diagnostic": str(private_path(artifact))} if artifact else {})
 
 
 def dispatch(args):
-    if getattr(args, "facts", None) and getattr(args, "role", None) != "worker":
-        raise AgentBoxError("--facts is only available for delegated workers")
-    if getattr(args, "question", None) and getattr(args, "role", None) != "scout":
-        raise AgentBoxError("--question is only available for scouts")
-    if getattr(args, "abort", False) and getattr(args, "role", None) != "worker":
-        raise AgentBoxError("--abort is only available for worker execution")
     config = effective_config()
     if not config.workflow.enabled:
         raise AgentBoxError("Enable workflow in agent-box config first")
@@ -1997,8 +1582,10 @@ def dispatch(args):
     if args.command == "review-result":
         return review_result(root, binding, adapter, SimpleNamespace(id=args.task), config,
                              args.round, reconcile=args.reconcile)
-    if args.command == "report" and args.role == "reviewer":
+    if args.command == "report":
         return native_review_result(args, root, binding, adapter, config)
+    if args.command == "delegate":
+        return delegate(args, root, adapter, config)
     if args.command == "finish":
         return finish(root, config, adapter, args.task)
     if args.command in ("pr", "land"):
@@ -2015,18 +1602,11 @@ def dispatch(args):
             state.update(ceiling=args.limit, ceiling_reason=args.reason.strip())
             save_review_state(root, binding, task, state)
             return {"task": task.id, "review_budget": review_budget_summary(state, config.workflow.review.max_rounds)}
-    if args.command == "writer":
-        return record_direct_writer(args, root, adapter, task, config)
     if args.command == "begin":
         with lock(root, "review-budget"), lock(root, "work"):
             return {**begin(root, adapter, task, args.resume), "configuration": configuration_summary(config)}
     if args.command == "inspect":
         return inspect(root, binding, adapter, task, config)
-    if args.command in ("prepare", "run", "report") and args.role == "worker":
-        with lock(root, "review-budget"), lock(root, "work"):
-            return worker_dispatch(args, root, binding, adapter, task, config)
-    if getattr(args, "role", None) == "scout":
-        return scout_dispatch(args, root, binding, adapter, task, config)
     parent, info, current, base = resolve(root, adapter, task)
     tasks = tree(adapter, task)
     fingerprint = scope(root, base, tasks)
@@ -2039,7 +1619,7 @@ def dispatch(args):
         raise AgentBoxError("Managed fallback requires --handoff from prepare; omit --fallback-reason for a new round")
     if reuse_review:
         descriptor = read_handoff_descriptor(identity, task, fingerprint, args.handoff)
-        check_handoff_route(descriptor, "reviewer", delegation_tier(args, task, "reviewer"))
+        check_handoff_route(descriptor, "reviewer", delegation_tier(args, task))
         if not (args.fallback_reason or "").strip():
             raise AgentBoxError("Pass --fallback-reason explaining why the prepared native review could not run")
     saved = evidence(root, task, fingerprint)
@@ -2070,7 +1650,6 @@ def dispatch(args):
         command = args.arguments
         if not command:
             raise AgentBoxError(f"Pass the project validation command after --: {VALIDATE_FORM}")
-        warning = check_open_worker_execution(root, task, identity)
         with lock(root, "work"):
             result = subprocess.run(command, cwd=root, stdout=sys.stderr,
                                     timeout=config.workflow.timeout_seconds)
@@ -2082,11 +1661,10 @@ def dispatch(args):
             saved = evidence(root, task, fingerprint)
             saved["validation"] = {"command": command, "exit": 0}
             save_evidence(root, task, saved)
-        return {**saved, **({"warning": warning} if warning else {})}
-    if args.command in ("prepare", "run", "review"):
-        # Worker and scout commands returned through their dedicated state machines.
+        return saved
+    if args.command in ("prepare", "review"):
         role = "reviewer"
-        tier = delegation_tier(args, task, role)
+        tier = delegation_tier(args, task)
         review_context = ""
         if role == "reviewer":
             files, lines = diff_stats(root, base, config.workflow.review)
@@ -2111,7 +1689,7 @@ def dispatch(args):
         # the report is ingested at the role and tier it was actually run at.
         inherit_session = tier is None and not config.workflow.models_for(role, tier)[1]
         selected = (descriptor["route"] if descriptor else session_route(args, role, config) if inherit_session
-                    else route(config, role, tier, args.primary, saved.get("writer")))
+                    else route(config, role, tier, args.primary))
         review_round = (descriptor["delegation"] if role == "reviewer" and descriptor else
                         secrets.token_urlsafe(18) if role == "reviewer" else None)
         session_action = (selected.get("mode") == "current-session"
@@ -2140,9 +1718,8 @@ def dispatch(args):
             result = {"scope": fingerprint, "route": selected, **scout_diagnostics(config),
                     "task": {"id": task.id, "title": task.title, "state": task.state, "tier": task.tier},
                     "base": base,
-                    "report_schema": report_schema(role),
+                    "report_schema": report_schema(),
                     "report_command": " ".join(report_command),
-                    "context_policy": context_policy(),
                     "delegate_handoff": None,
                     "handoff": handoff_descriptor(
                         identity, task, fingerprint, selected, delegation=review_round),
@@ -2159,7 +1736,7 @@ def dispatch(args):
                                     "The delegate's whole final message is the role JSON object; REPORT.json holds it unchanged."}
             result["review_budget"] = budget
             descriptor = json.loads(base64.urlsafe_b64decode(result["handoff"]))
-            descriptor["review_scope"] = review_scope(root, base, tasks, config)
+            descriptor["review_scope"] = review_scope(root, base, tasks)
             descriptor["review_attempt"] = budget["used"]
             try:
                 prompt = reviewer_handoff(
@@ -2252,7 +1829,7 @@ def dispatch(args):
                         review_round)
                     descriptor = json.loads(base64.urlsafe_b64decode(handoff_descriptor(
                         identity, task, fingerprint, selected, delegation=review_round)))
-                    descriptor["review_scope"] = review_scope(root, base, tasks, config)
+                    descriptor["review_scope"] = review_scope(root, base, tasks)
                     descriptor["review_attempt"] = budget["used"]
                     bind_delegation_input(root, descriptor, prompt)
                     prompt = read_delegation_input(root, descriptor)
@@ -2276,11 +1853,20 @@ def dispatch(args):
 
 def main(argv):
     try:
-        result = dispatch(parser().parse_args(argv))
+        args = parser().parse_args(argv)
+        result = dispatch(args)
+        if args.command == "delegate":
+            # The answer is the output; its route and saved copy go beside it.
+            print(result.pop("response"))
+            print(json.dumps(result, ensure_ascii=False), file=sys.stderr)
+            return 0
         print(json.dumps(result, ensure_ascii=False, indent=2))
         if result.get("reconciliation", {}).get("status") in ("error", "blocked", "stale", "superseded", "invalid_input"):
             return 2
         return 0
+    except ProviderFailures as exc:
+        print(json.dumps({"error": exc.message, "failures": exc.failures}, ensure_ascii=False))
+        return 2
     except (AgentBoxError, OSError, ValueError, subprocess.TimeoutExpired) as exc:
         print(json.dumps({"error": str(exc)}))
         return 2

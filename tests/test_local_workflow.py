@@ -13,22 +13,7 @@ from agent_box.config import Config
 from agent_box.errors import AgentBoxError
 from agent_box.repo_binding import Binding
 from agent_box.tracker.core import Task
-from test_workflow_handoff import BINDING, repository, selected_route
-
-
-def completed_worker(case, task):
-    """Retire acceptance through an actual delegated assignment and report."""
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".md") as brief:
-        brief.write("Inspect current work")
-        brief.flush()
-        prepared = case.dispatch(["prepare", task.id, "--primary", "codex",
-                                  "--reason", "Inspect current work", "--brief", brief.name])
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".json") as report:
-        report.write('{"status":"completed","summary":"Inspected current work","evidence":[]}')
-        report.flush()
-        case.dispatch(["report", task.id, "--scope", prepared["scope"],
-                       "--handoff", prepared["handoff"], "--provider", "codex",
-                       "--session-inherited", "--file", report.name])
+from workflow_fixtures import BINDING, repository, selected_route
 
 
 class LocalLandTests(unittest.TestCase):
@@ -345,18 +330,6 @@ class LocalLandTests(unittest.TestCase):
         with self.assertRaisesRegex(AgentBoxError, "PASS review"):
             self.dispatch(["finish", "7"])
         self.adapter.set_state.assert_not_called()
-
-    def test_worker_start_retires_human_acceptance_even_before_new_commits(self):
-        """A failed worker must not leave earlier approval standing over its work."""
-        self.parent.state = "Doing"
-        self.config.workflow.review.policy = "always"
-        self.approve()
-        completed_worker(self, self.parent)
-        saved = workflow.read_evidence(self.root, self.parent)
-        saved["validation"] = {"exit": 0}
-        workflow.save_evidence(self.root, self.parent, saved)
-        with self.assertRaisesRegex(AgentBoxError, "PASS review"):
-            self.dispatch(["finish", "7"])
 
     def test_merge_refuses_dirty_or_diverged_work_before_switching(self):
         (self.root / "dirty").write_text("dirty")
@@ -832,7 +805,7 @@ class LocalPushTests(unittest.TestCase):
         self.assertEqual(self.remote_head(), before)
         self.adapter.set_state.assert_not_called()
         gw.git(origin, "symbolic-ref", "HEAD", "refs/heads/main")
-        from test_workflow_handoff import clone
+        from workflow_fixtures import clone
         other = clone(self.temporary.name)
         gw.git(other, "commit", "--allow-empty", "-m", "remote-only work")
         gw.git(other, "push", "origin", "main")

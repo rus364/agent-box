@@ -1,5 +1,4 @@
 """Completion retries retain acceptance of the work that actually advanced Git."""
-import tempfile
 import unittest
 from contextlib import contextmanager
 from dataclasses import replace
@@ -10,7 +9,7 @@ from agent_box import workflow
 from agent_box.errors import AgentBoxError
 from agent_box.tracker.core import Task
 import test_local_workflow
-from test_workflow_handoff import BINDING
+from workflow_fixtures import BINDING
 
 
 class ChildFinishTests(unittest.TestCase):
@@ -69,22 +68,6 @@ class ChildFinishTests(unittest.TestCase):
              self.adapter.set_state.side_effect) = previous
         self.assertEqual(initial.state, snapshot_state or authoritative.state)
         return result
-
-    def test_active_child_execution_blocks_integration_despite_validation(self):
-        """Child completion must not merge or close work with an outstanding worker."""
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".md") as brief:
-            brief.write("Inspect child work")
-            brief.flush()
-            prepared = self.dispatch(["prepare", "8", "--primary", "codex",
-                                      "--reason", "Inspect child work", "--brief", brief.name])
-        self.dispatch(["validate", "8", "--", "true"])
-        parent_head = gw.local_branch_head(self.root, "ab/7-parent")
-        saved = workflow.read_evidence(self.root, self.child)
-        with self.assertRaisesRegex(AgentBoxError, "Cannot finish: worker execution is prepared"):
-            self.dispatch(["finish", "8"])
-        self.assertEqual(gw.local_branch_head(self.root, "ab/7-parent"), parent_head)
-        self.adapter.set_state.assert_not_called()
-        self.assertEqual(saved["execution"]["descriptor"]["scope"], prepared["scope"])
 
     def test_tracker_outage_retry_finishes_original_work_without_merge_or_validation(self):
         """The advanced parent must not turn the accepted child into an empty diff."""
@@ -247,7 +230,6 @@ class ChildFinishTests(unittest.TestCase):
         self.child.state = "Ready"
         self.begin_ready_child()
         self.adapter.reset_mock()
-        test_local_workflow.completed_worker(self, self.child)
         self.dispatch(["validate", "8", "--", "true"])
         with self.assertRaisesRegex(AgentBoxError, "acceptance.*missing"):
             self.dispatch(["finish", "8"])
@@ -292,11 +274,9 @@ class ChildFinishTests(unittest.TestCase):
         self.assertEqual(gw.local_branch_head(self.root, "ab/7-parent"), base_head)
         self.adapter.set_state.assert_not_called()
 
-    def test_snapshot_is_saved_before_git_integration_and_keeps_writer(self):
-        """A failure immediately after Git still leaves the accepted scope and writer recoverable."""
+    def test_snapshot_is_saved_before_git_integration(self):
+        """A failure immediately after Git still leaves the accepted scope recoverable."""
         saved = workflow.read_evidence(self.root, self.child)
-        saved["writer"] = "codex"
-        workflow.save_evidence(self.root, self.child, saved)
         original_git = gw.git
 
         def observe(root, *args, **kwargs):
@@ -308,7 +288,7 @@ class ChildFinishTests(unittest.TestCase):
 
         with patch.object(gw, "git", side_effect=observe):
             self.dispatch(["finish", "8"])
-        self.assertEqual(workflow.read_evidence(self.root, self.parent)["writer"], "codex")
+        self.assertIn("local_acceptance", workflow.read_evidence(self.root, self.child))
 
 
 class NoCodeChildFinishTests(unittest.TestCase):
@@ -602,10 +582,6 @@ class NoCodeChildFinishTests(unittest.TestCase):
         elif retirement == "review":
             saved = workflow.read_evidence(self.root, self.child)
             workflow.reserve_review(self.root, BINDING, self.child, 3, "new-round", saved["scope"])
-        else:
-            gw.git(self.root, "switch", "ab/8-child")
-            test_local_workflow.completed_worker(self, self.child)
-            gw.git(self.root, "switch", "ab/7-parent")
         self.assertNotIn("local_acceptance", workflow.read_evidence(self.root, self.child))
         if remote:
             gw.git(self.root, "branch", "-D", "ab/8-child")
@@ -656,10 +632,6 @@ class NoCodeChildFinishTests(unittest.TestCase):
         """Starting another review cannot make a reset child look continuously unchanged."""
         self.returned_origin(retirement="review")
 
-    def test_direct_ref_return_cannot_erase_integration_after_worker_retirement(self):
-        """Delegation retires acceptance but must preserve known non-origin work."""
-        self.returned_origin(retirement="worker")
-
     def test_validated_non_origin_work_cannot_be_reset_into_no_code_acceptance(self):
         """Observed child work stays known even when a ref is reset before workflow integrates it."""
         self.returned_origin(integrate=False)
@@ -686,7 +658,6 @@ class NoCodeChildFinishTests(unittest.TestCase):
         self.child = replace(self.child, state="Ready")
         self.begin_ready_child(snapshot_state="Doing", resume=True)
         self.adapter.reset_mock()
-        test_local_workflow.completed_worker(self, self.child)
         self.dispatch(["validate", "8", "--", "true"])
         with self.assertRaisesRegex(AgentBoxError, "acceptance.*missing"):
             self.dispatch(["finish", "8"])
@@ -726,16 +697,6 @@ class NoCodeChildFinishTests(unittest.TestCase):
         with self.assertRaisesRegex(AgentBoxError, "acceptance.*missing"):
             self.dispatch(["finish", "8"])
         self.adapter.set_state.assert_not_called()
-
-    def test_worker_retirement_keeps_origin_but_requires_new_validation(self):
-        """Delegating investigation can retire acceptance without creating a code diff."""
-        self.dispatch(["validate", "8", "--", "true"])
-        test_local_workflow.completed_worker(self, self.child)
-        with self.assertRaisesRegex(AgentBoxError, "workflow validate"):
-            self.dispatch(["finish", "8"])
-        self.dispatch(["validate", "8", "--", "true"])
-        self.assertEqual(self.dispatch(["finish", "8"])["state"], "Done")
-
 
 class TransitionReadTests(unittest.TestCase):
     setUp = test_local_workflow.LocalLandTests.setUp
