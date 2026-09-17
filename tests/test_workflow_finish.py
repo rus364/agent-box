@@ -1,6 +1,5 @@
 """Completion retries retain acceptance of the work that actually advanced Git."""
 import unittest
-from pathlib import Path
 from contextlib import contextmanager
 from dataclasses import replace
 from unittest.mock import patch
@@ -88,11 +87,9 @@ class ChildFinishTests(unittest.TestCase):
     def test_finishing_a_subtask_discards_its_raw_review_streams(self):
         """Done ends the need to diagnose the subtask's review rounds; an interrupted finish keeps them."""
         from agent_box import review_results
-        source = Path(self.temporary.name) / "streams-source"
-        source.mkdir()
-        (source / "stderr").write_text("warning\n")
-        streams = review_results.save_streams(workflow.WORKFLOW_STATE, workflow.repository_key(self.root),
-                                              "8", "round", source).parent
+        run = review_results.stream_run(workflow.WORKFLOW_STATE, workflow.repository_key(self.root), "8", "round")
+        (run / "stderr").write_text("warning\n")
+        streams = run.parent
         self.interrupted_finish()
         self.assertTrue(streams.is_dir())
         self.assertEqual(self.dispatch(["finish", "8"])["state"], "Done")

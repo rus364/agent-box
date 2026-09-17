@@ -165,6 +165,7 @@ def stream_path(state, repository, task_id, round_id):
 
 
 def remove_tree(path):
+    """Delete a stream tree without following links out of it."""
     for candidate in sorted(path.rglob("*"), key=lambda item: len(item.parts), reverse=True):
         if candidate.is_dir() and not candidate.is_symlink():
             candidate.rmdir()
@@ -173,17 +174,22 @@ def remove_tree(path):
     path.rmdir()
 
 
-def save_streams(state, repository, task_id, round_id, source):
-    """Keep a round's raw provider streams for diagnosis until its task is Done.
+def stream_run(state, repository, task_id, round_id):
+    """Open an empty private directory for one launched reviewer's raw streams.
 
-    Each launched candidate gets a numbered run directory. The same 20-run,
-    seven-day bound as receipts caps what a task that never finishes leaves.
+    Each candidate a round launches gets a numbered run, kept for diagnosis until
+    the task is Done; the same 20-run, seven-day bound as receipts caps what a task
+    that never finishes leaves. A linked directory is refused like a linked receipt
+    directory, so provider output cannot be written or pruned outside workflow state.
     """
     target = stream_path(state, repository, task_id, round_id)
     for path in (target.parent.parent, target.parent, target):
+        if path.is_symlink():
+            raise AgentBoxError("Review stream directory is a symlink; leaving it untouched")
         path.mkdir(mode=0o700, exist_ok=True)
-    runs = sorted((run for task in target.parent.parent.iterdir() if task.is_dir()
-                   for round_dir in task.iterdir() if round_dir.is_dir() for run in round_dir.iterdir()),
+    runs = sorted((run for task in target.parent.parent.iterdir() if task.is_dir() and not task.is_symlink()
+                   for round_dir in task.iterdir() if round_dir.is_dir() and not round_dir.is_symlink()
+                   for run in round_dir.iterdir() if run.is_dir() and not run.is_symlink()),
                   key=lambda path: path.lstat().st_mtime, reverse=True)
     now = time.time()
     for index, run in enumerate(runs):
@@ -192,11 +198,6 @@ def save_streams(state, repository, task_id, round_id, source):
     number = 1 + max((int(path.name) for path in target.iterdir() if path.name.isdigit()), default=0)
     run = target / str(number)
     run.mkdir(mode=0o700)
-    for name in ("stdout", "stderr", "result.json"):
-        if (source / name).is_file():
-            with (source / name).open("rb") as stream:
-                (run / name).write_bytes(stream.read(MAX_BYTES))
-            (run / name).chmod(0o400)
     return run
 
 

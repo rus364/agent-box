@@ -312,9 +312,10 @@ nothing. Preflight checks local executables and supported routes, without guessi
 live model or account availability.
 
 A failure spends no attempt and may be rerun: the process was killed, the provider
-failed or timed out, or the answer had no verdict line. Failures are counted in a
-row, and a managed start counts as one until its verdict clears it, so a killed
-run that could record nothing still counts. After 2 failures in a row every review
+failed or timed out, a native reviewer never answered, or the answer had no verdict
+line, which also ends a native round. Failures are counted in a row, and every
+round start counts as one until its verdict clears it, so a killed run or an
+abandoned native reviewer that could record nothing still counts. After 2 failures in a row every review
 of the task stops until the user decides; a received verdict resets the count.
 The limit is fixed.
 
@@ -574,10 +575,11 @@ directories and 0400 files. Per checkout, retention is 20 receipts, 32 MiB total
 and symlinks stay untouched. No background cleanup or automatic paid rerun occurs.
 Read the full answer locally and journal only necessary findings/evidence.
 
-Every launched managed reviewer keeps its raw provider streams (Codex JSONL or the
-Claude envelope as stdout, stderr, and Codex's final message file) beside the
-receipts under `review-results/<checkout>/streams/<task>/<round>/<run>`, one
-numbered run per candidate, up to 8 MiB each. They exist to diagnose an
+Every launched managed reviewer writes its raw provider streams (Codex JSONL or the
+Claude envelope as stdout, stderr, and Codex's final message file) directly beside
+the receipts under `review-results/<checkout>/streams/<task>/<round>/<run>`, one
+numbered run per candidate, so a killed run leaves them too. A finished run's files
+become read-only and are cut to 8 MiB each; a linked stream directory is refused. They exist to diagnose an
 INCONCLUSIVE, a failure or a disputed result, for example a reviewer that claims
 its input files were missing although workflow verified them; the coordinator does
 not read them in normal work. They are removed when the task becomes Done (`finish`

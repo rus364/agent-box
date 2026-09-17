@@ -67,18 +67,25 @@ class ReviewWorkflowTests(WorkflowCase):
         with self.assertRaisesRegex(AgentBoxError, "pass them with --result"):
             self.run_workflow("review", "1", "--native", "--model", "m")
 
-    def test_an_answer_without_exactly_one_verdict_line_keeps_the_native_round_open(self):
-        """An unreadable verdict is a failure to record, not a spent round."""
-        self.native_round()
-        for text in ("Looks fine to me.\n", "Verdict: PASS\nVerdict: NEEDS_WORK\n", "Verdict: MAYBE\n"):
-            with self.subTest(text=text), self.assertRaisesRegex(AgentBoxError, "round stays pending"):
+    def test_a_native_answer_without_exactly_one_verdict_line_is_a_failure_like_a_managed_one(self):
+        """A native round is counted from its start, so neither a bad answer nor an abandoned reviewer retries forever."""
+        for count, text in ((1, "Looks fine to me.\n"), (2, "Verdict: PASS\nVerdict: NEEDS_WORK\n")):
+            opened = self.native_round()
+            with self.assertRaisesRegex(AgentBoxError, f"ended as failure {count} of 2.*--native"):
                 self.native_result(text)
-        self.assertEqual(self.budget()["used"], 0)
+            self.assertFalse(self.delegation_input(opened).exists())
+            with self.assertRaisesRegex(AgentBoxError, "No native review round is pending"):
+                self.native_result()
+        self.assertEqual((self.budget()["used"], self.budget()["failures"]), (0, 2))
         self.assertNotIn("review", workflow.read_evidence(self.root, self.task))
+        with self.assertRaisesRegex(AgentBoxError, "Review stopped"):
+            self.native_round()
+        self.run_workflow("review-budget", "1", "--reason", "User allows another native review")
+        self.native_round()
         result = self.native_result("Verdict: NEEDS_WORK\n\n- [HIGH] change.py:1 — bound the value\n"
                                     "- [LOW] docs.md:3 — typo\n")
         self.assertEqual((result["verdict"], result["findings"]), ("NEEDS_WORK", {"HIGH": 1, "LOW": 1}))
-        self.assertEqual(result["review_budget"]["used"], 1)
+        self.assertEqual((result["review_budget"]["used"], result["review_budget"]["failures"]), (1, 0))
 
     def test_a_commit_after_the_native_round_opened_makes_its_verdict_stale(self):
         """The verdict still cost a round, but it describes code that is no longer the head."""
@@ -93,7 +100,7 @@ class ReviewWorkflowTests(WorkflowCase):
         """A reviewer that may have read other bytes cannot record a verdict; owned cleanup stays exact."""
         for damage in ("missing", "modified", "symlink", "replaced-package", "unknown-file"):
             with self.subTest(damage=damage):
-                self.config.workflow.review.max_rounds = 10
+                workflow.save_review_state(self.root, BINDING, self.task, {"used": 0})
                 opened = self.native_round()
                 path = self.delegation_input(opened)
                 descriptor = json.loads((path.parent / "descriptor.json").read_text())
@@ -365,12 +372,10 @@ class ReviewWorkflowTests(WorkflowCase):
 
     def test_a_managed_answer_without_a_verdict_line_is_a_failure_with_readable_streams(self):
         """The runner's parse refuses the answer; the round costs nothing and its raw streams stay private."""
-        def provider(route, role, root, prompt, *, on_streams, **kwargs):
-            source = Path(self.directory.name) / "run"
-            source.mkdir(exist_ok=True)
-            (source / "stdout").write_text('{"type": "turn.completed"}\n')
-            (source / "stderr").write_text("warning\n")
-            on_streams(source)
+        def provider(route, role, root, prompt, *, streams, **kwargs):
+            run = streams()
+            (run / "stdout").write_text('{"type": "turn.completed"}\n')
+            (run / "stderr").write_text("warning\n")
             return provider_runner.review_report("No verdict here.\n")
 
         with patch.object(workflow, "run", side_effect=provider), \
@@ -378,7 +383,7 @@ class ReviewWorkflowTests(WorkflowCase):
             self.run_workflow("review", "1")
         streams = Path(raised.exception.message.rsplit("Raw streams: ", 1)[1])
         self.assertEqual((streams / "1" / "stderr").read_text(), "warning\n")
-        self.assertEqual(stat.S_IMODE((streams / "1" / "stdout").stat().st_mode), 0o400)
+        self.assertEqual(stat.S_IMODE((streams / "1").stat().st_mode), 0o700)
         self.assertEqual(self.budget()["used"], 0)
 
     def test_a_killed_managed_review_reads_back_as_an_ended_failure(self):
@@ -412,11 +417,8 @@ class ReviewWorkflowTests(WorkflowCase):
 
     def test_raw_streams_stay_until_the_task_is_done(self):
         """A verdict's streams explain an INCONCLUSIVE later; Done is when nobody needs them."""
-        def provider(route, role, root, prompt, *, on_streams, **kwargs):
-            source = Path(self.directory.name) / "streams-source"
-            source.mkdir(exist_ok=True)
-            (source / "stdout").write_text("events\n")
-            on_streams(source)
+        def provider(route, role, root, prompt, *, streams, **kwargs):
+            (streams() / "stdout").write_text("events\n")
             return answer("Verdict: INCONCLUSIVE\n\nInput files not found.\n")
 
         with patch.object(workflow, "run", side_effect=managed_runner(provider)):

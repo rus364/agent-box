@@ -124,7 +124,7 @@ class FailureDiagnosticsTests(unittest.TestCase):
         self.envelope = json.dumps({"result": self.text}).encode()
 
     def run_response(self, output, *, stderr=b"", code=0, route=None, result=None, timeout=False, diagnostics=None,
-                     on_completed=None, role="reviewer", on_streams=None):
+                     on_completed=None, role="reviewer", streams=None):
         def popen(command, **kwargs):
             kwargs["stdout"].buffer.write(output)
             kwargs["stderr"].buffer.write(stderr)
@@ -137,7 +137,7 @@ class FailureDiagnosticsTests(unittest.TestCase):
         with patch.object(self.r.subprocess, "Popen", side_effect=popen), \
              patch.object(self.r.os, "killpg"):
             return self.r.run(route or self.route, role, self.root, "private prompt",
-                              diagnostics=diagnostics, on_completed=on_completed, on_streams=on_streams)
+                              diagnostics=diagnostics, on_completed=on_completed, streams=streams)
 
     def test_completion_hook_runs_with_diagnostics_before_temporary_files_are_removed(self):
         """Workflow must save a successful response before the provider's temporary context exits."""
@@ -277,20 +277,38 @@ class FailureDiagnosticsTests(unittest.TestCase):
                                            result=prose.encode()), expected)
         self.assertFalse((self.state / "provider-failures").exists())
 
-    def test_streams_are_offered_after_every_launched_process(self):
-        """Raw streams explain a confusing verdict or a failure; a refusal before launch has none."""
-        seen = []
+    def test_streams_are_written_where_they_survive_a_killed_runner(self):
+        """The process writes straight into the private run directory, so a kill leaves its streams behind.
 
-        def keep(directory):
-            seen.append({name: (directory / name).read_bytes() for name in ("stdout", "stderr")})
+        A refusal before launch opens nothing; a finished run's files become read-only and bounded.
+        """
+        runs = []
 
-        self.run_response(self.envelope, stderr=b"note", on_streams=keep)
-        self.fail_response(json.dumps({"result": "no verdict"}).encode(), on_streams=keep)
-        self.assertEqual([item["stderr"] for item in seen], [b"note", b""])
-        self.assertEqual(seen[0]["stdout"], self.envelope)
+        def run_directory():
+            path = self.root / f"run-{len(runs)}"
+            path.mkdir(mode=0o700)
+            runs.append(path)
+            return path
+
+        def written_while_running(command, **kwargs):
+            kwargs["stdout"].buffer.write(b"partial events")
+            kwargs["stdout"].flush()
+            self.assertEqual((runs[-1] / "stdout").read_bytes(), b"partial events")
+            raise KeyboardInterrupt
+
+        with patch.object(self.r.subprocess, "Popen", side_effect=written_while_running), \
+             self.assertRaises(self.r.ProviderFailure):
+            self.r.run({**self.route, "provider": "codex"}, "reviewer", self.root, "prompt", streams=run_directory)
+        with patch.object(self.r, "STREAM_LIMIT", 4):
+            self.run_response(self.envelope, stderr=b"note", streams=run_directory)
+        self.assertEqual(((runs[-1] / "stdout").read_bytes(), (runs[-1] / "stderr").read_bytes()),
+                         (self.envelope[:4], b"note"))
+        self.assertEqual((runs[-1] / "stdout").stat().st_mode & 0o777, 0o400)
+        failure = self.fail_response(json.dumps({"result": "no verdict"}).encode(), streams=run_directory)
+        self.assertEqual(failure.diagnostic["stdout_bytes"], len(json.dumps({"result": "no verdict"})))
         with self.assertRaises(self.r.ProviderFailure):
-            self.r.run({**self.route, "provider": "other"}, "reviewer", self.root, "prompt", on_streams=keep)
-        self.assertEqual(len(seen), 2)
+            self.r.run({**self.route, "provider": "other"}, "reviewer", self.root, "prompt", streams=run_directory)
+        self.assertEqual([path.exists() for path in runs], [True, True, True, False])
 
     def test_error_subtypes_or_errors_cannot_smuggle_valid_verdict(self):
         """Reproduce the observed parser defect with explicitly synthetic envelopes."""

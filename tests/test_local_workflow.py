@@ -74,13 +74,10 @@ class LocalLandTests(unittest.TestCase):
     def test_landing_a_parent_discards_its_raw_review_streams_only_once_it_is_done(self):
         """Streams explain open review rounds; a failed Done write still needs them, a landed parent does not."""
         from agent_box import review_results
-        source = Path(self.temporary.name) / "streams-source"
-        source.mkdir()
-        (source / "stdout").write_text("events\n")
-        streams = review_results.save_streams(workflow.WORKFLOW_STATE, workflow.repository_key(self.root),
-                                              "7", "round", source).parent
-        other = review_results.save_streams(workflow.WORKFLOW_STATE, workflow.repository_key(self.root),
-                                            "9", "round", source)
+        run = review_results.stream_run(workflow.WORKFLOW_STATE, workflow.repository_key(self.root), "7", "round")
+        (run / "stdout").write_text("events\n")
+        streams = run.parent
+        other = review_results.stream_run(workflow.WORKFLOW_STATE, workflow.repository_key(self.root), "9", "round")
         self.adapter.set_state.side_effect = AgentBoxError("tracker unavailable")
         with self.assertRaisesRegex(AgentBoxError, "tracker unavailable"):
             self.operate("merge")

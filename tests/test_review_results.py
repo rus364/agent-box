@@ -212,24 +212,28 @@ class ReviewResultTests(unittest.TestCase):
         self.assertEqual(target.read_text(), "keep")
         self.assertEqual(os.stat(newer["result_path"]).st_mode & 0o777, 0o400)
 
-    def test_raw_stream_retention_keeps_twenty_recent_runs(self):
-        """A task that never reaches Done cannot grow stream storage without bound."""
-        source = Path(self.directory.name) / "streams-source"
-        source.mkdir()
-        (source / "stdout").write_bytes(b"x" * 10)
-        (source / "result.json").write_text("Verdict: PASS")
+    def test_raw_stream_retention_keeps_twenty_recent_runs_inside_workflow_state(self):
+        """A task that never reaches Done cannot grow stream storage without bound or write through links."""
         repository = workflow.repository_key(self.root)
-        first = review_results.save_streams(workflow.WORKFLOW_STATE, repository, "1", "old", source)
+        first = review_results.stream_run(workflow.WORKFLOW_STATE, repository, "1", "old")
+        (first / "stdout").write_text("old")
         os.utime(first, (0, 0))
-        second = review_results.save_streams(workflow.WORKFLOW_STATE, repository, "2", "round", source)
+        second = review_results.stream_run(workflow.WORKFLOW_STATE, repository, "2", "round")
         self.assertFalse(first.exists())
-        self.assertEqual(sorted(path.name for path in second.iterdir()), ["result.json", "stdout"])
-        self.assertEqual((second.stat().st_mode & 0o777, (second / "stdout").stat().st_mode & 0o777), (0o700, 0o400))
-        runs = [review_results.save_streams(workflow.WORKFLOW_STATE, repository, "2", "round", source)
+        self.assertEqual((second.name, second.stat().st_mode & 0o777), ("1", 0o700))
+        os.utime(second, (second.stat().st_mtime - 60,) * 2)  # Created runs can share a timestamp.
+        runs = [review_results.stream_run(workflow.WORKFLOW_STATE, repository, "2", "round")
                 for _ in range(review_results.MAX_FILES)]
         self.assertEqual([run.name for run in runs[-2:]], ["20", "21"])
         self.assertFalse(second.exists())
         self.assertEqual(len(list(second.parent.iterdir())), review_results.MAX_FILES)
+        outside = Path(self.directory.name) / "outside"
+        outside.mkdir()
+        link = review_results.stream_path(workflow.WORKFLOW_STATE, repository, "3", "round").parent
+        link.symlink_to(outside, target_is_directory=True)
+        with self.assertRaisesRegex(AgentBoxError, "symlink"):
+            review_results.stream_run(workflow.WORKFLOW_STATE, repository, "3", "round")
+        self.assertEqual(list(outside.iterdir()), [])
 
     def test_information_changes_keep_validation_while_policy_labels_still_trigger_review(self):
         """Metadata is not a test input, but a review-trigger label still has its live consumer."""

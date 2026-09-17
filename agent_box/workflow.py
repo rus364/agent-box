@@ -269,10 +269,10 @@ def save_review_state(root, binding, task, value):
 def start_review(root, binding, task, limit, round_id, fingerprint, backend):
     """Open a round; only its verdict will spend an attempt.
 
-    A managed start counts as a failure until a verdict clears it: a killed
-    process runs no code afterwards, so counting on failure would miss exactly
-    the kills that burned rounds before. Two failures in a row stop review for
-    the user's decision instead of retrying forever.
+    Every start counts as a failure until a verdict clears it: a killed process
+    runs no code afterwards, and an abandoned native reviewer reports nothing, so
+    counting on failure would miss both. Two failures in a row stop review for the
+    user's decision instead of retrying forever.
     """
     with lock(root, "review-budget"):
         state = read_review_state(root, binding, task)
@@ -294,9 +294,7 @@ def start_review(root, binding, task, limit, round_id, fingerprint, backend):
         save_evidence(root, task, saved)
         unanswered = state.get("pending") if state.get("pending_backend") == "native" and not any(
             item["round"] == state.get("pending") for item in state.get("results", [])) else None
-        state.update(pending=round_id, pending_backend=backend)
-        if backend == "managed":
-            state["failures"] = budget["failures"] + 1
+        state.update(pending=round_id, pending_backend=backend, failures=budget["failures"] + 1)
         save_review_state(root, binding, task, state)
     if unanswered:
         # Its answer can no longer be recorded, so nobody needs its input; foreign files stay.
@@ -714,7 +712,7 @@ class ProviderFailures(AgentBoxError):
         self.message, self.failures = message, failures
 
 
-def execute(config, selected, role, root, prompt, read_paths=(), on_completed=None, on_streams=None):
+def execute(config, selected, role, root, prompt, read_paths=(), on_completed=None, streams=None):
     failures = []
     for candidate in [selected, *selected["fallbacks"]]:
         try:
@@ -723,7 +721,7 @@ def execute(config, selected, role, root, prompt, read_paths=(), on_completed=No
                 return {"route": {k: candidate[k] for k in ("provider", "api_provider", "api_fingerprint", "model", "effort", "tier", "fast") if k in candidate},
                         "report": report, "failures": list(failures), "diagnostics": dict(diagnostics)}
             report = run(candidate, role, root, prompt, timeout=config.timeout_seconds,
-                         read_paths=read_paths, diagnostics=diagnostics, on_streams=on_streams,
+                         read_paths=read_paths, diagnostics=diagnostics, streams=streams,
                          **({"on_completed": lambda report: on_completed(completed(report))} if on_completed else {}))
             return completed(report)
         except ProviderFailure as exc:
@@ -1327,8 +1325,7 @@ def review(args, root, binding, adapter, config, task, parent, tasks, base, fing
             try:
                 completed(execute(config.workflow, selected, "reviewer", root, read_delegation_input(root, descriptor),
                         read_paths=[review_evidence_path(root, task.id, round_id)], on_completed=completed,
-                        on_streams=lambda source: review_results.save_streams(
-                            WORKFLOW_STATE, repository, task.id, round_id, source)))
+                        streams=lambda: review_results.stream_run(WORKFLOW_STATE, repository, task.id, round_id)))
             except ProviderFailures as exc:
                 failures = read_review_budget(root, binding, task, limit)["failures"]
                 raise ProviderFailures(
@@ -1360,7 +1357,18 @@ def native_result(args, root, binding, adapter, config, task):
     try:
         report = {**review_report(text), "text": text}
     except ProviderFailure as exc:
-        raise AgentBoxError(f"{exc}; the round stays pending, so record a corrected answer or rerun the reviewer") from None
+        # Like a managed answer without a verdict: the round ends as a failure and a rerun opens a new one.
+        with lock(root, "review-budget"):
+            state = read_review_state(root, binding, task)
+            if state.get("pending") == round_id:
+                state.pop("pending", None)
+                state.pop("pending_backend", None)
+                save_review_state(root, binding, task, state)
+        with contextlib.suppress(AgentBoxError, OSError):
+            cleanup_delegation_input(root, descriptor)
+        raise AgentBoxError(f"{exc}; the round ended as failure {state.get('failures', 0)} of "
+                            f"{REVIEW_FAILURE_LIMIT} in a row without spending an attempt. Rerun the reviewer "
+                            f"with workflow review {task.id} --native") from None
     route = {"provider": args.provider, "model": args.model, **({"effort": args.effort} if args.effort else {}),
              "backend": "native"}
     store_review_result(root, binding, task, descriptor, {"route": route, "report": report,

@@ -29,6 +29,7 @@ DIAGNOSTIC_STREAM_LIMIT = 1024 * 1024
 STDERR_LIMIT = 64 * 1024
 DIAGNOSTIC_MAX_FILES = 20
 DIAGNOSTIC_MAX_AGE = 7 * 24 * 3600
+STREAM_LIMIT = 8 * 1024 * 1024
 
 
 class Interrupted(Exception):
@@ -274,11 +275,13 @@ def codex_usage(path):
 
 
 def run(route, role, root, prompt, *, timeout=3600, read_paths=(), diagnostics=None, on_completed=None,
-        on_streams=None):
+        streams=None):
     """A reviewer returns its verdict and text; a worker or scout its Markdown text.
 
-    ``on_streams(directory)`` sees the raw stdout, stderr and result files of a
-    launched process, whether it answered or failed, before they are discarded.
+    ``streams()`` returns a private directory that receives the raw stdout, stderr
+    and result file as the process writes them. Copying them after the run was the
+    rejected alternative: a killed runner copies nothing, and a kill is exactly
+    what the streams have to explain.
     """
     from .external_launch import builtin_environment, prepare
     env = builtin_environment(os.environ)
@@ -292,15 +295,17 @@ def run(route, role, root, prompt, *, timeout=3600, read_paths=(), diagnostics=N
     with tempfile.TemporaryDirectory(prefix="agent-box-run-") as directory:
         directory = Path(directory)
         reviewer = role == "reviewer"
-        result = directory / "result.json"
+        output_directory = streams() if streams is not None else directory
+        result = output_directory / "result.json"
         def record(exc):
             metadata.update(category=exc.category, stage=exc.stage, reason=exc.reason,
                             duration_seconds=round(time.monotonic() - started, 3),
                             exit_code=process.returncode if process is not None else None)
-            for name, path in (("stdout", directory / "stdout"), ("stderr", directory / "stderr"), ("result", result)):
+            for name, path in (("stdout", output_directory / "stdout"), ("stderr", output_directory / "stderr"),
+                               ("result", result)):
                 metadata[name + "_bytes"] = path.stat().st_size if path.exists() else None
             try:
-                metadata["artifact"] = save_failure(metadata, directory)
+                metadata["artifact"] = save_failure(metadata, output_directory)
             except OSError:
                 metadata.update(artifact=None, diagnostic_error="cannot persist private diagnostic")
             exc.diagnostic = metadata
@@ -323,8 +328,11 @@ def run(route, role, root, prompt, *, timeout=3600, read_paths=(), diagnostics=N
             # naming the refused settings, like every other provider failure.
             exc.stage, exc.reason = "preflight", str(exc)
             record(exc)
+            if streams is not None:
+                with contextlib.suppress(OSError):
+                    output_directory.rmdir()
             raise
-        with (directory / "stdout").open("w+") as stdout, (directory / "stderr").open("w+") as stderr:
+        with (output_directory / "stdout").open("w+") as stdout, (output_directory / "stderr").open("w+") as stderr:
             try:
                 # The CLI runs in its own session, so a signal to this process
                 # alone would leave it spending unobserved; the default SIGTERM
@@ -358,13 +366,13 @@ def run(route, role, root, prompt, *, timeout=3600, read_paths=(), diagnostics=N
                 stderr.flush()
                 if route["provider"] == "codex" and not result.exists() and not process.returncode:
                     invalid("response", "Codex wrote no final message")
-                source = result if route["provider"] == "codex" and result.exists() else directory / "stdout"
+                source = result if route["provider"] == "codex" and result.exists() else output_directory / "stdout"
                 metadata["response_source"] = "result-file" if source == result else "stdout"
                 with source.open("rb") as stream:
                     output = stream.read(RESPONSE_LIMIT + 1)
                 if len(output) > RESPONSE_LIMIT and not process.returncode:
                     invalid("response", "response exceeds 4 MiB limit")
-                with (directory / "stderr").open("rb") as stream:
+                with (output_directory / "stderr").open("rb") as stream:
                     error = stream.read(STDERR_LIMIT)
                 try:
                     output = output.decode("utf-8")
@@ -378,7 +386,7 @@ def run(route, role, root, prompt, *, timeout=3600, read_paths=(), diagnostics=N
                 if reviewer:
                     report = {**review_report(report), "text": report}
                 if route["provider"] == "codex":
-                    metadata.update(codex_usage(directory / "stdout"))
+                    metadata.update(codex_usage(output_directory / "stdout"))
                 if diagnostics is not None:
                     diagnostics["usage"] = metadata["usage"]
                 if on_completed is not None:
@@ -392,6 +400,10 @@ def run(route, role, root, prompt, *, timeout=3600, read_paths=(), diagnostics=N
             finally:
                 stdout.flush()
                 stderr.flush()
-                if on_streams is not None and process is not None:
-                    with contextlib.suppress(OSError, AgentBoxError):
-                        on_streams(directory)
+                if streams is not None:
+                    for name in ("stdout", "stderr", "result.json"):
+                        with contextlib.suppress(OSError):
+                            path = output_directory / name
+                            if path.stat().st_size > STREAM_LIMIT:
+                                os.truncate(path, STREAM_LIMIT)
+                            path.chmod(0o400)
