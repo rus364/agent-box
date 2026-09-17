@@ -7,7 +7,7 @@ describes one thing you can turn on, what it exposes, and what it costs.
 | Integration | Default | What it is |
 | --- | --- | --- |
 | [Shared skills](skills.md) | links on, workflow off | One skill tree both agents read, plus the owned workflow skills |
-| [Tracker](tracker.md) | off | Portable task commands and Vikunja API v2 |
+| [Tracker](tracker.md) | off | Portable task commands and the Vikunja API v2 adapter |
 | [Workflow](workflow.md) | off | Sequential tasks, model routing, fresh review and parent PRs |
 | [External API providers](external-providers.md) | off | Named API keys, separate CLI endpoints, explicit launches and workflow candidates |
 | [Agent browser](browser.md) | off | A headless browser inside the workspace box for agents to drive |
