@@ -947,6 +947,14 @@ def effective_config(base=None, *, include_project=True) -> Config:
                 launch = rendered.get("launch") if isinstance(rendered.get("launch"), dict) else {}
             except (OSError, ValueError, TypeError):
                 raise AgentBoxError("Cannot read rendered workflow configuration") from None
+            # The snapshot is rendered once at launch; after a schema change in the
+            # checkout it fails validation although nothing the user saved is wrong.
+            errors = base.workflow.validate()
+            if errors:
+                raise AgentBoxError(
+                    "This session's configuration snapshot was rendered at launch for an older "
+                    f"agent-box configuration schema ({'; '.join(errors)}). Restart the agent-box "
+                    "session to render a current snapshot")
     import copy
     base = copy.deepcopy(base)
     # The editor needs the original URLs, but a session must not retain an

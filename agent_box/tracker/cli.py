@@ -26,7 +26,7 @@ def emit(value):
 def parser():
     p = argparse.ArgumentParser(prog="agent-box tracker", description=(
         "Read and maintain tracker tasks. Output is JSON by default; no --json flag is needed. "
-        "Use resolve for a user reference, then get ID for a full task."))
+        "get accepts a user reference directly; other task commands take the canonical ID it returns."))
     p.add_argument("--provider", help="Override the configured provider")
     p.add_argument("--adoption", type=Path, help="Use a receipt's staging scope without changing the repository binding")
     sub = p.add_subparsers(dest="command", required=True)
@@ -64,7 +64,8 @@ def parser():
                        "normalized": "Mark completed normalization; --undo makes the task a candidate again",
                        "relation": "Add or remove a task relation"}[name]
         cmd = sub.add_parser(name, help=description, description=description + "; output is JSON.")
-        cmd.add_argument("task", help="Canonical task ID returned by resolve/get/search")
+        cmd.add_argument("task", help="Visible number, exact title, task URL or canonical ID" if name == "get"
+                         else "Canonical task ID returned by resolve/get/search")
         if name == "claim":
             cmd.add_argument("--resume", action="store_true")
         elif name == "state":
@@ -219,7 +220,10 @@ def dispatch(args):
             tasks = ready_tasks(tasks, adapter.get, str(adapter.identity()["id"]))
         results = [task.to_dict(full=False) for task in tasks]
         return (results[0] if results else None) if args.command == "next" else results
-    task = adapter.get(args.task)
+    if args.command == "get" and binding is not None:
+        task = adapter.resolve(args.task, binding.project, binding.recursive, canonical=True)
+    else:
+        task = adapter.get(args.task)
     if args.adoption and args.command in {"update", "tier", "relation", "comment", "check", "state", "normalized"}:
         scope = set(adapter.subtree(binding.project, True))
         if task.project not in scope:

@@ -1470,8 +1470,32 @@ def begin(root, adapter, task, resume):
     return {"task": task.id, "parent": parent.id, "branch": gw.current_branch(root), "base": base}
 
 
+VALIDATE_FORM = "agent-box workflow validate ID [--primary PROVIDER] -- COMMAND ARGS"
+
+
+class WorkflowParser(argparse.ArgumentParser):
+    """Split `validate` at `--` before argparse sees the project command.
+
+    A trailing REMAINDER positional swallowed every option after the task ID, so
+    `validate ID --primary claude -- CMD` tried to execute `--primary`. The
+    separator is required instead: without it an option-looking project argument
+    cannot be told apart from a workflow option.
+    """
+
+    def parse_known_args(self, args=None, namespace=None):
+        args = list(sys.argv[1:] if args is None else args)
+        if args[:1] != ["validate"] or {"-h", "--help"} & set(args[:args.index("--") if "--" in args else None]):
+            return super().parse_known_args(args, namespace)
+        if "--" not in args:
+            raise AgentBoxError(f"Pass the validation command after --: {VALIDATE_FORM}")
+        split = args.index("--")
+        namespace, extras = super().parse_known_args(args[:split], namespace)
+        namespace.arguments = args[split + 1:]
+        return namespace, extras
+
+
 def parser():
-    p = argparse.ArgumentParser(prog="agent-box workflow")
+    p = WorkflowParser(prog="agent-box workflow")
     sub = p.add_subparsers(dest="command", required=True)
     for name in ("begin", "inspect", "approve", "prepare", "run", "review", "review-result", "review-budget", "validate", "report", "finish", "pr", "land", "writer"):
         description = {
@@ -1480,6 +1504,7 @@ def parser():
             "writer": "Record the coordinator's own direct work and provider; auto policy requires --reason. No preparation or report",
             "review": "Apply review policy to the clean task scope and dispatch a required review",
             "review-result": "Read a private completed result or retry reconciliation without a model call or attempt",
+            "validate": f"Run the project validation command on the clean task scope: {VALIDATE_FORM}",
         }.get(name)
         cmd = sub.add_parser(name, **({"help": description, "description": description} if description else {}))
         cmd.add_argument("task")
@@ -1531,8 +1556,6 @@ def parser():
         if name == "review":
             cmd.add_argument("--handoff", help="Run managed fallback once within this prepared pending review round")
             cmd.add_argument("--fallback-reason", help="Why native cannot run the prepared reviewer; managed tries the same provider first")
-        if name == "validate":
-            cmd.add_argument("arguments", nargs=argparse.REMAINDER)
         if name == "pr":
             cmd.add_argument("--title", required=True)
             cmd.add_argument("--body-file", required=True)
@@ -2045,10 +2068,8 @@ def dispatch(args):
         return {"task": task.id, "head": gw.head_sha(root), "human_acceptance": saved["human_acceptance"]}
     if args.command == "validate":
         command = args.arguments
-        if command and command[0] == "--":
-            command = command[1:]
         if not command:
-            raise AgentBoxError("Pass the project validation command after --")
+            raise AgentBoxError(f"Pass the project validation command after --: {VALIDATE_FORM}")
         warning = check_open_worker_execution(root, task, identity)
         with lock(root, "work"):
             result = subprocess.run(command, cwd=root, stdout=sys.stderr,

@@ -162,6 +162,9 @@ def parser_candidates(parser, args):
         if pending:
             pending = None
             continue
+        if token == "--":
+            # Only a wrapped command follows the separator (`workflow validate ID -- CMD`).
+            return files(args)
         if token.startswith("-") and token != "-":
             flag, inline, _ = token.partition("=")
             action = optionals.get(flag)

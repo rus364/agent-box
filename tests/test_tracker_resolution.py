@@ -20,6 +20,8 @@ class IndexClient(NativeClient):
                 if row['project_id'] == int(parts[1]) and row['index'] == int(parts[4]):
                     return dict(row)
             raise api.APIError(404, 'This task does not exist', 4002)
+        if len(parts) == 2 and parts[0] == 'tasks' and int(parts[1]) not in self.tasks:
+            raise api.APIError(404, 'This task does not exist', 4002)
         return super().get(path)
 
 
@@ -38,6 +40,30 @@ class ResolutionTests(unittest.TestCase):
     def resolve(self, *arguments):
         with patch.object(cli, 'context', return_value=(self.adapter, self.binding, None)):
             return cli.dispatch(cli.parser().parse_args(['resolve', *arguments]))
+
+    def get(self, reference):
+        with patch.object(cli, 'context', return_value=(self.adapter, self.binding, None)), \
+             patch.object(self.adapter, 'comments', return_value=[]):
+            return cli.dispatch(cli.parser().parse_args(['get', reference]))
+
+    def test_get_reads_a_user_reference_without_a_separate_resolve(self):
+        """A copied number, title or URL reads its task; canonical IDs keep working."""
+        for reference, expected in (('#21', '319'), ('24', '322'), ('Resolution', '322'),
+                                    (self.client.url + '/tasks/319', '319'), ('319', '319'), ('400', '400')):
+            with self.subTest(reference=reference):
+                self.assertEqual(self.get(reference)['id'], expected)
+        self.assertEqual(self.client.writes, [])
+
+    def test_get_refuses_a_number_that_is_one_tasks_id_and_anothers_visible_number(self):
+        """Silently choosing either reading of 21 would show the wrong requirements."""
+        with self.assertRaises(TrackerError) as caught:
+            self.get('21')
+        message = str(caught.exception)
+        for fragment in ('canonical ID 21', 'ID 319', '"#21"', 'URL'):
+            self.assertIn(fragment, message)
+        self.assertEqual(caught.exception.category, 'conflict')
+        with self.assertRaisesRegex(TrackerError, 'No exact'):
+            self.get('999')
 
     def test_visible_number_wins_over_global_id_and_description(self):
         """A copied UI number identifies #21 even when global ID 21 exists."""

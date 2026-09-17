@@ -18,8 +18,8 @@ agent-box tracker projects
 agent-box tracker setup --project 12 --recursive
 agent-box tracker setup --project 12 --recursive --apply
 agent-box tracker ready
-agent-box tracker resolve "#21"
-agent-box tracker resolve "Exact task title"
+agent-box tracker get "#21"
+agent-box tracker get "Exact task title"
 agent-box tracker resolve "#21" --project 42
 agent-box tracker get 123
 agent-box tracker claim 123
@@ -63,7 +63,7 @@ preserve other project overrides. Setup maintains checksum blocks in
 edited blocks, symlinks and ambiguous ownership.
 
 Search results are compact JSON; `get` includes the description, relationships
-and comments. Resolve the user reference before reading relevant history.
+and comments. `get` accepts the user's reference directly.
 
 `tracker resolve REFERENCE` selects by visible project number (`21` or quoted
 `"#21"`), exact title, or a task URL from the configured tracker. It searches the
@@ -76,8 +76,14 @@ choice. `--project PROJECT` narrows to that single project inside the binding;
 falling back to description text or global IDs. URLs outside the selected scope
 fail and are never redirected to adopted copies.
 
+`tracker get REFERENCE` applies the same rules and also accepts a canonical ID.
+A bare number is looked up both ways: when a canonical ID inside the binding and
+a visible number name different tasks, `get` refuses and asks for the quoted
+`"#21"` or the task URL instead of guessing. A canonical ID outside the binding
+still reads when no visible number matches.
+
 Full and compact tasks expose `number` alongside canonical `id`, project and URL.
-Pass that `id` unchanged to `get`, mutations and workflow commands. Internal IDs,
+Pass that `id` unchanged to mutations and workflow commands. Internal IDs,
 relations and branch names retain their existing meaning. Text search only finds
 candidates; a substring match does not establish the user's intended task.
 

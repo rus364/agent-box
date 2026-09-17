@@ -84,6 +84,8 @@ class CandidateTests(unittest.TestCase):
         self.assertEqual(words("workflow prepare 374 --role ")[1], ["worker", "reviewer", "scout"])
         self.assertIn("--brief", words("workflow prepare 374 --role scout --")[1])
         self.assertEqual(words("workflow validate 374 -- python3 ")[0], "files")
+        self.assertEqual(words("workflow validate 374 --primary claude -- python3 ")[0], "files")
+        self.assertIn("--primary", words("workflow validate 374 --")[1])
 
     def test_a_new_argparse_subcommand_completes_without_a_completion_change(self):
         """Any command that parses with argparse gets its subcommands, options and choices for free."""

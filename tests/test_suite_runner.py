@@ -26,7 +26,9 @@ from agent_box import paths, pathsetup
 class Fixture(unittest.TestCase):
     def test_integration_writes(self):
         self.assertFalse(any(os.isatty(fd) for fd in (0, 1, 2)))
-        self.assertNotIn("AGENT_BOX_RUNTIME_CONFIG", os.environ)
+        for name in ("AGENT_BOX_RUNTIME_CONFIG", "AGENT_BOX_SUPPRESS_NOTIFY",
+                     "AGENT_BOX_PRIMARY_PROVIDER", "AGENT_BOX_NOTIFY_TOKEN"):
+            self.assertNotIn(name, os.environ)
         root = paths.STATE_ROOT.parent
         targets = [paths.CONFIG_FILE, paths.TOOLS_REFRESH_FILE,
                    paths.CLAUDE_HOME / "settings.json", paths.CODEX_HOME / "config.toml",
@@ -41,7 +43,10 @@ class Fixture(unittest.TestCase):
         self.fail("intentional failure after isolated writes")
 ''')
             env = isolated_environment(host)
-            env.update(TEST_HOST=str(host), AGENT_BOX_RUNTIME_CONFIG=str(sentinel), PATH=str(host))
+            # A workspace session's own variables must not reach the tests.
+            env.update(TEST_HOST=str(host), AGENT_BOX_RUNTIME_CONFIG=str(sentinel), PATH=str(host),
+                       AGENT_BOX_SUPPRESS_NOTIFY="1", AGENT_BOX_PRIMARY_PROVIDER="codex",
+                       AGENT_BOX_NOTIFY_TOKEN="session-token")
             result = subprocess.run(
                 [sys.executable, str(ROOT / "tests/run_suite.py"), "discover", "-s", str(directory)],
                 env=env, capture_output=True, text=True, check=False,

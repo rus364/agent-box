@@ -247,9 +247,34 @@ class VikunjaAdapter:
             raise TrackerError("Use a canonical numeric Vikunja task ID; run tracker resolve for user references") from None
         return self.normalize(self.client.get(f"/tasks/{task_id}?format=markdown&expand=buckets&expand=subtasks"))
 
-    def resolve(self, reference, project, recursive=False, *, title=False):
-        """User references resolve once; internal reads keep their canonical IDs."""
+    def resolve(self, reference, project, recursive=False, *, title=False, canonical=False):
+        """User references resolve once; internal reads keep their canonical IDs.
+
+        With ``canonical`` (``tracker get``) a bare number may also be a canonical
+        ID. Preferring either reading would silently return the wrong task when a
+        scoped canonical ID and a visible number differ, so that case is refused;
+        a canonical ID outside the binding still reads when no visible number matches.
+        """
         text = reference.strip()
+        if canonical and not title and re.fullmatch(r"[0-9]+", text):
+            try:
+                by_id = self.get(text)
+            except api.APIError as exc:
+                if not (exc.status == 404 and exc.code == 4002):
+                    raise
+                by_id = None
+            try:
+                by_number = self.resolve(text, project, recursive)
+            except TrackerError as exc:
+                if exc.category != "not-found" or by_id is None:
+                    raise
+                return by_id
+            if by_id is None or by_id.id == by_number.id or by_id.project not in set(self.subtree(project, recursive)):
+                return by_number
+            raise TrackerError(
+                f"Ambiguous task reference {text}: canonical ID {by_id.id} is #{by_id.number} {by_id.title} "
+                f"({by_id.url}); visible #{text} is ID {by_number.id} {by_number.title} ({by_number.url}). "
+                f"Pass \"#{text}\" for the visible number or a task URL", "conflict")
         if not text:
             raise TrackerError("Pass a visible task number, exact title or task URL")
         scope = set(self.subtree(project, recursive))

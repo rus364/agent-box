@@ -10,7 +10,9 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 def isolated_environment(directory):
-    env = dict(os.environ)
+    # A workspace session exports its runtime config, notification credentials
+    # and flags; the suite must see only its own fixtures, never the caller's.
+    env = {name: value for name, value in os.environ.items() if not name.startswith("AGENT_BOX_")}
     for name, child in {
         "XDG_CONFIG_HOME": "xdg-config", "XDG_DATA_HOME": "xdg-data",
         "XDG_CACHE_HOME": "cache", "XDG_STATE_HOME": "xdg-state",
@@ -21,7 +23,6 @@ def isolated_environment(directory):
         "CLAUDE_CREDENTIALS_PATH": "claude/.credentials.json",
     }.items():
         env[name] = str(directory / child)
-    env.pop("AGENT_BOX_RUNTIME_CONFIG", None)
     # Uninstall must not discover the developer's launcher through PATH.
     env["PATH"] = os.pathsep.join((str(directory / "bin"), os.defpath))
     env["GIT_CONFIG_GLOBAL"] = os.devnull

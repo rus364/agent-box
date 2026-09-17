@@ -16,6 +16,21 @@ from .config import Config
 
 
 def run_selftest() -> int:
+    """Run the checks with every `AGENT_BOX_*` variable removed, then restore them.
+
+    Inside a workspace box the session's own runtime config, notification
+    credentials and suppression flag are in the environment; left in place they
+    make the checks fail as if regressed, so isolation belongs here rather than
+    in a wrapper every caller has to remember.
+    """
+    saved = {name: os.environ.pop(name) for name in list(os.environ) if name.startswith("AGENT_BOX_")}
+    try:
+        return _checks()
+    finally:
+        os.environ.update(saved)
+
+
+def _checks() -> int:
     n = 0
 
     def check(actual: Any, expected: Any, label: str) -> None:
@@ -102,7 +117,6 @@ def run_selftest() -> int:
 
     from .notify import SUPPRESS_NOTIFY_ENV
     from . import notify as notify_module
-    saved_flag = os.environ.get(SUPPRESS_NOTIFY_ENV)
     os.environ[SUPPRESS_NOTIFY_ENV] = "1"
     try:
         check(notify_module.outbound_suppressed(), True, "official channel mode detected")
@@ -111,10 +125,7 @@ def run_selftest() -> int:
         check(notify_module.claude_interaction_suppressed("Stop"), False,
               "official channel keeps Claude completion notifications")
     finally:
-        if saved_flag is None:
-            os.environ.pop(SUPPRESS_NOTIFY_ENV, None)
-        else:
-            os.environ[SUPPRESS_NOTIFY_ENV] = saved_flag
+        os.environ.pop(SUPPRESS_NOTIFY_ENV, None)
     check(notify_module.outbound_suppressed(), False, "local runs still notify")
 
     from .mounts import MountSpec, plan_mounts
@@ -145,16 +156,7 @@ def run_selftest() -> int:
         config.notifications.telegram_token = "t"
         config.notifications.telegram_chat_id = "1"
         notify.sync_credentials(config, creds)
-        credential_env = (notify.NOTIFY_TOKEN_ENV, notify.NOTIFY_CHAT_ID_ENV)
-        saved_credentials = {name: os.environ.pop(name, None) for name in credential_env}
-        try:
-            check(notify.load_credentials(creds), ("t", "1"), "credential file round trip")
-        finally:
-            for name, value in saved_credentials.items():
-                if value is None:
-                    os.environ.pop(name, None)
-                else:
-                    os.environ[name] = value
+        check(notify.load_credentials(creds), ("t", "1"), "credential file round trip")
         config.notifications.enabled = False
         notify.sync_credentials(config, creds)
         check(creds.exists(), False, "disabling removes the credential file")

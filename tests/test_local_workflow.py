@@ -132,6 +132,25 @@ class LocalLandTests(unittest.TestCase):
         self.assertNotIn("review", result)
         self.assertNotIn("review", workflow.read_evidence(self.root, self.parent))
 
+    def test_validate_options_precede_separator_and_command_keeps_its_own(self):
+        """Workflow options before -- must not be executed as the project command."""
+        commands = []
+        original_run = workflow.subprocess.run
+
+        def run(command, *args, **kwargs):
+            if command[:1] == ["validation-fixture"]:
+                commands.append(command)
+                return SimpleNamespace(returncode=0)
+            return original_run(command, *args, **kwargs)
+
+        with patch.object(workflow.subprocess, "run", run):
+            result = self.dispatch(["validate", "7", "--primary", "claude", "--", "validation-fixture", "--primary"])
+            self.assertEqual(result["validation"]["exit"], 0)
+            self.assertEqual(commands, [["validation-fixture", "--primary"]])
+            with self.assertRaisesRegex(AgentBoxError, r"after --: agent-box workflow validate ID \[--primary PROVIDER\] -- COMMAND"):
+                self.dispatch(["validate", "7", "validation-fixture", "--primary", "claude"])
+        self.assertEqual(len(commands), 1)
+
     def test_landing_keeps_reservation_out_until_acceptance_is_consumed(self):
         """The other ordering allows landing and rejects a concurrent new reservation."""
         from agent_box import local_workflow
