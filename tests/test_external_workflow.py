@@ -204,11 +204,16 @@ class ExternalRoutingTests(unittest.TestCase):
         config.external_providers['deepseek'].api_key = 'rotated-key'
         self.assertEqual(route['api_fingerprint'], external_launch.route_identity(config, 'deepseek', 'codex')['api_fingerprint'])
         config.external_providers['deepseek'].codex.url = 'https://changed.example/v1'
-        with patch('agent_box.config.effective_config', return_value=config), \
-             patch.object(provider_runner.subprocess, 'Popen') as process, \
-             self.assertRaisesRegex(AgentBoxError, 'definition changed'):
-            provider_runner.run(route, 'worker', Path.cwd(), 'work')
-        process.assert_not_called()
+        with tempfile.TemporaryDirectory() as tmp, \
+             patch.object(provider_runner, 'WORKFLOW_STATE', Path(tmp)), \
+             patch('agent_box.config.effective_config', return_value=config), \
+             patch.object(provider_runner.subprocess, 'Popen') as process:
+            with self.assertRaisesRegex(provider_runner.ProviderFailure, 'definition changed') as caught:
+                provider_runner.run(route, 'worker', Path.cwd(), 'work')
+            process.assert_not_called()
+            # A delegate reports this like any refused launch: a category and a readable diagnostic.
+            self.assertEqual((caught.exception.category, caught.exception.stage), ('unsupported', 'preflight'))
+            self.assertTrue((Path(tmp) / caught.exception.diagnostic['artifact']).exists())
 
     def test_managed_builtin_reverse_call_restores_the_original_auth(self):
         """The managed runner must not send an external API token to the built-in provider."""

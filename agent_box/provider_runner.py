@@ -382,8 +382,8 @@ def run(route, role, root, prompt, *, timeout=3600, read_paths=(), diagnostics=N
                 from .config import effective_config
                 from .external_launch import check_model_effort, check_route
                 api_config = effective_config()
-                check_route(api_config, route)
                 try:
+                    check_route(api_config, route)
                     check_model_effort(api_config, route)
                 except AgentBoxError as exc:
                     raise ProviderFailure(str(exc), 'unsupported') from None
