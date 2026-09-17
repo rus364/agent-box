@@ -135,18 +135,20 @@ class DelegateCommandTests(WorkflowCase):
         self.assertEqual(output["failures"][1]["category"], "model-unavailable")
         self.assertNotIn("diagnostic", output["failures"][1])
 
-    def test_refusal_before_launch_still_names_its_reason(self):
-        """Unsupported settings stop before a process starts, so no artifact exists; the reason must not vanish."""
-        refusal = provider_runner.ProviderFailure("Claude fast is unsupported with CLAUDE_CODE_DISABLE_FAST_MODE",
-                                                  "unsupported")
-        self.config.workflow.scout.models = self.config.workflow.scout.models[:1]
-        with patch.object(workflow, "run", side_effect=refusal), \
+    def test_refusal_before_launch_still_names_its_reason_and_diagnostic(self):
+        """Settings refused before a process starts still name why and where the private diagnostic is."""
+        self.config.workflow.scout.models = [candidate("claude", "claude-opus-5", "high") | {"fast": True}]
+        with patch.dict("os.environ", {"CLAUDE_CODE_DISABLE_FAST_MODE": "1"}), \
+             patch.object(provider_runner.subprocess, "Popen") as popen, \
              contextlib.redirect_stdout(io.StringIO()) as stdout:
             self.assertEqual(workflow.main(["delegate", "1", "--role", "scout", "--brief", str(self.review_brief)]), 2)
+        popen.assert_not_called()
         failure = json.loads(stdout.getvalue())["failures"][0]
-        self.assertEqual(failure["category"], "unsupported")
+        self.assertEqual((failure["category"], failure["stage"]), ("unsupported", "preflight"))
         self.assertIn("CLAUDE_CODE_DISABLE_FAST_MODE", failure["reason"])
-        self.assertNotIn("diagnostic", failure)
+        artifact = json.loads(Path(failure["diagnostic"]).read_text())
+        self.assertEqual(artifact["metadata"]["reason"], failure["reason"])
+        self.assertEqual(artifact["streams"], {})
 
     def test_worker_needs_its_task_branch_and_a_configured_candidate(self):
         """A managed worker edits the checkout, so it must be the task's; with no candidate the coordinator runs one natively."""

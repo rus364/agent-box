@@ -980,9 +980,7 @@ def execute(config, selected, role, root, prompt, read_paths=(), on_completed=No
         except ProviderFailure as exc:
             failures.append({"provider": candidate["provider"],
                              **({"api_provider": candidate["api_provider"]} if candidate.get("api_provider") else {}),
-                             # A refusal before launch has no saved output; its reason is the diagnostic.
-                             "category": exc.category,
-                             **(exc.diagnostic or {"stage": exc.stage, "reason": str(exc)})})
+                             "category": exc.category, **exc.diagnostic})
             if exc.category == "interrupted":
                 raise ProviderFailures(
                     f"Managed {role} was interrupted by a signal; no provider fallback runs"

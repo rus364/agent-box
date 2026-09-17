@@ -364,18 +364,37 @@ def run(route, role, root, prompt, *, timeout=3600, read_paths=(), diagnostics=N
         schema, result = (directory / "schema.json" if reviewer else None), directory / "result.json"
         if reviewer:
             schema.write_text(json.dumps(report_schema(), ensure_ascii=False), encoding="utf-8")
-        command = build_command(route, role, Path(root), schema, result, read_paths)
-        if route.get("api_provider"):
-            from .config import effective_config
-            from .external_launch import check_model_effort, check_route
-            api_config = effective_config()
-            check_route(api_config, route)
+        def record(exc):
+            metadata.update(category=exc.category, stage=exc.stage, reason=exc.reason,
+                            duration_seconds=round(time.monotonic() - started, 3),
+                            exit_code=process.returncode if process is not None else None)
+            for name, path in (("stdout", directory / "stdout"), ("stderr", directory / "stderr"), ("result", result)):
+                metadata[name + "_bytes"] = path.stat().st_size if path.exists() else None
             try:
-                check_model_effort(api_config, route)
-            except AgentBoxError as exc:
-                raise ProviderFailure(str(exc), 'unsupported') from None
-            command, env = prepare(command, route["api_provider"], route["provider"], api_config,
-                                   directory, env, model=route["model"])
+                metadata["artifact"] = save_failure(metadata, directory)
+            except OSError:
+                metadata.update(artifact=None, diagnostic_error="cannot persist private diagnostic")
+            exc.diagnostic = metadata
+
+        try:
+            command = build_command(route, role, Path(root), schema, result, read_paths)
+            if route.get("api_provider"):
+                from .config import effective_config
+                from .external_launch import check_model_effort, check_route
+                api_config = effective_config()
+                check_route(api_config, route)
+                try:
+                    check_model_effort(api_config, route)
+                except AgentBoxError as exc:
+                    raise ProviderFailure(str(exc), 'unsupported') from None
+                command, env = prepare(command, route["api_provider"], route["provider"], api_config,
+                                       directory, env, model=route["model"])
+        except ProviderFailure as exc:
+            # A refusal before launch has no output, but it still gets an artifact
+            # naming the refused settings, like every other provider failure.
+            exc.stage, exc.reason = "preflight", str(exc)
+            record(exc)
+            raise
         with (directory / "stdout").open("w+") as stdout, (directory / "stderr").open("w+") as stderr:
             try:
                 # The CLI runs in its own session, so a signal to this process
@@ -439,14 +458,5 @@ def run(route, role, root, prompt, *, timeout=3600, read_paths=(), diagnostics=N
             except ProviderFailure as exc:
                 stdout.flush()
                 stderr.flush()
-                metadata.update(category=exc.category, stage=exc.stage, reason=exc.reason,
-                                duration_seconds=round(time.monotonic() - started, 3),
-                                exit_code=process.returncode if process is not None else None)
-                for name, path in (("stdout", directory / "stdout"), ("stderr", directory / "stderr"), ("result", result)):
-                    metadata[name + "_bytes"] = path.stat().st_size if path.exists() else None
-                try:
-                    metadata["artifact"] = save_failure(metadata, directory)
-                except OSError:
-                    metadata.update(artifact=None, diagnostic_error="cannot persist private diagnostic")
-                exc.diagnostic = metadata
+                record(exc)
                 raise
