@@ -586,6 +586,12 @@ attempt, and the user decides what to do. A human `APPROVED` on the current head
 remains acceptance in its own right, and GitHub approvals and required checks
 still follow repository policy.
 
+What the 2026-09-17 check covered live is reading both bots' answers on a throwaway
+pull request and recording a verdict from them end to end. Publishing the request
+and the `wait_seconds` timeout are covered by tests alone: the bots answer for real
+money, the budget for that check was two requests to each of them, and an hour of
+silence cannot be observed cheaply.
+
 ## Saved review results and failed attempts
 
 Completed native and managed reviews save a private immutable receipt before
