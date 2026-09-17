@@ -27,13 +27,11 @@ def _acceptance_reasons(config, tasks, accepted):
     # An already-integrated scope has lost its original diff. Auto cannot infer
     # that the work was small from an empty diff against the advanced base.
     reasons += review_blockers(config.review, tasks, accepted.get("files", []), accepted.get("lines", 0),
-                               accepted, allow_human=True, integrated=accepted.get("integrated_scope", False))
+                               accepted, integrated=accepted.get("integrated_scope", False))
     return reasons
 
 
 def _recovery_reasons(config, tasks, saved, base, task_head):
-    from .workflow import requirements, scope_requirements
-
     accepted = saved.get("local_acceptance", {})
     recovery = ("Switch to the task branch, run fresh validation with workflow validate "
                 "and independent review with ab-review as required, then run workflow land "
@@ -45,8 +43,6 @@ def _recovery_reasons(config, tasks, saved, base, task_head):
         reasons.append("Accepted task head has changed; " + recovery)
     if accepted.get("base") != base:
         reasons.append("Accepted base identity has changed; " + recovery)
-    if scope_requirements(accepted.get("requirements") or []) != scope_requirements(requirements(tasks)):
-        reasons.append("Accepted task requirements have changed; " + recovery)
     reasons += _acceptance_reasons(config, tasks, accepted)
     return reasons
 
@@ -113,14 +109,14 @@ def operate(args, root, config, adapter, task):
 
     if current != branch:
         raise AgentBoxError(f"Switch to the parent branch {branch} before local landing")
-    from .workflow import configuration_summary, diff_stats, requirements, review_reasons, save_evidence, scope
+    from .workflow import configuration_summary, diff_stats, evidence, review_reasons, save_evidence, scope
 
     reasons, tasks = _constraints(adapter, task)
     integrated = gw._is_ancestor(root, task_head, base_head)
-    accepted = saved if saved.get("scope") == scope(root, base, tasks) else {}
+    accepted = evidence(root, task, scope(root, base))
     files, lines = diff_stats(root, base, config.workflow.review)
     snapshot = {"head": task_head, "base": base, "base_head": base_head,
-                "requirements": requirements(tasks), "scope": accepted.get("scope"),
+                "scope": accepted.get("scope"),
                 "files": files, "lines": lines, "integrated_scope": integrated,
                 "validation": accepted.get("validation", {}),
                 "review": accepted.get("review", {}),

@@ -44,7 +44,7 @@ class InspectTests(unittest.TestCase):
         ):
             item.start()
             self.addCleanup(item.stop)
-        self.scope = workflow.scope(self.root, "main", [self.task])
+        self.scope = workflow.scope(self.root, "main")
         workflow.save_evidence(self.root, self.task, {
             "scope": self.scope, "validation": {"exit": 0}, "review": {"verdict": "PASS"}})
         workflow.save_review_state(self.root, BINDING, self.task, {"used": 1})
@@ -125,7 +125,7 @@ class InspectTests(unittest.TestCase):
         gw.git(self.root, "switch", "-c", "ab/2-child")
         result = self.inspect_readonly("2")
         self.assertEqual(result["task_branch"], "ab/2-child")
-        self.assertEqual(result["scope"], workflow.scope(self.root, "ab/1-task", [child]))
+        self.assertEqual(result["scope"], workflow.scope(self.root, "ab/1-task"))
 
     def test_ambiguous_refs_and_failed_git_tracker_or_budget_reads_remain_errors(self):
         """Diagnostic availability must not hide broken authority as ordinary missing work."""
@@ -166,7 +166,7 @@ class InspectTests(unittest.TestCase):
         brief.write_text("Changes/reasons: implementation. Risks: none known. Validation: tests only.")
         for args in (("prepare", "1", "--role", "reviewer", "--primary", "codex", "--brief", str(brief)),
                      ("review", "1", "--primary", "codex", "--brief", str(brief)),
-                     ("approve", "1", "--scope", self.scope, "--reason", "User accepts"),
+                     ("approve", "1", "--reason", "User accepts"),
                      ("validate", "1", "--", "true"), ("finish", "1"), ("land", "1", "merge")):
             with self.subTest(command=args[0]):
                 before = self.snapshot()

@@ -44,7 +44,7 @@ class LocalLandTests(unittest.TestCase):
         self.config.workflow.auto_push = False
         self.config.workflow.review.policy = "off"
         self.info = {"branch": "ab/7-parent", "base": gw.default_base(self.root)}
-        self.saved = {"scope": workflow.scope(self.root, "main", [self.parent]),
+        self.saved = {"scope": workflow.scope(self.root, "main"),
                       "validation": {"command": ["true"], "exit": 0}}
 
     def operate(self, action, *, method=None, saved=None):
@@ -170,7 +170,7 @@ class LocalLandTests(unittest.TestCase):
 
         def interleave(*args):
             workflow.reserve_review(self.root, BINDING, self.parent, 3,
-                                    "recovery-round", workflow.scope(self.root, "main", [self.parent]))
+                                    "recovery-round", workflow.scope(self.root, "main"))
             return original_landing(*args)
 
         with patch.object(workflow, "landing", interleave), \
@@ -231,7 +231,7 @@ class LocalLandTests(unittest.TestCase):
 
     def approve(self, reason="User explicitly accepted this result"):
         workflow.save_evidence(self.root, self.parent, self.saved)
-        return self.dispatch(["approve", "7", "--scope", self.saved["scope"], "--reason", reason])
+        return self.dispatch(["approve", "7", "--reason", reason])
 
     def test_explicit_human_acceptance_lands_and_cleans_up_without_fabricating_review(self):
         """Human approval is separate evidence and retains the normal completion path."""
@@ -255,17 +255,11 @@ class LocalLandTests(unittest.TestCase):
         self.assertEqual(gw.current_branch(self.root), "main")
         self.assertEqual(gw.git(self.root, "branch", "--list", "ab/7-parent"), "")
 
-    def test_human_approval_requires_explicit_scope_validation_and_local_parent(self):
-        """A vague acceptance or a GitHub parent cannot acquire a local review exception."""
+    def test_human_approval_requires_a_reason_and_validation_of_the_current_head(self):
+        """A vague acceptance or an unvalidated head cannot acquire a review exception."""
         workflow.save_evidence(self.root, self.parent, self.saved)
-        with self.assertRaisesRegex(AgentBoxError, "scope"):
-            self.dispatch(["approve", "7", "--scope", "stale", "--reason", "Accepted"])
         with self.assertRaisesRegex(AgentBoxError, "reason"):
             self.approve("   ")
-        self.config.workflow.merge_mode = "github"
-        with self.assertRaisesRegex(AgentBoxError, "parent task is available only in local merge mode"):
-            self.approve()
-        self.config.workflow.merge_mode = "local"
         self.saved.pop("validation")
         with self.assertRaisesRegex(AgentBoxError, "validation"):
             self.approve()
@@ -276,7 +270,7 @@ class LocalLandTests(unittest.TestCase):
         self.config.workflow.review.policy = "always"
         self.approve()
         gw.git(self.root, "commit", "--allow-empty", "-m", "new work")
-        saved = workflow.evidence(self.root, self.parent, workflow.scope(self.root, "main", [self.parent]))
+        saved = workflow.evidence(self.root, self.parent, workflow.scope(self.root, "main"))
         saved["validation"] = {"exit": 0}
         workflow.save_evidence(self.root, self.parent, saved)
         with self.assertRaisesRegex(AgentBoxError, "PASS review"):
@@ -284,7 +278,7 @@ class LocalLandTests(unittest.TestCase):
         self.adapter.set_state.assert_not_called()
 
     def test_human_acceptance_recovery_preserves_original_scope_after_tracker_failure(self):
-        """The same approval must survive base advancement, but not new requirements."""
+        """The same approval survives base advancement and later card edits."""
         self.config.workflow.review.policy = "always"
         self.approve()
         self.adapter.set_state.side_effect = AgentBoxError("tracker unavailable")
@@ -294,9 +288,8 @@ class LocalLandTests(unittest.TestCase):
         self.adapter.set_state.reset_mock()
         result = self.dispatch(["land", "7", "reconcile"])
         self.assertEqual(result["state"], "Done")
-        self.parent.description += "\n- [x] changed requirement"
-        with self.assertRaisesRegex(AgentBoxError, "requirements.*changed"):
-            self.dispatch(["land", "7", "reconcile"])
+        self.parent.description += "\n- [x] clarified requirement"
+        self.assertEqual(self.dispatch(["land", "7", "reconcile"])["state"], "Done")
 
     def test_human_acceptance_cannot_waive_ownership_or_checklist_constraints(self):
         """Only a ready result owned by the coordinator can be presented for acceptance."""
@@ -309,27 +302,16 @@ class LocalLandTests(unittest.TestCase):
             self.approve()
         self.assertNotIn("human_acceptance", workflow.read_evidence(self.root, self.parent))
 
-    def test_human_acceptance_expires_when_requirements_change(self):
-        """Checking a new requirement must not silently accept a broader task."""
-        self.config.workflow.review.policy = "always"
-        self.approve()
-        self.parent.description += "\n- [x] newly required behavior"
-        saved = workflow.evidence(self.root, self.parent, workflow.scope(self.root, "main", [self.parent]))
-        saved["validation"] = {"exit": 0}
-        workflow.save_evidence(self.root, self.parent, saved)
-        with self.assertRaisesRegex(AgentBoxError, "PASS review"):
-            self.dispatch(["land", "7", "merge"])
-        self.adapter.set_state.assert_not_called()
-
-    def test_human_acceptance_does_not_relax_github_completion(self):
-        """Switching modes cannot turn local human acceptance into GitHub review."""
+    def test_human_acceptance_replaces_the_parent_review_in_github_mode_too(self):
+        """The user's explicit decision closes a looping review in either merge mode."""
         self.config.workflow.review.policy = "always"
         self.parent.state = "Doing"
-        self.approve()
         self.config.workflow.merge_mode = "github"
+        workflow.save_evidence(self.root, self.parent, self.saved)
         with self.assertRaisesRegex(AgentBoxError, "PASS review"):
             self.dispatch(["finish", "7"])
-        self.adapter.set_state.assert_not_called()
+        self.approve()
+        self.assertEqual(self.dispatch(["finish", "7"])["state"], "Review")
 
     def test_merge_refuses_dirty_or_diverged_work_before_switching(self):
         (self.root / "dirty").write_text("dirty")
@@ -410,35 +392,25 @@ class LocalLandTests(unittest.TestCase):
         self.adapter.set_state.assert_not_called()
         self.assertEqual(self.parent.state, "Review")
 
-    def test_reconcile_rejects_changed_requirements_and_missing_cache(self):
-        """Checked acceptance boxes cannot substitute for acceptance of new requirements."""
-        accepted = self.failed_tracker_merge()
-        self.parent.description += "\n- [x] newly added requirement"
-        with self.assertRaisesRegex(AgentBoxError, "requirements.*changed"):
-            self.operate("reconcile", saved=accepted)
+    def test_reconcile_rejects_a_missing_cache(self):
+        """Without the pre-merge snapshot the merged head has no recorded acceptance."""
+        self.failed_tracker_merge()
         with self.assertRaisesRegex(AgentBoxError, "fresh validation.*review"):
             self.operate("reconcile", saved={})
         self.adapter.set_state.assert_not_called()
         self.assertEqual(self.parent.state, "Review")
 
-    def test_reconcile_reuses_local_acceptance_after_informational_metadata_edits(self):
-        """Related links and ordinary labels cannot demand another review after a tracker outage."""
+    def test_reconcile_reuses_local_acceptance_after_card_edits(self):
+        """Links, labels, a tier or a new checked item cannot demand another review after a tracker outage."""
         accepted = self.failed_tracker_merge()
         self.parent.related.append("99")
-        self.parent.labels.append("ordinary")
+        self.parent.labels = ["ordinary", "ab:tier:3"]
+        self.parent.description += "\n- [x] clarified requirement"
         with patch.object(workflow, "execute") as review, patch.object(workflow, "scope") as scope:
             result = self.operate("reconcile", saved=accepted)
         self.assertEqual(result["state"], "Done")
         review.assert_not_called()
         scope.assert_not_called()
-
-    def test_reconcile_rejects_tier_escalation_after_local_acceptance(self):
-        """A stronger routing tier is significant even when code and ordinary metadata are stable."""
-        accepted = self.failed_tracker_merge()
-        self.parent.labels = ["ab:tier:3"]
-        with self.assertRaisesRegex(AgentBoxError, "requirements.*changed"):
-            self.operate("reconcile", saved=accepted)
-        self.adapter.set_state.assert_not_called()
 
     def test_reconcile_applies_current_review_policy_to_original_diff(self):
         """After merge the base diff is empty, but auto review still covers original work."""
@@ -921,7 +893,7 @@ class MergeModeRoutingTests(unittest.TestCase):
             state = Path(directory) / "state"
             with patch.object(workflow, "WORKFLOW_STATE", state), \
                  patch.object(workflow_state, "WORKFLOW_STATE", state):
-                accepted = {"scope": workflow.scope(root, "main", [task]),
+                accepted = {"scope": workflow.scope(root, "main"),
                             "validation": {"command": ["true"], "exit": 0}}
                 workflow.save_evidence(root, task, accepted)
                 gw.git(root, "commit", "--allow-empty", "-m", "new work")

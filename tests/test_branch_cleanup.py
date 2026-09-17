@@ -59,13 +59,10 @@ class CleanupTests(unittest.TestCase):
 
     def accept_parent(self):
         """Supply the same disposable snapshot as a successful local landing."""
-        tasks = workflow.tree(self.adapter, self.task)
-        requirements = workflow.requirements(tasks)
         base_head = gw.git(self.root, 'rev-parse', self.head + '^')
-        fingerprint = workflow.scope_fingerprint(self.head, base_head, requirements)
+        fingerprint = workflow.scope_fingerprint(self.head, base_head)
         saved = {'scope': fingerprint, 'local_acceptance': {
-            'head': self.head, 'base': 'main', 'base_head': base_head,
-            'requirements': requirements, 'scope': fingerprint,
+            'head': self.head, 'base': 'main', 'base_head': base_head, 'scope': fingerprint,
             'validation': {'exit': 0}, 'review': {'verdict': 'PASS'}}}
         workflow.save_evidence(self.root, self.task, saved)
         return saved
@@ -412,7 +409,7 @@ class CleanupTests(unittest.TestCase):
         gw.git(self.root, 'switch', self.branch)
         self.adapter.identity.return_value = {'id': 1}
         self.config.workflow.review.policy = 'off'
-        saved = {'scope': workflow.scope(self.root, 'main', [self.task, child]), 'validation': {'exit': 0}}
+        saved = {'scope': workflow.scope(self.root, 'main'), 'validation': {'exit': 0}}
         workflow.save_evidence(self.root, self.task, saved)
         args = SimpleNamespace(command='land', task=self.task.id, action='merge', method=None)
         result = workflow.landing(args, self.root, self.config, self.adapter)
@@ -450,7 +447,7 @@ class CleanupTests(unittest.TestCase):
         original = workflow.read_evidence(self.root, self.task)
         changes = (
             ('missing', None, None), ('base', 'base', 'other'),
-            ('requirements', 'requirements', []), ('head', 'head', 'f' * 40),
+            ('head', 'head', 'f' * 40),
             ('base_head', 'base_head', 'f' * 40), ('scope', 'scope', 'stale'),
             ('nonexact head', 'head', 'main'), ('validation', 'validation', {'exit': 1}),
             ('malformed', None, []), ('retired scope', None, 'retired'),
@@ -490,22 +487,12 @@ class CleanupTests(unittest.TestCase):
         self.assertIn('origin unavailable', result['remote']['reason'])
         self.assertEqual(gw.local_branch_head(self.origin, branch), self.head)
 
-    def test_changed_task_requirements_retire_absent_parent_cleanup_proof(self):
-        """A snapshot for earlier requirements cannot authorize the live task tree."""
-        branch = self.land_with_occupied_child()
-        self.task.description += '\nNew acceptance requirement'
-        result = self.dispatch_land('cleanup')
-        self.assertEqual(result['state'], 'Done')
-        for kind in ('local', 'remote'):
-            self.assertIn('task/base scope', self.descendant_outcomes(result['cleanup'])['8'][kind]['reason'])
-        for root in (self.root, self.origin):
-            self.assertEqual(gw.local_branch_head(root, branch), self.head)
-
-    def test_informational_metadata_keeps_absent_parent_cleanup_proof(self):
-        """Ordinary links and labels cannot invalidate an accepted integration snapshot."""
+    def test_card_edits_keep_absent_parent_cleanup_proof(self):
+        """Links, labels and a changed description cannot invalidate an accepted integration snapshot."""
         self.land_with_occupied_child()
         self.task.related.append('99')
         self.task.labels.append('ordinary')
+        self.task.description += '\nClarified acceptance requirement'
         result = self.descendant_outcomes(self.dispatch_land('cleanup')['cleanup'])['8']
         for kind in ('local', 'remote'):
             self.assertEqual(result[kind]['status'], 'deleted')
@@ -985,7 +972,7 @@ class CleanupTests(unittest.TestCase):
         adapter.identity.return_value = {'id': 1}
         args = SimpleNamespace(command='land', task=self.task.id, action='merge', method=None)
         saved = {'validation': {'exit': 0}, 'review': {'verdict': 'PASS'}}
-        saved['scope'] = workflow.scope(self.root, 'main', [self.task, child])
+        saved['scope'] = workflow.scope(self.root, 'main')
         workflow.save_evidence(self.root, self.task, saved)
         with patch.object(gw, 'github_origin', return_value='o/r'), \
              patch.object(github, 'find_pr', return_value=9), \
@@ -1065,7 +1052,7 @@ class CleanupTests(unittest.TestCase):
         adapter = self.adapter
         adapter.identity.return_value = {'id': 1}
         self.config.workflow.review.policy = 'off'
-        saved = {'scope': workflow.scope(self.root, 'main', [self.task, child]), 'validation': {'exit': 0}}
+        saved = {'scope': workflow.scope(self.root, 'main'), 'validation': {'exit': 0}}
         workflow.save_evidence(self.root, self.task, saved)
         args = SimpleNamespace(command='land', task=self.task.id, action='merge', method=None)
         adapter.set_state.side_effect = AgentBoxError('tracker unavailable')
@@ -1102,7 +1089,7 @@ class CleanupTests(unittest.TestCase):
         gw.git(self.root, 'switch', self.branch)
         self.adapter.identity.return_value = {'id': 1}
         self.config.workflow.review.policy = 'off'
-        saved = {'scope': workflow.scope(self.root, 'main', [self.task]), 'validation': {'exit': 0}}
+        saved = {'scope': workflow.scope(self.root, 'main'), 'validation': {'exit': 0}}
         workflow.save_evidence(self.root, self.task, saved)
         args = SimpleNamespace(command='land', task=self.task.id, action='merge', method=None)
         original = cleanup.cleanup

@@ -40,7 +40,7 @@ can finish without commits after
 Doing/Review work (even with a missing branch) or adopting a remote branch does
 not create or reset this evidence. Child finish saves acceptance before
 integration/publication, so retry `workflow finish CHILD`
-after a failed Done write. It rechecks the accepted head, requirements and current
+after a failed Done write. It rechecks the accepted head, base and current
 review policy. GitHub auto-push publishes the current parent tip containing the
 accepted child before Done, including after later parent work. Lost acceptance
 of an integrated change cannot be replaced by
@@ -89,8 +89,8 @@ path of a private copy of the answer follow on stderr as one JSON line. The prom
 asks for `## Done`, `## Evidence` and `## Limitations`; nothing parses the answer.
 A failure prints JSON naming each tried candidate's category and the path of its
 private diagnostic. Workflow records nothing about the run and checks nothing
-afterwards, so editing the task card, committing or validating while a delegate
-works affects no later command.
+afterwards, so editing the task description, committing or validating while a
+delegate works affects no later command.
 
 A managed worker needs the task branch checked out and holds the local work lock,
 so validation cannot run under it. A worker failure other than an unavailable CLI
@@ -274,26 +274,33 @@ agent-box workflow begin TASK
 agent-box workflow delegate TASK --role worker --brief /tmp/brief.md
 # The coordinator verifies the answer against the code and commits what it accepts.
 agent-box workflow validate TASK -- python3 -m unittest discover -s tests
-agent-box workflow review TASK --primary codex --brief /tmp/review-brief.md
+agent-box workflow review TASK --primary codex
 agent-box workflow finish TASK
 ```
 
-The review brief is ephemeral per-round English input with a faithful current
-Goal/Acceptance/Validation translation, changes/reasons, technical risks,
-validation commands/results and limitations; it is not stored in tracker comments.
-Keep it outside the working tree: `review_brief=$(mktemp /tmp/agent-box-review.XXXXXX)`,
-write the report there, then pass `--brief "$review_brief"`. Remove it after the round.
+Acceptance belongs to code: validation, review and human acceptance are recorded
+for the task's head and base commits. A new commit or a moved base retires all
+three; editing the description, checking items, changing the tier, relations or
+hierarchy retires nothing. Move anything important from a discussion into the
+task description, since that is what the reviewer reads.
+
+`--brief FILE` is optional for review: a short English note on what the tracker
+lacks, such as technical risks or validation limits. Keep it outside the working
+tree (`mktemp /tmp/agent-box-review.XXXXXX`) and remove it after the round.
 Acceptance operations require a clean tree including untracked files; an untracked in-tree
 brief blocks prepare/review even when no branch switch is needed.
 Every native verdict uses a newly spawned reviewer with no inherited coordinator or
 reviewer history (`fork_turns="none"` for Codex), never followup/resume. Pass the
 returned `delegate_handoff` unchanged as the initial message. Managed commands remain
 ephemeral/no-session-persistence and do not resume a prior review. The bounded handoff
-indexes immutable base/head boundaries, task/path counts and samples, and paths and hashes
-for temporary read-only evidence containing the complete requirements, diff, changed-path
-list, mandatory repository instructions, author claims and recorded validation. The
-reviewer reads the normative requirements and diff before consulting untrusted author
-claims. Workflow state keeps native and managed paths shared and removes the generated
+names base/head boundaries, a diff shortstat and a manifest (path and SHA-256) of temporary
+read-only files: `task.md` with the complete task description, `parent.md` for a subtask or
+one `subtask-N.md` per subtask for a parent, the full diff, the changed-path list, recorded
+validation, repository instructions and, when given, the brief as `author-report.md`.
+Descriptions keep their language and headings; checkmarks are cleared, and comments,
+history and earlier verdicts are never included. A description of any size stays in its
+file, outside the handoff limit. The reviewer reads descriptions and diff before the brief.
+Workflow state keeps native and managed paths shared and removes the generated
 artifacts after report ingestion or managed review; oversized index metadata fails closed.
 
 The shared prompt checks correctness and unnecessary complexity against current requirements
@@ -304,7 +311,7 @@ and style preferences or hypothetical futures do not block PASS. The coordinator
 findings before fixing, challenges them with evidence and escalates material disagreement
 without inventing independent acceptance. No extra review stage or finding quota is added.
 
-Native reviewer handoffs use `prepare --brief FILE`, then `report --file FILE --scope DIGEST --handoff
+Native reviewer handoffs use `prepare`, then `report --file FILE --scope DIGEST --handoff
 DESCRIPTOR --provider ACTUAL_PROVIDER --model ACTUAL_MODEL --effort ACTUAL_EFFORT`
 for the returned structured report, with `--fresh-context` for every native reviewer. Native reviewer
 reports must match the selected primary candidate; unknown
@@ -314,8 +321,8 @@ provider/model/effort against the allowed prepared route before changing accepta
 Accepted reviewer evidence records the full route and any managed fallback
 reason or provider failures. These are coordinator-supplied execution
 facts, not provider attestation. Evidence is
-disposable local cache, bound to code, task requirements and scope; another
-device may need to rerun validation/review.
+disposable local cache bound to the head and base; another device may need to
+rerun validation/review.
 
 Review policy is off/auto/always. Auto considers explicit review labels, sensitive
 paths, changed-file count and added/deleted lines (binary changes require review).
@@ -341,12 +348,12 @@ part of that artifact.
 Priority is unrelated. Presets are thorough (2 files/80 lines), balanced (5/200)
 and light (10/500); all values and paths are editable. Apply the policy both to
 subtasks and the complete parent diff. SKIPPED, INCONCLUSIVE and provider errors
-are distinct from PASS. Code or requirement changes invalidate acceptance.
+are distinct from PASS. A new commit or a moved base invalidates acceptance.
 
 `max_rounds` (default 3) is enforced for local reviewer `prepare` and
 `review`: a new round reserves one attempt under a local lock before handoff or provider
-execution. Normative headings/fences and known managed launch constraints are checked
-first; their refusal publishes no handoff, reserves nothing and runs no provider.
+execution. Known managed launch constraints are checked first; their refusal
+publishes no handoff, reserves nothing and runs no provider.
 Preflight checks local executables and supported routes, without guessing live model,
 account or native tool availability. A failed budget write dispatches nothing and allocates no attempt;
 after durable reservation, packaging/execution failures still consume it.
@@ -355,7 +362,7 @@ supports that route and common role contract. If native cannot run after `prepar
 use the returned descriptor to try the same provider through managed CLI:
 
 ```bash
-agent-box workflow review TASK --handoff DESCRIPTOR --brief FILE --fallback-reason REASON
+agent-box workflow review TASK --handoff DESCRIPTOR --fallback-reason REASON
 ```
 
 This runs managed fallback once within
@@ -425,25 +432,23 @@ A local tracking failure leaves publication successful and does not repeat the
 push or merge, block Done, or update another local branch. A later fetch can
 refresh the tracking ref.
 
-For a subtask, or a parent in local merge mode, the coordinator can record the user's explicit acceptance
-of the inspected, validated result as an alternative to independent review:
+For any task, subtask or parent, in either merge mode, the coordinator can record
+the user's explicit acceptance of the current head as an alternative to a required
+independent review:
 
 ```bash
-agent-box workflow inspect PARENT
-agent-box workflow approve PARENT --scope DIGEST --reason 'User accepted the inspected result'
-agent-box workflow finish PARENT
-agent-box workflow land PARENT merge
+agent-box workflow approve TASK --reason 'User accepted the inspected result'
+agent-box workflow finish TASK
 ```
 
-Use the exact scope returned by inspect, after successful validation and completed
-acceptance checks. `approve` records the actor and reason separately as human
-acceptance; it does not write a reviewer PASS, change policy or mark the task Done.
-As with reviewer reports, this is a coordinator contract, not authentication of
-the human's identity. A request to avoid delegation alone is not approval. Code
-or requirement changes, or a later independent review retire the
-decision. A parent in GitHub mode does not accept this exception. Ownership,
-checklists, dependencies, validation and merge proof remain mandatory, and the
-normal post-merge cleanup still runs.
+It needs successful validation of the same head and completed acceptance checks.
+`approve` records the head, actor and reason as human acceptance; it does not
+write a reviewer PASS, change policy or mark the task Done. As with reviewer
+reports, this is a coordinator contract, not authentication of the human's
+identity. A request to avoid delegation alone is not approval. A new commit, a
+moved base or a later review round retires the decision. Ownership, checklists,
+dependencies, validation and merge proof remain mandatory, and the normal
+post-merge cleanup still runs.
 
 If publication or the tracker update fails after the fast-forward, the local merge
 and task branch are preserved and the task stays Review. Remain on the base and run
@@ -454,14 +459,13 @@ tracker failure. An explicit auto-push=false permits local-only recovery.
 Done reconciliation and cleanup never opportunistically publish the base.
 It rereads completion constraints and marks
 Done only when the current local task-branch tip is contained in the current
-local base **and** the pre-merge acceptance still covers that exact head, base
-identity and task requirements. Before changing Git, landing saves one disposable
+local base **and** the pre-merge acceptance still covers that exact head and base
+identity. Before changing Git, landing saves one disposable
 acceptance snapshot with the validated scope, original diff size/paths and review
 result, including any explicit human acceptance. Recovery applies the current
 off/auto/always review policy to that original diff, accepting the original scoped
 human decision when present, so advancing the base cannot manufacture acceptance.
-Changed requirements or task heads invalidate acceptance even if the new head is
-also integrated. Git remains the authority for integration; the snapshot neither
+A changed task head invalidates acceptance even if the new head is also integrated. Git remains the authority for integration; the snapshot neither
 records lifecycle nor selects branch refs. A refusal leaves the parent in Review.
 
 Manual merge or ancestry alone cannot complete an unaccepted parent. If the
@@ -502,8 +506,8 @@ current-head acceptance and merges with `--match-head-commit`. Branch protection
 is never bypassed. Merge-queue entry is not completion. If the tracker write
 fails after merge, `workflow land PARENT reconcile` retries only reconciliation.
 Before changing an unfinished parent to Done, reconciliation requires successful
-validation and applicable independent review of current code and requirements.
-A merged PR proves integration, not acceptance of changed requirements. Missing
+validation and applicable independent review of the merged head.
+A merged PR proves integration, not acceptance. Missing
 local evidence, including in a new clone, requires fresh `workflow validate`
 and ab-review as required from the parent branch, then another reconcile without
 another merge. If the base already contains the implementation, auto/always
@@ -605,7 +609,7 @@ not private report text. `workflow inspect` names the last received result.
 `workflow review-result TASK --round=ROUND --reconcile` retries application after
 tracker/evidence errors without dispatching a model or spending an attempt. It
 preserves route and freshness facts; applied rounds do not apply twice. Changed
-code/requirements and superseded rounds retain their reports but cannot accept
+code or base and superseded rounds retain their reports but cannot accept
 new work, even after old refs are restored. Check `reconciliation.status` separately
 from the provider verdict: `saved`, `error` and `blocked` may be retried; `stale`,
 `superseded` and `invalid_input` cannot be accepted. CLI application failures exit 2
@@ -619,11 +623,10 @@ checks its private `.seal` before restoring the index. An unavailable budget sta
 unknown and prevents application; it is never reset. A missing or modified receipt
 or recovery seal refuses acceptance.
 
-Ordinary related links and labels do not invalidate validation/review content.
-Descriptions, titles, hierarchy, blockers and routing tier labels remain in that scope.
-A tier escalation retires applied acceptance. Review labels still trigger live review
-policy, and reconciliation checks current lifecycle and ownership. Completion gates continue
-checking dependencies and hierarchy independently.
+Task edits never make a saved result stale: only the head and base do. Review
+labels still trigger live review policy, and reconciliation checks current lifecycle
+and ownership. Completion gates continue checking dependencies and hierarchy
+independently.
 
 Receipts use `WORKFLOW_STATE/review-results`, outside the checkout, with 0700
 directories and 0400 files. Per checkout, retention is 20 receipts, 32 MiB total,

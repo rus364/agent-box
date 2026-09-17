@@ -96,15 +96,18 @@ def blockers(pr, review_threads, saved):
 
 def acceptance_blockers(pr, saved):
     """A confirmed merge cannot replace the acceptance required before merging."""
+    from .workflow import human_accepted
+
     reasons = []
     approved = current_approval(pr)
     if pr["state"] == "MERGED":
-        # GitHub binds reviews to commits, not tracker requirements. Only an
+        # GitHub binds reviews to commits, not to local evidence. Only an
         # approval observed before merge can be associated with that scope.
         approved = (approved and bool(saved.get("scope"))
                     and saved.get("github_approval") == approval_scope(pr, saved["scope"]))
-    if not approved and saved.get("review", {}).get("verdict") != "PASS":
-        reasons.append("Need a current-head GitHub approval or a fresh local PASS; silence is not approval")
+    if not approved and saved.get("review", {}).get("verdict") != "PASS" and not human_accepted(saved):
+        reasons.append("Need a current-head GitHub approval, a fresh local PASS or the user's workflow approve; "
+                       "silence is not approval")
         if pr["state"] == "MERGED":
             reasons.append("Merged GitHub approval needs a matching pre-merge scope snapshot; otherwise run a fresh independent local review")
     if saved.get("validation", {}).get("exit") != 0:
@@ -157,7 +160,7 @@ def operate(args, root, config, adapter, task):
     tasks, saved = [], {}
     if args.command == "pr":
         tasks = tree(adapter, task)
-        saved = evidence(root, task, scope(root, info["base"], tasks))
+        saved = evidence(root, task, scope(root, info["base"]))
     return _operate(args, root, config, adapter, task, parent, info, saved, tasks)
 
 
@@ -165,7 +168,7 @@ def _landing_tasks(root, adapter, task_id, info, *, states=("Review",)):
     from .workflow import tree
 
     # Tracker responses are snapshots: traversing an old root misses changed
-    # requirements and newly attached children even if descendants are reread.
+    # completion state and newly attached children even if descendants are reread.
     task = adapter.get(task_id)
     tasks = tree(adapter, task)
     reasons = completion_reasons(task, tasks, str(adapter.identity()["id"]), states=states)
@@ -240,8 +243,8 @@ def _operate(args, root, config, adapter, task, parent, info, saved, tasks):
         task, tasks, reasons = _landing_tasks(root, adapter, task.id, info, states=("Review", "Done"))
         gw.require_clean(root)
         if task.state != "Done":
-            # A merged PR proves integration, not acceptance of today's requirements.
-            saved = evidence(root, task, scope(root, info["base"], tasks))
+            # A merged PR proves integration, not acceptance of the merged head.
+            saved = evidence(root, task, scope(root, info["base"]))
             reasons += acceptance_blockers(pr, saved)
         _current_head(root, pr)
         if reasons:
@@ -260,7 +263,7 @@ def _operate(args, root, config, adapter, task, parent, info, saved, tasks):
         comments = gh(root, "api", "--paginate", "--slurp", f"repos/{repo}/issues/{pr['number']}/comments", json_output=True)
     # Acceptance belongs after network feedback, immediately before the action.
     task, tasks, reasons = _landing_tasks(root, adapter, task.id, info)
-    saved = evidence(root, task, scope(root, info["base"], tasks))
+    saved = evidence(root, task, scope(root, info["base"]))
     _current_head(root, pr)
     reasons += blockers(pr, feedback, saved)
     if args.action == "inspect":
@@ -281,10 +284,10 @@ def _operate(args, root, config, adapter, task, parent, info, saved, tasks):
     # GitHub can merge the accepted head while local work or tracker acceptance
     # advances during the request. That successful merge cannot finish new work.
     task, tasks, reasons = _landing_tasks(root, adapter, task.id, info)
-    current = evidence(root, task, scope(root, info["base"], tasks))
+    current = evidence(root, task, scope(root, info["base"]))
     _current_head(root, merged)
     if current["scope"] != saved["scope"]:
-        reasons.append("Code or requirements changed during merge; validate and review the current scope")
+        reasons.append("Code changed during merge; validate and review the current head")
     reasons += blockers(pr, feedback, current)
     if reasons:
         raise AgentBoxError("Cannot complete merged task: " + "; ".join(reasons))

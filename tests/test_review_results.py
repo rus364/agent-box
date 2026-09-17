@@ -45,51 +45,47 @@ class ReviewResultTests(unittest.TestCase):
             self.task.related.append("99")
             kwargs["diagnostics"].update(usage={"input_tokens": 17}, total_cost_usd=0.12)
             return {"verdict": "PASS", "summary": "private-completed-marker", "findings": []}
-        original = workflow.scope(self.root, "main", [self.task])
+        original = workflow.scope(self.root, "main")
         with patch.object(workflow, "run", side_effect=provider) as run:
             result = self.review()
         self.assertEqual(run.call_count, 1)
-        self.assertEqual(workflow.scope(self.root, "main", [self.task]), original)
+        self.assertEqual(workflow.scope(self.root, "main"), original)
         self.assertEqual(workflow.read_review_state(self.root, BINDING, self.task)["used"], 1)
         self.assertEqual(result["reconciliation"]["status"], "applied")
         raw = Path(result["result_path"]).read_text()
         self.assertIn("private-completed-marker", raw)
         self.assertEqual(json.loads(raw)["output"]["diagnostics"]["usage"]["input_tokens"], 17)
 
-    def test_material_change_is_terminal_even_when_refs_or_requirements_return(self):
-        """An observed stale round cannot become a free new review by restoring its old inputs."""
-        self.config.workflow.review.max_rounds = 4
-        for component in ("head", "task:1.description", "task:1.blockers", "task:1.children"):
-            with self.subTest(component=component):
-                original_head = gw.head_sha(self.root)
-                original_description = self.task.description
-                def provider(*args, **kwargs):
-                    if component == "head":
-                        gw.git(self.root, "commit", "--allow-empty", "-m", "changed head")
-                    elif component.endswith("description"):
-                        self.task.description += "\nNew requirement"
-                    elif component.endswith("blockers"):
-                        self.task.blockers.append("99")
-                    else:
-                        # A changed hierarchy is material even before the new child can be fetched.
-                        self.task.parent = "99"
-                    return self.response()
-                with patch.object(workflow, "run", side_effect=provider):
-                    result = self.review()
-                self.assertEqual(result["reconciliation"]["status"], "stale")
-                self.assertIn("task:1.parent" if component.endswith("children") else component,
-                              result["reconciliation"]["changes"])
-                gw.git(self.root, "reset", "--hard", original_head)
-                self.task.description = original_description
-                self.task.blockers.clear()
-                self.task.parent = None
-                with patch.object(workflow, "run") as run, patch.object(workflow, "reserve_review") as reserve:
-                    repeated = self.retry(result)
-                self.assertEqual(repeated["reconciliation"]["status"], "stale")
-                run.assert_not_called()
-                reserve.assert_not_called()
-                self.assertNotIn("review", workflow.read_evidence(self.root, self.task))
-                self.assertTrue(Path(result["result_path"]).exists())
+    def test_a_new_commit_is_terminal_even_when_the_ref_returns(self):
+        """An observed stale round cannot become a free new review by restoring its old head."""
+        original_head = gw.head_sha(self.root)
+        def provider(*args, **kwargs):
+            gw.git(self.root, "commit", "--allow-empty", "-m", "changed head")
+            return self.response()
+        with patch.object(workflow, "run", side_effect=provider):
+            result = self.review()
+        self.assertEqual(result["reconciliation"]["status"], "stale")
+        self.assertEqual(result["reconciliation"]["changes"], ["head"])
+        gw.git(self.root, "reset", "--hard", original_head)
+        with patch.object(workflow, "run") as run, patch.object(workflow, "reserve_review") as reserve:
+            repeated = self.retry(result)
+        self.assertEqual(repeated["reconciliation"]["status"], "stale")
+        run.assert_not_called()
+        reserve.assert_not_called()
+        self.assertNotIn("review", workflow.read_evidence(self.root, self.task))
+        self.assertTrue(Path(result["result_path"]).exists())
+
+    def test_card_edits_while_the_reviewer_runs_do_not_discard_its_verdict(self):
+        """Acceptance belongs to code: a reworded description, a blocker or a new parent is not new work."""
+        def provider(*args, **kwargs):
+            self.task.description += "\nClarified requirement"
+            self.task.blockers.append("99")
+            self.task.labels = ["ab:tier:3"]
+            return self.response()
+        with patch.object(workflow, "run", side_effect=provider):
+            result = self.review()
+        self.assertEqual(result["reconciliation"]["status"], "applied")
+        self.assertEqual(workflow.read_evidence(self.root, self.task)["review"]["verdict"], "PASS")
 
     def test_tracker_failure_and_restart_reconcile_without_provider_or_attempt(self):
         """Once the provider responded, tracker availability affects only reconciliation."""
@@ -231,10 +227,10 @@ class ReviewResultTests(unittest.TestCase):
     def test_information_changes_keep_validation_while_policy_labels_still_trigger_review(self):
         """Metadata is not a test input, but a review-trigger label still has its live consumer."""
         self.run_workflow("validate", "1", "--", "true")
-        initial = workflow.scope(self.root, "main", [self.task])
+        initial = workflow.scope(self.root, "main")
         self.task.related = ["88"]
         self.task.labels += ["ordinary", self.config.workflow.review.label]
-        self.assertEqual(workflow.scope(self.root, "main", [self.task]), initial)
+        self.assertEqual(workflow.scope(self.root, "main"), initial)
         self.assertEqual(workflow.evidence(self.root, self.task, initial)["validation"]["exit"], 0)
         self.assertIn("task 1 has review label " + self.config.workflow.review.label,
                       workflow.review_reasons(self.config.workflow.review, [self.task], [], 0))
@@ -407,20 +403,22 @@ class ReviewResultTests(unittest.TestCase):
         gw.git(self.root, "reset", "--hard", original)
         self.assertEqual(self.retry(result)["reconciliation"]["status"], "stale")
 
-    def test_tier_escalation_after_applied_pass_requires_new_acceptance(self):
-        """Routing-significant tier labels must not inherit a lower-tier result after escalation."""
-        self.task.description = "## Acceptance\n- [x] requirement"
+    def test_card_edits_after_pass_keep_acceptance_and_a_new_commit_retires_it(self):
+        """Checking items, rewording or re-tiering a card after review is bookkeeping, not a new scope."""
         self.run_workflow("validate", "1", "--", "true")
         with patch.object(workflow, "run", return_value=self.response()):
             result = self.review()
         self.assertEqual(result["reconciliation"]["status"], "applied")
+        self.task.description = "## Acceptance\n- [x] requirement\n\nMoved section"
         self.task.labels = ["ab:tier:3"]
-        current = workflow.scope(self.root, "main", [self.task])
-        self.assertNotEqual(current, result["scope"])
-        self.assertNotIn("review", workflow.evidence(self.root, self.task, current))
-        with self.assertRaisesRegex(AgentBoxError, "validate.*exact scope"):
-            self.run_workflow("finish", "1")
-        self.adapter.set_state.assert_not_called()
+        self.task.children = []
+        current = workflow.scope(self.root, "main")
+        self.assertEqual(current, result["scope"])
+        saved = workflow.evidence(self.root, self.task, current)
+        self.assertEqual((saved["validation"]["exit"], saved["review"]["verdict"]), (0, "PASS"))
+        gw.git(self.root, "commit", "--allow-empty", "-m", "new work")
+        saved = workflow.evidence(self.root, self.task, workflow.scope(self.root, "main"))
+        self.assertFalse({"validation", "review", "human_acceptance"} & saved.keys())
 
     def test_unindexed_response_edits_are_detected_when_input_and_owner_checks_pass(self):
         """Input integrity cannot substitute for the missing index's response-byte identity."""

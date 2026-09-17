@@ -264,7 +264,7 @@ class LandingFreshnessTests(unittest.TestCase):
                 prompt = Path(descriptor["input"]["path"]).read_bytes().decode("utf-8")
                 handoff = json.loads(prompt.split("Delegation handoff:\n", 1)[1])
                 self.assertIn("review the complete implementation", handoff["scope_note"])
-                self.assertEqual(handoff["change_summary"]["path_count"], 0)
+                self.assertEqual(handoff["change_summary"], "")
                 output = Path(self.temporary.name) / "review.json"
                 output.write_text(json.dumps(report))
                 self.dispatch(["report", "7", "--role", "reviewer", "--scope", prepared["scope"],
@@ -298,7 +298,7 @@ class LandingFreshnessTests(unittest.TestCase):
                 self.assertEqual(inspected["review"]["files"], 0)
                 with self.assertRaisesRegex(AgentBoxError, "PASS review"):
                     self.dispatch(["finish", "7"])
-                with self.assertRaisesRegex(AgentBoxError, "GitHub approval or a fresh local PASS"):
+                with self.assertRaisesRegex(AgentBoxError, "GitHub approval, a fresh local PASS"):
                     self.run_land(action="reconcile")
                 self.adapter.set_state.assert_not_called()
                 self.recover_review(native=native)
@@ -318,7 +318,7 @@ class LandingFreshnessTests(unittest.TestCase):
             self.run_land(action="reconcile")
         self.dispatch(["validate", "7", "--", "true"])
         self.assertEqual(self.dispatch(["review", "7", "--primary", "codex"])["review"]["verdict"], "SKIPPED")
-        with self.assertRaisesRegex(AgentBoxError, "GitHub approval or a fresh local PASS"):
+        with self.assertRaisesRegex(AgentBoxError, "GitHub approval, a fresh local PASS"):
             self.run_land(action="reconcile")
         self.adapter.set_state.assert_not_called()
         self.merged["latestReviews"] = [{"state": "APPROVED", "commit": {"oid": self.pr["headRefOid"]}}]
@@ -346,7 +346,7 @@ class LandingFreshnessTests(unittest.TestCase):
                         self.assertEqual(self.run_land(action="reconcile")["state"], "Done")
                         self.adapter.set_state.assert_called_once_with(self.parent, "Done")
                     else:
-                        with self.assertRaisesRegex(AgentBoxError, "GitHub approval or a fresh local PASS"):
+                        with self.assertRaisesRegex(AgentBoxError, "GitHub approval, a fresh local PASS"):
                             self.run_land(action="reconcile")
                         self.adapter.set_state.assert_not_called()
                     self.command.assert_not_called()
@@ -363,17 +363,6 @@ class LandingFreshnessTests(unittest.TestCase):
                     self.run_land(action="reconcile")
                 self.adapter.set_state.assert_not_called()
                 self.command.assert_not_called()
-
-    def test_reconcile_rejects_stale_pass_after_current_scope_revalidation(self):
-        """Revalidation cannot revive review acceptance of earlier requirements."""
-        from dataclasses import replace
-        from agent_box.errors import AgentBoxError
-        self.parent = replace(self.parent, title="Changed goal")
-        self.dispatch(["validate", "7", "--", "true"])
-        with self.assertRaisesRegex(AgentBoxError, "GitHub approval or a fresh local PASS"):
-            self.run_land(action="reconcile")
-        self.adapter.set_state.assert_not_called()
-        self.command.assert_not_called()
 
     def test_reconcile_rechecks_head_after_acceptance_reads(self):
         """Acceptance work must not open a window for completing a newer local commit."""
@@ -434,8 +423,8 @@ class LandingFreshnessTests(unittest.TestCase):
         self.command.assert_not_called()
         self.adapter.set_state.assert_called_once_with(self.parent, "Done")
 
-    def test_approved_merge_cannot_complete_changed_requirements_after_revalidation(self):
-        """Approval of the same SHA cannot revive a pre-merge snapshot for new requirements."""
+    def test_approved_merge_survives_card_edits_after_merge(self):
+        """The approval bound to the merged head stays acceptance when only the card changes afterwards."""
         from dataclasses import replace
         from agent_box.errors import AgentBoxError
         self.approve_github()
@@ -444,16 +433,8 @@ class LandingFreshnessTests(unittest.TestCase):
             self.run_land()
         self.adapter.set_state.side_effect = None
         self.adapter.set_state.reset_mock()
-        self.parent = replace(self.parent, description="## Acceptance\n- [x] Changed requirements",
-                              labels=["ab:tier:1"])
-        self.dispatch(["validate", "7", "--", "true"])
-        self.assertNotIn("github_approval", workflow.read_evidence(self.root, self.parent))
-        with self.assertRaisesRegex(AgentBoxError, "pre-merge scope snapshot"):
-            self.run_land(action="reconcile")
-        self.adapter.set_state.assert_not_called()
-        self.command.assert_not_called()
-        self.config.workflow.review.policy = "always"
-        self.recover_review(integrated=False)
+        self.parent = replace(self.parent, description="## Acceptance\n- [x] Clarified requirements",
+                              labels=["ab:tier:3"])
         self.assertEqual(self.run_land(action="reconcile")["state"], "Done")
         self.command.assert_not_called()
 
@@ -467,28 +448,18 @@ class LandingFreshnessTests(unittest.TestCase):
             self.run_land(action="reconcile")
         self.adapter.set_state.assert_not_called()
 
-    def test_checked_root_requirements_changed_during_network_need_new_acceptance(self):
-        """A replaced root invalidates saved PASS even if every checkbox remains checked."""
+    def test_card_edits_during_network_keep_acceptance(self):
+        """A reworded title or checked item while GitHub answers is not new work to validate again."""
         from dataclasses import replace
-        from agent_box.errors import AgentBoxError
         original = self.parent
         for phase in ("find", "view", "threads"):
             for change in ({"title": "New goal"}, {"description": "- [x] Different acceptance"}):
                 self.parent = original
+                self.adapter.set_state.reset_mock()
                 with self.subTest(phase=phase, change=change):
-                    with self.assertRaisesRegex(AgentBoxError, "validation"):
-                        self.run_land(phase, lambda: setattr(self, "parent", replace(original, **change)))
-                    self.command.assert_not_called()
-                    self.adapter.set_state.assert_not_called()
-
-    def test_new_child_topology_after_feedback_invalidates_parent_acceptance(self):
-        """A freshly completed new child still changes the scope that was reviewed."""
-        from dataclasses import replace
-        from agent_box.errors import AgentBoxError
-        with self.assertRaisesRegex(AgentBoxError, "validation"):
-            self.run_land("threads", lambda: setattr(self, "parent", replace(self.parent, children=["8"])))
-        self.command.assert_not_called()
-        self.adapter.set_state.assert_not_called()
+                    result = self.run_land(phase, lambda: setattr(self, "parent", replace(original, **change)))
+                    self.assertEqual(result["state"], "Done")
+                    self.command.assert_called_once()
 
     def test_reopened_children_and_unchecked_root_after_feedback_block_merge(self):
         """Completion checks use new tracker snapshots even when normalized scope is unchanged."""
@@ -496,7 +467,7 @@ class LandingFreshnessTests(unittest.TestCase):
         from agent_box import workflow
         from agent_box.errors import AgentBoxError
         self.parent = replace(self.parent, children=["8"])
-        self.saved["scope"] = workflow.scope(self.root, "main", [self.parent, self.child])
+        self.saved["scope"] = workflow.scope(self.root, "main")
         workflow.save_evidence(self.root, self.parent, self.saved)
         with self.assertRaisesRegex(AgentBoxError, "subtasks"):
             self.run_land("threads", lambda: setattr(self, "child", replace(self.child, state="Doing")))
@@ -523,13 +494,12 @@ class LandingFreshnessTests(unittest.TestCase):
         self.command.assert_called_once()
         self.adapter.set_state.assert_not_called()
 
-    def test_requirements_or_completion_changed_during_merge_result_prevent_done(self):
-        """Successful GitHub merge does not authorize newly changed tracker acceptance."""
+    def test_completion_changed_during_merge_result_prevents_done(self):
+        """A successful GitHub merge does not waive another owner or an unchecked item."""
         from dataclasses import replace
         from agent_box.errors import AgentBoxError
         original = self.parent
-        for change in ({"title": "New goal"}, {"children": ["8"]}, {"assignees": ["2"]},
-                       {"description": "## Acceptance\n- [ ] accepted"}):
+        for change in ({"assignees": ["2"]}, {"description": "## Acceptance\n- [ ] accepted"}):
             self.parent = original
             with self.subTest(change=change):
                 with self.assertRaises(AgentBoxError):
@@ -550,27 +520,6 @@ class LandingFreshnessTests(unittest.TestCase):
                 self.assertEqual(self.command.call_count, 0 if phase == "threads" else 1)
                 self.adapter.set_state.assert_not_called()
 
-    def test_reconcile_cannot_bypass_requirements_changed_after_merge(self):
-        """Retrying a confirmed merge must not accept requirements the first call refused."""
-        from dataclasses import replace
-        from agent_box.errors import AgentBoxError
-        self.approve_github()
-        with self.assertRaisesRegex(AgentBoxError, "requirements changed"):
-            self.run_land("result", lambda: setattr(self, "parent", replace(self.parent, title="New goal")))
-        self.command.assert_called_once()
-        with self.assertRaisesRegex(AgentBoxError, "validation"):
-            self.run_land(action="reconcile")
-        self.command.assert_not_called()
-        self.adapter.set_state.assert_not_called()
-        self.config.workflow.review.policy = "always"
-        self.dispatch(["validate", "7", "--", "true"])
-        with self.assertRaisesRegex(AgentBoxError, "GitHub approval or a fresh local PASS"):
-            self.run_land(action="reconcile")
-        current = workflow.read_evidence(self.root, self.parent)
-        workflow.save_evidence(self.root, self.parent, {**current, "review": {"verdict": "PASS"}})
-        self.assertEqual(self.run_land(action="reconcile")["state"], "Done")
-        self.command.assert_not_called()
-
     def test_reconcile_rechecks_head_and_checklist_after_remote_lookup(self):
         """The remote branch lookup is itself a network window before Done."""
         from dataclasses import replace
@@ -585,14 +534,12 @@ class LandingFreshnessTests(unittest.TestCase):
         self.adapter.set_state.assert_not_called()
 
     def test_reconcile_rechecks_current_requirements_and_constraints_after_remote_lookup(self):
-        """A merged PR cannot mask fresh topology, ownership, blocker or scope changes."""
+        """A merged PR cannot mask an unfinished child, another owner or a blocker."""
         from dataclasses import replace
         from agent_box.errors import AgentBoxError
         original = self.parent
         self.child = replace(self.child, state="Doing")
-        for change in ({"title": "Changed goal"}, {"children": ["8"]},
-                       {"assignees": ["2"]}, {"blockers": ["8"]},
-                       {"description": "## Acceptance\n- [x] Different requirement"}):
+        for change in ({"children": ["8"]}, {"assignees": ["2"]}, {"blockers": ["8"]}):
             self.parent = original
             with self.subTest(change=change):
                 with self.assertRaises(AgentBoxError):

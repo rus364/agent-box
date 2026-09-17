@@ -29,7 +29,7 @@ def reviewer_instructions():
     return (
         "Act only as the assigned reviewer. Use English for the report. " + COORDINATOR_OWNS +
         "Use only the current assignment, repository instructions and explicitly labeled source evidence; do not load parent conversation, "
-        "tracker comments or previous-agent history. The supplied current requirements satisfy the "
+        "tracker comments or previous-agent history. The supplied task descriptions satisfy the "
         "repository instruction to read the tracked task; do not query its history. "
         "Read AGENTS.md or CLAUDE.md in directories you touch and files they import with @path. "
         "Read every chunk; report missing, unreadable or truncated instructions explicitly. "

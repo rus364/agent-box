@@ -74,9 +74,8 @@ class ChildFinishTests(unittest.TestCase):
         self.config.workflow.review.policy = "always"
         with self.assertRaisesRegex(AgentBoxError, "PASS review"):
             self.dispatch(["finish", "8"])
-        scope = workflow.read_evidence(self.root, self.child)["scope"]
         self.config.workflow.merge_mode = "github"
-        self.dispatch(["approve", "8", "--scope", scope, "--reason", "User accepted the inspected subtask"])
+        self.dispatch(["approve", "8", "--reason", "User accepted the inspected subtask"])
         self.config.workflow.merge_mode = "local"
         self.adapter.set_state.side_effect = AgentBoxError("tracker unavailable")
         with self.assertRaisesRegex(AgentBoxError, "tracker unavailable"):
@@ -107,13 +106,9 @@ class ChildFinishTests(unittest.TestCase):
         scope.assert_not_called()
         review.assert_not_called()
 
-    def test_retry_rejects_changed_requirements_and_changed_integrated_head(self):
-        """Ancestry of a different task revision cannot reuse the old acceptance."""
+    def test_retry_rejects_a_changed_integrated_head(self):
+        """Ancestry of a later commit cannot reuse the acceptance of an earlier head."""
         self.interrupted_finish()
-        self.child.description += "\nNew requirement"
-        with self.assertRaisesRegex(AgentBoxError, "requirements.*changed"):
-            self.dispatch(["finish", "8"])
-        self.child.description = "- [x] accepted"
         gw.git(self.root, "switch", "ab/8-child")
         self.commit("later.py")
         gw.git(self.root, "switch", "ab/7-parent")
@@ -362,7 +357,7 @@ class NoCodeChildFinishTests(unittest.TestCase):
                 def interleave(root, task):
                     value = original_read(root, task)
                     if task.id == self.child.id and not attempted:
-                        fingerprint = workflow.scope(root, "ab/7-parent", [self.child])
+                        fingerprint = workflow.scope(root, "ab/7-parent")
                         attempted.append(fingerprint)
                         try:
                             reserve(fingerprint)
@@ -487,19 +482,11 @@ class NoCodeChildFinishTests(unittest.TestCase):
             self.assertEqual(self.dispatch(["finish", "8"])["state"], "Done")
         scope.assert_not_called()
 
-    def test_no_code_requirements_change_requires_fresh_validation(self):
-        """The creation head survives a scope change; the prior acceptance does not."""
+    def test_no_code_card_edit_keeps_the_original_acceptance(self):
+        """A clarified description after an interrupted finish is not new work to validate again."""
         self.dispatch(["validate", "8", "--", "true"])
         self.interrupted_finish()
-        self.child.description += "\nNew requirement"
-        with self.assertRaisesRegex(AgentBoxError, "requirements.*changed"):
-            self.dispatch(["finish", "8"])
-        self.dispatch(["begin", "8", "--resume"])
-        with self.assertRaisesRegex(AgentBoxError, "Validation failed"):
-            self.dispatch(["validate", "8", "--", "false"])
-        with self.assertRaisesRegex(AgentBoxError, "requirements.*changed"):
-            self.dispatch(["finish", "8"])
-        self.dispatch(["validate", "8", "--", "true"])
+        self.child.description += "\nClarified requirement"
         self.assertEqual(self.dispatch(["finish", "8"])["state"], "Done")
 
     def test_no_code_current_review_policy_and_retirement_apply(self):
@@ -622,7 +609,7 @@ class NoCodeChildFinishTests(unittest.TestCase):
         self.commit("child.py")
         self.head = gw.head_sha(self.root)
         saved = workflow.read_evidence(self.root, self.child)
-        saved.update(scope=workflow.scope(self.root, "ab/7-parent", [self.child]),
+        saved.update(scope=workflow.scope(self.root, "ab/7-parent"),
                      validation={"command": ["true"], "exit": 0})
         workflow.save_evidence(self.root, self.child, saved)
         original_git = gw.git
@@ -846,7 +833,7 @@ class TransitionReadTests(unittest.TestCase):
         self.adapter.get.side_effect = lambda ident: {"7": self.parent, "8": child}[ident]
         self.config.workflow.merge_mode = "github"
         self.config.github.gh_token = True
-        self.saved["scope"] = workflow.scope(self.root, "main", [self.parent, child])
+        self.saved["scope"] = workflow.scope(self.root, "main")
         self.saved["review"] = {"verdict": "PASS"}
         workflow.save_evidence(self.root, self.parent, self.saved)
         pr = {"number": 9, "url": "https://github.com/o/r/pull/9", "state": "OPEN", "isDraft": False,
@@ -872,11 +859,10 @@ class TransitionReadTests(unittest.TestCase):
             self.assertEqual(tree.call_count, 2 if merging else 1)
             self.assertEqual(scope.call_count, 2 if merging else 1)
 
-    def test_validation_keeps_both_task_and_scope_reads(self):
-        """Validation must compare requirements and committed work before and after the command."""
-        with patch.object(workflow, "tree", wraps=workflow.tree) as tree, \
-             patch.object(workflow, "scope", wraps=workflow.scope) as scope:
+    def test_validation_compares_committed_code_before_and_after_the_command(self):
+        """A command that commits or moves the base cannot record success for the code it did not test."""
+        with patch.object(workflow, "scope", wraps=workflow.scope) as scope:
             self.dispatch(["validate", "7", "--", "true"])
-        self.assertEqual(self.adapter.get.call_count, 2)
-        self.assertEqual(tree.call_count, 2)
         self.assertEqual(scope.call_count, 2)
+        with self.assertRaisesRegex(AgentBoxError, "changed the committed code"):
+            self.dispatch(["validate", "7", "--", "git", "commit", "--allow-empty", "-m", "during validation"])

@@ -8,19 +8,22 @@ from agent_box.tracker.core import Task
 
 
 class WorkflowGitTests(unittest.TestCase):
-    def test_review_is_invalidated_by_requirement_changes(self):
+    def test_scope_follows_code_and_base_not_requirements(self):
+        """A card edit keeps acceptance; a commit or a moved base is new code to validate and review."""
         from agent_box.workflow import scope
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             for args in (["init", "-b", "main"], ["config", "user.name", "Test"], ["config", "user.email", "test@example.invalid"],
-                         ["commit", "--allow-empty", "-m", "initial"]):
+                         ["commit", "--allow-empty", "-m", "initial"], ["switch", "-c", "ab/1-task"]):
                 subprocess.run(["git", *args], cwd=root, check=True, capture_output=True)
-            task = Task("1", "1", "Task", description="- [ ] requirement")
-            original = scope(root, "main", [task])
-            task.description = "- [x] requirement"
-            self.assertEqual(scope(root, "main", [task]), original)
-            task.description = "- [ ] new requirement"
-            self.assertNotEqual(scope(root, "main", [task]), original)
+            original = scope(root, "main")
+            subprocess.run(["git", "commit", "--allow-empty", "-m", "work"], cwd=root, check=True, capture_output=True)
+            worked = scope(root, "main")
+            self.assertNotEqual(worked, original)
+            subprocess.run(["git", "commit", "--allow-empty", "-m", "base moves"], cwd=root, check=True, capture_output=True)
+            subprocess.run(["git", "branch", "-f", "main", "HEAD"], cwd=root, check=True, capture_output=True)
+            subprocess.run(["git", "reset", "--hard", "HEAD~1"], cwd=root, check=True, capture_output=True)
+            self.assertNotEqual(scope(root, "main"), worked)
 
     def test_auto_review_uses_diff_and_labels_not_priority(self):
         from agent_box.workflow import review_required
