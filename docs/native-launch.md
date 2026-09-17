@@ -51,11 +51,11 @@ that this session can execute explicit native parameters without selecting a
 profile, not that every model, provider or default-effort path works. Model/effort
 are enforced by the exposed tool contract, not attested by a model's self-report.
 
-Ingesting that scout report was correctly rejected as stale because the
-coordinator edited the working scope during the scout's independent inspection.
-The smoke is execution evidence, not accepted workflow evidence. Unit tests
-separately exercise ingestion on an unchanged prepared scope. Real Claude native
-execution, profile-precedence collisions and effort-default smoke were not run.
+The workflow of that time rejected ingesting the scout report as stale because the
+coordinator edited the working scope during the inspection; scout reports have
+since stopped being ingested at all (task 410). The smoke is execution evidence,
+not accepted workflow evidence. Real Claude native execution, profile-precedence
+collisions and effort-default smoke were not run.
 
 Validation: 995 isolated unittests, 45 selftests and Ruff E4/E9/F passed.
 The two targeted regressions failed before the fix and passed afterwards.
