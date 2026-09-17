@@ -256,14 +256,14 @@ class LocalLandTests(unittest.TestCase):
         self.assertEqual(gw.git(self.root, "branch", "--list", "ab/7-parent"), "")
 
     def test_human_approval_requires_explicit_scope_validation_and_local_parent(self):
-        """A vague acceptance or Github task cannot acquire a local review exception."""
+        """A vague acceptance or a GitHub parent cannot acquire a local review exception."""
         workflow.save_evidence(self.root, self.parent, self.saved)
         with self.assertRaisesRegex(AgentBoxError, "scope"):
             self.dispatch(["approve", "7", "--scope", "stale", "--reason", "Accepted"])
         with self.assertRaisesRegex(AgentBoxError, "reason"):
             self.approve("   ")
         self.config.workflow.merge_mode = "github"
-        with self.assertRaisesRegex(AgentBoxError, "local parent"):
+        with self.assertRaisesRegex(AgentBoxError, "parent task is available only in local merge mode"):
             self.approve()
         self.config.workflow.merge_mode = "local"
         self.saved.pop("validation")

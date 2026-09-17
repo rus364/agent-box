@@ -1470,7 +1470,7 @@ def finish_child(root, config, adapter, task, parent, info, branch, tasks):
             if accepted.get("validation", {}).get("exit") != 0:
                 reasons.append("Original child validation is missing")
             reasons += review_blockers(config.workflow.review, tasks, accepted.get("files", []),
-                                       accepted.get("lines", 0), accepted)
+                                       accepted.get("lines", 0), accepted, allow_human=True)
         if reasons:
             raise AgentBoxError("Cannot finish integrated child: " + "; ".join(reasons) + ". " + recovery)
     else:
@@ -1480,7 +1480,7 @@ def finish_child(root, config, adapter, task, parent, info, branch, tasks):
         if saved.get("validation", {}).get("exit") != 0:
             raise AgentBoxError("Run workflow validate against this exact scope before completion")
         files, lines = diff_stats(root, base, config.workflow.review)
-        reasons = review_blockers(config.workflow.review, tasks, files, lines, saved)
+        reasons = review_blockers(config.workflow.review, tasks, files, lines, saved, allow_human=True)
         if reasons:
             raise AgentBoxError("; ".join(reasons))
         if not integrated and not gw._is_ancestor(root, base_head, head):
@@ -1490,7 +1490,8 @@ def finish_child(root, config, adapter, task, parent, info, branch, tasks):
         saved["local_acceptance"] = {"head": head, "base": base, "base_head": head if integrated else base_head,
                                      "requirements": requirements(tasks), "scope": saved["scope"],
                                      "files": files, "lines": lines,
-                                     "validation": saved["validation"], "review": saved.get("review", {})}
+                                     "validation": saved["validation"], "review": saved.get("review", {}),
+                                     "human_acceptance": saved.get("human_acceptance", {})}
         save_evidence(root, task, saved)
     if gw.local_branch_head(root, branch) != head or gw.local_branch_head(root, base) != base_head:
         raise AgentBoxError("Child or parent head changed after acceptance; inspect before retrying")
@@ -1624,15 +1625,16 @@ def dispatch(args):
             raise AgentBoxError("Pass --fallback-reason explaining why the prepared native review could not run")
     saved = evidence(root, task, fingerprint)
     if args.command == "approve":
-        if config.workflow.merge_mode != "local" or task.id != parent.id:
-            raise AgentBoxError("Human acceptance is available only for a local parent task")
+        # A subtask is always reviewed locally; a GitHub parent keeps its independent review.
+        if config.workflow.merge_mode != "local" and task.id == parent.id:
+            raise AgentBoxError("Human acceptance of a parent task is available only in local merge mode")
         if not args.reason.strip():
             raise AgentBoxError("Human acceptance requires a non-empty reason from the user")
         with lock(root, "review-budget"), lock(root, "work"):
             task = adapter.get(task.id)
             tasks = tree(adapter, task)
-            if gw.current_branch(root) != info["branch"]:
-                raise AgentBoxError("Switch to the parent branch before recording human acceptance")
+            if gw.current_branch(root) != (current.get("branch") or info["branch"]):
+                raise AgentBoxError("Switch to the task branch before recording human acceptance")
             if args.scope != fingerprint or scope(root, base, tasks) != fingerprint:
                 raise AgentBoxError("Approval scope is stale; inspect the current result and ask the user again")
             reasons = completion_reasons(task, tasks, str(adapter.identity()["id"]), states=("Doing", "Review"))

@@ -69,6 +69,22 @@ class ChildFinishTests(unittest.TestCase):
         self.assertEqual(initial.state, snapshot_state or authoritative.state)
         return result
 
+    def test_user_acceptance_replaces_required_review_of_a_subtask(self):
+        """A subtask the reviewer keeps looping on is closed by the user's explicit decision, also after a retry."""
+        self.config.workflow.review.policy = "always"
+        with self.assertRaisesRegex(AgentBoxError, "PASS review"):
+            self.dispatch(["finish", "8"])
+        scope = workflow.read_evidence(self.root, self.child)["scope"]
+        self.config.workflow.merge_mode = "github"
+        self.dispatch(["approve", "8", "--scope", scope, "--reason", "User accepted the inspected subtask"])
+        self.config.workflow.merge_mode = "local"
+        self.adapter.set_state.side_effect = AgentBoxError("tracker unavailable")
+        with self.assertRaisesRegex(AgentBoxError, "tracker unavailable"):
+            self.dispatch(["finish", "8"])
+        self.adapter.set_state.side_effect = None
+        self.assertEqual(self.dispatch(["finish", "8"])["state"], "Done")
+        self.assertNotIn("review", workflow.read_evidence(self.root, self.child))
+
     def test_tracker_outage_retry_finishes_original_work_without_merge_or_validation(self):
         """The advanced parent must not turn the accepted child into an empty diff."""
         self.interrupted_finish()

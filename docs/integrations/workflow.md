@@ -433,7 +433,7 @@ A local tracking failure leaves publication successful and does not repeat the
 push or merge, block Done, or update another local branch. A later fetch can
 refresh the tracking ref.
 
-For a local parent, the coordinator can record the user's explicit acceptance
+For a subtask, or a parent in local merge mode, the coordinator can record the user's explicit acceptance
 of the inspected, validated result as an alternative to independent review:
 
 ```bash
@@ -449,7 +449,7 @@ acceptance; it does not write a reviewer PASS, change policy or mark the task Do
 As with reviewer reports, this is a coordinator contract, not authentication of
 the human's identity. A request to avoid delegation alone is not approval. Code
 or requirement changes, or a later independent review retire the
-decision. GitHub mode and subtasks do not accept this exception. Ownership,
+decision. A parent in GitHub mode does not accept this exception. Ownership,
 checklists, dependencies, validation and merge proof remain mandatory, and the
 normal post-merge cleanup still runs.
 
