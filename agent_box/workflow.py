@@ -292,12 +292,15 @@ def start_review(root, binding, task, limit, round_id, fingerprint, backend):
         # Retire acceptance before publishing a new round; result ingestion uses
         # this same lock so a late verdict cannot slip between these writes.
         save_evidence(root, task, saved)
-        unanswered = state.get("pending") if state.get("pending_backend") == "native" and not any(
-            item["round"] == state.get("pending") for item in state.get("results", [])) else None
+        previous = dict(state)
         state.update(pending=round_id, pending_backend=backend, failures=budget["failures"] + 1)
         save_review_state(root, binding, task, state)
-    if unanswered:
-        # Its answer can no longer be recorded, so nobody needs its input; foreign files stay.
+    unanswered = previous.get("pending")
+    if unanswered and not any(item["round"] == unanswered for item in previous.get("results", [])) and (
+            previous.get("pending_backend") == "native" or backend == "managed"
+            or managed_round_status(root, previous) == "ended_without_response"):
+        # Its answer can no longer be recorded, so nobody needs its input; foreign files stay. A managed
+        # caller already holds the execution lock, so an earlier managed round cannot still be running.
         with contextlib.suppress(AgentBoxError, OSError):
             cleanup_review_evidence(review_evidence_path(root, task.id, unanswered))
     return review_budget_summary(state, limit)

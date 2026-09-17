@@ -61,8 +61,9 @@ ceremony is shipped. The reference licenses are retained in
 Task 335 checked tool schemas and installed CLI help separately from mocked
 launch and prompt-composition tests; those tests do not attest provider behavior.
 The coordinator then ran six fresh managed Codex no-op probes in a temporary Git
-repository through the current `render_handoff`, `report_schema` and
-`build_command` paths, using `gpt-5.6-sol` at medium effort: two sequential
+repository through the then-current `render_handoff`, `report_schema` and
+`build_command` paths (the report schema and `workflow prepare` were removed in
+task 413), using `gpt-5.6-sol` at medium effort: two sequential
 assignments each for worker, scout and reviewer. All six exited zero, returned
 their current marker, and emitted `thread.started` with distinct IDs and
 `turn.completed`. Each role's second invocation reported its predecessor's marker

@@ -6,7 +6,7 @@ from pathlib import Path
 import unittest
 from unittest.mock import patch
 
-from agent_box import workflow, review_results, git_workflow as gw
+from agent_box import workflow, review_results, workflow_state, git_workflow as gw
 from agent_box.errors import AgentBoxError
 import workflow_fixtures as fixtures
 
@@ -138,6 +138,23 @@ class ReviewResultTests(unittest.TestCase):
         self.assertEqual(latest["review_budget"]["used"], 1)
         with self.assertRaisesRegex(AgentBoxError, "No native review round is pending"):
             self.native()
+
+    def test_a_new_round_retires_the_input_of_a_killed_managed_round_but_not_a_running_one(self):
+        """A kill leaves no code to clean up; the next round does, unless that round is still executing."""
+        with patch.object(workflow, "run", side_effect=KeyboardInterrupt), self.assertRaises(KeyboardInterrupt):
+            with patch.object(workflow, "cleanup_review_evidence"):
+                self.review()
+        killed = workflow.read_review_state(self.root, BINDING, self.task)["pending"]
+        package = workflow.review_evidence_path(self.root, "1", killed)
+        self.assertTrue(package.is_dir())
+        with workflow_state.lock(self.root, "review"):
+            self.native_round()
+        self.assertTrue(package.is_dir())
+        state = workflow.read_review_state(self.root, BINDING, self.task)
+        state.update(pending=killed, pending_backend="managed", failures=0)
+        workflow.save_review_state(self.root, BINDING, self.task, state)
+        self.native_round()
+        self.assertFalse(package.exists())
 
     def test_missing_modified_or_replaced_receipts_never_apply(self):
         """A receipt seal detects content edits and same-byte replacements before acceptance."""
