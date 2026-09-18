@@ -685,8 +685,11 @@ class StagingTests(unittest.TestCase):
             self.staging_delete(child_copy)
         self.client.patch(f'/tasks/{moving}', {'project_id': int(child_copy)})
         self.staging_move(str(moving), '--project', root_copy)
-        with patch.object(self.client, 'delete', lost), self.assertRaises(TrackerError):
+        with patch.object(self.client, 'delete', lost), \
+                self.assertRaisesRegex(TrackerError, f'Rerun agent-box tracker delete-project {child_copy}'):
             self.staging_delete(child_copy)
+        # Unarchiving would let a task in before the rerun deletes the project with it.
+        self.assertTrue(self.client.get(f'/projects/{child_copy}')['is_archived'])
         self.assertEqual(json.loads(self.receipt.read_text())['clone']['removed'], ['2'])
         self.assertIn(f'Staging project {child_copy} is recorded as removed but still exists; '
                       f'rerun tracker --adoption RECEIPT delete-project {child_copy}',
@@ -704,6 +707,16 @@ class StagingTests(unittest.TestCase):
                 self.staging_delete(project)
         self.assertEqual(json.loads(self.receipt.read_text())['clone'].keys(), {'projects'})
         self.assertEqual(adoption.cutover(self.root, self.receipt)['errors'], [])
+
+    def test_cutover_waits_for_a_move_in_progress(self):
+        """A move that starts after the journal check could be cut off once no staging rerun is possible."""
+        self.clone()
+        from agent_box import workflow_state
+        patch.object(workflow_state, 'WORKFLOW_STATE', self.root / 'state').start()
+        with workflow_state.lock(self.root, 'move'), self.assertRaisesRegex(AgentBoxError, 'Another local move'):
+            adoption.cutover(self.root, self.receipt, True)
+        self.assertEqual(self.client.get('/projects/1')['title'], 'Root')
+        self.assertTrue(adoption.cutover(self.root, self.receipt, True)['complete'])
 
     def test_adoption_names_what_it_still_refuses(self):
         """Creating or claiming staging work is outside adoption; the refusal says what is inside."""

@@ -238,6 +238,16 @@ def start(root, project, path=None, provider=None, apply=False):
 
 
 def cutover(root, path, apply=False):
+    if not apply:
+        return check_cutover(root, path)
+    from ..workflow_state import lock
+    # A staging move started after the journal check could be interrupted once
+    # the roots are renamed, when no --adoption rerun can finish it any more.
+    with lock(root, "move"):
+        return check_cutover(root, path, True)
+
+
+def check_cutover(root, path, apply=False):
     receipt, source, adapter = load(path, root)
     target = receipt["clone"].get("projects", {}).get(source.project)
     if not target:

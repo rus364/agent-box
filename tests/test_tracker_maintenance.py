@@ -451,6 +451,21 @@ class MoveTests(unittest.TestCase):
             self.run_cli('move', '21', '--project', '2')
         self.assertEqual(raised.exception.category, 'conflict')
 
+    def test_a_relation_kind_the_workflow_does_not_model_is_still_verified(self):
+        """Ordering and duplicate edges carry meaning too; the move promises to keep every relation."""
+        self.client.tasks[21]['related_tasks']['precedes'] = [{'id': 30}]
+        original = self.client.patch
+
+        def lossy(path, body, markdown=False):
+            result = original(path, body, markdown)
+            if path == '/tasks/21':
+                self.client.tasks[21]['related_tasks'].pop('precedes')
+            return result
+
+        with patch.object(self.client, 'patch', lossy), \
+                self.assertRaisesRegex(TrackerError, 'Task 21 lost relations'):
+            self.run_cli('move', '21', '--project', '2')
+
     def test_bulk_updates_cannot_move_tasks_either(self):
         """A bulk project change would skip the subtree, the binding and the column restore."""
         with self.assertRaisesRegex(vikunja_api.ImportConflict, 'project_id.*tracker move'):

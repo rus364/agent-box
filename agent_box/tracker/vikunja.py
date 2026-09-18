@@ -247,7 +247,14 @@ class VikunjaAdapter:
             if not archived:
                 self.client.patch(f"/projects/{ident}", {"title": target["title"], "is_archived": False})
             raise
-        self.client.delete(f"/projects/{ident}")
+        try:
+            self.client.delete(f"/projects/{ident}")
+        except TrackerError as exc:
+            # Unarchiving here would reopen the window, and a delete whose answer
+            # was lost may already have happened; a rerun settles both.
+            raise TrackerError(f"Deleting archived project {ident} failed: {exc}. Rerun agent-box tracker "
+                               f"delete-project {ident}; the archive keeps tasks out until then",
+                               exc.category, exc.retryable) from exc
         if ident in {str(p["id"]) for p in self.projects()}:
             raise TrackerError(f"Deletion of project {ident} was not confirmed", "conflict")
         return {"deleted": ident, "title": target["title"]}
@@ -500,8 +507,12 @@ class VikunjaAdapter:
         A list, not a tuple: it is saved in the move journal and must compare
         equal after a JSON round trip.
         """
-        return [task.parent, sorted(task.children), sorted(task.blockers), sorted(task.related),
-                sorted(task.labels), task.priority, sorted(task.assignees), len(self.comments(task.id))]
+        # Every relation kind, not only the ones Task models: a lost duplicate or
+        # ordering edge is as much a loss as a lost blocker.
+        related = self.client.get(f"/tasks/{int(task.id)}").get("related_tasks") or {}
+        relations = sorted([kind, sorted(str(other["id"]) for other in others)]
+                           for kind, others in related.items() if others)
+        return [relations, sorted(task.labels), task.priority, sorted(task.assignees), len(self.comments(task.id))]
 
     def _check_moved(self, task, fingerprint):
         if self._move_fingerprint(task) != fingerprint:
