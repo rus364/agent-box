@@ -279,12 +279,17 @@ def dispatch(args):
         tasks = [adapter.get(reference) for reference in
                  (args.task if isinstance(args.task, list) else [args.task])]
     task = tasks[0] if tasks else None
-    if args.adoption and args.command in {"update", "tier", "relation", "comment", "check", "state", "normalized"}:
-        scope = set(adapter.subtree(binding.project, True))
-        if any(found.project not in scope for found in tasks):
-            raise TrackerError("Adoption can only change staging tasks", "conflict")
+    # One boundary for every task write: a project outside the binding stays
+    # readable, and naming a task by ID is not a way past that.
+    if binding and args.command in {"update", "tier", "relation", "comment", "check", "state", "normalized"}:
+        scope = set(adapter.subtree(binding.project, binding.recursive or bool(args.adoption)))
+        outside = [found.id for found in tasks if found.project not in scope]
+        if outside:
+            raise TrackerError(("Adoption can only change staging tasks: " if args.adoption else
+                                "Tasks outside the repository binding: ") + ", ".join(outside), "conflict")
         if args.command == "relation" and adapter.get(args.other).project not in scope:
-            raise TrackerError("Adoption relations must stay inside staging", "conflict")
+            raise TrackerError("Adoption relations must stay inside staging" if args.adoption else
+                               "Relations must stay inside the repository binding", "conflict")
     if args.command == "get":
         return {**task.to_dict(), "comments": adapter.comments(task.id)}
     if args.command == "comments":
@@ -313,10 +318,6 @@ def dispatch(args):
             raise TrackerError("Use agent-box tracker claim to assign and start a task")
         # Everything this command can see is judged before the first task moves:
         # a batch that stops halfway leaves the user reconstructing what it did.
-        scope = set(adapter.subtree(binding.project, binding.recursive or bool(args.adoption)))
-        outside = [found.id for found in tasks if found.project not in scope]
-        if outside:
-            raise TrackerError(f"Tasks outside the repository binding: {', '.join(outside)}", "conflict")
         broken = [entry for entry in adapter.lifecycle_report(sorted({found.project for found in tasks}))
                   if entry["problems"]]
         if broken:

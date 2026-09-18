@@ -174,6 +174,16 @@ class MaintenanceTests(unittest.TestCase):
             self.run_cli("check", "5", "1", "--revision", "")
         self.assertEqual(self.client.writes, [])
 
+    def test_naming_a_task_by_id_is_no_way_past_the_binding(self):
+        """Every task write shares one boundary; a project outside it stays readable only."""
+        self.client.tasks[7]["description"] = "- [ ] первый\n"
+        self.client.revisions["/tasks/7"] = "rev-1"
+        for command in (("check", "7", "1", "--revision", "rev-1"), ("normalized", "7"), ("tier", "7", "2")):
+            with self.subTest(command=command[0]):
+                with self.assertRaisesRegex(TrackerError, "outside the repository binding"):
+                    self.run_cli(*command)
+        self.assertEqual(self.client.writes, [])
+
     def test_completed_tasks_are_marked_processed_in_one_call(self):
         """A Done task has nothing left to normalize, so a pass should not read each one."""
         for ident in (5, 6, 8):
