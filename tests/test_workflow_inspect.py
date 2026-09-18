@@ -99,6 +99,13 @@ class InspectTests(unittest.TestCase):
         self.config.workflow.merge_mode = "github"
         self.assertIn("ab-pr", self.inspect_readonly()["next_step"])
 
+    def test_a_parent_branch_that_never_left_the_base_asks_for_work(self):
+        """Git shows the same two commits for an unmoved branch and a base that absorbed the head."""
+        gw.git(self.root, "switch", "-C", "ab/1-task", "main")
+        self.assertIn("Commit the implementation", self.inspect_readonly()["next_step"])
+        self.task.state = "Review"
+        self.assertNotIn("Commit the implementation", self.inspect_readonly()["next_step"])
+
     def test_an_unstarted_subtask_is_sent_to_work_and_a_done_one_to_its_parent(self):
         """A finished subtask's branch is released, so proposing a switch to it sent work nowhere."""
         child = Task("2", "1", "Child", parent="1", state="Doing", assignees=["1"],

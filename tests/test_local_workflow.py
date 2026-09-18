@@ -274,13 +274,19 @@ class LocalLandTests(unittest.TestCase):
         self.assertEqual(gw.current_branch(self.root), "main")
         self.assertEqual(gw.git(self.root, "branch", "--list", "ab/7-parent"), "")
 
-    def test_an_open_manual_check_blocks_completion_but_not_acceptance(self):
-        """A check nobody can run from a container once held up the round that judges the code."""
+    def test_an_open_manual_check_blocks_landing_but_not_acceptance_or_review(self):
+        """A check nobody can run from a container once held up the round that judges the code.
+
+        The parent reaches Review without it because in GitHub mode its review
+        round lives in a pull request that Review is the precondition for.
+        """
         self.parent.state = "Doing"
         self.parent.description = "## Acceptance\n- [x] accepted\n\n## Validation\n- [ ] user checks the real payload"
         self.assertEqual(self.approve()["human_acceptance"]["actor"], "1")
+        self.assertEqual(self.dispatch(["finish", "7"])["state"], "Review")
+        self.parent.state = "Review"
         with self.assertRaisesRegex(AgentBoxError, "checklist remains incomplete"):
-            self.dispatch(["finish", "7"])
+            self.dispatch(["land", "7", "merge"])
 
     def test_human_approval_requires_a_reason_and_validation_of_the_current_head(self):
         """A vague acceptance or an unvalidated head cannot acquire a review exception."""

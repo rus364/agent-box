@@ -737,6 +737,9 @@ def recorded_step(task, parent, config, saved, blockers, *, no_work):
     describes, so it kept asking for a run that had already passed. Each case
     here is decided by a recorded fact: an unmoved branch, validation of this
     exact head, the acceptance the head still needs, and the task's own state.
+    A branch that never left its base and a base that has absorbed the head are
+    the same two commits in Git, so `no_work` is told them apart by the state:
+    work that reached Review or Done is not work that never started.
     """
     if "Done" in (task.state, parent.state):
         return completed_step(task, parent)
@@ -830,7 +833,8 @@ def inspect(root, binding, adapter, task, config):
                                {**saved, "delta_review": delta}, integrated=integrated)
     result.update(scope=fingerprint, validation=saved.get("validation"),
                   next_step=recorded_step(task, parent, config, saved, blockers,
-                                          no_work=not integrated and gw.base_commit(root, base) == head))
+                                          no_work=gw.base_commit(root, base) == head
+                                          and task.state not in ("Review", "Done")))
     return result
 
 
@@ -1296,7 +1300,12 @@ def finish(root, config, adapter, task_id):
                     "cleanup": release_branch(root, config, task, current.get("branch"), info["branch"])}
         parent, info, current, base = resolve(root, adapter, task)
         tasks = tree(adapter, task)
-        reasons = completion_reasons(task, tasks, str(adapter.identity()["id"])) + blocking_reasons(task, adapter.get)
+        # A parent only reaches Review here, and in GitHub mode its review lives
+        # in a pull request that Review is the precondition for, so the checklist
+        # is asked for where the task actually completes: a subtask's own finish
+        # and every landing.
+        reasons = completion_reasons(task, tasks, str(adapter.identity()["id"]),
+                                     checklist=task.id != parent.id) + blocking_reasons(task, adapter.get)
         if reasons:
             raise AgentBoxError("Cannot finish: " + "; ".join(reasons))
         if task.id != parent.id:
