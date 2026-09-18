@@ -29,6 +29,7 @@ agent-box tracker comment 123 --file /tmp/progress.md
 agent-box tracker state 123 124 Done --reason 'Superseded by task 130'
 agent-box tracker normalized --done --recursive
 agent-box tracker move 123 --project 42
+agent-box tracker delete-project 42
 ```
 
 `setup` previews, for every project in scope, the kanban view it resolved and
@@ -134,6 +135,10 @@ is restored by a second write. Between the two writes that state exists nowhere
 else, so the move records it in workflow state first; a rerun of the same
 command restores what an interruption left, and any other move waits for it.
 Moving is only this command: neither `task-fields` nor `bulk-update` accepts `project_id`.
+`delete-project P` then deletes an emptied subproject of the binding. The
+provider would delete a project's tasks and child projects with it and has no
+undo, so a project that still holds either, the binding root and any project
+outside the binding are refused.
 
 Comments are a human journal. Nothing machine-readable lives in one: branch,
 base branch and pull request come from Git and GitHub, lifecycle from the
@@ -231,6 +236,12 @@ visible number, which would break the per-project index pairing, so before the
 first move the receipt saves `clone.tasks`, the source-to-staging task mapping,
 while the indexes still pair up. From then on clone verification and cutover use
 that mapping instead, and `clone --apply` refuses to run again.
+`tracker --adoption PATH delete-project P` deletes an emptied staging
+subproject. After the same checks, and before the delete, it saves the mapping
+if no move has, and records the source project in `clone.removed`; clone
+verification and cutover then treat that copy as intentionally gone. A copy
+recorded as removed that still exists, because the delete was interrupted,
+blocks cutover until the command is rerun.
 
 Labels are still global shared objects: adoption may create missing `ab:tier:*`
 labels and edit staging attachments, but never rename/delete global labels.

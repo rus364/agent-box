@@ -22,7 +22,7 @@ LIFECYCLE_ALIASES = {
 class VikunjaAdapter:
     capabilities = frozenset({"tasks", "projects", "comments", "checklists", "relations",
                               "assignees", "boards", "optimistic_checks", "import", "bulk",
-                              "clone_project_tree", "rename_project", "move"})
+                              "clone_project_tree", "rename_project", "move", "delete_project"})
 
     def __init__(self, url, token, binding=None, client=None):
         self.client = client or api.VikunjaClient(url, token)
@@ -204,6 +204,36 @@ class VikunjaAdapter:
         if current["title"] != title:
             raise TrackerError(f"Project {project_id} rename was not confirmed", "conflict")
         return current
+
+    def delete_project(self, project, checkpoint):
+        """Delete an emptied subproject of the binding.
+
+        Vikunja deletes a project's tasks and child projects with it and has no
+        undo, so only an empty leaf goes, never the binding's root: collapsing a
+        tree means moving its tasks out first. ``checkpoint`` runs after every
+        check and before the delete, so a caller can record the intent that an
+        interrupted delete would otherwise lose.
+        """
+        target = self.project(project)
+        ident = str(target["id"])
+        if ident not in self.projects_in_scope():
+            raise TrackerError(f"Project {ident} is outside the repository binding", "conflict")
+        if ident == str(self.binding.project):
+            raise TrackerError(f"Project {ident} is the root of the binding; only a subproject can be deleted",
+                               "conflict")
+        children = [p["id"] for p in self.projects() if p["parent"] == ident]
+        if children:
+            raise TrackerError(f"Project {ident} still has child projects "
+                               f"{', '.join(str(c) for c in children)}; delete or move them first", "conflict")
+        tasks = api.collect_tasks(self.client, project=ident)
+        if tasks:
+            raise TrackerError(f"Project {ident} still has {len(tasks)} tasks; move them out with "
+                               "agent-box tracker move first", "conflict")
+        checkpoint(ident)
+        self.client.delete(f"/projects/{ident}")
+        if ident in {str(p["id"]) for p in self.projects()}:
+            raise TrackerError(f"Deletion of project {ident} was not confirmed", "conflict")
+        return {"deleted": ident, "title": target["title"]}
 
     def clone_project_tree(self, source, title, progress, checkpoint, apply=False):
         from .vikunja_clone import clone

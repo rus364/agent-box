@@ -467,5 +467,43 @@ class MoveTests(unittest.TestCase):
         self.assertEqual(self.client.writes, [])
 
 
+class DeleteProjectTests(unittest.TestCase):
+    """Deleting an emptied subproject, the last step of collapsing a project tree.
+
+    Vikunja deletes a project's tasks and child projects with it and has no undo,
+    so only an empty leaf inside the binding may go, and never the binding root.
+    """
+
+    def setUp(self):
+        self.client = NativeClient()
+        self.client.projects += [{'id': 3, 'title': 'Emptied', 'parent_project_id': 1, 'max_permission': 2},
+                                 {'id': 4, 'title': 'Parent', 'parent_project_id': 1, 'max_permission': 2},
+                                 {'id': 8, 'title': 'Leaf', 'parent_project_id': 4, 'max_permission': 2}]
+        # A done task still belongs to the project and would be deleted with it.
+        self.client.tasks[6]['done'] = True
+        binding = Binding('vikunja', self.client.url, '1', True)
+        adapter = VikunjaAdapter(self.client.url, 'token', binding, self.client)
+        target = patch.object(cli, 'context', return_value=(adapter, binding, Path('/repository')))
+        target.start()
+        self.addCleanup(target.stop)
+
+    def run_cli(self, *args):
+        return cli.dispatch(cli.parser().parse_args(args))
+
+    def test_an_empty_subproject_is_deleted(self):
+        self.assertEqual(self.run_cli('delete-project', '3'), {'deleted': '3', 'title': 'Emptied'})
+        self.assertNotIn(3, [project['id'] for project in self.client.projects])
+
+    def test_anything_that_would_be_deleted_with_the_project_refuses(self):
+        """Tasks, child projects, the binding root and outside projects all stay; nothing is written."""
+        for project, message in (('2', 'Project 2 still has 1 tasks; move them out'),
+                                 ('4', 'Project 4 still has child projects 8'),
+                                 ('1', 'Project 1 is the root of the binding'),
+                                 ('9', 'Project 9 is outside the repository binding')):
+            with self.subTest(project=project), self.assertRaisesRegex(TrackerError, message):
+                self.run_cli('delete-project', project)
+        self.assertEqual(self.client.writes, [])
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -522,13 +522,16 @@ class StagingTests(unittest.TestCase):
         args = ['adopt', 'clone', '--project', '1', '--receipt', str(kept), '--apply']
         self.assertEqual(cli.dispatch(cli.parser().parse_args(args))['receipt'], str(kept))
 
-    def staging_move(self, *argv):
+    def staging_cli(self, *argv):
         state = self.root / 'state' / 'workflow'
         from agent_box import workflow_state
         for name in (cli, workflow_state):
             patch.object(name, 'WORKFLOW_STATE', state).start()
         patch.object(cli, 'repository_root', return_value=self.root).start()
-        return cli.dispatch(cli.parser().parse_args(['--adoption', str(self.receipt), 'move', *argv]))
+        return cli.dispatch(cli.parser().parse_args(['--adoption', str(self.receipt), *argv]))
+
+    def staging_move(self, *argv):
+        return self.staging_cli('move', *argv)
 
     def test_a_move_inside_staging_still_cuts_over_with_every_copy_accounted_for(self):
         """A moved task is renumbered, so pairing numbers per project would call the copy lost.
@@ -640,6 +643,67 @@ class StagingTests(unittest.TestCase):
         with self.assertRaisesRegex(TrackerError, 'recorded task mapping'):
             adoption.cutover(self.root, self.receipt, True)
         self.assertEqual(self.client.get('/projects/1')['title'], 'Root')
+
+    def staging_delete(self, project):
+        return self.staging_cli('delete-project', project)
+
+    def test_an_emptied_staging_subproject_is_deleted_and_cutover_still_proves_the_copy(self):
+        """Collapsing staging deletes a copy; cutover must read that as intended, not as a lost project."""
+        report = self.clone()
+        root_copy, child_copy = report['projects']['1'], report['projects']['2']
+        moving = next(t['id'] for t in self.client.tasks.values() if t['project_id'] == int(child_copy))
+        self.staging_move(str(moving), '--project', root_copy)
+        self.assertEqual(self.staging_delete(child_copy), {'deleted': child_copy, 'title': 'Child'})
+        clone = json.loads(self.receipt.read_text())['clone']
+        self.assertEqual((clone['removed'], clone['projects']['2']), (['2'], child_copy))
+        with self.assertRaisesRegex(TrackerError, 'do not rerun clone'):
+            self.clone()
+        preview = adoption.cutover(self.root, self.receipt)
+        self.assertEqual((preview['errors'], preview['clone']['incomplete'], preview['clone']['removed']),
+                         ([], [], ['2']))
+        self.assertTrue(adoption.cutover(self.root, self.receipt, True)['complete'])
+        self.assertEqual(self.client.get(f'/projects/{root_copy}')['title'], 'Root')
+        for ident, source in self.source.items():
+            self.assertEqual(self.client.tasks[ident], source)
+
+    def test_a_deletion_is_recorded_before_it_happens(self):
+        """Without the record an interrupted delete would leave cutover calling the copy lost.
+
+        The first deletion also freezes the task mapping: nothing else may have
+        saved it, and afterwards the emptied copy can no longer be paired.
+        """
+        report = self.clone()
+        root_copy, child_copy = report['projects']['1'], report['projects']['2']
+        moving = next(t['id'] for t in self.client.tasks.values() if t['project_id'] == int(child_copy))
+        # A move outside adoption keeps the receipt unaware of the mapping.
+        self.client.patch(f'/tasks/{moving}', {'project_id': int(root_copy)})
+
+        def lost(path):
+            raise TrackerError('lost connection', 'transport', retryable=True)
+
+        with self.assertRaisesRegex(TrackerError, 'finish or inspect the clone first'):
+            self.staging_delete(child_copy)
+        self.client.patch(f'/tasks/{moving}', {'project_id': int(child_copy)})
+        self.staging_move(str(moving), '--project', root_copy)
+        with patch.object(self.client, 'delete', lost), self.assertRaises(TrackerError):
+            self.staging_delete(child_copy)
+        self.assertEqual(json.loads(self.receipt.read_text())['clone']['removed'], ['2'])
+        self.assertIn(f'Staging project {child_copy} is recorded as removed but still exists; '
+                      f'rerun tracker --adoption RECEIPT delete-project {child_copy}',
+                      adoption.cutover(self.root, self.receipt)['errors'])
+        self.staging_delete(child_copy)
+        self.assertTrue(adoption.cutover(self.root, self.receipt, True)['complete'])
+
+    def test_only_an_emptied_staging_subproject_can_be_deleted(self):
+        """A refusal records nothing, so cutover still expects the copy it kept."""
+        report = self.clone()
+        for project, message in ((report['projects']['2'], 'still has 1 tasks'),
+                                 (report['projects']['1'], 'root of the binding'),
+                                 ('2', 'outside the repository binding')):
+            with self.subTest(project=project), self.assertRaisesRegex(TrackerError, message):
+                self.staging_delete(project)
+        self.assertEqual(json.loads(self.receipt.read_text())['clone'].keys(), {'projects'})
+        self.assertEqual(adoption.cutover(self.root, self.receipt)['errors'], [])
 
     def test_adoption_names_what_it_still_refuses(self):
         """Creating or claiming staging work is outside adoption; the refusal says what is inside."""

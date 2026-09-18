@@ -104,6 +104,10 @@ def parser():
     cmd.add_argument("task", nargs="+", help="Canonical task ID returned by resolve/get/search")
     cmd.add_argument("--project", required=True,
                      help="Target project inside the repository binding, or inside staging under --adoption")
+    description = ("Delete an empty subproject of the binding, one with no tasks and no child projects; "
+                   "under --adoption, an emptied staging subproject, recorded in the receipt")
+    cmd = sub.add_parser("delete-project", help=description, description=description + "; output is JSON.")
+    cmd.add_argument("project", help="Project ID or path inside the binding, or inside staging under --adoption")
     cmd = sub.add_parser("create", help="Create a task from a title and description file")
     cmd.add_argument("--project")
     cmd.add_argument("--title", required=True)
@@ -222,8 +226,9 @@ def unintegrated(root, adapter, task):
 def dispatch(args):
     if args.adoption and args.command not in {"audit", "status", "search", "resolve", "get", "comments", "checklist",
                                              "update", "tier", "relation", "comment", "check", "state", "normalized",
-                                             "move"}:
-        raise TrackerError("Staging adoption only reads, normalizes and moves existing staging tasks")
+                                             "move", "delete-project"}:
+        raise TrackerError("Staging adoption only reads, normalizes and moves existing staging tasks "
+                           "and deletes emptied staging subprojects")
     if args.command == "adopt":
         from . import adoption
         root = repository_root()
@@ -263,7 +268,8 @@ def dispatch(args):
                 "configuration")
         return {"written": write_setup(repository_root(), binding), "binding": asdict(binding),
                 "lifecycle": report}
-    adapter, binding, root = context(args.provider, args.command in ("ready", "next", "claim", "state", "move"), args.adoption)
+    adapter, binding, root = context(args.provider, args.command in ("ready", "next", "claim", "state", "move", "delete-project"),
+                                    args.adoption)
     if args.command == "status":
         user = adapter.identity()
         return {"provider": args.provider or (binding.provider if binding else effective_config().tracker.provider),
@@ -283,6 +289,13 @@ def dispatch(args):
     if args.command == "projects":
         return [{"id": str(p["id"]), "title": p["title"], "parent": str(p.get("parent_project_id") or "")}
                 for p in adapter.projects() if args.query.casefold() in p["title"].casefold()]
+    if args.command == "delete-project":
+        if "delete_project" not in adapter.capabilities:
+            raise TrackerError("This provider cannot delete projects", "configuration")
+        if args.adoption:
+            from .adoption import delete_project
+            return delete_project(root, args.adoption, adapter, args.project)
+        return adapter.delete_project(args.project, lambda _: None)
     if args.command == "resolve":
         if binding is None:
             raise TrackerError("Task resolution needs a repository binding; run ab-setup")

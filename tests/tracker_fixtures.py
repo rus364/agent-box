@@ -175,6 +175,11 @@ class NativeClient(FakeClient):
 
     def delete(self, path):
         parts = path.strip('/').split('/')
+        if len(parts) == 2 and parts[0] == 'projects':
+            # Vikunja deletes the tasks and child projects too; the adapter must never rely on that.
+            self.writes.append((path, None))
+            self.projects = [p for p in self.projects if p['id'] != int(parts[1])]
+            return None
         if len(parts) != 5 or parts[0] != 'tasks' or parts[2] != 'relations':
             raise AssertionError(path)
         base, kind, other = int(parts[1]), parts[3], int(parts[4])

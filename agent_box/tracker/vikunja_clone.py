@@ -36,6 +36,8 @@ def inspect(adapter, source, title, progress):
     # Once staging tasks move between projects their visible numbers no longer
     # pair up, so the mapping saved before the first move replaces the pairing.
     frozen = progress.get("tasks")
+    removed = set(progress.get("removed", []))
+    existing = {str(p["id"]) for p in adapter.projects()} if removed else set()
     tasks, task_map, errors, staging = {}, {}, [], set()
     for ident, project in projects.items():
         if ident not in copies and len(project["title"] + " - duplicate") > 250:
@@ -46,6 +48,12 @@ def inspect(adapter, source, title, progress):
         tasks.update({str(t["id"]): t for t in rows})
         original = indexed(rows)
         if ident not in copies:
+            continue
+        if ident in removed:
+            # An emptied copy deleted on purpose; its tasks are checked through the frozen mapping.
+            if copies[ident] in existing:
+                errors.append(f"Staging project {copies[ident]} is recorded as removed but still exists; "
+                              f"rerun tracker --adoption RECEIPT delete-project {copies[ident]}")
             continue
         target = adapter.project(copies[ident])
         expected_parent = (root.get("parent_project_id") or 0) if ident == str(root["id"]) else copies.get(
@@ -74,7 +82,8 @@ def inspect(adapter, source, title, progress):
             errors.append(f"Staging task {ident} is not a copy of any source task")
     if str(source) in copies:
         actual = set(adapter.subtree(copies[str(source)], True))
-        if actual != set(copies.values()):
+        gone = {copies[ident] for ident in removed}
+        if actual - gone != set(copies.values()) - gone:
             errors.append("Staging contains projects outside the recorded clone mapping")
     edges = api.relation_edges(tasks.values())
     external = []
@@ -91,8 +100,9 @@ def inspect(adapter, source, title, progress):
 
 
 def clone(adapter, source, title, progress, checkpoint, apply=False):
-    if apply and (progress.get("relation_removals") or "tasks" in progress):
-        raise TrackerError("Resume normalization or cutover after relation edits or moves; do not rerun clone",
+    if apply and (progress.get("relation_removals") or "tasks" in progress or progress.get("removed")):
+        raise TrackerError("Resume normalization or cutover after relation edits, moves or project removals; "
+                           "do not rerun clone",
                            "conflict")
     source = str(adapter.project(source)["id"])
     report = inspect(adapter, source, title, progress)
@@ -160,6 +170,7 @@ def clone(adapter, source, title, progress, checkpoint, apply=False):
             "incomplete": incomplete,
             "missing_projects": report["missing_projects"], "errors": report["errors"],
             "relation_removals": progress.get("relation_removals", []),
+            "removed": progress.get("removed", []),
             "external_relations": adapter.preserve_external_relations(report["external_relations"],
                                                                       apply and not report["errors"]),
             "dry_run": not apply,

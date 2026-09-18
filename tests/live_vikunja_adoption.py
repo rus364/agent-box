@@ -5,6 +5,7 @@ The ordinary unittest discovery never executes this module's main function.
 """
 import argparse
 import json
+import os
 import subprocess
 import tempfile
 import urllib.request
@@ -12,9 +13,11 @@ import uuid
 from pathlib import Path
 
 from agent_box.config import effective_config
+from agent_box.paths import WORKFLOW_STATE
 from agent_box.repo_binding import Binding
-from agent_box.tracker import adoption, vikunja_api as api
+from agent_box.tracker import adoption, cli, vikunja_api as api
 from agent_box.tracker.audit import audit_project
+from agent_box.tracker.core import TrackerError, checkboxes
 
 
 def run():
@@ -23,10 +26,13 @@ def run():
     name = 'agent-box adoption test ' + uuid.uuid4().hex[:10]
     roots, label = [], None
     user = client.get('/user')
-    with tempfile.TemporaryDirectory(prefix='agent-box-adoption-live-') as tmp:
+    WORKFLOW_STATE.mkdir(parents=True, exist_ok=True)
+    # Inside a box, staging commands accept only a receipt under workflow state.
+    with tempfile.TemporaryDirectory(prefix='agent-box-adoption-live-') as tmp, \
+            tempfile.TemporaryDirectory(prefix='adoption-live-', dir=WORKFLOW_STATE) as state:
         repository = Path(tmp)
         subprocess.run(['git', 'init', '-q', str(repository)], check=True)
-        receipt = repository / 'receipt.json'
+        receipt = Path(state) / 'receipt.json'
         try:
             source = client.post('/projects', {'title': name})['id']; roots.append(source)
             child = client.post('/projects', {'title': 'Child', 'parent_project_id': source})['id']
@@ -84,6 +90,34 @@ def run():
                 'title': 'Existing task, clarified',
                 'description': 'Goal\n\nOriginal meaning.\n\nAcceptance\n\nRequires ab-interview.\n\nVikunja external ID: TEST-1'})
             assert audit_project(instance, target)['clean']
+            # Optional collapse: move the child's only task into the root, then delete the emptied child.
+            os.chdir(repository)
+
+            def staging(*argv):
+                return cli.dispatch(cli.parser().parse_args(['--adoption', str(receipt), *argv]))
+
+            checklist = 'Goal\n\nMoved work.\n\nAcceptance\n\n- [x] Kept evidence\n- [ ] Open item'
+            instance.update(instance.get(str(copied_third)), {'description': checklist})
+            # A done task is listed like any other, so it holds its project back too.
+            client.patch(f'/tasks/{copied_third}', {'done': True})
+            try:
+                staging('delete-project', copied_child)
+                raise AssertionError('a project holding a done task was deleted')
+            except TrackerError as exc:
+                assert 'still has 1 tasks' in str(exc), exc
+            client.patch(f'/tasks/{copied_third}', {'done': False})
+            state = instance.get(str(copied_third)).state
+            moved = staging('move', str(copied_third), '--project', target)
+            assert [(row['project'], row['state']) for row in moved] == [(target, state)], moved
+            items = [(item['checked'], item['text']) for item in checkboxes(instance.get(str(copied_third)).description)]
+            assert items == [(True, 'Kept evidence'), (False, 'Open item')], items
+            after = client.get(f'/tasks/{copied_third}')
+            assert copied_first in {t['id'] for t in after['related_tasks']['blocked']}
+            assert staging('delete-project', copied_child)['deleted'] == copied_child
+            assert int(copied_child) not in {p['id'] for p in api.projects_from_client(client)}
+            assert json.loads(receipt.read_text())['clone']['removed'] == [str(child)]
+            instance, _, _ = adoption.staging_context(receipt, repository)
+            assert audit_project(instance, target)['clean']
             # Cutover also repairs eligible edges added after the original clone.
             client.post(f'/tasks/{first}/relations', {'other_task_id': external, 'relation_kind': 'related'})
             outside_before = client.get(f'/tasks/{external}')
@@ -105,7 +139,8 @@ def run():
             assert report['verification']['ok'], report
             assert client.get(f'/tasks/{first}')['description'] == originals[str(first)]['description']
             assert client.get(f'/tasks/{copied_first}')['title'] == 'Imported update'
-            print('PASS: native tree, indexes, comments, attachment, shares, assignees, relations, staging audit, cutover, scoped import')
+            print('PASS: native tree, indexes, comments, attachment, shares, assignees, relations, staging audit, '
+                  'staging move and project removal, cutover, scoped import')
         finally:
             # A recorded clone may exist even when a later verification raised.
             if receipt.exists():

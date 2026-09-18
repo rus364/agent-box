@@ -70,6 +70,13 @@ def load(path, root):
                                                for k, v in tasks.items())
                 or len(set(tasks.values())) != len(tasks)):
             raise ValueError("clone.tasks must map source task ID strings to distinct staging task ID strings")
+        removed = receipt["clone"].get("removed", [])
+        if (not isinstance(removed, list) or len(set(removed)) != len(removed)
+                or any(not isinstance(ident, str) or ident not in copies or ident == binding.project
+                       for ident in removed)):
+            raise ValueError("clone.removed must list distinct copied source subprojects")
+        if removed and "tasks" not in receipt["clone"]:
+            raise ValueError("clone.removed needs the clone.tasks mapping saved before the first removal")
         removals = receipt["clone"].get("relation_removals", [])
         if not isinstance(removals, list):
             raise ValueError("clone.relation_removals must be a list")
@@ -105,7 +112,10 @@ def staging_context(path, root):
         raise TrackerError("Clone does not cover the complete source tree", "conflict")
     if set(copies.values()) & set(copies):
         raise TrackerError("Staging and source projects overlap", "conflict")
-    if set(adapter.subtree(target, True)) != set(copies.values()):
+    # A removed copy may still exist when its delete was interrupted; rerunning
+    # delete-project, which needs this context, is how it goes.
+    gone = {copies[ident] for ident in receipt["clone"].get("removed", [])}
+    if set(adapter.subtree(target, True)) - gone != set(copies.values()) - gone:
         raise TrackerError("Staging tree differs from the clone mapping", "conflict")
     if adapter.project(target)["title"] != receipt["staging_title"]:
         raise TrackerError("Staging was renamed; inspect cutover before normalizing", "conflict")
@@ -150,6 +160,27 @@ def freeze_tasks(root, path):
                            "conflict")
     receipt["clone"]["tasks"] = copied["tasks"]
     save(path, receipt)
+
+
+def delete_project(root, path, adapter, project):
+    """Record an emptied staging subproject in clone.removed before deleting it.
+
+    Staging is checked against clone.projects, so a copy deleted without a
+    record reads as a lost one and blocks cutover; its tasks, moved out first,
+    are verified through the task mapping saved here if no move saved it yet.
+    """
+    def checkpoint(staging):
+        # Only after the adapter's checks: a refused delete leaves the receipt as it was.
+        freeze_tasks(root, path)
+        receipt, _, _ = load(path, root)
+        ident = next((source for source, copy in receipt["clone"]["projects"].items() if copy == staging), None)
+        if ident is None:
+            raise TrackerError(f"Project {staging} is not a staging copy", "conflict")
+        removed = receipt["clone"].setdefault("removed", [])
+        if ident not in removed:
+            removed.append(ident)
+            save(path, receipt)
+    return adapter.delete_project(project, checkpoint)
 
 
 def start(root, project, path=None, provider=None, apply=False):
