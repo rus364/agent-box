@@ -162,7 +162,11 @@ class DelegateCommandTests(WorkflowCase):
         self.assertEqual(artifact["streams"], {})
 
     def test_worker_needs_its_task_branch_and_a_configured_candidate(self):
-        """A managed worker edits the checkout, so it must be the task's; with no candidate the coordinator runs one natively."""
+        """A managed worker edits the checkout, so it must be the task's; with no candidate the coordinator works itself.
+
+        Suggesting a native subagent instead would only rerun the session's own
+        model in a fresh context that rereads everything.
+        """
         gw.git(self.root, "switch", "main")
         with patch.object(workflow, "run") as run, self.assertRaisesRegex(AgentBoxError, "Switch to task branch ab/1-task"):
             self.delegate("worker")
@@ -170,9 +174,37 @@ class DelegateCommandTests(WorkflowCase):
         gw.git(self.root, "switch", "ab/1-task")
         self.config.workflow.worker.models = []
         with patch.object(workflow, "run") as run, \
-             self.assertRaisesRegex(AgentBoxError, "No worker candidates in workflow.worker.models; .*native subagent"):
+             self.assertRaisesRegex(AgentBoxError, "workflow.worker.models is empty, so the coordinator does this "
+                                                   "worker work itself in its own session") as raised:
             self.delegate("worker")
         run.assert_not_called()
+        self.assertNotIn("subagent", str(raised.exception))
+
+    def test_inspect_names_how_each_assignment_runs(self):
+        """Empty means the session itself; a list names its first candidate's native profile and the managed command.
+
+        Only the provider opening the list gets a profile: another provider's
+        profile runs a later fallback, which would silently skip the preferred
+        model. A tier list selects the tier's profile only while tiers are on.
+        """
+        self.config.workflow.worker.tiers["1"] = [candidate("codex", "worker-tier1", "high")]
+        self.config.workflow.scout.models = []
+        for use_tiers, worker in ((False, {"mode": "delegate", "models": "workflow.worker.models",
+                                           "native": {"claude": "ab-worker"}}),
+                                  (True, {"mode": "delegate", "models": "workflow.worker.tiers.1",
+                                          "native": {"codex": "ab-worker-1"}})):
+            self.config.workflow.use_tiers = use_tiers
+            with self.subTest(use_tiers=use_tiers):
+                execution = self.run_workflow("inspect", "1")["execution"]
+                self.assertEqual(execution["worker"], {
+                    **worker, "managed": "agent-box workflow delegate 1 --role worker --brief FILE"})
+                self.assertEqual(execution["scout"], {"mode": "self", "models": "workflow.scout.models"})
+        self.config.workflow.use_tiers = False
+        self.config.workflow.worker.models = [{**candidate("claude", "worker-model", "high"), "api_provider": "deepseek"}]
+        self.config.workflow.scout.models = [candidate("codex", "scout-model", "high"),
+                                             candidate("claude", "scout-fallback", "low")]
+        execution = self.run_workflow("inspect", "1")["execution"]
+        self.assertEqual((execution["worker"]["native"], execution["scout"]["native"]), ({}, {"codex": "ab-scout"}))
 
     def test_direct_work_needs_no_record_before_validation_review_and_finish(self):
         """The coordinator's own commit goes straight to validate, policy review and finish."""

@@ -815,7 +815,9 @@ def inspect(root, binding, adapter, task, config):
     result = {"task": task.id, **info, "task_branch": expected, "current_branch": branch,
               "head": head, "scope": None, "configuration": configuration_summary(config),
               "acceptance": {"available": not unavailable, "reasons": unavailable},
-              "review": review, "validation": None}
+              "review": review, "validation": None,
+              "execution": {"worker": execution(config, "worker", config.workflow.effective_tier(task.tier), task.id),
+                            "scout": execution(config, "scout", None, task.id)}}
     if unavailable:
         if task.state == "Done" or parent.state == "Done":
             next_step = completed_step(task, parent)
@@ -1412,6 +1414,32 @@ def release_branch(root, config, task, branch, base, *, expected_head=None):
     return _cleanup_branch(root, config, task, branch=branch, base=base, expected_head=expected_head)
 
 
+def execution(config, role, tier, task_id):
+    """How the coordinator carries out a worker or scout assignment.
+
+    An empty list means the coordinator's own session does the work: a
+    subagent on the session's model would only reread the same context. A
+    configured list means delegation to its first candidate: natively when
+    the session runs that candidate's CLI, else as a managed CLI. A profile
+    runs its provider's first usable candidate, which is a later, fallback
+    choice unless it opens the list, so only the list's opening provider
+    counts. Profiles are written by config apply from saved lists, so a
+    session pin has none. The session's provider is the coordinator's to
+    know, so the route is named per provider.
+    """
+    from .agent_profiles import profile_name
+    from .fast_mode import configuration_error
+    path, models = config.workflow.models_for(role, tier)
+    if not models:
+        return {"mode": "self", "models": path}
+    first, native = models[0], {}
+    if (not path.startswith("--") and config.workflow.enabled and not first.get("api_provider")
+            and not configuration_error(first["provider"], first)):
+        native[first["provider"]] = profile_name(role, tier if ".tiers." in path else None)
+    return {"mode": "delegate", "models": path, "native": native,
+            "managed": f"agent-box workflow delegate {task_id} --role {role} --brief FILE"}
+
+
 def scout_diagnostics(config):
     return {"scout_limit": config.workflow.scout.limit,
             "scout_slots": "Managed scouts started by workflow delegate share these repository slots; "
@@ -1436,7 +1464,8 @@ def delegate(args, root, adapter, config):
     tier = config.workflow.effective_tier(task.tier) if args.role == "worker" else None
     path, models = config.workflow.models_for(args.role, tier)
     if not models:
-        raise AgentBoxError(f"No {args.role} candidates in {path}; configure them, or launch a native subagent instead")
+        raise AgentBoxError(f"{path} is empty, so the coordinator does this {args.role} work itself in its own "
+                            f"session; configure candidates there to delegate it")
     selected = candidates(config, args.role, tier)
     prompt = delegate_prompt(args.role, task, brief, repository_instructions(root))
     # A worker shares the working tree with validation; scouts only read, up to their limit.

@@ -1,8 +1,8 @@
-<!-- BEGIN AGENT-BOX workflow sha256=f76d8d2629db463f3ebdc00ea6382bf7be0a92ceef2575920380263bc5182b57 -->
+<!-- BEGIN AGENT-BOX workflow sha256=06ea2059b2ed3b97039486d2463ef2fa4da171b29ac6c2a9e53a5eb9f3f45aca -->
 Read the tracked task before work; .agent-box.json binds this repository to its tracker project.
 Use agent-box tracker for task state, progress and dependencies; read related history when context is missing.
 Use ab-interview, ab-plan, ab-work, ab-review, ab-pr, and ab-land as needed. ab-setup maintains this binding and ab-adopt brings an existing project in line with the workflow; ab-normalize processes unmarked tasks in a bound project.
-The coordinator owns branches, commits, lifecycle, dependencies, and GitHub actions. Delegate implementation sequentially; independent read-only scouts may run in parallel.
+The coordinator owns branches, commits, lifecycle, dependencies, and GitHub actions. Delegate implementation sequentially and research to scouts, which may run in parallel, when their model lists are configured; with an empty list the coordinator does that work itself.
 A worker changes project files and answers; scouts and a fresh read-only reviewer only read. The coordinator verifies answers and findings and commits what it accepts.
 Tracker comments are a human journal. Branch, base branch, and pull request come from Git and GitHub; lifecycle comes from the tracker's own fields, never from comment text.
 Use the user's language with them and the task's language in the tracker. Use English for agent handoffs, reports and implementation; generated diagnostics may be English.
