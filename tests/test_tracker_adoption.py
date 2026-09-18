@@ -10,7 +10,7 @@ import unittest
 
 from agent_box.tracker.audit import audit, task_problems
 from agent_box.tracker.core import Task, TrackerError
-from test_tracker_lifecycle import adapter, board, task
+from tracker_fixtures import adapter, board, task
 
 
 def tasks(*items):

@@ -1,7 +1,6 @@
 """A failed adoption leaves source data usable and never needs destructive undo."""
 import copy
 import json
-import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -13,100 +12,7 @@ from agent_box.tracker import adoption, cli
 from agent_box.tracker import vikunja_api as api
 from agent_box.tracker.core import TrackerError
 from agent_box.tracker.vikunja import VikunjaAdapter
-from test_tracker_lifecycle import FakeClient, board, task
-
-
-class NativeClient(FakeClient):
-    def __init__(self):
-        projects = [{"id": 1, "title": "Root", "parent_project_id": 0, "max_permission": 2},
-                    {"id": 2, "title": "Child", "parent_project_id": 1, "max_permission": 2},
-                    {"id": 9, "title": "Outside", "parent_project_id": 0, "max_permission": 2}]
-        tasks = {5: task(5, 1, 10, 100, index=1, title="Same", assignees=[{"id": 7}],
-                         related_tasks={"blocking": [{"id": 6}]}),
-                 6: task(6, 2, 20, 200, index=1, title="Same", related_tasks={"blocked": [{"id": 5}]}),
-                 7: task(7, 9, 90, 900, index=1)}
-        super().__init__(projects, {1: board(10, 100, done_bucket=104),
-                                   2: board(20, 200, done_bucket=204), 9: board(90, 900)}, tasks)
-        self.lose_response = False
-        self.duplicates = 0
-        self.journal = {}
-
-    def paginate(self, path, params=None):
-        if path == "/tasks":
-            ids = {int(n) for n in re.findall(r'\d+', (params or {}).get('filter', ''))}
-            return copy.deepcopy([t for t in self.tasks.values() if not ids or t['project_id'] in ids])
-        if path.endswith('/comments'):
-            return copy.deepcopy(self.journal.get(int(path.split('/')[2]), []))
-        if path.endswith('/attachments'):
-            return []
-        return super().paginate(path, params)
-
-    def get(self, path):
-        match = re.fullmatch(r'/projects/(\d+)', path)
-        if match:
-            return copy.deepcopy(next(p for p in self.projects if p['id'] == int(match[1])))
-        return copy.deepcopy(super().get(path))
-
-    def post(self, path, body):
-        parts = path.split('?')[0].strip('/').split('/')
-        if parts[-1] == 'duplicate':
-            self.writes.append((path, body))
-            source = int(parts[1]); target = max(p['id'] for p in self.projects) + 1
-            original = self.get(f'/projects/{source}')
-            self.projects.append({**original, 'id': target, 'parent_project_id': body['parent_project_id'],
-                                  'title': original['title'] + ' - duplicate'})
-            self.boards[target] = board(target * 10, target * 100, done_bucket=target * 100 + 4)
-            for row in list(self.tasks.values()):
-                if row['project_id'] == source:
-                    ident = max(self.tasks) + 1
-                    self.tasks[ident] = {**copy.deepcopy(row), 'id': ident, 'project_id': target,
-                                        'assignees': [], 'related_tasks': {},
-                                        'buckets': [{'id': target*100, 'project_view_id': target*10}]}
-            self.duplicates += 1
-            if self.lose_response:
-                self.lose_response = False
-                raise TrackerError('lost response', 'transport')
-            return {'duplicated_project': self.get(f'/projects/{target}')}
-        if parts[-1] == 'assignees':
-            self.writes.append((path, body))
-            self.tasks[int(parts[1])]['assignees'].append({'id': body['user_id']})
-            return body
-        if parts[-1] == 'relations':
-            self.writes.append((path, body))
-            base, other, kind = int(parts[1]), body['other_task_id'], body['relation_kind']
-            existing = self.tasks[base]['related_tasks'].setdefault(kind, [])
-            if {'id': other} in existing:
-                raise api.APIError(409, 'Relation already exists')
-            existing.append({'id': other})
-            self.tasks[other]['related_tasks'].setdefault(api.RELATION_INVERSE[kind], []).append({'id': base})
-            return body
-        if parts[-1] == 'comments':
-            self.writes.append((path, body))
-            self.journal.setdefault(int(parts[1]), []).append(dict(body))
-            return body
-        return super().post(path, body)
-
-    def delete(self, path):
-        parts = path.strip('/').split('/')
-        if len(parts) != 5 or parts[0] != 'tasks' or parts[2] != 'relations':
-            raise AssertionError(path)
-        base, kind, other = int(parts[1]), parts[3], int(parts[4])
-        self.writes.append((path, None))
-        for left, edge, right in ((base, kind, other), (other, api.RELATION_INVERSE[kind], base)):
-            relations = self.tasks[left]['related_tasks']
-            relations[edge] = [t for t in relations.get(edge, []) if t['id'] != right]
-
-    def patch(self, path, body, markdown=False):
-        match = re.fullmatch(r'/projects/(\d+)', path)
-        if match:
-            self.writes.append((path, body))
-            project = next(p for p in self.projects if p['id'] == int(match[1]))
-            project.update(body)
-            return dict(project)
-        if re.fullmatch(r'/tasks/\d+', path):
-            self.writes.append((path, body)); self.tasks[int(path.split('/')[2])].update(body)
-            return copy.deepcopy(self.tasks[int(path.split('/')[2])])
-        return super().patch(path, body, markdown)
+from tracker_fixtures import NativeClient
 
 
 class StagingTests(unittest.TestCase):

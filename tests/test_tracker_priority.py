@@ -5,8 +5,7 @@ from unittest.mock import patch
 from agent_box.repo_binding import Binding
 from agent_box.tracker import cli
 from agent_box.tracker.vikunja import VikunjaAdapter
-from test_tracker_staging import NativeClient
-from test_tracker_lifecycle import task
+from tracker_fixtures import NativeClient, task
 
 
 class PriorityClient(NativeClient):

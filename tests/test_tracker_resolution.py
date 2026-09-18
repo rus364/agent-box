@@ -7,8 +7,7 @@ from agent_box.tracker import cli
 from agent_box.tracker import vikunja_api as api
 from agent_box.tracker.core import TrackerError
 from agent_box.tracker.vikunja import VikunjaAdapter
-from test_tracker_staging import NativeClient
-from test_tracker_lifecycle import task
+from tracker_fixtures import NativeClient, task
 
 
 class IndexClient(NativeClient):

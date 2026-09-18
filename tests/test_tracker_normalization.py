@@ -1,73 +1,19 @@
 """Incremental normalization skips marked tasks without hiding relation candidates."""
 import copy
 import json
-import re
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
-from urllib.parse import parse_qs, urlsplit
 
 from agent_box import runtime
 from agent_box.config import Config
 from agent_box.repo_binding import Binding
-from agent_box.tracker import cli, vikunja_api as api
+from agent_box.tracker import cli
 from agent_box.tracker.core import NORMALIZED_LABEL, TrackerError
 from agent_box.tracker.vikunja import VikunjaAdapter
-from test_tracker_lifecycle import task
-from test_tracker_staging import NativeClient
+from tracker_fixtures import NormalizationClient
 
-
-class NormalizationClient(NativeClient):
-    per_page = 1
-
-    def __init__(self):
-        super().__init__()
-        self.labels = [{'id': 1, 'title': 'keep'}]
-        self.tasks = {
-            5: task(5, 1, 10, 100, labels=[self.labels[0]], description='Unresolved question'),
-            6: task(6, 2, 20, 200, labels=[{'id': 2, 'title': NORMALIZED_LABEL}], description='Do not output'),
-            7: task(7, 9, 90, 900, description='Outside'),
-            8: task(8, 2, 20, 200, description='Last page candidate'),
-        }
-
-    def paginate(self, path, params=None):
-        if path == '/tasks':
-            return api.VikunjaClient.paginate(self, path, params)
-        if path == '/labels':
-            return copy.deepcopy(self.labels)
-        return super().paginate(path, params)
-
-    def get(self, path):
-        if path.startswith('/tasks?'):
-            self.reads.append(path)
-            params = parse_qs(urlsplit(path).query)
-            ids = {int(n) for n in re.findall(r'\d+', params.get('filter', [''])[0])}
-            rows = [r for r in self.tasks.values() if r['project_id'] in ids]
-            query = params.get('q', [''])[0].casefold()
-            rows = [r for r in rows if query in (r['title'] + r['description']).casefold()]
-            page = int(params['page'][0])
-            return {'items': copy.deepcopy(rows[page-1:page]), 'total': len(rows), 'total_pages': len(rows)}
-        return super().get(path)
-
-    def post(self, path, body):
-        if path == '/labels':
-            self.writes.append((path, body))
-            label = {'id': max([r['id'] for r in self.labels] + [2]) + 1, **body}
-            self.labels.append(label)
-            return dict(label)
-        if path.endswith('/labels'):
-            self.writes.append((path, body))
-            label = next(r for r in self.labels if r['id'] == body['label_id'])
-            self.tasks[int(path.split('/')[2])].setdefault('labels', []).append(dict(label))
-            return dict(body)
-        return super().post(path, body)
-
-    def delete(self, path):
-        self.writes.append((path, None))
-        parts = path.split('/')
-        self.tasks[int(parts[2])]['labels'] = [r for r in self.tasks[int(parts[2])]['labels']
-                                             if r['id'] != int(parts[4])]
 
 
 class NormalizationTests(unittest.TestCase):

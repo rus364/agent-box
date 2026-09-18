@@ -85,6 +85,44 @@ class InspectTests(unittest.TestCase):
                 self.assertIsNone(result["review"]["required"])
                 self.assertIn(next_step, result["next_step"])
 
+    def test_next_step_names_only_the_step_the_recorded_state_calls_for(self):
+        """One hint that always named validate and review outlived the evidence describing this head."""
+        workflow.evidence_path(self.root, self.task).unlink()
+        self.assertIn("workflow validate 1", self.inspect_readonly()["next_step"])
+        workflow.save_evidence(self.root, self.task, {"scope": self.scope, "validation": {"exit": 0}})
+        self.assertIn("workflow review 1", self.inspect_readonly()["next_step"])
+        workflow.save_evidence(self.root, self.task, {"scope": self.scope, "validation": {"exit": 0},
+                                                      "review": {"verdict": "PASS"}})
+        self.assertIn("workflow finish 1", self.inspect_readonly()["next_step"])
+        self.task.state = "Review"
+        self.assertIn("ab-land", self.inspect_readonly()["next_step"])
+        self.config.workflow.merge_mode = "github"
+        self.assertIn("ab-pr", self.inspect_readonly()["next_step"])
+
+    def test_an_unstarted_subtask_is_sent_to_work_and_a_done_one_to_its_parent(self):
+        """A finished subtask's branch is released, so proposing a switch to it sent work nowhere."""
+        child = Task("2", "1", "Child", parent="1", state="Doing", assignees=["1"],
+                     description="## Acceptance\n- [ ] child work")
+        self.tasks["2"] = child
+        self.task.children = ["2"]
+        gw.git(self.root, "switch", "-c", "ab/2-child")
+        self.assertIn("Commit the implementation", self.inspect_readonly("2")["next_step"])
+        (self.root / "child.py").write_text("value = 2\n")
+        gw.git(self.root, "add", "child.py")
+        gw.git(self.root, "commit", "-m", "child work")
+        workflow.save_evidence(self.root, child, {"scope": workflow.scope(self.root, "ab/1-task"),
+                                                  "validation": {"exit": 0}, "review": {"verdict": "PASS"}})
+        self.assertIn("workflow finish 2", self.inspect_readonly("2")["next_step"])
+        child.state = "Done"
+        gw.git(self.root, "switch", "ab/1-task")
+        for released in (False, True):
+            if released:
+                gw.git(self.root, "branch", "-D", "ab/2-child")
+            with self.subTest(released=released):
+                step = self.inspect_readonly("2")["next_step"]
+                self.assertNotIn("ab/2-child", step)
+                self.assertIn("workflow inspect 1", step)
+
     def test_dirty_tree_and_other_or_detached_branch_never_expose_saved_acceptance(self):
         """Even valid cached PASS belongs only to the clean checked-out task scope."""
         (self.root / "code.py").write_text("value = 2\n")

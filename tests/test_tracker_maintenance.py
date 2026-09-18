@@ -15,7 +15,7 @@ from agent_box.repo_binding import Binding
 from agent_box.tracker import cli
 from agent_box.tracker.core import NORMALIZED_LABEL, TrackerError, checkboxes
 from agent_box.tracker.vikunja import VikunjaAdapter
-from test_tracker_normalization import NormalizationClient
+from tracker_fixtures import NormalizationClient
 from workflow_fixtures import clone, origin_path, repository
 
 

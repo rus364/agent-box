@@ -292,6 +292,13 @@ class ReviewWorkflowTests(WorkflowCase):
         self.assertEqual(seen[0].split("Delegation handoff:\n", 1)[0], prompt.split("Delegation handoff:\n", 1)[0])
         self.assertEqual(payload_of(seen[0])["boundaries"], payload["boundaries"])
 
+    def test_the_handoff_states_the_reviewer_sandbox_instead_of_leaving_it_to_be_found(self):
+        """A managed round runs read-only, so an unstated limit costs part of every attempt."""
+        prompt = self.delegation_input(self.native_round()).read_text()
+        self.assertIn("read-only", prompt)
+        self.assertIn("test suite cannot be run", prompt)
+        self.assertIn("recorded-validation.json", prompt)
+
     def test_a_managed_result_cannot_overwrite_a_newer_native_round(self):
         """A provider returning after another round opened keeps its verdict private."""
         def provider(*args, **kwargs):
