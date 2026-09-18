@@ -166,12 +166,17 @@ def move_journal(root):
     return WORKFLOW_STATE / "moves" / f"{repository_key(root)}.json"
 
 
-def move(adapter, root, tasks, project):
+def move(adapter, root, tasks, project, adoption=None):
     from ..workflow_state import lock
     path = move_journal(root)
     # One move at a time: a concurrent one would overwrite or unlink the
     # other's journal, and with it the only record of the columns it left.
     with lock(root, "move"):
+        if adoption:
+            from .adoption import freeze_tasks
+            staging_locked(root, adoption)
+            # Before the first write renumbers a task.
+            freeze_tasks(root, adoption)
         journal = read_json(path) if path.exists() else {"project": project, "tasks": {}}
         if journal["project"] != project:
             raise TrackerError(f"An interrupted move of tasks {', '.join(journal['tasks'])} into project "
@@ -185,6 +190,16 @@ def move(adapter, root, tasks, project):
                 path.unlink(missing_ok=True)
 
         return adapter.move(tasks, project, journal["tasks"], checkpoint)
+
+
+def staging_locked(root, receipt):
+    """Recheck staging under the move lock that cutover also takes.
+
+    The context was read before the lock; a cutover finishing in between would
+    leave this command writing to the adopted tree with no staging rerun left.
+    """
+    from .adoption import staging_context
+    staging_context(receipt, root)
 
 
 def unintegrated(root, adapter, task):
@@ -292,10 +307,15 @@ def dispatch(args):
     if args.command == "delete-project":
         if "delete_project" not in adapter.capabilities:
             raise TrackerError("This provider cannot delete projects", "configuration")
-        if args.adoption:
-            from .adoption import delete_project
-            return delete_project(root, args.adoption, adapter, args.project)
-        return adapter.delete_project(args.project, lambda _: None)
+        from ..workflow_state import lock
+        # The move lock: a delete must not interleave with a move into the
+        # project or with a cutover renaming the tree around it.
+        with lock(root, "move"):
+            if args.adoption:
+                from .adoption import delete_project
+                staging_locked(root, args.adoption)
+                return delete_project(root, args.adoption, adapter, args.project)
+            return adapter.delete_project(args.project, lambda _: None)
     if args.command == "resolve":
         if binding is None:
             raise TrackerError("Task resolution needs a repository binding; run ab-setup")
@@ -419,10 +439,7 @@ def dispatch(args):
         if project not in scope:
             raise TrackerError("Adoption can only move tasks inside staging" if args.adoption else
                                "Target project is outside the repository binding", "conflict")
-        if args.adoption:
-            from .adoption import freeze_tasks
-            freeze_tasks(root, args.adoption)
-        return move(adapter, root, tasks, project)
+        return move(adapter, root, tasks, project, args.adoption)
     if args.command == "check":
         if not task.revision:
             raise TrackerError("This provider returned no revision for the task, so an edit cannot prove it "

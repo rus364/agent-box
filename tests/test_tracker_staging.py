@@ -718,6 +718,29 @@ class StagingTests(unittest.TestCase):
         self.assertEqual(self.client.get('/projects/1')['title'], 'Root')
         self.assertTrue(adoption.cutover(self.root, self.receipt, True)['complete'])
 
+    def test_staging_writes_stop_when_cutover_finished_after_they_read_staging(self):
+        """Their context predates the lock; once the tree is adopted no --adoption rerun could finish them."""
+        report = self.clone()
+        child_copy = report['projects']['2']
+        moving = next(t['id'] for t in self.client.tasks.values() if t['project_id'] == int(child_copy))
+        self.staging_cli('comments', str(moving))
+        stale = cli.context(None, True, self.receipt)
+        self.assertTrue(adoption.cutover(self.root, self.receipt, True)['complete'])
+        with patch.object(cli, 'context', return_value=stale):
+            for argv in (['move', str(moving), '--project', report['projects']['1']],
+                         ['delete-project', child_copy]):
+                with self.subTest(command=argv[0]), self.assertRaisesRegex(TrackerError, 'Staging was renamed'):
+                    self.staging_cli(*argv)
+        self.assertEqual(self.client.tasks[moving]['project_id'], int(child_copy))
+
+    def test_a_delete_waits_for_a_move_in_progress(self):
+        """A move into the project or a cutover around it must not interleave with its deletion."""
+        report = self.clone()
+        self.staging_cli('comments', str(max(self.client.tasks)))
+        from agent_box import workflow_state
+        with workflow_state.lock(self.root, 'move'), self.assertRaisesRegex(AgentBoxError, 'Another local move'):
+            self.staging_delete(report['projects']['2'])
+
     def test_adoption_names_what_it_still_refuses(self):
         """Creating or claiming staging work is outside adoption; the refusal says what is inside."""
         self.clone()

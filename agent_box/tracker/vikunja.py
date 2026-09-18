@@ -253,7 +253,8 @@ class VikunjaAdapter:
             # Unarchiving here would reopen the window, and a delete whose answer
             # was lost may already have happened; a rerun settles both.
             raise TrackerError(f"Deleting archived project {ident} failed: {exc}. Rerun agent-box tracker "
-                               f"delete-project {ident}; the archive keeps tasks out until then",
+                               f"delete-project {ident}; the archive keeps tasks out until then. If the rerun finds no "
+                               f"project {ident}, this delete already happened",
                                exc.category, exc.retryable) from exc
         if ident in {str(p["id"]) for p in self.projects()}:
             raise TrackerError(f"Deletion of project {ident} was not confirmed", "conflict")
