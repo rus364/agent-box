@@ -74,8 +74,13 @@ come from Git and GitHub, and lifecycle comes from the tracker's own fields.
 
 Small bounded edits are the coordinator's own work: commit, validate, review by
 policy; nothing else is recorded. For a separate implementation assignment or a
-bounded research question the coordinator either spawns a native subagent itself
-(its profile sets the model) or launches a managed one:
+bounded research question the route comes from the role's model list, and
+`workflow inspect TASK` names it under `execution.worker` and `execution.scout`.
+An empty list (`self`) means the coordinator does that work in its own session,
+never through a general-purpose subagent. A configured list (`delegate`) names
+the native profile for the provider of its first candidate; a coordinator of that
+provider spawns it, any other launches a managed run, so the first candidate is
+never skipped for a later fallback:
 
 ```bash
 agent-box workflow delegate TASK --role worker --brief /tmp/brief.md
@@ -98,7 +103,7 @@ or model never falls back to another candidate, because files may already have
 changed. Managed scouts may overlap up to `workflow.scout.limit` (default 3),
 counted by per-repository slot locks that a finished or killed process releases;
 the coordinator counts its own native scouts. With no candidate configured for the
-role, `delegate` refuses and the coordinator runs a native subagent instead.
+role, `delegate` refuses and the coordinator does the work in its own session.
 
 The brief is a compact English file outside the working tree: goal, scope and
 relevant paths, decisions and limitations, and for a scout its one question. Never
