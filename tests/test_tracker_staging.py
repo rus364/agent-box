@@ -26,6 +26,8 @@ class StagingTests(unittest.TestCase):
         self.make = make
         self.addCleanup(patch.stopall)
         patch.object(adoption, 'make_adapter', side_effect=make).start()
+        # The suite may itself run inside a box; receipts in the temporary repository are host behaviour.
+        patch.object(adoption, 'in_container', return_value=False).start()
         from agent_box.config import Config, TrackerConnection
         config = Config(); config.tracker.provider = 'vikunja'
         config.tracker.connections['vikunja'] = TrackerConnection('https://tracker.example', 'token')
@@ -476,3 +478,46 @@ class StagingTests(unittest.TestCase):
         self.assertEqual({t['id'] for t in result['tasks']}, {'5', '6'})
         self.assertTrue(result['clean'])
         self.assertFalse((self.root / BINDING_FILE).exists())
+
+    def workflow_state(self):
+        state = self.root / 'state' / 'workflow'
+        patch.object(adoption, 'WORKFLOW_STATE', state).start()
+        patch.object(cli, 'repository_root', return_value=self.root).start()
+        return state
+
+    def test_receipt_defaults_to_a_fixed_path_in_workflow_state(self):
+        """Without --receipt the mapping lands in mounted workflow state, where a recreated box still finds it.
+
+        A path chosen per run, or one on the box's own filesystem, would lose the
+        only record of which staging project copies which source project.
+        """
+        state = self.workflow_state()
+        from agent_box.workflow import repository_key
+        expected = state / 'adoptions' / repository_key(self.root) / '1.json'
+        report = cli.dispatch(cli.parser().parse_args(['adopt', 'clone', '--project', '1', '--apply']))
+        self.assertEqual(report['receipt'], str(expected))
+        self.assertTrue(expected.is_file())
+        self.assertEqual(adoption.start(self.root, '1')['receipt'], str(expected))
+        self.assertTrue(cli.dispatch(cli.parser().parse_args(['adopt', 'cutover']))['ok'])
+
+    def test_several_receipts_need_an_explicit_choice(self):
+        """Guessing between two operations could cut over the wrong staging tree."""
+        self.workflow_state()
+        adoption.receipts(self.root).mkdir(parents=True)
+        for name in ('1.json', '2.json'):
+            (adoption.receipts(self.root) / name).write_text('{}')
+        with self.assertRaisesRegex(TrackerError, 'Found 2 adoption receipts.*--receipt'):
+            cli.dispatch(cli.parser().parse_args(['adopt', 'cutover']))
+
+    def test_box_refuses_an_explicit_receipt_outside_workflow_state(self):
+        """Inside a box only mounted workflow state survives recreation; elsewhere the receipt vanishes silently."""
+        state = self.workflow_state()
+        patch.object(adoption, 'in_container', return_value=True).start()
+        for args in (['adopt', 'clone', '--project', '1', '--receipt', str(self.receipt)],
+                     ['--adoption', str(self.receipt), 'audit']):
+            with self.assertRaisesRegex(TrackerError, 'under .*workflow'):
+                cli.dispatch(cli.parser().parse_args(args))
+        self.assertFalse(self.receipt.exists())
+        kept = state / 'mine.json'
+        args = ['adopt', 'clone', '--project', '1', '--receipt', str(kept), '--apply']
+        self.assertEqual(cli.dispatch(cli.parser().parse_args(args))['receipt'], str(kept))

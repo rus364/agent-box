@@ -112,7 +112,8 @@ def parser():
     cmd = sub.add_parser("adopt", help="Clone, normalize or activate a staging project tree")
     cmd.add_argument("operation", choices=("clone", "boards", "cutover"))
     cmd.add_argument("--project", help="Exact source project for clone")
-    cmd.add_argument("--receipt", type=Path, required=True)
+    cmd.add_argument("--receipt", type=Path,
+                     help="Default: the only receipt of this repository in agent-box workflow state")
     cmd.add_argument("--apply", action="store_true")
     cmd = sub.add_parser("provider", help="Run an explicitly provider-specific command")
     cmd.add_argument("provider", choices=("vikunja",))
@@ -127,10 +128,10 @@ def context(provider=None, require_binding=False, adoption=None):
     except AgentBoxError:
         root = None
     if adoption:
-        from .adoption import staging_context
+        from .adoption import check_receipt, staging_context
         if root is None:
             raise TrackerError("Adoption needs a repository")
-        adapter, binding, root = staging_context(adoption, root)
+        adapter, binding, root = staging_context(check_receipt(adoption), root)
         if provider and provider != binding.provider:
             raise TrackerError("Provider differs from the adoption receipt", "conflict")
         return adapter, binding, root
@@ -184,10 +185,12 @@ def dispatch(args):
     if args.command == "adopt":
         from . import adoption
         root = repository_root()
+        receipt = args.receipt and adoption.check_receipt(args.receipt)
         if args.operation == "clone":
             if not args.project:
                 raise TrackerError("Clone needs --project with an exact source ID or path")
-            return adoption.start(root, args.project, args.receipt, args.provider, args.apply)
+            return adoption.start(root, args.project, receipt, args.provider, args.apply)
+        args.receipt = receipt or adoption.locate(root)
         if args.provider:
             _, source, _ = adoption.load(args.receipt, root)
             if args.provider != source.provider:

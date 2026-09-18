@@ -5,8 +5,10 @@ reads the actual projects and binding. An interruption leaves usable projects;
 there is no compensating deletion or tracker restoration.
 """
 from dataclasses import asdict, replace
+from pathlib import Path
 
 from ..atomicio import atomic_write_json, read_json
+from ..paths import WORKFLOW_STATE
 from ..repo_binding import (BINDING_FILE, Binding, server_identity, setup_content,
                             write_binding, write_setup)
 from .audit import audit_project
@@ -17,6 +19,32 @@ from .registry import make_adapter
 def current_binding(root):
     from ..project_config import load
     return Binding.load(root) if "project" in load(root / BINDING_FILE).get("tracker", {}) else None
+
+
+def in_container():
+    return Path("/run/.containerenv").is_file()
+
+
+def receipts(root):
+    """Receipts live in workflow state: it is mounted into the box, so they survive a recreated container."""
+    from ..workflow import repository_key
+    return WORKFLOW_STATE / "adoptions" / repository_key(root)
+
+
+def check_receipt(path):
+    """A box's own filesystem is discarded with the box, taking the only clone mapping with it."""
+    if in_container() and WORKFLOW_STATE.resolve() not in path.resolve().parents:
+        raise TrackerError(f"Inside a workspace box keep the adoption receipt under {WORKFLOW_STATE}; "
+                           f"omit --receipt to use {WORKFLOW_STATE / 'adoptions'}")
+    return path
+
+
+def locate(root):
+    found = sorted(receipts(root).glob("*.json"))
+    if len(found) != 1:
+        raise TrackerError(f"Found {len(found)} adoption receipts in {receipts(root)}; "
+                           + ("pass --receipt PATH" if found else "run tracker adopt clone first"))
+    return found[0]
 
 
 def save(path, receipt):
@@ -95,8 +123,13 @@ def relate(root, path, adapter, task, kind, other, remove=False):
     return adapter.relate(task.id, kind, other, remove)
 
 
-def start(root, project, path, provider=None, apply=False):
-    root, path = root.resolve(), path.resolve() if not path.is_symlink() else path
+def start(root, project, path=None, provider=None, apply=False):
+    root = root.resolve()
+    if path is None:
+        from ..config import effective_config
+        adapter = make_adapter(provider=provider or effective_config().tracker.provider)
+        path = receipts(root) / f"{adapter.project(project)['id']}.json"
+    path = path.resolve() if not path.is_symlink() else path
     if path in {root / name for name in (BINDING_FILE, "AGENTS.md", "CLAUDE.md")} or root / ".git" in path.parents:
         raise TrackerError("Keep the adoption receipt outside repository control files")
     if path.exists() or path.is_symlink():
