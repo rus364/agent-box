@@ -113,7 +113,8 @@ def parser():
     cmd.add_argument("operation", choices=("clone", "boards", "cutover"))
     cmd.add_argument("--project", help="Exact source project for clone")
     cmd.add_argument("--receipt", type=Path,
-                     help="Default: the only receipt of this repository in agent-box workflow state")
+                     help="Default in workflow state: clone uses <repository key>/<source ID>.json; "
+                          "boards and cutover use the repository's only receipt")
     cmd.add_argument("--apply", action="store_true")
     cmd = sub.add_parser("provider", help="Run an explicitly provider-specific command")
     cmd.add_argument("provider", choices=("vikunja",))
