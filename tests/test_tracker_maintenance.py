@@ -6,16 +6,18 @@ These tests protect the replacements together with the refusal that keeps the
 shortcut honest: a task branch holding commits nothing has integrated is
 unfinished work, not a card to close by hand.
 """
+import json
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from agent_box import git_workflow as gw
 from agent_box.repo_binding import Binding
-from agent_box.tracker import cli
+from agent_box.tracker import cli, extensions
 from agent_box.tracker.core import NORMALIZED_LABEL, TrackerError, checkboxes
 from agent_box.tracker.vikunja import VikunjaAdapter
-from tracker_fixtures import NormalizationClient
+from tracker_fixtures import NativeClient, NormalizationClient, board, task
 from workflow_fixtures import clone, origin_path, repository
 
 
@@ -245,6 +247,165 @@ class MaintenanceTests(unittest.TestCase):
         self.client.tasks[7]["done"] = True
         with self.assertRaisesRegex(TrackerError, "outside the repository binding"):
             self.run_cli("normalized", "--done", "--project", "9")
+        self.assertEqual(self.client.writes, [])
+
+
+def related(**kinds):
+    return {kind: [{'id': ident} for ident in idents] for kind, idents in kinds.items()}
+
+
+class MoveTests(unittest.TestCase):
+    """Moving a task tree between bound projects, the only supported way to do it.
+
+    Vikunja keeps a moved task's ID and history but renumbers it and drops the
+    card into the target's default column, so a move that only patched the
+    project would silently reset every task to Backlog.
+    """
+
+    def setUp(self):
+        self.client = NativeClient()
+        keep = {'id': 1, 'title': 'keep'}
+        self.client.tasks = {
+            21: task(21, 1, 10, 101, index=3, priority=3, labels=[keep], assignees=[{'id': 7}],
+                     related_tasks=related(subtask=[22, 23], blocked=[30])),
+            22: task(22, 1, 10, 102, index=4, related_tasks=related(parenttask=[21], subtask=[24])),
+            23: task(23, 1, 10, 104, index=5, done=True, related_tasks=related(parenttask=[21])),
+            24: task(24, 1, 10, 103, index=6, related_tasks=related(parenttask=[22])),
+            30: task(30, 1, 10, 100, index=7, related_tasks=related(blocking=[21])),
+            40: task(40, 2, 20, 200, index=1),
+            50: task(50, 9, 90, 900, index=1),
+        }
+        self.client.journal = {21: [{'comment': 'Решение'}, {'comment': 'Прогресс'}]}
+        self.binding = Binding('vikunja', self.client.url, '1', True)
+        self.adapter = VikunjaAdapter(self.client.url, 'token', self.binding, self.client)
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.state = Path(directory.name) / 'state'
+        for target in (patch.object(cli, 'WORKFLOW_STATE', self.state),
+                       patch.object(cli, 'context', return_value=(
+                           self.adapter, self.binding, Path(directory.name) / 'repository'))):
+            target.start()
+            self.addCleanup(target.stop)
+
+    def run_cli(self, *args):
+        return cli.dispatch(cli.parser().parse_args(args))
+
+    def test_a_parent_moves_with_its_subtree_into_the_columns_it_left(self):
+        """Without restoring state every moved card would land in Backlog and lose its place."""
+        moved = self.run_cli('move', '21', '--project', '2')
+        self.assertEqual([(row['id'], row['project'], row['state'], row['previous_number'], row['number'])
+                          for row in moved],
+                         [('21', '2', 'Ready', 3, 2), ('22', '2', 'Doing', 4, 3),
+                          ('24', '2', 'Review', 6, 4), ('23', '2', 'Done', 5, 5)])
+        self.assertNotIn('description', moved[0])
+        parent = self.adapter.get('21')
+        self.assertEqual((parent.children, parent.blockers, parent.labels, parent.priority, parent.assignees),
+                         (['22', '23'], ['30'], ['keep'], 3, ['7']))
+        self.assertEqual(len(self.adapter.comments('21')), 2)
+        self.assertEqual(self.adapter.get('30').project, '1')
+
+    def test_a_subtask_cannot_leave_its_parent_behind(self):
+        """The provider keeps parent and child in one project; a half-moved tree would break it."""
+        with self.assertRaisesRegex(TrackerError, 'moves only with its parent.*22'):
+            self.run_cli('move', '22', '--project', '2')
+        self.assertEqual(self.client.writes, [])
+
+    def test_neither_end_of_a_move_may_leave_the_binding(self):
+        """Outside projects stay readable, never writable, from either side of a move."""
+        with self.assertRaisesRegex(TrackerError, 'Target project is outside'):
+            self.run_cli('move', '21', '--project', '9')
+        with self.assertRaisesRegex(TrackerError, 'outside the repository binding: 50'):
+            self.run_cli('move', '50', '--project', '2')
+        self.assertEqual(self.client.writes, [])
+
+    def test_a_target_board_that_cannot_hold_the_states_stops_the_move_before_it_starts(self):
+        """Discovering the missing column after the first patch would strand a task in Backlog."""
+        self.client.boards[2] = board(20, 200, done_bucket=203, titles=('Backlog', 'Ready', 'Doing', 'Done'))
+        with self.assertRaises(TrackerError) as raised:
+            self.run_cli('move', '21', '--project', '2')
+        self.assertEqual(raised.exception.category, 'configuration')
+        self.assertEqual(self.client.writes, [])
+
+    def test_a_rerun_finishes_an_interrupted_move_without_touching_what_already_moved(self):
+        """An interruption must be recoverable by repeating the same command."""
+        original = self.client.patch
+
+        def interrupted(path, body, markdown=False):
+            if path == '/tasks/24':
+                raise TrackerError('lost connection', 'transport', retryable=True)
+            return original(path, body, markdown)
+
+        with patch.object(self.client, 'patch', interrupted), self.assertRaises(TrackerError):
+            self.run_cli('move', '21', '--project', '2')
+        self.client.writes.clear()
+        moved = self.run_cli('move', '21', '--project', '2')
+        self.assertEqual([(row['id'], row['state']) for row in moved], [('24', 'Review'), ('23', 'Done')])
+        self.assertNotIn(('/tasks/21', {'project_id': 2}), self.client.writes)
+        self.assertEqual(self.adapter.get('22').state, 'Doing')
+
+    def test_a_rerun_restores_the_column_a_card_lost_between_its_two_writes(self):
+        """After the project changes the card already says Backlog; only the journal remembers Review."""
+        original = self.adapter.set_state
+
+        def interrupted(found, state):
+            if found.id == '24':
+                raise TrackerError('lost connection', 'transport', retryable=True)
+            return original(found, state)
+
+        with patch.object(self.adapter, 'set_state', interrupted), self.assertRaises(TrackerError):
+            self.run_cli('move', '21', '--project', '2')
+        self.assertEqual((self.adapter.get('24').project, self.adapter.get('24').state), ('2', 'Backlog'))
+        moved = self.run_cli('move', '21', '--project', '2')
+        self.assertEqual([(row['id'], row['state'], row['previous_number']) for row in moved],
+                         [('24', 'Review', 6), ('23', 'Done', 5)])
+        self.assertEqual(list(self.state.rglob('*.json')), [])
+
+    def test_another_move_waits_for_an_interrupted_one(self):
+        """A second move would leave the first one's lost columns unrecoverable behind it."""
+        original = self.adapter.set_state
+
+        def interrupted(found, state):
+            if found.id == '24':
+                raise TrackerError('lost connection', 'transport', retryable=True)
+            return original(found, state)
+
+        with patch.object(self.adapter, 'set_state', interrupted), self.assertRaises(TrackerError):
+            self.run_cli('move', '21', '--project', '2')
+        self.client.writes.clear()
+        with self.assertRaisesRegex(TrackerError, 'interrupted move of tasks 24 into project 2'):
+            self.run_cli('move', '30', '--project', '2')
+        with self.assertRaisesRegex(TrackerError, 'interrupted move of tasks 24 into project 2'):
+            self.run_cli('move', '40', '--project', '1')
+        self.assertEqual(self.client.writes, [])
+
+    def test_a_move_that_drops_a_relation_is_reported_not_passed_off_as_success(self):
+        """Silently losing a blocker would unblock work the workflow must still hold back."""
+        original = self.client.patch
+
+        def lossy(path, body, markdown=False):
+            result = original(path, body, markdown)
+            if path == '/tasks/21':
+                self.client.tasks[21]['related_tasks'].pop('blocked')
+            return result
+
+        with patch.object(self.client, 'patch', lossy), \
+                self.assertRaisesRegex(TrackerError, 'Task 21 lost relations') as raised:
+            self.run_cli('move', '21', '--project', '2')
+        self.assertEqual(raised.exception.category, 'conflict')
+
+    def test_staging_adoption_cannot_move_tasks(self):
+        """Adoption only normalizes staging tasks; moving them is not part of that scope yet."""
+        with self.assertRaisesRegex(TrackerError, 'Staging adoption'):
+            self.run_cli('--adoption', '/nonexistent/receipt.json', 'move', '21', '--project', '2')
+        self.assertEqual(self.client.writes, [])
+
+    def test_the_provider_field_escape_hatch_no_longer_moves_tasks(self):
+        """A raw project_id patch skips the subtree, the binding and the column restore."""
+        with tempfile.TemporaryDirectory() as directory:
+            fields = Path(directory) / 'fields.json'
+            fields.write_text(json.dumps({'project_id': 2}))
+            with self.assertRaisesRegex(TrackerError, 'tracker move'):
+                extensions.run(self.adapter, ['task-fields', '21', '--file', str(fields)])
         self.assertEqual(self.client.writes, [])
 
 

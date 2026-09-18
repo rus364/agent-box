@@ -22,7 +22,7 @@ LIFECYCLE_ALIASES = {
 class VikunjaAdapter:
     capabilities = frozenset({"tasks", "projects", "comments", "checklists", "relations",
                               "assignees", "boards", "optimistic_checks", "import", "bulk",
-                              "clone_project_tree", "rename_project"})
+                              "clone_project_tree", "rename_project", "move"})
 
     def __init__(self, url, token, binding=None, client=None):
         self.client = client or api.VikunjaClient(url, token)
@@ -356,6 +356,91 @@ class VikunjaAdapter:
         if current.state != state:
             raise TrackerError(f"State transition not confirmed: expected {state}, got {current.state}", "conflict")
         return current
+
+    def move(self, tasks, project, pending, checkpoint):
+        """Move tasks with their whole subtree into another bound project.
+
+        Vikunja keeps a moved task's ID, relations and journal but gives it the
+        next visible number and drops the card into the target's default column;
+        it ignores a bucket sent with the project change. The state read
+        beforehand is therefore put back by a second write, and ``pending``
+        (task ID -> state and number, saved by ``checkpoint`` before the project
+        changes) is the only place that state survives an interruption between
+        the two: the card itself already says Backlog. Everything else is judged
+        before the first write, and a rerun of the same move finishes it.
+        """
+        target = str(project)
+        scope = self.projects_in_scope()
+        if target not in scope:
+            raise TrackerError(f"Target project {target} is outside the repository binding", "conflict")
+        self.board(target)
+        found, queue = {}, [task.id for task in tasks]
+        while queue:
+            task = self.get(queue.pop())
+            if task.id not in found:
+                found[task.id] = task
+                queue.extend(task.children)
+        orphans = [task.id for task in found.values() if task.parent and task.parent not in found]
+        if orphans:
+            raise TrackerError("A subtask moves only with its parent; move the parent instead: "
+                               + ", ".join(orphans), "conflict")
+        outside = [task.id for task in found.values() if task.project not in scope]
+        if outside:
+            raise TrackerError("Tasks outside the repository binding: " + ", ".join(outside), "conflict")
+        unfinished = sorted(pending.keys() - found.keys(), key=int)
+        if unfinished:
+            raise TrackerError("An interrupted move of tasks " + ", ".join(unfinished) + f" into project {target} "
+                               "is unfinished; rerun that move first", "conflict")
+        moving = [task for task in found.values() if task.project != target]
+        unknown = [task.id for task in moving if task.state not in STATES]
+        if unknown:
+            raise TrackerError("Lifecycle state unknown, so the target column cannot follow it: "
+                               + ", ".join(unknown), "conflict")
+        # Parents first: the provider keeps parent and child in one project, and a
+        # rerun must meet a parent that already moved rather than an orphan.
+        order, stack = [], sorted((t.id for t in found.values() if not t.parent), key=int, reverse=True)
+        while stack:
+            ident = stack.pop()
+            if found[ident] not in order:
+                order.append(found[ident])
+                stack.extend(sorted(found[ident].children, key=int, reverse=True))
+        if len(order) != len(found):
+            raise TrackerError("Parent relation cycle", "conflict")
+        before = {task.id: self._move_fingerprint(task) for task in moving}
+        moved = []
+        for task in order:
+            if task.project == target:
+                if task.id not in pending:
+                    continue
+                recorded = pending[task.id]
+                after = self.set_state(task, recorded["state"]) if task.state != recorded["state"] else task
+                del pending[task.id]
+                checkpoint(pending)
+                moved.append({**after.to_dict(full=False), "previous_number": recorded["number"]})
+                continue
+            current = self.get(task.id)
+            if self._move_fingerprint(current) != before[task.id] or current.state != task.state:
+                raise TrackerError(f"Task {task.id} changed while moving; reread and rerun", "conflict")
+            pending[task.id] = {"state": task.state, "number": task.number}
+            checkpoint(pending)
+            self.client.patch(f"/tasks/{task.id}", {"project_id": int(target)})
+            after = self.get(task.id)
+            if after.project != target:
+                raise TrackerError(f"Task {task.id} move was not confirmed", "conflict")
+            if after.state != task.state:
+                after = self.set_state(after, task.state)
+            del pending[task.id]
+            checkpoint(pending)
+            if self._move_fingerprint(after) != before[task.id]:
+                raise TrackerError(f"Task {task.id} lost relations, labels, comments, priority or "
+                                   "assignees while moving; inspect it in the tracker", "conflict")
+            moved.append({**after.to_dict(full=False), "previous_number": task.number})
+        return moved
+
+    def _move_fingerprint(self, task):
+        """What a move must leave untouched; the visible number and column may change."""
+        return (task.parent, sorted(task.children), sorted(task.blockers), sorted(task.related),
+                sorted(task.labels), task.priority, sorted(task.assignees), len(self.comments(task.id)))
 
     def create(self, project, title, description="", parent=None, priority=0):
         if parent:

@@ -8,7 +8,9 @@ from dataclasses import asdict
 from pathlib import Path
 
 from ..config import effective_config
+from ..atomicio import atomic_write_json, read_json
 from ..errors import AgentBoxError
+from ..paths import WORKFLOW_STATE
 from ..repo_binding import Binding, repository_root, write_setup
 from .audit import audit_project
 from .core import (NORMALIZED_LABEL, STATES, Task, TrackerError, checkboxes, claim, ready_tasks,
@@ -96,6 +98,10 @@ def parser():
             cmd.add_argument("--title")
             cmd.add_argument("--description-file")
             cmd.add_argument("--priority", type=int, choices=range(6))
+    description = "Move tasks with all their subtasks into another bound project, keeping each lifecycle state"
+    cmd = sub.add_parser("move", help=description, description=description + "; output is JSON.")
+    cmd.add_argument("task", nargs="+", help="Canonical task ID returned by resolve/get/search")
+    cmd.add_argument("--project", required=True, help="Target project inside the repository binding")
     cmd = sub.add_parser("create", help="Create a task from a title and description file")
     cmd.add_argument("--project")
     cmd.add_argument("--title", required=True)
@@ -141,6 +147,33 @@ def context(provider=None, require_binding=False, adoption=None):
     if require_binding and binding is None:
         raise TrackerError("This operation needs a repository binding; run ab-setup")
     return make_adapter(binding, provider), binding, root
+
+
+def move_journal(root):
+    """A move's pending states live in workflow state, beside the repository's other runs.
+
+    After the project changes the card already sits in the default column, so
+    this file is the only record of the column it left. It exists only while a
+    move is unfinished; workflow state survives a recreated box.
+    """
+    from ..workflow import repository_key
+    return WORKFLOW_STATE / "moves" / f"{repository_key(root)}.json"
+
+
+def move(adapter, root, tasks, project):
+    path = move_journal(root)
+    journal = read_json(path) if path.exists() else {"project": project, "tasks": {}}
+    if journal["project"] != project:
+        raise TrackerError(f"An interrupted move of tasks {', '.join(journal['tasks'])} into project "
+                           f"{journal['project']} is unfinished; rerun that move first", "conflict")
+
+    def checkpoint(pending):
+        if pending:
+            atomic_write_json(path, {"project": project, "tasks": pending}, 0o600)
+        else:
+            path.unlink(missing_ok=True)
+
+    return adapter.move(tasks, project, journal["tasks"], checkpoint)
 
 
 def unintegrated(root, adapter, task):
@@ -222,7 +255,7 @@ def dispatch(args):
                 "configuration")
         return {"written": write_setup(repository_root(), binding), "binding": asdict(binding),
                 "lifecycle": report}
-    adapter, binding, root = context(args.provider, args.command in ("ready", "next", "claim", "state"), args.adoption)
+    adapter, binding, root = context(args.provider, args.command in ("ready", "next", "claim", "state", "move"), args.adoption)
     if args.command == "status":
         user = adapter.identity()
         return {"provider": args.provider or (binding.provider if binding else effective_config().tracker.provider),
@@ -297,7 +330,7 @@ def dispatch(args):
     # One boundary for every task write: a project outside the binding stays
     # readable, and naming a task by ID is not a way past that.
     if binding and args.command in {"update", "tier", "relation", "comment", "check", "state", "normalized",
-                                    "claim"}:
+                                    "claim", "move"}:
         scope = set(adapter.subtree(binding.project, binding.recursive or bool(args.adoption)))
         outside = [found.id for found in tasks if found.project not in scope]
         if outside:
@@ -358,6 +391,13 @@ def dispatch(args):
             # Compact rows: a batch answers with what moved, not with every body it read.
             changed.append(adapter.set_state(found, args.state).to_dict(full=False))
         return changed
+    if args.command == "move":
+        if "move" not in adapter.capabilities:
+            raise TrackerError("This provider cannot move tasks between projects", "configuration")
+        project = str(adapter.project(args.project)["id"])
+        if project not in scope:
+            raise TrackerError("Target project is outside the repository binding", "conflict")
+        return move(adapter, root, tasks, project)
     if args.command == "check":
         if not task.revision:
             raise TrackerError("This provider returned no revision for the task, so an edit cannot prove it "

@@ -191,8 +191,21 @@ class NativeClient(FakeClient):
             project.update(body)
             return dict(project)
         if re.fullmatch(r'/tasks/\d+', path):
-            self.writes.append((path, body)); self.tasks[int(path.split('/')[2])].update(body)
-            return copy.deepcopy(self.tasks[int(path.split('/')[2])])
+            self.writes.append((path, body))
+            row = self.tasks[int(path.split('/')[2])]
+            target = body.get('project_id', row['project_id'])
+            if target != row['project_id']:
+                # Vikunja keeps the ID, journal, labels and relations, renumbers
+                # the task inside the target, and drops the card into the target's
+                # default column (the done column for a done task), not its old one.
+                view = self.boards[target]['views'][0]
+                columns = sorted(self.boards[target]['buckets'][view['id']], key=lambda b: b['position'])
+                bucket = view.get('done_bucket_id') if row.get('done') else columns[0]['id']
+                row['index'] = 1 + max([t.get('index') or 0 for t in self.tasks.values()
+                                        if t['project_id'] == target], default=0)
+                row['buckets'] = [{'id': bucket, 'project_view_id': view['id']}]
+            row.update(body)
+            return copy.deepcopy(row)
         return super().patch(path, body, markdown)
 
 

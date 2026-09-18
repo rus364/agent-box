@@ -28,6 +28,7 @@ agent-box tracker check 123 1 3 --revision '"1789633065000000000-2"'
 agent-box tracker comment 123 --file /tmp/progress.md
 agent-box tracker state 123 124 Done --reason 'Superseded by task 130'
 agent-box tracker normalized --done --recursive
+agent-box tracker move 123 --project 42
 ```
 
 `setup` previews, for every project in scope, the kanban view it resolved and
@@ -121,6 +122,18 @@ can advance or even create one and `refs/remotes/*` is only as fresh as the last
 fetch; a commit origin reports and this checkout has never fetched is left
 unjudged, and the refusal asks for a fetch rather than assuming it landed. `normalized --done` marks every completed task in scope as processed
 in one command, because a Done task has nothing left for `ab-normalize` to do.
+
+`move TASK... --project P` moves tasks into another project of the binding,
+each with its whole subtask tree, because the provider keeps a parent and its
+subtasks in one project; a subtask whose parent stays behind is refused. The
+task keeps its ID, relations, labels, comments, priority and assignees, which
+the move checks afterwards, but gets a new visible number (rows report
+`previous_number`). Vikunja drops a moved card into the target's default column
+and ignores a column sent with the project change, so the state read beforehand
+is restored by a second write. Between the two writes that state exists nowhere
+else, so the move records it in workflow state first; a rerun of the same
+command restores what an interruption left, and any other move waits for it.
+Moving is only this command: `task-fields` no longer accepts `project_id`.
 
 Comments are a human journal. Nothing machine-readable lives in one: branch,
 base branch and pull request come from Git and GitHub, lifecycle from the
