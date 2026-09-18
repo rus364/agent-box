@@ -150,22 +150,24 @@ def unintegrated(root, adapter, task):
     """
     from .. import git_workflow as gw
     try:
-        branch = gw.task_branch(root, task)
-        if not branch:
-            return None
         parent = root_task(task, adapter.get)
         targets = [gw.default_base(root)]
         if parent.id != task.id:
             targets.append(gw.task_branch(root, parent))
         targets = [name for name in targets if name]
-        if gw.integrated(root, branch, targets):
-            return None
+        left = gw.abandoned_work(root, task.id, targets)
     except TrackerError:
         raise
     except AgentBoxError as exc:
         raise TrackerError(str(exc), "configuration") from None
-    return (f"Task {task.id} branch {branch} has commits that {' and '.join(targets)} "
-            f"do not contain; run agent-box workflow finish {task.id}, or land the work, before Done")
+    if left["unfetched"]:
+        return (f"Origin has {', '.join(left['unfetched'])} for task {task.id}, and this checkout has not "
+                f"fetched it; fetch origin before deciding that nothing is left to land")
+    if left["unmerged"]:
+        return (f"Task {task.id} branch {', '.join(left['unmerged'])} has commits that "
+                f"{' and '.join(targets)} do not contain; run agent-box workflow finish {task.id}, "
+                f"or land the work, before Done")
+    return None
 
 
 def dispatch(args):
@@ -262,12 +264,15 @@ def dispatch(args):
             raise TrackerError("Marking a whole project needs a repository binding; run ab-setup")
         # Selecting a project by name must not reach past the binding: outside
         # projects stay readable, and this command writes to every task it finds.
+        scope = set(adapter.subtree(binding.project, binding.recursive or bool(args.adoption)))
         project = str(adapter.project(args.project or binding.project)["id"])
-        if project not in adapter.subtree(binding.project, binding.recursive or bool(args.adoption)):
+        if project not in scope:
             raise TrackerError("Selected project is outside the repository binding")
-        tasks = [found for found in adapter.search(
-            project, "", args.recursive or bool(binding and binding.recursive))
-            if found.state == "Done" and (NORMALIZED_LABEL in found.labels) == args.undo]
+        # --recursive widens the search inside the binding; it can never widen the
+        # binding itself, so what the search finds beyond it is read and dropped.
+        tasks = [found for found in adapter.search(project, "", args.recursive or binding.recursive)
+                 if found.project in scope and found.state == "Done"
+                 and (NORMALIZED_LABEL in found.labels) == args.undo]
     elif args.command == "get" and binding is not None:
         tasks = [adapter.resolve(args.task, binding.project, binding.recursive, canonical=True)]
     else:

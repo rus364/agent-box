@@ -16,7 +16,7 @@ from agent_box.tracker import cli
 from agent_box.tracker.core import NORMALIZED_LABEL, TrackerError, checkboxes
 from agent_box.tracker.vikunja import VikunjaAdapter
 from test_tracker_normalization import NormalizationClient
-from workflow_fixtures import repository
+from workflow_fixtures import clone, repository
 
 
 class MaintenanceTests(unittest.TestCase):
@@ -80,6 +80,23 @@ class MaintenanceTests(unittest.TestCase):
         gw.git(self.root, "reset", "--hard", "HEAD~1")
         gw.git(self.root, "switch", "main")
         with self.assertRaisesRegex(TrackerError, "ab/5-work"):
+            self.run_cli("state", "5", "Done", "--reason", "Не нужна")
+        self.assertEqual(self.client.writes, [])
+        gw.git(self.root, "merge", "--ff-only", "origin/ab/5-work")
+        self.assertEqual(self.run_cli("state", "5", "Done", "--reason", "Не нужна")[0]["state"], "Done")
+
+    def test_a_branch_only_origin_knows_about_stops_the_close_until_it_is_fetched(self):
+        """Another checkout can create the branch; this one would never see it locally."""
+        other = clone(self.directory.name, "other")
+        gw.git(other, "switch", "-c", "ab/5-work")
+        (other / "elsewhere.txt").write_text("work")
+        gw.git(other, "add", "-A")
+        gw.git(other, "commit", "-m", "work elsewhere")
+        gw.git(other, "push", "-q", "origin", "ab/5-work")
+        with self.assertRaisesRegex(TrackerError, "has not fetched"):
+            self.run_cli("state", "5", "Done", "--reason", "Не нужна")
+        gw.git(self.root, "fetch", "-q", "origin")
+        with self.assertRaisesRegex(TrackerError, "workflow finish 5"):
             self.run_cli("state", "5", "Done", "--reason", "Не нужна")
         self.assertEqual(self.client.writes, [])
         gw.git(self.root, "merge", "--ff-only", "origin/ab/5-work")
@@ -158,6 +175,16 @@ class MaintenanceTests(unittest.TestCase):
         self.assertEqual(self.run_cli('normalized', '--done'), [])
         with self.assertRaisesRegex(TrackerError, "pass --done"):
             self.run_cli("normalized", "5", "--done")
+
+    def test_recursion_searches_inside_the_binding_and_never_widens_it(self):
+        """A binding that stops at its root must not label tasks in child projects."""
+        self.binding.recursive = False
+        self.adapter._scope = None
+        for ident in (5, 8):
+            self.client.tasks[ident]["done"] = True
+        marked = self.run_cli("normalized", "--done", "--recursive")
+        self.assertEqual([row["id"] for row in marked], ["5"])
+        self.assertNotIn(NORMALIZED_LABEL, self.adapter.get("8").labels)
 
     def test_a_project_named_outside_the_binding_is_not_marked(self):
         """This command writes to every task it selects, so its scope is the binding's."""

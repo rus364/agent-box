@@ -246,17 +246,50 @@ def base_ref(root, base):
     return refs[0]
 
 
-def integrated(root, branch, targets):
-    """Whether these branches contain everything every copy of this branch holds.
+def remote_branches(root, pattern):
+    """What origin itself has under this pattern, as {branch: commit}.
 
-    Closing a task without implementation must not quietly abandon commits, and
-    Git alone can say whether any are left. The local tip does not prove it: a
-    commit pushed from another checkout lives only in origin's copy, and a close
-    that looked here would drop it.
+    `refs/remotes/*` is only as fresh as the last fetch, so a decision that could
+    abandon commits asks the remote rather than this checkout's memory of it.
     """
+    url = effective_push_url(root)
+    if url is None:
+        return {}
+    try:
+        result = _run(["git", "ls-remote", "--heads", url, f"refs/heads/{pattern}"],
+                      cwd=root, timeout=REMOTE_QUERY_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        result = None
+    if result is None or result.returncode:
+        raise AgentBoxError(f"Cannot read origin's branches matching {pattern}; reconcile before continuing")
+    heads = {}
+    for line in result.stdout.splitlines():
+        sha, _, ref = line.partition("\t")
+        if ref.startswith("refs/heads/") and sha:
+            heads[ref.removeprefix("refs/heads/")] = sha
+    return heads
+
+
+def abandoned_work(root, task_id, targets):
+    """This task's branches that no target branch contains, and the ones it cannot judge.
+
+    Closing a task without implementation must not quietly abandon commits. The
+    local tip cannot answer that alone: another checkout may have advanced, or
+    even created, the branch. A commit origin reports but this checkout has never
+    fetched is reported separately instead of being assumed landed.
+    """
+    prefix = branch_prefix(task_id)
+    tips = [(name, name) for name in _branch_refs(root, f"refs/heads/{prefix}*")]
+    tips += [(ref.removeprefix("origin/"), ref) for ref in _branch_refs(root, f"refs/remotes/origin/{prefix}*")]
+    tips += list(remote_branches(root, f"{prefix}*").items())
     contained = [ref for name in targets for ref in branch_refs(root, name)]
-    return all(any(_is_ancestor(root, ref, target) for target in contained)
-               for ref in branch_refs(root, branch))
+    unmerged, unfetched = set(), set()
+    for name, commit in tips:
+        if _run(["git", "cat-file", "-e", f"{commit}^{{commit}}"], cwd=root).returncode:
+            unfetched.add(name)
+        elif not any(_is_ancestor(root, commit, target) for target in contained):
+            unmerged.add(name)
+    return {"unmerged": sorted(unmerged), "unfetched": sorted(unfetched)}
 
 
 def local_branch_head(root, branch):

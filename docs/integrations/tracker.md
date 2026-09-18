@@ -116,7 +116,10 @@ implemented: it closes them and journals that reason on each. It refuses while
 a task's `ab/<id>-` branch still holds commits neither the base branch nor the
 parent task's branch contains, naming the branch and the `workflow finish`
 command that would move them, and it judges every named task before moving any
-of them. `normalized --done` marks every completed task in scope as processed
+of them. Origin is asked for those branches directly, because another checkout
+can advance or even create one and `refs/remotes/*` is only as fresh as the last
+fetch; a commit origin reports and this checkout has never fetched is left
+unjudged, and the refusal asks for a fetch rather than assuming it landed. `normalized --done` marks every completed task in scope as processed
 in one command, because a Done task has nothing left for `ab-normalize` to do.
 
 Comments are a human journal. Nothing machine-readable lives in one: branch,
