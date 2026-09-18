@@ -62,7 +62,10 @@ def inspect(adapter, source, title, progress):
         for index in original.keys() & duplicate.keys():
             task_map[str(original[index]["id"])] = str(duplicate[index]["id"])
     if frozen is not None:
-        task_map = {ident: target for ident, target in frozen.items() if ident in tasks}
+        # Only pairs with both sides present are compared; a missing side is reported below.
+        task_map = {ident: target for ident, target in frozen.items() if ident in tasks and target in staging}
+        for ident in sorted(frozen.keys() - tasks.keys(), key=int):
+            errors.append(f"Source task {ident} from the recorded task mapping no longer exists in the source")
         for ident in sorted(tasks.keys() - frozen.keys(), key=int):
             errors.append(f"Source task {ident} has no staging copy in the recorded task mapping")
         for ident in sorted(set(frozen.values()) - staging, key=int):

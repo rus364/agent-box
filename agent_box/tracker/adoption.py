@@ -242,7 +242,8 @@ def cutover(root, path, apply=False):
     if move_journal(root).exists():
         # After the rename no --adoption move can run, and the journal is the
         # only record of the column an interrupted staging move left.
-        errors.append("An interrupted move is unfinished; rerun it with tracker --adoption before cutover")
+        errors.append(f"An interrupted move is unfinished ({move_journal(root)}); rerun it before cutover, "
+                      "with tracker --adoption when it moved staging tasks")
     setup_content(root, binding)
     result = {"source": source.project, "project": target, "names": list(expected),
               "binding": asdict(binding), "audit": report, "clone": copied,

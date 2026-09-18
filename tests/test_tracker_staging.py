@@ -614,11 +614,29 @@ class StagingTests(unittest.TestCase):
         with patch.object(VikunjaAdapter, 'set_state', interrupted), self.assertRaises(TrackerError):
             self.staging_move(str(moving), '--project', report['projects']['1'])
         preview = adoption.cutover(self.root, self.receipt)
-        self.assertIn('An interrupted move is unfinished; rerun it with tracker --adoption before cutover',
-                      preview['errors'])
+        self.assertTrue(any(error.startswith('An interrupted move is unfinished') for error in preview['errors']))
         with self.assertRaisesRegex(TrackerError, 'interrupted move'):
             adoption.cutover(self.root, self.receipt, True)
         self.assertEqual(self.client.get('/projects/1')['title'], 'Root')
         moved = self.staging_move(str(moving), '--project', report['projects']['1'])
         self.assertEqual(moved[0]['state'], 'Review')
         self.assertTrue(adoption.cutover(self.root, self.receipt, True)['complete'])
+
+    def test_the_frozen_mapping_still_names_every_lost_copy(self):
+        """Without index pairing the mapping is cutover's only proof; a lost pair must stop it."""
+        report = self.clone()
+        root_copy, child_copy = report['projects']['1'], report['projects']['2']
+        moving = next(t['id'] for t in self.client.tasks.values() if t['project_id'] == int(child_copy))
+        self.staging_move(str(moving), '--project', root_copy)
+        for ident in (moving - 1, 6):
+            # The provider removes a deleted task's relations on both ends.
+            del self.client.tasks[ident]
+            for row in self.client.tasks.values():
+                for kind, others in row['related_tasks'].items():
+                    row['related_tasks'][kind] = [other for other in others if other['id'] != ident]
+        errors = adoption.cutover(self.root, self.receipt)['errors']
+        self.assertIn('Source task 6 from the recorded task mapping no longer exists in the source', errors)
+        self.assertIn(f'Staging task {moving - 1} from the recorded task mapping is not in staging', errors)
+        with self.assertRaisesRegex(TrackerError, 'recorded task mapping'):
+            adoption.cutover(self.root, self.receipt, True)
+        self.assertEqual(self.client.get('/projects/1')['title'], 'Root')
