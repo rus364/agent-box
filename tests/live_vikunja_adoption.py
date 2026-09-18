@@ -131,14 +131,20 @@ def run():
             assert client.get(f'/projects/{source}')['title'] == name + f' — backup {source}'
             assert client.get(f'/projects/{target}')['title'] == name
             assert adoption.cutover(repository, receipt, apply=True)['complete']
-            plan_task = api.PlanTask.from_row({'Title': 'Imported update', 'Description': 'Original meaning.',
-                                              'Project': 'Plan root', 'Plan ID': 'TEST-1', 'Labels': name})
+            copied_title = client.get(f'/tasks/{copied_first}')['title']
+            plan_task = api.PlanTask.from_row({'Title': 'Imported task', 'Description': 'Original meaning.',
+                                              'Project': 'Plan root', 'Plan ID': 'TEST-1', 'Labels': name,
+                                              'Depends On': str(copied_first)})
             plan = api.Plan([plan_task], repository / 'plan.csv', 'test-plan')
             importer = api.Importer(client, plan, repository / 'imports', project=target)
             report = importer.apply()
-            assert report['verification']['ok'], report
+            assert (report['tasks_created'], report['relations_created']) == (1, 1), report
+            created = client.get(f"/tasks/{importer.state.task_id('TEST-1')}?format=markdown")
+            assert (created['project_id'], created['title']) == (int(target), 'Imported task'), created
+            assert created['description'].strip() == 'Original meaning.', created['description']
+            assert copied_first in {t['id'] for t in created['related_tasks']['blocked']}
             assert client.get(f'/tasks/{first}')['description'] == originals[str(first)]['description']
-            assert client.get(f'/tasks/{copied_first}')['title'] == 'Imported update'
+            assert client.get(f'/tasks/{copied_first}')['title'] == copied_title
             print('PASS: native tree, indexes, comments, attachment, shares, assignees, relations, staging audit, '
                   'staging move and project removal, cutover, scoped import')
         finally:

@@ -465,10 +465,8 @@ def main(argv):
     try:
         result = dispatch(parser().parse_args(argv))
         emit(result)
-        if isinstance(result, dict):
-            verification = result.get("verification")
-            if isinstance(verification, dict) and verification.get("ok") is False or result.get("ok") is False and "errors" in result:
-                return 3
+        if isinstance(result, dict) and result.get("ok") is False and "errors" in result:
+            return 3
         return 0
     except (OSError, ValueError) as exc:
         print(json.dumps({"error": str(exc), "category": "input"}), file=sys.stderr)
