@@ -596,3 +596,29 @@ class StagingTests(unittest.TestCase):
                 self.receipt.write_text(json.dumps(receipt))
                 with self.assertRaisesRegex(TrackerError, 'Invalid adoption receipt.*clone.tasks'):
                     adoption.cutover(self.root, self.receipt)
+
+    def test_cutover_waits_for_an_interrupted_staging_move(self):
+        """After the rename no staging move can run, and the journal holds the only record of the column."""
+        report = self.clone()
+        moving = next(t['id'] for t in self.client.tasks.values() if t['project_id'] == int(report['projects']['2']))
+        # A card in Review, which the target's default column would silently turn into Backlog.
+        self.client.tasks[moving].update(description='Acceptance.', buckets=[
+            {'id': int(report['projects']['2']) * 100 + 3, 'project_view_id': int(report['projects']['2']) * 10}])
+        original = VikunjaAdapter.set_state
+
+        def interrupted(instance, found, state):
+            if found.id == str(moving):
+                raise TrackerError('lost connection', 'transport', retryable=True)
+            return original(instance, found, state)
+
+        with patch.object(VikunjaAdapter, 'set_state', interrupted), self.assertRaises(TrackerError):
+            self.staging_move(str(moving), '--project', report['projects']['1'])
+        preview = adoption.cutover(self.root, self.receipt)
+        self.assertIn('An interrupted move is unfinished; rerun it with tracker --adoption before cutover',
+                      preview['errors'])
+        with self.assertRaisesRegex(TrackerError, 'interrupted move'):
+            adoption.cutover(self.root, self.receipt, True)
+        self.assertEqual(self.client.get('/projects/1')['title'], 'Root')
+        moved = self.staging_move(str(moving), '--project', report['projects']['1'])
+        self.assertEqual(moved[0]['state'], 'Review')
+        self.assertTrue(adoption.cutover(self.root, self.receipt, True)['complete'])

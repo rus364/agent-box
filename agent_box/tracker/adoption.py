@@ -238,6 +238,11 @@ def cutover(root, path, apply=False):
     report = audit_project(make_adapter(binding), target)
     if not report["clean"]:
         errors.append("Staging audit has structural errors; resolve them before cutover")
+    from .cli import move_journal
+    if move_journal(root).exists():
+        # After the rename no --adoption move can run, and the journal is the
+        # only record of the column an interrupted staging move left.
+        errors.append("An interrupted move is unfinished; rerun it with tracker --adoption before cutover")
     setup_content(root, binding)
     result = {"source": source.project, "project": target, "names": list(expected),
               "binding": asdict(binding), "audit": report, "clone": copied,

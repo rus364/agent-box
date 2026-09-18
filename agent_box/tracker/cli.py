@@ -98,10 +98,12 @@ def parser():
             cmd.add_argument("--title")
             cmd.add_argument("--description-file")
             cmd.add_argument("--priority", type=int, choices=range(6))
-    description = "Move tasks with all their subtasks into another bound project, keeping each lifecycle state"
+    description = ("Move tasks with all their subtasks into another bound project, keeping each lifecycle state; "
+                   "under --adoption, between staging projects only")
     cmd = sub.add_parser("move", help=description, description=description + "; output is JSON.")
     cmd.add_argument("task", nargs="+", help="Canonical task ID returned by resolve/get/search")
-    cmd.add_argument("--project", required=True, help="Target project inside the repository binding")
+    cmd.add_argument("--project", required=True,
+                     help="Target project inside the repository binding, or inside staging under --adoption")
     cmd = sub.add_parser("create", help="Create a task from a title and description file")
     cmd.add_argument("--project")
     cmd.add_argument("--title", required=True)
