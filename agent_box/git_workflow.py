@@ -228,12 +228,31 @@ def default_base(root):
     return _DEFAULT_BASE[key]
 
 
-def base_ref(root, base):
-    """A fresh clone may only have the remote-tracking copy of the base branch."""
-    for candidate in (base, f"refs/remotes/origin/{base}"):
+def branch_ref(root, branch):
+    """This branch here, or origin's copy: a fresh clone may only have the remote one."""
+    for candidate in (branch, f"refs/remotes/origin/{branch}"):
         if _run(["git", "rev-parse", "--verify", "--quiet", f"{candidate}^{{commit}}"], cwd=root).returncode == 0:
             return candidate
-    raise AgentBoxError(f"Base {base} does not resolve to a commit in this repository")
+    return None
+
+
+def base_ref(root, base):
+    ref = branch_ref(root, base)
+    if ref is None:
+        raise AgentBoxError(f"Base {base} does not resolve to a commit in this repository")
+    return ref
+
+
+def integrated(root, branch, targets):
+    """Whether one of these branches already contains everything this branch holds.
+
+    Closing a task without implementation must not quietly abandon commits, and
+    Git alone can say whether any are left: a tip the base or the parent branch
+    already contains has nothing that finishing or landing would still move.
+    """
+    ref = branch_ref(root, branch)
+    return ref is None or any(_is_ancestor(root, ref, target) for target in
+                              filter(None, (branch_ref(root, name) for name in targets)))
 
 
 def local_branch_head(root, branch):

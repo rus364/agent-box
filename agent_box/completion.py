@@ -199,6 +199,10 @@ def parser_candidates(parser, args):
         return "words", [(name, helps.get(name, "")) for name in action.choices]
     if action.nargs == argparse.REMAINDER:
         return files(args)
+    if action.nargs in ("*", "+") and len(positionals) > 1:
+        # A repeated positional ends wherever the user stops naming tasks, so the
+        # positional after it completes this word just as legitimately.
+        return action_values(positionals[1], action_values(action, ("words", [])))
     return action_values(action, ("words", []))
 
 

@@ -24,8 +24,10 @@ agent-box tracker resolve "#21" --project 42
 agent-box tracker get 123
 agent-box tracker claim 123
 agent-box tracker checklist 123
-agent-box tracker check 123 1 --text 'Expected acceptance item'
+agent-box tracker check 123 1 3 --revision '"1789633065000000000-2"'
 agent-box tracker comment 123 --file /tmp/progress.md
+agent-box tracker state 123 124 Done --reason 'Superseded by task 130'
+agent-box tracker normalized --done --recursive
 ```
 
 `setup` previews, for every project in scope, the kanban view it resolved and
@@ -99,6 +101,23 @@ return a conflict for reconciliation, never a blind retry. It also sends ETags
 when supplied, but the tested Vikunja version ignores If-Match on PATCH despite
 returning ETags on GET. Optimistic checks cannot close the race between the
 last read and the write; they are not atomic compare-and-swap.
+
+`checklist` prints the task's revision beside the item indices, and `check
+ID INDEX... --revision REVISION` writes every named item into the description
+at once. The revision is the same ETag the adapter reads; comparing it before
+the write catches a checklist edited since it was read, and it is a client-side
+check, not a compare-and-swap, for the same reason ETags cannot be one here. It
+belongs to the whole task rather than the description, so posting a progress
+comment moves it as well: read `checklist` immediately before `check`.
+
+`Done` belongs to `agent-box workflow finish`, which proves integration.
+`state TASK... Done --reason TEXT` is the exception for tasks that were never
+implemented: it closes them and journals that reason on each. It refuses while
+a task's `ab/<id>-` branch still holds commits neither the base branch nor the
+parent task's branch contains, naming the branch and the `workflow finish`
+command that would move them, and it judges every named task before moving any
+of them. `normalized --done` marks every completed task in scope as processed
+in one command, because a Done task has nothing left for `ab-normalize` to do.
 
 Comments are a human journal. Nothing machine-readable lives in one: branch,
 base branch and pull request come from Git and GitHub, lifecycle from the

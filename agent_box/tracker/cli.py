@@ -11,7 +11,8 @@ from ..config import effective_config
 from ..errors import AgentBoxError
 from ..repo_binding import Binding, repository_root, write_setup
 from .audit import audit_project
-from .core import STATES, Task, TrackerError, checkboxes, claim, ready_tasks, set_checkbox
+from .core import (NORMALIZED_LABEL, STATES, Task, TrackerError, checkboxes, claim, ready_tasks,
+                   root_task, set_checkboxes)
 from .registry import make_adapter
 
 
@@ -54,30 +55,37 @@ def parser():
     for name in ("get", "comments", "checklist", "claim", "update", "state", "check", "comment", "tier", "relation", "normalized"):
         description = {"get": "Read a full task, including requirements, relations and comments",
                        "comments": "Read task comments",
-                       "checklist": "Read checklist indices and text",
+                       "checklist": "Read the task revision and its checklist indices and text",
                        "claim": "Claim an eligible task and enter Doing",
                        "update": "Update selected task fields",
-                       "state": "Move a task to a lifecycle state",
-                       "check": "Check or uncheck an exact checklist item",
+                       "state": "Move one or more tasks to a lifecycle state",
+                       "check": "Check or uncheck checklist items in one write",
                        "comment": "Append a human journal comment from a file or stdin",
                        "tier": "Set the task's execution tier",
                        "normalized": "Mark completed normalization; --undo makes the task a candidate again",
                        "relation": "Add or remove a task relation"}[name]
         cmd = sub.add_parser(name, help=description, description=description + "; output is JSON.")
-        cmd.add_argument("task", help="Visible number, exact title, task URL or canonical ID" if name == "get"
+        several = {"state": "+", "normalized": "*"}
+        cmd.add_argument("task", **({"nargs": several[name]} if name in several else {}),
+                         help="Visible number, exact title, task URL or canonical ID" if name == "get"
                          else "Canonical task ID returned by resolve/get/search")
         if name == "claim":
             cmd.add_argument("--resume", action="store_true")
         elif name == "state":
             cmd.add_argument("state", choices=STATES)
+            cmd.add_argument("--reason", help="Close tasks that were never implemented, journaling this reason")
         elif name == "check":
-            cmd.add_argument("index", type=int)
-            cmd.add_argument("--text", required=True, help="Expected current checklist item text")
+            cmd.add_argument("index", type=int, nargs="+")
+            cmd.add_argument("--revision", required=True, help="Task revision printed by tracker checklist")
             cmd.add_argument("--undo", action="store_true")
         elif name == "comment":
             cmd.add_argument("--file", required=True, help="UTF-8 text file, or - for stdin")
         elif name == "normalized":
             cmd.add_argument("--undo", action="store_true")
+            cmd.add_argument("--done", action="store_true",
+                             help="Select every completed task in scope instead of naming tasks")
+            cmd.add_argument("--project")
+            cmd.add_argument("--recursive", action="store_true")
         elif name == "tier":
             cmd.add_argument("tier", type=int, choices=(1, 2, 3))
         elif name == "relation":
@@ -131,6 +139,33 @@ def context(provider=None, require_binding=False, adoption=None):
     if require_binding and binding is None:
         raise TrackerError("This operation needs a repository binding; run ab-setup")
     return make_adapter(binding, provider), binding, root
+
+
+def unintegrated(root, adapter, task):
+    """Name the branch whose commits closing this task would abandon, if there is one.
+
+    Closing without implementation is meant for work that was never built, so
+    the only question Git has to answer is whether the task's branch still holds
+    commits the base, or the parent branch it was cut from, does not contain.
+    """
+    from .. import git_workflow as gw
+    try:
+        branch = gw.task_branch(root, task)
+        if not branch:
+            return None
+        parent = root_task(task, adapter.get)
+        targets = [gw.default_base(root)]
+        if parent.id != task.id:
+            targets.append(gw.task_branch(root, parent))
+        targets = [name for name in targets if name]
+        if gw.integrated(root, branch, targets):
+            return None
+    except TrackerError:
+        raise
+    except AgentBoxError as exc:
+        raise TrackerError(str(exc), "configuration") from None
+    return (f"Task {task.id} branch {branch} has commits that {' and '.join(targets)} "
+            f"do not contain; run agent-box workflow finish {task.id}, or land the work, before Done")
 
 
 def dispatch(args):
@@ -220,13 +255,24 @@ def dispatch(args):
             tasks = ready_tasks(tasks, adapter.get, str(adapter.identity()["id"]))
         results = [task.to_dict(full=False) for task in tasks]
         return (results[0] if results else None) if args.command == "next" else results
-    if args.command == "get" and binding is not None:
-        task = adapter.resolve(args.task, binding.project, binding.recursive, canonical=True)
+    if args.command == "normalized" and bool(args.task) == args.done:
+        raise TrackerError("Mark the tasks you name, or pass --done for every completed task in scope")
+    if args.command == "normalized" and args.done:
+        project = args.project or (binding.project if binding else None)
+        if not project:
+            raise TrackerError("Resolve a project first: pass --project or run ab-setup")
+        tasks = [found for found in adapter.search(
+            project, "", args.recursive or bool(binding and binding.recursive))
+            if found.state == "Done" and (NORMALIZED_LABEL in found.labels) == args.undo]
+    elif args.command == "get" and binding is not None:
+        tasks = [adapter.resolve(args.task, binding.project, binding.recursive, canonical=True)]
     else:
-        task = adapter.get(args.task)
+        tasks = [adapter.get(reference) for reference in
+                 (args.task if isinstance(args.task, list) else [args.task])]
+    task = tasks[0] if tasks else None
     if args.adoption and args.command in {"update", "tier", "relation", "comment", "check", "state", "normalized"}:
         scope = set(adapter.subtree(binding.project, True))
-        if task.project not in scope:
+        if any(found.project not in scope for found in tasks):
             raise TrackerError("Adoption can only change staging tasks", "conflict")
         if args.command == "relation" and adapter.get(args.other).project not in scope:
             raise TrackerError("Adoption relations must stay inside staging", "conflict")
@@ -235,7 +281,9 @@ def dispatch(args):
     if args.command == "comments":
         return adapter.comments(task.id)
     if args.command == "checklist":
-        return [{key: item[key] for key in ("index", "checked", "text")} for item in checkboxes(task.description)]
+        return {"task": task.id, "revision": task.revision,
+                "items": [{key: item[key] for key in ("index", "checked", "text")}
+                          for item in checkboxes(task.description)]}
     if args.command == "claim":
         from ..workflow_state import lock
         with lock(root, "claim"):
@@ -249,17 +297,36 @@ def dispatch(args):
             raise TrackerError("No changes requested")
         return adapter.update(task, fields)
     if args.command == "state":
-        if args.state == "Done" and (not args.adoption or task.state != "Done"):
-            raise TrackerError("Use agent-box workflow finish to verify integration or merge before Done")
+        if args.reason and args.state != "Done":
+            raise TrackerError("A reason records closing a task without implementation; it belongs to Done")
         if args.state == "Doing" and not args.adoption:
             raise TrackerError("Use agent-box tracker claim to assign and start a task")
-        return adapter.set_state(task, args.state)
+        # Every task is judged before the first one moves: a batch that stops
+        # halfway leaves the user reconstructing which cards it already closed.
+        for found in tasks if args.state == "Done" else []:
+            if args.adoption:
+                if found.state != "Done":
+                    raise TrackerError("Staging adoption cannot mark unfinished work Done")
+            elif not args.reason:
+                raise TrackerError("Use agent-box workflow finish to verify integration or merge before Done, "
+                                   "or pass --reason TEXT to close a task that was never implemented")
+            elif reason := unintegrated(root, adapter, found):
+                raise TrackerError(reason, "conflict")
+        changed = []
+        for found in tasks:
+            found = adapter.set_state(found, args.state)
+            if args.reason:
+                adapter.comment(found.id, args.reason)
+            changed.append(found.to_dict())
+        return changed
     if args.command == "check":
-        return adapter.update(task, {"description": set_checkbox(task.description, args.index, not args.undo, args.text)})
+        if task.revision != args.revision:
+            raise TrackerError("Task changed since that revision; reread tracker checklist before editing", "conflict")
+        return adapter.update(task, {"description": set_checkboxes(task.description, args.index, not args.undo)})
     if args.command == "comment":
         return adapter.comment(task.id, text_file(args.file))
     if args.command == "normalized":
-        return adapter.set_normalized(task.id, not args.undo)
+        return [adapter.set_normalized(found.id, not args.undo).to_dict() for found in tasks]
     if args.command == "tier":
         return adapter.set_tier(task.id, args.tier)
     if args.command == "relation":

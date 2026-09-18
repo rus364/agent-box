@@ -58,7 +58,7 @@ class TrackerWorkflowTests(unittest.TestCase):
         self.assertEqual(claimed.labels, ["product"])
         self.assertIn("Acceptance or validation checklist remains incomplete",
                       c.completion_reasons(task, [task], "7"))
-        adapter.update(task, {"description": c.set_checkbox(task.description, 1, True, "acceptance")})
+        adapter.update(task, {"description": c.set_checkboxes(task.description, [1], True)})
         for state in ("Doing", "Review"):
             current = adapter.set_state(task, state)
             self.assertEqual(c.completion_reasons(current, [current], "7"), [])
@@ -94,14 +94,18 @@ class TrackerWorkflowTests(unittest.TestCase):
         with self.assertRaises(c.TrackerError):
             c.root_task(task, {"1": task}.__getitem__)
 
-    def test_checkbox_edits_require_the_current_text_and_ignore_code_fences(self):
+    def test_checkbox_edits_change_only_named_items_and_ignore_code_fences(self):
+        """One write records several decisions; an example inside a fence is not an item."""
         c = self.core()
         body = "## Steps\n- [ ] API\n```md\n- [ ] example\n```\n- [x] UI\n"
-        changed = c.set_checkbox(body, 1, True, "API")
-        self.assertEqual(changed, body.replace("- [ ] API", "- [x] API"))
         self.assertEqual(len(c.checkboxes(body)), 2)
-        with self.assertRaises(c.TrackerError):
-            c.set_checkbox(body, 1, False, "Old API requirement")
+        self.assertEqual(c.set_checkboxes(body, [1], True), body.replace("- [ ] API", "- [x] API"))
+        both = c.set_checkboxes(body, [2, 1], True)
+        self.assertEqual(both, body.replace("- [ ] API", "- [x] API"))
+        self.assertEqual(c.set_checkboxes(both, [1, 2], False),
+                         body.replace("- [ ] API", "- [ ] API").replace("- [x] UI", "- [ ] UI"))
+        with self.assertRaisesRegex(c.TrackerError, "no item 3"):
+            c.set_checkboxes(body, [1, 3], True)
 
     def test_setup_is_idempotent_and_refuses_edited_blocks_without_partial_writes(self):
         b = importlib.import_module("agent_box.repo_binding")

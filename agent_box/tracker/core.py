@@ -176,14 +176,24 @@ def checkboxes(body: str):
     return result
 
 
-def set_checkbox(body: str, index: int, checked: bool, expected: str) -> str:
+def set_checkboxes(body: str, indices, checked: bool) -> str:
+    """Rewrite every named item at once, so one decision costs one description write.
+
+    Quoting each item's current text back proved nothing the task's own revision
+    does not prove for the whole description, and it forced one write, and one
+    race with it, per checked item.
+    """
     items = checkboxes(body)
-    if not 1 <= index <= len(items) or items[index - 1]["text"] != expected:
-        raise TrackerError("Checklist changed; reread the task before editing", "conflict")
-    target = items[index - 1]
-    offset = target["offset"]
-    line = re.sub(r"\[[ xX]\]", "[x]" if checked else "[ ]", target["line"], count=1)
-    return body[:offset] + line + body[offset + len(target["line"]):]
+    unknown = sorted({index for index in indices if not 1 <= index <= len(items)})
+    if unknown:
+        raise TrackerError(f"Checklist has {len(items)} items; no item "
+                           + ", ".join(str(index) for index in unknown))
+    for index in sorted(set(indices), reverse=True):
+        target = items[index - 1]
+        offset = target["offset"]
+        line = re.sub(r"\[[ xX]\]", "[x]" if checked else "[ ]", target["line"], count=1)
+        body = body[:offset] + line + body[offset + len(target["line"]):]
+    return body
 
 
 def claim(adapter: Adapter, task_id: str, resume=False) -> tuple[Task, bool]:
