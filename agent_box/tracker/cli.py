@@ -151,6 +151,13 @@ def unintegrated(root, adapter, task):
     from .. import git_workflow as gw
     try:
         parent = root_task(task, adapter.get)
+        if not gw.has_origin(root):
+            # Without a remote no other clone can hold this task's commits, and
+            # no base can be derived either, so the question Git can still answer
+            # is whether this checkout kept a branch of its own.
+            left = gw.task_branches(root, task.id)
+            return (f"Task {task.id} branch {', '.join(left)} exists in this checkout, which has no origin "
+                    f"to judge it against; land or delete it before Done") if left else None
         targets = [gw.default_base(root)]
         if parent.id != task.id:
             targets.append(gw.task_branch(root, parent))

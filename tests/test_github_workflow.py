@@ -63,7 +63,7 @@ class MergeAcceptanceTests(unittest.TestCase):
                   "baseRefName": "main", "mergedAt": "2026-01-01T00:00:00Z",
                   "mergeCommit": {"oid": "mergecommit"}, "statusCheckRollup": []}
         info = {"branch": "ab/task", "base": "main"}
-        args = SimpleNamespace(command="land", merged=True, method="squash")
+        args = SimpleNamespace(command="land", action="merge", merged=True, method="squash")
         with patch.object(github.gw, "github_origin", return_value="o/r"), \
              patch.object(github.gw, "current_branch", return_value="ab/task"), \
              patch.object(github.gw, "require_clean"), \
@@ -106,7 +106,7 @@ class MergeAcceptanceTests(unittest.TestCase):
                   "baseRefName": "main", "mergedAt": "2026-01-01T00:00:00Z",
                   "mergeCommit": {"oid": "mergecommit"}, "statusCheckRollup": []}
         info = {"branch": "ab/task", "base": "main"}
-        args = SimpleNamespace(command="land", merged=True, method="squash")
+        args = SimpleNamespace(command="land", action="merge", merged=True, method="squash")
         with patch.object(github.gw, "github_origin", return_value="o/r"), \
              patch.object(github.gw, "current_branch", return_value="ab/task"), \
              patch.object(github.gw, "require_clean"), \
@@ -151,7 +151,7 @@ class MergeAcceptanceTests(unittest.TestCase):
                   "baseRefName": "main", "mergedAt": "2026-01-01T00:00:00Z",
                   "mergeCommit": {"oid": "mergecommit"}, "statusCheckRollup": []}
         info = {"branch": "ab/task", "base": "main"}
-        args = SimpleNamespace(command="land", merged=True, method="squash")
+        args = SimpleNamespace(command="land", action="merge", merged=True, method="squash")
         with patch.object(github.gw, "github_origin", return_value="o/r"), \
              patch.object(github.gw, "current_branch", return_value="ab/task"), \
              patch.object(github.gw, "require_clean"), \
@@ -319,6 +319,18 @@ class LandingFreshnessTests(LandingCase):
                 reviewer.assert_called_once()
                 if integrated:
                     self.assertIn("review the complete implementation", reviewer.call_args.args[-1])
+
+    def test_inspecting_a_merged_pull_request_reports_instead_of_completing_it(self):
+        """The step ab-land prescribes first must not write the tracker or release branches."""
+        self.config.workflow.cleanup_local_branches = True
+        self.config.workflow.cleanup_remote_branches = True
+        inspected = self.run_land(action="inspect", merged=True)
+        self.assertEqual(inspected["state"], "Review")
+        self.assertEqual(inspected["blockers"], [])
+        self.assertNotIn("cleanup", inspected)
+        self.adapter.set_state.assert_not_called()
+        self.assertEqual(self.run_land(merged=True)["state"], "Done")
+        self.adapter.set_state.assert_called_once_with(self.parent, "Done")
 
     def test_lost_evidence_with_integrated_remote_only_base_requires_real_review(self):
         """A new clone must review current requirements even when the merged SHA was approved."""

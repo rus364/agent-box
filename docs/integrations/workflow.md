@@ -89,8 +89,8 @@ path of a private copy of the answer follow on stderr as one JSON line. The prom
 asks for `## Done`, `## Evidence` and `## Limitations`; nothing parses the answer.
 A failure prints JSON naming each tried candidate's category and the path of its
 private diagnostic. Workflow records nothing about the run and checks nothing
-afterwards, so editing the task description, committing or validating while a
-delegate works affects no later command.
+afterwards, so editing the task description or committing while a delegate works
+affects no later command.
 
 A managed worker needs the task branch checked out and holds the local work lock,
 so validation cannot run under it. A worker failure other than an unavailable CLI
@@ -629,7 +629,10 @@ remains acceptance in its own right, and GitHub approvals and required checks
 still follow repository policy.
 
 What the 2026-09-17 check covered live is reading both bots' answers on a throwaway
-pull request and recording a verdict from them end to end. Publishing the request
+pull request and recording a verdict from them end to end. The request has asked
+Claude for the `Reviewed-Base` line since then, and the probe answers predate that
+form, so a live answer carrying it has not been observed; without it the round ends
+as a failure that spends no attempt. Publishing the request
 and the `wait_seconds` timeout are covered by tests alone: the bots answer for real
 money, the budget for that check was two requests to each of them, and an hour of
 silence cannot be observed cheaply.

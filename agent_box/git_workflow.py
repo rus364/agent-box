@@ -167,6 +167,22 @@ def require_clean(root):
         raise AgentBoxError(dirty_tree_reason(changes))
 
 
+def has_origin(cwd: Path) -> bool:
+    """Whether this checkout has an origin remote at all.
+
+    Everything the workflow derives from origin refuses when it cannot be read,
+    because an unreadable remote may still hold commits. A remote that was never
+    configured is the other case: nothing can be fetched from it later, so the
+    local refs are the whole truth rather than half of it.
+    """
+    return _run(['git', 'remote', 'get-url', 'origin'], cwd=cwd).returncode == 0
+
+
+def task_branches(cwd: Path, task_id) -> list[str]:
+    """This checkout's own branches in the task's namespace."""
+    return _branch_refs(cwd, f"refs/heads/{branch_prefix(task_id)}*")
+
+
 def branch_prefix(task_id):
     return "ab/" + re.sub(r"[^a-zA-Z0-9_-]", "-", str(task_id)) + "-"
 

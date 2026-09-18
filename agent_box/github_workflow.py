@@ -238,15 +238,26 @@ def _operate(args, root, config, adapter, task, parent, info, saved, tasks):
                 f"{pr['headRefOid'][:12]}; another checkout advanced the branch, so reconcile them first")
         merged_identity(pr, info["branch"], info["base"])
         task, tasks, reasons = _landing_tasks(root, adapter, task.id, info, states=("Review", "Done"))
-        gw.require_clean(root)
+        saved, delta = {}, None
         if task.state != "Done":
             # A merged PR proves integration, not acceptance of the merged head.
             saved = evidence(root, task, scope(root, info["base"]), info["base"])
+            delta = delta_review(root, config, task, tasks)
             reasons += acceptance_blockers(
-                root, config, tasks, pr, {**saved, "delta_review": delta_review(root, config, task, tasks)},
+                root, config, tasks, pr, {**saved, "delta_review": delta},
                 info["base"], approved=human_approval(root, repo, pr),
                 integrated=integrated_parent(root, task, parent, info["base"]))
         _current_head(root, pr)
+        if args.action == "inspect":
+            # Inspection reports what is left; completing what GitHub merged, and
+            # releasing the branches it used, is the work of `land PARENT merge`.
+            return {"pr": pr, "threads": [], "comments": [], "blockers": reasons, "state": task.state,
+                    "merge": pr["mergeCommit"],
+                    "review": {"verdict": saved.get("review", {}).get("verdict"), "delta": delta,
+                               "route": review_route(config, task, parent)},
+                    "max_rounds": config.workflow.review.max_rounds,
+                    "wait_seconds": config.workflow.review.wait_seconds}
+        gw.require_clean(root)
         if reasons:
             raise AgentBoxError("Cannot complete merged task: " + "; ".join(reasons))
         if task.state != "Done":

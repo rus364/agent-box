@@ -112,6 +112,14 @@ class MaintenanceTests(unittest.TestCase):
             self.run_cli("state", "5", "Done", "--reason", "Не нужна")
         self.assertEqual(self.client.writes, [])
 
+    def test_a_checkout_without_an_origin_answers_from_its_own_refs(self):
+        """A remote that was never configured holds nothing, and the refusal names no remedy."""
+        gw.git(self.root, "remote", "remove", "origin")
+        self.assertEqual(self.run_cli("state", "5", "Done", "--reason", "Не нужна")[0]["state"], "Done")
+        self.commit_on("ab/8-work")
+        with self.assertRaisesRegex(TrackerError, "ab/8-work.*no origin"):
+            self.run_cli("state", "8", "Done", "--reason", "Не нужна")
+
     def test_a_base_another_checkout_advanced_asks_for_a_fetch_not_for_landing(self):
         """The work is landed; only this clone has not heard, and the remedy is a fetch."""
         self.commit_on("ab/5-work")
