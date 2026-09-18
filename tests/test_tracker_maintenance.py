@@ -451,12 +451,6 @@ class MoveTests(unittest.TestCase):
             self.run_cli('move', '21', '--project', '2')
         self.assertEqual(raised.exception.category, 'conflict')
 
-    def test_staging_adoption_cannot_move_tasks(self):
-        """Adoption only normalizes staging tasks; moving them is not part of that scope yet."""
-        with self.assertRaisesRegex(TrackerError, 'Staging adoption'):
-            self.run_cli('--adoption', '/nonexistent/receipt.json', 'move', '21', '--project', '2')
-        self.assertEqual(self.client.writes, [])
-
     def test_bulk_updates_cannot_move_tasks_either(self):
         """A bulk project change would skip the subtree, the binding and the column restore."""
         with self.assertRaisesRegex(vikunja_api.ImportConflict, 'project_id.*tracker move'):

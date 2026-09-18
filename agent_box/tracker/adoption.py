@@ -123,6 +123,25 @@ def relate(root, path, adapter, task, kind, other, remove=False):
     return adapter.relate(task.id, kind, other, remove)
 
 
+def freeze_tasks(root, path):
+    """Save the source -> staging task mapping before the first move changes a visible number.
+
+    Until then the copy is verified by pairing numbers inside each project pair;
+    a moved task gets a new number, and only a mapping saved while the numbers
+    still pair up keeps cutover able to prove nothing was lost.
+    """
+    receipt, source, adapter = load(path, root)
+    if "tasks" in receipt["clone"]:
+        return
+    copied = adapter.clone_project_tree(source.project, receipt["staging_title"], receipt["clone"], lambda _: None)
+    if copied["errors"] or copied["missing_projects"]:
+        raise TrackerError("Staging no longer pairs with its source, so a task mapping cannot be saved "
+                           "before a move: " + "; ".join(copied["errors"] or ["clone is missing source projects"]),
+                           "conflict")
+    receipt["clone"]["tasks"] = copied["tasks"]
+    save(path, receipt)
+
+
 def start(root, project, path=None, provider=None, apply=False):
     root = root.resolve()
     if path is None:

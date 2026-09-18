@@ -219,7 +219,8 @@ def unintegrated(root, adapter, task):
 
 def dispatch(args):
     if args.adoption and args.command not in {"audit", "status", "search", "resolve", "get", "comments", "checklist",
-                                             "update", "tier", "relation", "comment", "check", "state", "normalized"}:
+                                             "update", "tier", "relation", "comment", "check", "state", "normalized",
+                                             "move"}:
         raise TrackerError("Staging adoption only reads and normalizes existing tasks")
     if args.command == "adopt":
         from . import adoption
@@ -401,7 +402,11 @@ def dispatch(args):
             raise TrackerError("This provider cannot move tasks between projects", "configuration")
         project = str(adapter.project(args.project)["id"])
         if project not in scope:
-            raise TrackerError("Target project is outside the repository binding", "conflict")
+            raise TrackerError("Adoption can only move tasks inside staging" if args.adoption else
+                               "Target project is outside the repository binding", "conflict")
+        if args.adoption:
+            from .adoption import freeze_tasks
+            freeze_tasks(root, args.adoption)
         return move(adapter, root, tasks, project)
     if args.command == "check":
         if not task.revision:

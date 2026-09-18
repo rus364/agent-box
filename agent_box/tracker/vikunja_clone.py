@@ -33,7 +33,10 @@ def inspect(adapter, source, title, progress):
         raise TrackerError("Clone project mapping no longer matches the source tree", "conflict")
     if set(copies.values()) & projects.keys():
         raise TrackerError("A staging project cannot be a source project", "conflict")
-    tasks, task_map, errors = {}, {}, []
+    # Once staging tasks move between projects their visible numbers no longer
+    # pair up, so the mapping saved before the first move replaces the pairing.
+    frozen = progress.get("tasks")
+    tasks, task_map, errors, staging = {}, {}, [], set()
     for ident, project in projects.items():
         if ident not in copies and len(project["title"] + " - duplicate") > 250:
             errors.append(f"Source project {ident} title is too long for native duplicate")
@@ -49,11 +52,23 @@ def inspect(adapter, source, title, progress):
             str(project.get("parent_project_id")))
         if expected_parent is None or str(target.get("parent_project_id") or 0) != str(expected_parent):
             errors.append(f"Copy {target['id']} has a different parent; inspect it before continuing")
-        duplicate = indexed(api.collect_tasks(adapter.client, project=str(target["id"])))
+        copied = api.collect_tasks(adapter.client, project=str(target["id"]))
+        if frozen is not None:
+            staging.update(str(row["id"]) for row in copied)
+            continue
+        duplicate = indexed(copied)
         if original.keys() != duplicate.keys():
             errors.append(f"Task indexes differ between projects {ident} and {target['id']}")
         for index in original.keys() & duplicate.keys():
             task_map[str(original[index]["id"])] = str(duplicate[index]["id"])
+    if frozen is not None:
+        task_map = {ident: target for ident, target in frozen.items() if ident in tasks}
+        for ident in sorted(tasks.keys() - frozen.keys(), key=int):
+            errors.append(f"Source task {ident} has no staging copy in the recorded task mapping")
+        for ident in sorted(set(frozen.values()) - staging, key=int):
+            errors.append(f"Staging task {ident} from the recorded task mapping is not in staging")
+        for ident in sorted(staging - set(frozen.values()), key=int):
+            errors.append(f"Staging task {ident} is not a copy of any source task")
     if str(source) in copies:
         actual = set(adapter.subtree(copies[str(source)], True))
         if actual != set(copies.values()):
@@ -73,8 +88,9 @@ def inspect(adapter, source, title, progress):
 
 
 def clone(adapter, source, title, progress, checkpoint, apply=False):
-    if apply and progress.get("relation_removals"):
-        raise TrackerError("Resume normalization or cutover after relation edits; do not rerun clone", "conflict")
+    if apply and (progress.get("relation_removals") or "tasks" in progress):
+        raise TrackerError("Resume normalization or cutover after relation edits or moves; do not rerun clone",
+                           "conflict")
     source = str(adapter.project(source)["id"])
     report = inspect(adapter, source, title, progress)
     copies = progress.setdefault("projects", {})
@@ -137,7 +153,8 @@ def clone(adapter, source, title, progress, checkpoint, apply=False):
     incomplete = copy_problems(adapter.client, report, progress.get("relation_removals", []))
     if apply and incomplete:
         raise TrackerError("; ".join(incomplete), "conflict")
-    return {"project": copies.get(source), "projects": dict(copies), "incomplete": incomplete,
+    return {"project": copies.get(source), "projects": dict(copies), "tasks": report["task_map"],
+            "incomplete": incomplete,
             "missing_projects": report["missing_projects"], "errors": report["errors"],
             "relation_removals": progress.get("relation_removals", []),
             "external_relations": adapter.preserve_external_relations(report["external_relations"],

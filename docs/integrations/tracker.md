@@ -224,6 +224,14 @@ assignments after native shares exist, and connects relations between copied
 projects. Internal relations, comments, attachments/files, views/buckets and
 positions use native copying. No custom task/file deep-copy engine is involved.
 
+Collapsing subprojects is optional and happens only when the user asks for it:
+`tracker --adoption PATH move TASK... --project P` moves staging tasks between
+staging projects and refuses any target outside staging. A moved task gets a new
+visible number, which would break the per-project index pairing, so before the
+first move the receipt saves `clone.tasks`, the source-to-staging task mapping,
+while the indexes still pair up. From then on clone verification and cutover use
+that mapping instead, and `clone --apply` refuses to run again.
+
 Labels are still global shared objects: adoption may create missing `ab:tier:*`
 labels and edit staging attachments, but never rename/delete global labels.
 Shares are copied immediately, without a separate permissions

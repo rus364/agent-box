@@ -521,3 +521,54 @@ class StagingTests(unittest.TestCase):
         kept = state / 'mine.json'
         args = ['adopt', 'clone', '--project', '1', '--receipt', str(kept), '--apply']
         self.assertEqual(cli.dispatch(cli.parser().parse_args(args))['receipt'], str(kept))
+
+    def staging_move(self, *argv):
+        state = self.root / 'state' / 'workflow'
+        from agent_box import workflow_state
+        for name in (cli, workflow_state):
+            patch.object(name, 'WORKFLOW_STATE', state).start()
+        patch.object(cli, 'repository_root', return_value=self.root).start()
+        return cli.dispatch(cli.parser().parse_args(['--adoption', str(self.receipt), 'move', *argv]))
+
+    def test_a_move_inside_staging_still_cuts_over_with_every_copy_accounted_for(self):
+        """A moved task is renumbered, so pairing numbers per project would call the copy lost.
+
+        The mapping must be in the receipt before the first write: a move that
+        renumbers a task first could never pair it up again afterwards.
+        """
+        report = self.clone()
+        root_copy, child_copy = report['projects']['1'], report['projects']['2']
+        moving = next(t['id'] for t in self.client.tasks.values() if t['project_id'] == int(child_copy))
+        original = self.client.patch
+        saved = []
+
+        def patched(path, body, markdown=False):
+            if 'project_id' in body:
+                saved.append(json.loads(self.receipt.read_text())['clone'].get('tasks'))
+            return original(path, body, markdown)
+
+        with patch.object(self.client, 'patch', patched):
+            moved = self.staging_move(str(moving), '--project', root_copy)
+        self.assertEqual(saved, [{'5': str(moving - 1), '6': str(moving)}])
+        self.assertEqual([(row['id'], row['project'], row['number']) for row in moved],
+                         [(str(moving), root_copy, 2)])
+        preview = adoption.cutover(self.root, self.receipt)
+        self.assertEqual((preview['errors'], preview['clone']['incomplete']), ([], []))
+        self.assertTrue(adoption.cutover(self.root, self.receipt, True)['complete'])
+        for ident, source in self.source.items():
+            self.assertEqual(self.client.tasks[ident], source)
+
+    def test_a_staging_move_cannot_reach_the_source_tree(self):
+        """Adoption leaves the source intact until the final rename."""
+        self.clone()
+        with self.assertRaisesRegex(TrackerError, 'only move tasks inside staging'):
+            self.staging_move(str(max(self.client.tasks)), '--project', '1')
+        self.assertNotIn('tasks', json.loads(self.receipt.read_text())['clone'])
+
+    def test_clone_is_not_rerun_over_moved_tasks(self):
+        """A rerun would duplicate again and pair numbers the move has already changed."""
+        report = self.clone()
+        moving = next(t['id'] for t in self.client.tasks.values() if t['project_id'] == int(report['projects']['2']))
+        self.staging_move(str(moving), '--project', report['projects']['1'])
+        with self.assertRaisesRegex(TrackerError, 'do not rerun clone'):
+            self.clone()
