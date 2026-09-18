@@ -169,7 +169,8 @@ def move(adapter, root, tasks, project):
         journal = read_json(path) if path.exists() else {"project": project, "tasks": {}}
         if journal["project"] != project:
             raise TrackerError(f"An interrupted move of tasks {', '.join(journal['tasks'])} into project "
-                               f"{journal['project']} is unfinished; rerun that move first", "conflict")
+                               f"{journal['project']} is unfinished; rerun that move first. Only if it can "
+                               f"no longer run (its target project is gone), delete {path}", "conflict")
 
         def checkpoint(pending):
             if pending:
