@@ -197,10 +197,11 @@ class NativeClient(FakeClient):
             if target != row['project_id']:
                 # Vikunja keeps the ID, journal, labels and relations, renumbers
                 # the task inside the target, and drops the card into the target's
-                # default column (the done column for a done task), not its old one.
+                # default column, not its old one. Nothing proves a done card goes
+                # to the done column, so the fake assumes the worse case.
                 view = self.boards[target]['views'][0]
                 columns = sorted(self.boards[target]['buckets'][view['id']], key=lambda b: b['position'])
-                bucket = view.get('done_bucket_id') if row.get('done') else columns[0]['id']
+                bucket = columns[0]['id']
                 row['index'] = 1 + max([t.get('index') or 0 for t in self.tasks.values()
                                         if t['project_id'] == target], default=0)
                 row['buckets'] = [{'id': bucket, 'project_view_id': view['id']}]

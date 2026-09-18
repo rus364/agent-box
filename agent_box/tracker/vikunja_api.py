@@ -1099,7 +1099,7 @@ def get_task_complete(client, task_id):
 
 
 BULK_WRITABLE_TASK_FIELDS = {
-    "title", "description", "done", "priority", "project_id", "due_date",
+    "title", "description", "done", "priority", "due_date",
     "start_date", "end_date", "percent_done", "hex_color", "is_favorite",
 }
 
@@ -1123,7 +1123,8 @@ def plan_bulk_updates(specification, tasks):
             raise ImportConflict(f"bulk item {position} changes must be a non-empty object")
         forbidden = sorted(set(changes) - BULK_WRITABLE_TASK_FIELDS)
         if forbidden:
-            raise ImportConflict(f"bulk fields are not writable: {', '.join(forbidden)}")
+            raise ImportConflict(f"bulk fields are not writable: {', '.join(forbidden)}"
+                                 + ("; move tasks with agent-box tracker move" if "project_id" in forbidden else ""))
         if "description" in changes:
             check_external_marker(task_id, task.get("description", ""), changes["description"])
         actions.append(Action("update", "task", task_id, {"changes": changes, "title": task.get("title", "")}))

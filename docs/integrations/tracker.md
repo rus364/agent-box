@@ -133,7 +133,7 @@ and ignores a column sent with the project change, so the state read beforehand
 is restored by a second write. Between the two writes that state exists nowhere
 else, so the move records it in workflow state first; a rerun of the same
 command restores what an interruption left, and any other move waits for it.
-Moving is only this command: `task-fields` no longer accepts `project_id`.
+Moving is only this command: neither `task-fields` nor `bulk-update` accepts `project_id`.
 
 Comments are a human journal. Nothing machine-readable lives in one: branch,
 base branch and pull request come from Git and GitHub, lifecycle from the

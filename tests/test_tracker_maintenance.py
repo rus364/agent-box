@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 from agent_box import git_workflow as gw
 from agent_box.repo_binding import Binding
-from agent_box.tracker import cli, extensions
+from agent_box.tracker import cli, extensions, vikunja_api
 from agent_box.tracker.core import NORMALIZED_LABEL, TrackerError, checkboxes
 from agent_box.tracker.vikunja import VikunjaAdapter
 from tracker_fixtures import NativeClient, NormalizationClient, board, task
@@ -303,6 +303,9 @@ class MoveTests(unittest.TestCase):
                          (['22', '23'], ['30'], ['keep'], 3, ['7']))
         self.assertEqual(len(self.adapter.comments('21')), 2)
         self.assertEqual(self.adapter.get('30').project, '1')
+        # Done is read from the task's flag, so only the card itself shows where it lies.
+        self.assertEqual(self.client.tasks[23]['buckets'][0]['id'],
+                         self.client.boards[2]['views'][0]['done_bucket_id'])
 
     def test_a_subtask_cannot_leave_its_parent_behind(self):
         """The provider keeps parent and child in one project; a half-moved tree would break it."""
@@ -360,6 +363,27 @@ class MoveTests(unittest.TestCase):
                          [('24', 'Review', 6), ('23', 'Done', 5)])
         self.assertEqual(list(self.state.rglob('*.json')), [])
 
+    def test_a_rerun_still_reports_what_the_interrupted_move_lost(self):
+        """Finishing the column must not turn a dropped blocker into a silent success."""
+        original_state, original_patch = self.adapter.set_state, self.client.patch
+
+        def interrupted(found, state):
+            if found.id == '21':
+                raise TrackerError('lost connection', 'transport', retryable=True)
+            return original_state(found, state)
+
+        def lossy(path, body, markdown=False):
+            result = original_patch(path, body, markdown)
+            if path == '/tasks/21':
+                self.client.tasks[21]['related_tasks'].pop('blocked')
+            return result
+
+        with patch.object(self.adapter, 'set_state', interrupted), patch.object(self.client, 'patch', lossy), \
+                self.assertRaises(TrackerError):
+            self.run_cli('move', '21', '--project', '2')
+        with self.assertRaisesRegex(TrackerError, 'Task 21 lost relations'):
+            self.run_cli('move', '21', '--project', '2')
+
     def test_another_move_waits_for_an_interrupted_one(self):
         """A second move would leave the first one's lost columns unrecoverable behind it."""
         original = self.adapter.set_state
@@ -398,6 +422,12 @@ class MoveTests(unittest.TestCase):
         with self.assertRaisesRegex(TrackerError, 'Staging adoption'):
             self.run_cli('--adoption', '/nonexistent/receipt.json', 'move', '21', '--project', '2')
         self.assertEqual(self.client.writes, [])
+
+    def test_bulk_updates_cannot_move_tasks_either(self):
+        """A bulk project change would skip the subtree, the binding and the column restore."""
+        with self.assertRaisesRegex(vikunja_api.ImportConflict, 'project_id.*tracker move'):
+            vikunja_api.plan_bulk_updates([{'task': '21', 'changes': {'project_id': 2}}],
+                                          list(self.client.tasks.values()))
 
     def test_the_provider_field_escape_hatch_no_longer_moves_tasks(self):
         """A raw project_id patch skips the subtree, the binding and the column restore."""

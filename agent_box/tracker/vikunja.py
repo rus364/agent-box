@@ -413,34 +413,43 @@ class VikunjaAdapter:
                 if task.id not in pending:
                     continue
                 recorded = pending[task.id]
-                after = self.set_state(task, recorded["state"]) if task.state != recorded["state"] else task
+                after = self.set_state(task, recorded["state"])
                 del pending[task.id]
                 checkpoint(pending)
+                self._check_moved(after, recorded["fingerprint"])
                 moved.append({**after.to_dict(full=False), "previous_number": recorded["number"]})
                 continue
             current = self.get(task.id)
             if self._move_fingerprint(current) != before[task.id] or current.state != task.state:
                 raise TrackerError(f"Task {task.id} changed while moving; reread and rerun", "conflict")
-            pending[task.id] = {"state": task.state, "number": task.number}
+            pending[task.id] = {"state": task.state, "number": task.number, "fingerprint": before[task.id]}
             checkpoint(pending)
             self.client.patch(f"/tasks/{task.id}", {"project_id": int(target)})
             after = self.get(task.id)
             if after.project != target:
                 raise TrackerError(f"Task {task.id} move was not confirmed", "conflict")
-            if after.state != task.state:
-                after = self.set_state(after, task.state)
+            # Unconditional: Done is read from the task's flag, not its card, so a
+            # done card left in the default column would still read as Done.
+            after = self.set_state(after, task.state)
             del pending[task.id]
             checkpoint(pending)
-            if self._move_fingerprint(after) != before[task.id]:
-                raise TrackerError(f"Task {task.id} lost relations, labels, comments, priority or "
-                                   "assignees while moving; inspect it in the tracker", "conflict")
+            self._check_moved(after, before[task.id])
             moved.append({**after.to_dict(full=False), "previous_number": task.number})
         return moved
 
     def _move_fingerprint(self, task):
-        """What a move must leave untouched; the visible number and column may change."""
-        return (task.parent, sorted(task.children), sorted(task.blockers), sorted(task.related),
-                sorted(task.labels), task.priority, sorted(task.assignees), len(self.comments(task.id)))
+        """What a move must leave untouched; the visible number and column may change.
+
+        A list, not a tuple: it is saved in the move journal and must compare
+        equal after a JSON round trip.
+        """
+        return [task.parent, sorted(task.children), sorted(task.blockers), sorted(task.related),
+                sorted(task.labels), task.priority, sorted(task.assignees), len(self.comments(task.id))]
+
+    def _check_moved(self, task, fingerprint):
+        if self._move_fingerprint(task) != fingerprint:
+            raise TrackerError(f"Task {task.id} lost relations, labels, comments, priority or "
+                               "assignees while moving; inspect it in the tracker", "conflict")
 
     def create(self, project, title, description="", parent=None, priority=0):
         if parent:
