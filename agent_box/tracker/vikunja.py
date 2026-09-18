@@ -387,6 +387,16 @@ class VikunjaAdapter:
         outside = [task.id for task in found.values() if task.project not in scope]
         if outside:
             raise TrackerError("Tasks outside the repository binding: " + ", ".join(outside), "conflict")
+        for ident in sorted(pending.keys() - found.keys(), key=int):
+            # A deleted task has no column left to restore; keeping its entry
+            # would refuse every later move with no way out.
+            try:
+                self.get(ident)
+            except api.APIError as exc:
+                if not (exc.status == 404 and exc.code == 4002):
+                    raise
+                del pending[ident]
+                checkpoint(pending)
         unfinished = sorted(pending.keys() - found.keys(), key=int)
         if unfinished:
             raise TrackerError("An interrupted move of tasks " + ", ".join(unfinished) + f" into project {target} "

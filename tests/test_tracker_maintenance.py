@@ -12,7 +12,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from agent_box import git_workflow as gw
+from agent_box import git_workflow as gw, workflow_state
+from agent_box.errors import AgentBoxError
 from agent_box.repo_binding import Binding
 from agent_box.tracker import cli, extensions, vikunja_api
 from agent_box.tracker.core import NORMALIZED_LABEL, TrackerError, checkboxes
@@ -281,9 +282,11 @@ class MoveTests(unittest.TestCase):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         self.state = Path(directory.name) / 'state'
+        self.root = Path(directory.name) / 'repository'
         for target in (patch.object(cli, 'WORKFLOW_STATE', self.state),
+                       patch.object(workflow_state, 'WORKFLOW_STATE', self.state),
                        patch.object(cli, 'context', return_value=(
-                           self.adapter, self.binding, Path(directory.name) / 'repository'))):
+                           self.adapter, self.binding, self.root))):
             target.start()
             self.addCleanup(target.stop)
 
@@ -400,6 +403,37 @@ class MoveTests(unittest.TestCase):
             self.run_cli('move', '30', '--project', '2')
         with self.assertRaisesRegex(TrackerError, 'interrupted move of tasks 24 into project 2'):
             self.run_cli('move', '40', '--project', '1')
+        self.assertEqual(self.client.writes, [])
+
+    def test_a_deleted_task_does_not_hold_every_later_move_hostage(self):
+        """Its column has nowhere to go; refusing forever would leave only a hand-edited journal."""
+        original = self.adapter.set_state
+
+        def interrupted(found, state):
+            if found.id == '24':
+                raise TrackerError('lost connection', 'transport', retryable=True)
+            return original(found, state)
+
+        with patch.object(self.adapter, 'set_state', interrupted), self.assertRaises(TrackerError):
+            self.run_cli('move', '21', '--project', '2')
+        self.client.tasks[22]['related_tasks'].pop('subtask')
+        del self.client.tasks[24]
+        read = self.client.get
+
+        def deleted(path):
+            if path.startswith('/tasks/24'):
+                raise vikunja_api.APIError(404, 'The task does not exist.', 4002)
+            return read(path)
+
+        with patch.object(self.client, 'get', deleted):
+            moved = self.run_cli('move', '21', '--project', '2')
+        self.assertEqual([row['id'] for row in moved], ['23'])
+        self.assertEqual(list(self.state.rglob('moves/*.json')), [])
+
+    def test_a_concurrent_move_waits_instead_of_overwriting_the_journal(self):
+        """Two moves sharing one journal could erase the only record of a lost column."""
+        with workflow_state.lock(self.root, 'move'), self.assertRaisesRegex(AgentBoxError, 'move'):
+            self.run_cli('move', '21', '--project', '2')
         self.assertEqual(self.client.writes, [])
 
     def test_a_move_that_drops_a_relation_is_reported_not_passed_off_as_success(self):

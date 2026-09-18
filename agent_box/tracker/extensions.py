@@ -162,7 +162,8 @@ def run(adapter, arguments):
         return {"deleted": task.id}
     fields = json.loads(args.file.read_text())
     if not isinstance(fields, dict) or fields.keys() - {"due_date", "start_date", "end_date", "percent_done", "hex_color", "is_favorite"}:
-        raise TrackerError("task-fields accepts only product-specific scheduling, color and favorite fields; "
-                           "move tasks with agent-box tracker move")
+        raise TrackerError("task-fields accepts only product-specific scheduling, color and favorite fields"
+                           + ("; move tasks with agent-box tracker move"
+                              if isinstance(fields, dict) and "project_id" in fields else ""))
     client.patch(f"/tasks/{task.id}", fields)
     return adapter.get(task.id).to_dict()

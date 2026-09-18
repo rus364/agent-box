@@ -161,19 +161,23 @@ def move_journal(root):
 
 
 def move(adapter, root, tasks, project):
+    from ..workflow_state import lock
     path = move_journal(root)
-    journal = read_json(path) if path.exists() else {"project": project, "tasks": {}}
-    if journal["project"] != project:
-        raise TrackerError(f"An interrupted move of tasks {', '.join(journal['tasks'])} into project "
-                           f"{journal['project']} is unfinished; rerun that move first", "conflict")
+    # One move at a time: a concurrent one would overwrite or unlink the
+    # other's journal, and with it the only record of the columns it left.
+    with lock(root, "move"):
+        journal = read_json(path) if path.exists() else {"project": project, "tasks": {}}
+        if journal["project"] != project:
+            raise TrackerError(f"An interrupted move of tasks {', '.join(journal['tasks'])} into project "
+                               f"{journal['project']} is unfinished; rerun that move first", "conflict")
 
-    def checkpoint(pending):
-        if pending:
-            atomic_write_json(path, {"project": project, "tasks": pending}, 0o600)
-        else:
-            path.unlink(missing_ok=True)
+        def checkpoint(pending):
+            if pending:
+                atomic_write_json(path, {"project": project, "tasks": pending}, 0o600)
+            else:
+                path.unlink(missing_ok=True)
 
-    return adapter.move(tasks, project, journal["tasks"], checkpoint)
+        return adapter.move(tasks, project, journal["tasks"], checkpoint)
 
 
 def unintegrated(root, adapter, task):
