@@ -575,6 +575,26 @@ class CloudReviewTests(unittest.TestCase):
                     login="chatgpt-codex-connector[bot]")
         self.assertIn("no answer", self.review()["outcome"])
 
+    def test_a_mention_inside_the_quoted_requirements_summons_nobody(self):
+        """The Action triggers on a comment's words, so a card naming @claude would start
+        a paid Claude review from a request addressed to Codex."""
+        self.parent.description = "Ask @claude for the parent's final review, never @codex."
+        self.config.workflow.review.github_provider = "codex"
+        self.review()
+        body = self.published()
+        self.assertTrue(body.startswith("@codex review"))
+        self.assertNotIn("@claude", body)
+        self.assertIn("@<!-- -->claude", body)
+        self.assertEqual(body.count("@codex review"), 1)
+
+    def test_a_workflow_that_only_mentions_the_action_configures_nothing(self):
+        """A request nobody is configured to answer waits out its budget for nothing."""
+        self.commit_action("# anthropics/claude-code-action@v1 is what we should use\n"
+                           "jobs:\n  review:\n    steps:\n      - run: echo anthropics/claude-code-action@v1\n")
+        with self.assertRaisesRegex(AgentBoxError, "uses the Claude Action"):
+            self.review()
+        self.assertIsNone(self.published())
+
     def test_an_unpublished_head_has_no_reviewer_and_a_missing_pull_request_names_ab_pr(self):
         """The bot reads GitHub, so a head GitHub does not have cannot be the one reviewed."""
         from agent_box import github_workflow as github

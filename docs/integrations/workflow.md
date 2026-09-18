@@ -565,7 +565,10 @@ no example verdict either, because an example is copied back sooner or later. A 
 that is where the reviewer reads it, and so are the task descriptions themselves: a
 local reviewer is handed them as files, while the bot reads only this comment, and a
 pull request body is the author's summary rather than the requirements a verdict is
-measured against. A request that would exceed GitHub's comment limit is refused before
+measured against. Everything the request quotes - the cards, the brief and the scope
+note - carries its mentions defused, because a Claude Action triggers on a comment's
+words and a card naming `@claude` would otherwise start a second, paid review from a
+request addressed to Codex. A request that would exceed GitHub's comment limit is refused before
 anything is published, because a truncated requirement is a requirement nobody read. The bot's answer becomes an ordinary round:
 the same budget, the same failure limit, the same receipt, `reconciliation.status`
 and `incremental` delta economy as a local verdict. `workflow review PARENT
@@ -573,8 +576,8 @@ and `incremental` delta economy as a local verdict. `workflow review PARENT
 
 Before publishing anything the command refuses a pin the reviewer cannot honour:
 `github_model`/`github_effort` are rejected for Codex, whose mention interface
-cannot pin them, and for Claude must already appear in `claude_args` in the
-repository's Claude Action. The pull request must exist (`ab-pr`) and its head
+cannot pin them, and for Claude must already appear in the `claude_args` of the step
+that uses the Claude Action, which must be a step and not a mention of one. The pull request must exist (`ab-pr`) and its head
 must be the local head, because the bot reviews what GitHub has.
 
 Answers are read as the bots actually publish them, verified live against this

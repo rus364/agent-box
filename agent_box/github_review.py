@@ -40,6 +40,9 @@ CODEX_SEVERITY = {"P0": "CRITICAL", "P1": "HIGH", "P2": "MEDIUM", "P3": "LOW"}
 CODEX_COMMIT = re.compile(r"\*\*Reviewed commit:\*\*\s*`([0-9a-f]{10,64})`")
 #: The Action's own arguments, inline or as a block scalar, and nothing else in the file.
 CLAUDE_ARGS = re.compile(r"^(\s*)claude_args\s*:\s*(.*)$")
+#: A mention anywhere in a comment summons that bot: the Action triggers on the words
+#: of the comment, not on who is addressed. Quoted text therefore carries none.
+MENTION = re.compile(r"@(?=\w)")
 
 #: GitHub refuses a longer comment, and a truncated requirement is a requirement nobody read.
 COMMENT_LIMIT = 65536
@@ -73,6 +76,17 @@ carry no comments and no checkmarks, and the bot has no other access to them.
 """
 
 
+def quoted(text):
+    """Text this request repeats rather than says, with its mentions defused.
+
+    A task description that names `@claude` would summon Claude from a request
+    addressed to Codex, because the Action reads the comment's words and not its
+    addressee. The HTML comment disappears when GitHub renders the mention and
+    keeps the trigger from matching.
+    """
+    return MENTION.sub("@<!-- -->", text.strip())
+
+
 def request_body(provider, head, base, descriptions, review_context="", brief=None):
     """The request names both commits of the scope it asks about, because that is the
     only place a published request can record which diff the answer will describe.
@@ -85,9 +99,9 @@ def request_body(provider, head, base, descriptions, review_context="", brief=No
     sooner or later, and a copied `PASS|NEEDS_WORK|INCONCLUSIVE` ends the round as
     a failure the user sees, while a copied `NEEDS_WORK` would be a verdict nobody gave.
     """
-    context = f"\n\n{review_context.strip()}" if review_context else ""
-    note = f"\n\nContext from the coordinator:\n\n{brief.strip()}" if brief else ""
-    cards = "\n\n---\n\n".join(text.strip() for text in descriptions.values())
+    context = f"\n\n{quoted(review_context)}" if review_context else ""
+    note = f"\n\nContext from the coordinator:\n\n{quoted(brief)}" if brief else ""
+    cards = "\n\n---\n\n".join(quoted(text) for text in descriptions.values())
     return REQUEST_FORM.format(provider=provider, head=head, base=base, context=context,
                                brief=note, cards=cards)
 
@@ -231,7 +245,8 @@ def action_step(lines):
     that one would report a pin this Action never receives.
     """
     start = next((index for index, line in enumerate(lines)
-                  if "anthropics/claude-code-action@" in line), None)
+                  if "anthropics/claude-code-action@" in line
+                  and line.split("#", 1)[0].strip().removeprefix("- ").startswith("uses:")), None)
     if start is None:
         return []
     indent = len(lines[start]) - len(lines[start].lstrip())
@@ -243,14 +258,13 @@ def action_step(lines):
     return step
 
 
-def claude_args(source):
-    """The arguments the Claude Action is configured with, read out of its own step.
+def claude_args(lines):
+    """The arguments the Claude Action's own step is configured with.
 
     A search over the whole YAML would accept a flag written in a comment or in
     another step, so the `claude_args` value itself is extracted, in both the
     inline and the block form, and split into whole arguments.
     """
-    lines = action_step(source.splitlines())
     for index, line in enumerate(lines):
         found = CLAUDE_ARGS.match(line)
         if not found:
@@ -287,10 +301,11 @@ def configured_reviewer(root, config):
         workflow = root / ".github/workflows/claude.yml"
         if not workflow.is_file():
             raise AgentBoxError("Configure a Claude GitHub Action first, or use local review")
-        source = workflow.read_text()
-        if "anthropics/claude-code-action@" not in source:
-            raise AgentBoxError("Cannot identify the Claude Action; use local review or inspect the workflow")
-        args = claude_args(source)
+        step = action_step(workflow.read_text().splitlines())
+        if not step:
+            raise AgentBoxError("No step in .github/workflows/claude.yml uses the Claude Action; "
+                                "a comment naming it answers nothing. Use local review or fix the workflow")
+        args = claude_args(step)
         for flag, value in (("--model", config.github_model), ("--effort", config.github_effort)):
             if value and not pinned(args, flag, value):
                 raise AgentBoxError(f"Claude Action must configure claude_args with {flag} {value}; comments cannot pin it")
