@@ -640,3 +640,10 @@ class StagingTests(unittest.TestCase):
         with self.assertRaisesRegex(TrackerError, 'recorded task mapping'):
             adoption.cutover(self.root, self.receipt, True)
         self.assertEqual(self.client.get('/projects/1')['title'], 'Root')
+
+    def test_adoption_names_what_it_still_refuses(self):
+        """Creating or claiming staging work is outside adoption; the refusal says what is inside."""
+        self.clone()
+        patch.object(cli, 'repository_root', return_value=self.root).start()
+        with self.assertRaisesRegex(TrackerError, 'reads, normalizes and moves existing staging tasks'):
+            cli.dispatch(cli.parser().parse_args(['--adoption', str(self.receipt), 'claim', '5']))

@@ -223,7 +223,7 @@ def dispatch(args):
     if args.adoption and args.command not in {"audit", "status", "search", "resolve", "get", "comments", "checklist",
                                              "update", "tier", "relation", "comment", "check", "state", "normalized",
                                              "move"}:
-        raise TrackerError("Staging adoption only reads and normalizes existing tasks")
+        raise TrackerError("Staging adoption only reads, normalizes and moves existing staging tasks")
     if args.command == "adopt":
         from . import adoption
         root = repository_root()
