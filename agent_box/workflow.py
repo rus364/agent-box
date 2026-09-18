@@ -856,20 +856,18 @@ def inspect(root, binding, adapter, task, config):
     return result
 
 
-def delegation_identity(root, binding, integration=None):
+def delegation_identity(root, binding):
     """What a delegation is about: this checkout, this branch, this tracker project.
 
-    Four cheap facts, all derived. The binding is here because `.agent-box.json`
+    Three cheap facts, all derived. The binding is here because `.agent-box.json`
     names the project a report is accepted into, so a report prepared against one
     project must not be ingested against another. The branch and head are here
-    because a report describes work on one commit, and `integration` is the tip
-    of the branch a subtask will be merged into, which is the one other ref the
-    delegation depends on. Deliberately not a survey of the ref store or the task
-    tree: this detects the obvious contract violation, it is not a perimeter.
+    because a report describes work on one commit. Deliberately not a survey of
+    the ref store or the task tree: this detects the obvious contract violation,
+    it is not a perimeter, and a field nobody compares binds nothing.
     """
     return {"repository": repository_key(root), "branch": gw.current_branch(root),
             "head": gw.head_sha(root),
-            "integration": [integration, gw.git(root, "rev-parse", integration)] if integration else None,
             "binding": [binding.provider, server_identity(binding.server),
                         binding.project, binding.recursive]}
 
@@ -1639,9 +1637,7 @@ def dispatch(args):
     parent, info, current, base = resolve(root, adapter, task)
     tasks = tree(adapter, task)
     fingerprint = scope(root, base)
-    # A subtask merges back into its parent branch, so that tip is part of what
-    # the delegation was prepared against; a parent task integrates nowhere else.
-    identity = delegation_identity(root, binding, current.get("branch") and info["branch"])
+    identity = delegation_identity(root, binding)
     saved = evidence(root, task, fingerprint, base)
     if args.command == "approve":
         if not args.reason.strip():
