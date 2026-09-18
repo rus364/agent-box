@@ -146,17 +146,24 @@ class ChildFinishTests(unittest.TestCase):
             self.dispatch(["finish", "8"])
         self.adapter.set_state.assert_not_called()
 
-    def test_retry_rechecks_current_checklist_and_assignment(self):
+    def test_retry_rechecks_current_assignment(self):
         """Normalized requirements never substitute for current completion conditions."""
         self.interrupted_finish()
-        self.child.description = "- [ ] accepted"
-        with self.assertRaisesRegex(AgentBoxError, "checklist"):
-            self.dispatch(["finish", "8"])
-        self.child.description = "- [x] accepted"
         self.child.assignees = ["2"]
         with self.assertRaisesRegex(AgentBoxError, "assigned"):
             self.dispatch(["finish", "8"])
         self.adapter.set_state.assert_not_called()
+
+    def test_an_item_only_the_user_can_close_reaches_done_but_never_a_merge(self):
+        """Holding the subtask for it also held the parent, its pull request and the round inside."""
+        self.child.description = "- [x] accepted\n- [ ] user checks the real payload"
+        self.assertEqual(self.dispatch(["finish", "8"])["state"], "Done")
+        self.child.state = "Done"
+        self.dispatch(["validate", "7", "--", "true"])
+        self.assertEqual(self.dispatch(["finish", "7"])["state"], "Review")
+        self.parent.state = "Review"
+        with self.assertRaisesRegex(AgentBoxError, "checklist remains incomplete"):
+            self.dispatch(["land", "7", "merge"])
 
     def test_enabled_publication_failure_keeps_done_unwritten_and_retryable(self):
         """Publishing the accepted parent precedes Done and can retry after Git succeeds."""

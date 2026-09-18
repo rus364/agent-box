@@ -1315,12 +1315,13 @@ def finish(root, config, adapter, task_id):
                     "cleanup": release_branch(root, config, task, current.get("branch"), info["branch"])}
         parent, info, current, base = resolve(root, adapter, task)
         tasks = tree(adapter, task)
-        # A parent only reaches Review here, and in GitHub mode its review lives
-        # in a pull request that Review is the precondition for, so the checklist
-        # is asked for where the task actually completes: a subtask's own finish
-        # and every landing.
+        # The checklist is the user's own gate, and landing is where it stands:
+        # a check nobody can run from here would otherwise stop the subtask, its
+        # parent's move to Review, the pull request that move is the precondition
+        # for, and the cloud round that lives in it. Both landing routes read the
+        # whole tree, so nothing merges with an item still open.
         reasons = completion_reasons(task, tasks, str(adapter.identity()["id"]),
-                                     checklist=task.id != parent.id) + blocking_reasons(task, adapter.get)
+                                     checklist=False) + blocking_reasons(task, adapter.get)
         if reasons:
             raise AgentBoxError("Cannot finish: " + "; ".join(reasons))
         if task.id != parent.id:

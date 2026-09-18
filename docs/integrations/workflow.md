@@ -254,11 +254,11 @@ lacks, such as technical risks or validation limits. Keep it outside the working
 tree (`mktemp /tmp/agent-box-review.XXXXXX`) and remove it after the round.
 Acceptance operations require a clean tree including untracked files; an untracked in-tree
 brief blocks review even when no branch switch is needed. An acceptance or validation item
-only the user can close, such as a check that cannot run from a container, is asked for where the
-task completes: a subtask's `finish` and either landing route. A review round, `approve` and a
-parent's move to Review never wait for it, so a cloud round can still open in the pull request
-that move is the precondition for. The round judges the code; completion needs the check itself
-done.
+only the user can close, such as a check that cannot run from a container, is asked for by landing
+alone, which reads the whole tree, so nothing merges while one is open. A review round,
+`approve` and `finish` never wait for it: a checkmark is the coordinator's progress claim, while
+one open item would otherwise stop the subtask, its parent's move to Review, the pull request
+that move is the precondition for, and the cloud round that lives in it.
 Every native verdict uses a newly started reviewer in fresh context without the
 parent's history, never a resumed one; pass the returned `message` unchanged as its
 whole prompt. Managed commands remain ephemeral/no-session-persistence and do not

@@ -223,11 +223,12 @@ def claim(adapter: Adapter, task_id: str, resume=False) -> tuple[Task, bool]:
 
 
 def completion_reasons(task, tasks, user, *, states=("Doing", "Review"), checklist=True):
-    """Why this task cannot be completed yet; `checklist` separates acceptance from completion.
+    """Why this task cannot be completed yet; `checklist` belongs to landing alone.
 
     An item only the user can close, such as a check that cannot run from a
-    container, used to block the round that judges the code as well as the
-    completion that needs the check done. Acceptance asks for neither.
+    container, used to block every step from the round that judges the code to
+    the merge that needs the check done. Only the merge asks for it now, and it
+    reads the whole tree, so a subtask's open item still stops it.
     """
     reasons = []
     if task.state not in states:

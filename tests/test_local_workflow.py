@@ -275,11 +275,7 @@ class LocalLandTests(unittest.TestCase):
         self.assertEqual(gw.git(self.root, "branch", "--list", "ab/7-parent"), "")
 
     def test_an_open_manual_check_blocks_landing_but_not_acceptance_or_review(self):
-        """A check nobody can run from a container once held up the round that judges the code.
-
-        The parent reaches Review without it because in GitHub mode its review
-        round lives in a pull request that Review is the precondition for.
-        """
+        """A check nobody can run from a container once held up the round that judges the code."""
         self.parent.state = "Doing"
         self.parent.description = "## Acceptance\n- [x] accepted\n\n## Validation\n- [ ] user checks the real payload"
         self.assertEqual(self.approve()["human_acceptance"]["actor"], "1")
