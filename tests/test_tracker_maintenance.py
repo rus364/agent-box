@@ -44,6 +44,7 @@ class MaintenanceTests(unittest.TestCase):
     def test_tasks_that_were_never_implemented_close_with_one_journalled_reason(self):
         """Closing decided-elsewhere cards must not need the provider's bulk extension."""
         closed = self.run_cli('state', '5', '8', 'Done', '--reason', 'Решено в задаче 12')
+        self.assertNotIn('description', closed[0])
         self.assertEqual([(row['id'], row['state']) for row in closed], [('5', 'Done'), ('8', 'Done')])
         self.assertEqual([entry['comment'] for entry in self.client.journal[5]], ['Решено в задаче 12'])
         self.assertEqual([entry['comment'] for entry in self.client.journal[8]], ['Решено в задаче 12'])

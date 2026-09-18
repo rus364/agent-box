@@ -343,7 +343,8 @@ def dispatch(args):
             # was closed for is exactly what this command exists to avoid.
             if args.reason:
                 adapter.comment(found.id, args.reason)
-            changed.append(adapter.set_state(found, args.state).to_dict())
+            # Compact rows: a batch answers with what moved, not with every body it read.
+            changed.append(adapter.set_state(found, args.state).to_dict(full=False))
         return changed
     if args.command == "check":
         if not task.revision:
@@ -355,7 +356,7 @@ def dispatch(args):
     if args.command == "comment":
         return adapter.comment(task.id, text_file(args.file))
     if args.command == "normalized":
-        return [adapter.set_normalized(found.id, not args.undo).to_dict() for found in tasks]
+        return [adapter.set_normalized(found.id, not args.undo).to_dict(full=False) for found in tasks]
     if args.command == "tier":
         return adapter.set_tier(task.id, args.tier)
     if args.command == "relation":

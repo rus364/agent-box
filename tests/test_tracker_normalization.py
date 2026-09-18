@@ -113,7 +113,8 @@ class NormalizationTests(unittest.TestCase):
         """The marker is processing state, not readiness or permission to replace labels."""
         before = copy.deepcopy(self.client.tasks[5])
         marked, = self.run_cli('normalized', '5')
-        self.assertEqual((marked['state'], marked['description']), ('Backlog', before['description']))
+        self.assertEqual(marked['state'], 'Backlog')
+        self.assertEqual(self.adapter.get('5').description, before['description'])
         self.assertEqual(set(marked['labels']), {'keep', NORMALIZED_LABEL})
         writes = copy.deepcopy(self.client.writes)
         self.run_cli('normalized', '5')
