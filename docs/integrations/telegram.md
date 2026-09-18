@@ -94,14 +94,11 @@ notifications or uninstalling removes only the exact unchanged leading block;
 moved or edited blocks and manually configured settings remain user-owned.
 The JSON formatter and Telegram sender are shared with Claude's existing hooks.
 
-Completion notifications render an agent-box reviewer's JSON report as readable
-Markdown: the verdict, summary and every finding's severity, location, message,
-evidence and requirement. Workers and scouts already answer in Markdown. Empty review findings are stated explicitly. Text keeps its
-original language, with English section labels. This changes only Telegram
-presentation, not the agents' report protocol. Ordinary Markdown, unrelated JSON
-and invalid reports keep their original content. The formatted report uses the
-same markup sanitization, delivery limits and plain-text fallback as other
-completion messages; an oversized report produces an explicit delivery notice.
+A completion notification carries the text the agent itself wrote, in its own
+language: every role answers in Markdown, and agent-box reformats none of it.
+It is model output rather than trusted markup, so it goes through the same
+sanitization, delivery limits and plain-text fallback as other completion
+messages; an oversized message produces an explicit delivery notice.
 
 When a Claude session already owns the official channel, duplicate *interaction*
 notifications are suppressed — the channel is already relaying those to the same

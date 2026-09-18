@@ -314,9 +314,12 @@ def start_review(root, binding, task, limit, round_id, fingerprint, backend):
     unanswered = previous.get("pending")
     if unanswered and not any(item["round"] == unanswered for item in previous.get("results", [])) and (
             previous.get("pending_backend") != "managed" or backend == "managed"
-            or managed_round_status(root, previous) == "ended_without_response"):
+            or managed_round_status(root, previous) == "ended_without_response") and (
+            previous.get("pending_backend") != "cloud"):
         # Its answer can no longer be recorded, so nobody needs its input; foreign files stay. A managed
         # caller already holds the execution lock, so an earlier managed round cannot still be running.
+        # A cloud round keeps its input whatever opens next: the request is already published, and that
+        # text is what stops the next round from paying the bot for a question it was asked once.
         with contextlib.suppress(AgentBoxError, OSError):
             cleanup_review_evidence(review_evidence_path(root, task.id, unanswered))
     return review_budget_summary(state, limit)

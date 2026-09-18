@@ -2,6 +2,7 @@
 import unittest
 from agent_box import workflow
 from agent_box.tracker.core import Task
+from workflow_fixtures import LandingCase
 
 
 def approval(commit, *, login="maintainer", kind="User"):
@@ -234,14 +235,13 @@ class MergeAcceptanceTests(unittest.TestCase):
                                                               approved=False)))
 
 
-class LandingFreshnessTests(unittest.TestCase):
+class LandingFreshnessTests(LandingCase):
     """Provider responses are immutable snapshots, not shared live task objects."""
 
     def setUp(self):
         from copy import deepcopy
         from agent_box import git_workflow as gw, workflow
-        from test_local_workflow import LocalLandTests
-        LocalLandTests.setUp(self)
+        super().setUp()
         self.config.github.gh_token = True
         self.config.workflow.merge_mode = "github"
         self.saved["review"] = {"verdict": "PASS"}
@@ -291,10 +291,6 @@ class LandingFreshnessTests(unittest.TestCase):
         (self.root / "later.py").write_text("value = 2\n")
         gw.git(self.root, "add", "later.py")
         gw.git(self.root, "commit", "-m", "later work")
-
-    def dispatch(self, arguments):
-        from test_local_workflow import LocalLandTests
-        return LocalLandTests.dispatch(self, arguments)
 
     def recover_review(self, *, native=False, integrated=True):
         import json

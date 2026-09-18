@@ -13,52 +13,10 @@ from agent_box.config import Config
 from agent_box.errors import AgentBoxError
 from agent_box.repo_binding import Binding
 from agent_box.tracker.core import Task
-from workflow_fixtures import BINDING, answer, candidate, repository, selected_route
+from workflow_fixtures import BINDING, LandingCase, answer, candidate, repository, selected_route
 
 
-class LocalLandTests(unittest.TestCase):
-    def setUp(self):
-        self.temporary = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temporary.cleanup)
-        self.root = repository(self.temporary.name)
-        state_patch = patch.object(workflow_state, "WORKFLOW_STATE",
-                                   Path(self.temporary.name) / "state")
-        state_patch.start()
-        self.addCleanup(state_patch.stop)
-        evidence_patch = patch.object(workflow, "WORKFLOW_STATE",
-                                      Path(self.temporary.name) / "state")
-        evidence_patch.start()
-        self.addCleanup(evidence_patch.stop)
-        gw.git(self.root, "switch", "-c", "ab/7-parent")
-        (self.root / "change.py").write_text("value = 1\n")
-        gw.git(self.root, "add", "change.py")
-        gw.git(self.root, "commit", "-m", "task work")
-        self.parent = Task("7", "1", "Parent", state="Review", assignees=["1"],
-                           description="## Acceptance\n- [x] accepted")
-        self.adapter = Mock()
-        self.adapter.identity.return_value = {"id": 1}
-        self.adapter.get.side_effect = lambda ident: {"7": self.parent}[ident]
-        self.config = Config()
-        self.config.workflow.enabled = True
-        self.config.workflow.merge_mode = "local"
-        self.config.workflow.auto_push = False
-        self.config.workflow.review.policy = "off"
-        self.info = {"branch": "ab/7-parent", "base": gw.default_base(self.root)}
-        self.saved = {**workflow.evidence(self.root, self.parent, workflow.scope(self.root, "main"), "main"),
-                      "validation": {"command": ["true"], "exit": 0}}
-
-    def operate(self, action, *, method=None, saved=None):
-        args = SimpleNamespace(command="land", task=self.parent.id, action=action, method=method)
-        workflow.save_evidence(self.root, self.parent, self.saved if saved is None else saved)
-        return workflow.landing(args, self.root, self.config, self.adapter)
-
-    def dispatch(self, arguments):
-        with patch.object(workflow, "effective_config", return_value=self.config), \
-             patch.object(workflow, "repository_root", return_value=self.root), \
-             patch.object(Binding, "load", return_value=BINDING), \
-             patch.object(workflow, "make_adapter", return_value=self.adapter):
-            return workflow.dispatch(workflow.parser().parse_args(arguments))
-
+class LocalLandTests(LandingCase):
     def test_merge_fast_forwards_exact_task_head_without_push_or_github(self):
         task_head = gw.git(self.root, "rev-parse", "ab/7-parent")
         with patch("agent_box.github_workflow.gh") as github, \
@@ -578,10 +536,7 @@ class LocalLandTests(unittest.TestCase):
         github.assert_not_called()
 
 
-class LocalPushTests(unittest.TestCase):
-    setUp = LocalLandTests.setUp
-    operate = LocalLandTests.operate
-    dispatch = LocalLandTests.dispatch
+class LocalPushTests(LandingCase):
 
     def remote_head(self):
         return gw.git(Path(self.temporary.name) / "origin.git", "rev-parse", "main")

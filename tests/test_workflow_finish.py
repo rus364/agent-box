@@ -1,5 +1,4 @@
 """Completion retries retain acceptance of the work that actually advanced Git."""
-import unittest
 from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
@@ -9,15 +8,12 @@ from agent_box import git_workflow as gw
 from agent_box import workflow
 from agent_box.errors import AgentBoxError
 from agent_box.tracker.core import Task
-import test_local_workflow
-from workflow_fixtures import BINDING
+from workflow_fixtures import BINDING, LandingCase
 
 
-class ChildFinishTests(unittest.TestCase):
-    dispatch = test_local_workflow.LocalLandTests.dispatch
-
+class ChildFinishTests(LandingCase):
     def setUp(self):
-        test_local_workflow.LocalLandTests.setUp(self)
+        LandingCase.setUp(self)
         self.parent.state = "Doing"
         self.parent.children = ["8"]
         self.child = Task("8", "1", "Child", state="Doing", assignees=["1"],
@@ -321,10 +317,9 @@ class ChildFinishTests(unittest.TestCase):
         self.assertEqual(workflow.read_evidence(self.root, self.child)["head"], self.head)
 
 
-class ChildBranchReleaseTests(unittest.TestCase):
+class ChildBranchReleaseTests(LandingCase):
     """A finished subtask keeps nothing: its work is in the parent branch, so its branch goes."""
 
-    dispatch = test_local_workflow.LocalLandTests.dispatch
     setUp = ChildFinishTests.setUp
     commit = ChildFinishTests.commit
 
@@ -383,16 +378,15 @@ class ChildBranchReleaseTests(unittest.TestCase):
         self.adapter.set_state.assert_not_called()
 
 
-class NoCodeChildFinishTests(unittest.TestCase):
+class NoCodeChildFinishTests(LandingCase):
     """A child begun without commits still needs current acceptance, not just ancestry."""
 
-    dispatch = test_local_workflow.LocalLandTests.dispatch
     commit = ChildFinishTests.commit
     interrupted_finish = ChildFinishTests.interrupted_finish
     begin_ready_child = ChildFinishTests.begin_ready_child
 
     def setUp(self):
-        test_local_workflow.LocalLandTests.setUp(self)
+        LandingCase.setUp(self)
         self.parent.state = "Doing"
         self.parent.children = ["8"]
         self.child = Task("8", "1", "Child", state="Ready", assignees=["1"],
@@ -781,9 +775,7 @@ class NoCodeChildFinishTests(unittest.TestCase):
             self.dispatch(["finish", "8"])
         self.adapter.set_state.assert_not_called()
 
-class TransitionReadTests(unittest.TestCase):
-    setUp = test_local_workflow.LocalLandTests.setUp
-    dispatch = test_local_workflow.LocalLandTests.dispatch
+class TransitionReadTests(LandingCase):
 
     def locked_task(self, ident):
         for purpose in ("review-budget", "work"):

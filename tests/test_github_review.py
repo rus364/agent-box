@@ -16,7 +16,7 @@ from agent_box import git_workflow as gw
 from agent_box import github_review
 from agent_box import workflow
 from agent_box.errors import AgentBoxError
-from workflow_fixtures import BINDING
+from workflow_fixtures import BINDING, LandingCase
 
 
 CLAUDE_PASS = """**Claude finished @rus364's task in 32s** —— [View job](https://github.com/o/r/actions/runs/1)
@@ -98,12 +98,11 @@ def bot(login, body, created=None, identifier=1):
             "html_url": f"https://github.com/o/r/pull/9#issuecomment-{identifier}"}
 
 
-class CloudReviewTests(unittest.TestCase):
+class CloudReviewTests(LandingCase):
     """A reviewer that answers where it runs still spends one round and one verdict."""
 
     def setUp(self):
-        from test_local_workflow import LocalLandTests
-        LocalLandTests.setUp(self)
+        LandingCase.setUp(self)
         self.config.workflow.merge_mode = "github"
         self.config.workflow.review.policy = "always"
         self.config.workflow.review.github_provider = "claude"
@@ -135,7 +134,6 @@ class CloudReviewTests(unittest.TestCase):
 
     def review(self, *flags):
         from agent_box import github_workflow as github
-        from test_local_workflow import LocalLandTests
         self.requests = []
 
         def command(*args, **kwargs):
@@ -148,7 +146,7 @@ class CloudReviewTests(unittest.TestCase):
              patch.object(github, "view", return_value=self.pr), \
              patch.object(github_review, "paginate", side_effect=self.paginate), \
              patch.object(github, "gh", side_effect=command):
-            return LocalLandTests.dispatch(self, ["review", "7", *flags])
+            return self.dispatch(["review", "7", *flags])
 
     def published(self):
         """The request body this run posted, if it posted one."""
@@ -345,6 +343,18 @@ class CloudReviewTests(unittest.TestCase):
             waiting = self.review("--brief", str(brief))
         self.assertIsNone(self.published())
         self.assertIn("no answer", waiting["outcome"])
+
+    def test_another_backend_opening_next_cannot_erase_the_published_question(self):
+        """The published request is the only local record that the bot was already asked."""
+        self.review()
+        self.comments.append({**self.request_comment(), "body": self.published()})
+        rounds = workflow.review_evidence_path(self.root, "7", "round").parent
+        published = [path.read_text() for path in rounds.glob("*/handoff.txt")]
+        self.assertTrue(published)
+        self.dispatch(["review", "7", "--native"])
+        kept = [path.read_text() for path in rounds.glob("*/handoff.txt")]
+        for text in published:
+            self.assertIn(text, kept)
 
     def test_the_request_spells_no_verdict_the_reviewer_could_copy(self):
         """A copied example verdict would be a verdict nobody gave, so none is offered."""
@@ -635,7 +645,6 @@ class CloudReviewTests(unittest.TestCase):
     def test_an_unpublished_head_has_no_reviewer_and_a_missing_pull_request_names_ab_pr(self):
         """The bot reads GitHub, so a head GitHub does not have cannot be the one reviewed."""
         from agent_box import github_workflow as github
-        from test_local_workflow import LocalLandTests
         self.pr = {**self.pr, "headRefOid": "0" * 40}
         with self.assertRaisesRegex(AgentBoxError, "publish this head"):
             self.review()
@@ -643,7 +652,7 @@ class CloudReviewTests(unittest.TestCase):
              patch.object(github, "find_pr", return_value=None), \
              patch.object(github, "gh"):
             with self.assertRaisesRegex(AgentBoxError, "ab-pr"):
-                LocalLandTests.dispatch(self, ["review", "7"])
+                self.dispatch(["review", "7"])
 
     def test_a_disabled_github_integration_refuses_before_any_call(self):
         """The bot lives on GitHub; without that integration there is nothing to ask."""
@@ -659,15 +668,11 @@ class CloudReviewTests(unittest.TestCase):
         self.assertIsNone(self.published())
 
 
-class CloudRouteTests(unittest.TestCase):
+class CloudRouteTests(LandingCase):
     """Where the final review happens changes what finishing the parent requires."""
 
     setUp = CloudReviewTests.setUp
     commit_action = CloudReviewTests.commit_action
-
-    def dispatch(self, arguments):
-        from test_local_workflow import LocalLandTests
-        return LocalLandTests.dispatch(self, arguments)
 
     def test_finishing_a_parent_leaves_its_final_review_to_the_pull_request(self):
         """The reviewer reads a pull request that does not exist before finish."""
