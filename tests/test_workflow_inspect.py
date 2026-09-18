@@ -98,6 +98,13 @@ class InspectTests(unittest.TestCase):
         self.assertIn("ab-land", self.inspect_readonly()["next_step"])
         self.config.workflow.merge_mode = "github"
         self.assertIn("ab-pr", self.inspect_readonly()["next_step"])
+        # On the cloud route the verdict comes from the pull request, so the
+        # parent is sent through it rather than to a local round it cannot open.
+        self.config.workflow.review.github_provider = "codex"
+        self.assertIn("workflow review 1", self.inspect_readonly()["next_step"])
+        self.task.state = "Doing"
+        workflow.save_evidence(self.root, self.task, {"scope": self.scope, "validation": {"exit": 0}})
+        self.assertIn("workflow finish 1", self.inspect_readonly()["next_step"])
 
     def test_a_parent_branch_that_never_left_the_base_asks_for_work(self):
         """Git shows the same two commits for an unmoved branch and a base that absorbed the head."""

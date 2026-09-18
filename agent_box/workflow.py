@@ -768,7 +768,7 @@ def recorded_step(task, parent, config, saved, blockers, *, no_work):
     if task.id != parent.id:
         return f"Integrate the accepted subtask with agent-box workflow finish {task.id}"
     if task.state != "Review":
-        return f"Complete the accepted parent with agent-box workflow finish {task.id}"
+        return f"Complete the parent with agent-box workflow finish {task.id}"
     return landing_step(config, task, cloud_review(config, task, parent))
 
 
