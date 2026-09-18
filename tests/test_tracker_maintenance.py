@@ -16,7 +16,7 @@ from agent_box.tracker import cli
 from agent_box.tracker.core import NORMALIZED_LABEL, TrackerError, checkboxes
 from agent_box.tracker.vikunja import VikunjaAdapter
 from test_tracker_normalization import NormalizationClient
-from workflow_fixtures import clone, repository
+from workflow_fixtures import clone, origin_path, repository
 
 
 class MaintenanceTests(unittest.TestCase):
@@ -101,6 +101,15 @@ class MaintenanceTests(unittest.TestCase):
         self.assertEqual(self.client.writes, [])
         gw.git(self.root, "merge", "--ff-only", "origin/ab/5-work")
         self.assertEqual(self.run_cli("state", "5", "Done", "--reason", "Не нужна")[0]["state"], "Done")
+
+    def test_an_origin_that_cannot_be_read_stops_the_close(self):
+        """Reading nothing from origin must not be read as origin holding nothing."""
+        origin = str(origin_path(self.directory.name))
+        for url in (origin, origin + ".mirror"):
+            gw.git(self.root, "remote", "set-url", "--add", "--push", "origin", url)
+        with self.assertRaisesRegex(TrackerError, "no single push destination"):
+            self.run_cli("state", "5", "Done", "--reason", "Не нужна")
+        self.assertEqual(self.client.writes, [])
 
     def test_work_the_parent_branch_already_carries_may_be_closed_by_hand(self):
         """A subtask branch outlives its integration in a clone; its commits are not lost."""

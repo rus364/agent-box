@@ -203,9 +203,12 @@ def parser_candidates(parser, args):
     if action.nargs == argparse.REMAINDER:
         return files(args)
     if action.nargs in ("*", "+") and len(positionals) > 1 and repeated:
-        # Once it has a task, a repeated positional may end at any later word, so
-        # the positional after it completes this one just as legitimately.
-        return action_values(positionals[1], action_values(action, ("words", [])))
+        # Once it has a value, a repeated positional may end at any later word, so
+        # the positional after it completes this one just as legitimately - unless
+        # that word has already been typed, which its own choices reveal.
+        follower = positionals[1]
+        if not (follower.choices and done and done[-1] in follower.choices):
+            return action_values(follower, action_values(action, ("words", [])))
     return action_values(action, ("words", []))
 
 

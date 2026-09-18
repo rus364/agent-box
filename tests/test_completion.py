@@ -83,6 +83,8 @@ class CandidateTests(unittest.TestCase):
         # A repeated positional gives way to the next one only once it has a value:
         # before any task ID, a lifecycle state would be parsed as the task.
         self.assertEqual(words("tracker state ")[1], [])
+        # ... and gives way once the following positional has been typed.
+        self.assertEqual(words("tracker state 374 Done ")[1], [])
         self.assertEqual(words("--no-tmux workflow land 374 ")[1], ["inspect", "merge", "cleanup"])
         self.assertEqual(words("workflow delegate 374 --role ")[1], ["worker", "scout"])
         self.assertIn("--brief", words("workflow delegate 374 --role scout --")[1])

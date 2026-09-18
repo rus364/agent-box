@@ -254,7 +254,10 @@ def remote_branches(root, pattern):
     """
     url = effective_push_url(root)
     if url is None:
-        return {}
+        # Several push URLs, or no origin at all: reading nothing must not read as
+        # "origin holds nothing" when the answer decides whether commits are lost.
+        raise AgentBoxError("Origin has no single push destination, so its branches cannot be read; "
+                           "reconcile remote.origin push URLs before continuing")
     try:
         result = _run(["git", "ls-remote", "--heads", url, f"refs/heads/{pattern}"],
                       cwd=root, timeout=REMOTE_QUERY_TIMEOUT)
