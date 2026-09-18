@@ -82,6 +82,24 @@ class MaintenanceTests(unittest.TestCase):
         with self.assertRaisesRegex(TrackerError, 'ab/5-parent'):
             self.run_cli('state', '5', 'Done', '--reason', 'Не нужна')
 
+    def test_a_batch_moves_nothing_until_every_named_task_is_reachable(self):
+        """Half a closed batch is worse than none: the user has to reconstruct what moved."""
+        with self.assertRaisesRegex(TrackerError, "outside the repository binding: 7"):
+            self.run_cli("state", "5", "7", "Done", "--reason", "Не нужна")
+        self.assertEqual(self.client.writes, [])
+        self.assertEqual(self.adapter.get("5").state, "Backlog")
+
+    def test_the_reason_reaches_the_journal_before_the_task_closes(self):
+        """A task closed without the reason it was closed for defeats the whole command."""
+        with self.assertRaisesRegex(TrackerError, "must say something"):
+            self.run_cli("state", "5", "Done", "--reason", "   ")
+        self.assertEqual(self.client.writes, [])
+        with patch.object(self.adapter, "set_state", side_effect=TrackerError("transport", "transport")):
+            with self.assertRaises(TrackerError):
+                self.run_cli("state", "5", "Done", "--reason", "Решено в задаче 12")
+        self.assertEqual([entry["comment"] for entry in self.client.journal[5]], ["Решено в задаче 12"])
+        self.assertEqual(self.adapter.get("5").state, "Backlog")
+
     def test_one_write_records_several_checklist_decisions_for_a_known_revision(self):
         """A per-item write raced with itself and quoted back what the revision proves."""
         self.client.tasks[5]['description'] = '## Приёмка\n- [ ] первый\n- [ ] второй\n- [ ] третий\n'
@@ -105,6 +123,13 @@ class MaintenanceTests(unittest.TestCase):
             self.run_cli('check', '5', '1', '2', '--revision', 'rev-2')
         self.assertEqual(self.client.writes, [])
 
+    def test_an_edit_needs_a_revision_the_provider_actually_returned(self):
+        """Without an ETag the comparison would pass on two empty strings and prove nothing."""
+        self.client.tasks[5]["description"] = "- [ ] первый\n"
+        with self.assertRaisesRegex(TrackerError, "no revision"):
+            self.run_cli("check", "5", "1", "--revision", "")
+        self.assertEqual(self.client.writes, [])
+
     def test_completed_tasks_are_marked_processed_in_one_call(self):
         """A Done task has nothing left to normalize, so a pass should not read each one."""
         for ident in (5, 6, 8):
@@ -113,8 +138,15 @@ class MaintenanceTests(unittest.TestCase):
         self.assertEqual([row['id'] for row in marked], ['5', '8'])
         self.assertTrue(all(NORMALIZED_LABEL in row['labels'] for row in marked))
         self.assertEqual(self.run_cli('normalized', '--done'), [])
-        with self.assertRaisesRegex(TrackerError, 'pass --done'):
-            self.run_cli('normalized', '5', '--done')
+        with self.assertRaisesRegex(TrackerError, "pass --done"):
+            self.run_cli("normalized", "5", "--done")
+
+    def test_a_project_named_outside_the_binding_is_not_marked(self):
+        """This command writes to every task it selects, so its scope is the binding's."""
+        self.client.tasks[7]["done"] = True
+        with self.assertRaisesRegex(TrackerError, "outside the repository binding"):
+            self.run_cli("normalized", "--done", "--project", "9")
+        self.assertEqual(self.client.writes, [])
 
 
 if __name__ == '__main__':

@@ -258,9 +258,13 @@ def dispatch(args):
     if args.command == "normalized" and bool(args.task) == args.done:
         raise TrackerError("Mark the tasks you name, or pass --done for every completed task in scope")
     if args.command == "normalized" and args.done:
-        project = args.project or (binding.project if binding else None)
-        if not project:
-            raise TrackerError("Resolve a project first: pass --project or run ab-setup")
+        if binding is None:
+            raise TrackerError("Marking a whole project needs a repository binding; run ab-setup")
+        # Selecting a project by name must not reach past the binding: outside
+        # projects stay readable, and this command writes to every task it finds.
+        project = str(adapter.project(args.project or binding.project)["id"])
+        if project not in adapter.subtree(binding.project, binding.recursive or bool(args.adoption)):
+            raise TrackerError("Selected project is outside the repository binding")
         tasks = [found for found in adapter.search(
             project, "", args.recursive or bool(binding and binding.recursive))
             if found.state == "Done" and (NORMALIZED_LABEL in found.labels) == args.undo]
@@ -297,12 +301,22 @@ def dispatch(args):
             raise TrackerError("No changes requested")
         return adapter.update(task, fields)
     if args.command == "state":
-        if args.reason and args.state != "Done":
-            raise TrackerError("A reason records closing a task without implementation; it belongs to Done")
+        if args.reason is not None and (not args.reason.strip() or args.state != "Done"):
+            raise TrackerError("A reason records closing a task without implementation; "
+                               "it belongs to Done and must say something")
         if args.state == "Doing" and not args.adoption:
             raise TrackerError("Use agent-box tracker claim to assign and start a task")
-        # Every task is judged before the first one moves: a batch that stops
-        # halfway leaves the user reconstructing which cards it already closed.
+        # Everything this command can see is judged before the first task moves:
+        # a batch that stops halfway leaves the user reconstructing what it did.
+        scope = set(adapter.subtree(binding.project, binding.recursive or bool(args.adoption)))
+        outside = [found.id for found in tasks if found.project not in scope]
+        if outside:
+            raise TrackerError(f"Tasks outside the repository binding: {', '.join(outside)}", "conflict")
+        broken = [entry for entry in adapter.lifecycle_report(sorted({found.project for found in tasks}))
+                  if entry["problems"]]
+        if broken:
+            raise TrackerError("Fix the board lifecycle first: " + "; ".join(
+                f"project {entry['project']}: {', '.join(entry['problems'])}" for entry in broken), "configuration")
         for found in tasks if args.state == "Done" else []:
             if args.adoption:
                 if found.state != "Done":
@@ -314,12 +328,16 @@ def dispatch(args):
                 raise TrackerError(reason, "conflict")
         changed = []
         for found in tasks:
-            found = adapter.set_state(found, args.state)
+            # The journal entry goes first: a task closed without the reason it
+            # was closed for is exactly what this command exists to avoid.
             if args.reason:
                 adapter.comment(found.id, args.reason)
-            changed.append(found.to_dict())
+            changed.append(adapter.set_state(found, args.state).to_dict())
         return changed
     if args.command == "check":
+        if not task.revision:
+            raise TrackerError("This provider returned no revision for the task, so an edit cannot prove it "
+                               "read the current checklist", "configuration")
         if task.revision != args.revision:
             raise TrackerError("Task changed since that revision; reread tracker checklist before editing", "conflict")
         return adapter.update(task, {"description": set_checkboxes(task.description, args.index, not args.undo)})
