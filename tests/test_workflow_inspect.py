@@ -130,6 +130,26 @@ class InspectTests(unittest.TestCase):
                 self.assertNotIn("ab/2-child", step)
                 self.assertIn("workflow inspect 1", step)
 
+    def test_an_integrated_subtask_branch_is_not_mistaken_for_one_that_never_moved(self):
+        """A failed Done write leaves the child's commits inside the parent, where Git stops telling them apart."""
+        child = Task("2", "1", "Child", parent="1", state="Doing", assignees=["1"],
+                     description="## Acceptance\n- [x] child work")
+        self.tasks["2"] = child
+        self.task.children = ["2"]
+        start = gw.head_sha(self.root)
+        gw.git(self.root, "switch", "-c", "ab/2-child")
+        (self.root / "child.py").write_text("value = 2\n")
+        gw.git(self.root, "add", "child.py")
+        gw.git(self.root, "commit", "-m", "child work")
+        gw.git(self.root, "switch", "ab/1-task")
+        gw.git(self.root, "merge", "--ff-only", "ab/2-child")
+        gw.git(self.root, "switch", "ab/2-child")
+        workflow.save_evidence(self.root, child, {
+            "child_start": {"head": start, "parent": "1", "work_observed": True},
+            "scope": workflow.scope(self.root, "ab/1-task"),
+            "validation": {"exit": 0}, "review": {"verdict": "PASS"}})
+        self.assertIn("workflow finish 2", self.inspect_readonly("2")["next_step"])
+
     def test_dirty_tree_and_other_or_detached_branch_never_expose_saved_acceptance(self):
         """Even valid cached PASS belongs only to the clean checked-out task scope."""
         (self.root / "code.py").write_text("value = 2\n")

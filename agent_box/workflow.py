@@ -214,6 +214,11 @@ def save_evidence(root, task, value):
     atomic_write_text(path, json.dumps(value, indent=2) + "\n", 0o600)
 
 
+def unmoved_child(saved, head, parent_id):
+    """A branch still at the commit it was created on holds no work to accept."""
+    return saved.get("child_start") == {"head": head, "parent": parent_id, "work_observed": False}
+
+
 def observe_child_head(root, task, head):
     """Returning a ref to its origin cannot erase work the workflow already saw."""
     saved = read_evidence(root, task)
@@ -715,6 +720,15 @@ def resolve(root, adapter, task, *, allow_missing=False):
     return parent, info, {"branch": child}, branch
 
 
+def landing_step(config, task, cloud):
+    """The route an accepted parent follows, worded once for finish and for inspect."""
+    if config.workflow.merge_mode == "local":
+        return "Run ab-land for a local fast-forward into the base"
+    return ("Open the pull request with ab-pr"
+            + (f", then review its head with workflow review {task.id}" if cloud else "")
+            + "; Done follows the actual GitHub merge")
+
+
 def completed_step(task, parent):
     """Where a closed task points: never at its own branch, which finish has released.
 
@@ -738,8 +752,9 @@ def recorded_step(task, parent, config, saved, blockers, *, no_work):
     here is decided by a recorded fact: an unmoved branch, validation of this
     exact head, the acceptance the head still needs, and the task's own state.
     A branch that never left its base and a base that has absorbed the head are
-    the same two commits in Git, so `no_work` is told them apart by the state:
-    work that reached Review or Done is not work that never started.
+    the same two commits in Git, so `no_work` falls back to the task's own state:
+    work that reached Review or Done is not work that never started. A subtask
+    that still has its creation record needs no such guess.
     """
     if "Done" in (task.state, parent.state):
         return completed_step(task, parent)
@@ -754,8 +769,7 @@ def recorded_step(task, parent, config, saved, blockers, *, no_work):
         return f"Integrate the accepted subtask with agent-box workflow finish {task.id}"
     if task.state != "Review":
         return f"Complete the accepted parent with agent-box workflow finish {task.id}"
-    return ("Run ab-land for a local fast-forward into the base" if config.workflow.merge_mode == "local"
-            else "Open the pull request with ab-pr; Done follows the actual GitHub merge")
+    return landing_step(config, task, cloud_review(config, task, parent))
 
 
 def inspect(root, binding, adapter, task, config):
@@ -832,9 +846,10 @@ def inspect(root, binding, adapter, task, config):
     blockers = review_blockers(config.workflow.review, tasks, files, lines,
                                {**saved, "delta_review": delta}, integrated=integrated)
     result.update(scope=fingerprint, validation=saved.get("validation"),
-                  next_step=recorded_step(task, parent, config, saved, blockers,
-                                          no_work=gw.base_commit(root, base) == head
-                                          and task.state not in ("Review", "Done")))
+                  next_step=recorded_step(
+                      task, parent, config, saved, blockers,
+                      no_work=unmoved_child(saved, head, parent.id) if "child_start" in saved
+                      else gw.base_commit(root, base) == head and task.state not in ("Review", "Done")))
     return result
 
 
@@ -1326,12 +1341,7 @@ def finish(root, config, adapter, task_id):
             if reasons:
                 raise AgentBoxError("; ".join(reasons))
         adapter.set_state(task, "Review")
-        next_step = ("Run ab-land for a local fast-forward into the base"
-                     if config.workflow.merge_mode == "local" else
-                     "Open the pull request with ab-pr" + (
-                         f", then review its head with workflow review {task.id}" if route else "")
-                     + "; Done follows the actual GitHub merge")
-        return {"task": task.id, "state": "Review", "next": next_step}
+        return {"task": task.id, "state": "Review", "next": landing_step(config, task, route)}
 
 
 def finish_child(root, config, adapter, task, parent, info, branch, tasks):
@@ -1345,8 +1355,7 @@ def finish_child(root, config, adapter, task, parent, info, branch, tasks):
     base_head = gw.local_branch_head(root, base)
     integrated = gw._is_ancestor(root, head, base_head)
     saved = observe_child_head(root, task, head)
-    # A branch still at the commit it was created on holds no work to accept.
-    no_work = saved.get("child_start") == {"head": head, "parent": parent.id, "work_observed": False}
+    no_work = unmoved_child(saved, head, parent.id)
     delta = delta_review(root, config, task, tasks, head=head)
     if integrated:
         # The parent already contains this head, so Git no longer knows where the
