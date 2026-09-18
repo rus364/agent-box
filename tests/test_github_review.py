@@ -595,6 +595,43 @@ class CloudReviewTests(unittest.TestCase):
             self.review()
         self.assertIsNone(self.published())
 
+    def test_a_prompt_that_spells_out_the_arguments_configures_none(self):
+        """A block scalar is the value of its own key; the Action never parses prose."""
+        self.config.workflow.review.github_model = "opus"
+        self.commit_action("jobs:\n"
+                           "  review:\n"
+                           "    steps:\n"
+                           "      - uses: anthropics/claude-code-action@v1\n"
+                           "        with:\n"
+                           "          prompt: |\n"
+                           "            Review this pull request.\n"
+                           "            claude_args: --model opus\n")
+        with self.assertRaisesRegex(AgentBoxError, "claude_args with --model opus"):
+            self.review()
+        self.assertIsNone(self.published())
+
+    def test_a_head_that_moved_before_github_was_reached_is_not_asked_about(self):
+        """The scope was fingerprinted earlier; a paid answer about a retired head buys nothing."""
+        from agent_box import workflow as flow
+        original, seen = flow.scope_fingerprint, []
+
+        def drift(head, base):
+            # The scope is fingerprinted once by the dispatcher; the commit lands next.
+            seen.append(True)
+            return original(head, base) if len(seen) == 1 else "another scope"
+
+        with patch.object(flow, "scope_fingerprint", drift):
+            with self.assertRaisesRegex(AgentBoxError, "moved while this command was starting"):
+                self.review()
+        self.assertIsNone(self.published())
+
+    def test_a_retargeted_pull_request_is_not_this_task_s_question(self):
+        """The lookup found a pull request between this branch and this base; the read must agree."""
+        self.pr = {**self.pr, "baseRefName": "release"}
+        with self.assertRaisesRegex(AgentBoxError, "resolve the pull request"):
+            self.review()
+        self.assertIsNone(self.published())
+
     def test_an_unpublished_head_has_no_reviewer_and_a_missing_pull_request_names_ab_pr(self):
         """The bot reads GitHub, so a head GitHub does not have cannot be the one reviewed."""
         from agent_box import github_workflow as github

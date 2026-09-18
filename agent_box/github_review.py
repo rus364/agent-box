@@ -43,6 +43,8 @@ CLAUDE_ARGS = re.compile(r"^(\s*)claude_args\s*:\s*(.*)$")
 #: A mention anywhere in a comment summons that bot: the Action triggers on the words
 #: of the comment, not on who is addressed. Quoted text therefore carries none.
 MENTION = re.compile(r"@(?=\w)")
+#: A key whose value is a block scalar; everything indented under it is that value.
+BLOCK_KEY = re.compile(r"^(\s*)[\w.-]+\s*:\s*[|>][-+]?\s*$")
 
 #: GitHub refuses a longer comment, and a truncated requirement is a requirement nobody read.
 COMMENT_LIMIT = 65536
@@ -263,10 +265,21 @@ def claude_args(lines):
 
     A search over the whole YAML would accept a flag written in a comment or in
     another step, so the `claude_args` value itself is extracted, in both the
-    inline and the block form, and split into whole arguments.
+    inline and the block form, and split into whole arguments. Another key's block
+    scalar is skipped as well: a prompt that spells out `claude_args` is prose the
+    Action never parses.
     """
+    inside = None
     for index, line in enumerate(lines):
+        indent = len(line) - len(line.lstrip())
+        if inside is not None and (not line.strip() or indent > inside):
+            continue
+        inside = None
+        block = BLOCK_KEY.match(line)
         found = CLAUDE_ARGS.match(line)
+        if block and not found:
+            inside = len(block[1])
+            continue
         if not found:
             continue
         indent, value = found[1], found[2].strip()
@@ -369,7 +382,7 @@ def review(root, binding, adapter, config, task, parent, tasks, base, fingerprin
     to do about a bot that never answered.
     """
     from .github_workflow import find_pr, view
-    from .workflow import lock, read_evidence, review_result
+    from .workflow import lock, read_evidence, review_result, scope_fingerprint
 
     settings = config.workflow.review
     if not (config.github.gh_token or config.github.gh_config):
@@ -378,6 +391,11 @@ def review(root, binding, adapter, config, task, parent, tasks, base, fingerprin
     repo = gw.github_origin(root)
     gw.require_clean(root)
     head, base_head = gw.head_sha(root), gw.base_commit(root, base)
+    if scope_fingerprint(head, base_head) != fingerprint:
+        # The scope was fingerprinted before this command reached GitHub. Asking about
+        # a head that has already moved spends a paid answer on a stale question.
+        raise AgentBoxError(f"The head or base moved while this command was starting; "
+                            f"run agent-box workflow review {task.id} again")
     branch = gw.current_branch(root)
     number = find_pr(root, repo, branch, base)
     if not number:
@@ -387,6 +405,11 @@ def review(root, binding, adapter, config, task, parent, tasks, base, fingerprin
     if pr["headRefOid"] != head:
         raise AgentBoxError(f"PR #{number} is at {pr['headRefOid'][:12]}, not the local {head[:12]}; "
                             "publish this head before asking its reviewer")
+    if pr["headRefName"] != branch or pr["baseRefName"] != base:
+        # A pull request retargeted between the lookup and this read describes another
+        # question, and its answer would be recorded for this task all the same.
+        raise AgentBoxError(f"PR #{number} now merges {pr['headRefName']} into {pr['baseRefName']}, "
+                            f"not {branch} into {base}; resolve the pull request before reviewing it")
     # One published request per scope: the lock keeps a second invocation on this
     # checkout from asking again, or from starting a second round on one answer,
     # between reading the recorded verdict and acting on it.
