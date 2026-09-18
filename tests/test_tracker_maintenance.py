@@ -111,6 +111,19 @@ class MaintenanceTests(unittest.TestCase):
             self.run_cli("state", "5", "Done", "--reason", "Не нужна")
         self.assertEqual(self.client.writes, [])
 
+    def test_a_base_another_checkout_advanced_asks_for_a_fetch_not_for_landing(self):
+        """The work is landed; only this clone has not heard, and the remedy is a fetch."""
+        self.commit_on("ab/5-work")
+        gw.git(self.root, "push", "-q", "origin", "ab/5-work")
+        other = clone(self.directory.name, "other")
+        gw.git(other, "merge", "--no-ff", "-m", "land the work", "origin/ab/5-work")
+        gw.git(other, "push", "-q", "origin", "main")
+        with self.assertRaisesRegex(TrackerError, "has not fetched"):
+            self.run_cli("state", "5", "Done", "--reason", "Не нужна")
+        self.assertEqual(self.client.writes, [])
+        gw.git(self.root, "fetch", "-q", "origin")
+        self.assertEqual(self.run_cli("state", "5", "Done", "--reason", "Не нужна")[0]["state"], "Done")
+
     def test_work_the_parent_branch_already_carries_may_be_closed_by_hand(self):
         """A subtask branch outlives its integration in a clone; its commits are not lost."""
         self.client.tasks[8]['related_tasks'] = {'parenttask': [{'id': 5}]}
@@ -178,10 +191,14 @@ class MaintenanceTests(unittest.TestCase):
         """Every task write shares one boundary; a project outside it stays readable only."""
         self.client.tasks[7]["description"] = "- [ ] первый\n"
         self.client.revisions["/tasks/7"] = "rev-1"
-        for command in (("check", "7", "1", "--revision", "rev-1"), ("normalized", "7"), ("tier", "7", "2")):
+        for command in (("check", "7", "1", "--revision", "rev-1"), ("normalized", "7"),
+                        ("tier", "7", "2"), ("claim", "7")):
             with self.subTest(command=command[0]):
                 with self.assertRaisesRegex(TrackerError, "outside the repository binding"):
                     self.run_cli(*command)
+        self.assertEqual(self.client.writes, [])
+        with self.assertRaisesRegex(TrackerError, "inside the repository binding"):
+            self.run_cli("create", "--project", "9", "--title", "Outside", "--description-file", "/dev/null")
         self.assertEqual(self.client.writes, [])
 
     def test_completed_tasks_are_marked_processed_in_one_call(self):

@@ -119,6 +119,9 @@ def _worktree_clean(cwd: Path) -> bool:
     result = _run(['git', 'status', '--porcelain'], cwd=cwd)
     return result.returncode == 0 and result.stdout.strip() == ''
 
+def _has_commit(cwd: Path, commit: str) -> bool:
+    return _run(['git', 'cat-file', '-e', f'{commit}^{{commit}}'], cwd=cwd).returncode == 0
+
 def _is_ancestor(cwd: Path, ancestor: str, descendant: str) -> bool:
     result = _run(['git', 'merge-base', '--is-ancestor', ancestor, descendant], cwd=cwd)
     return result.returncode == 0
@@ -246,8 +249,8 @@ def base_ref(root, base):
     return refs[0]
 
 
-def remote_branches(root, pattern):
-    """What origin itself has under this pattern, as {branch: commit}.
+def remote_branches(root, *patterns):
+    """What origin itself has under these patterns, as {branch: commit}.
 
     `refs/remotes/*` is only as fresh as the last fetch, so a decision that could
     abandon commits asks the remote rather than this checkout's memory of it.
@@ -259,12 +262,12 @@ def remote_branches(root, pattern):
         raise AgentBoxError("Origin has no single push destination, so its branches cannot be read; "
                            "reconcile remote.origin push URLs before continuing")
     try:
-        result = _run(["git", "ls-remote", "--heads", url, f"refs/heads/{pattern}"],
+        result = _run(["git", "ls-remote", "--heads", url, *(f"refs/heads/{name}" for name in patterns)],
                       cwd=root, timeout=REMOTE_QUERY_TIMEOUT)
     except subprocess.TimeoutExpired:
         result = None
     if result is None or result.returncode:
-        raise AgentBoxError(f"Cannot read origin's branches matching {pattern}; reconcile before continuing")
+        raise AgentBoxError("Cannot read origin's branches " + ", ".join(patterns) + "; reconcile before continuing")
     heads = {}
     for line in result.stdout.splitlines():
         sha, _, ref = line.partition("\t")
@@ -276,22 +279,23 @@ def remote_branches(root, pattern):
 def abandoned_work(root, task_id, targets):
     """This task's branches that no target branch contains, and the ones it cannot judge.
 
-    Closing a task without implementation must not quietly abandon commits. The
-    local tip cannot answer that alone: another checkout may have advanced, or
-    even created, the branch. A commit origin reports but this checkout has never
-    fetched is reported separately instead of being assumed landed.
+    Closing a task without implementation must not quietly abandon commits. This
+    checkout cannot answer that alone: another clone may have advanced, or even
+    created, the task branch, and may equally have landed it into the base that
+    this clone still remembers from its last fetch. Origin is asked about both,
+    and a commit it reports that is not here yet is named as such, so the answer
+    is a fetch rather than a guess in either direction.
     """
     prefix = branch_prefix(task_id)
+    heads = remote_branches(root, f"{prefix}*", *targets)
+    unfetched = {name for name, commit in heads.items() if not _has_commit(root, commit)}
     tips = [(name, name) for name in _branch_refs(root, f"refs/heads/{prefix}*")]
     tips += [(ref.removeprefix("origin/"), ref) for ref in _branch_refs(root, f"refs/remotes/origin/{prefix}*")]
-    tips += list(remote_branches(root, f"{prefix}*").items())
+    tips += [(name, commit) for name, commit in heads.items() if name.startswith(prefix)]
     contained = [ref for name in targets for ref in branch_refs(root, name)]
-    unmerged, unfetched = set(), set()
-    for name, commit in tips:
-        if _run(["git", "cat-file", "-e", f"{commit}^{{commit}}"], cwd=root).returncode:
-            unfetched.add(name)
-        elif not any(_is_ancestor(root, commit, target) for target in contained):
-            unmerged.add(name)
+    contained += [heads[name] for name in targets if name in heads and name not in unfetched]
+    unmerged = {name for name, commit in tips if name not in unfetched
+                and not any(_is_ancestor(root, commit, target) for target in contained)}
     return {"unmerged": sorted(unmerged), "unfetched": sorted(unfetched)}
 
 

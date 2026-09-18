@@ -161,8 +161,8 @@ def unintegrated(root, adapter, task):
     except AgentBoxError as exc:
         raise TrackerError(str(exc), "configuration") from None
     if left["unfetched"]:
-        return (f"Origin has {', '.join(left['unfetched'])} for task {task.id}, and this checkout has not "
-                f"fetched it; fetch origin before deciding that nothing is left to land")
+        return (f"Origin has commits on {', '.join(left['unfetched'])} that this checkout has not fetched; "
+                f"fetch origin before deciding that task {task.id} has nothing left to land")
     if left["unmerged"]:
         return (f"Task {task.id} branch {', '.join(left['unmerged'])} has commits that "
                 f"{' and '.join(targets)} do not contain; run agent-box workflow finish {task.id}, "
@@ -247,7 +247,11 @@ def dispatch(args):
         if not project:
             raise TrackerError("Resolve a project first: pass --project or run ab-setup")
         if args.command == "create":
-            task = adapter.create(str(adapter.project(project)["id"]), args.title,
+            project = str(adapter.project(project)["id"])
+            if binding and project not in adapter.subtree(binding.project, binding.recursive):
+                raise TrackerError("Create the task inside the repository binding; an outside project "
+                                   "stays readable and could not be maintained from here")
+            task = adapter.create(project, args.title,
                                   text_file(args.description_file), args.parent, priority=args.priority)
             return adapter.set_tier(task.id, args.tier) if args.tier else task
         tasks = adapter.search(project, getattr(args, "query", ""), args.recursive or bool(binding and binding.recursive))
@@ -281,7 +285,8 @@ def dispatch(args):
     task = tasks[0] if tasks else None
     # One boundary for every task write: a project outside the binding stays
     # readable, and naming a task by ID is not a way past that.
-    if binding and args.command in {"update", "tier", "relation", "comment", "check", "state", "normalized"}:
+    if binding and args.command in {"update", "tier", "relation", "comment", "check", "state", "normalized",
+                                    "claim"}:
         scope = set(adapter.subtree(binding.project, binding.recursive or bool(args.adoption)))
         outside = [found.id for found in tasks if found.project not in scope]
         if outside:
