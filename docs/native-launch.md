@@ -12,7 +12,7 @@ No user configuration or installed profiles were changed.
 | Claude overrides | Documentation describes model forcing, allowlist substitution, and version-dependent precedence. Safe mode, force mode and conflicting model/effort environment settings can override a profile, so the coordinator checks live settings and substitutions; exact file contents alone are insufficient. |
 | Default effort | Preserve task 298: omit the managed override and clear inherited Claude effort. Native omission is not proof of no inherited override, so `default` stays managed. |
 | Fresh context | Every verdict round launches a new independent read-only reviewer in fresh context without the parent's history; followup/resume of an earlier reviewer is forbidden. The parameter that achieves it differs between tool versions (`fork_turns="none"` here, `fork_context=false` in Codex 0.154.0), so instructions state the requirement, not a parameter. A native result is recorded on trust (task 413). Managed Codex is ephemeral and managed Claude disables session persistence. |
-| Model availability | The live tool must support the selected provider/model/effort. A configured name or successful prepare is not account availability. Unsupported/unknown native capabilities use the managed route; errors never authorize an unconfigured model or tier. |
+| Model availability | The live tool must support the selected provider/model/effort. A configured name or a successful launch is not account availability. Unsupported/unknown native capabilities use the managed route; errors never authorize an unconfigured model or tier. |
 
 Sources: [Codex subagents](https://learn.chatgpt.com/docs/agent-configuration/subagents),
 [Claude subagents](https://code.claude.com/docs/en/sub-agents), locally inspected
@@ -36,10 +36,9 @@ Messages/Responses stub with a fake key, then one short live DeepSeek run per CL
 
 ## Validation boundaries
 
-Regression tests exercise prepared route diagnostics for missing, exact and
-modified profiles, explicit report acceptance without profile readiness, rejection
-of mismatched actual settings, reviewer matrices, fallback reasons, handoff/scope,
-fresh review and default effort. Instruction checks require explicit verification
+Regression tests exercise route diagnostics for missing, exact and modified
+profiles, rejection of mismatched actual settings, reviewer matrices, fallback
+reasons, handoff/scope, fresh review and default effort. Instruction checks require explicit verification
 of unknown/unsupported capabilities and custom-agent precedence. They do not
 execute or simulate provider internals and do not prove external precedence.
 

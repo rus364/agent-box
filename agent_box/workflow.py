@@ -1631,7 +1631,8 @@ def dispatch(args):
                 raise AgentBoxError("Switch to the task branch before recording human acceptance")
             # The user accepts what is committed now; a later commit or base move retires it.
             fingerprint = scope(root, base)
-            reasons = completion_reasons(task, tasks, str(adapter.identity()["id"]), states=("Doing", "Review"))
+            reasons = completion_reasons(task, tasks, str(adapter.identity()["id"]),
+                                         states=("Doing", "Review"), checklist=False)
             reasons += blocking_reasons(task, adapter.get)
             if reasons:
                 raise AgentBoxError("Cannot accept: " + "; ".join(reasons))

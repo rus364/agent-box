@@ -253,7 +253,10 @@ task description, since that is what the reviewer reads.
 lacks, such as technical risks or validation limits. Keep it outside the working
 tree (`mktemp /tmp/agent-box-review.XXXXXX`) and remove it after the round.
 Acceptance operations require a clean tree including untracked files; an untracked in-tree
-brief blocks review even when no branch switch is needed.
+brief blocks review even when no branch switch is needed. An acceptance or validation item
+only the user can close, such as a check that cannot run from a container, blocks `finish` and
+landing but never a review round or `approve`: the round judges the code, while completion
+needs the check itself done.
 Every native verdict uses a newly started reviewer in fresh context without the
 parent's history, never a resumed one; pass the returned `message` unchanged as its
 whole prompt. Managed commands remain ephemeral/no-session-persistence and do not
@@ -264,7 +267,9 @@ one `subtask-N.md` per subtask for a parent, the full diff, the changed-path lis
 validation, repository instructions and, when given, the brief as `author-report.md`.
 Descriptions keep their language and headings; checkmarks are cleared, and comments,
 history and earlier verdicts are never included. A description of any size stays in its
-file, outside the handoff limit. The reviewer reads descriptions and diff before the brief.
+file, outside the handoff limit. The reviewer reads descriptions and diff before the brief. The prompt also states the round's
+own boundary - read-only, with no way to run the suite - so recorded validation is read as the
+only run there is instead of being rediscovered every round.
 Workflow state keeps native and managed paths shared and removes the generated
 artifacts once the round's result is recorded or its managed run fails; oversized
 index metadata fails closed.
@@ -295,7 +300,12 @@ path matching both lists stays counted and triggers review as sensitive. Ignorin
 never changes `always`, labels, scope, validation or the diff a reviewer reads.
 `agent-box workflow inspect TASK` is read-only and works before begin, from another
 branch or with uncommitted files. It reports current/found branches, effective
-configuration, review budget, acceptance availability/reasons and a next step.
+configuration, review budget, acceptance availability/reasons and a next step. That step is
+derived from what is recorded for this head rather than from the shape of the cycle: a branch
+still at its fork point asks for work, a head without successful validation asks for it, a head
+that still needs acceptance asks for the review route, and an accepted one asks for finish or
+landing. A Done task points at its parent or at the next task, never at the branch finish
+released.
 `scope` is null until the expected task branch is clean; scope-dependent review
 and validation fields are unavailable too. On that branch it returns the exact
 scope, validation and every review trigger. Ambiguous refs or failed Git/tracker
@@ -403,14 +413,14 @@ agent-box workflow approve TASK --reason 'User accepted the inspected result'
 agent-box workflow finish TASK
 ```
 
-It needs successful validation of the same head and completed acceptance checks.
+It needs successful validation of the same head, and the ownership and dependency checks.
 `approve` records the head, actor and reason as human acceptance; it does not
 write a reviewer PASS, change policy or mark the task Done. As with reviewer
 reports, this is a coordinator contract, not authentication of the human's
 identity. A request to avoid delegation alone is not approval. A new commit, a
-moved base or a later review round retires the decision. Ownership, checklists,
-dependencies, validation and merge proof remain mandatory, and the normal
-post-merge cleanup still runs.
+moved base or a later review round retires the decision. Ownership, dependencies,
+validation, the checklist and merge proof remain mandatory for completion, and the
+normal post-merge cleanup still runs.
 
 `workflow land PARENT merge` is one idempotent command: it checks acceptance of
 the task head, fast-forwards the base, publishes it, marks the task Done and runs

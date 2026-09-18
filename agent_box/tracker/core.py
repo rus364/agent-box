@@ -222,7 +222,13 @@ def claim(adapter: Adapter, task_id: str, resume=False) -> tuple[Task, bool]:
     return task, True
 
 
-def completion_reasons(task, tasks, user, *, states=("Doing", "Review")):
+def completion_reasons(task, tasks, user, *, states=("Doing", "Review"), checklist=True):
+    """Why this task cannot be completed yet; `checklist` separates acceptance from completion.
+
+    An item only the user can close, such as a check that cannot run from a
+    container, used to block the round that judges the code as well as the
+    completion that needs the check done. Acceptance asks for neither.
+    """
     reasons = []
     if task.state not in states:
         reasons.append("Task must be " + " or ".join(states))
@@ -230,6 +236,6 @@ def completion_reasons(task, tasks, user, *, states=("Doing", "Review")):
         reasons.append("Task must remain assigned to the current API-key user")
     if any(child.state != "Done" for child in tasks if child.id != task.id):
         reasons.append("All subtasks must remain Done")
-    if any(not item["checked"] for child in tasks for item in checkboxes(child.description)):
+    if checklist and any(not item["checked"] for child in tasks for item in checkboxes(child.description)):
         reasons.append("Acceptance or validation checklist remains incomplete")
     return reasons

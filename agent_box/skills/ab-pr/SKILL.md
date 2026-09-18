@@ -5,7 +5,7 @@ description: Open one GitHub PR for a validated parent task whose configured rou
 
 # ab-pr
 
-An accepted task lands by its configured route without asking: merge it, and open its pull request where the route calls for one. Ask the user only about a blocker or disputed scope. Read the parent task and subtasks; confirm work is integrated, accepted and in Review. Inspect the actual complete diff and validation/review evidence. Do not create a PR per microtask.
+Open the pull request the configured route calls for without asking; ask the user only about a blocker or disputed scope. Read the parent task and subtasks; confirm work is integrated, accepted and in Review. Inspect the actual complete diff and validation/review evidence. Do not create a PR per microtask.
 
 Use this skill only when `workflow.merge_mode` is `github`. Local mode rejects PR creation without contacting GitHub and lands through ab-land instead.
 

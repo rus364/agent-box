@@ -39,8 +39,8 @@ the explicit ref/OID lease used only for remote deletion. These comparisons do
 not check branch occupancy: [git-branch](https://git-scm.com/docs/git-branch) and
 `git worktree list --porcelain` inform the separate worktree guard. Cleanup uses
 no merge registry and covers the completed parent and its completed descendants.
-Local descendant retries reuse the existing acceptance snapshot to pin the
-original parent result, then check live Git integration.
+Local descendant retries pin the original parent result from the two commits its
+acceptance names, then check live Git integration.
 
 These local reference checkouts informed the design. The shipped skill prose is
 maintained here, not periodically patched or fetched from upstream.
@@ -91,9 +91,9 @@ bytes and words must not be reported as exact tokens.
 
 ## Workflow input audit (2026-09-09)
 
-Task 348 audited all nine shipped skills plus repository binding, native profiles,
-prepare output and workflow documentation. Route mechanics now come from the
-actual `workflow prepare` result instead of being copied into plan/work/review.
+Task 348 audited all shipped skills plus repository binding, native profiles,
+coordinator output and workflow documentation. Route mechanics come from the
+actual command result instead of being copied into plan/work/review.
 An exact task ID no longer requires `tracker ready`; `config show` is diagnostic;
 library/version research runs only for a material dependency choice. Task,
 repository and applicable rule reads remain mandatory. Interview questions test
@@ -105,7 +105,7 @@ The matched probe used frozen source `e450d5e` and was rerun against `c4e8894`
 on 2026-09-09; all After values below were reproduced unchanged. It runs in separate
 isolated processes with the same synthetic repository, task, brief, routes and
 two-review change/fix sequence. It counted UTF-8 bytes and whitespace-separated
-words delivered across the invoked skill, coordinator prepare/result, native
+words delivered across the invoked skill, coordinator command results, native
 profile, delegate handoff and every mandatory reviewer artifact. Temporary paths
 were normalized before counting. Provider execution was mocked only to capture
 the actual composed input; this is input measurement, not runtime or token proof.
@@ -125,15 +125,16 @@ The native rows grew because the old path omitted generated complete worker
 handoff data and silently truncated ordinary repository instructions; review now
 indexes complete immutable requirements, diff, validation and instruction
 artifacts. Removing those bytes would restore the defect. The managed worker and
-direct paths shrink because compact skills and prepare task identity remove real
+direct paths shrink because compact skills and derived task identity remove real
 duplication. These byte/word counts are not model tokens. Real successful managed
 usage is reported separately when the provider exposes it; unavailable native or
 managed usage remains null.
 
 For an exact-ID task with no dependency choice, the documented coordinator CLI
 sequence drops from six commands (`get`, `ready`, `config show`, `inspect`,
-`begin`, `prepare`) to four (`get`, `inspect`, `begin`, `prepare`). Task selection
-still uses `ready`, and configuration diagnosis still uses `config show`. A
+`begin`, `prepare`) to three (`get`, `inspect`, `begin`), `prepare` itself having been
+removed in task 413. Task selection still uses `ready`, and configuration diagnosis
+still uses `config show`. A
 prepared native-to-managed review fallback remains two commands but now consumes
 one logical attempt instead of two and reuses the same handoff. Two verdicts
 around a fix still consume two attempts and two fresh contexts. Re-reading
