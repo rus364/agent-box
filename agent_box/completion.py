@@ -158,6 +158,7 @@ def parser_candidates(parser, args):
     optionals = {flag: action for action in parser._actions for flag in action.option_strings}
     positionals = [action for action in parser._actions if not action.option_strings]
     pending = None
+    repeated = 0
     for index, token in enumerate(done):
         if pending:
             pending = None
@@ -178,7 +179,9 @@ def parser_candidates(parser, args):
             return parser_candidates(sub, done[index + 1:] + [current]) if sub else ("words", [])
         if action.nargs == argparse.REMAINDER:
             return files(args)
-        if action.nargs not in ("*", "+"):
+        if action.nargs in ("*", "+"):
+            repeated += 1
+        else:
             positionals.pop(0)
     if pending:
         return action_values(pending, files(args))
@@ -199,9 +202,9 @@ def parser_candidates(parser, args):
         return "words", [(name, helps.get(name, "")) for name in action.choices]
     if action.nargs == argparse.REMAINDER:
         return files(args)
-    if action.nargs in ("*", "+") and len(positionals) > 1:
-        # A repeated positional ends wherever the user stops naming tasks, so the
-        # positional after it completes this word just as legitimately.
+    if action.nargs in ("*", "+") and len(positionals) > 1 and repeated:
+        # Once it has a task, a repeated positional may end at any later word, so
+        # the positional after it completes this one just as legitimately.
         return action_values(positionals[1], action_values(action, ("words", [])))
     return action_values(action, ("words", []))
 

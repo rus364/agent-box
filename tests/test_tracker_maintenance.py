@@ -67,6 +67,24 @@ class MaintenanceTests(unittest.TestCase):
         closed = self.run_cli('state', '8', '5', 'Done', '--reason', 'Не нужна')
         self.assertEqual([row['state'] for row in closed], ['Done', 'Done'])
 
+    def test_a_branch_another_checkout_pushed_further_is_still_unintegrated(self):
+        """The local tip does not speak for the branch; origin may hold newer commits."""
+        self.commit_on("ab/5-work")
+        gw.git(self.root, "push", "-q", "origin", "ab/5-work")
+        gw.git(self.root, "merge", "--ff-only", "ab/5-work")
+        gw.git(self.root, "switch", "ab/5-work")
+        (self.root / "later.txt").write_text("later")
+        gw.git(self.root, "add", "-A")
+        gw.git(self.root, "commit", "-m", "later work")
+        gw.git(self.root, "push", "-q", "origin", "ab/5-work")
+        gw.git(self.root, "reset", "--hard", "HEAD~1")
+        gw.git(self.root, "switch", "main")
+        with self.assertRaisesRegex(TrackerError, "ab/5-work"):
+            self.run_cli("state", "5", "Done", "--reason", "Не нужна")
+        self.assertEqual(self.client.writes, [])
+        gw.git(self.root, "merge", "--ff-only", "origin/ab/5-work")
+        self.assertEqual(self.run_cli("state", "5", "Done", "--reason", "Не нужна")[0]["state"], "Done")
+
     def test_work_the_parent_branch_already_carries_may_be_closed_by_hand(self):
         """A subtask branch outlives its integration in a clone; its commits are not lost."""
         self.client.tasks[8]['related_tasks'] = {'parenttask': [{'id': 5}]}

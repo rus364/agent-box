@@ -80,6 +80,9 @@ class CandidateTests(unittest.TestCase):
 
     def test_tracker_and_workflow_complete_from_their_parsers(self):
         self.assertEqual(words("tracker state 374 Re")[1], ["Ready", "Review"])
+        # A repeated positional gives way to the next one only once it has a value:
+        # before any task ID, a lifecycle state would be parsed as the task.
+        self.assertEqual(words("tracker state ")[1], [])
         self.assertEqual(words("--no-tmux workflow land 374 ")[1], ["inspect", "merge", "cleanup"])
         self.assertEqual(words("workflow delegate 374 --role ")[1], ["worker", "scout"])
         self.assertIn("--brief", words("workflow delegate 374 --role scout --")[1])
