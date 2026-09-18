@@ -572,3 +572,27 @@ class StagingTests(unittest.TestCase):
         self.staging_move(str(moving), '--project', report['projects']['1'])
         with self.assertRaisesRegex(TrackerError, 'do not rerun clone'):
             self.clone()
+
+    def test_an_unfinished_copy_is_not_frozen_by_a_move(self):
+        """Freezing ends clone resumption, which is the only repair for a half-copied assignee."""
+        report = self.clone()
+        child_copy = int(report['projects']['2'])
+        copy_of_five = next(t for t in self.client.tasks.values()
+                            if t['project_id'] == int(report['projects']['1']))
+        copy_of_five['assignees'] = []
+        moving = next(t['id'] for t in self.client.tasks.values() if t['project_id'] == child_copy)
+        with self.assertRaisesRegex(TrackerError, 'finish or inspect the clone first.*assignees'):
+            self.staging_move(str(moving), '--project', report['projects']['1'])
+        self.assertNotIn('tasks', json.loads(self.receipt.read_text())['clone'])
+        self.assertEqual(self.client.tasks[moving]['project_id'], child_copy)
+
+    def test_a_malformed_task_mapping_is_reported_as_an_invalid_receipt(self):
+        """Two source tasks sharing one copy would leave one of them never verified."""
+        self.clone()
+        receipt = json.loads(self.receipt.read_text())
+        for mapping in ([], {'5': '8', '6': '8'}, {'x': '8'}):
+            with self.subTest(mapping=mapping):
+                receipt['clone']['tasks'] = mapping
+                self.receipt.write_text(json.dumps(receipt))
+                with self.assertRaisesRegex(TrackerError, 'Invalid adoption receipt.*clone.tasks'):
+                    adoption.cutover(self.root, self.receipt)

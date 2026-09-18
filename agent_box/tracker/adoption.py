@@ -64,6 +64,12 @@ def load(path, root):
         if not isinstance(copies, dict) or any(not isinstance(k, str) or not isinstance(v, str)
                                                for k, v in copies.items()):
             raise ValueError("clone.projects must map source ID strings to new ID strings")
+        tasks = receipt["clone"].get("tasks", {})
+        if (not isinstance(tasks, dict) or any(not isinstance(k, str) or not k.isdigit()
+                                               or not isinstance(v, str) or not v.isdigit()
+                                               for k, v in tasks.items())
+                or len(set(tasks.values())) != len(tasks)):
+            raise ValueError("clone.tasks must map source task ID strings to distinct staging task ID strings")
         removals = receipt["clone"].get("relation_removals", [])
         if not isinstance(removals, list):
             raise ValueError("clone.relation_removals must be a list")
@@ -134,9 +140,13 @@ def freeze_tasks(root, path):
     if "tasks" in receipt["clone"]:
         return
     copied = adapter.clone_project_tree(source.project, receipt["staging_title"], receipt["clone"], lambda _: None)
-    if copied["errors"] or copied["missing_projects"]:
-        raise TrackerError("Staging no longer pairs with its source, so a task mapping cannot be saved "
-                           "before a move: " + "; ".join(copied["errors"] or ["clone is missing source projects"]),
+    # Saving the mapping ends clone resumption, so an unfinished copy must be
+    # finished by clone first; afterwards only cutover's own report could say so.
+    problems = [*copied["errors"], *copied["incomplete"]] + (
+        ["clone is missing source projects"] if copied["missing_projects"] else [])
+    if problems:
+        raise TrackerError("Staging is not a complete, paired copy of its source, so a task mapping cannot be "
+                           "saved before a move; finish or inspect the clone first: " + "; ".join(problems),
                            "conflict")
     receipt["clone"]["tasks"] = copied["tasks"]
     save(path, receipt)
