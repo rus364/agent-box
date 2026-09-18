@@ -138,7 +138,10 @@ Moving is only this command: neither `task-fields` nor `bulk-update` accepts `pr
 `delete-project P` then deletes an emptied subproject of the binding. The
 provider would delete a project's tasks and child projects with it and has no
 undo, so a project that still holds either, the binding root and any project
-outside the binding are refused.
+outside the binding are refused. The provider's delete is unconditional, so the
+command archives the project, which then refuses new tasks, moved-in tasks and
+child projects, checks it is still empty, and only then deletes it; a refusal
+unarchives it again.
 
 Comments are a human journal. Nothing machine-readable lives in one: branch,
 base branch and pull request come from Git and GitHub, lifecycle from the

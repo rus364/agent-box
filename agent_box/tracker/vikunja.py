@@ -210,9 +210,13 @@ class VikunjaAdapter:
 
         Vikunja deletes a project's tasks and child projects with it and has no
         undo, so only an empty leaf goes, never the binding's root: collapsing a
-        tree means moving its tasks out first. ``checkpoint`` runs after every
+        tree means moving its tasks out first. Its delete is unconditional, so
+        the project is archived before the emptiness is checked again: Vikunja
+        refuses to create or move in a task, or a child project, under an
+        archived one, which closes the window a concurrent writer would
+        otherwise have between check and delete. ``checkpoint`` runs after that
         check and before the delete, so a caller can record the intent that an
-        interrupted delete would otherwise lose.
+        interrupted delete would otherwise lose; a refusal unarchives again.
         """
         target = self.project(project)
         ident = str(target["id"])
@@ -221,15 +225,28 @@ class VikunjaAdapter:
         if ident == str(self.binding.project):
             raise TrackerError(f"Project {ident} is the root of the binding; only a subproject can be deleted",
                                "conflict")
-        children = [p["id"] for p in self.projects() if p["parent"] == ident]
-        if children:
-            raise TrackerError(f"Project {ident} still has child projects "
-                               f"{', '.join(str(c) for c in children)}; delete or move them first", "conflict")
-        tasks = api.collect_tasks(self.client, project=ident)
-        if tasks:
-            raise TrackerError(f"Project {ident} still has {len(tasks)} tasks; move them out with "
-                               "agent-box tracker move first", "conflict")
-        checkpoint(ident)
+
+        def check_empty():
+            children = [p["id"] for p in self.projects() if p["parent"] == ident]
+            if children:
+                raise TrackerError(f"Project {ident} still has child projects "
+                                   f"{', '.join(str(c) for c in children)}; delete or move them first", "conflict")
+            tasks = api.collect_tasks(self.client, project=ident)
+            if tasks:
+                raise TrackerError(f"Project {ident} still has {len(tasks)} tasks; move them out with "
+                                   "agent-box tracker move first", "conflict")
+
+        check_empty()
+        archived = bool(target.get("is_archived"))
+        if not archived:
+            self.client.patch(f"/projects/{ident}", {"title": target["title"], "is_archived": True})
+        try:
+            check_empty()
+            checkpoint(ident)
+        except BaseException:
+            if not archived:
+                self.client.patch(f"/projects/{ident}", {"title": target["title"], "is_archived": False})
+            raise
         self.client.delete(f"/projects/{ident}")
         if ident in {str(p["id"]) for p in self.projects()}:
             raise TrackerError(f"Deletion of project {ident} was not confirmed", "conflict")

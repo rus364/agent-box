@@ -494,6 +494,24 @@ class DeleteProjectTests(unittest.TestCase):
         self.assertEqual(self.run_cli('delete-project', '3'), {'deleted': '3', 'title': 'Emptied'})
         self.assertNotIn(3, [project['id'] for project in self.client.projects])
 
+    def test_a_task_added_before_the_archive_stops_the_delete(self):
+        """The provider's delete is unconditional; only the recheck under archive can see a late writer.
+
+        The project is unarchived again, so the late task stays usable where it was put.
+        """
+        original = self.client.patch
+
+        def concurrent(path, body, markdown=False):
+            if body.get('is_archived'):
+                self.client.tasks[60] = task(60, 3, 30, 300, index=1)
+            return original(path, body, markdown)
+
+        with patch.object(self.client, 'patch', concurrent), \
+                self.assertRaisesRegex(TrackerError, 'Project 3 still has 1 tasks'):
+            self.run_cli('delete-project', '3')
+        self.assertEqual(self.client.writes, [('/projects/3', {'title': 'Emptied', 'is_archived': True}),
+                                              ('/projects/3', {'title': 'Emptied', 'is_archived': False})])
+
     def test_anything_that_would_be_deleted_with_the_project_refuses(self):
         """Tasks, child projects, the binding root and outside projects all stay; nothing is written."""
         for project, message in (('2', 'Project 2 still has 1 tasks; move them out'),
