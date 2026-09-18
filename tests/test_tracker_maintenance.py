@@ -147,6 +147,15 @@ class MaintenanceTests(unittest.TestCase):
         self.assertEqual(self.client.writes, [])
         self.assertEqual(self.adapter.get("5").state, "Backlog")
 
+    def test_a_board_that_cannot_be_read_keeps_the_failure_it_had(self):
+        """A provider outage is retryable; a misconfigured column is not, and they differ."""
+        broken = TrackerError("Vikunja API HTTP 503", "transport", retryable=True)
+        with patch.object(self.adapter, "board", side_effect=broken):
+            with self.assertRaises(TrackerError) as raised:
+                self.run_cli("state", "5", "Done", "--reason", "Не нужна")
+        self.assertEqual((raised.exception.category, raised.exception.retryable), ("transport", True))
+        self.assertEqual(self.client.writes, [])
+
     def test_the_reason_reaches_the_journal_before_the_task_closes(self):
         """A task closed without the reason it was closed for defeats the whole command."""
         with self.assertRaisesRegex(TrackerError, "must say something"):

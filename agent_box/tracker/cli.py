@@ -323,11 +323,12 @@ def dispatch(args):
             raise TrackerError("Use agent-box tracker claim to assign and start a task")
         # Everything this command can see is judged before the first task moves:
         # a batch that stops halfway leaves the user reconstructing what it did.
-        broken = [entry for entry in adapter.lifecycle_report(sorted({found.project for found in tasks}))
-                  if entry["problems"]]
-        if broken:
-            raise TrackerError("Fix the board lifecycle first: " + "; ".join(
-                f"project {entry['project']}: {', '.join(entry['problems'])}" for entry in broken), "configuration")
+        # Resolving each board here is what the move would do anyway, so a board
+        # that cannot express the lifecycle stops the batch before it starts. It
+        # is asked directly: a report would fold a provider outage into the same
+        # answer as a misconfigured column and mislabel a retryable failure.
+        for project in sorted({found.project for found in tasks}):
+            adapter.board(project)
         for found in tasks if args.state == "Done" else []:
             if args.adoption:
                 if found.state != "Done":
