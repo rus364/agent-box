@@ -24,8 +24,6 @@ NOTES = (
     "project under the root takes part in the workflow.",
     "Labels are shared objects. Change only staging task label attachments; "
     "never rename or delete global labels, including ab: labels.",
-    "A description may carry an import marker that identifies the task for a "
-    "later re-import. Rewriting the text around it is fine; dropping it is not.",
     "Preserve meaning and language. Extract only evidenced acceptance and "
     "checklists. Unanswered decisions stay in Backlog for ab-interview; planning "
     "and decomposition belong to ab-plan. Repair evidenced internal relations "

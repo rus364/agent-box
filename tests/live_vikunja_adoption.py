@@ -43,7 +43,7 @@ def run():
                 rows.append(client.post(f'/projects/{project}/tasks?format=markdown',
                                         {'title': 'Same title', 'description': 'Existing acceptance.', 'done': done}))
             first, second, third, external = [t['id'] for t in rows]
-            client.patch(f'/tasks/{first}', {'description': 'Original meaning.\n\nVikunja external ID: TEST-1'}, markdown=True)
+            client.patch(f'/tasks/{first}', {'description': 'Original meaning.'}, markdown=True)
             client.post(f'/tasks/{first}/assignees', {'user_id': user['id']})
             api.attach_label(client, first, label)
             client.post(f'/tasks/{first}/comments', {'comment': '<p>Original journal</p>'})
@@ -88,7 +88,7 @@ def run():
             instance.initialize_boards(instance.subtree(target, True), apply=True)
             instance.update(instance.get(str(copied_first)), {
                 'title': 'Existing task, clarified',
-                'description': 'Goal\n\nOriginal meaning.\n\nAcceptance\n\nRequires ab-interview.\n\nVikunja external ID: TEST-1'})
+                'description': 'Goal\n\nOriginal meaning.\n\nAcceptance\n\nRequires ab-interview.'})
             assert audit_project(instance, target)['clean']
             # Optional collapse: move the child's only task into the root, then delete the emptied child.
             os.chdir(repository)

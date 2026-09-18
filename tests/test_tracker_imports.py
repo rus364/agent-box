@@ -31,7 +31,7 @@ def write_plan(path, rows):
         writer.writerows(rows)
 
 
-def row(external_id="M01-01", depends="", project="Root / Child", title="Task"):
+def row(plan_id="M01-01", depends="", project="Root / Child", title="Task"):
     return {
         "Title": title,
         "Description": "Meaningful description",
@@ -39,7 +39,7 @@ def row(external_id="M01-01", depends="", project="Root / Child", title="Task"):
         "Labels": "migration,architecture",
         "Project": project,
         "Done": "false",
-        "Plan ID": external_id,
+        "Plan ID": plan_id,
         "Kind": "decision",
         "Depends On": depends,
         "Source Tasks": "Old #1",
@@ -246,8 +246,8 @@ class PlanTests(unittest.TestCase):
             parsed = vikunja.parse_plan(path).tasks[0]
 
         self.assertEqual(parsed.description, planned["Description"])
-        self.assertIn("Goal  \nKeep this paragraph separate.", parsed.desired_description())
-        self.assertIn("Work  \n- First item  \n- Second item", parsed.desired_description())
+        self.assertIn("Goal  \nKeep this paragraph separate.", parsed.rendered_description())
+        self.assertIn("Work  \n- First item  \n- Second item", parsed.rendered_description())
 
     def test_csv_parsing_preserves_semantics_and_dependency_direction(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -257,18 +257,26 @@ class PlanTests(unittest.TestCase):
             second["Order"] = "2"
             write_plan(path, [first, second])
             plan = vikunja.parse_plan(path)
-            self.assertEqual(plan.tasks[1].external_id, "M01-02")
+            self.assertEqual(plan.tasks[1].plan_id, "M01-02")
             self.assertEqual(plan.tasks[1].depends_on, ("M01-01",))
             self.assertEqual(plan.relation_edges(), (("M01-01", "blocking", "M01-02"),))
 
-    def test_invalid_external_id_is_rejected(self):
+    def test_invalid_plan_id_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "plan.csv"
             write_plan(path, [row("has spaces")])
-            with self.assertRaisesRegex(vikunja.PlanValidationError, "external ID"):
+            with self.assertRaisesRegex(vikunja.PlanValidationError, "plan ID"):
                 vikunja.parse_plan(path)
 
-    def test_duplicate_external_ids_are_rejected(self):
+    def test_all_digit_plan_id_is_rejected_because_digits_name_tracker_tasks(self):
+        """A reference "12" must mean one thing: an existing task, never a plan row."""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "plan.csv"
+            write_plan(path, [row("12")])
+            with self.assertRaisesRegex(vikunja.PlanValidationError, "plan ID"):
+                vikunja.parse_plan(path)
+
+    def test_duplicate_plan_ids_are_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "plan.csv"
             a, b = row("M01-01"), row("M01-01", title="Another")
@@ -284,36 +292,43 @@ class PlanTests(unittest.TestCase):
             with self.assertRaisesRegex(vikunja.PlanValidationError, "itself"):
                 vikunja.parse_plan(path)
 
-    def test_dependency_outside_the_plan_is_an_external_reference(self):
+    def test_dependency_outside_the_plan_is_a_tracker_reference(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "plan.csv"
+            write_plan(path, [row("M01-01", "77")])
+            plan = vikunja.parse_plan(path)
+            self.assertEqual(plan.tracker_references(), ("77",))
+
+    def test_a_plan_id_from_another_file_is_rejected_at_validation(self):
+        """Plan IDs mean nothing outside their file; an existing task is named by its tracker ID."""
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "plan.csv"
             write_plan(path, [row("M01-01", "M99-99")])
-            plan = vikunja.parse_plan(path)
-            self.assertEqual(plan.external_references(), ("M99-99",))
+            with self.assertRaisesRegex(vikunja.PlanValidationError, "M99-99"):
+                vikunja.parse_plan(path)
 
-    def test_unresolvable_external_reference_fails_at_import_not_validation(self):
+    def test_unresolvable_tracker_reference_fails_at_import_not_validation(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "plan.csv"
-            write_plan(path, [row("M01-01", "M99-99", project="Root")])
+            write_plan(path, [row("M01-01", "99", project="Root")])
             plan = vikunja.parse_plan(path)
             inventory = vikunja.Inventory([{"id": 1, "title": "Root", "parent_project_id": 0}], [], [])
-            with self.assertRaisesRegex(vikunja.ImportConflict, "M99-99"):
+            with self.assertRaisesRegex(vikunja.ImportConflict, "99"):
                 vikunja.build_import_actions(plan, inventory, require_root=True)
 
-    def test_external_reference_resolves_against_an_existing_marked_task(self):
+    def test_tracker_reference_resolves_against_an_existing_task(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "plan.csv"
-            write_plan(path, [row("M01-01", "M99-99", project="Root")])
+            write_plan(path, [row("M01-01", "7", project="Root")])
             plan = vikunja.parse_plan(path)
-            existing = {"id": 7, "title": "Older", "project_id": 1,
-                        "description": "Body\n\nVikunja external ID: M99-99"}
+            existing = {"id": 7, "title": "Older", "project_id": 1, "description": "Body"}
             inventory = vikunja.Inventory(
                 [{"id": 1, "title": "Root", "parent_project_id": 0}], [existing], []
             )
             actions = vikunja.build_import_actions(plan, inventory, require_root=True)
             relations = [a for a in actions if a.entity == "relation"]
             self.assertEqual(
-                [(a.kind, a.key) for a in relations], [("create", "M99-99:blocking:M01-01")]
+                [(a.kind, a.key) for a in relations], [("create", "7:blocking:M01-01")]
             )
 
     def test_dependency_cycle_is_rejected_with_cycle_members(self):
@@ -327,46 +342,13 @@ class PlanTests(unittest.TestCase):
 
 
 class StateAndPlanningTests(unittest.TestCase):
-    def test_state_mapping_recovers_task_when_server_stripped_marker(self):
-        inventory = vikunja.Inventory(
-            projects=[{"id": 1, "title": "Root", "parent_project_id": 0},
-                      {"id": 2, "title": "Child", "parent_project_id": 1}],
-            tasks=[{"id": 42, "title": "Task", "project_id": 2,
-                    "description": "Meaningful description", "priority": 4,
-                    "done": False, "labels": None, "related_tasks": {}}],
-            labels=[],
-        )
-        plan = vikunja.Plan(tasks=(vikunja.PlanTask.from_row(row()),), source=Path("x"), digest="d")
-        actions = vikunja.build_import_actions(
-            plan, inventory, require_root=True, state_task_ids={"M01-01": 42}
-        )
-        task_action = next(action for action in actions if action.entity == "task")
-        self.assertEqual(task_action.kind, "update")
-        self.assertEqual(task_action.details["id"], 42)
-        self.assertIn("Vikunja external ID: M01-01", task_action.details["changes"]["description"])
-
-    def test_text_external_marker_round_trips_without_html_comment(self):
-        description = vikunja.with_external_marker("Body", "M03-04")
-        self.assertEqual(description, "Body\n\nVikunja external ID: M03-04")
-        self.assertEqual(vikunja.external_id_from_description(description), "M03-04")
-
-    def test_description_equivalence_ignores_markdown_round_trip_but_requires_identity(self):
-        source = "Цель\nТекст\n\nPlan ID\nA"
-        actual = "Цель  \nТекст\n\nPlan ID  \nA\n\nVikunja external ID: A"
-        self.assertTrue(vikunja.description_matches(actual, source, "A"))
-        self.assertFalse(vikunja.description_matches(source, source, "A"))
-        self.assertFalse(vikunja.description_matches(
-            source + "\n\n\\[vikunja-external-id: A]", source, "A"
-        ))
-
-    def test_mapping_persists_and_reverse_resolution_survives_reload(self):
+    def test_mapping_persists_across_reload(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "state.json"
             state = vikunja.ImportState(path, source_digest="abc")
             state.record_task("M01-01", 42, "created")
             loaded = vikunja.ImportState(path, source_digest="abc")
             self.assertEqual(loaded.task_id("M01-01"), 42)
-            self.assertEqual(loaded.external_id(42), "M01-01")
 
     def test_source_change_refuses_to_reuse_mapping(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -375,20 +357,24 @@ class StateAndPlanningTests(unittest.TestCase):
             with self.assertRaisesRegex(vikunja.ImportConflict, "digest"):
                 vikunja.ImportState(path, source_digest="different")
 
-    def test_interrupted_import_resume_does_not_plan_duplicate_task(self):
+    def test_interrupted_import_resumes_from_its_checkpoint_without_duplicates(self):
+        """The checkpoint alone links a row to its task, whatever the task body now says."""
         inventory = vikunja.Inventory(
             projects=[{"id": 1, "title": "Root", "parent_project_id": 0},
                       {"id": 2, "title": "Child", "parent_project_id": 1}],
             tasks=[{"id": 42, "title": "Task", "project_id": 2,
-                    "description": vikunja.with_external_marker("Meaningful description", "M01-01"),
-                    "priority": 4, "done": False, "labels": []}],
+                    "description": "Rewritten by a person", "priority": 1,
+                    "done": False, "labels": []}],
             labels=[],
         )
         plan = vikunja.Plan(tasks=(vikunja.PlanTask.from_row(row()),), source=Path("x"), digest="d")
-        actions = vikunja.build_import_actions(plan, inventory, require_root=True)
-        self.assertEqual([a.kind for a in actions if a.entity == "task"], ["reuse"])
+        actions = vikunja.build_import_actions(
+            plan, inventory, require_root=True, state_task_ids={"M01-01": 42}
+        )
+        task_actions = [a for a in actions if a.entity == "task"]
+        self.assertEqual([(a.kind, a.details["id"]) for a in task_actions], [("reuse", 42)])
 
-    def test_title_match_without_external_marker_is_a_conflict_not_reuse(self):
+    def test_title_match_outside_the_checkpoint_is_a_conflict_not_reuse(self):
         inventory = vikunja.Inventory(
             projects=[{"id": 1, "title": "Root", "parent_project_id": 0},
                       {"id": 2, "title": "Child", "parent_project_id": 1}],
@@ -418,14 +404,15 @@ class StateAndPlanningTests(unittest.TestCase):
         b = row("B", "A", title="B"); b["Order"] = "2"
         tasks = [
             {"id": 10, "title": "A", "project_id": 2, "priority": 4, "done": False,
-             "description": vikunja.with_external_marker("Meaningful description", "A"),
+             "description": "Meaningful description",
              "labels": [], "related_tasks": {"blocking": [{"id": 11}]}},
             {"id": 11, "title": "B", "project_id": 2, "priority": 4, "done": False,
-             "description": vikunja.with_external_marker("Meaningful description", "B"),
+             "description": "Meaningful description",
              "labels": [], "related_tasks": {"blocked": [{"id": 10}]}},
         ]
         plan = vikunja.Plan(tasks=(vikunja.PlanTask.from_row(a), vikunja.PlanTask.from_row(b)), source=Path("x"), digest="d")
-        actions = vikunja.build_import_actions(plan, vikunja.Inventory(projects, tasks, []), require_root=True)
+        actions = vikunja.build_import_actions(plan, vikunja.Inventory(projects, tasks, []), require_root=True,
+                                               state_task_ids={"A": 10, "B": 11})
         relation = [action for action in actions if action.entity == "relation"]
         self.assertEqual([(action.kind, action.key) for action in relation], [("reuse", "A:blocking:B")])
 
@@ -534,7 +521,7 @@ class ImportIntegrationTests(unittest.TestCase):
         })
         with tempfile.TemporaryDirectory() as directory:
             report = vikunja.Importer(service, plan, Path(directory)).apply()
-        self.assertTrue(report["verification"]["ok"], report["verification"])
+        self.assertEqual(report["tasks_created"], 1)
 
     def test_explicit_root_creation_allows_import_into_an_empty_instance(self):
         plan = vikunja.Plan((vikunja.PlanTask.from_row(row()),), Path("plan.csv"), "new-root")
@@ -546,7 +533,6 @@ class ImportIntegrationTests(unittest.TestCase):
             ).apply()
         self.assertEqual(report["projects_created"], 2)
         self.assertEqual(report["tasks_created"], 1)
-        self.assertTrue(report["verification"]["ok"], report["verification"])
 
     def test_apply_then_resume_creates_no_duplicates_and_verifies_relations(self):
         first = row("A", "", title="First")
@@ -558,7 +544,8 @@ class ImportIntegrationTests(unittest.TestCase):
             self.assertEqual(report["projects_created"], 1)
             self.assertEqual(report["tasks_created"], 2)
             self.assertEqual(report["relations_created"], 1)
-            self.assertTrue(report["verification"]["ok"], report["verification"])
+            self.assertEqual([t["description"] for t in service.tasks],
+                             ["Meaningful description"] * 2)
             task_count, project_count = len(service.tasks), len(service.projects)
             resumed = vikunja.Importer(service, plan, Path(directory)).apply()
             self.assertEqual((len(service.tasks), len(service.projects)), (task_count, project_count))
@@ -702,7 +689,7 @@ class PlanFormatTests(unittest.TestCase):
                 encoding="utf-8",
             )
             plan = vikunja.parse_plan(path)
-            self.assertEqual([t.external_id for t in plan.tasks], ["A", "B"])
+            self.assertEqual([t.plan_id for t in plan.tasks], ["A", "B"])
             self.assertEqual([t.order for t in plan.tasks], [1, 2])
             self.assertEqual(plan.tasks[0].priority, 0)
             self.assertFalse(plan.tasks[0].done)
@@ -714,7 +701,7 @@ class PlanFormatTests(unittest.TestCase):
                 "Title,Description,Project,Plan ID,Order\nOne,B,Root,B,7\nTwo,B,Root,A,7\n",
                 encoding="utf-8",
             )
-            self.assertEqual([t.external_id for t in vikunja.parse_plan(path).tasks], ["A", "B"])
+            self.assertEqual([t.plan_id for t in vikunja.parse_plan(path).tasks], ["A", "B"])
 
     def test_unknown_csv_column_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -763,47 +750,6 @@ class PlanFormatTests(unittest.TestCase):
                 vikunja.parse_plan(path)
 
 
-class StaleBindingTests(unittest.TestCase):
-    def test_dropped_dependency_and_label_are_reported_not_deleted(self):
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "plan.json"
-            json_plan(path, [
-                {"id": "A", "title": "A", "project": "Root", "description": "D"},
-                {"id": "B", "title": "B", "project": "Root", "description": "D", "labels": ["keep"]},
-            ])
-            plan = vikunja.parse_plan(path)
-            tasks = [
-                {"id": 1, "title": "A", "project_id": 1, "labels": [],
-                 "description": "D\n\nVikunja external ID: A", "related_tasks": {}},
-                {"id": 2, "title": "B", "project_id": 1,
-                 "labels": [{"id": 5, "title": "keep"}, {"id": 6, "title": "gone"}],
-                 "description": "D\n\nVikunja external ID: B",
-                 "related_tasks": {"blocked": [{"id": 1}]}},
-            ]
-            inventory = vikunja.Inventory(
-                [{"id": 1, "title": "Root", "parent_project_id": 0}], tasks, []
-            )
-            stale = vikunja.find_stale_bindings(plan, inventory)
-            self.assertEqual(stale["relations"], [{"kind": "blocked", "other": "A", "task": "B"}])
-            self.assertEqual(stale["labels"], [{"label": "gone", "task": "B"}])
-            actions = vikunja.build_import_actions(plan, inventory, require_root=True)
-            self.assertFalse([a for a in actions if a.kind == "delete"])
-
-
-class TextOptionTests(unittest.TestCase):
-
-    def test_append_keeps_the_external_marker_last(self):
-        current = "Body\n\nVikunja external ID: M01-01"
-        updated = vikunja.append_to_description(current, "- extra bullet")
-        self.assertTrue(updated.rstrip().endswith("Vikunja external ID: M01-01"))
-        self.assertIn("- extra bullet", updated)
-        self.assertEqual(vikunja.external_id_from_description(updated), "M01-01")
-        self.assertEqual(updated.count("Vikunja external ID"), 1)
-
-    def test_append_on_an_unmarked_description_adds_no_marker(self):
-        self.assertEqual(vikunja.append_to_description("Body", "More"), "Body\n\nMore")
-
-
 class RichFieldImportTests(unittest.TestCase):
     def _plan(self, directory, entries):
         path = Path(directory) / "plan.json"
@@ -824,7 +770,6 @@ class RichFieldImportTests(unittest.TestCase):
             self.assertEqual(report["assignees_set"], 1)
             self.assertEqual(report["buckets_set"], 1)
             self.assertEqual(report["relations_created"], 1)
-            self.assertTrue(report["verification"]["ok"], report["verification"])
             child = next(t for t in service.tasks if t["title"] == "Child")
             self.assertEqual(child["due_date"], "2026-09-10T00:00:00Z")
             self.assertEqual(child["percent_done"], 0.25)
@@ -871,8 +816,8 @@ class BucketInViewTests(unittest.TestCase):
 
 
 class ScopedImportTests(unittest.TestCase):
-    def test_a_backup_with_the_same_external_ids_cannot_redirect_a_targeted_import(self):
-        """Project IDs scope markers and checkpoints, including renamed staging roots."""
+    def test_a_targeted_import_writes_and_checkpoints_only_inside_its_tree(self):
+        """A backup with the same tasks cannot receive the import or share its checkpoint."""
         import re
         class ScopedService(_MemoryVikunja):
             url = 'https://tracker.example'
@@ -884,21 +829,17 @@ class ScopedImportTests(unittest.TestCase):
                 return rows
         service = ScopedService()
         service.projects += [{'id': 2, 'title': 'Root — staging', 'parent_project_id': 0}]
-        for project, task_id in [(1, 10), (2, 20)]:
-            service.tasks.append({'id': task_id, 'project_id': project, 'title': 'Old',
-                                  'description': 'Vikunja external ID: M01-01', 'priority': 4,
-                                  'done': False, 'labels': [], 'related_tasks': {}})
+        service.tasks.append({'id': 10, 'project_id': 1, 'title': 'Task', 'description': 'Backup',
+                              'priority': 4, 'done': False, 'labels': [], 'related_tasks': {}})
         plan = vikunja.Plan((vikunja.PlanTask.from_row(row(project='Root')),), Path('plan.csv'), 'scoped')
         with tempfile.TemporaryDirectory() as tmp:
             original = json.loads(json.dumps(service.tasks[0]))
             importer = vikunja.Importer(service, plan, Path(tmp), project='2')
-            before = importer.dry_run()
-            self.assertEqual([a['details']['id'] for a in before['actions'] if a['entity'] == 'task'], [20])
             result = importer.apply()
-            self.assertTrue(result['verification']['ok'])
+            self.assertEqual(result['tasks_created'], 1)
             self.assertEqual(service.tasks[0], original)
+            self.assertEqual(service.tasks[1]['project_id'], 2)
             self.assertEqual(service.projects[1]['title'], 'Root — staging')
-            self.assertTrue(vikunja.verify_plan(service, plan, '2')['ok'])
             other = vikunja.Importer(service, plan, Path(tmp), project='1')
             self.assertNotEqual(other.state.path, importer.state.path)
             self.assertEqual(other.state.data['tasks'], {})

@@ -383,8 +383,6 @@ class VikunjaAdapter:
         allowed = {"title", "description", "priority", "done", "due_date", "start_date", "end_date", "percent_done"}
         if fields.keys() - allowed:
             raise TrackerError(f"Unsupported task fields: {sorted(fields.keys() - allowed)}")
-        if "description" in fields:
-            api.check_external_marker(task.id, task.description, fields["description"])
         if fields:
             self.client.revisions[f"/tasks/{task.id}"] = task.revision
             self.client.patch(f"/tasks/{task.id}", fields, markdown="description" in fields)

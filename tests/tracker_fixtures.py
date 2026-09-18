@@ -79,6 +79,9 @@ class FakeClient:
             view = next(v for v in self.boards[int(parts[1])]["views"] if v["id"] == int(parts[3]))
             view.update(body)
             return dict(view)
+        if parts[0] == "tasks":
+            self.tasks[int(parts[1])].update(body)
+            return dict(self.tasks[int(parts[1])])
         raise AssertionError(path)
 
     def put(self, path, body):

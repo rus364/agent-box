@@ -11,12 +11,12 @@ def parser():
     p = argparse.ArgumentParser(prog="agent-box tracker provider vikunja")
     sub = p.add_subparsers(dest="command", required=True)
     cmd = sub.add_parser("import")
-    cmd.add_argument("operation", choices=("validate", "plan", "verify"))
+    cmd.add_argument("operation", choices=("validate", "plan"))
     cmd.add_argument("file", type=Path)
     cmd.add_argument("--state-dir", type=Path, default=api.DEFAULT_STATE_DIR)
     cmd.add_argument("--apply", action="store_true")
     cmd.add_argument("--create-root", action="store_true")
-    cmd.add_argument("--project", help="Resolve external IDs only inside this existing target tree")
+    cmd.add_argument("--project", help="Import into this existing target tree; its ID also scopes the checkpoint")
     cmd = sub.add_parser("bulk-update")
     cmd.add_argument("file", type=Path)
     cmd.add_argument("--apply", action="store_true")
@@ -43,8 +43,6 @@ def parser():
     cmd.add_argument("label", nargs="?")
     cmd.add_argument("--task")
     cmd.add_argument("--force", action="store_true")
-    cmd = sub.add_parser("external")
-    cmd.add_argument("reference")
     cmd = sub.add_parser("task-fields")
     cmd.add_argument("task")
     cmd.add_argument("--file", type=Path, required=True)
@@ -62,13 +60,8 @@ def run(adapter, arguments):
         plan = api.parse_plan(args.file)
         if operation == "validate":
             return api.validation_summary(plan)
-        if operation == "verify":
-            return api.verify_plan(client, plan, args.project)
         importer = api.Importer(client, plan, args.state_dir, allow_create_root=args.create_root, project=args.project)
         return importer.apply() if args.apply else importer.dry_run()
-    if args.command == "external":
-        task = api.TaskIndex(api.inventory_from_client(client).tasks).resolve(args.reference)
-        return {"task_id": task["id"], "external_id": api.external_id_from_description(task.get("description", ""))}
     if args.command == "bulk-update":
         inventory = api.inventory_from_client(client)
         actions = api.plan_bulk_updates(json.loads(args.file.read_text()), inventory.tasks)

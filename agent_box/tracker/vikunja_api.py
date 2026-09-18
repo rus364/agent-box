@@ -39,13 +39,10 @@ UNMANAGED = ""
 CLEARED = "-"
 HEX_COLOR_RE = re.compile(r"^#?[0-9a-fA-F]{6}$")
 NULL_TIMESTAMP = "0001-01-01T00:00:00Z"
-EXTERNAL_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
-CURRENT_MARKER_RE = re.compile(r"(?mi)^Vikunja external ID:\s*([^\s]+)\s*$")
-MARKER_RES = (
-    re.compile(r"<!--\s*vikunja-external-id:\s*([^\s]+)\s*-->"),
-    re.compile(r"\\?\[vikunja-external-id:\s*([^\]\\\s]+)\\?\]"),
-    CURRENT_MARKER_RE,
-)
+# A plan ID names a row only inside its file. Anything else a row references is
+# an existing task's tracker ID, so an all-digit plan ID would be ambiguous.
+PLAN_ID_RE = re.compile(r"^(?!\d+$)[A-Za-z0-9][A-Za-z0-9._:-]*$")
+TRACKER_ID_RE = re.compile(r"^\d+$")
 RELATION_KINDS = {
     "subtask", "parenttask", "related", "duplicateof", "duplicates",
     "blocking", "blocked", "precedes", "follows", "copiedfrom", "copiedto",
@@ -88,27 +85,6 @@ class PlanValidationError(VikunjaError):
 
 class ImportConflict(VikunjaError):
     pass
-
-
-
-
-def append_to_description(current, addition, external_id=None):
-    """Append prose while keeping the external-ID footer last."""
-    marker = external_id or external_id_from_description(current)
-    body = current or ""
-    if marker:
-        for pattern in MARKER_RES:
-            body = pattern.sub("", body)
-    body = body.rstrip() + "\n\n" + addition.strip()
-    return with_external_marker(body, marker) if marker else body.strip()
-
-
-
-
-
-
-
-
 
 
 def stable_json(value, pretty=False):
@@ -282,11 +258,6 @@ class TaskIndex:
             if not found:
                 raise NotFound(f"task id {text} was not found")
             return found
-        external = [t for t in self.tasks if external_id_from_description(t.get("description", "")) == text]
-        if len(external) == 1:
-            return external[0]
-        if len(external) > 1:
-            raise AmbiguousMatch(f"external task id {text!r} is duplicated")
         matches = [task for task in self.tasks if task.get("title") == text]
         if not matches:
             raise NotFound(f"task {text!r} was not found")
@@ -296,34 +267,9 @@ class TaskIndex:
         return matches[0]
 
 
-def external_id_from_description(description):
-    for pattern in MARKER_RES:
-        match = pattern.search(description or "")
-        if match:
-            return match.group(1)
-    return None
-
-
-def check_external_marker(task_id, current, updated):
-    """Refuse a rewrite that drops the marker the importer identifies a task by.
-
-    The rule lives here rather than in the adapter because bulk updates write
-    descriptions straight through the client; an invariant that only one of two
-    write paths enforces is not an invariant. Rewriting the text around the
-    marker stays allowed.
-    """
-    marker = external_id_from_description(current)
-    if marker and external_id_from_description(updated) != marker:
-        raise ImportConflict(
-            f"Task {task_id} carries import marker {marker}; keep it in the description",
-            "conflict")
-
-
-def with_external_marker(description, external_id):
-    description = description or ""
-    for pattern in MARKER_RES:
-        description = pattern.sub("", description)
-    lines = description.rstrip().splitlines()
+def markdown_description(description):
+    """Keep the plan's single line breaks visible once Vikunja renders Markdown."""
+    lines = (description or "").rstrip().splitlines()
     prepared = []
     in_fence = False
     for index, line in enumerate(lines):
@@ -334,33 +280,14 @@ def with_external_marker(description, external_id):
         if stripped and next_nonblank and not in_fence and not line.endswith("  "):
             line += "  "
         prepared.append(line)
-    body = "\n".join(prepared).rstrip()
-    return f"{body}\n\nVikunja external ID: {external_id}"
-
-
-def _normalized_description_text(description):
-    text = description or ""
-    for pattern in MARKER_RES:
-        text = pattern.sub("", text)
-    text = re.sub(r"\\([\\`*_[\]{}()#+\-.!])", r"\1", text)
-    text = text.replace("  \n", "\n").replace("\\\n", "\n")
-    return re.sub(r"\s+", " ", text).strip()
-
-
-def description_matches(actual, source, external_id):
-    marker = CURRENT_MARKER_RE.search(actual or "")
-    return (
-        marker is not None
-        and marker.group(1) == external_id
-        and _normalized_description_text(actual) == _normalized_description_text(source)
-    )
+    return "\n".join(prepared).rstrip()
 
 
 def _cell(row, field):
     return (row.get(field) or "").strip()
 
 
-def _plan_timestamp(external_id, field, value):
+def _plan_timestamp(plan_id, field, value):
     """Optional date cell: blank leaves the field unmanaged, "-" clears it."""
     if value == UNMANAGED:
         return None
@@ -368,7 +295,7 @@ def _plan_timestamp(external_id, field, value):
         return NULL_TIMESTAMP
     if not re.fullmatch(r"\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2})?(Z|[+-]\d{2}:\d{2})?)?", value):
         raise PlanValidationError(
-            f"{external_id}: {field} must be ISO-8601 (2026-09-02 or 2026-09-02T15:04:05Z), "
+            f"{plan_id}: {field} must be ISO-8601 (2026-09-02 or 2026-09-02T15:04:05Z), "
             f'blank to leave unmanaged, or "-" to clear'
         )
     if len(value) == 10:
@@ -378,7 +305,7 @@ def _plan_timestamp(external_id, field, value):
 
 class PlanTask:
     def __init__(self, title, description, priority, labels, project_path, done,
-                 external_id, kind, depends_on, source_tasks, order,
+                 plan_id, kind, depends_on, source_tasks, order,
                  fields=None, assignees=None, bucket=UNMANAGED, parent=None):
         self.title = title
         self.description = description
@@ -386,7 +313,7 @@ class PlanTask:
         self.labels = tuple(labels)
         self.project_path = project_path
         self.done = done
-        self.external_id = external_id
+        self.plan_id = plan_id
         self.kind = kind
         self.depends_on = tuple(depends_on)
         self.source_tasks = source_tasks
@@ -398,38 +325,38 @@ class PlanTask:
 
     @classmethod
     def from_row(cls, row, default_order=1):
-        external_id = _cell(row, "Plan ID")
-        if not EXTERNAL_ID_RE.fullmatch(external_id):
-            raise PlanValidationError(f"invalid external ID {external_id!r}")
+        plan_id = _cell(row, "Plan ID")
+        if not PLAN_ID_RE.fullmatch(plan_id):
+            raise PlanValidationError(f"invalid plan ID {plan_id!r}; use letters, digits and ._:- with at least one non-digit")
         priority_text = _cell(row, "Priority") or "0"
         try:
             priority = int(priority_text)
         except ValueError:
-            raise PlanValidationError(f"{external_id}: priority must be an integer") from None
+            raise PlanValidationError(f"{plan_id}: priority must be an integer") from None
         if priority not in range(0, 6):
-            raise PlanValidationError(f"{external_id}: priority must be between 0 and 5")
+            raise PlanValidationError(f"{plan_id}: priority must be between 0 and 5")
         done_text = (_cell(row, "Done") or "false").lower()
         if done_text not in ("true", "false"):
-            raise PlanValidationError(f"{external_id}: Done must be true or false")
+            raise PlanValidationError(f"{plan_id}: Done must be true or false")
         order_text = _cell(row, "Order")
         if order_text:
             try:
                 order = int(order_text)
             except ValueError:
-                raise PlanValidationError(f"{external_id}: Order must be an integer") from None
+                raise PlanValidationError(f"{plan_id}: Order must be an integer") from None
         else:
             order = default_order
         try:
             project_path = " / ".join(_normalize_path(row["Project"]))
         except ValueError:
-            raise PlanValidationError(f"{external_id}: Project must not be empty") from None
+            raise PlanValidationError(f"{plan_id}: Project must not be empty") from None
         labels = tuple(dict.fromkeys(x.strip() for x in _cell(row, "Labels").split(",") if x.strip()))
         depends = tuple(dict.fromkeys(x.strip() for x in _cell(row, "Depends On").split(",") if x.strip()))
 
         fields = {}
         for column, key in (("Due Date", "due_date"), ("Start Date", "start_date"),
                             ("End Date", "end_date")):
-            stamp = _plan_timestamp(external_id, column, _cell(row, column))
+            stamp = _plan_timestamp(plan_id, column, _cell(row, column))
             if stamp is not None:
                 fields[key] = stamp
         percent = _cell(row, "Percent Done")
@@ -437,10 +364,10 @@ class PlanTask:
             try:
                 value = float(percent)
             except ValueError:
-                raise PlanValidationError(f"{external_id}: Percent Done must be a number") from None
+                raise PlanValidationError(f"{plan_id}: Percent Done must be a number") from None
             if not 0.0 <= value <= 1.0:
                 raise PlanValidationError(
-                    f"{external_id}: Percent Done must be between 0 and 1 (0.5 means 50%)"
+                    f"{plan_id}: Percent Done must be between 0 and 1 (0.5 means 50%)"
                 )
             fields["percent_done"] = value
         color = _cell(row, "Hex Color")
@@ -450,7 +377,7 @@ class PlanTask:
             elif HEX_COLOR_RE.fullmatch(color):
                 fields["hex_color"] = color.lstrip("#").lower()
             else:
-                raise PlanValidationError(f"{external_id}: Hex Color must be six hex digits")
+                raise PlanValidationError(f"{plan_id}: Hex Color must be six hex digits")
 
         assignee_cell = _cell(row, "Assignees")
         if assignee_cell == CLEARED:
@@ -460,14 +387,12 @@ class PlanTask:
         else:
             assignees = None
         parent = _cell(row, "Parent") or None
-        if parent and not EXTERNAL_ID_RE.fullmatch(parent):
-            raise PlanValidationError(f"{external_id}: invalid Parent reference {parent!r}")
-        if parent == external_id:
-            raise PlanValidationError(f"{external_id} is its own parent")
+        if parent == plan_id:
+            raise PlanValidationError(f"{plan_id} is its own parent")
 
         return cls(
             _cell(row, "Title"), row["Description"].rstrip(), priority, labels,
-            project_path, done_text == "true", external_id, _cell(row, "Kind"),
+            project_path, done_text == "true", plan_id, _cell(row, "Kind"),
             depends, _cell(row, "Source Tasks"), order,
             fields=fields, assignees=assignees, bucket=_cell(row, "Bucket"), parent=parent,
         )
@@ -475,13 +400,13 @@ class PlanTask:
     def manages_assignees(self):
         return self.assignees is not None
 
-    def desired_description(self):
-        return with_external_marker(self.description, self.external_id)
+    def rendered_description(self):
+        return markdown_description(self.description)
 
     def as_dict(self):
         value = {
             "depends_on": list(self.depends_on), "description": self.description,
-            "done": self.done, "external_id": self.external_id, "kind": self.kind,
+            "done": self.done, "plan_id": self.plan_id, "kind": self.kind,
             "labels": list(self.labels), "order": self.order, "priority": self.priority,
             "project": self.project_path, "source_tasks": self.source_tasks,
             "title": self.title,
@@ -512,14 +437,14 @@ class Plan:
         edges = []
         for task in self.tasks:
             for dependency in task.depends_on:
-                edges.append((dependency, "blocking", task.external_id))
+                edges.append((dependency, "blocking", task.plan_id))
             if task.parent:
-                edges.append((task.external_id, "parenttask", task.parent))
+                edges.append((task.plan_id, "parenttask", task.parent))
         return tuple(edges)
 
-    def external_references(self):
-        """Referenced plan IDs that no row defines; they must already exist."""
-        known = {task.external_id for task in self.tasks}
+    def tracker_references(self):
+        """References that no row defines; each must be an existing task's tracker ID."""
+        known = {task.plan_id for task in self.tasks}
         referenced = set()
         for task in self.tasks:
             referenced.update(task.depends_on)
@@ -530,7 +455,7 @@ class Plan:
     def as_dict(self):
         return {
             "digest": self.digest,
-            "external_references": list(self.external_references()),
+            "tracker_references": list(self.tracker_references()),
             "projects": sorted({task.project_path for task in self.tasks}),
             "relation_edges": [list(edge) for edge in self.relation_edges()],
             "source": str(self.source),
@@ -681,22 +606,28 @@ def _finish_plan(rows, path, digest):
         raise PlanValidationError("plan contains no tasks")
     by_id = {}
     for task in tasks:
-        if task.external_id in by_id:
-            raise PlanValidationError(f"duplicate external ID {task.external_id}")
-        by_id[task.external_id] = task
+        if task.plan_id in by_id:
+            raise PlanValidationError(f"duplicate plan ID {task.plan_id}")
+        by_id[task.plan_id] = task
+    references = Plan(tasks, path, digest).tracker_references()
+    invalid = [ref for ref in references if not TRACKER_ID_RE.fullmatch(ref)]
+    if invalid:
+        raise PlanValidationError(
+            "references must name a plan row or an existing task's tracker ID: " + ", ".join(invalid)
+        )
     seen_edges = set()
     for task in tasks:
         for dependency in task.depends_on:
-            if dependency == task.external_id:
-                raise PlanValidationError(f"{task.external_id} depends on itself")
-            edge = (dependency, task.external_id)
+            if dependency == task.plan_id:
+                raise PlanValidationError(f"{task.plan_id} depends on itself")
+            edge = (dependency, task.plan_id)
             if edge in seen_edges:
-                raise PlanValidationError(f"duplicate dependency edge {dependency} -> {task.external_id}")
+                raise PlanValidationError(f"duplicate dependency edge {dependency} -> {task.plan_id}")
             seen_edges.add(edge)
     cycle = _find_cycle(by_id)
     if cycle:
         raise PlanValidationError("dependency cycle: " + " -> ".join(cycle))
-    tasks.sort(key=lambda item: (item.order, item.external_id))
+    tasks.sort(key=lambda item: (item.order, item.plan_id))
     return Plan(tasks, path.resolve(), digest)
 
 
@@ -718,33 +649,33 @@ class Action:
         return {"details": self.details, "entity": self.entity, "key": self.key, "kind": self.kind}
 
 
-def _tasks_by_external(inventory, state_task_ids=None):
-    tasks_by_external = {}
-    for task in inventory.tasks:
-        external_id = external_id_from_description(task.get("description", ""))
-        if external_id:
-            if external_id in tasks_by_external:
-                raise ImportConflict(f"external ID {external_id!r} appears on multiple Vikunja tasks")
-            tasks_by_external[external_id] = task
+def _imported_tasks(inventory, state_task_ids=None):
+    """Plan IDs this import already created, as recorded by its own checkpoint.
+
+    The checkpoint is the only link between a plan row and a task: the task body
+    stays the user's text, and a plan ID means nothing outside its file.
+    """
     tasks_by_id = {int(task["id"]): task for task in inventory.tasks}
-    for external_id, task_id in (state_task_ids or {}).items():
+    imported = {}
+    for plan_id, task_id in (state_task_ids or {}).items():
         task = tasks_by_id.get(int(task_id))
         if task is None:
             raise ImportConflict(
-                f"import state maps {external_id!r} to missing Vikunja task id {task_id}"
+                f"import state maps {plan_id!r} to missing Vikunja task id {task_id}"
             )
-        marked_id = external_id_from_description(task.get("description", ""))
-        if marked_id and marked_id != external_id:
-            raise ImportConflict(
-                f"import state maps {external_id!r} to task {task_id}, which is marked {marked_id!r}"
-            )
-        existing = tasks_by_external.get(external_id)
-        if existing is not None and int(existing["id"]) != int(task_id):
-            raise ImportConflict(
-                f"external ID {external_id!r} conflicts between import state and task marker"
-            )
-        tasks_by_external[external_id] = task
-    return tasks_by_external
+        imported[plan_id] = task
+    return imported
+
+
+def _referenced_tasks(plan, inventory):
+    tasks_by_id = {str(task["id"]): task for task in inventory.tasks}
+    references = plan.tracker_references()
+    missing = [ref for ref in references if ref not in tasks_by_id]
+    if missing:
+        raise ImportConflict(
+            "referenced tracker IDs were not found in the import scope: " + ", ".join(missing)
+        )
+    return {ref: tasks_by_id[ref] for ref in references}
 
 
 def build_import_actions(plan, inventory, require_root=True, state_task_ids=None):
@@ -774,79 +705,49 @@ def build_import_actions(plan, inventory, require_root=True, state_task_ids=None
             elif not any(a.entity == "project" and a.key == partial for a in actions):
                 actions.append(Action("create", "project", partial, {"parent_path": " / ".join(parts[:depth - 1])}))
 
-    tasks_by_external = _tasks_by_external(inventory, state_task_ids)
+    imported = _imported_tasks(inventory, state_task_ids)
+    known_tasks = {**_referenced_tasks(plan, inventory), **imported}
     project_tasks = {}
     for task in inventory.tasks:
         project_tasks.setdefault(int(task.get("project_id") or 0), []).append(task)
 
-    unresolved = [ref for ref in plan.external_references() if ref not in tasks_by_external]
-    if unresolved:
-        raise ImportConflict(
-            "referenced plan IDs are neither in this plan nor on an existing task: "
-            + ", ".join(unresolved)
-        )
-
     for task in sorted(plan.tasks, key=lambda item: item.order):
-        existing = tasks_by_external.get(task.external_id)
+        existing = imported.get(task.plan_id)
         desired_project = known_paths.get(task.project_path)
         if existing:
-            changes = {}
-            expected = {
-                "title": task.title, "description": task.desired_description(),
-                "priority": task.priority, "done": task.done,
-            }
-            expected.update(task.fields)
-            if desired_project:
-                expected["project_id"] = desired_project["id"]
-            for key, value in expected.items():
-                if key == "description":
-                    differs = not description_matches(
-                        existing.get("description", ""), task.description, task.external_id
-                    )
-                elif key in ("due_date", "start_date", "end_date"):
-                    differs = _timestamp_text(existing.get(key)) != _timestamp_text(value)
-                elif key == "percent_done":
-                    differs = float(existing.get(key) or 0.0) != float(value)
-                elif key == "hex_color":
-                    differs = (existing.get(key) or "").lstrip("#").lower() != value
-                else:
-                    differs = existing.get(key) != value
-                if differs:
-                    changes[key] = value
-            kind = "update" if changes else "reuse"
-            actions.append(Action(kind, "task", task.external_id,
-                                  {"id": existing["id"], "project_path": task.project_path, "changes": changes}))
-        else:
-            if desired_project:
-                collisions = [candidate for candidate in project_tasks.get(int(desired_project["id"]), [])
-                              if candidate.get("title") == task.title]
-                if collisions:
-                    raise ImportConflict(
-                        f"task title {task.title!r} already exists in {task.project_path} without "
-                        f"external ID {task.external_id}; refusing title-based reuse"
-                    )
-            details = {
-                "project_path": task.project_path, "title": task.title,
-                "description": task.desired_description(), "priority": task.priority,
-                "done": task.done, "order": task.order,
-            }
-            details.update(task.fields)
-            actions.append(Action("create", "task", task.external_id, details))
+            actions.append(Action("reuse", "task", task.plan_id,
+                                  {"id": existing["id"], "project_path": task.project_path}))
+            continue
+        if desired_project:
+            collisions = [candidate for candidate in project_tasks.get(int(desired_project["id"]), [])
+                          if candidate.get("title") == task.title]
+            if collisions:
+                raise ImportConflict(
+                    f"task title {task.title!r} already exists in {task.project_path}; "
+                    f"import only creates tasks and refuses to reuse one by title"
+                )
+        details = {
+            "project_path": task.project_path, "title": task.title,
+            "description": task.rendered_description(), "priority": task.priority,
+            "done": task.done, "order": task.order,
+        }
+        details.update(task.fields)
+        actions.append(Action("create", "task", task.plan_id, details))
 
     for task in sorted(plan.tasks, key=lambda item: item.order):
-        existing = tasks_by_external.get(task.external_id)
+        existing = imported.get(task.plan_id)
         if task.manages_assignees():
             current = sorted(
                 (u.get("username") or "") for u in ((existing or {}).get("assignees") or [])
             )
             desired = sorted(task.assignees)
             kind = "reuse" if existing and current == desired else "set"
-            actions.append(Action(kind, "assignee", task.external_id,
+            actions.append(Action(kind, "assignee", task.plan_id,
                                   {"usernames": desired, "current": current}))
         if task.bucket:
             current = task_bucket_titles(existing or {})
             kind = "reuse" if existing and task.bucket in current else "set"
-            actions.append(Action(kind, "bucket", task.external_id,
+            actions.append(Action(kind, "bucket", task.plan_id,
                                   {"title": task.bucket, "current": current}))
 
     labels_by_title = {label["title"]: label for label in inventory.labels}
@@ -857,68 +758,15 @@ def build_import_actions(plan, inventory, require_root=True, state_task_ids=None
             actions.append(Action("create", "label", title))
     relation_keys = existing_relation_keys(inventory.tasks)
     for base, relation_kind, other in plan.relation_edges():
-        source = tasks_by_external.get(base)
-        target = tasks_by_external.get(other)
+        source = known_tasks.get(base)
+        target = known_tasks.get(other)
         kind = "reuse" if source and target and (
             int(source["id"]), relation_kind, int(target["id"])
         ) in relation_keys else "create"
         actions.append(Action(kind, "relation", f"{base}:{relation_kind}:{other}", {
-            "from_external_id": base, "relation_kind": relation_kind,
-            "to_external_id": other,
+            "from": base, "relation_kind": relation_kind, "to": other,
         }))
     return actions
-
-
-def _timestamp_text(value):
-    text = str(value or "").strip()
-    return "" if not text or text.startswith("0001-01-01") else text
-
-
-MANAGED_RELATION_KINDS = ("blocked", "parenttask")
-
-
-def find_stale_bindings(plan, inventory, state_task_ids=None):
-    """Report relations and labels present in Vikunja but absent from the plan.
-
-    Never applied. The importer only adds; this makes what it cannot remove
-    visible instead of leaving a silently stale edge behind.
-    """
-    tasks_by_external = _tasks_by_external(inventory, state_task_ids)
-    id_to_external = {int(t["id"]): e for e, t in tasks_by_external.items()}
-    desired = set()
-    for base, kind, other in plan.relation_edges():
-        desired.add((base, kind, other))
-        inverse = {"blocking": "blocked", "blocked": "blocking",
-                   "parenttask": "subtask", "subtask": "parenttask"}.get(kind)
-        if inverse:
-            desired.add((other, inverse, base))
-    stale_relations = []
-    stale_labels = []
-    for task in plan.tasks:
-        existing = tasks_by_external.get(task.external_id)
-        if not existing:
-            continue
-        related = existing.get("related_tasks") or {}
-        for kind in MANAGED_RELATION_KINDS:
-            for other in related.get(kind) or []:
-                other_external = id_to_external.get(int(other["id"]))
-                if other_external is None:
-                    continue
-                if (task.external_id, kind, other_external) not in desired:
-                    stale_relations.append({
-                        "kind": kind, "other": other_external, "task": task.external_id,
-                    })
-        attached = {label["title"] for label in (existing.get("labels") or [])}
-        for title in sorted(attached - set(task.labels)):
-            stale_labels.append({"label": title, "task": task.external_id})
-    return {
-        "labels": sorted(stale_labels, key=lambda item: (item["task"], item["label"])),
-        "relations": sorted(
-            stale_relations, key=lambda item: (item["task"], item["kind"], item["other"])
-        ),
-    }
-
-
 
 
 def attach_label(client, task_id, label_id):
@@ -1125,8 +973,6 @@ def plan_bulk_updates(specification, tasks):
         if forbidden:
             raise ImportConflict(f"bulk fields are not writable: {', '.join(forbidden)}"
                                  + ("; move tasks with agent-box tracker move" if "project_id" in forbidden else ""))
-        if "description" in changes:
-            check_external_marker(task_id, task.get("description", ""), changes["description"])
         actions.append(Action("update", "task", task_id, {"changes": changes, "title": task.get("title", "")}))
     return actions
 
@@ -1173,23 +1019,17 @@ class ImportState:
         self.data["projects"][path] = {"id": int(project_id), "disposition": disposition}
         self._save()
 
-    def record_task(self, external_id, task_id, disposition):
-        self.data["tasks"][external_id] = {"id": int(task_id), "disposition": disposition}
+    def record_task(self, plan_id, task_id, disposition):
+        self.data["tasks"][plan_id] = {"id": int(task_id), "disposition": disposition}
         self._save()
 
     def record_relation(self, key, disposition):
         self.data["relations"][key] = {"disposition": disposition}
         self._save()
 
-    def task_id(self, external_id):
-        value = self.data["tasks"].get(external_id)
+    def task_id(self, plan_id):
+        value = self.data["tasks"].get(plan_id)
         return value["id"] if value else None
-
-    def external_id(self, task_id):
-        matches = [external for external, value in self.data["tasks"].items() if value["id"] == int(task_id)]
-        if len(matches) > 1:
-            raise ImportConflict(f"Vikunja task id {task_id} maps to multiple external IDs")
-        return matches[0] if matches else None
 
 
 def projects_from_client(client):
@@ -1204,7 +1044,7 @@ def inventory_from_client(client):
 
 
 def import_inventory(client, plan, project=None):
-    """An explicit target root owns external IDs even when its backup keeps them.
+    """An explicit target root scopes the import to its subtree.
 
 The plan's root is a local name for that target, so importing into a renamed or
 nested staging root neither renames it nor creates an extra root above it.
@@ -1287,18 +1127,16 @@ class Importer:
 
     def _state_task_ids(self):
         return {
-            external_id: value["id"]
-            for external_id, value in self.state.data["tasks"].items()
+            plan_id: value["id"]
+            for plan_id, value in self.state.data["tasks"].items()
         }
 
     def dry_run(self):
         inventory = import_inventory(self.client, self.plan, self.project)
         state_task_ids = self._state_task_ids()
-        result = summarize_actions(build_import_actions(
+        return summarize_actions(build_import_actions(
             self.plan, inventory, not self.allow_create_root, state_task_ids=state_task_ids,
         ))
-        result["stale"] = find_stale_bindings(self.plan, inventory, state_task_ids)
-        return result
 
     def apply(self):
         inventory = import_inventory(self.client, self.plan, self.project)
@@ -1306,11 +1144,10 @@ class Importer:
         actions = build_import_actions(
             self.plan, inventory, not self.allow_create_root, state_task_ids=state_task_ids,
         )
-        stale = find_stale_bindings(self.plan, inventory, state_task_ids)
         projects = ProjectIndex(inventory.projects)
         path_to_id = {projects.path_for(p): int(p["id"]) for p in inventory.projects}
         report = {"projects_created": 0, "projects_reused": 0, "tasks_created": 0,
-                  "tasks_reused": 0, "tasks_updated": 0, "labels_created": 0,
+                  "tasks_reused": 0, "labels_created": 0,
                   "labels_reused": 0, "relations_created": 0, "relations_reused": 0,
                   "assignees_set": 0, "assignees_reused": 0, "buckets_set": 0,
                   "buckets_reused": 0}
@@ -1330,13 +1167,13 @@ class Importer:
                 report["projects_created"] += 1
             self.state.record_project(action.key, project_id, action.kind)
 
-        plan_by_id = {task.external_id: task for task in self.plan.tasks}
+        plan_by_id = {task.plan_id: task for task in self.plan.tasks}
         task_ids = {}
         for action in [a for a in actions if a.entity == "task"]:
             task = plan_by_id[action.key]
             if action.kind == "create":
                 body = {
-                    "title": task.title, "description": task.desired_description(),
+                    "title": task.title, "description": task.rendered_description(),
                     "priority": task.priority, "done": task.done,
                 }
                 body.update(task.fields)
@@ -1347,15 +1184,7 @@ class Importer:
                 report["tasks_created"] += 1
             else:
                 task_id = int(action.details["id"])
-                if action.kind == "update":
-                    changes = dict(action.details["changes"])
-                    if "description" in changes:
-                        self.client.patch(f"/tasks/{task_id}", changes, markdown=True)
-                    else:
-                        self.client.patch(f"/tasks/{task_id}", changes)
-                    report["tasks_updated"] += 1
-                else:
-                    report["tasks_reused"] += 1
+                report["tasks_reused"] += 1
             task_ids[action.key] = task_id
             self.state.record_task(action.key, task_id, action.kind)
 
@@ -1372,7 +1201,7 @@ class Importer:
             for t in inventory.tasks
         }
         for task in self.plan.tasks:
-            task_id = task_ids[task.external_id]
+            task_id = task_ids[task.plan_id]
             attached = current.get(task_id, set())
             for title in task.labels:
                 label_id = labels[title]
@@ -1399,9 +1228,7 @@ class Importer:
             report["buckets_set"] += 1
 
         refreshed = import_inventory(self.client, self.plan, self.project)
-        resolved = dict(task_ids)
-        for external_id, existing in _tasks_by_external(refreshed).items():
-            resolved.setdefault(external_id, int(existing["id"]))
+        resolved = {**{ref: int(ref) for ref in self.plan.tracker_references()}, **task_ids}
         relations = existing_relation_keys(refreshed.tasks)
         for base, kind, other in self.plan.relation_edges():
             key = f"{base}:{kind}:{other}"
@@ -1415,8 +1242,6 @@ class Importer:
             })
             report["relations_created"] += 1
             self.state.record_relation(key, "create")
-        report["stale"] = stale
-        report["verification"] = verify_plan(self.client, self.plan, self.project)
         return report
 
     def _resolve_user(self, username):
@@ -1456,57 +1281,11 @@ def existing_relation_keys(tasks):
     return keys
 
 
-def verify_plan(client, plan, project=None):
-    inventory = import_inventory(client, plan, project)
-    project_index = ProjectIndex(inventory.projects)
-    paths = {project_index.path_for(p): p for p in inventory.projects}
-    errors = []
-    root = _normalize_path(plan.tasks[0].project_path)[0]
-    roots = [p for p in inventory.projects if p["title"] == root and not int(p.get("parent_project_id") or 0)]
-    if len(roots) != 1:
-        errors.append(f"expected one root {root!r}, found {len(roots)}")
-    for path in sorted({task.project_path for task in plan.tasks}):
-        if path not in paths:
-            errors.append(f"missing project path {path}")
-    by_external = {}
-    for task in inventory.tasks:
-        external = external_id_from_description(task.get("description", ""))
-        if external:
-            by_external.setdefault(external, []).append(task)
-    for desired in plan.tasks:
-        matches = by_external.get(desired.external_id, [])
-        if len(matches) != 1:
-            errors.append(f"external ID {desired.external_id} resolves to {len(matches)} tasks")
-            continue
-        actual = matches[0]
-        for field, expected in (("title", desired.title), ("priority", desired.priority), ("done", desired.done)):
-            if actual.get(field) != expected:
-                errors.append(f"{desired.external_id}: {field} differs")
-        if not description_matches(
-            actual.get("description", ""), desired.description, desired.external_id
-        ):
-            errors.append(f"{desired.external_id}: description differs")
-        actual_labels = {label["title"] for label in (actual.get("labels") or [])}
-        if actual_labels != set(desired.labels):
-            errors.append(f"{desired.external_id}: labels differ")
-        if desired.bucket and desired.bucket not in task_bucket_titles(actual):
-            errors.append(f"{desired.external_id}: bucket differs")
-    relations = existing_relation_keys(inventory.tasks)
-    unique = {external: matches[0] for external, matches in by_external.items() if len(matches) == 1}
-    for dependency, kind, blocked in plan.relation_edges():
-        if dependency in unique and blocked in unique:
-            key = (int(unique[dependency]["id"]), kind, int(unique[blocked]["id"]))
-            if key not in relations:
-                errors.append(f"missing relation {dependency} {kind} {blocked}")
-    return {"errors": errors, "ok": not errors, "tasks_expected": len(plan.tasks),
-            "relations_expected": len(plan.relation_edges())}
-
-
 def validation_summary(plan):
-    """Local validation result. External references are resolved only on import."""
+    """Local validation result. Tracker references are resolved only on import."""
     return {
         "digest": plan.digest,
-        "external_references": list(plan.external_references()),
+        "tracker_references": list(plan.tracker_references()),
         "projects": len({t.project_path for t in plan.tasks}),
         "relations": len(plan.relation_edges()),
         "tasks": len(plan.tasks),

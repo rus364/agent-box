@@ -85,15 +85,21 @@ class BoardRepairTests(unittest.TestCase):
         self.assertEqual({path for path, _ in client.writes}, {"/projects/1/views/10/buckets"})
 
 
-class ImportMarkerTests(unittest.TestCase):
-    def test_a_rewrite_may_not_drop_the_marker_a_later_import_identifies_the_task_by(self):
-        """Without it the next import creates a second copy of the same task."""
+class DescriptionRewriteTests(unittest.TestCase):
+    def test_a_description_may_be_rewritten_whole_even_after_an_import(self):
+        """The import links rows to tasks through its checkpoint, so the body stays the user's text."""
         existing = task(5, 1, 10, 101, description="Goal\n\nVikunja external ID: B-01")
         instance, client = adapter(tasks={5: existing})
-        current = instance.get("5")
-        with self.assertRaisesRegex(TrackerError, "import marker B-01"):
-            instance.update(current, {"description": "Goal\n\n- [ ] Acceptance"})
-        self.assertEqual(client.writes, [])
+        instance.update(instance.get("5"), {"description": "Goal\n\n- [ ] Acceptance"})
+        self.assertEqual([body["description"] for _, body in client.writes if body and "description" in body],
+                         ["Goal\n\n- [ ] Acceptance"])
+
+    def test_a_bulk_rewrite_is_planned_like_any_other_description_change(self):
+        from agent_box.tracker import vikunja_api
+
+        tasks = [{"id": 5, "title": "Task", "description": "Goal\n\nVikunja external ID: B-01"}]
+        actions = vikunja_api.plan_bulk_updates([{"task": "5", "changes": {"description": "Goal"}}], tasks)
+        self.assertEqual(actions[0].details["changes"], {"description": "Goal"})
 
 
 class UnreadableBoardTests(unittest.TestCase):
@@ -109,32 +115,6 @@ class UnreadableBoardTests(unittest.TestCase):
         self.assertIn("several kanban views", entry["problems"][0])
         with self.assertRaisesRegex(TrackerError, "several kanban views"):
             instance.set_state(instance.get("5"), "Doing")
-
-
-class BulkMarkerTests(unittest.TestCase):
-    def test_a_bulk_rewrite_is_refused_at_planning_time_like_a_single_one(self):
-        """An invariant only one of two write paths enforces is not an invariant."""
-        from agent_box.tracker import vikunja_api
-
-        tasks = [{"id": 5, "title": "Task", "description": "Goal\n\nVikunja external ID: B-01"}]
-        with self.assertRaisesRegex(TrackerError, "import marker B-01"):
-            vikunja_api.plan_bulk_updates([{"task": "5", "changes": {"description": "Goal"}}], tasks)
-        kept = "Goal rewritten\n\nVikunja external ID: B-01"
-        actions = vikunja_api.plan_bulk_updates([{"task": "5", "changes": {"description": kept}}], tasks)
-        self.assertEqual(actions[0].details["changes"], {"description": kept})
-
-    def test_both_write_paths_report_the_refusal_as_a_conflict(self):
-        """A caller retries on 'invalid' input and stops on a conflict; the category decides."""
-        from agent_box.tracker import vikunja_api
-
-        with self.assertRaises(TrackerError) as bulk:
-            vikunja_api.check_external_marker("5", "Goal\n\nVikunja external ID: B-01", "Goal")
-        self.assertEqual(bulk.exception.category, "conflict")
-        existing = task(5, 1, 10, 101, description="Goal\n\nVikunja external ID: B-01")
-        instance, _ = adapter(tasks={5: existing})
-        with self.assertRaises(TrackerError) as single:
-            instance.update(instance.get("5"), {"description": "Goal"})
-        self.assertEqual(single.exception.category, "conflict")
 
 
 class AuditTests(unittest.TestCase):

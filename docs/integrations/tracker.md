@@ -164,15 +164,19 @@ in the provider-neutral commands. Extensions cover:
 
 - `projects tree|children|create|update|delete` and `labels list|create|add|remove|delete`;
 - `board show|buckets|move` with an explicit project and optional view;
-- `external`, `task-fields`, and `delete-task --force`;
+- `task-fields` and `delete-task --force`;
 - `bulk-update FILE` (preview by default, `--apply` to write);
-- `import validate|plan|verify FILE`, accepting CSV or JSON. `plan` is a dry run
+- `import validate|plan FILE`, accepting CSV or JSON. `plan` is a dry run
   unless `--apply` is supplied; `--create-root` explicitly permits a missing root.
 
-Imports retain stable external identifiers, dependency and parent relations,
-labels, assignees, scheduling fields, bucket placement, conflict detection,
-resumable state and post-apply verification. They do not become a second task
-source of truth. Use normal task creation for workflow planning; there is no
+An import creates tasks once, with dependency and parent relations, labels,
+assignees, scheduling fields and bucket placement. A plan ID links rows only
+within its file; a row that depends on or belongs under an existing task names
+that task's tracker ID. An interrupted import resumes from its local checkpoint,
+which is the only link between rows and created tasks: nothing is written into
+a task body, and a task title already present in the target project is refused
+rather than reused. Once imported, tasks are maintained in the tracker, not by
+editing and re-importing the plan. Use normal task creation for workflow planning; there is no
 requirement to make a subproject per parent task.
 
 ## Adoption of existing projects
@@ -292,12 +296,11 @@ track omitted adoption relations after cutover; the report and comments explain
 those omissions to people. Ambiguous boards and invalid staging hierarchy remain
 structural errors, including external or unreadable children of staging parents.
 
-Structured imports remain independent. To re-import into a copied project, use
+Structured imports remain independent. To import into a copied project, use
 `tracker provider vikunja import plan FILE --project NEW_ROOT_ID` (and `--apply`
-after review); `verify` accepts the same scope. The plan's root name denotes that
-explicit target even if staging has a different title or an external parent.
-External IDs resolve only within its subtree, and checkpoints are separated by
-server/target ID. Without `--project`, global marker ambiguity is still refused.
+after review). The plan's root name denotes that explicit target even if staging
+has a different title or an external parent. Tracker references resolve only
+within its subtree, and checkpoints are separated by server/target ID.
 
 Run `PYTHONPATH=. python3 tests/live_vikunja_adoption.py --run` from the checkout
 for the opt-in live contract check. It creates and removes its own test projects,
