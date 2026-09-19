@@ -206,6 +206,32 @@ class DelegateCommandTests(WorkflowCase):
         execution = self.run_workflow("inspect", "1")["execution"]
         self.assertEqual((execution["worker"]["native"], execution["scout"]["native"]), ({}, {"codex": "ab-scout"}))
 
+    def test_reviewer_native_route_preserves_candidate_order_and_effective_tier(self):
+        """A matching session uses the first candidate's profile, never a later fallback."""
+        self.config.workflow.review.models = [candidate("codex", "gpt-5.6-luna", "max"),
+                                              candidate("claude", "fallback", "high")]
+        self.config.workflow.review.tiers["1"] = [candidate("claude", "tier-reviewer", "high")]
+        for tiered, native, source in ((False, {"codex": "ab-reviewer"}, "workflow.review.models"),
+                                      (True, {"claude": "ab-reviewer-1"}, "workflow.review.tiers.1")):
+            self.config.workflow.use_tiers = tiered
+            with self.subTest(tiered=tiered):
+                self.assertEqual(self.run_workflow("inspect", "1")["execution"]["reviewer"],
+                                 {"mode": "delegate", "models": source, "native": native,
+                                  "managed": "agent-box workflow review 1"})
+        self.config.workflow.use_tiers = False
+        self.config.workflow.review.models[0]["api_provider"] = "deepseek"
+        self.assertEqual(self.run_workflow("inspect", "1")["execution"]["reviewer"]["native"], {})
+
+    def test_empty_reviewer_list_never_suggests_self_review_or_overrides_cloud(self):
+        """Independent native review remains required without candidates; cloud parents stay cloud."""
+        self.config.workflow.review.models = []
+        self.assertEqual(self.run_workflow("inspect", "1")["execution"]["reviewer"],
+                         {"mode": "native", "models": "workflow.review.models"})
+        self.config.workflow.merge_mode = "github"
+        self.config.workflow.review.github_provider = "codex"
+        self.assertEqual(self.run_workflow("inspect", "1")["execution"]["reviewer"],
+                         {"mode": "cloud", "command": "agent-box workflow review 1"})
+
     def test_direct_work_needs_no_record_before_validation_review_and_finish(self):
         """The coordinator's own commit goes straight to validate, policy review and finish."""
         self.task.description = "## Acceptance\n- [x] requirement"

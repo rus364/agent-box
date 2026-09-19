@@ -817,7 +817,10 @@ def inspect(root, binding, adapter, task, config):
               "acceptance": {"available": not unavailable, "reasons": unavailable},
               "review": review, "validation": None,
               "execution": {"worker": execution(config, "worker", config.workflow.effective_tier(task.tier), task.id),
-                            "scout": execution(config, "scout", None, task.id)}}
+                            "scout": execution(config, "scout", None, task.id),
+                            "reviewer": ({"mode": "cloud", "command": f"agent-box workflow review {task.id}"}
+                                         if cloud_review(config, task, parent) else
+                                         execution(config, "reviewer", config.workflow.effective_tier(task.tier), task.id))}}
     if unavailable:
         if task.state == "Done" or parent.state == "Done":
             next_step = completed_step(task, parent)
@@ -1415,9 +1418,10 @@ def release_branch(root, config, task, branch, base, *, expected_head=None):
 
 
 def execution(config, role, tier, task_id):
-    """How the coordinator carries out a worker or scout assignment.
+    """How the coordinator launches a configured role.
 
-    An empty list means the coordinator's own session does the work: a
+    An empty reviewer list requires an independent native reviewer; other
+    empty lists mean the coordinator's own session does the work: a
     subagent on the session's model would only reread the same context. A
     configured list means delegation to its first candidate: natively when
     the session runs that candidate's CLI, else as a managed CLI. A profile
@@ -1431,13 +1435,14 @@ def execution(config, role, tier, task_id):
     from .fast_mode import configuration_error
     path, models = config.workflow.models_for(role, tier)
     if not models:
-        return {"mode": "self", "models": path}
+        return {"mode": "native" if role == "reviewer" else "self", "models": path}
     first, native = models[0], {}
     if (not path.startswith("--") and config.workflow.enabled and not first.get("api_provider")
             and not configuration_error(first["provider"], first)):
         native[first["provider"]] = profile_name(role, tier if ".tiers." in path else None)
     return {"mode": "delegate", "models": path, "native": native,
-            "managed": f"agent-box workflow delegate {task_id} --role {role} --brief FILE"}
+            "managed": (f"agent-box workflow review {task_id}" if role == "reviewer" else
+                        f"agent-box workflow delegate {task_id} --role {role} --brief FILE")}
 
 
 def scout_diagnostics(config):

@@ -123,6 +123,11 @@ explicit limitation.
 
 A review round runs managed, native or, for a parent whose route is a cloud
 reviewer, in its pull request (see [cloud review](#cloud-review-in-the-pull-request)).
+`workflow inspect TASK` exposes `execution.reviewer`: for a local round the
+coordinator uses the first candidate's native profile when available in its session
+with the configured model, effort and speed; otherwise it uses managed execution.
+An empty reviewer list requires an independent native reviewer, never self-review.
+Cloud parents keep their pull-request route.
 `workflow review TASK` runs the first available reviewer candidate as a managed CLI. `workflow review TASK --native`
 writes the same input package and prints `message`, the prompt for a fresh
 read-only subagent the coordinator starts without its own history; the
