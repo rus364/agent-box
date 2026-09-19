@@ -102,8 +102,8 @@ class InspectTests(unittest.TestCase):
         # On the cloud route the verdict comes from the pull request, so the
         # parent is sent through it rather than to a local round it cannot open.
         self.config.workflow.review.github_provider = "codex"
-        self.assertIn("workflow review 1 [--native]", self.inspect_readonly()["next_step"])
-        self.assertIn("execution.reviewer", self.inspect_readonly()["next_step"])
+        self.assertIn("workflow review 1", self.inspect_readonly()["next_step"])
+        self.assertNotIn("--native", self.inspect_readonly()["next_step"])
         self.task.state = "Doing"
         workflow.save_evidence(self.root, self.task, {"scope": self.scope, "validation": {"exit": 0}})
         self.assertIn("workflow finish 1", self.inspect_readonly()["next_step"])
