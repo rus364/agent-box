@@ -1439,7 +1439,8 @@ def execution(config, role, tier, task_id):
         return {"mode": "native" if role == "reviewer" else "self", "models": path}
     first, native = models[0], {}
     if (not path.startswith("--") and config.workflow.enabled and not first.get("api_provider")
-            and not configuration_error(first["provider"], first)):
+            and not configuration_error(first["provider"], first)
+            and (role != "reviewer" or first["effort"] != "default")):
         native[first["provider"]] = profile_name(role, tier if ".tiers." in path else None)
     return {"mode": "delegate", "models": path, "native": native,
             "managed": (f"agent-box workflow review {task_id}" if role == "reviewer" else

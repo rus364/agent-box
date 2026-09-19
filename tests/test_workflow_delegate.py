@@ -222,6 +222,15 @@ class DelegateCommandTests(WorkflowCase):
         self.config.workflow.review.models[0]["api_provider"] = "deepseek"
         self.assertEqual(self.run_workflow("inspect", "1")["execution"]["reviewer"]["native"], {})
 
+    def test_default_effort_reviewer_stays_managed_to_avoid_inherited_effort(self):
+        """Omitting native effort can inherit the coordinator's override instead of the model default."""
+        for provider in ("codex", "claude"):
+            with self.subTest(provider=provider):
+                self.config.workflow.review.models = [candidate(provider, "review-model", "default")]
+                route = self.run_workflow("inspect", "1")["execution"]["reviewer"]
+                self.assertEqual(route["native"], {})
+                self.assertEqual(route["managed"], "agent-box workflow review 1")
+
     def test_empty_reviewer_list_never_suggests_self_review_or_overrides_cloud(self):
         """Independent native review remains required without candidates; cloud parents stay cloud."""
         self.config.workflow.review.models = []
