@@ -231,6 +231,16 @@ class DelegateCommandTests(WorkflowCase):
                 self.assertEqual(route["native"], {})
                 self.assertEqual(route["managed"], "agent-box workflow review 1")
 
+    def test_fast_review_uses_native_only_when_the_profile_can_pin_speed(self):
+        """Claude profiles inherit speed; Codex profiles can express the configured fast request."""
+        for provider, model, native in (("claude", "claude-opus-5", {}),
+                                        ("codex", "gpt-5.6-luna", {"codex": "ab-reviewer"})):
+            with self.subTest(provider=provider):
+                self.config.workflow.review.models = [{**candidate(provider, model, "high"), "fast": True}]
+                route = self.run_workflow("inspect", "1")["execution"]["reviewer"]
+                self.assertEqual(route["native"], native)
+                self.assertEqual(route["managed"], "agent-box workflow review 1")
+
     def test_empty_reviewer_list_never_suggests_self_review_or_overrides_cloud(self):
         """Independent native review remains required without candidates; cloud parents stay cloud."""
         self.config.workflow.review.models = []

@@ -1433,14 +1433,15 @@ def execution(config, role, tier, task_id):
     know, so the route is named per provider.
     """
     from .agent_profiles import profile_name
-    from .fast_mode import configuration_error
+    from .fast_mode import configuration_error, native_limitation
     path, models = config.workflow.models_for(role, tier)
     if not models:
         return {"mode": "native" if role == "reviewer" else "self", "models": path}
     first, native = models[0], {}
     if (not path.startswith("--") and config.workflow.enabled and not first.get("api_provider")
             and not configuration_error(first["provider"], first)
-            and (role != "reviewer" or first["effort"] != "default")):
+            and (role != "reviewer" or (first["effort"] != "default"
+                 and not native_limitation(first["provider"], first.get("fast", False))))):
         native[first["provider"]] = profile_name(role, tier if ".tiers." in path else None)
     return {"mode": "delegate", "models": path, "native": native,
             "managed": (f"agent-box workflow review {task_id}" if role == "reviewer" else
