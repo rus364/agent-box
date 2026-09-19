@@ -767,7 +767,8 @@ def recorded_step(task, parent, config, saved, blockers, *, no_work):
     if saved.get("validation", {}).get("exit") != 0:
         return f"Validate this head with agent-box workflow validate {task.id} -- COMMAND ARGS"
     if blockers and not cloud_review(config, task, parent):
-        return f"Obtain acceptance for this head with ab-review: agent-box workflow review {task.id}"
+        return (f"Obtain acceptance for this head with ab-review: agent-box workflow review {task.id} [--native]; "
+                "choose the backend from execution.reviewer")
     if task.id != parent.id:
         return f"Integrate the accepted subtask with agent-box workflow finish {task.id}"
     if task.state != "Review":
