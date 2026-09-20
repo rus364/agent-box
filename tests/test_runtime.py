@@ -560,27 +560,32 @@ class CodexRuntimeOverridesTests(IsolatedRuntimeTest):
         ])
 
     def test_native_wait_override_is_only_for_interactive_workflow_sessions(self):
-        """Batch commands and disabled workflows must retain ordinary Codex argv."""
+        """Batch commands and either disabled switch must retain ordinary Codex argv."""
         config = Config()
-        setting = "features.multi_agent_v2.default_wait_timeout_ms=3600000"
+        setting = "features.multi_agent_v2.default_wait_timeout_ms=1680000"
         self.assertNotIn(setting, runtime.codex_command([], config))
 
         config.workflow.enabled = True
         self.assertIn(setting, runtime.codex_command([], config))
         self.assertNotIn(setting, runtime.codex_command(["exec", "hello"], config))
+        config.codex.native_agent_wait.enabled = False
+        self.assertNotIn(setting, runtime.codex_command([], config))
 
-    def test_native_wait_override_uses_the_bounded_workflow_timeout(self):
-        """Codex rejects wait defaults above its hard one-hour maximum."""
+    def test_native_wait_override_uses_the_configured_bounded_interval(self):
+        """The cache-aware cadence is independent of managed-agent runtime."""
         config = Config()
         config.workflow.enabled = True
         config.workflow.timeout_seconds = 45
+        config.codex.native_agent_wait.interval_seconds = 1200
         self.assertEqual(runtime.codex_workflow_overrides([], config), [
-            "features.multi_agent_v2.default_wait_timeout_ms=45000",
+            "features.multi_agent_v2.default_wait_timeout_ms=1200000",
         ])
-        config.workflow.timeout_seconds = 86_400
+        config.codex.native_agent_wait.interval_seconds = 3600
         self.assertEqual(runtime.codex_workflow_overrides([], config), [
             "features.multi_agent_v2.default_wait_timeout_ms=3600000",
         ])
+        config.codex.native_agent_wait.interval_seconds = 3601
+        self.assertEqual(runtime.codex_workflow_overrides([], config), [])
 
     def test_native_wait_override_never_writes_the_user_config(self):
         """A launch-time policy is an argv override, not integration application."""
@@ -819,7 +824,7 @@ class HostModeTests(IsolatedRuntimeTest):
             self.assertEqual(runtime.host_main("codex", []), 0)
             self.assertEqual(call.call_args.args[0], [
                 "/usr/bin/codex", "-c",
-                "features.multi_agent_v2.default_wait_timeout_ms=3600000",
+                "features.multi_agent_v2.default_wait_timeout_ms=1680000",
             ])
 
     def test_interactive_host_launch_captures_remote_mode_for_the_new_session(self):

@@ -67,6 +67,7 @@ class ConfigMenuTests(unittest.TestCase):
             (): ['default_agent', 'claude', 'codex', 'external_providers', 'tracker', 'workflow',
                  'image', 'browser', 'audio', 'git', 'github', 'providers', 'env',
                  'skills', 'notifications'],
+            ('codex',): ['native_agent_wait', 'remote_control'],
             ('workflow',): ['enabled', 'merge_mode', 'auto_push', 'cleanup_local_branches',
                            'cleanup_remote_branches', 'use_tiers', 'worker', 'scout', 'review', 'timeout_seconds'],
             ('workflow', 'worker'): ['models', 'tiers'],

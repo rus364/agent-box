@@ -73,6 +73,35 @@ class RoundTripTests(unittest.TestCase):
             self.assertEqual(json.loads(path.read_text()), {'version': 1})
             self.assertEqual(load_config(path).to_dict(), Config().to_dict())
 
+    def test_native_agent_wait_defaults_are_cache_aware_and_round_trip_custom_values(self):
+        """A user can disable or tune the launch policy without editing Codex config."""
+        defaults = Config().codex.native_agent_wait
+        self.assertTrue(defaults.enabled)
+        self.assertEqual(defaults.interval_seconds, 28 * 60)
+        config = Config()
+        config.codex.native_agent_wait.enabled = False
+        config.codex.native_agent_wait.interval_seconds = 900
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'config.json'
+            save_config(config, path)
+            self.assertEqual(json.loads(path.read_text()), {
+                'version': 1,
+                'codex': {'native_agent_wait': {'enabled': False, 'interval_seconds': 900}},
+            })
+            loaded = load_config(path)
+        self.assertFalse(loaded.codex.native_agent_wait.enabled)
+        self.assertEqual(loaded.codex.native_agent_wait.interval_seconds, 900)
+
+    def test_native_agent_wait_rejects_values_codex_cannot_accept(self):
+        """The editable interval stays within the installed wait tool's bounds."""
+        for value in (9, 3601, 28.0):
+            with self.subTest(value=value):
+                config = Config.from_dict({"codex": {"native_agent_wait": {"interval_seconds": value}}})
+                self.assertTrue(config.codex.validate())
+        self.assertEqual(Config.from_dict({"codex": {"native_agent_wait": {
+            "interval_seconds": 3600,
+        }}}).codex.validate(), [])
+
     def test_sparse_global_roundtrip_keeps_nested_false_empty_lists_and_custom_values(self):
         """An omitted sibling inherits; false and empty lists can still override defaults."""
         config = Config()

@@ -116,16 +116,48 @@ class ClaudeConfig:
 
 
 @dataclass
+class NativeAgentWaitConfig:
+    """Cache-aware cadence for root coordinators waiting on native agents."""
+
+    enabled: bool = True
+    interval_seconds: int = 28 * 60
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"enabled": self.enabled, "interval_seconds": self.interval_seconds}
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "NativeAgentWaitConfig":
+        result = cls()
+        result.enabled = _bool(data, "enabled", result.enabled)
+        result.interval_seconds = _number(data, "interval_seconds", result.interval_seconds)
+        return result
+
+    def validate(self) -> list[str]:
+        value = self.interval_seconds
+        if not isinstance(value, int) or not 10 <= value <= 3600:
+            return ["codex.native_agent_wait.interval_seconds must be between 10 and 3600"]
+        return []
+
+
+@dataclass
 class CodexConfig:
     #: Remote access is opt-in; a session never switches the shared daemon.
     remote_control: bool = False
+    native_agent_wait: NativeAgentWaitConfig = field(default_factory=NativeAgentWaitConfig)
 
     def to_dict(self) -> dict[str, Any]:
-        return {"remote_control": self.remote_control}
+        return {"remote_control": self.remote_control,
+                "native_agent_wait": self.native_agent_wait.to_dict()}
 
     @classmethod
     def from_dict(cls, data: Any) -> "CodexConfig":
-        return cls(remote_control=_bool(data, "remote_control", False))
+        return cls(
+            remote_control=_bool(data, "remote_control", False),
+            native_agent_wait=NativeAgentWaitConfig.from_dict(_mapping(data).get("native_agent_wait")),
+        )
+
+    def validate(self) -> list[str]:
+        return self.native_agent_wait.validate()
 
 
 LAUNCH_AGENTS = ("claude", "codex")
@@ -955,7 +987,7 @@ def effective_config(base=None, *, include_project=True) -> Config:
             try:
                 base = Config.from_dict(rendered)
                 # Only agent-box's own messages are shown: other exceptions may quote values.
-                errors = base.workflow.validate()
+                errors = base.workflow.validate() + base.codex.validate()
             except AgentBoxError as exc:
                 errors = [str(exc)]
             except (ValueError, TypeError, AttributeError):

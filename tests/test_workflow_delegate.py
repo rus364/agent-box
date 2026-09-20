@@ -206,6 +206,13 @@ class DelegateCommandTests(WorkflowCase):
         execution = self.run_workflow("inspect", "1")["execution"]
         self.assertEqual((execution["worker"]["native"], execution["scout"]["native"]), ({}, {"codex": "ab-scout"}))
 
+    def test_inspect_exposes_the_root_native_wait_policy(self):
+        """The coordinator can follow the global switch without passing it to delegates."""
+        self.config.codex.native_agent_wait.enabled = False
+        self.config.codex.native_agent_wait.interval_seconds = 900
+        summary = self.run_workflow("inspect", "1")["configuration"]
+        self.assertEqual(summary["native_agent_wait"], {"enabled": False, "interval_seconds": 900})
+
     def test_reviewer_native_route_preserves_candidate_order_and_effective_tier(self):
         """A matching session uses the first candidate's profile, never a later fallback."""
         self.config.workflow.review.models = [candidate("codex", "gpt-5.6-luna", "max"),
@@ -290,7 +297,9 @@ class DelegateContractTests(unittest.TestCase):
         """Delegates do not need the coordinator's event-driven waiting policy."""
         skill = (Path(workflow.__file__).parent / "skills/ab-work/SKILL.md").read_text()
         self.assertIn("independent useful work", skill)
-        self.assertIn("repeated short waits", skill)
+        self.assertIn("configuration.native_agent_wait", skill)
+        self.assertIn("if it times out while agents still run", skill)
+        self.assertIn("shorter waits", skill)
         for role in ("worker", "scout", "reviewer"):
             with self.subTest(role=role):
                 self.assertNotIn("wait_agent", delegation.profile_instructions(role))

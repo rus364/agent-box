@@ -75,8 +75,6 @@ from .workspace import Workspace, resolve_workspace
 
 IMAGE = os.environ.get("AGENT_BOX_IMAGE", "localhost/agent-box:latest")
 CHATGPT_DESKTOP_RESOURCES = "/usr/lib/chatgpt/resources/"
-CODEX_WAIT_AGENT_MAX_TIMEOUT_MS = 3_600_000
-
 WORKSPACE_CONTAINER_SCHEMA = "2"
 WORKSPACE_CONTAINER_LABEL = "io.agent-box.managed"
 WORKSPACE_CONTAINER_WORKSPACE_LABEL = "io.agent-box.workspace"
@@ -217,15 +215,12 @@ def codex_runtime_overrides() -> list[str]:
 
 
 def codex_workflow_overrides(rest: list[str], config: Config) -> list[str]:
-    """Give interactive workflow coordinators one bounded native-agent wait.
-
-    Codex 0.155.1 caps ``wait_agent`` at one hour. Reusing the managed
-    delegation timeout keeps one workflow policy while leaving explicit short
-    waits available and every non-session Codex command unchanged.
-    """
-    if not config.workflow.enabled or not host_interactive_invocation("codex", rest):
+    """Keep native-agent waits cache-aware without changing Codex's config."""
+    policy = config.codex.native_agent_wait
+    if (not config.workflow.enabled or not policy.enabled
+            or policy.validate() or not host_interactive_invocation("codex", rest)):
         return []
-    timeout_ms = min(config.workflow.timeout_seconds * 1000, CODEX_WAIT_AGENT_MAX_TIMEOUT_MS)
+    timeout_ms = policy.interval_seconds * 1000
     return [f"features.multi_agent_v2.default_wait_timeout_ms={timeout_ms}"]
 
 
@@ -1002,7 +997,7 @@ def tracker_host_args(config: Config) -> list[str]:
 def tracker_warnings(config: Config) -> list[str]:
     from .external_config import validate_connections
     problems = validate_connections(config)
-    problems += config.workflow.validate() if config.workflow.enabled else []
+    problems += config.workflow.validate() + config.codex.validate() if config.workflow.enabled else []
     if config.tracker.enabled:
         if not config.tracker.connection().usable:
             problems.append("Tracker is enabled but its default connection needs a server URL and token")

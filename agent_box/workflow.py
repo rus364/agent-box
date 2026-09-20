@@ -701,6 +701,7 @@ def acceptance_reasons(root, review, tasks, saved, head, base_head=None, *, no_w
 def configuration_summary(config):
     return {"source": effective_config_source(), "merge_mode": config.workflow.merge_mode,
             "auto_push": config.workflow.auto_push, "use_tiers": config.workflow.use_tiers,
+            "native_agent_wait": config.codex.native_agent_wait.to_dict(),
             **scout_diagnostics(config),
             "cleanup_local_branches": config.workflow.cleanup_local_branches,
             "cleanup_remote_branches": config.workflow.cleanup_remote_branches}
@@ -1634,7 +1635,7 @@ def dispatch(args):
     config = effective_config()
     if not config.workflow.enabled:
         raise AgentBoxError("Enable workflow in agent-box config first")
-    errors = config.workflow.validate()
+    errors = config.workflow.validate() + config.codex.validate()
     if errors:
         raise AgentBoxError("; ".join(errors))
     root = repository_root()

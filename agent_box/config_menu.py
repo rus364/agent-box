@@ -34,6 +34,9 @@ HELP = {
     "claude.statusline.command": "Extra segment in Claude's status line and `agent-box usage all`: shell command whose first output line is shown after Codex usage; empty shows nothing. Runs where the line is drawn (Claude's status line runs inside the box), cached 60s, 5s timeout, failures show —. Pass keys via environment, not in the command.",
     "codex": "Codex interactive session settings, including --host.",
     "codex.remote_control": "Request Remote Control through a private app-server; one agent-box RC session per CODEX_HOME. Unsupported launches keep the ordinary CLI. Off leaves native behavior unchanged.",
+    "codex.native_agent_wait": "Cache-aware waiting for native Codex subagents in tracked workflow sessions. Global only.",
+    "codex.native_agent_wait.enabled": "Set the root coordinator's default wait interval for native subagents. Off leaves Codex's native wait default unchanged.",
+    "codex.native_agent_wait.interval_seconds": "Seconds between coordinator turns while native subagents are still running, from 10 through 3600. Default 1680 keeps each turn inside the 30-minute prompt-cache guarantee.",
     "notifications": "Outbound Telegram completion notifications. The bot token and chat ID stay disabled until this section is enabled and fully configured.",
     "notifications.enabled": "Send outbound completion notifications through Telegram when a bot token and chat ID are configured.",
     "notifications.telegram_token": "Telegram bot token used only for outbound notifications. The value is masked in the menu and saved in the protected config file.",
@@ -128,6 +131,10 @@ MENU_GROUPS = {
         ("Delivery", ("merge_mode", "auto_push", "cleanup_local_branches", "cleanup_remote_branches")),
         ("Roles", ("use_tiers", "worker", "scout", "review")),
         ("Delegation", ("timeout_seconds",)),
+    ),
+    ("codex",): (
+        ("Native agents", ("native_agent_wait",)),
+        ("Remote access", ("remote_control",)),
     ),
     ("workflow", "worker"): (
         ("Models", ("models", "tiers")),
@@ -244,7 +251,7 @@ def help_for(path):
 
 
 def validate(config):
-    errors = config.workflow.validate() + validate_connections(config)
+    errors = config.workflow.validate() + config.codex.validate() + validate_connections(config)
     if config.claude.telegram_channel:
         from .channel import missing_requirements
         errors.extend(missing_requirements())
