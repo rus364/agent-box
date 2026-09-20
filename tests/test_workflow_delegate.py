@@ -286,6 +286,15 @@ class DelegateContractTests(unittest.TestCase):
                 self.assertIn(delegation.delegate_rules(role), prompt)
                 self.assertIn("never write to any of them", profile)
 
+    def test_native_wait_policy_belongs_only_to_the_coordinator_skill(self):
+        """Delegates do not need the coordinator's event-driven waiting policy."""
+        skill = (Path(workflow.__file__).parent / "skills/ab-work/SKILL.md").read_text()
+        self.assertIn("independent useful work", skill)
+        self.assertIn("repeated short waits", skill)
+        for role in ("worker", "scout", "reviewer"):
+            with self.subTest(role=role):
+                self.assertNotIn("wait_agent", delegation.profile_instructions(role))
+
     def test_no_execution_backend_carries_a_private_tracker_restriction(self):
         """Symmetry is the point: an env-gated guard would apply to one path only."""
         for module in ("provider_runner", "workflow", "tracker/core", "tracker/cli"):

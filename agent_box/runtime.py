@@ -75,6 +75,7 @@ from .workspace import Workspace, resolve_workspace
 
 IMAGE = os.environ.get("AGENT_BOX_IMAGE", "localhost/agent-box:latest")
 CHATGPT_DESKTOP_RESOURCES = "/usr/lib/chatgpt/resources/"
+CODEX_WAIT_AGENT_MAX_TIMEOUT_MS = 3_600_000
 
 WORKSPACE_CONTAINER_SCHEMA = "2"
 WORKSPACE_CONTAINER_LABEL = "io.agent-box.managed"
@@ -215,6 +216,19 @@ def codex_runtime_overrides() -> list[str]:
     return sorted(set(overrides))
 
 
+def codex_workflow_overrides(rest: list[str], config: Config) -> list[str]:
+    """Give interactive workflow coordinators one bounded native-agent wait.
+
+    Codex 0.155.1 caps ``wait_agent`` at one hour. Reusing the managed
+    delegation timeout keeps one workflow policy while leaving explicit short
+    waits available and every non-session Codex command unchanged.
+    """
+    if not config.workflow.enabled or not host_interactive_invocation("codex", rest):
+        return []
+    timeout_ms = min(config.workflow.timeout_seconds * 1000, CODEX_WAIT_AGENT_MAX_TIMEOUT_MS)
+    return [f"features.multi_agent_v2.default_wait_timeout_ms={timeout_ms}"]
+
+
 def codex_command(
     rest: list[str], config: Config,
     browser_session_dir: Path | None = None,
@@ -231,6 +245,8 @@ def codex_command(
     for override in browser_codex_overrides(browser_session_dir):
         command += ["-c", override]
     for override in codex_runtime_overrides():
+        command += ["-c", override]
+    for override in codex_workflow_overrides(rest, config):
         command += ["-c", override]
     return [*command, "--dangerously-bypass-approvals-and-sandbox", *rest]
 
@@ -2854,7 +2870,8 @@ def host_main(
     for key in [k for k in env if k.startswith(ENV_PREFIX)]:
         del env[key]
 
-    command = [executable, *rest]
+    workflow_overrides = codex_workflow_overrides(rest, config) if agent == "codex" else []
+    command = [executable, *(arg for override in workflow_overrides for arg in ("-c", override)), *rest]
     if api_provider:
         command = external_command(command, agent, api_provider, container=False)
     elif remote_control_invocation(agent, rest):

@@ -559,6 +559,43 @@ class CodexRuntimeOverridesTests(IsolatedRuntimeTest):
             "exec", "hello",
         ])
 
+    def test_native_wait_override_is_only_for_interactive_workflow_sessions(self):
+        """Batch commands and disabled workflows must retain ordinary Codex argv."""
+        config = Config()
+        setting = "features.multi_agent_v2.default_wait_timeout_ms=3600000"
+        self.assertNotIn(setting, runtime.codex_command([], config))
+
+        config.workflow.enabled = True
+        self.assertIn(setting, runtime.codex_command([], config))
+        self.assertNotIn(setting, runtime.codex_command(["exec", "hello"], config))
+
+    def test_native_wait_override_uses_the_bounded_workflow_timeout(self):
+        """Codex rejects wait defaults above its hard one-hour maximum."""
+        config = Config()
+        config.workflow.enabled = True
+        config.workflow.timeout_seconds = 45
+        self.assertEqual(runtime.codex_workflow_overrides([], config), [
+            "features.multi_agent_v2.default_wait_timeout_ms=45000",
+        ])
+        config.workflow.timeout_seconds = 86_400
+        self.assertEqual(runtime.codex_workflow_overrides([], config), [
+            "features.multi_agent_v2.default_wait_timeout_ms=3600000",
+        ])
+
+    def test_native_wait_override_never_writes_the_user_config(self):
+        """A launch-time policy is an argv override, not integration application."""
+        with tempfile.TemporaryDirectory() as tmp:
+            codex_home = Path(tmp) / "codex-home"
+            codex_home.mkdir()
+            config_path = codex_home / "config.toml"
+            config_path.write_text('model = "user-choice"\n')
+            before = config_path.read_bytes()
+            config = Config()
+            config.workflow.enabled = True
+            with mock.patch.object(runtime, "CODEX_HOME", codex_home):
+                runtime.codex_command([], config)
+            self.assertEqual(config_path.read_bytes(), before)
+
 
 
     def test_non_codex_launches_do_not_inspect_codex_mcp_configuration(self):
@@ -768,6 +805,22 @@ class HostModeTests(IsolatedRuntimeTest):
                  mock.patch.object(runtime.subprocess, "call", return_value=0) as call:
                 self.assertEqual(runtime.host_main(agent, ["--model", "x"]), 0)
             self.assertEqual(call.call_args.args[0], [f"/usr/bin/{expected}", "--model", "x"])
+
+    def test_host_codex_gets_the_same_interactive_workflow_wait_policy(self):
+        """Host coordinators share workflow behavior without affecting host batch commands."""
+        config = Config()
+        config.workflow.enabled = True
+        with tempfile.TemporaryDirectory() as tmp, \
+             mock.patch.object(runtime.shutil, "which", return_value="/usr/bin/codex"), \
+             mock.patch.object(runtime, "resolve_workspace", return_value=Workspace(Path(tmp), Path(tmp))), \
+             mock.patch.object(runtime, "launch_config", return_value=config), \
+             mock.patch.object(runtime, "tmux_enabled", return_value=False), \
+             mock.patch.object(runtime.subprocess, "call", return_value=0) as call:
+            self.assertEqual(runtime.host_main("codex", []), 0)
+            self.assertEqual(call.call_args.args[0], [
+                "/usr/bin/codex", "-c",
+                "features.multi_agent_v2.default_wait_timeout_ms=3600000",
+            ])
 
     def test_interactive_host_launch_captures_remote_mode_for_the_new_session(self):
         for agent in ("claude", "codex"):
