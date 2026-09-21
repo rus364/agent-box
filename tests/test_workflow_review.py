@@ -276,6 +276,7 @@ class ReviewWorkflowTests(WorkflowCase):
                        "+value = 2", "report_schema"):
             self.assertNotIn(absent, prompt)
         for present in (gw.head_sha(self.root), "diff_range", "untrusted English brief", "counterexamples",
+                        'ask "then what?"', "discard the finding", "Prefer leaving correct code unchanged.",
                         "Verdict: PASS", "[SEVERITY] path:line", "CRITICAL —", "LOW —"):
             self.assertIn(present, prompt)
         self.adapter.comments.assert_not_called()
