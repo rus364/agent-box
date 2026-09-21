@@ -1159,7 +1159,10 @@ def reviewer_handoff(root, base, task, parent, tasks, brief, saved, review_conte
         "state/checks, unsupported generalization and tests that restate code. A complexity finding needs a location, "
         "current cost of understanding/change or divergence risk, and a simpler behavior-preserving alternative; a "
         "runtime bug is not required. Prefer local fixes/reuse and justify redesign. Preserve required error, safety "
-        "and compatibility checks. No finding quota, mandatory refactor, taste-only or hypothetical blocker.\n"
+        "and compatibility checks. No finding quota, mandatory refactor, taste-only or hypothetical blocker. "
+        "For every candidate finding, ask \"then what?\" and trace its consequences until they reach a concrete "
+        "correctness, user, operational, security or maintainability impact. If the chain depends on implausible "
+        "assumptions or cannot reach concrete impact, discard the finding. Prefer leaving correct code unchanged.\n"
         "Each finding needs proportionate severity, path/line, concrete scenario, impact, technical evidence and violated "
         "requirement. PASS has no findings.\n"
     )
