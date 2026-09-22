@@ -128,6 +128,13 @@ coordinator uses the first candidate's native profile when available in its sess
 with the configured model, effort and speed; otherwise it uses managed execution.
 An empty reviewer list requires an independent native reviewer, never self-review.
 Cloud parents keep their pull-request route.
+Select the backend anew for every new round. An earlier thread-limit error from
+another assignment or review is not proof that native launching is still
+unavailable. When the current route, tool and profile support native execution,
+attempt a fresh spawn. If it fails, explain the current reason and use the
+configured managed route within the existing failure budget; do not loop spawn
+or skip the preferred candidate solely because of a thread limit. A later round
+rechecks native availability. An empty reviewer list still has no managed route.
 `workflow review TASK` runs the first available reviewer candidate as a managed CLI. `workflow review TASK --native`
 writes the same input package and prints `message`, the prompt for a fresh
 read-only subagent the coordinator starts without its own history; the
