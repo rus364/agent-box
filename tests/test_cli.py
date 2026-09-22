@@ -69,9 +69,9 @@ class LaunchOptionParsingTests(unittest.TestCase):
     def test_an_effort_suffix_is_optional_and_a_model_may_contain_colons(self):
         """Only a known effort is split off, so provider model IDs such as `name:free` survive."""
         self.assertEqual(parse_spec("--reviewer", "claude:opus:high"),
-                         [{"provider": "claude", "model": "opus", "effort": "high", "fast": False, "api_provider": ""}])
+                         [{"provider": "claude", "model": "opus", "effort": "high", "speed": "inherit", "api_provider": ""}])
         self.assertEqual(parse_spec("--worker", "codex@openrouter:deepseek/v4:free"),
-                         [{"provider": "codex", "model": "deepseek/v4:free", "effort": "default", "fast": False, "api_provider": "openrouter"}])
+                         [{"provider": "codex", "model": "deepseek/v4:free", "effort": "default", "speed": "inherit", "api_provider": "openrouter"}])
 
 
 class LaunchOptionDispatchTests(unittest.TestCase):

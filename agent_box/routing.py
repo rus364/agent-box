@@ -50,6 +50,6 @@ def select(config, role, tier, usage=None, *, now=None, available=None):
     def entry(spec):
         return {"provider": spec["provider"], "model": spec["model"], "effort": spec["effort"],
                 **({"api_provider": spec["api_provider"]} if spec.get("api_provider") else {}),
-                "fast": spec.get("fast", False), "tier": tier}
+                "speed": spec.get("speed", "inherit"), "tier": tier}
     return {**entry(allowed[0]), "role": role, "reason": f"{reason}; models from {path}",
             "fallbacks": [entry(spec) for spec in allowed[1:]]}

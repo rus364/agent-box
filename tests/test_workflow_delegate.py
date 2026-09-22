@@ -148,7 +148,7 @@ class DelegateCommandTests(WorkflowCase):
 
     def test_refusal_before_launch_still_names_its_reason_and_diagnostic(self):
         """Settings refused before a process starts still name why and where the private diagnostic is."""
-        self.config.workflow.scout.models = [candidate("claude", "claude-opus-5", "high") | {"fast": True}]
+        self.config.workflow.scout.models = [candidate("claude", "claude-opus-5", "high") | {"speed": "fast"}]
         with patch.dict("os.environ", {"CLAUDE_CODE_DISABLE_FAST_MODE": "1"}), \
              patch.object(provider_runner.subprocess, "Popen") as popen, \
              contextlib.redirect_stdout(io.StringIO()) as stdout:
@@ -238,15 +238,19 @@ class DelegateCommandTests(WorkflowCase):
                 self.assertEqual(route["native"], {})
                 self.assertEqual(route["managed"], "agent-box workflow review 1")
 
-    def test_fast_review_uses_native_only_when_the_profile_can_pin_speed(self):
-        """Claude profiles inherit speed; Codex profiles can express the configured fast request."""
-        for provider, model, native in (("claude", "claude-opus-5", {}),
-                                        ("codex", "gpt-5.6-luna", {"codex": "ab-reviewer"})):
-            with self.subTest(provider=provider):
-                self.config.workflow.review.models = [{**candidate(provider, model, "high"), "fast": True}]
-                route = self.run_workflow("inspect", "1")["execution"]["reviewer"]
-                self.assertEqual(route["native"], native)
-                self.assertEqual(route["managed"], "agent-box workflow review 1")
+    def test_explicit_speed_requires_managed_for_every_role(self):
+        """Native agents inherit speed; explicit requests require their own process."""
+        for role in ('worker', 'scout', 'reviewer'):
+            for provider, model in (('claude', 'claude-opus-5'), ('codex', 'gpt-5.6-luna')):
+                for speed in ('inherit', 'standard', 'fast'):
+                    with self.subTest(role=role, provider=provider, speed=speed):
+                        self.config.workflow.role(role).models = [{**candidate(provider, model, 'high'), 'speed': speed}]
+                        route = self.run_workflow('inspect', '1')['execution'][role]
+                        native = {provider: 'ab-' + role} if speed == 'inherit' else {}
+                        self.assertEqual(route['native'], native)
+                        if speed != 'inherit':
+                            self.assertIn('managed CLI to request ' + speed, route['native_limitation'])
+                        self.assertIn('agent-box workflow', route['managed'])
 
     def test_empty_reviewer_list_never_suggests_self_review_or_overrides_cloud(self):
         """Independent native review remains required without candidates; cloud parents stay cloud."""
@@ -287,7 +291,7 @@ class DelegateContractTests(unittest.TestCase):
     def test_the_native_profile_states_the_same_rules_as_the_managed_prompt(self):
         for role in ("worker", "scout"):
             with self.subTest(role=role):
-                profile = body("claude", role, 1, {"fast": False, "model": "m", "effort": "high"})
+                profile = body("claude", role, 1, {"speed": "inherit", "model": "m", "effort": "high"})
                 prompt = delegation.delegate_prompt(role, Task("1", "1", "Task"), "Brief.", "")
                 self.assertIn(delegation.delegate_rules(role), profile)
                 self.assertIn(delegation.delegate_rules(role), prompt)
@@ -312,7 +316,7 @@ class DelegateContractTests(unittest.TestCase):
 
     def test_claude_delegation_keeps_the_isolated_safe_mode_context(self):
         """Safe mode is why the instructions must travel; it stays deliberately on."""
-        command = provider_runner.build_command({"fast": False, "provider": "claude", "model": "m", "effort": "high"},
+        command = provider_runner.build_command({"speed": "inherit", "provider": "claude", "model": "m", "effort": "high"},
                                                 "worker", Path("/tmp"), Path("/tmp/out"))
         self.assertIn("--safe-mode", command)
 

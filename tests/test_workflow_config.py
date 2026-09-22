@@ -137,14 +137,14 @@ class WorkflowConfigTests(unittest.TestCase):
                      self.assertRaisesRegex(AgentBoxError, message.split(":")[0]):
                     effective_config()
 
-    def test_show_lists_candidates_in_launch_flag_spelling(self):
-        """One row per list, in the spelling --scout accepts, so the order of preference is visible."""
+    def test_show_lists_candidate_identity_and_speed(self):
+        """One row per list shows candidate identity, speed and preference order."""
         config = Config()
         config.workflow.scout.models = [
-            {"provider": "codex", "model": "gpt-5.6-luna", "effort": "high", "fast": False, "api_provider": ""},
-            {"provider": "claude", "model": "v4", "effort": "high", "fast": False, "api_provider": "deepseek"}]
+            {"provider": "codex", "model": "gpt-5.6-luna", "effort": "high", "speed": "inherit", "api_provider": ""},
+            {"provider": "claude", "model": "v4", "effort": "high", "speed": "inherit", "api_provider": "deepseek"}]
         rows = shown(config)
-        self.assertEqual(rows['workflow.scout.models'], 'codex:gpt-5.6-luna:high, claude@deepseek:v4:high')
+        self.assertEqual(rows['workflow.scout.models'], 'codex:gpt-5.6-luna:high speed=inherit, claude@deepseek:v4:high speed=inherit')
         self.assertEqual(rows['workflow.review.models'], '(none)')
 
     def test_show_reads_the_runtime_artifact_instead_of_host_defaults(self):

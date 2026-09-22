@@ -81,12 +81,12 @@ def managed_runner(provider):
 
 
 def candidate(provider, model, effort):
-    return {"provider": provider, "model": model, "effort": effort, "fast": False, "api_provider": ""}
+    return {"provider": provider, "model": model, "effort": effort, "speed": "inherit", "api_provider": ""}
 
 
 def selected_route(_config, role, tier):
     """What `workflow.candidates` would return: the delegation it was asked for."""
-    return {"fast": False, "provider": "claude", "model": "m", "effort": "high", "tier": tier, "role": role,
+    return {"speed": "inherit", "provider": "claude", "model": "m", "effort": "high", "tier": tier, "role": role,
             "fallbacks": []}
 
 

@@ -121,7 +121,7 @@ class WorkflowGitTests(unittest.TestCase):
             adapter = Mock()
             adapter.get.return_value = task
             adapter.identity.return_value = {"id": 1}
-            route = {"fast": False, "provider": "claude", "tier": 1, "role": "reviewer", "model": "exact-model", "effort": "high", "fallbacks": []}
+            route = {"speed": "inherit", "provider": "claude", "tier": 1, "role": "reviewer", "model": "exact-model", "effort": "high", "fallbacks": []}
             info = {"branch": "ab/task", "base": "main"}
             report = Path(temporary) / "report.md"
             report.write_text("Verdict: PASS\n")

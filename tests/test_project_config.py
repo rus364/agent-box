@@ -31,7 +31,7 @@ class ProjectConfigTests(unittest.TestCase):
         self.addCleanup(self.env.stop)
 
     def test_partial_override_preserves_false_empty_list_and_global(self):
-        self.config.workflow.review.models = [{"provider": "codex", "model": "global", "effort": "high", "fast": False, "api_provider": ""}]
+        self.config.workflow.review.models = [{"provider": "codex", "model": "global", "effort": "high", "speed": "inherit", "api_provider": ""}]
         original = self.config.to_dict()
         data = {'browser': {'enabled': False}, 'image': {'tools': {'browser': True}},
                 'workflow': {'review': {'sensitive_paths': [], 'ignored_paths': ['**/*.md'], 'tiers': {'2': []}},
@@ -56,8 +56,8 @@ class ProjectConfigTests(unittest.TestCase):
 
     def test_project_role_lists_replace_global_lists_whole_and_reach_runtime(self):
         """A project list replaces the global one entirely; merging entries would reorder preferences silently."""
-        global_models = [{"provider": "codex", "model": "global-codex", "effort": "high", "fast": False, "api_provider": ""},
-                         {"provider": "claude", "model": "global-claude", "effort": "medium", "fast": False, "api_provider": ""}]
+        global_models = [{"provider": "codex", "model": "global-codex", "effort": "high", "speed": "inherit", "api_provider": ""},
+                         {"provider": "claude", "model": "global-claude", "effort": "medium", "speed": "inherit", "api_provider": ""}]
         self.config.workflow.worker.models = global_models
         original = self.config.to_dict()
         data = {'workflow': {'worker': {'models': [{'provider': 'claude', 'model': 'opus', 'effort': 'default'}]}}}
@@ -70,7 +70,7 @@ class ProjectConfigTests(unittest.TestCase):
             rendered = effective_config()
             self.assertEqual(effective_config(include_project=False).workflow.worker.models, global_models)
         self.assertEqual(rendered.workflow.worker.models,
-                         [{"provider": "claude", "model": "opus", "effort": "default", "fast": False, "api_provider": ""}])
+                         [{"provider": "claude", "model": "opus", "effort": "default", "speed": "inherit", "api_provider": ""}])
         self.assertEqual(rendered.workflow.review, self.config.workflow.review)
         self.assertEqual(self.config.to_dict(), original)
         for bad in ({'models': {'claude': {'model': 'opus'}}}, {'models': [{'provider': 'claude', 'model': 'opus', 'effort': 'ultra'}]},

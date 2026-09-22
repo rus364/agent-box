@@ -134,7 +134,7 @@ class ExternalModelTests(unittest.TestCase):
     def test_unsupported_workflow_effort_is_rejected_before_preparation_or_process(self):
         """A picker change must not save an incompatible inherited effort or spend a review run."""
         config = rich_config()
-        candidate = dict(provider='codex', model='v4-pro', effort='medium', fast=False, api_provider='deepseek')
+        candidate = dict(provider='codex', model='v4-pro', effort='medium', speed='inherit', api_provider='deepseek')
         config.workflow.worker.tiers['1'] = [candidate]
         errors = validate_connections(config)
         self.assertTrue(any('workflow.worker.tiers.1.0' in error and 'not supported' in error for error in errors))
@@ -232,7 +232,7 @@ class ExternalModelTests(unittest.TestCase):
         """A manually entered [1m] ID must not lose the configured model's effort metadata."""
         config = rich_config()
         config.workflow.worker.models = [dict(provider='claude', api_provider='deepseek', model='v4-pro[1m]',
-                                              effort='default', fast=False)]
+                                              effort='default', speed='inherit')]
         path = ('workflow', 'worker', 'models')
         keys = []
         for index, part in enumerate(path):

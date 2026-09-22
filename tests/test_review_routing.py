@@ -128,7 +128,7 @@ class ReviewRoutingTests(unittest.TestCase):
         """An unusable backup must not prevent an available primary from reviewing."""
         config = reviewer_config()
         route = select(config, "reviewer", 2, {})
-        route["fallbacks"][0].update(model="claude-opus-5", effort="high", fast=True)
+        route["fallbacks"][0].update(model="claude-opus-5", effort="high", speed='fast')
         with patch.dict(os.environ, {"CLAUDE_CODE_DISABLE_FAST_MODE": "1"}), \
              patch.object(workflow.shutil, "which", return_value="cli"), \
              patch.object(workflow, "run", return_value={"verdict": "PASS", "summary": "Checked", "findings": []}) as run:

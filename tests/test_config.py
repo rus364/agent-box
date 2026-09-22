@@ -107,7 +107,7 @@ class RoundTripTests(unittest.TestCase):
         config = Config()
         config.workflow.auto_push = False
         config.workflow.review.sensitive_paths = []
-        config.workflow.review.models = [{'provider': 'codex', 'model': 'custom-model', 'effort': 'medium', 'fast': False, 'api_provider': ''}]
+        config.workflow.review.models = [{'provider': 'codex', 'model': 'custom-model', 'effort': 'medium', 'speed': 'inherit', 'api_provider': ''}]
         config.image.tools['analysis'] = False
         config.env.set['CUSTOM'] = ''
         with tempfile.TemporaryDirectory() as tmp:
@@ -117,7 +117,7 @@ class RoundTripTests(unittest.TestCase):
             self.assertEqual(data, {
                 'version': 1, 'env': {'set': {'CUSTOM': ''}}, 'image': {'tools': {'analysis': False}},
                 'workflow': {'auto_push': False, 'review': {'sensitive_paths': [],
-                    'models': [{'provider': 'codex', 'model': 'custom-model', 'effort': 'medium', 'fast': False, 'api_provider': ''}]}}})
+                    'models': [{'provider': 'codex', 'model': 'custom-model', 'effort': 'medium', 'speed': 'inherit', 'api_provider': ''}]}}})
             self.assertEqual(load_config(path).to_dict(), config.to_dict())
             path.write_text(json.dumps(config.to_dict()))
             save_config(load_config(path), path)

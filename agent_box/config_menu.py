@@ -203,9 +203,9 @@ def json_field(path):
 def help_for(path):
     """Return complete help for every static and generated menu entry."""
     dotted = ".".join(path)
-    if path[0] == "workflow" and path[-1] == "fast":
-        return ("Request faster responses at higher provider usage/cost. Off preserves provider/native defaults. Independent of effort. "
-                "On requires a supported exact model ID and account access. Claude native needs verified inherited fast; otherwise use managed CLI.")
+    if path[0] == "workflow" and path[-1] == "speed":
+        return ("Inherit preserves session/provider speed; standard explicitly disables fast; fast requests higher speed at higher provider usage/cost. "
+                "Independent of effort. Explicit speed uses managed CLI; native agents inherit speed. External APIs support inherit only.")
     if dotted in HELP:
         return HELP[dotted]
     if path[:1] == ("external_providers",):
@@ -693,7 +693,7 @@ def edit(config, *, project=None):
         title = " / ".join(label_for(part, path[:i]) for i, part in enumerate(path))
         while True:
             rows = [f"{number}. {candidate_label(spec)}" for number, spec in enumerate(models, 1)] + ["Add model"]
-            details = [f"Candidate {number}: Enter to change its model, effort or fast, move it or remove it. " + help_for(path)
+            details = [f"Candidate {number}: Enter to change its model, effort or speed, move it or remove it. " + help_for(path)
                        for number in range(1, len(models) + 1)] + ["Append a candidate; the first available candidate runs. " + help_for(path)]
             index = choose(screen, rows, title, min(index, len(rows) - 1), details=details)
             if index is None:
@@ -707,11 +707,11 @@ def edit(config, *, project=None):
                 continue
             spec = models[index]
             actions = [f"Model: {spec['model']} [{spec['provider']}{'@' + spec['api_provider'] if spec.get('api_provider') else ''}]",
-                       f"Effort: {spec['effort']}", f"Fast: {'on' if spec.get('fast') is True else 'off'}",
+                       f"Effort: {spec['effort']}", f"Speed: {spec.get('speed', 'inherit')}",
                        "Move up", "Move down", "Remove"]
             action = choose(screen, actions, f"{title} / {index + 1}", 0,
                             details=["Choose the CLI, API and model.", "Reasoning effort; default omits agent-box's effort override.",
-                                     help_for(("workflow", "fast")), "Prefer this candidate earlier.",
+                                     help_for(("workflow", "speed")), "Prefer this candidate earlier.",
                                      "Prefer this candidate later.", "Delete this candidate from the list."])
             if action == 0:
                 chosen = pick_model(screen, spec)
@@ -725,7 +725,12 @@ def edit(config, *, project=None):
                 if picked is not None:
                     spec["effort"], changed = options[picked], True
             elif action == 2:
-                spec["fast"], changed = spec.get("fast") is not True, True
+                from .speed import SPEEDS
+                picked = choose(screen, list(SPEEDS), f"{title} / {index + 1} / speed",
+                                SPEEDS.index(spec.get("speed", "inherit")) if spec.get("speed", "inherit") in SPEEDS else 0,
+                                explanation=help_for(("workflow", "speed")))
+                if picked is not None:
+                    spec["speed"], changed = SPEEDS[picked], True
             elif action == 3 and index:
                 models[index - 1], models[index] = models[index], models[index - 1]
                 index, changed = index - 1, True

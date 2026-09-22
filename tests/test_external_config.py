@@ -82,7 +82,7 @@ class ExternalConfigTests(unittest.TestCase):
         keys = [*prefix, '\n', '\n', curses.KEY_HOME, *[curses.KEY_DOWN] * (4 + external), '\n', '\x1b', *save]
         edited, screen = menu_tests.ConfigMenuTests().edit(config, keys, project={})
         self.assertEqual(edited.project['workflow']['scout']['models'],
-                         [{'provider': 'codex', 'model': model, 'effort': 'medium', 'fast': False, 'api_provider': 'deepseek'}])
+                         [{'provider': 'codex', 'model': model, 'effort': 'medium', 'speed': 'inherit', 'api_provider': 'deepseek'}])
         self.assertIn(model + ' [codex]', screen.drawn)
         self.assertIn(model + f' [codex@deepseek: {model}]', screen.drawn)
         reset, _ = menu_tests.ConfigMenuTests().edit(config, [*prefix, 'r', *save], project=edited.project)
@@ -112,7 +112,7 @@ class ExternalConfigTests(unittest.TestCase):
     def test_a_malformed_candidate_api_name_is_a_validation_error_not_a_crash(self):
         """The menu and config set run both validators; a list-valued name must reach the schema error."""
         config = external_config()
-        config.workflow.scout.models = [{'provider': 'codex', 'model': 'm', 'effort': 'medium', 'fast': False, 'api_provider': []}]
+        config.workflow.scout.models = [{'provider': 'codex', 'model': 'm', 'effort': 'medium', 'speed': 'inherit', 'api_provider': []}]
         self.assertIn('workflow.scout.models.0: invalid API provider name', config_menu.validate(config))
 
     def test_invalid_connections_fail_without_echoing_values(self):
@@ -196,7 +196,7 @@ class ExternalConfigTests(unittest.TestCase):
                 for part in path:
                     value = value[part]
                 self.assertEqual(value, [{'provider': 'claude', 'model': 'external-small', 'effort': 'medium',
-                                          'fast': False, 'api_provider': 'deepseek'}])
+                                          'speed': 'inherit', 'api_provider': 'deepseek'}])
                 self.assertEqual(len(edited.config.workflow.candidates()), 1)
                 self.assertNotIn('private-api-key', '\n'.join(screen.drawn))
 
@@ -209,7 +209,7 @@ class ExternalConfigTests(unittest.TestCase):
             config.external_providers['deepseek'].codex.models = {}
             if deleted:
                 del config.external_providers['deepseek']
-            config.workflow.worker.models = [{'provider': 'codex', 'model': 'old', 'effort': 'medium', 'fast': False,
+            config.workflow.worker.models = [{'provider': 'codex', 'model': 'old', 'effort': 'medium', 'speed': 'inherit',
                                               'api_provider': 'deepseek'}]
             keys = []
             for index, part in enumerate(path):

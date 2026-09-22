@@ -923,7 +923,7 @@ def execute(config, selected, role, root, prompt, read_paths=(), on_completed=No
         try:
             diagnostics = {"usage": None}
             def completed(report):
-                return {"route": {k: candidate[k] for k in ("provider", "api_provider", "api_fingerprint", "model", "effort", "tier", "fast") if k in candidate},
+                return {"route": {k: candidate[k] for k in ("provider", "api_provider", "api_fingerprint", "model", "effort", "tier", "speed") if k in candidate},
                         "report": report, "failures": list(failures), "diagnostics": dict(diagnostics)}
             report = run(candidate, role, root, prompt, timeout=config.timeout_seconds,
                          read_paths=read_paths, diagnostics=diagnostics, streams=streams,
@@ -1437,17 +1437,19 @@ def execution(config, role, tier, task_id):
     know, so the route is named per provider.
     """
     from .agent_profiles import profile_name
-    from .fast_mode import configuration_error, native_limitation
+    from .speed import configuration_error, native_limitation
     path, models = config.workflow.models_for(role, tier)
     if not models:
         return {"mode": "native" if role == "reviewer" else "self", "models": path}
     first, native = models[0], {}
+    limitation = native_limitation(first["provider"], first.get("speed", "inherit"))
     if (not path.startswith("--") and config.workflow.enabled and not first.get("api_provider")
             and not configuration_error(first["provider"], first)
-            and (role != "reviewer" or (first["effort"] != "default"
-                 and not native_limitation(first["provider"], first.get("fast", False))))):
+            and not limitation
+            and (role != "reviewer" or first["effort"] != "default")):
         native[first["provider"]] = profile_name(role, tier if ".tiers." in path else None)
     return {"mode": "delegate", "models": path, "native": native,
+            **({"native_limitation": limitation} if limitation else {}),
             "managed": (f"agent-box workflow review {task_id}" if role == "reviewer" else
                         f"agent-box workflow delegate {task_id} --role {role} --brief FILE")}
 

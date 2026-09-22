@@ -142,7 +142,7 @@ def failure_metadata(route, role):
         return value if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_.:/-]{1,128}", value) else None
     return {**{key: identifier(route.get(key)) for key in ("provider", "model", "effort")},
             **({"api_provider": identifier(route["api_provider"])} if route.get("api_provider") else {}),
-            "fast": route.get("fast") if type(route.get("fast")) is bool else None,
+            "speed": route.get("speed", "inherit") if route.get("speed", "inherit") in ("inherit", "standard", "fast") else None,
             "role": identifier(role), "exit_code": None, "duration_seconds": None,
             "response_source": None, "stdout_bytes": None, "stderr_bytes": None,
             "result_bytes": None, "usage": None}
@@ -196,11 +196,11 @@ def check_settings(route):
         raise ProviderFailure("Unsupported managed provider", "unsupported")
     if not route.get("model") or not route.get("effort"):
         raise ProviderFailure("Managed execution requires a candidate with a model and an effort", "unsupported")
-    from .fast_mode import configuration_error
+    from .speed import configuration_error
     error = configuration_error(route["provider"], route)
     if error:
         raise ProviderFailure(error, "unsupported")
-    if route["provider"] == "claude" and route.get("fast", False):
+    if route["provider"] == "claude" and route.get("speed", "inherit") == "fast":
         from .external_launch import builtin_environment
         environment = builtin_environment(os.environ)
         blocked = [name for name in ("CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY",
@@ -228,20 +228,22 @@ def preflight(route):
 def build_command(route, role, root, result_path, read_paths=()):
     check_settings(route)
     readonly = role != "worker"
+    speed = route.get("speed", "inherit")
     if route["provider"] == "codex":
         command = ["codex", "exec", "--ephemeral", "--ignore-user-config", "--json", "-C", str(root),
                    "--sandbox", "read-only" if readonly else "workspace-write", "--model", route["model"]]
         if route["effort"] != "default":
             command += ["-c", 'model_reasoning_effort=' + toml_string(route["effort"])]
-        if route.get("fast", False):
-            command += ["-c", 'service_tier="fast"', "-c", "features.fast_mode=true"]
+        if speed != "inherit":
+            command += ["-c", 'service_tier=' + toml_string("fast" if speed == "fast" else "default"),
+                        "-c", "features.fast_mode=" + str(speed == "fast").lower()]
         command += [*([] if readonly else ["-c", "sandbox_workspace_write.network_access=true"]),
                     "-o", str(result_path), "-"]
         return command
     # Excluding Bash prevents a read-only reviewer from gaining shell write access.
     command = ["claude", "-p", "--model", route["model"]]
-    if route.get("fast", False):
-        command += ["--settings", '{"fastMode":true}']
+    if speed != "inherit":
+        command += ["--settings", json.dumps({"fastMode": speed == "fast"})]
     if route["effort"] != "default":
         command += ["--effort", route["effort"]]
     for path in read_paths:

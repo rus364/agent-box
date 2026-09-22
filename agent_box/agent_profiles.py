@@ -7,7 +7,7 @@ from .atomicio import atomic_write_text
 from .config import TIERED_ROLES, TIERS
 from .delegation import profile_instructions
 from .external_config import has_toml_spelling, toml_string
-from .fast_mode import configuration_error, native_limitation
+from .speed import configuration_error, native_limitation
 
 
 def _codex_field(value):
@@ -32,9 +32,6 @@ def body(provider, role, tier, spec):
         fields = {"name": name, "description": description, "model": spec["model"],
                   "model_reasoning_effort": spec["effort"], "sandbox_mode": "workspace-write" if role == "worker" else "read-only",
                   "developer_instructions": instructions}
-        if spec.get("fast", False):
-            fields["service_tier"] = "fast"
-            fields["features.fast_mode"] = True
         if spec["effort"] == "default":
             fields.pop("model_reasoning_effort")
         return "\n".join(f"{key} = {_codex_field(value)}" for key, value in fields.items()) + "\n"
@@ -73,7 +70,7 @@ def profile_candidate(models, provider):
     """
     return next((spec for spec in (models if isinstance(models, list) else [])
                  if spec["provider"] == provider and not spec.get("api_provider")),
-                {"provider": provider, "model": "", "effort": "medium", "fast": False, "api_provider": ""})
+                {"provider": provider, "model": "", "effort": "medium", "speed": "inherit", "api_provider": ""})
 
 
 def sync(config, codex_home, claude_home):
@@ -104,8 +101,10 @@ def sync(config, codex_home, claude_home):
             if enabled and error:
                 messages.append(f"{path.name}: {error}; native profile disabled")
                 enabled = False
-            if enabled and provider == "claude" and spec.get("fast", False):
-                messages.append(f"{path.name}: {native_limitation(provider, True)}")
+            limitation = native_limitation(provider, spec.get("speed", "inherit"))
+            if enabled and limitation:
+                messages.append(f"{path.name}: {limitation}; native profile disabled")
+                enabled = False
             if not enabled:
                 if intact:
                     path.unlink()

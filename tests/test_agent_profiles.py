@@ -8,7 +8,7 @@ from agent_box.config import Config
 
 
 def entry(provider, model, effort, **fields):
-    return {"provider": provider, "model": model, "effort": effort, "fast": False, "api_provider": "", **fields}
+    return {"provider": provider, "model": model, "effort": effort, "speed": "inherit", "api_provider": "", **fields}
 
 
 class AgentProfileTests(unittest.TestCase):
@@ -112,7 +112,7 @@ class AgentProfileTests(unittest.TestCase):
         wrote a non-BMP one as a surrogate pair, which TOML rejects, and left
         DEL literal, which a basic string forbids.
         """
-        spec = {"model": "🚀 del\x7fmodel", "effort": "low", "fast": False}
+        spec = {"model": "🚀 del\x7fmodel", "effort": "low", "speed": "inherit"}
         self.assertEqual(tomllib.loads(body("codex", "worker", 1, spec))["model"],
                          "🚀 del\x7fmodel")
 

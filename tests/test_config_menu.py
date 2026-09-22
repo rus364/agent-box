@@ -253,7 +253,7 @@ class ConfigMenuTests(unittest.TestCase):
         suffix = ["\x1b", curses.KEY_END, curses.KEY_UP, "\n"]
         config = Config()
         config.workflow.worker.tiers["2"] = [{"provider": "codex", "model": "gpt-5.5", "effort": "high",
-                                              "fast": False, "api_provider": ""}]
+                                              "speed": "inherit", "api_provider": ""}]
         cancelled, screen = self.edit(config, [*prefix, *["\x1b"] * 2])
         self.assertIsNone(cancelled)
         self.assertFalse(config.workflow.use_tiers)
@@ -366,20 +366,37 @@ class ConfigMenuTests(unittest.TestCase):
                 curses.KEY_END, "\n", curses.KEY_HOME, "\n", *"gpt-6-astra", "\n",       # add a custom Codex model
                 curses.KEY_HOME, curses.KEY_DOWN, "\n", *[curses.KEY_DOWN] * 3, "\n",        # move it up
                 curses.KEY_HOME, "\n", curses.KEY_DOWN, "\n", curses.KEY_HOME, *[curses.KEY_DOWN] * 3, "\n",  # effort high
-                curses.KEY_HOME, "\n", *[curses.KEY_DOWN] * 2, "\n",                        # fast on
+                curses.KEY_HOME, "\n", *[curses.KEY_DOWN] * 2, "\n", curses.KEY_END, "\n",                        # speed fast
                 "\x1b"]
         cancelled, _ = self.edit(config, [*keys, "\x1b", "\x1b", "\x1b"])
         self.assertIsNone(cancelled)
         self.assertEqual(config.workflow.scout.models, [])
         result, screen = self.edit(config, [*keys, "\x1b", "\x1b", curses.KEY_END, curses.KEY_UP, "\n"])
         self.assertEqual(result.config.workflow.scout.models, [
-            {"provider": "codex", "model": "gpt-6-astra", "effort": "high", "fast": True, "api_provider": ""},
-            {"provider": "claude", "model": BUNDLED_MODELS["claude"][0], "effort": "medium", "fast": False, "api_provider": ""}])
-        self.assertTrue(any(line.startswith("Models") and "codex:gpt-6-astra:high fast" in line for line in screen.drawn))
+            {"provider": "codex", "model": "gpt-6-astra", "effort": "high", "speed": "fast", "api_provider": ""},
+            {"provider": "claude", "model": BUNDLED_MODELS["claude"][0], "effort": "medium", "speed": "inherit", "api_provider": ""}])
+        self.assertTrue(any(line.startswith("Models") and "codex:gpt-6-astra:high speed=fast" in line for line in screen.drawn))
         self.assertEqual(result.config.workflow.worker, config.workflow.worker)
         removed, _ = self.edit(result.config, [*opened, curses.KEY_HOME, "\n", curses.KEY_END, "\n", "\x1b",
                                                "\x1b", "\x1b", curses.KEY_END, curses.KEY_UP, "\n"])
         self.assertEqual([spec["model"] for spec in removed.config.workflow.scout.models], [BUNDLED_MODELS["claude"][0]])
+
+    def test_scout_speed_selects_standard_inherit_and_can_cancel(self):
+        """The speed picker has three distinct choices and cancellation preserves the candidate."""
+        import curses
+        config = Config()
+        config.workflow.scout.models = [{"provider": "codex", "model": "gpt-6-astra", "effort": "high",
+                                         "speed": "fast", "api_provider": ""}]
+        opened = [*select("workflow"), "\n", *select("scout", ("workflow",)), "\n",
+                  *select("models", ("workflow", "scout")), "\n", "\n",
+                  curses.KEY_DOWN, curses.KEY_DOWN, "\n"]
+        saved = ["\x1b", "\x1b", "\x1b", curses.KEY_END, curses.KEY_UP, "\n"]
+        for choice, speed in (([curses.KEY_HOME, curses.KEY_DOWN, "\n"], "standard"),
+                              ([curses.KEY_HOME, "\n"], "inherit"), (["\x1b"], "fast")):
+            with self.subTest(speed=speed):
+                result, _ = self.edit(config, [*opened, *choice, *saved])
+                self.assertEqual(result.config.workflow.scout.models[0]["speed"], speed)
+                self.assertEqual(config.workflow.scout.models[0]["speed"], "fast")
 
     def test_picker_offers_both_clis_keeps_an_unknown_current_model_and_refreshes_catalogs_once(self):
         """Any CLI's model may serve any role, so a Codex list offers Claude models too."""
@@ -388,7 +405,7 @@ class ConfigMenuTests(unittest.TestCase):
         for project in (None, {}):
             config = Config()
             config.workflow.review.tiers["2"] = [{"provider": "claude", "model": "private-model", "effort": "medium",
-                                                   "fast": False, "api_provider": ""}]
+                                                   "speed": "inherit", "api_provider": ""}]
             path = ("workflow", "review", "tiers")
             keys = [*select("workflow"), "\n", *select("review", path[:1]), "\n", *select("tiers", path[:2]), "\n",
                     curses.KEY_DOWN, "\n", "\n", "\n", "\x1b", "\x1b", "\n", "\n", *["\x1b"] * 7]
@@ -404,7 +421,7 @@ class ConfigMenuTests(unittest.TestCase):
         """A list is one value: a project either owns all of it or inherits all of it."""
         import curses
         config = Config()
-        config.workflow.worker.models = [{"provider": "claude", "model": "opus", "effort": "high", "fast": False, "api_provider": ""}]
+        config.workflow.worker.models = [{"provider": "claude", "model": "opus", "effort": "high", "speed": "inherit", "api_provider": ""}]
         prefix = [*select("workflow"), "\n", *select("worker", ("workflow",)), "\n", *select("models", ("workflow", "worker"))]
         save = ["\x1b", "\x1b", curses.KEY_END, curses.KEY_UP, "\n"]
         added = [*prefix, "\n", curses.KEY_END, "\n", curses.KEY_HOME, "\n", *"gpt-5.5", "\n", "\x1b"]

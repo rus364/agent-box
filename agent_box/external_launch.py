@@ -341,7 +341,7 @@ def prepare(command, name, cli, config, directory, environment, *, model=None):
                 'modelPicker': {'replaceBuiltInOptions': True, 'options': [
                     {'model': m, **({'label': s['display_name']} if s['display_name'] else {})}
                     for m, s in picker_models.items()]}}
-    # Managed fast settings use the same single --settings argument.
+    # Managed speed settings use the same single --settings argument.
     if '--settings' in before:
         i = before.index('--settings')
         settings = {**json.loads(before[i + 1]), **settings}

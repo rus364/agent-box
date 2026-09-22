@@ -615,7 +615,7 @@ class TrackerConfig:
                     _mapping(data.get("connections")).items() if k in TRACKER_PROVIDERS})
 
 
-MODEL_ENTRY = {"provider": str, "model": str, "effort": str, "fast": bool, "api_provider": str}
+MODEL_ENTRY = {"provider": str, "model": str, "effort": str, "speed": str, "api_provider": str}
 #: Task tiers that may select their own worker and reviewer lists; scouts have none.
 TIERS = range(1, 4)
 TIERED_ROLES = ("worker", "reviewer")
@@ -630,14 +630,14 @@ def model_entry(data):
     data = _mapping(data)
     # Kept as written, not coerced: a wrong type must reach validate() at its path.
     return {"provider": data.get("provider", ""), "model": data.get("model", ""),
-            "effort": data.get("effort", "medium"), "fast": data.get("fast", False),
+            "effort": data.get("effort", "medium"), "speed": data.get("speed", "inherit"),
             "api_provider": data.get("api_provider", "")}
 
 
 def candidate_label(spec):
-    """``PROVIDER[@API]:MODEL:EFFORT``, the spelling --worker/--scout/--reviewer accept."""
+    """Candidate identity and explicit speed; CLI pins accept the identity alone."""
     api = f"@{spec['api_provider']}" if spec.get("api_provider") else ""
-    return f"{spec['provider']}{api}:{spec['model']}:{spec['effort']}" + (" fast" if spec.get("fast") is True else "")
+    return f"{spec['provider']}{api}:{spec['model']}:{spec['effort']}" + f" speed={spec.get('speed', 'inherit')}"
 
 
 def model_list(data=None):
@@ -804,7 +804,7 @@ class WorkflowConfig:
             value = getattr(self.review, name)
             if not isinstance(value, int) or value < 1:
                 errors.append(f"workflow.review.{name} must be a positive integer")
-        from .fast_mode import configuration_error
+        from .speed import configuration_error
         for role in ("scout", *TIERED_ROLES):
             section = "review" if role == "reviewer" else role
             settings = self.role(role)

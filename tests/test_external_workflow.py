@@ -12,7 +12,7 @@ import workflow_fixtures
 
 
 def candidate(provider='codex'):
-    return {'provider': provider, 'model': 'external-small', 'effort': 'high', 'fast': False, 'api_provider': 'deepseek'}
+    return {'provider': provider, 'model': 'external-small', 'effort': 'high', 'speed': 'inherit', 'api_provider': 'deepseek'}
 
 
 def configure(policy, role, tier, models):
@@ -28,8 +28,8 @@ class ExternalRoutingTests(unittest.TestCase):
     def test_reviewer_fallback_preserves_each_candidates_api_identity(self):
         """Fallback may change CLI/API, but the accepted evidence must identify the one that ran."""
         config = external_config()
-        native = {'provider': 'codex', 'model': 'native-model', 'effort': 'high', 'fast': False, 'tier': 1}
-        external = {'provider': 'claude', 'model': 'external-small', 'effort': 'high', 'fast': False, 'tier': 1,
+        native = {'provider': 'codex', 'model': 'native-model', 'effort': 'high', 'speed': 'inherit', 'tier': 1}
+        external = {'provider': 'claude', 'model': 'external-small', 'effort': 'high', 'speed': 'inherit', 'tier': 1,
                     **external_launch.route_identity(config, 'deepseek', 'claude')}
         for first, second in ((native, external), (external, native)):
             selected = {**first, 'fallbacks': [second]}
@@ -81,7 +81,7 @@ class ExternalRoutingTests(unittest.TestCase):
             with patch.dict(os.environ, env, clear=True), \
                  self.assertRaisesRegex(provider_runner.ProviderFailure, 'CLAUDE_CODE_USE_BEDROCK'):
                 provider_runner.check_settings({'provider': 'claude', 'model': 'claude-opus-5',
-                                                'effort': 'high', 'fast': True})
+                                                'effort': 'high', 'speed': 'fast'})
 
     def test_owned_native_profiles_are_removed_for_external_candidates(self):
         """Applying a configured API must not leave an owned profile pointing at a built-in endpoint."""
@@ -96,7 +96,7 @@ class ExternalRoutingTests(unittest.TestCase):
             config.workflow.worker.tiers['1'][0]['api_provider'] = 'deepseek'
             agent_profiles.sync(config, codex, claude)
             self.assertFalse(path.exists())
-        config.workflow.worker.tiers['1'][0]['fast'] = True
+        config.workflow.worker.tiers['1'][0]['speed'] = 'fast'
         self.assertTrue(any('external API' in e for e in config.workflow.validate()))
 
     def test_endpoint_drift_is_refused_before_process_creation_without_key_fingerprints(self):

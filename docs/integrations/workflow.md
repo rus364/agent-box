@@ -159,7 +159,7 @@ Each role owns an ordered candidate list: `workflow.scout`, `workflow.worker` an
 `workflow.review` each hold `models`; workers and reviewers also hold optional
 `tiers.N` for task tiers 1-3. Scouts have no tiers. A candidate names the CLI that
 runs it and what it runs: `provider` (`codex` or `claude`), `model`, `effort`,
-`fast` (default `false`) and `api_provider` (empty for the built-in API). Roles
+`speed` (`inherit`, `standard`, or `fast`; default `inherit`) and `api_provider` (empty for the built-in API). Roles
 never share or inherit each other's lists.
 
 The first available candidate runs and the rest are ordered fallbacks. This holds
@@ -173,8 +173,8 @@ session, and a Claude worker from a Codex session, as a managed `codex exec` /
 external API).
 
 The lists are edited in the configuration menu (add, reorder, change effort or
-fast, remove; the picker offers every CLI's models together), shown in
-`config show` in the `--scout` spelling `PROVIDER[@API]:MODEL:EFFORT`, and travel in
+speed, remove; the picker offers every CLI's models together), shown in
+`config show` as `PROVIDER[@API]:MODEL:EFFORT speed=MODE`, and travel in
 the container's minimal workflow configuration. The effort value `default` omits
 agent-box's effort override; it does not disable thinking or pass a literal `none`
 value to the provider. A new candidate starts at `medium`. Lists start empty
@@ -713,45 +713,46 @@ than seven days and excess oldest files are removed when the next failure is sav
 Delete individual artifact files to remove them sooner; inactive state is not
 cleaned by a background service.
 
-## Fast mode
+## Model speed
 
-`fast` is an independent boolean on each candidate of every role list. It defaults to `false`: agent-box adds no
-speed override or native capability requirement, preserving existing provider
-and session behavior. This does not turn off fast already selected by the user
-in the provider. Enable a request through the candidate's **Fast** menu entry.
-Fallbacks keep their own request. It changes neither model, effort, provider
-selection nor review policy. `fast: true` records a higher-speed request at
-higher usage/cost, not delivered service.
+Each candidate has its own `speed`: `inherit` (default), `standard`, or `fast`.
+Choose **Speed** in the candidate menu; `config show` includes `speed=...` for
+every candidate. Roles, tiers and fallbacks retain their own selection without
+changing model, effort, provider order or review policy.
 
-Support checked 2026-09-11:
+- `inherit` adds no speed override. Native agents use the parent session's
+  speed. Managed processes use their provider defaults: Codex keeps
+  `--ignore-user-config`, so it does not copy the interactive parent's settings.
+- `standard` explicitly requests ordinary speed even when the coordinator uses
+  Fast. Managed Codex passes `service_tier="default"` and
+  `features.fast_mode=false` (Codex omits the service tier on the wire); Claude passes `--settings '{"fastMode":false}'`.
+- `fast` requests faster responses at higher provider usage/cost. Managed Codex
+  passes `service_tier="fast"` and `features.fast_mode=true`; Claude passes
+  `--settings '{"fastMode":true}'`. Provider access is still required.
 
-- Codex: exact IDs `gpt-6-astra`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`,
-  `gpt-5.6`, `gpt-5.5`, `gpt-5.4`. When requested, CLI and native profiles set
-  `service_tier="fast"` and `features.fast_mode=true`. False leaves the original
-  CLI/profile fields unchanged. Spark is a separate model, not this setting.
-  Sources: [Codex speed](https://learn.chatgpt.com/docs/agent-configuration/speed),
-  [configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference).
-  Local Codex 0.154.0 catalog advertises priority/Fast for Astra/Sol/Terra/Luna/5.5.
-- Claude: exact IDs `claude-opus-5` and `claude-opus-4-8`. Managed CLI requests
-  `claude -p --settings '{"fastMode":true}'`; false adds no settings override.
-  Unverified aliases and other models are rejected to prevent automatic model
-  switches. Requires account access and usage credits or paid API access;
-  third-party cloud backends are unsupported. Source:
-  [Claude fast mode](https://code.claude.com/docs/en/fast-mode).
-- Codex's priority service tier represents Fast. Claude profiles cannot
-  independently pin speed; a native subagent inherits the session's. A native
-  review result records no speed, so a configured fast request is delivered only
-  by the managed run.
+Explicit speed uses managed CLI for every role. Codex 0.155.1 overwrites a
+native child's service tier with the root session's tier after applying its
+custom profile; a profile cannot pin independent speed. Claude native profiles
+also inherit speed. `workflow inspect` reports this limitation; `config apply`
+installs native profiles only for `inherit`, removing only intact owned profiles
+for explicit speed and preserving user edits.
 
-The coordinator's own work and the native subagents it spawns retain their
-previous speed behavior. Ordinary interactive launcher commands
-keep provider-owned settings and user CLI arguments; workflow matrices do not
-change the coordinator's session. GitHub-hosted reviews have no independent
-fast control here; use local workflow review for configured speed.
+External API candidates support `inherit` only: their endpoints have no shared
+standard/Fast contract. GitHub-hosted reviews have no independent speed control
+here; use local workflow review for configured speed. Ordinary interactive
+launches preserve provider-owned settings and user CLI arguments.
 
-Config apply validates candidates before creating native profiles; invalid fast
-combinations disable only intact owned profiles, preserving user edits. The
-provider can deny or downgrade a request due to access, limits, policy or CLI
-support. Tests prove configuration and request construction, not account
-entitlement or acceleration. Config/apply does not change billing settings,
-bypass provider checks or run paid fast inference.
+Fast model support: Codex exact IDs `gpt-6-astra`, `gpt-5.6-sol`, `gpt-5.6-terra`,
+`gpt-5.6-luna`, `gpt-5.6`, `gpt-5.5`, `gpt-5.4`; Claude exact IDs
+`claude-opus-5`, `claude-opus-4-8`. Unknown Fast models are rejected to avoid a
+silent model switch. Standard does not require a Fast-capable model. Claude
+Fast on third-party cloud backends is unsupported.
+
+Mechanisms checked 2026-09-22:
+[Codex schema](https://learn.chatgpt.com/docs/config-schema.json),
+[Codex 0.155.1 native spawn](https://github.com/openai/codex/blob/rust-v0.155.1/codex-rs/core/src/agent/control/spawn.rs),
+[Codex speed](https://learn.chatgpt.com/docs/agent-configuration/speed),
+[Claude Fast mode](https://code.claude.com/docs/en/fast-mode).
+Tests prove configuration, routing and request construction, not account
+entitlement, billing or delivered acceleration. Providers may deny or downgrade
+requests due to account limits or policy. Config/apply runs no paid inference.

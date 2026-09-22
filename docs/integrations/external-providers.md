@@ -222,7 +222,7 @@ be entered for any enabled API. An empty model disables that candidate. For exam
           "api_provider": "deepseek",
           "model": "your-model-id",
           "effort": "default",
-          "fast": false
+          "speed": "inherit"
         }
       ]
     }

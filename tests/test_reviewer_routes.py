@@ -22,8 +22,8 @@ class ReviewerMatrixTests(unittest.TestCase):
         config.workflow.worker.tiers["1"] = [entry("codex", "worker-model", "medium")]
         config.workflow.review.tiers["1"] = [entry("codex", "review-model", "default")]
         rows = shown(config)
-        self.assertIn("1 codex:review-model:default;", rows["workflow.review.tiers"])
-        self.assertIn("1 codex:worker-model:medium;", rows["workflow.worker.tiers"])
+        self.assertIn("1 codex:review-model:default speed=inherit;", rows["workflow.review.tiers"])
+        self.assertIn("1 codex:worker-model:medium speed=inherit;", rows["workflow.worker.tiers"])
 
     def test_config_show_reports_the_tier_switch(self):
         """Inspection must reveal whether task tiers select models, since the tier lists stay listed either way."""
@@ -43,7 +43,7 @@ class ReviewerMatrixTests(unittest.TestCase):
         config = Config.from_dict({"workflow": {
             "worker": {"tiers": {"2": [{"provider": "claude", "model": "worker"}]}},
             "review": {"tiers": {"2": [
-                {"provider": "claude", "api_provider": "", "fast": False, "model": "reviewer", "effort": "default"},
+                {"provider": "claude", "api_provider": "", "speed": "inherit", "model": "reviewer", "effort": "default"},
                 {"provider": "codex", "model": "fallback", "effort": "high"}]}}}})
         config = Config.from_dict(config.to_dict())
         selected = routing.select(config.workflow, "reviewer", 2)
@@ -56,7 +56,7 @@ class ReviewerMatrixTests(unittest.TestCase):
 
     def test_reviewer_effort_is_validated_by_provider(self):
         config = Config.from_dict({"workflow": {"review": {"tiers": {"3": [
-            {"provider": "claude", "fast": False, "model": "review", "effort": "ultra"}]}}}})
+            {"provider": "claude", "speed": "inherit", "model": "review", "effort": "ultra"}]}}}})
         self.assertTrue(any("workflow.review.tiers.3.0" in e
                             for e in config.workflow.validate()))
 
@@ -67,11 +67,11 @@ class ManagedReviewRouteTests(unittest.TestCase):
 
     def test_managed_review_fallback_failures_are_kept_with_acceptance(self):
         self.config.workflow.review.policy = "always"
-        selected = {"fast": False, "provider": "claude", "model": "m", "effort": "high", "tier": 1,
+        selected = {"speed": "inherit", "provider": "claude", "model": "m", "effort": "high", "tier": 1,
                     "role": "reviewer", "fallbacks": [
-                        {"fast": False, "provider": "codex", "model": "fallback", "effort": "medium", "tier": 1}]}
+                        {"speed": "inherit", "provider": "codex", "model": "fallback", "effort": "medium", "tier": 1}]}
         failure = workflow.ProviderFailure("Quota exhausted", "quota")
-        failure.diagnostic = {"fast": False, "model": "m", "effort": "high", "role": "reviewer",
+        failure.diagnostic = {"speed": "inherit", "model": "m", "effort": "high", "role": "reviewer",
                               "stage": "envelope", "reason": "provider error envelope",
                               "artifact": "provider-failures/fixture.json", "exit_code": 0,
                               "duration_seconds": 1.25, "stdout_bytes": 7, "stderr_bytes": 0,
