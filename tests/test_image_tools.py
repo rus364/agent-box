@@ -10,43 +10,43 @@ import unittest
 from unittest import mock
 
 from agent_box import runtime
-from agent_box.config import IMAGE_TOOL_GROUPS, Config, ImageConfig
+from agent_box.config import TOOL_GROUPS, Config, ToolsConfig
 
 
 def _config(**groups: bool) -> Config:
     config = Config()
-    config.image.tools.update(groups)
+    config.tools.groups.update(groups)
     return config
 
 
-class ImageConfigSchemaTests(unittest.TestCase):
+class ToolsConfigSchemaTests(unittest.TestCase):
     def test_the_defaults_favour_small_and_widely_useful(self):
-        self.assertEqual(Config().image.enabled_groups(), ["analysis", "kubernetes"])
+        self.assertEqual(Config().tools.enabled_groups(), ["analysis", "kubernetes"])
 
     def test_the_large_groups_are_off_until_asked_for(self):
-        self.assertFalse(Config().image.tools["virtualization"])
-        self.assertFalse(Config().image.tools["browser"])
+        self.assertFalse(Config().tools.groups["virtualization"])
+        self.assertFalse(Config().tools.groups["browser"])
 
     def test_round_trips(self):
         config = _config(virtualization=True, kubernetes=False)
-        loaded = Config.from_dict(config.to_dict()).image
-        self.assertTrue(loaded.tools["virtualization"])
-        self.assertFalse(loaded.tools["kubernetes"])
+        loaded = Config.from_dict(config.to_dict()).tools
+        self.assertTrue(loaded.groups["virtualization"])
+        self.assertFalse(loaded.groups["kubernetes"])
 
     def test_an_unknown_group_is_dropped(self):
         """The file must never ask a build for a group that does not exist."""
-        loaded = ImageConfig.from_dict({"tools": {"quantum": True, "analysis": False}})
-        self.assertNotIn("quantum", loaded.tools)
-        self.assertFalse(loaded.tools["analysis"])
+        loaded = ToolsConfig.from_dict({"quantum": True, "analysis": False})
+        self.assertNotIn("quantum", loaded.groups)
+        self.assertFalse(loaded.groups["analysis"])
 
     def test_a_config_file_without_the_section_gets_the_defaults(self):
         config = Config.from_dict({"version": 1, "github": {}})
-        self.assertEqual(config.image.tools, IMAGE_TOOL_GROUPS)
+        self.assertEqual(config.tools.groups, TOOL_GROUPS)
 
     def test_enabled_groups_are_ordered(self):
         """The label is compared as text, so its order cannot be incidental."""
         config = _config(virtualization=True, browser=True)
-        self.assertEqual(config.image.enabled_groups(), sorted(config.image.enabled_groups()))
+        self.assertEqual(config.tools.enabled_groups(), sorted(config.tools.enabled_groups()))
 
 
 class BuildArgumentTests(unittest.TestCase):
@@ -55,7 +55,7 @@ class BuildArgumentTests(unittest.TestCase):
         the Containerfile's own defaults and quietly disagree with the file."""
         args = runtime.tool_build_args(Config())
         flags = [a for a in args if a != "--build-arg"]
-        for group in IMAGE_TOOL_GROUPS:
+        for group in TOOL_GROUPS:
             self.assertTrue(
                 any(flag.startswith(f"TOOLS_{group.upper()}=") for flag in flags),
                 f"{group} was not passed to the build")

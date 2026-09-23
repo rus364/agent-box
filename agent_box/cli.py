@@ -239,16 +239,14 @@ def _image_note(config) -> str:
 
 
 def _browser_note(config) -> str:
-    """Name what the switch actually starts, and where the pages land.
+    """Name what the group actually starts, and where the pages land.
 
     "on" alone would understate it: this is a real browser the agent drives,
     and everything it loads is inside the workspace box with the agent, the
     project and every other enabled integration.
     """
-    if not config.browser.enabled:
+    if not config.tools.groups["browser"]:
         return ""
-    if not config.image.tools.get("browser"):
-        return " (but the browser tool group is off, so the image has none)"
     return " (headless Chromium in the box; --host sessions unaffected)"
 
 
@@ -261,8 +259,8 @@ def _show_notes(config) -> dict[str, str]:
     """
     notes = {
         "claude.statusline.enabled": _statusline_note(config),
-        "image.tools": _image_note(config),
-        "browser.enabled": _browser_note(config),
+        "tools": _image_note(config),
+        "tools.browser": _browser_note(config),
         "workflow.auto_push": (" (accepted base after local merge)" if config.workflow.merge_mode == "local"
                                else " (parent task branch after subtask integration)"),
     }

@@ -22,8 +22,7 @@ def _fields(value, parts=()):
 
 PROJECT_FIELDS = {
     "workflow": {key: _fields(value, ("workflow", key)) for key, value in Config().workflow.to_dict().items() if key != "enabled"},
-    "browser": {"enabled": bool},
-    "image": _fields(Config().image.to_dict()),
+    "tools": _fields(Config().tools.to_dict()),
     "tracker": {"provider": str, "project": str, "recursive": bool,
                 "connections": {provider: {"url": str} for provider in TRACKER_PROVIDERS}},
 }

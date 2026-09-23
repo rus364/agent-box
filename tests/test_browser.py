@@ -25,21 +25,16 @@ from unittest import mock
 
 from agent_box import cli as cli_module
 from agent_box import runtime
-from agent_box.config import BrowserConfig, Config, NotificationsConfig
+from agent_box.config import Config, NotificationsConfig
 from agent_box.workspace import Workspace
 
 from test_runtime import IsolatedRuntimeTest
 
 
 def browser_config(enabled: bool = True) -> Config:
-    """A configuration where the switch and the image agree.
-
-    The browser is two decisions -- an image that carries Chromium, and a
-    session wired to drive it -- so a fixture that set only the switch would
-    be testing a state agent-box itself reports as a mistake.
-    """
-    config = Config(browser=BrowserConfig(enabled=enabled))
-    config.image.tools["browser"] = enabled
+    """A configuration with the browser tool group on or off."""
+    config = Config()
+    config.tools.groups["browser"] = enabled
     return config
 
 
@@ -59,6 +54,13 @@ class BrowserSessionStateTests(IsolatedRuntimeTest):
 
     def test_disabled_creates_no_state_at_all(self):
         self.assertIsNone(self._session(browser_config(False)))
+        self.assertFalse(runtime.browser_session_root(self.runtime_state).exists())
+
+    def test_no_browser_session_option_creates_no_state(self):
+        """``--no-browser`` keeps the MCP server out although the image has Chromium."""
+        config = browser_config()
+        config.tools.browser_off = True
+        self.assertIsNone(self._session(config))
         self.assertFalse(runtime.browser_session_root(self.runtime_state).exists())
 
     def test_enabled_creates_a_session_private_output_directory(self):
@@ -219,8 +221,8 @@ class CodexBrowserInjectionTests(IsolatedRuntimeTest):
         config = Config(
             notifications=NotificationsConfig(
                 enabled=True, telegram_token="t", telegram_chat_id="c"),
-            browser=BrowserConfig(enabled=True),
         )
+        config.tools.groups["browser"] = True
         command = runtime.codex_command(["exec", "hi"], config, Path("/state/b/codex-1"))
         overrides = [command[i + 1] for i, arg in enumerate(command) if arg == "-c"]
         self.assertFalse(any(o.startswith("notify=") for o in overrides))
@@ -430,20 +432,12 @@ class ConfigSurfaceTests(unittest.TestCase):
         return buffer.getvalue()
 
     def _browser_line(self, config: Config) -> str:
-        """The switch's own value -- not the image group that shares its name."""
         from test_workflow_config import show_paths
-        return show_paths(self._show(config))["browser.enabled"]
+        return show_paths(self._show(config))["tools.browser"]
 
     def test_config_show_reports_the_switch_off(self):
         line = self._browser_line(browser_config(False))
         self.assertEqual(line, "off")
-
-    def test_config_show_flags_a_switch_the_image_cannot_serve(self):
-        """Enabling the browser without building it is a state worth naming."""
-        config = browser_config(True)
-        config.image.tools["browser"] = False
-        line = self._browser_line(config)
-        self.assertIn("browser tool group is off", line)
 
     def test_config_show_reports_the_switch_on_and_where_it_runs(self):
         line = self._browser_line(browser_config(True))
@@ -463,7 +457,7 @@ class ConfigSurfaceTests(unittest.TestCase):
         from agent_box import config_menu
         changed = Config.from_dict(config.to_dict())
         if answer is not None:
-            changed.browser.enabled = answer
+            changed.tools.groups["browser"] = answer
         with mock.patch.object(cli_module, "load_config", return_value=config), \
              mock.patch.object(cli_module, "save_config") as save, \
              mock.patch.object(config_menu, "edit", return_value=config_menu.EditResult(changed)), \
@@ -478,18 +472,18 @@ class ConfigSurfaceTests(unittest.TestCase):
             return save.call_args.args[0]
 
     def test_interactive_config_can_turn_the_browser_on(self):
-        self.assertTrue(self._interactive(browser_config(False), True).browser.enabled)
+        self.assertTrue(self._interactive(browser_config(False), True).tools.groups["browser"])
 
     def test_interactive_config_can_turn_the_browser_off(self):
-        self.assertFalse(self._interactive(browser_config(True), False).browser.enabled)
+        self.assertFalse(self._interactive(browser_config(True), False).tools.groups["browser"])
 
     def test_pressing_enter_keeps_the_stored_answer(self):
-        self.assertFalse(self._interactive(browser_config(False), None).browser.enabled)
-        self.assertTrue(self._interactive(browser_config(True), None).browser.enabled)
+        self.assertFalse(self._interactive(browser_config(False), None).tools.groups["browser"])
+        self.assertTrue(self._interactive(browser_config(True), None).tools.groups["browser"])
 
     def test_menu_explains_the_browser_trust_boundary(self):
-        from agent_box.config_menu import HELP
-        text = HELP["browser.enabled"]
+        from agent_box.config_menu import help_for
+        text = help_for(("tools", "browser"))
         self.assertIn("Chromium", text)
         self.assertIn("in-memory", text)
         self.assertIn("trust boundary", text)

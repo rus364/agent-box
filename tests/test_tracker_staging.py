@@ -40,7 +40,7 @@ class StagingTests(unittest.TestCase):
     def test_launch_only_project_config_survives_public_adoption_and_cutover(self):
         """Adoption can bind a launch-configured repository without discarding its policy."""
         path = self.root / BINDING_FILE
-        overrides = {'browser': {'enabled': True}, 'workflow': {'auto_push': False}}
+        overrides = {'tools': {'browser': True}, 'workflow': {'auto_push': False}}
         path.write_text(json.dumps(overrides))
         report = self.clone()
         self.assertEqual(json.loads(path.read_text()), overrides)
@@ -48,14 +48,14 @@ class StagingTests(unittest.TestCase):
         self.assertEqual(adoption.staging_context(self.receipt, self.root)[1].project, report['project'])
         self.assertTrue(adoption.cutover(self.root, self.receipt, True)['complete'])
         result = json.loads(path.read_text())
-        self.assertEqual(result['browser'], overrides['browser'])
+        self.assertEqual(result['tools'], overrides['tools'])
         self.assertEqual(result['workflow'], overrides['workflow'])
         self.assertEqual(Binding.load(self.root).project, report['project'])
 
     def test_adoption_rejects_invalid_project_config_before_clone_writes(self):
         """Launch-only support must not hide malformed files or an attempted incomplete binding."""
         path = self.root / BINDING_FILE
-        for content in ('{', '{"browser":{"enabled":1}}', '{"tracker":{"project":"1"}}'):
+        for content in ('{', '{"tools":{"browser":1}}', '{"tracker":{"project":"1"}}'):
             with self.subTest(content=content):
                 path.write_text(content)
                 with self.assertRaises(AgentBoxError):

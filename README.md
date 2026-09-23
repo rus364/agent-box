@@ -157,7 +157,7 @@ agent-box --host --no-tmux codex exec "run the tests"
 | Launch | `--host`, `--workspace PATH`, `--mount PATH[:ro]`, `--env NAME[=VALUE]`, `--no-tmux`, `--no-kvm` |
 | Workflow | `--worker SPEC`, `--reviewer SPEC`, `--scout SPEC`, `--[no-]tiers`, `--review off\|auto\|always`, `--rounds N`, `--merge github\|local`, `--[no-]push`, `--no-workflow` |
 | Tracker | `--tracker URL`, `--project ID` ([details](#project-configuration)) |
-| Access | `--[no-]gh-token`, `--[no-]gh-config`, `--[no-]git-config`, `--[no-]api-keys`, `--[no-]browser`, `--[no-]remote-control`, `--[no-]notify` |
+| Access | `--[no-]gh-token`, `--[no-]gh-config`, `--[no-]git-config`, `--[no-]api-keys`, `--no-browser`, `--[no-]remote-control`, `--[no-]notify` |
 
 `SPEC` is `PROVIDER[@API]:MODEL[:EFFORT]`, for example `codex:gpt-5.5:high` or
 `claude@deepseek:deepseek-v4`. `--reviewer`, `--scout` and `--worker` pin
@@ -387,13 +387,12 @@ bound project still require a complete tracker binding.
     "connections": {"vikunja": {"url": "https://tasks.example.org"}}
   },
   "workflow": {"auto_push": false},
-  "browser": {"enabled": true},
-  "image": {"tools": {"browser": true}}
+  "tools": {"browser": true}
 }
 ```
 
 The allowed shared paths are `workflow` except its top-level `enabled`,
-`browser.enabled`, `image.tools`, `tracker.provider`, and
+`tools`, `tracker.provider`, and
 `tracker.connections.<provider>.url`. Workflow includes each role's candidate lists
 (`models`, and `tiers.N` for workers and reviewers) and `use_tiers`. `tracker.project` and `tracker.recursive` are
 project identity fields. Missing fields inherit global settings; nested objects
@@ -494,7 +493,7 @@ Image tool changes still need `agent-box build`.
 
 ## The workspace image
 
-A base set everyone gets, plus optional groups you choose in `agent-box config`.
+A base set everyone gets, plus optional groups you choose under **Tools** in `agent-box config` (`tools.<group>`).
 
 | Always | Included |
 | --- | --- |
@@ -508,8 +507,8 @@ A base set everyone gets, plus optional groups you choose in `agent-box config`.
 | `analysis` | on | shellcheck, sqlite3, jscpd |
 | `kubernetes` | on | kubectl, Helm, yq |
 | `virtualization` | off | QEMU x86-64 + aarch64, OVMF; also gates `/dev/kvm` passthrough |
-| `browser` | off | Playwright MCP + headless Chromium (see [agent browser](docs/integrations/browser.md)) |
 | `podman` | off | Nested rootless Podman, userspace networking and image builds (see [nested Podman](docs/nested-podman.md)) |
+| `browser` | off | Playwright MCP + headless Chromium, wired into every box session (see [agent browser](docs/integrations/browser.md)) |
 
 Anything else your projects need belongs in the project, through `mise` — a
 per-project toolchain is not an image everyone shares.

@@ -144,12 +144,13 @@ class SessionPrecedenceTests(IsolatedLaunchTest):
             with self.subTest(overrides=overrides), self.assertRaisesRegex(AgentBoxError, message):
                 launch_options.apply(config, overrides)
 
-    def test_browser_without_its_image_group_is_refused_instead_of_starting_broken(self):
-        with self.assertRaisesRegex(AgentBoxError, "browser image tool group"):
-            launch_options.apply(Config(), {"browser": True})
+    def test_no_browser_keeps_the_mcp_server_out_without_changing_the_image(self):
+        """The session opts out; the build and drift check still see the group."""
         config = Config()
-        config.image.tools["browser"] = True
-        self.assertTrue(launch_options.apply(config, {"browser": True}).browser.enabled)
+        config.tools.groups["browser"] = True
+        result = launch_options.apply(config, {"browser": False})
+        self.assertFalse(result.tools.browser())
+        self.assertIn("browser", result.tools.enabled_groups())
 
     def test_copies_seeded_at_box_creation_are_refused_for_a_running_box(self):
         """A running box keeps the gh/Git copies it was created with; the flag must not look applied."""

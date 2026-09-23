@@ -49,8 +49,8 @@ class ConfigSetTests(unittest.TestCase):
     def test_dry_run_prints_the_same_diff_and_writes_nothing(self):
         """Previewing is how the agent asks for consent, so it must not already have changed the file."""
         before = self.file.read_text()
-        output = self.run_set("--project", "--dry-run", "browser.enabled=true")
-        self.assertIn('+    "enabled": true', output)
+        output = self.run_set("--project", "--dry-run", "tools.browser=true")
+        self.assertIn('+    "browser": true', output)
         self.assertIn("Dry run: nothing written", output)
         self.assertEqual(self.file.read_text(), before)
 
@@ -64,10 +64,10 @@ class ConfigSetTests(unittest.TestCase):
         self.assertEqual(workflow["review"]["ignored_paths"], [])
 
     def test_reset_removes_the_override_and_empty_sections_so_the_path_inherits(self):
-        self.run_set("--project", "workflow.review.max_files=5", "browser.enabled=false")
+        self.run_set("--project", "workflow.review.max_files=5", "tools.browser=false")
         output = self.run_set("--project", "--reset", "workflow.review.max_files")
         self.assertIn('-      "max_files": 5', output)
-        self.assertEqual(self.saved(), {**self.binding, "browser": {"enabled": False}})
+        self.assertEqual(self.saved(), {**self.binding, "tools": {"browser": False}})
         self.assertIn("No changes", self.run_set("--project", "--reset", "workflow.review.max_lines"))
 
     def test_invalid_changes_leave_the_file_untouched_and_never_echo_the_value(self):
@@ -80,7 +80,7 @@ class ConfigSetTests(unittest.TestCase):
             ("statusline.command=curl-secret-value",): "must be JSON",
             ("workflow.review.policy=\"sometimes\"",): "",
             ("--reset",): "expected",
-            ("browser.enabled=true", "browser.enabled=false"): "once",
+            ("tools.browser=true", "tools.browser=false"): "once",
             ('workflow.review={"max_files": 5}', "workflow.review.max_lines=3"): "containing",
             ("--reset", "workflow.review", "workflow.review.max_lines=3"): "containing",
         }
@@ -98,7 +98,7 @@ class ConfigSetTests(unittest.TestCase):
     def test_the_project_scope_is_required_and_the_command_is_documented(self):
         """Global writes arrive separately; a missing scope must not guess one."""
         with self.assertRaises(AgentBoxError):
-            self.run_set("browser.enabled=true")
+            self.run_set("tools.browser=true")
         with contextlib.redirect_stdout(io.StringIO()) as output:
             cli.usage_text()
         self.assertIn("config set --project", output.getvalue())

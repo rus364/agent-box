@@ -55,7 +55,7 @@ OPTIONS = (
     Option("gh-config", ACCESS, "Copy of the host gh configuration", form="pair", container=True),
     Option("git-config", ACCESS, "Copy of the full host Git configuration", form="pair", container=True),
     Option("api-keys", ACCESS, "Provider API key variables", form="pair", container=True),
-    Option("browser", ACCESS, "Agent browser", form="pair", container=True),
+    Option("browser", ACCESS, "Do not start the agent browser MCP server", form="negated", container=True),
     Option("remote-control", ACCESS, "Remote control; the --no- form also keeps Claude off Telegram", form="pair"),
     Option("notify", ACCESS, "Telegram notifications; turning them on needs them set up in agent-box config",
            form="pair"),
@@ -194,7 +194,7 @@ def apply(config, overrides):
         elif key == "api-keys":
             config.providers.api_keys = value
         elif key == "browser":
-            config.browser.enabled = value
+            config.tools.browser_off = True
         elif key == "remote-control":
             config.claude.remote_control = config.codex.remote_control = value
             config.claude.telegram_channel = config.claude.telegram_channel and value
@@ -208,8 +208,6 @@ def apply(config, overrides):
     if tracker_keys and not config.tracker.enabled:
         # A session may point the tracker elsewhere, never open a gate the saved configuration keeps closed.
         raise AgentBoxError(f"--{tracker_keys[0]} needs the tracker; enable it in agent-box config")
-    if overrides.get("browser") and not config.image.tools.get("browser"):
-        raise AgentBoxError("--browser needs the browser image tool group; enable it in agent-box config, then agent-box build")
     for role, models in workflow.pins.items():
         api = models[0]["api_provider"]
         if api and not (api in config.external_providers and config.external_providers[api].enabled):

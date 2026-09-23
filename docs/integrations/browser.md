@@ -23,31 +23,25 @@ X11/Wayland forwarding.
 
 ## Enabling it
 
-This is two decisions, because the browser is two things: a Chromium in the
-image, and a session wired to drive it.
-
-```bash
-agent-box config
-```
-
-1. Turn on the **`browser` image tool group** — Chromium and Playwright MCP are
-   roughly 400 MB, so they are built only when asked for.
-2. Answer yes to *"Let containerized agents drive a headless browser"*.
-
-Then:
+Turn on the **`browser` tool group** under **Tools** in `agent-box config`
+(`tools.browser`). Chromium and Playwright MCP are roughly 400 MB, so they are
+built only when asked for. The group both builds them into the image and wires
+the MCP server into every containerized Claude and Codex session; a separate
+switch for the server would isolate nothing, because an agent can drive the
+image's Chromium through Playwright from a shell anyway.
 
 ```bash
 agent-box build     # once, to add the browser layers
 agent-box claude
 ```
 
-`agent-box config show` and `agent-box doctor` both say plainly when the switch
-is on but the image has no browser to drive.
+`agent-box config show` and every launch say when the image lacks a group the
+configuration asks for.
 
-Once the image has it, turning the *switch* on and off costs nothing: the
-browser is not part of the container's identity, so it never rebuilds or
-destroys a running workspace box. It applies to the next `agent-box claude` or
-`agent-box codex` — a session started earlier keeps running without it.
+`agent-box --no-browser claude` starts one session without the MCP server; the
+image keeps Chromium. The server is added per invocation, so this never
+rebuilds or destroys a running workspace box, and a session started earlier
+keeps what it started with.
 
 Both agents see the server under the same name:
 
@@ -116,15 +110,15 @@ browser integration: enabled
 Disabled is a normal state, not an error:
 
 ```text
-browser integration: disabled (enable it with 'agent-box config')
+browser integration: disabled (turn on the browser tool group in 'agent-box config')
 ```
 
 ## Troubleshooting
 
 **The agent says it has no browser tools.** Check `agent-box config show`:
-`browser` → `enabled` must be `on`, and it must not say the image has none. The server
-is added per invocation, so a session started before you enabled it keeps
-running without one — start a new session.
+`tools` → `browser` must be `on`, and `tools` must not say the image lacks it. The server
+is added per invocation, so a session started before you enabled it, or with
+`--no-browser`, keeps running without one — start a new session.
 
 **Chromium fails to start.** `agent-box doctor` prints the launch error.
 Chromium needs a writable `$HOME/.config` for its crash-reports database, which

@@ -274,9 +274,9 @@ def tool_build_args(config: Config) -> list[str]:
     build layer sees as turning one on.
     """
     args: list[str] = []
-    for name, enabled in sorted(config.image.tools.items()):
+    for name, enabled in sorted(config.tools.groups.items()):
         args += ["--build-arg", f"TOOLS_{name.upper()}={'1' if enabled else '0'}"]
-    args += ["--build-arg", f"AGENT_BOX_TOOLS={','.join(config.image.enabled_groups())}"]
+    args += ["--build-arg", f"AGENT_BOX_TOOLS={','.join(config.tools.enabled_groups())}"]
     return args
 
 
@@ -317,7 +317,7 @@ def build_image(script_dir: Path, refresh: bool, no_cache: bool,
 
 
 def nested_podman_build_args(config: Config, identity: HostIdentity) -> list[str]:
-    if not config.image.tools.get("podman"):
+    if not config.tools.groups["podman"]:
         return []
     try:
         mappings = nested_podman.host_info()["idMappings"]
@@ -331,7 +331,7 @@ def nested_podman_build_args(config: Config, identity: HostIdentity) -> list[str
 
 
 def nested_podman_args(config: Config, workspace: Workspace) -> list[str]:
-    if not config.image.tools.get("podman"):
+    if not config.tools.groups["podman"]:
         return []
     try:
         if not os.access("/dev/net/tun", os.R_OK | os.W_OK):
@@ -383,7 +383,7 @@ def image_tool_drift(config: Config) -> tuple[list[str], list[str]]:
     built = image_tool_groups()
     if built is None:
         return ([], [])
-    wanted = config.image.enabled_groups()
+    wanted = config.tools.enabled_groups()
     return ([g for g in wanted if g not in built], [g for g in built if g not in wanted])
 
 
@@ -877,10 +877,9 @@ def sync_tracker_runtime(config: Config, directory: Path | None = None, *, polic
                    "statusline": {"command": config.claude.statusline.command}},
         "codex": config.codex.to_dict(),
         "github": config.github.to_dict(),
-        "browser": config.browser.to_dict(),
         # A nested box inherits the outer box's sound socket at the same path.
         "audio": config.audio.to_dict(),
-        "image": config.image.to_dict(),
+        "tools": config.tools.to_dict(),
         "external_providers": external,
         "container": container,
         # Re-applied over the project configuration inside the session.
@@ -1169,7 +1168,7 @@ def browser_session(
     browser" rather than aborting: a browser is an extra capability, and
     losing it is not a reason to refuse to start the agent.
     """
-    if not config.browser.enabled or agent not in {"claude", "codex"}:
+    if not config.tools.browser() or agent not in {"claude", "codex"}:
         return None
     session_id = browser_session_id(agent)
     try:
@@ -1296,7 +1295,7 @@ def kvm_args(config: Config, enabled: bool = True) -> list[str]:
     device is a bind with no consumer, and handing a container a device it has
     no use for is not a neutral default. ``--no-kvm`` withholds it for a launch.
     """
-    if not config.image.tools.get("virtualization"):
+    if not config.tools.groups["virtualization"]:
         return []
     if not enabled or not Path("/dev/kvm").exists():
         return []
@@ -2212,10 +2211,7 @@ if has_group browser; then
   printf "%-20s %s\n" "playwright-mcp:" "$(playwright-mcp --version 2>/dev/null || echo MISSING)"
 fi
 if [[ "${AGENT_BOX_BROWSER:-0}" == "1" ]]; then
-  if ! has_group browser; then
-    echo "browser chromium:    MISSING (the browser tool group is off; turn it on in"
-    echo "                     'agent-box config' and run 'agent-box build')"
-  elif ! command -v agent-box-browser-smoke >/dev/null 2>&1; then
+  if ! command -v agent-box-browser-smoke >/dev/null 2>&1; then
     echo "browser chromium:    MISSING (image built without it; run 'agent-box build')"
   elif smoke="$(timeout 30 agent-box-browser-smoke 2>&1)"; then
     printf "%-20s %s\n" "browser chromium:" "OK (${smoke})"
@@ -2225,7 +2221,7 @@ if [[ "${AGENT_BOX_BROWSER:-0}" == "1" ]]; then
   fi
   echo "browser integration: enabled"
 else
-  echo "browser integration: disabled (enable it with 'agent-box config')"
+  echo "browser integration: disabled (turn on the browser tool group in 'agent-box config')"
 fi
 '''
 
@@ -2451,7 +2447,7 @@ def runtime_main(
     session = tmux_session(agent, runtime_state) if tmux_enabled(agent, options.tmux) else None
     # Invocation-scoped, and deliberately not part of the box's structural
     # identity: everything it needs is already in the image and already
-    # mounted, so flipping browser.enabled never recreates a compatible box.
+    # mounted, so --no-browser never recreates a compatible box.
     browser_dir = browser_session(config, workspace, runtime_state, agent)
     channel, extra_env = claude_channel_args(agent, config, workspace, rest, session)
     if getattr(config, "_launch", {}).get("notify") is False:
@@ -2472,9 +2468,9 @@ def runtime_main(
             # so the one bit it needs is forwarded per-exec.
             extra_env = [
                 *extra_env,
-                f"{BROWSER_ENABLED_ENV}={'1' if config.browser.enabled else '0'}",
+                f"{BROWSER_ENABLED_ENV}={'1' if config.tools.browser() else '0'}",
                 f"{CLAUDE_SKILL_LINKS_ENV}={'1' if config.skills.claude_links else '0'}",
-                f"{IMAGE_TOOLS_ENV}={','.join(config.image.enabled_groups())}",
+                f"{IMAGE_TOOLS_ENV}={','.join(config.tools.enabled_groups())}",
                 f"AGENT_BOX_IMAGE={IMAGE}",
             ]
             command = ["bash", "-c", DOCTOR_SCRIPT]

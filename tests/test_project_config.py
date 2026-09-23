@@ -33,7 +33,7 @@ class ProjectConfigTests(unittest.TestCase):
     def test_partial_override_preserves_false_empty_list_and_global(self):
         self.config.workflow.review.models = [{"provider": "codex", "model": "global", "effort": "high", "speed": "inherit", "api_provider": ""}]
         original = self.config.to_dict()
-        data = {'browser': {'enabled': False}, 'image': {'tools': {'browser': True}},
+        data = {'tools': {'browser': True},
                 'workflow': {'review': {'sensitive_paths': [], 'ignored_paths': ['**/*.md'], 'tiers': {'2': []}},
                              'auto_push': False}}
         project_config.validate(data, self.path)
@@ -43,8 +43,8 @@ class ProjectConfigTests(unittest.TestCase):
         self.assertEqual(result.workflow.review.models, self.config.workflow.review.models)
         self.assertEqual(result.workflow.review.tiers['2'], [])
         self.assertFalse(result.workflow.auto_push)
-        self.assertTrue(result.image.tools['browser'])
-        self.assertTrue(result.image.tools['analysis'])
+        self.assertTrue(result.tools.groups['browser'])
+        self.assertTrue(result.tools.groups['analysis'])
         self.assertEqual(self.config.to_dict(), original)
 
     def test_project_scout_limit_overrides_the_scout_section_without_changing_global(self):
@@ -79,7 +79,7 @@ class ProjectConfigTests(unittest.TestCase):
                 project_config.validate({'workflow': {'worker': bad}}, self.path)
 
     def test_unknown_forbidden_and_malformed_values_never_fall_back(self):
-        for data in ({'browser': {'enabled': 1}}, {'env': {}}, {'workflow': {'enabled': False}},
+        for data in ({'tools': {'browser': 1}}, {'env': {}}, {'workflow': {'enabled': False}},
                      {'default_agent': 'codex'}, {'claude': {'statusline': {'command': 'echo'}}},
                      {'workflow': {'unknown': 1}}, {'workflow': {'merge_mode': ''}},
                      {'workflow': {'review': {'sensitive_paths': [None]}}},
@@ -120,19 +120,19 @@ class ProjectConfigTests(unittest.TestCase):
             self.assertNotIn('do-not-display', message)
 
     def test_binding_setup_and_cutover_preserve_project_overrides(self):
-        project_config.save(self.path, {'browser': {'enabled': True}, 'workflow': {'auto_push': False}})
+        project_config.save(self.path, {'tools': {'browser': True}, 'workflow': {'auto_push': False}})
         write_binding(self.root, self.binding)
         self.assertEqual(Binding.load(self.root), self.binding)
         data = json.loads(setup_content(self.root, Binding('vikunja', self.binding.server, '25'))[self.path])
-        self.assertTrue(data['browser']['enabled'])
+        self.assertTrue(data['tools']['browser'])
         self.assertFalse(data['workflow']['auto_push'])
         self.assertEqual(data['tracker']['project'], '25')
         self.assertNotIn('server', data)
 
     def test_launch_settings_need_no_binding_but_tracker_binding_does(self):
-        project_config.save(self.path, {'browser': {'enabled': True}})
+        project_config.save(self.path, {'tools': {'browser': True}})
         with patch.object(project_config, 'project_path', return_value=self.path):
-            self.assertTrue(effective_config(self.config).browser.enabled)
+            self.assertTrue(effective_config(self.config).tools.browser())
         with self.assertRaisesRegex(AgentBoxError, 'Incomplete repository binding'):
             Binding.load(self.root)
 
@@ -352,15 +352,15 @@ class ProjectConfigTests(unittest.TestCase):
         self.assertNotIn('FAKE_SENTINEL', str(caught.exception))
 
     def test_disabled_integrations_share_only_nonsecret_policy_with_config_show(self):
-        """Global browser/image inheritance remains visible without granting account access."""
+        """Global tool group inheritance remains visible without granting account access."""
         import contextlib
         import io
         from agent_box import cli
         self.config.tracker.enabled = False
-        self.config.browser.enabled = True
-        self.config.image.tools['virtualization'] = True
+        self.config.tools.groups['browser'] = True
+        self.config.tools.groups['virtualization'] = True
         self.config.env.set['PRIVATE_VALUE'] = 'not-for-the-box'
-        data = {'workflow': {'auto_push': False}, 'image': {'tools': {'analysis': False}}}
+        data = {'workflow': {'auto_push': False}, 'tools': {'analysis': False}}
         config = project_config.apply(self.config, data)
         with patch.object(runtime, 'TRACKER_RUNTIME_DIR', self.root / 'credentials'), \
              patch.object(runtime, 'POLICY_RUNTIME_DIR', self.root / 'policy'):
@@ -379,9 +379,9 @@ class ProjectConfigTests(unittest.TestCase):
                  contextlib.redirect_stdout(io.StringIO()) as output:
                 cli.config_show()
                 effective = effective_config()
-            self.assertTrue(effective.browser.enabled)
-            self.assertTrue(effective.image.tools['virtualization'])
-            self.assertFalse(effective.image.tools['analysis'])
+            self.assertTrue(effective.tools.browser())
+            self.assertTrue(effective.tools.groups['virtualization'])
+            self.assertFalse(effective.tools.groups['analysis'])
             self.assertFalse(effective.workflow.auto_push)
             from test_workflow_config import show_paths
-            self.assertEqual(show_paths(output.getvalue())['browser.enabled'], 'on')
+            self.assertEqual(show_paths(output.getvalue())['tools.browser'], 'on')

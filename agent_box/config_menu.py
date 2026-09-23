@@ -9,7 +9,7 @@ import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 
-from .config import AGENT_EFFORTS, AGENT_PROVIDERS, IMAGE_TOOL_GROUP_HELP, LAUNCH_AGENTS, Config, EnvConfig, REVIEW_INCREMENTAL, REVIEW_PRESETS, TRACKER_PROVIDERS, TrackerConnection, candidate_label, model_entry
+from .config import AGENT_EFFORTS, AGENT_PROVIDERS, TOOL_GROUP_HELP, LAUNCH_AGENTS, Config, EnvConfig, REVIEW_INCREMENTAL, REVIEW_PRESETS, TRACKER_PROVIDERS, TrackerConnection, candidate_label, model_entry
 from .errors import AgentBoxError
 from .external_config import API_EFFORTS, ExternalProvider, model_defaults, model_settings, valid_model, valid_name, validate_connections
 from .model_catalog import load_model_catalogs
@@ -56,16 +56,13 @@ HELP = {
     "env.set": "JSON object of literal environment values. These values are stored in config and appear in Podman arguments, so do not put secrets here.",
     "skills": "Configure agent-box-owned skill integration with host agent clients.",
     "skills.claude_links": "Link agent-box's managed shared skills into Claude's skill directory when applying configuration.",
-    "image": "Select tool groups built into the workspace image. A changed selection takes effect after the image is rebuilt.",
-    "image.tools": "Tool groups baked into the workspace image. Each group changes box identity and may make the image larger.",
+    "tools": "Tool groups baked into the workspace image. Each group changes box identity and may make the image larger; a changed selection takes effect after the image is rebuilt.",
     "tracker": "Expose configured task-tracker connections to agents. Connections remain unavailable while this integration is disabled.",
     "tracker.enabled": "Expose configured tracker connections to agents. Keep credentials out of repository files.",
     "tracker.provider": "Default tracker for repositories without a more specific binding. Choose one of the supported adapters.",
     "tracker.project": "Project tracker identity: the tracker project ID this repository's tasks belong to. Project setting only; setup and adopt write it.",
     "tracker.recursive": "Project tracker identity: include every project under the bound project in the workflow. Project setting only.",
     "tracker.connections": "Provider URLs and tokens rendered into minimal runtime credential files only when tracker integration is enabled.",
-    "browser": "Configure the agent-controlled headless browser inside the workspace box.",
-    "browser.enabled": "Headless Chromium in the box; isolated in-memory profile, same trust boundary as agents. Unavailable in --host mode.",
     "audio": "Configure access to the host's sound server from workspace boxes.",
     "audio.enabled": "Mount the host PulseAudio/PipeWire socket so agents can use the microphone and speakers, e.g. Claude Code /voice. Everything in the box gets both. Changing it recreates the box.",
     "workflow": "Opt-in tracked-work orchestration, role models, review, publication, and cleanup policy.",
@@ -108,7 +105,7 @@ LABELS = {
     "default_agent": "Default agent", "statusline": "Status line",
     "claude": "Claude", "codex": "Codex", "github": "GitHub", "git": "Git",
     "command": "Custom command",
-    "env": "Environment", "providers": "Provider environment", "image": "Workspace image",
+    "env": "Environment", "providers": "Provider environment", "tools": "Tools",
     "url": "URL", "token": "Access token", "effort": "Reasoning effort",
     "github_model": "GitHub review model", "github_effort": "GitHub review effort",
     "telegram_chat_id": "Telegram chat ID",
@@ -122,7 +119,7 @@ MENU_GROUPS = {
     (): (
         ("Agents", ("default_agent", "claude", "codex", "external_providers")),
         ("Tracked work", ("tracker", "workflow")),
-        ("Workspace box", ("image", "browser", "audio")),
+        ("Workspace box", ("tools", "audio")),
         ("From host into the box", ("git", "github", "providers", "env")),
         ("On the host", ("skills", "notifications")),
     ),
@@ -235,8 +232,8 @@ def help_for(path):
                 "env": "JSON object of per-process environment strings. Model values override endpoint values; typed effort/compact fields and explicit effort take priority. API/auth/RC ownership cannot be overridden. Values are masked and never placed in argv."}.get(path[-1])
         if text:
             return text
-    if len(path) == 3 and path[:2] == ("image", "tools"):
-        return f"{IMAGE_TOOL_GROUP_HELP.get(path[-1], path[-1])}. Rebuild the workspace image to install or remove this group; browsing and saving this selection do not rebuild it."
+    if len(path) == 2 and path[0] == "tools":
+        return f"{TOOL_GROUP_HELP.get(path[-1], path[-1])}. Rebuild the workspace image to install or remove this group; browsing and saving this selection do not rebuild it."
     if len(path) == 3 and path[:2] == ("tracker", "connections"):
         return f"Connection settings for the {path[-1]} tracker. It is exposed only when tracker integration is enabled."
     if len(path) == 4 and path[:2] == ("tracker", "connections"):

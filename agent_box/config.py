@@ -436,98 +436,71 @@ class EnvConfig:
 #: group is large and most projects never touch it. Anything not listed here
 #: belongs in the project, installed through mise, rather than in an image
 #: everyone shares.
-IMAGE_TOOL_GROUPS: dict[str, bool] = {
+TOOL_GROUPS: dict[str, bool] = {
     # shellcheck, sqlite3, jscpd -- what an agent reaches for when reading code
     "analysis": True,
     # kubectl, Helm, yq
     "kubernetes": True,
     # QEMU x86-64/aarch64, OVMF; also gates the /dev/kvm passthrough
     "virtualization": False,
-    # Playwright MCP + headless Chromium; the browser integration needs it
-    "browser": False,
     # Nested rootless Podman; gates ID capabilities, TUN and namespace setup
     "podman": False,
+    # Playwright MCP + headless Chromium, wired into every box session
+    "browser": False,
 }
 
 
 #: What each group is, in the words `agent-box config` asks the question in.
-IMAGE_TOOL_GROUP_HELP: dict[str, str] = {
+TOOL_GROUP_HELP: dict[str, str] = {
     "analysis": "Code analysis (shellcheck, sqlite3, jscpd)",
     "kubernetes": "Kubernetes (kubectl, Helm, yq)",
     "virtualization": "Virtualization (QEMU x86-64/arm64, KVM passthrough; large)",
-    "browser": "Headless browser (Playwright MCP + Chromium; large)",
     "podman": "Nested Podman (rootless builds/containers; extra namespace permissions)",
+    "browser": ("Agent browser (Playwright MCP + headless Chromium; large). Isolated in-memory "
+                "profile, same trust boundary as agents; unavailable in --host mode"),
 }
 
 
 @dataclass
-class ImageConfig:
+class ToolsConfig:
     """Which optional tool groups the workspace image is built with.
 
-    Separate from the switches that turn a *capability* on, because these are
-    a property of the image rather than of a launch: changing one means
-    rebuilding. ``browser`` is the pair to watch -- ``browser.enabled`` wires
-    the MCP server into a session, and this group decides whether the image
-    has a browser for it to drive at all.
+    A property of the image rather than of a launch: changing a group means
+    rebuilding. ``browser`` also wires the Playwright MCP server into every
+    Claude and Codex session in the box. A separate switch for that server was
+    rejected: with Chromium in the box an agent can drive it through Playwright
+    from a shell anyway, so the switch isolated nothing.
+
+    The browser exposes no host state -- no host profile, cookie jar or
+    credential. Pages the agent opens land *inside the workspace box*, one
+    trust boundary with the agent, the mounted project and every other enabled
+    integration. Each MCP process gets an isolated, non-persistent profile and
+    a session-private output directory (``agent_box.runtime.browser_session``),
+    so there is nothing further for a user to configure.
 
     Unknown group names are dropped on load rather than carried, so the file
     can never ask the build for a group that no longer exists.
     """
 
-    tools: dict[str, bool] = field(
-        default_factory=lambda: dict(IMAGE_TOOL_GROUPS))
+    groups: dict[str, bool] = field(default_factory=lambda: dict(TOOL_GROUPS))
+    #: ``--no-browser`` for one session: the image keeps Chromium, the session
+    #: gets no MCP server. Never saved; the launch snapshot re-applies it.
+    browser_off: bool = False
 
     def enabled_groups(self) -> list[str]:
         """The groups to build, in a stable order for the image label."""
-        return sorted(name for name, on in self.tools.items() if on)
+        return sorted(name for name, on in self.groups.items() if on)
+
+    def browser(self) -> bool:
+        """Whether this session wires the browser MCP server."""
+        return self.groups["browser"] and not self.browser_off
 
     def to_dict(self) -> dict[str, Any]:
-        return {"tools": {name: bool(self.tools.get(name, default))
-                          for name, default in IMAGE_TOOL_GROUPS.items()}}
+        return {name: bool(self.groups.get(name, default)) for name, default in TOOL_GROUPS.items()}
 
     @classmethod
-    def from_dict(cls, data: Any) -> "ImageConfig":
-        raw = data.get("tools") if isinstance(data, dict) else None
-        raw = raw if isinstance(raw, dict) else {}
-        return cls(tools={
-            name: _bool(raw, name, default)
-            for name, default in IMAGE_TOOL_GROUPS.items()
-        })
-
-
-@dataclass
-class BrowserConfig:
-    """An agent-controlled headless browser inside the workspace container.
-
-    Off by default, like every other capability that widens what an agent can
-    reach. Turning it on makes a Playwright MCP server available to
-    containerized Claude and Codex sessions, which drives a headless Chromium
-    baked into the image.
-
-    This exposes no host state at all -- there is no host browser profile, no
-    host cookie jar and no credential of any kind involved, and the switch
-    therefore holds nothing secret. What it does mean is that pages the agent
-    opens land *inside the workspace box*: the browser, the MCP server, the
-    agent, the mounted project and every other enabled integration are one
-    trust boundary, so anything the browser fetches is reachable by everything
-    else in that box. That is the decision this switch is asking about.
-
-    Deliberately one boolean and nothing else. Each MCP process gets an
-    isolated, non-persistent profile and a session-private output directory
-    derived from the workspace's runtime state (see
-    ``agent_box.runtime.browser_session``), so there is no profile path,
-    cookie file or credential for a user to configure -- and no place for one
-    to be stored.
-    """
-
-    enabled: bool = False
-
-    def to_dict(self) -> dict[str, Any]:
-        return {"enabled": self.enabled}
-
-    @classmethod
-    def from_dict(cls, data: Any) -> "BrowserConfig":
-        return cls(enabled=_bool(data, "enabled", False))
+    def from_dict(cls, data: Any) -> "ToolsConfig":
+        return cls(groups={name: _bool(data, name, default) for name, default in TOOL_GROUPS.items()})
 
 
 @dataclass
@@ -878,9 +851,8 @@ class Config:
     env: EnvConfig = field(default_factory=EnvConfig)
     skills: SkillsConfig = field(default_factory=SkillsConfig)
     install: InstallConfig = field(default_factory=InstallConfig)
-    image: ImageConfig = field(default_factory=ImageConfig)
+    tools: ToolsConfig = field(default_factory=ToolsConfig)
     tracker: TrackerConfig = field(default_factory=TrackerConfig)
-    browser: BrowserConfig = field(default_factory=BrowserConfig)
     audio: AudioConfig = field(default_factory=AudioConfig)
     workflow: WorkflowConfig = field(default_factory=WorkflowConfig)
     #: The agent a bare ``agent-box`` starts; an explicit ``claude``/``codex`` wins.
@@ -901,9 +873,8 @@ class Config:
             "env": self.env.to_dict(),
             "skills": self.skills.to_dict(),
             "install": self.install.to_dict(),
-            "image": self.image.to_dict(),
+            "tools": self.tools.to_dict(),
             "tracker": self.tracker.to_dict(),
-            "browser": self.browser.to_dict(),
             "audio": self.audio.to_dict(),
             "workflow": self.workflow.to_dict(),
         }
@@ -925,9 +896,8 @@ class Config:
             env=EnvConfig.from_dict(data.get("env")),
             skills=SkillsConfig.from_dict(data.get("skills")),
             install=InstallConfig.from_dict(data.get("install")),
-            image=ImageConfig.from_dict(data.get("image")),
+            tools=ToolsConfig.from_dict(data.get("tools")),
             tracker=TrackerConfig.from_dict(data.get("tracker")),
-            browser=BrowserConfig.from_dict(data.get("browser")),
             audio=AudioConfig.from_dict(data.get("audio")),
             workflow=WorkflowConfig.from_dict(data.get("workflow")),
         )

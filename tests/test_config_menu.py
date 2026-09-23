@@ -65,7 +65,7 @@ class ConfigMenuTests(unittest.TestCase):
         data.pop('install')
         expected = {
             (): ['default_agent', 'claude', 'codex', 'external_providers', 'tracker', 'workflow',
-                 'image', 'browser', 'audio', 'git', 'github', 'providers', 'env',
+                 'tools', 'audio', 'git', 'github', 'providers', 'env',
                  'skills', 'notifications'],
             ('codex',): ['native_agent_wait', 'remote_control'],
             ('workflow',): ['enabled', 'merge_mode', 'auto_push', 'cleanup_local_branches',
@@ -182,13 +182,13 @@ class ConfigMenuTests(unittest.TestCase):
         import curses
         from agent_box.config import save_config
         config = Config()
-        config.browser.enabled = True
+        config.tools.groups['browser'] = True
         config.workflow.auto_push = False
         config.workflow.review.max_lines = 31
-        browser = [*select("browser"), '\n', 'r', '\x1b']
+        browser = [*select("tools"), '\n', *select("browser", ("tools",)), 'r', '\x1b']
         cancelled, _ = self.edit(config, [*browser, '\x1b'])
         self.assertIsNone(cancelled)
-        self.assertTrue(config.browser.enabled)
+        self.assertTrue(config.tools.groups['browser'])
         result, screen = self.edit(config, [*browser, *select("workflow"), 'r',
                                            curses.KEY_END, curses.KEY_UP, '\n'])
         self.assertEqual(result.config.to_dict(), Config().to_dict())
@@ -562,16 +562,16 @@ class ProjectMenuTests(unittest.TestCase):
         import curses
         from agent_box import project_config
         config = Config()
-        browser = [*select("browser"), '\n']
+        browser = [*select("tools"), '\n', *select("browser", ("tools",))]
         save = ['\x1b', curses.KEY_END, curses.KEY_UP, '\n']
         pinned, screen = self.edit(config, [*browser, 'g', *save], project={})
-        self.assertEqual(pinned.project, {'browser': {'enabled': False}})
+        self.assertEqual(pinned.project, {'tools': {'browser': False}})
         self.assertIn('copy and pin', '\n'.join(screen.drawn))
         reset, _ = self.edit(config, [*browser, 'r', *save], project=pinned.project)
         self.assertEqual(reset.project, {})
-        config.browser.enabled = True
-        self.assertFalse(project_config.apply(config, pinned.project).browser.enabled)
-        self.assertTrue(project_config.apply(config, reset.project).browser.enabled)
+        config.tools.groups['browser'] = True
+        self.assertFalse(project_config.apply(config, pinned.project).tools.browser())
+        self.assertTrue(project_config.apply(config, reset.project).tools.browser())
 
     def test_section_copy_filters_global_only_and_keeps_empty_explicit_values(self):
         """Section pinning must never serialize the global integration permission."""
@@ -729,10 +729,10 @@ class ProjectMenuTests(unittest.TestCase):
         """Explicit equality is a choice; reset removes the choice from the file."""
         import curses
         config = Config()
-        browser = [*select("browser"), '\n']
+        browser = [*select("tools"), '\n', *select("browser", ("tools",))]
         save = ['\x1b', curses.KEY_END, curses.KEY_UP, '\n']
         result, screen = self.edit(config, [*browser, ' ', ' ', *save], project={})
-        self.assertEqual(result.project, {'browser': {'enabled': False}})
+        self.assertEqual(result.project, {'tools': {'browser': False}})
         self.assertIn('Inherited', '\n'.join(screen.drawn))
         self.assertIn('Overridden', '\n'.join(screen.drawn))
         reset, _ = self.edit(config, [*browser, 'r', *save], project=result.project)
@@ -747,7 +747,7 @@ class ProjectMenuTests(unittest.TestCase):
         import io
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / '.agent-box.json'
-            result = config_menu.EditResult(Config(), project={'browser': {'enabled': False}})
+            result = config_menu.EditResult(Config(), project={'tools': {'browser': False}})
             with patch.object(project_config, 'project_path', return_value=path), \
                  patch.object(cli, 'effective_config', return_value=Config()), \
                  patch.object(config_menu, 'edit', return_value=result), \
