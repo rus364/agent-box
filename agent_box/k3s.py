@@ -218,8 +218,8 @@ def check_host() -> None:
     if missing:
         raise AgentBoxError(
             f"k3s needs the cgroup controllers {', '.join(REQUIRED_CONTROLLERS)} delegated to your user; "
-            f"missing: {', '.join(missing)}. Delegate them with a systemd user@.service drop-in "
-            "(Delegate=cpu cpuset io memory pids) and log in again")
+            f"missing: {', '.join(missing)}. Delegate them to your user's cgroup (on systemd hosts: "
+            "a user@.service drop-in with Delegate=cpu cpuset io memory pids) and log in again")
 
 
 def pull(k3s: K3sConfig) -> None:
@@ -248,6 +248,13 @@ def _log_tail(workspace_id: str) -> str:
     result = _podman("logs", "--tail=15", name(workspace_id), timeout=PROBE_TIMEOUT)
     lines = (result.stdout + result.stderr).strip().splitlines()
     return "\n".join(line[:300] for line in lines[-15:]) or "(no log output)"
+
+
+def is_outdated(workspace_id: str, k3s: K3sConfig, state_dir: Path, project_root: Path) -> bool:
+    """Whether an existing sidecar was created from different settings."""
+    container = inspect(workspace_id)
+    labels = (container or {}).get("Config", {}).get("Labels") or {}
+    return container is not None and labels.get(SPEC_LABEL) != spec_hash(workspace_id, k3s, state_dir, project_root)
 
 
 def ensure(workspace_id: str, k3s: K3sConfig, state_dir: Path, project_root: Path) -> int:

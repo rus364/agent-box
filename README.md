@@ -86,7 +86,7 @@ Then, day to day:
 ```bash
 agent-box shell       # shell in this project's box
 agent-box attach      # reattach a detached session
-agent-box stop        # end the box and every session in it
+agent-box stop        # end the box and every session in it, and stop its k3s cluster
 agent-box doctor      # verify the environment
 agent-box upgrade     # move this checkout to the newest release
 ```
@@ -242,7 +242,8 @@ credentials — no Podman. Tracker commands, task workflow, model routing and
 parent-branch push policy are shared with container mode. The
 [agent browser](docs/integrations/browser.md) is not: it is a capability of the
 workspace image, and agent-box never rewrites your host agent configuration to
-fake one.
+fake one. Nor is the [k3s cluster](docs/integrations/k3s.md): a host agent keeps
+your own kube contexts.
 
 Interactive host sessions use an installed `tmux` and `bash` with agent-box's private
 configuration and one private server per project. They survive a closed
@@ -263,7 +264,7 @@ install it or use `--no-tmux` for direct execution.
 | Tracker, workflow, project settings | Shared policy and a per-session configuration snapshot. Managed delegates retain workflow's role-specific policy. |
 | Environment and Git/gh | Inherited host environment plus explicit env settings; container credential-forwarding switches do not restrict host access. |
 | Skills and owned integrations | Applied by `config` / `config apply`; launching does not rewrite user configuration. Existing host plugins remain under the CLI's configuration. |
-| Image, mounts, browser, shell/doctor | Container-only. Host tooling is not provisioned from the image. |
+| Image, mounts, browser, k3s cluster, shell/doctor | Container-only. Host tooling is not provisioned from the image. |
 
 Telegram control and notifications have their own integration contract; see
 [Telegram](docs/integrations/telegram.md).
@@ -352,7 +353,7 @@ because you asked for it.
 | Provider transport settings | on | Base URL, proxies, CA bundle — without these a container behind a proxy cannot reach the network |
 | Share skills with Claude | on | Link `~/.agents/skills` into `~/.claude/skills` |
 | Image tool groups | analysis, kubernetes | What the workspace image is built with |
-| Everything else | **off** | Credentials, task tracking, browser, host audio, notifications, workflow (auto-push defaults on within opt-in workflow) |
+| Everything else | **off** | Credentials, task tracking, browser, k3s cluster, host audio, notifications, workflow (auto-push defaults on within opt-in workflow) |
 
 Every switch and what it exposes: **[docs/integrations](docs/integrations/)**.
 
@@ -513,6 +514,10 @@ A base set everyone gets, plus optional groups you choose under **Tools** in `ag
 Anything else your projects need belongs in the project, through `mise` — a
 per-project toolchain is not an image everyone shares.
 
+**Tools → k3s** is not an image group. It runs a per-project
+[k3s cluster](docs/integrations/k3s.md) in a sidecar container beside the box
+(`tools.k3s.enabled`, off by default).
+
 ```bash
 agent-box build      # normal cached build
 agent-box update     # refresh frequently updated tools
@@ -548,6 +553,7 @@ All off by default and independent of each other. See
 - **[Tracker](docs/integrations/tracker.md)** — portable task commands, repository setup and a working Vikunja API v2 provider.
 - **[Workflow](docs/integrations/workflow.md)** — sequential tracked work, configurable provider/model routing, fresh review and parent GitHub PRs.
 - **[Agent browser](docs/integrations/browser.md)** — a headless browser inside the box for agents to drive.
+- **[k3s cluster](docs/integrations/k3s.md)** — a per-project Kubernetes cluster in a rootless sidecar, with `kubectl` access from the box.
 - **[Host audio](docs/integrations/audio.md)** — the host microphone and speakers in the box, e.g. for Claude Code `/voice`.
 - **[Telegram](docs/integrations/telegram.md)** — Anthropic's official control channel, plus one-way notifications.
 - **[Remote Control](docs/integrations/remote-control.md)** — optional native remote access for new Claude/Codex sessions, with ordinary-launch fallback.

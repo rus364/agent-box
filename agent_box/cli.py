@@ -63,7 +63,8 @@ Sessions:
   shell, doctor           A shell in the box; check the box and its integrations
   ext API                 Start claude/codex against an enabled external API provider
   attach [SESSION]        Reattach to a detached session; detach with C-\\ d
-  stop                    Remove the box and its sessions; with --host, this project's host sessions
+  stop [--cluster-data]   Remove the box and its sessions and stop its k3s cluster; --cluster-data also
+                          deletes the cluster's data; with --host, this project's host sessions
 
 Configuration:
   config                  Interactive setup, saved to ~/.config/agent-box/config.json and applied
@@ -250,6 +251,12 @@ def _browser_note(config) -> str:
     return " (headless Chromium in the box; --host sessions unaffected)"
 
 
+def _k3s_note(config) -> str:
+    if not config.tools.k3s.enabled:
+        return ""
+    return " (sidecar cluster per project; --host sessions get none)"
+
+
 def _show_notes(config) -> dict[str, str]:
     """Explanations derived from state, keyed by the dotted path they qualify.
 
@@ -261,6 +268,7 @@ def _show_notes(config) -> dict[str, str]:
         "claude.statusline.enabled": _statusline_note(config),
         "tools": _image_note(config),
         "tools.browser": _browser_note(config),
+        "tools.k3s.enabled": _k3s_note(config),
         "workflow.auto_push": (" (accepted base after local merge)" if config.workflow.merge_mode == "local"
                                else " (parent task branch after subtask integration)"),
     }
@@ -863,7 +871,7 @@ def config_apply() -> None:
               "links are host-only and untouched")
     for line in runtime.apply_config(config, session=session):
         print(f"agent-box: {line}")
-    for problem in runtime.tracker_warnings(config) + runtime.audio_warnings(config):
+    for problem in runtime.tracker_warnings(config) + runtime.audio_warnings(config) + runtime.k3s_warnings(config):
         print(f"agent-box: warning: {problem}", file=sys.stderr)
     if not session:
         for line in path_status(config):

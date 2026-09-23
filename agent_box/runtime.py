@@ -33,6 +33,7 @@ import urllib.parse
 from . import channel as channel_module
 from . import claude_settings
 from . import notify as notify_module
+from . import k3s
 from . import nested_podman
 from .atomicio import atomic_write_json, atomic_write_text, read_json
 from .config import ENV_PREFIX, WORKFLOW_SKILLS, Config, load_config, effective_config, session_account
@@ -313,7 +314,12 @@ def build_image(script_dir: Path, refresh: bool, no_cache: bool,
     if no_cache:
         args.append("--no-cache")
     args.append(str(script_dir))
-    return subprocess.call(args)
+    rc = subprocess.call(args)
+    if rc == 0 and config.tools.k3s.enabled:
+        # The sidecar's image is not part of this one; fetched here so the
+        # first launch does not stall on it.
+        k3s.pull(config.tools.k3s)
+    return rc
 
 
 def nested_podman_build_args(config: Config, identity: HostIdentity) -> list[str]:
@@ -1240,6 +1246,10 @@ def build_mounts(
         # The keeper needs only this workspace's lifecycle lock and snapshots,
         # never another workspace's writable runtime state.
         pairs.append((runtime_state.root, runtime_state.root, False))
+        if config is not None and config.tools.k3s.enabled:
+            # Read-only over the writable runtime root: the sidecar mounts
+            # registries.yaml from here, and the box must not rewrite it.
+            pairs.append((k3s_state_dir(runtime_state), k3s_state_dir(runtime_state), True))
     if (script_dir / "agent_box").is_dir():
         pairs.append((script_dir / "agent_box", CONTAINER_LAUNCHER_ROOT / "agent_box", True))
     # PATH launches use the library root as their build context, including
@@ -1434,6 +1444,83 @@ def provider_env(config: Config) -> list[str]:
     return [f"--env={name}" for name in names if os.environ.get(name)]
 
 
+def k3s_state_dir(runtime_state: WorkspaceRuntimeState) -> Path:
+    """The kubeconfig and registries.yaml of this workspace's k3s sidecar."""
+    return runtime_state.root / "k3s"
+
+
+def k3s_box_args(
+    config: Config, workspace: Workspace, runtime_state: WorkspaceRuntimeState | None,
+) -> list[str]:
+    """The box's route to its cluster: pasta's loopback forward and the kubeconfig.
+
+    The API is published on host loopback, which Podman's host alias does
+    not reach, and publishing it on the LAN would expose a cluster-admin
+    endpoint. ``-T`` forwards the box's own 127.0.0.1:PORT to the host's.
+    Structural: the port is fixed when the sidecar is created, so a
+    recreated sidecar recreates the box too.
+    """
+    if not config.tools.k3s.enabled:
+        return []
+    runtime_state = runtime_state or workspace_runtime_state(workspace)
+    port = k3s.api_port(workspace_identity(workspace))
+    return [f"--network=pasta:-T,{port}",
+            f"--env=KUBECONFIG={k3s.kubeconfig_path(k3s_state_dir(runtime_state))}"]
+
+
+def prepare_k3s(config: Config, workspace: Workspace, runtime_state: WorkspaceRuntimeState) -> None:
+    """Bring this workspace's cluster up, or release one a new box no longer needs.
+
+    Before the box is specified, because the sidecar's published port is
+    part of the box's identity; under the transition lock, so two launches
+    do not create the sidecar twice.
+    """
+    with workspace_transition_lock(workspace):
+        if config.tools.k3s.enabled:
+            workspace_id, state_dir = workspace_identity(workspace), k3s_state_dir(runtime_state)
+            box = inspect_workspace_container(workspace_container_name(workspace))
+            # Recreating the sidecar under a running box would pull the
+            # cluster out from under its sessions, as a recreated box would.
+            if (box or {}).get("State", {}).get("Status") == "running" and k3s.is_outdated(
+                    workspace_id, config.tools.k3s, state_dir, workspace.host_root):
+                raise AgentBoxError("the k3s settings changed while this project's box is running; "
+                                    "end it with agent-box stop first")
+            k3s.ensure(workspace_id, config.tools.k3s, state_dir, workspace.host_root)
+        else:
+            release_k3s(workspace, config, runtime_state)
+
+
+def release_k3s(workspace: Workspace, config: Config | None = None,
+                runtime_state: WorkspaceRuntimeState | None = None) -> None:
+    """Stop the sidecar once no box uses it, unless the configuration keeps it.
+
+    ``persistent`` keeps a running cluster between boxes. A cluster the
+    configuration no longer asks for, or one bound to its box, stops as soon
+    as agent-box sees the box gone. A box that ended on its own is only
+    noticed by the next agent-box command for the workspace.
+    """
+    runtime_state = runtime_state or workspace_runtime_state(workspace)
+    state_dir = k3s_state_dir(runtime_state)
+    # Every start renders the kubeconfig and deleting the data deletes it:
+    # without one no sidecar was started here, and neither the configuration
+    # nor Podman need be asked.
+    if not k3s.kubeconfig_path(state_dir).exists():
+        return
+    settings = (config or effective_config(runtime_config_base())).tools.k3s
+    if settings.enabled and settings.lifetime != "box":
+        return
+    if inspect_workspace_container(workspace_container_name(workspace)) is not None:
+        return
+    if k3s.stop(workspace_identity(workspace), settings, state_dir):
+        print(f"agent-box: stopped the k3s cluster {k3s.name(workspace_identity(workspace))}", file=sys.stderr)
+
+
+def k3s_warnings(config: Config) -> list[str]:
+    if config.tools.k3s.enabled and not config.tools.groups["kubernetes"]:
+        return ["tools.k3s is on but the kubernetes tool group is off: the box has no kubectl or helm"]
+    return []
+
+
 def container_lifetime_args(
     workspace: Workspace, extra_mounts: list[MountSpec], script_dir: Path,
     config: Config | None = None, mount_notifications: bool = False,
@@ -1477,6 +1564,7 @@ def container_lifetime_args(
         # disagree. Only the host mapping is structural, because it is a
         # container-creation flag rather than file content.
         *tracker_host_args(config),
+        *k3s_box_args(config, workspace, runtime_state),
     ]
     # A host that relocates Claude Code's config directory must have the
     # container agree: CLAUDE_HOME is already bind-mounted at its host path,
@@ -2063,6 +2151,7 @@ def launch_in_workspace_container(
     try:
         with workspace_transition_lock(workspace):
             cleanup_workspace_container_if_idle(spec.name)
+            release_k3s(workspace, spec.creation_config, spec.runtime_state)
     except (AgentBoxError, OSError, subprocess.SubprocessError) as exc:
         # The agent command's status is more meaningful than a best-effort
         # post-exit cleanup problem. A later launch will recover stale
@@ -2222,6 +2311,21 @@ if [[ "${AGENT_BOX_BROWSER:-0}" == "1" ]]; then
   echo "browser integration: enabled"
 else
   echo "browser integration: disabled (turn on the browser tool group in 'agent-box config')"
+fi
+echo
+# Checked from inside the box, through the same kubeconfig and loopback
+# forward an agent uses, so "OK" means kubectl here really reaches the cluster.
+if [[ "${AGENT_BOX_K3S:-0}" == "1" ]]; then
+  if ! command -v kubectl >/dev/null 2>&1; then
+    echo "k3s cluster:         kubectl MISSING (turn on the kubernetes tool group and run 'agent-box build')"
+  elif nodes="$(timeout 15 kubectl get nodes --no-headers 2>&1)"; then
+    printf "%-20s %s\n" "k3s cluster:" "OK (${nodes//$'\n'/; })"
+  else
+    echo "k3s cluster:         FAILED"
+    printf "  %s\n" "${nodes}"
+  fi
+else
+  echo "k3s cluster:         disabled (turn on tools.k3s in 'agent-box config')"
 fi
 '''
 
@@ -2434,7 +2538,7 @@ def runtime_main(
                  f" -- run 'agent-box build' to drop them")
     # Every launch, not only box creation: joining a running box with the
     # switch on and no socket leaves box identity unchanged and would say nothing.
-    for problem in audio_warnings(config):
+    for problem in audio_warnings(config) + k3s_warnings(config):
         warn(problem)
 
 
@@ -2469,6 +2573,7 @@ def runtime_main(
             extra_env = [
                 *extra_env,
                 f"{BROWSER_ENABLED_ENV}={'1' if config.tools.browser() else '0'}",
+                f"AGENT_BOX_K3S={'1' if config.tools.k3s.enabled else '0'}",
                 f"{CLAUDE_SKILL_LINKS_ENV}={'1' if config.skills.claude_links else '0'}",
                 f"{IMAGE_TOOLS_ENV}={','.join(config.tools.enabled_groups())}",
                 f"AGENT_BOX_IMAGE={IMAGE}",
@@ -2488,6 +2593,7 @@ def runtime_main(
             command = external_command(command, agent, api_provider, container=True)
         elif remote_control_invocation(agent, rest):
             command = remote_control_command(command, agent, config, container=True)
+        prepare_k3s(config, workspace, runtime_state)
         spec = workspace_container_spec(workspace, extra_mounts, script_dir, config, options.kvm)
         # These copies are seeded only when a box is created, so a running box
         # would silently keep its old ones.
@@ -2555,7 +2661,13 @@ def attach_main(args: list[str], workspace_root: str = "") -> int:
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
         raise AgentBoxError("agent-box attach needs a terminal")
     workspace = resolved_workspace(workspace_root)
-    name = running_workspace_container(workspace)
+    try:
+        name = running_workspace_container(workspace)
+    except AgentBoxError:
+        # No box to attach to: a sidecar bound to the box it outlived stops now.
+        with workspace_transition_lock(workspace):
+            release_k3s(workspace)
+        raise
     session = choose_session(tmux_sessions(name), args[0] if args else None)
     # ``-d`` evicts whichever client still holds the session. After a closed
     # terminal that client is a ghost: conmon keeps its pty open, so it never
@@ -2569,43 +2681,58 @@ def attach_main(args: list[str], workspace_root: str = "") -> int:
     try:
         with workspace_transition_lock(workspace):
             cleanup_workspace_container_if_idle(name)
+            release_k3s(workspace)
     except (AgentBoxError, OSError, subprocess.SubprocessError) as exc:
         warn(f"could not clean up workspace container: {exc}")
     return rc
 
 
 def stop_main(args: list[str], workspace_root: str = "") -> int:
-    """``agent-box stop``: end this workspace's box, detached sessions included.
+    """``agent-box stop [--cluster-data]``: end this workspace's box and cluster.
 
     Ordinary boxes still disappear on their own once no workload remains. A
     detached session *is* a workload, so a box someone walked away from needs
-    a way to be shut down deliberately.
+    a way to be shut down deliberately. The k3s sidecar stops with it
+    whatever its lifetime; its data stays unless ``persistent_data`` is off or
+    ``--cluster-data`` asks for it to go.
     """
-    if args:
-        raise AgentBoxError("agent-box stop takes no arguments")
+    cluster_data = False
+    for arg in args:
+        if arg != "--cluster-data":
+            raise AgentBoxError(f"unexpected argument '{arg}'; agent-box stop takes only --cluster-data")
+        cluster_data = True
     if not shutil.which("podman"):
         raise AgentBoxError("podman not found")
     workspace = resolved_workspace(workspace_root)
     name = workspace_container_name(workspace)
+    runtime_state = workspace_runtime_state(workspace)
+    config = effective_config(runtime_config_base())
     with workspace_transition_lock(workspace):
         current = inspect_workspace_container(name)
         if current is None:
             print("agent-box: no workspace container for this project", file=sys.stderr)
-            return 0
-        if current.get("State", {}).get("Status") == "running":
-            try:
-                sessions = tmux_sessions(name)
-            except AgentBoxError:
-                sessions = []
-            if sessions:
-                print(f"agent-box: ending {len(sessions)} session(s): {', '.join(sessions)}", file=sys.stderr)
-        remove_workspace_container_then_confirm_absent(name)
-        runtime_state = workspace_runtime_state(workspace)
-        shutil.rmtree(runtime_state.root / "sessions", ignore_errors=True)
-        # The box is gone, so no browser session of this workspace can still
-        # be running; its snapshots and screenshots go with it.
-        remove_browser_sessions(runtime_state)
-    print(f"agent-box: removed workspace container {name}", file=sys.stderr)
+        else:
+            if current.get("State", {}).get("Status") == "running":
+                try:
+                    sessions = tmux_sessions(name)
+                except AgentBoxError:
+                    sessions = []
+                if sessions:
+                    print(f"agent-box: ending {len(sessions)} session(s): {', '.join(sessions)}", file=sys.stderr)
+            remove_workspace_container_then_confirm_absent(name)
+            shutil.rmtree(runtime_state.root / "sessions", ignore_errors=True)
+            # The box is gone, so no browser session of this workspace can still
+            # be running; its snapshots and screenshots go with it.
+            remove_browser_sessions(runtime_state)
+            print(f"agent-box: removed workspace container {name}", file=sys.stderr)
+        workspace_id = workspace_identity(workspace)
+        sidecar = k3s.name(workspace_id)
+        if cluster_data:
+            k3s.remove(workspace_id, k3s_state_dir(runtime_state), data=True)
+            print(f"agent-box: removed the k3s cluster {sidecar} and its data", file=sys.stderr)
+        elif k3s.stop(workspace_id, config.tools.k3s, k3s_state_dir(runtime_state)):
+            kept = "" if config.tools.k3s.persistent_data else " and deleted its data"
+            print(f"agent-box: stopped the k3s cluster {sidecar}{kept}", file=sys.stderr)
     return 0
 
 
@@ -2753,6 +2880,19 @@ def uninstall_main(args: list[str]) -> int:
         remove_workspace_container_then_confirm_absent(name)
     if names:
         done.append(f"removed {len(names)} workspace box(es)")
+    # Containers and networks at both levels; the clusters' data is
+    # agent-box state, so its volumes go only after --purge is confirmed.
+    clusters: list[str] = []
+    if shutil.which("podman"):
+        try:
+            clusters = k3s.all_workspaces()
+            for workspace_id in clusters:
+                k3s.remove(workspace_id, None, data=False)
+        except AgentBoxError as exc:
+            done.append(f"warning: k3s clusters were not removed: {exc}")
+        else:
+            if clusters:
+                done.append(f"removed {len(clusters)} k3s cluster(s)")
 
     settings = CLAUDE_HOME / "settings.json"
     if claude_settings.reconcile_claude_settings(
@@ -2800,6 +2940,14 @@ def uninstall_main(args: list[str]) -> int:
                 print("Keeping configuration and state.")
                 purge = False
         if purge:
+            try:
+                for workspace_id in clusters:
+                    k3s.remove(workspace_id, None, data=True)
+            except AgentBoxError as exc:
+                done.append(f"warning: k3s cluster data was not removed: {exc}")
+            else:
+                if clusters:
+                    done.append(f"deleted the data of {len(clusters)} k3s cluster(s)")
             shutil.rmtree(CONFIG_ROOT, ignore_errors=True)
             shutil.rmtree(STATE_ROOT, ignore_errors=True)
             done.append(f"deleted {CONFIG_ROOT} and {STATE_ROOT}")
@@ -2818,6 +2966,8 @@ def uninstall_main(args: list[str]) -> int:
     print("Remaining, deliberately left for you:")
     if not purge:
         print(f"  configuration and state   {CONFIG_ROOT}, {STATE_ROOT}")
+        if clusters:
+            print("  k3s cluster data          podman volume rm " + " ".join(k3s.name(c) for c in clusters))
     if rc_note:
         print(f"  shell PATH line           {rc_note}")
     print(f"  container image           podman rmi {IMAGE}")

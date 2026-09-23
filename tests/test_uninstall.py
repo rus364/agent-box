@@ -53,6 +53,12 @@ class UninstallTestCase(unittest.TestCase):
         )
         self.patches.start()
         self.addCleanup(self.patches.stop)
+        # uninstall removes every k3s sidecar Podman lists; the developer's
+        # own clusters must never be in reach of the suite.
+        self.clusters = mock.patch.multiple(runtime.k3s, all_workspaces=mock.Mock(return_value=[]),
+                                            remove=mock.Mock())
+        self.clusters.start()
+        self.addCleanup(self.clusters.stop)
         self.checkout = self.root / "checkout"
         (self.checkout / "agent_box").mkdir(parents=True)
         (self.checkout / "agent_box/__init__.py").write_text("")
@@ -200,6 +206,20 @@ class UninstallTests(UninstallTestCase):
                  runtime, "remove_workspace_container_then_confirm_absent") as remove:
             self._uninstall(podman="/usr/bin/podman")
         self.assertEqual([call.args[0] for call in remove.call_args_list], ["a", "b"])
+
+    def test_clusters_lose_containers_at_once_but_data_only_after_a_confirmed_purge(self):
+        """Cluster data is agent-box state: it goes with --purge and never before the answer."""
+        runtime.k3s.all_workspaces.return_value = ["0123456789abcdef"]
+        with mock.patch.object(runtime, "managed_container_names", return_value=[]):
+            self._uninstall(podman="/usr/bin/podman")
+            self.assertEqual([c.kwargs["data"] for c in runtime.k3s.remove.call_args_list], [False])
+            runtime.k3s.remove.reset_mock()
+            with mock.patch("builtins.input", return_value="n"):
+                self._uninstall("--purge", podman="/usr/bin/podman")
+            self.assertEqual([c.kwargs["data"] for c in runtime.k3s.remove.call_args_list], [False])
+            runtime.k3s.remove.reset_mock()
+            self._uninstall("--purge", "--yes", podman="/usr/bin/podman")
+        self.assertEqual([c.kwargs["data"] for c in runtime.k3s.remove.call_args_list], [False, True])
 
     def test_the_image_is_never_deleted(self):
         """Large, trivially rebuilt, and not something to remove unasked."""

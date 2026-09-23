@@ -339,6 +339,12 @@ class EnsureTests(SidecarTestCase):
         self.assertEqual(self.podman.did("volume", "rm") + self.podman.did("volume", "create"), [])
         self.assertEqual(self.podman.volumes, {NAME})
 
+    def test_outdated_means_a_sidecar_exists_with_other_settings(self):
+        self.assertFalse(k3s.is_outdated(WID, K3sConfig(enabled=True), self.state, self.root))
+        k3s.ensure(WID, K3sConfig(enabled=True), self.state, self.root)
+        self.assertFalse(k3s.is_outdated(WID, K3sConfig(enabled=True, lifetime="box"), self.state, self.root))
+        self.assertTrue(k3s.is_outdated(WID, K3sConfig(enabled=True, traefik=True), self.state, self.root))
+
     def test_a_host_without_delegated_controllers_is_refused_before_anything_is_created(self):
         self.podman.controllers = ["memory", "pids"]
         with self.assertRaisesRegex(AgentBoxError, "missing: cpu, cpuset, io"):
