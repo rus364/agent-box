@@ -87,6 +87,7 @@ class ProjectConfigTests(unittest.TestCase):
                      {'workflow': {'review': {'ignored_paths': '**/*.md'}}},
                      {'workflow': {'tiers': {'0': {'codex': {'effort': ''}}}}},
                      {'tracker': {'connections': {'vikunja': {'url': 'https://u:secret@host'}}}},
+                     {'tools': {'k3s': {'version': 'v1.33'}}}, {'tools': {'k3s': {'lifetime': 'forever'}}},
                      [], None):
             with self.subTest(data=data), self.assertRaises(AgentBoxError):
                 project_config.validate(data, self.path)

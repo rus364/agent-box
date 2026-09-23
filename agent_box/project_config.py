@@ -124,7 +124,8 @@ def validate(data, path):
     for key in ("merge_mode",):
         if key in workflow and not workflow[key]:
             raise AgentBoxError(f"Invalid project configuration: {path}: workflow.{key} must be nonempty")
-    errors = Config.from_dict(merge(Config().to_dict(), data)).workflow.validate()
+    merged = Config.from_dict(merge(Config().to_dict(), data))
+    errors = merged.workflow.validate() + merged.tools.validate()
     if errors:
         raise AgentBoxError(f"Invalid project configuration: {path}: {errors[0]}")
 
