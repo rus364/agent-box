@@ -1479,13 +1479,13 @@ def prepare_k3s(config: Config, workspace: Workspace, runtime_state: WorkspaceRu
         if config.tools.k3s.enabled:
             workspace_id, state_dir = workspace_identity(workspace), k3s_state_dir(runtime_state)
             box = inspect_workspace_container(workspace_container_name(workspace))
+            box_running = (box or {}).get("State", {}).get("Status") == "running"
             # Recreating the sidecar under a running box would pull the
             # cluster out from under its sessions, as a recreated box would.
-            if (box or {}).get("State", {}).get("Status") == "running" and k3s.is_outdated(
-                    workspace_id, config.tools.k3s, state_dir, workspace.host_root):
+            if box_running and k3s.is_outdated(workspace_id, config.tools.k3s, state_dir, workspace.host_root):
                 raise AgentBoxError("the k3s settings changed while this project's box is running; "
                                     "end it with agent-box stop first")
-            if box is None:
+            if not box_running:
                 # A box-bound cluster whose box ended on its own is noticed
                 # only now, and the new box must not inherit it.
                 release_k3s(workspace, config, runtime_state)
@@ -1516,7 +1516,9 @@ def release_k3s(workspace: Workspace, config: Config | None = None,
     if not settings.enabled:
         # Switching the cluster off is not asking for its data to go.
         settings = replace(settings, persistent_data=True)
-    if inspect_workspace_container(workspace_container_name(workspace)) is not None:
+    # An exited box, as a reboot leaves one despite --rm, uses no cluster.
+    box = inspect_workspace_container(workspace_container_name(workspace))
+    if (box or {}).get("State", {}).get("Status") == "running":
         return
     if k3s.stop(workspace_identity(workspace), settings, state_dir):
         print(f"agent-box: stopped the k3s cluster {k3s.name(workspace_identity(workspace))}", file=sys.stderr)

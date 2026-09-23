@@ -83,10 +83,11 @@ class PrepareTests(K3sRuntimeTest):
     def test_a_box_bound_cluster_left_by_a_box_that_ended_on_its_own_restarts_clean(self):
         """With persistent_data off the new box would otherwise inherit the old cluster."""
         self.state.mkdir(parents=True)
-        for lifetime, stops in (("box", 1), ("persistent", 0)):
-            with self.subTest(lifetime=lifetime), \
+        exited = {"State": {"Status": "exited"}}
+        for lifetime, box, stops in (("box", None, 1), ("box", exited, 1), ("persistent", None, 0)):
+            with self.subTest(lifetime=lifetime, box=box), \
                     mock.patch.object(runtime, "workspace_transition_lock", return_value=nullcontext()), \
-                    mock.patch.object(runtime, "inspect_workspace_container", return_value=None), \
+                    mock.patch.object(runtime, "inspect_workspace_container", return_value=box), \
                     mock.patch.multiple(runtime.k3s, ensure=mock.DEFAULT, stop=mock.DEFAULT) as sidecar, \
                     redirect_stderr(io.StringIO()):
                 runtime.prepare_k3s(k3s_config(lifetime=lifetime, persistent_data=False), self.workspace,
@@ -158,6 +159,11 @@ class ReleaseTests(K3sRuntimeTest):
         self.release(k3s_config(lifetime="box"), box={"State": {"Status": "running"}})
         runtime.k3s.stop.assert_not_called()
         self.release(k3s_config(lifetime="box"))
+        runtime.k3s.stop.assert_called_once()
+
+    def test_an_exited_box_left_by_a_reboot_does_not_hold_a_box_bound_cluster(self):
+        self.started_once()
+        self.release(k3s_config(lifetime="box"), box={"State": {"Status": "exited"}})
         runtime.k3s.stop.assert_called_once()
 
     def test_a_start_that_timed_out_still_stops_once_switched_off(self):
