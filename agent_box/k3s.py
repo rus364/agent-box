@@ -112,8 +112,8 @@ def _podman(*args: str, timeout: float | None = None) -> subprocess.CompletedPro
         raise AgentBoxError(f"k3s: podman {args[0]} failed: {exc}") from exc
 
 
-def _checked(*args: str) -> str:
-    result = _podman(*args)
+def _checked(*args: str, timeout: float | None = None) -> str:
+    result = _podman(*args, timeout=timeout)
     if result.returncode:
         detail = result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}"
         raise AgentBoxError(f"k3s: podman {' '.join(args[:2])} failed: {detail}")
@@ -124,9 +124,9 @@ def _say(message: str) -> None:
     print(f"agent-box: {message}", file=sys.stderr)
 
 
-def _exists(kind: str, resource: str) -> bool:
+def _exists(kind: str, resource: str, timeout: float | None = None) -> bool:
     """Podman's own answer; a failing Podman is an error, never "absent"."""
-    result = _podman(kind, "exists", resource)
+    result = _podman(kind, "exists", resource, timeout=timeout)
     if result.returncode not in (0, 1):
         detail = result.stderr.strip() or f"exit {result.returncode}"
         raise AgentBoxError(f"k3s: podman {kind} exists failed: {detail}")
@@ -140,12 +140,12 @@ def _require_owned(kind: str, workspace_id: str, owner: str) -> None:
                             "agent-box for this workspace; rename or remove it yourself")
 
 
-def inspect(workspace_id: str) -> dict | None:
+def inspect(workspace_id: str, timeout: float | None = None) -> dict | None:
     """The sidecar container, or ``None`` when there is none."""
-    if not _exists("container", name(workspace_id)):
+    if not _exists("container", name(workspace_id), timeout):
         return None
     try:
-        payload = json.loads(_checked("container", "inspect", name(workspace_id)))
+        payload = json.loads(_checked("container", "inspect", name(workspace_id), timeout=timeout))
     except json.JSONDecodeError:
         raise AgentBoxError("k3s: podman container inspect returned invalid JSON") from None
     if not (isinstance(payload, list) and payload and isinstance(payload[0], dict)):
@@ -239,10 +239,12 @@ def wait_ready(workspace_id: str, timeout: float) -> None:
     probe = ["exec", resource, "kubectl", "get", "nodes",
              "-o", "jsonpath={.items[*].status.conditions[?(@.type==\"Ready\")].status}"]
     while True:
+        # Every call in the loop is cut off at the deadline, so neither a
+        # stalled kubectl nor a stalled Podman can hold the wait open.
         remaining = max(1.0, min(PROBE_TIMEOUT, deadline - time.monotonic()))
         if _podman(*probe, timeout=remaining).stdout.strip() == "True":
             return
-        if not _running(inspect(workspace_id)):
+        if not _running(inspect(workspace_id, remaining)):
             raise AgentBoxError(f"k3s: the cluster {resource} stopped while starting; its log ends with:\n"
                                 + _log_tail(workspace_id))
         if time.monotonic() >= deadline:

@@ -53,6 +53,7 @@ class FakePodman:
         self.broken = False
         self.probe_hangs = False
         self.probe_timeouts = []
+        self.inspect_timeouts = []
 
     def __call__(self, argv, **_):
         assert argv[0] == "podman"
@@ -64,6 +65,7 @@ class FakePodman:
             return CompletedProcess(argv, 125, "", "cannot connect to Podman")
         match args:
             case ["container", "exists", _]:
+                self.inspect_timeouts.append(_.get("timeout"))
                 return ok() if self.container is not None else fail
             case ["container", "inspect", _]:
                 return ok(json.dumps([{"State": {"Status": "running" if self.container["running"] else "exited"},
@@ -250,6 +252,7 @@ class EnsureTests(SidecarTestCase):
                 self.assertRaisesRegex(AgentBoxError, "not ready within 5s"):
             k3s.ensure(WID, K3sConfig(enabled=True), self.state, timeout=5)
         self.assertEqual(self.podman.probe_timeouts, [5])
+        self.assertEqual(self.podman.inspect_timeouts[-1], 5)
 
     def test_same_named_objects_agent_box_did_not_create_are_never_touched(self):
         """A user's own container, network or volume must not be reused or deleted."""
