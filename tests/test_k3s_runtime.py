@@ -7,6 +7,7 @@ cluster must leave the box exactly as it was and cost no Podman calls, and
 the lifetime setting decides whether a cluster outlives its box.
 """
 import io
+import os
 import tempfile
 import unittest
 from contextlib import nullcontext, redirect_stderr, redirect_stdout
@@ -252,9 +253,17 @@ class BuildAndWarningTests(K3sRuntimeTest):
 
 class HostModeTests(K3sRuntimeTest):
     def test_host_sessions_never_start_or_wire_the_cluster(self):
-        """A host agent keeps the user's own kube contexts; nothing may redirect it."""
-        for agent in ("claude", "codex"):
-            with self.subTest(agent=agent), \
+        """A host agent keeps the user's own kube contexts; nothing may redirect it.
+
+        The user's KUBECONFIG, or its absence, reaches the agent unchanged; the
+        suite may itself run inside a box whose session sets one.
+        """
+        for agent, kubeconfig in (("claude", None), ("codex", None), ("claude", "/home/user/.kube/config")):
+            environ = {name: value for name, value in os.environ.items() if name != "KUBECONFIG"}
+            if kubeconfig:
+                environ["KUBECONFIG"] = kubeconfig
+            with self.subTest(agent=agent, kubeconfig=kubeconfig), \
+                    mock.patch.dict(os.environ, environ, clear=True), \
                     mock.patch.object(runtime.shutil, "which", return_value=f"/usr/bin/{agent}"), \
                     mock.patch.object(runtime, "resolve_workspace", return_value=self.workspace), \
                     mock.patch.object(runtime, "load_config", return_value=k3s_config()), \
@@ -265,7 +274,8 @@ class HostModeTests(K3sRuntimeTest):
                     redirect_stderr(io.StringIO()) as err:
                 runtime.host_main(agent, ["--version"])
             self.assertEqual([m.call_count for m in sidecar.values()], [0, 0, 0])
-            self.assertNotIn("KUBECONFIG", str(call.call_args))
+            # Compare the one variable: the whole environment would print its secrets on failure.
+            self.assertEqual(call.call_args.kwargs["env"].get("KUBECONFIG"), kubeconfig)
             self.assertIn("--host sessions get no cluster", err.getvalue())
 
 
