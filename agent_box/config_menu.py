@@ -9,7 +9,7 @@ import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 
-from .config import AGENT_EFFORTS, AGENT_PROVIDERS, TOOL_GROUP_HELP, LAUNCH_AGENTS, Config, EnvConfig, REVIEW_INCREMENTAL, REVIEW_PRESETS, TRACKER_PROVIDERS, TrackerConnection, candidate_label, model_entry
+from .config import AGENT_EFFORTS, AGENT_PROVIDERS, K3S_LIFETIMES, TOOL_GROUP_HELP, LAUNCH_AGENTS, Config, EnvConfig, REVIEW_INCREMENTAL, REVIEW_PRESETS, TRACKER_PROVIDERS, TrackerConnection, candidate_label, model_entry
 from .errors import AgentBoxError
 from .external_config import API_EFFORTS, ExternalProvider, model_defaults, model_settings, valid_model, valid_name, validate_connections
 from .model_catalog import load_model_catalogs
@@ -21,6 +21,7 @@ CHOICES = {
     "workflow.review.policy": ("off", "auto", "always"),
     "workflow.review.incremental": REVIEW_INCREMENTAL,
     "workflow.review.github_provider": ("auto", "local", "codex", "claude"),
+    "tools.k3s.lifetime": K3S_LIFETIMES,
 }
 HELP = {
     "default_agent": "Agent started by `agent-box` without claude/codex; an explicit claude or codex always wins. Global only; not a project setting.",
@@ -56,7 +57,14 @@ HELP = {
     "env.set": "JSON object of literal environment values. These values are stored in config and appear in Podman arguments, so do not put secrets here.",
     "skills": "Configure agent-box-owned skill integration with host agent clients.",
     "skills.claude_links": "Link agent-box's managed shared skills into Claude's skill directory when applying configuration.",
-    "tools": "Tool groups baked into the workspace image. Each group changes box identity and may make the image larger; a changed selection takes effect after the image is rebuilt.",
+    "tools": "Tool groups baked into the workspace image, and the k3s cluster beside the box. Each image group changes box identity and may make the image larger; a changed selection takes effect after the image is rebuilt.",
+    "tools.k3s": "Per-project k3s cluster in a sidecar container of the host's rootless Podman; the box gets kubectl access, never extra privileges. Not in the image and not available in --host mode.",
+    "tools.k3s.enabled": "Run the cluster and give the box a kubeconfig. The agent becomes cluster-admin; privileged pods reach only the sidecar, never host files. kubectl comes from the kubernetes group. Changes box identity.",
+    "tools.k3s.lifetime": "persistent keeps the cluster running until `agent-box stop`, so deployments survive between sessions. box stops it when agent-box removes the box, or at the next agent-box command for the project if the box ended on its own.",
+    "tools.k3s.persistent_data": "Keep the cluster's volume when the sidecar stops. Off deletes it at every stop, so each start is a clean cluster. `agent-box stop --cluster-data` deletes it on demand.",
+    "tools.k3s.traefik": "Run k3s's Traefik ingress controller. Ingresses are reachable inside the cluster or through kubectl port-forward; nothing is published on the host. Recreates the sidecar on the same data.",
+    "tools.k3s.metrics_server": "Run metrics-server for kubectl top and HorizontalPodAutoscalers. Recreates the sidecar on the same data.",
+    "tools.k3s.version": "rancher/k3s tag such as v1.33.5-k3s1; empty uses the release agent-box pins by digest. k3s cannot downgrade existing data: use `agent-box stop --cluster-data` first.",
     "tracker": "Expose configured task-tracker connections to agents. Connections remain unavailable while this integration is disabled.",
     "tracker.enabled": "Expose configured tracker connections to agents. Keep credentials out of repository files.",
     "tracker.provider": "Default tracker for repositories without a more specific binding. Choose one of the supported adapters.",
@@ -248,7 +256,8 @@ def help_for(path):
 
 
 def validate(config):
-    errors = config.workflow.validate() + config.codex.validate() + validate_connections(config)
+    errors = (config.workflow.validate() + config.codex.validate() + config.tools.validate()
+              + validate_connections(config))
     if config.claude.telegram_channel:
         from .channel import missing_requirements
         errors.extend(missing_requirements())

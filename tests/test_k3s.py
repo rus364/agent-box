@@ -1,0 +1,268 @@
+"""The k3s sidecar: its configuration, and how agent-box keeps one cluster per workspace.
+
+The cluster holds the user's deployments and volumes across sessions, so the
+lifecycle's promises are the point: a changed definition recreates the
+container but never its data, stopping keeps data unless the user chose a
+throwaway cluster, and removing what is already gone is not an error. The
+box reaches the API only through the rendered kubeconfig, so that file has to
+point at the published loopback port and stay private.
+"""
+import json
+import tempfile
+import unittest
+from pathlib import Path
+from subprocess import CompletedProcess
+from unittest import mock
+
+from agent_box import k3s, runtime
+from agent_box.config import Config, K3sConfig, ToolsConfig, load_config, save_config
+from agent_box.errors import AgentBoxError
+
+WID = "0123456789abcdef"
+NAME = f"agent-box-k3s-{WID}"
+KUBECONFIG = """apiVersion: v1
+clusters:
+- cluster:
+    certificate-authority-data: Q0E=
+    server: https://127.0.0.1:6443
+  name: default
+contexts:
+- context:
+    cluster: default
+    user: default
+  name: default
+current-context: default
+kind: Config
+users:
+- name: default
+  user:
+    client-certificate-data: Q0VSVA==
+"""
+
+
+class FakePodman:
+    """Just enough Podman state for the sidecar lifecycle."""
+
+    def __init__(self, *, ready=True, dies=False):
+        self.container = None  # {"running": bool, "spec": str}
+        self.networks, self.volumes = set(), set()
+        self.ready, self.dies = ready, dies
+        self.calls = []
+        self.controllers = ["cpuset", "cpu", "io", "memory", "pids"]
+
+    def __call__(self, argv, **_):
+        assert argv[0] == "podman"
+        args = argv[1:]
+        self.calls.append(args)
+        ok = lambda out="": CompletedProcess(argv, 0, out, "")  # noqa: E731
+        fail = CompletedProcess(argv, 1, "", "no such object")
+        match args:
+            case ["container", "inspect", _]:
+                if self.container is None:
+                    return fail
+                return ok(json.dumps([{"State": {"Status": "running" if self.container["running"] else "exited"},
+                                       "Config": {"Labels": {k3s.SPEC_LABEL: self.container["spec"]}}}]))
+            case ["info", _]:
+                return ok(json.dumps({"host": {"cgroupVersion": "v2", "cgroupControllers": self.controllers}}))
+            case ["image", "exists", _]:
+                return ok()
+            case [("network" | "volume") as kind, "exists", resource]:
+                return ok() if resource in getattr(self, kind + "s") else fail
+            case [("network" | "volume") as kind, "create", *_, resource]:
+                getattr(self, kind + "s").add(resource)
+                return ok()
+            case [("network" | "volume") as kind, "rm", resource]:
+                getattr(self, kind + "s").discard(resource)
+                return ok()
+            case ["create", *rest]:
+                spec = next(a.split("=", 2)[2] for a in rest if a.startswith(f"--label={k3s.SPEC_LABEL}="))
+                self.container = {"running": False, "spec": spec}
+                return ok()
+            case ["start", _]:
+                self.container["running"] = not self.dies
+                return ok()
+            case ["stop", *_]:
+                self.container["running"] = False
+                return ok()
+            case ["rm", *_]:
+                self.container = None
+                return ok()
+            case ["exec", _, "kubectl", "get", "nodes", *_]:
+                return ok("True" if self.ready else "False")
+            case ["exec", _, "kubectl", "get", "--raw=/readyz"]:
+                return ok("ok")
+            case ["exec", _, "cat", _]:
+                return ok(KUBECONFIG)
+            case ["port", *_]:
+                return ok("127.0.0.1:41234\n")
+            case ["logs", *_]:
+                return ok("E0923 kubelet failed: open /dev/kmsg\n")
+        raise AssertionError(f"unexpected podman call {args}")
+
+    def did(self, *prefix):
+        return [call for call in self.calls if tuple(call[:len(prefix)]) == prefix]
+
+
+class SidecarTestCase(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.state = Path(tmp.name) / "k3s"
+        self.podman = FakePodman()
+        patcher = mock.patch.object(k3s.subprocess, "run", side_effect=lambda *a, **k: self.podman(*a, **k))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        sleep = mock.patch.object(k3s.time, "sleep")
+        sleep.start()
+        self.addCleanup(sleep.stop)
+
+
+class ConfigTests(unittest.TestCase):
+    def test_the_cluster_is_off_by_default_and_a_saved_file_stays_sparse(self):
+        """The agent becomes cluster-admin, so the cluster must be asked for."""
+        self.assertFalse(Config().tools.k3s.enabled)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            config = Config()
+            config.tools.k3s.enabled = True
+            config.tools.k3s.lifetime = "box"
+            save_config(config, path)
+            self.assertEqual(json.loads(path.read_text())["tools"], {"k3s": {"enabled": True, "lifetime": "box"}})
+            self.assertEqual(load_config(path).tools.k3s, config.tools.k3s)
+
+    def test_a_non_boolean_does_not_enable_the_cluster(self):
+        self.assertFalse(ToolsConfig.from_dict({"k3s": {"enabled": "yes"}}).k3s.enabled)
+        self.assertFalse(ToolsConfig.from_dict({"k3s": "on"}).k3s.enabled)
+
+    def test_an_unknown_lifetime_or_malformed_version_is_reported(self):
+        """A typo must not silently run the pinned release or a different lifetime."""
+        problems = ToolsConfig.from_dict({"k3s": {"lifetime": "forever", "version": "1.33"}}).validate()
+        self.assertEqual(len(problems), 2)
+        self.assertEqual(ToolsConfig.from_dict({"k3s": {"version": "v1.35.0-rc1-k3s1"}}).validate(), [])
+
+    def test_the_cluster_never_reaches_the_image_build_or_its_label(self):
+        """k3s builds nothing into the image, so it must not be reported as drift."""
+        config = Config()
+        config.tools.k3s.enabled = True
+        args = " ".join(runtime.tool_build_args(config))
+        self.assertNotIn("K3S", args)
+        self.assertNotIn("k3s", args)
+        self.assertNotIn("k3s", config.tools.enabled_groups())
+        with mock.patch.object(runtime, "image_tool_groups", return_value=config.tools.enabled_groups()):
+            self.assertEqual(runtime.image_tool_drift(config), ([], []))
+
+
+class DefinitionTests(unittest.TestCase):
+    def test_components_and_version_change_the_definition(self):
+        """Each of these changes what runs, so each must recreate the sidecar."""
+        base = K3sConfig(enabled=True)
+        variants = [K3sConfig(enabled=True, traefik=True), K3sConfig(enabled=True, metrics_server=True),
+                    K3sConfig(enabled=True, version="v1.33.5-k3s1")]
+        hashes = {k3s.spec_hash(WID, config) for config in [base, *variants]}
+        self.assertEqual(len(hashes), 4)
+        self.assertIn("--disable=traefik,metrics-server", k3s.server_args(base))
+        self.assertNotIn("--disable=metrics-server", k3s.server_args(K3sConfig(traefik=True, metrics_server=True)))
+
+    def test_lifetime_and_data_policy_do_not_recreate_a_running_cluster(self):
+        base = K3sConfig(enabled=True)
+        self.assertEqual(k3s.spec_hash(WID, base), k3s.spec_hash(WID, K3sConfig(
+            enabled=True, lifetime="box", persistent_data=False)))
+
+    def test_the_pinned_release_is_addressed_by_digest(self):
+        self.assertIn("@sha256:", k3s.image_ref(K3sConfig()))
+        self.assertEqual(k3s.image_ref(K3sConfig(version="v1.33.5-k3s1")), "docker.io/rancher/k3s:v1.33.5-k3s1")
+
+    def test_the_api_is_published_on_host_loopback_only(self):
+        """Publishing on every address would hand the LAN a cluster-admin endpoint's door."""
+        published = [arg for arg in k3s.container_args(WID, K3sConfig()) if arg.startswith("--publish")]
+        self.assertEqual(published, ["--publish=127.0.0.1::6443/tcp"])
+
+
+class EnsureTests(SidecarTestCase):
+    def test_first_start_creates_network_volume_and_container_and_renders_kubeconfig(self):
+        port = k3s.ensure(WID, K3sConfig(enabled=True), self.state)
+        self.assertEqual(port, 41234)
+        self.assertEqual((self.podman.networks, self.podman.volumes), ({NAME}, {NAME}))
+        self.assertTrue(self.podman.container["running"])
+        path = k3s.kubeconfig_path(self.state)
+        self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+        text = path.read_text()
+        self.assertIn("server: https://127.0.0.1:41234\n", text)
+        self.assertIn("current-context: agent-box\n", text)
+        self.assertNotIn("default", text)
+        self.assertIn("client-certificate-data: Q0VSVA==", text)
+
+    def test_a_running_cluster_is_reused(self):
+        k3s.ensure(WID, K3sConfig(enabled=True), self.state)
+        self.podman.calls.clear()
+        k3s.ensure(WID, K3sConfig(enabled=True), self.state)
+        self.assertEqual(self.podman.did("create") + self.podman.did("start") + self.podman.did("rm"), [])
+
+    def test_a_stopped_cluster_is_started_not_recreated(self):
+        k3s.ensure(WID, K3sConfig(enabled=True), self.state)
+        self.podman.container["running"] = False
+        self.podman.calls.clear()
+        k3s.ensure(WID, K3sConfig(enabled=True), self.state)
+        self.assertEqual(len(self.podman.did("start")), 1)
+        self.assertEqual(self.podman.did("create"), [])
+
+    def test_a_changed_definition_recreates_the_container_on_the_same_volume(self):
+        """Turning on Traefik must not cost the user their cluster's data."""
+        k3s.ensure(WID, K3sConfig(enabled=True), self.state)
+        self.podman.calls.clear()
+        k3s.ensure(WID, K3sConfig(enabled=True, traefik=True), self.state)
+        self.assertEqual(len(self.podman.did("rm")), 1)
+        self.assertEqual(len(self.podman.did("create")), 1)
+        self.assertEqual(self.podman.did("volume", "rm") + self.podman.did("volume", "create"), [])
+        self.assertEqual(self.podman.volumes, {NAME})
+
+    def test_a_host_without_delegated_controllers_is_refused_before_anything_is_created(self):
+        self.podman.controllers = ["memory", "pids"]
+        with self.assertRaisesRegex(AgentBoxError, "missing: cpu, cpuset, io"):
+            k3s.ensure(WID, K3sConfig(enabled=True), self.state)
+        self.assertEqual((self.podman.container, self.podman.networks, self.podman.volumes), (None, set(), set()))
+
+    def test_waiting_is_bounded_and_the_failure_shows_the_sidecar_log(self):
+        self.podman.ready = False
+        with mock.patch.object(k3s.time, "monotonic", side_effect=[0, 0, 5, 10]), \
+                self.assertRaisesRegex(AgentBoxError, r"not ready within 5s(.|\n)*open /dev/kmsg"):
+            k3s.ensure(WID, K3sConfig(enabled=True), self.state, timeout=5)
+
+    def test_a_sidecar_that_dies_fails_at_once_instead_of_waiting_out_the_timeout(self):
+        self.podman.ready, self.podman.dies = False, True
+        with self.assertRaisesRegex(AgentBoxError, "stopped while starting"):
+            k3s.ensure(WID, K3sConfig(enabled=True), self.state, timeout=3600)
+
+
+class StopAndRemoveTests(SidecarTestCase):
+    def test_stop_keeps_the_data_of_a_persistent_cluster(self):
+        k3s.ensure(WID, K3sConfig(enabled=True), self.state)
+        self.assertTrue(k3s.stop(WID, K3sConfig(enabled=True), self.state))
+        self.assertEqual(k3s.status(WID), "stopped")
+        self.assertEqual(self.podman.volumes, {NAME})
+        self.assertTrue(k3s.kubeconfig_path(self.state).exists())
+
+    def test_stop_of_a_throwaway_cluster_deletes_its_data_and_credential(self):
+        config = K3sConfig(enabled=True, persistent_data=False)
+        k3s.ensure(WID, config, self.state)
+        k3s.stop(WID, config, self.state)
+        self.assertEqual((self.podman.container, self.podman.networks, self.podman.volumes), (None, set(), set()))
+        self.assertFalse(k3s.kubeconfig_path(self.state).exists())
+
+    def test_remove_without_data_keeps_the_volume(self):
+        k3s.ensure(WID, K3sConfig(enabled=True), self.state)
+        k3s.remove(WID, self.state, data=False)
+        self.assertEqual((self.podman.container, self.podman.networks, self.podman.volumes), (None, set(), {NAME}))
+
+    def test_absent_objects_are_not_an_error(self):
+        self.assertFalse(k3s.stop(WID, K3sConfig(enabled=True), self.state))
+        k3s.remove(WID, self.state, data=True)
+        self.assertEqual(k3s.status(WID), "absent")
+
+    def test_status_distinguishes_a_ready_api(self):
+        k3s.ensure(WID, K3sConfig(enabled=True), self.state)
+        self.assertEqual(k3s.status(WID), "ready")
+
+
+if __name__ == "__main__":
+    unittest.main()

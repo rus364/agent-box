@@ -24,6 +24,7 @@ for launch and workflow policy alongside tracker identity. Version remains 1 dur
 from __future__ import annotations
 
 import os
+import re
 import stat
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -461,6 +462,64 @@ TOOL_GROUP_HELP: dict[str, str] = {
 }
 
 
+K3S_LIFETIMES = ("persistent", "box")
+#: A ``rancher/k3s`` release tag; the image spells k3s's ``+`` as ``-``.
+K3S_TAG_PATTERN = re.compile(r"v\d+\.\d+\.\d+(-rc\d+)?-k3s\d+")
+
+
+@dataclass
+class K3sConfig:
+    """A per-workspace k3s cluster in a sidecar next to the workspace box.
+
+    Not an image group: the cluster runs in its own ``rancher/k3s`` container
+    in the host's rootless Podman, so the box itself gains no privilege. The
+    alternatives -- k3s inside the box, or nested Podman with delegated
+    cgroups -- both widen what the box where the agent lives may do.
+
+    Off by default: the agent gets cluster-admin in a cluster whose privileged
+    pods are root in the sidecar's user namespace. That reaches only the
+    sidecar's own filesystem and volume, never the host's files, but it is a
+    wider kernel surface than an unprivileged box.
+
+    ``lifetime`` ``persistent`` keeps the cluster until ``agent-box stop`` so
+    deployments survive between sessions; ``box`` stops it with the box.
+    ``persistent_data`` false deletes the cluster's volume whenever the sidecar
+    stops. An empty ``version`` is the release agent-box pins by digest.
+    """
+
+    enabled: bool = False
+    lifetime: str = "persistent"
+    persistent_data: bool = True
+    traefik: bool = False
+    metrics_server: bool = False
+    version: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"enabled": self.enabled, "lifetime": self.lifetime,
+                "persistent_data": self.persistent_data, "traefik": self.traefik,
+                "metrics_server": self.metrics_server, "version": self.version}
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "K3sConfig":
+        default = cls()
+        return cls(
+            enabled=_bool(data, "enabled", default.enabled),
+            lifetime=_str(data, "lifetime") or default.lifetime,
+            persistent_data=_bool(data, "persistent_data", default.persistent_data),
+            traefik=_bool(data, "traefik", default.traefik),
+            metrics_server=_bool(data, "metrics_server", default.metrics_server),
+            version=_str(data, "version"),
+        )
+
+    def validate(self) -> list[str]:
+        errors = []
+        if self.lifetime not in K3S_LIFETIMES:
+            errors.append(f"tools.k3s.lifetime must be one of {', '.join(K3S_LIFETIMES)}")
+        if self.version and not K3S_TAG_PATTERN.fullmatch(self.version):
+            errors.append("tools.k3s.version must be empty or a rancher/k3s tag such as v1.33.5-k3s1")
+        return errors
+
+
 @dataclass
 class ToolsConfig:
     """Which optional tool groups the workspace image is built with.
@@ -480,9 +539,14 @@ class ToolsConfig:
 
     Unknown group names are dropped on load rather than carried, so the file
     can never ask the build for a group that no longer exists.
+
+    ``k3s`` sits beside the groups rather than among them: it builds nothing
+    into the image, so it never reaches the build args, the image label or
+    the drift report.
     """
 
     groups: dict[str, bool] = field(default_factory=lambda: dict(TOOL_GROUPS))
+    k3s: K3sConfig = field(default_factory=K3sConfig)
     #: ``--no-browser`` for one session: the image keeps Chromium, the session
     #: gets no MCP server. Never saved; the launch snapshot re-applies it.
     browser_off: bool = False
@@ -496,11 +560,16 @@ class ToolsConfig:
         return self.groups["browser"] and not self.browser_off
 
     def to_dict(self) -> dict[str, Any]:
-        return {name: bool(self.groups.get(name, default)) for name, default in TOOL_GROUPS.items()}
+        return {**{name: bool(self.groups.get(name, default)) for name, default in TOOL_GROUPS.items()},
+                "k3s": self.k3s.to_dict()}
 
     @classmethod
     def from_dict(cls, data: Any) -> "ToolsConfig":
-        return cls(groups={name: _bool(data, name, default) for name, default in TOOL_GROUPS.items()})
+        return cls(groups={name: _bool(data, name, default) for name, default in TOOL_GROUPS.items()},
+                   k3s=K3sConfig.from_dict(_mapping(data).get("k3s")))
+
+    def validate(self) -> list[str]:
+        return self.k3s.validate()
 
 
 @dataclass
