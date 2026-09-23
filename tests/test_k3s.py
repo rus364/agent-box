@@ -404,6 +404,13 @@ class EnsureTests(SidecarTestCase):
         with self.assertRaisesRegex(AgentBoxError, "stopped while starting"):
             k3s.ensure(WID, K3sConfig(enabled=True, ready_timeout=1800), self.state, self.root)
 
+    def test_a_failed_start_still_marks_the_workspace_as_having_a_sidecar(self):
+        """Without the mark, switching the cluster off would never stop what the failed start left."""
+        self.podman.ready, self.podman.dies = False, True
+        with self.assertRaises(AgentBoxError):
+            k3s.ensure(WID, K3sConfig(enabled=True), self.state, self.root)
+        self.assertTrue(self.state.is_dir())
+
 
 class StopAndRemoveTests(SidecarTestCase):
     def test_stop_keeps_the_data_of_a_persistent_cluster(self):
@@ -418,7 +425,7 @@ class StopAndRemoveTests(SidecarTestCase):
         k3s.ensure(WID, config, self.state, self.root)
         k3s.stop(WID, config, self.state)
         self.assertEqual((self.podman.container, self.podman.networks, self.podman.volumes), (None, set(), set()))
-        self.assertFalse(k3s.kubeconfig_path(self.state).exists())
+        self.assertFalse(self.state.exists(), "a leftover state directory makes every later launch ask Podman")
 
     def test_remove_without_data_keeps_the_volume(self):
         k3s.ensure(WID, K3sConfig(enabled=True), self.state, self.root)

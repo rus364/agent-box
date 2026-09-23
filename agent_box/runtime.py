@@ -1501,10 +1501,10 @@ def release_k3s(workspace: Workspace, config: Config | None = None,
     """
     runtime_state = runtime_state or workspace_runtime_state(workspace)
     state_dir = k3s_state_dir(runtime_state)
-    # Every start renders the kubeconfig and deleting the data deletes it:
-    # without one no sidecar was started here, and neither the configuration
+    # Creating a sidecar creates this directory and deleting its data removes
+    # it: without one no sidecar exists here, and neither the configuration
     # nor Podman need be asked.
-    if not k3s.kubeconfig_path(state_dir).exists():
+    if not state_dir.is_dir():
         return
     settings = (config or effective_config(runtime_config_base())).tools.k3s
     if settings.enabled and settings.lifetime != "box":
@@ -3023,6 +3023,8 @@ def host_main(
     # runs in the very shell those names would have been forwarded from, so
     # the values are present already.
     env.update(config.env.set)
+    if config.tools.k3s.enabled:
+        print("agent-box: tools.k3s is on; --host sessions get no cluster", file=sys.stderr)
     # Owned metadata describes this launch, even when env.set names these keys.
     env["AGENT_BOX_RUNTIME_CONFIG"] = str(session_runtime(config, container=False))
     if getattr(config, "_launch", {}).get("notify") is False:

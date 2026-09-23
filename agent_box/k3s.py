@@ -15,6 +15,7 @@ the LAN.
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import re
@@ -278,6 +279,10 @@ def ensure(workspace_id: str, k3s: K3sConfig, state_dir: Path, project_root: Pat
     if container is None:
         check_host()
         pull(k3s)
+        # The workspace's record that a sidecar may exist: release_k3s asks
+        # Podman nothing without it, and a start that fails later still
+        # leaves a sidecar to stop.
+        state_dir.mkdir(parents=True, exist_ok=True)
         _ensure_labeled("network", workspace_id)
         _ensure_labeled("volume", workspace_id)
         registries = registries_yaml(k3s)
@@ -369,6 +374,8 @@ def remove(workspace_id: str, state_dir: Path | None, *, data: bool) -> None:
         if state_dir is not None:
             kubeconfig_path(state_dir).unlink(missing_ok=True)
             (state_dir / REGISTRIES_FILE).unlink(missing_ok=True)
+            with contextlib.suppress(OSError):
+                state_dir.rmdir()
 
 
 def all_workspaces() -> list[str]:

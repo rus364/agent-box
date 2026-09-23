@@ -146,6 +146,12 @@ class ReleaseTests(K3sRuntimeTest):
         self.release(k3s_config(lifetime="box"))
         runtime.k3s.stop.assert_called_once()
 
+    def test_a_start_that_timed_out_still_stops_once_switched_off(self):
+        """A readiness timeout leaves a running sidecar and no kubeconfig."""
+        self.state.mkdir(parents=True)
+        self.release(Config())
+        runtime.k3s.stop.assert_called_once()
+
     def test_a_cluster_switched_off_stops_before_a_new_box_but_keeps_its_data(self):
         self.started_once()
         self.release(Config())
@@ -227,10 +233,12 @@ class HostModeTests(K3sRuntimeTest):
                     mock.patch.object(runtime.claude_settings, "reconcile_claude_settings"), \
                     mock.patch.multiple(runtime.k3s, ensure=mock.DEFAULT, stop=mock.DEFAULT,
                                         api_port=mock.DEFAULT) as sidecar, \
-                    mock.patch.object(runtime.subprocess, "call", return_value=0) as call:
+                    mock.patch.object(runtime.subprocess, "call", return_value=0) as call, \
+                    redirect_stderr(io.StringIO()) as err:
                 runtime.host_main(agent, ["--version"])
             self.assertEqual([m.call_count for m in sidecar.values()], [0, 0, 0])
             self.assertNotIn("KUBECONFIG", str(call.call_args))
+            self.assertIn("--host sessions get no cluster", err.getvalue())
 
 
 if __name__ == "__main__":
