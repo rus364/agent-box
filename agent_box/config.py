@@ -474,6 +474,7 @@ def _k3s_url_problem(url: Any) -> str:
         return "must be a string"
     try:
         parts = urlsplit(url)
+        parts.port  # noqa: B018 -- raises on a port that is not a number in range
     except ValueError:
         return "is not a URL"
     if parts.scheme not in ("http", "https") or not parts.hostname:

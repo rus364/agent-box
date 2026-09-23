@@ -241,6 +241,8 @@ class ClusterSettingsTests(unittest.TestCase):
                              ("registry_mirrors", {"docker.io": []}),
                              ("registry_mirrors", {"docker.io": ["https://user:secret@mirror.example"]}),
                              ("registry_mirrors", {"docker.io": ["ftp://mirror.example"]}),
+                             ("registry_mirrors", {"docker.io": ["https://mirror.example:abc"]}),
+                             ("registry_mirrors", {"docker.io": ["https://mirror.example:70000"]}),
                              ("extra_args", ["cluster-cidr=x"]), ("ready_timeout", 5), ("ready_timeout", 30.5)):
             with self.subTest(field=field, value=value):
                 problems = K3sConfig.from_dict({field: value}).validate()
