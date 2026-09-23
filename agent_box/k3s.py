@@ -42,6 +42,9 @@ KUBECONFIG_SOURCE = "/etc/rancher/k3s/k3s.yaml"
 KUBECONFIG_FILE = "kubeconfig"
 CONTEXT = "agent-box"
 READY_TIMEOUT = 180
+#: Bounds one readiness probe, so a stalled ``podman exec`` cannot outlive
+#: the overall deadline.
+PROBE_TIMEOUT = 15
 REQUIRED_CONTROLLERS = ("cpu", "cpuset", "io", "memory", "pids")
 
 #: cgroup v2 forbids enabling controllers for children of a cgroup that holds
@@ -100,9 +103,11 @@ def spec_hash(workspace_id: str, k3s: K3sConfig) -> str:
     return hashlib.sha256(text.encode()).hexdigest()[:16]
 
 
-def _podman(*args: str) -> subprocess.CompletedProcess:
+def _podman(*args: str, timeout: float | None = None) -> subprocess.CompletedProcess:
     try:
-        return subprocess.run(["podman", *args], text=True, capture_output=True)
+        return subprocess.run(["podman", *args], text=True, capture_output=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(["podman", *args], 124, "", f"timed out after {timeout}s")
     except OSError as exc:
         raise AgentBoxError(f"k3s: podman {args[0]} failed: {exc}") from exc
 
@@ -119,16 +124,35 @@ def _say(message: str) -> None:
     print(f"agent-box: {message}", file=sys.stderr)
 
 
+def _exists(kind: str, resource: str) -> bool:
+    """Podman's own answer; a failing Podman is an error, never "absent"."""
+    result = _podman(kind, "exists", resource)
+    if result.returncode not in (0, 1):
+        detail = result.stderr.strip() or f"exit {result.returncode}"
+        raise AgentBoxError(f"k3s: podman {kind} exists failed: {detail}")
+    return result.returncode == 0
+
+
+def _require_owned(kind: str, workspace_id: str, owner: str) -> None:
+    """Refuse a same-named object agent-box did not create for this workspace."""
+    if owner != workspace_id:
+        raise AgentBoxError(f"k3s: a {kind} named {name(workspace_id)} exists but was not created by "
+                            "agent-box for this workspace; rename or remove it yourself")
+
+
 def inspect(workspace_id: str) -> dict | None:
     """The sidecar container, or ``None`` when there is none."""
-    result = _podman("container", "inspect", name(workspace_id))
-    if result.returncode:
+    if not _exists("container", name(workspace_id)):
         return None
     try:
-        payload = json.loads(result.stdout)
+        payload = json.loads(_checked("container", "inspect", name(workspace_id)))
     except json.JSONDecodeError:
         raise AgentBoxError("k3s: podman container inspect returned invalid JSON") from None
-    return payload[0] if isinstance(payload, list) and payload and isinstance(payload[0], dict) else None
+    if not (isinstance(payload, list) and payload and isinstance(payload[0], dict)):
+        raise AgentBoxError("k3s: podman container inspect returned an unexpected shape")
+    labels = payload[0].get("Config", {}).get("Labels") or {}
+    _require_owned("container", workspace_id, labels.get(LABEL, ""))
+    return payload[0]
 
 
 def _running(container: dict | None) -> bool:
@@ -157,14 +181,22 @@ def pull(k3s: K3sConfig) -> None:
     _checked("pull", "--quiet", ref)
 
 
-def _ensure_labeled(kind: str, workspace_id: str) -> None:
+def _owned_exists(kind: str, workspace_id: str) -> bool:
     resource = name(workspace_id)
-    if _podman(kind, "exists", resource).returncode:
-        _checked(kind, "create", f"--label={LABEL}={workspace_id}", resource)
+    if not _exists(kind, resource):
+        return False
+    owner = _checked(kind, "inspect", f'--format={{{{index .Labels "{LABEL}"}}}}', resource).strip()
+    _require_owned(kind, workspace_id, owner)
+    return True
+
+
+def _ensure_labeled(kind: str, workspace_id: str) -> None:
+    if not _owned_exists(kind, workspace_id):
+        _checked(kind, "create", f"--label={LABEL}={workspace_id}", name(workspace_id))
 
 
 def _log_tail(workspace_id: str) -> str:
-    result = _podman("logs", "--tail=15", name(workspace_id))
+    result = _podman("logs", "--tail=15", name(workspace_id), timeout=PROBE_TIMEOUT)
     lines = (result.stdout + result.stderr).strip().splitlines()
     return "\n".join(line[:300] for line in lines[-15:]) or "(no log output)"
 
@@ -207,7 +239,7 @@ def wait_ready(workspace_id: str, timeout: float) -> None:
     probe = ["exec", resource, "kubectl", "get", "nodes",
              "-o", "jsonpath={.items[*].status.conditions[?(@.type==\"Ready\")].status}"]
     while True:
-        if _podman(*probe).stdout.strip() == "True":
+        if _podman(*probe, timeout=PROBE_TIMEOUT).stdout.strip() == "True":
             return
         if not _running(inspect(workspace_id)):
             raise AgentBoxError(f"k3s: the cluster {resource} stopped while starting; its log ends with:\n"
@@ -262,11 +294,12 @@ def remove(workspace_id: str, state_dir: Path | None, *, data: bool) -> None:
     Anything already absent is not an error.
     """
     resource = name(workspace_id)
-    _checked("rm", "--force", "--ignore", resource)
-    if _podman("network", "exists", resource).returncode == 0:
+    if inspect(workspace_id) is not None:
+        _checked("rm", "--force", resource)
+    if _owned_exists("network", workspace_id):
         _checked("network", "rm", resource)
     if data:
-        if _podman("volume", "exists", resource).returncode == 0:
+        if _owned_exists("volume", workspace_id):
             _checked("volume", "rm", resource)
         if state_dir is not None:
             kubeconfig_path(state_dir).unlink(missing_ok=True)
@@ -291,5 +324,5 @@ def status(workspace_id: str) -> str:
         return "absent"
     if not _running(container):
         return "stopped"
-    result = _podman("exec", name(workspace_id), "kubectl", "get", "--raw=/readyz")
+    result = _podman("exec", name(workspace_id), "kubectl", "get", "--raw=/readyz", timeout=PROBE_TIMEOUT)
     return "ready" if result.returncode == 0 and result.stdout.strip() == "ok" else "running"

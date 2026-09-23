@@ -49,6 +49,9 @@ class FakePodman:
         self.ready, self.dies = ready, dies
         self.calls = []
         self.controllers = ["cpuset", "cpu", "io", "memory", "pids"]
+        self.owner = WID  # the io.agent-box.k3s label of every existing object
+        self.broken = False
+        self.probe_hangs = False
 
     def __call__(self, argv, **_):
         assert argv[0] == "podman"
@@ -56,12 +59,17 @@ class FakePodman:
         self.calls.append(args)
         ok = lambda out="": CompletedProcess(argv, 0, out, "")  # noqa: E731
         fail = CompletedProcess(argv, 1, "", "no such object")
+        if self.broken:
+            return CompletedProcess(argv, 125, "", "cannot connect to Podman")
         match args:
+            case ["container", "exists", _]:
+                return ok() if self.container is not None else fail
             case ["container", "inspect", _]:
-                if self.container is None:
-                    return fail
                 return ok(json.dumps([{"State": {"Status": "running" if self.container["running"] else "exited"},
-                                       "Config": {"Labels": {k3s.SPEC_LABEL: self.container["spec"]}}}]))
+                                       "Config": {"Labels": {k3s.LABEL: self.owner,
+                                                             k3s.SPEC_LABEL: self.container["spec"]}}}]))
+            case [("network" | "volume"), "inspect", _, _]:
+                return ok(self.owner + "\n")
             case ["info", _]:
                 return ok(json.dumps({"host": {"cgroupVersion": "v2", "cgroupControllers": self.controllers}}))
             case ["image", "exists", _]:
@@ -88,6 +96,8 @@ class FakePodman:
                 self.container = None
                 return ok()
             case ["exec", _, "kubectl", "get", "nodes", *_]:
+                if self.probe_hangs:
+                    raise k3s.subprocess.TimeoutExpired(argv, _["timeout"])
                 return ok("True" if self.ready else "False")
             case ["exec", _, "kubectl", "get", "--raw=/readyz"]:
                 return ok("ok")
@@ -227,6 +237,35 @@ class EnsureTests(SidecarTestCase):
         with mock.patch.object(k3s.time, "monotonic", side_effect=[0, 0, 5, 10]), \
                 self.assertRaisesRegex(AgentBoxError, r"not ready within 5s(.|\n)*open /dev/kmsg"):
             k3s.ensure(WID, K3sConfig(enabled=True), self.state, timeout=5)
+
+    def test_a_hanging_probe_is_cut_off_so_the_deadline_still_holds(self):
+        self.podman.probe_hangs = True
+        with mock.patch.object(k3s.time, "monotonic", side_effect=[0, 0, 5, 10]), \
+                self.assertRaisesRegex(AgentBoxError, "not ready within 5s"):
+            k3s.ensure(WID, K3sConfig(enabled=True), self.state, timeout=5)
+        probes = [call for call in self.podman.calls if call[:4] == ["exec", NAME, "kubectl", "get"]]
+        self.assertTrue(probes)
+
+    def test_same_named_objects_agent_box_did_not_create_are_never_touched(self):
+        """A user's own container, network or volume must not be reused or deleted."""
+        self.podman.networks.add(NAME)
+        self.podman.owner = ""
+        with self.assertRaisesRegex(AgentBoxError, "not created by agent-box"):
+            k3s.ensure(WID, K3sConfig(enabled=True), self.state)
+        self.assertEqual(self.podman.did("network", "rm") + self.podman.did("create"), [])
+        self.podman.container = {"running": True, "spec": "other"}
+        for action in (lambda: k3s.remove(WID, self.state, data=True),
+                       lambda: k3s.stop(WID, K3sConfig(enabled=True), self.state)):
+            with self.assertRaisesRegex(AgentBoxError, "not created by agent-box"):
+                action()
+        self.assertEqual(self.podman.did("rm") + self.podman.did("stop"), [])
+
+    def test_a_failing_podman_is_an_error_not_an_absent_cluster(self):
+        """Reporting "absent" would let stop claim success while the cluster runs on."""
+        self.podman.broken = True
+        for action in (lambda: k3s.status(WID), lambda: k3s.stop(WID, K3sConfig(enabled=True), self.state)):
+            with self.assertRaisesRegex(AgentBoxError, "cannot connect to Podman"):
+                action()
 
     def test_a_sidecar_that_dies_fails_at_once_instead_of_waiting_out_the_timeout(self):
         self.podman.ready, self.podman.dies = False, True
