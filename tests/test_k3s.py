@@ -52,6 +52,7 @@ class FakePodman:
         self.owner = WID  # the io.agent-box.k3s label of every existing object
         self.broken = False
         self.probe_hangs = False
+        self.probe_timeouts = []
 
     def __call__(self, argv, **_):
         assert argv[0] == "podman"
@@ -96,6 +97,7 @@ class FakePodman:
                 self.container = None
                 return ok()
             case ["exec", _, "kubectl", "get", "nodes", *_]:
+                self.probe_timeouts.append(_["timeout"])
                 if self.probe_hangs:
                     raise k3s.subprocess.TimeoutExpired(argv, _["timeout"])
                 return ok("True" if self.ready else "False")
@@ -247,8 +249,7 @@ class EnsureTests(SidecarTestCase):
         with mock.patch.object(k3s.time, "monotonic", side_effect=[0, 0, 5, 10]), \
                 self.assertRaisesRegex(AgentBoxError, "not ready within 5s"):
             k3s.ensure(WID, K3sConfig(enabled=True), self.state, timeout=5)
-        probes = [call for call in self.podman.calls if call[:4] == ["exec", NAME, "kubectl", "get"]]
-        self.assertTrue(probes)
+        self.assertEqual(self.podman.probe_timeouts, [5])
 
     def test_same_named_objects_agent_box_did_not_create_are_never_touched(self):
         """A user's own container, network or volume must not be reused or deleted."""

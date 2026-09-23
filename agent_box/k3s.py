@@ -239,7 +239,8 @@ def wait_ready(workspace_id: str, timeout: float) -> None:
     probe = ["exec", resource, "kubectl", "get", "nodes",
              "-o", "jsonpath={.items[*].status.conditions[?(@.type==\"Ready\")].status}"]
     while True:
-        if _podman(*probe, timeout=PROBE_TIMEOUT).stdout.strip() == "True":
+        remaining = max(1.0, min(PROBE_TIMEOUT, deadline - time.monotonic()))
+        if _podman(*probe, timeout=remaining).stdout.strip() == "True":
             return
         if not _running(inspect(workspace_id)):
             raise AgentBoxError(f"k3s: the cluster {resource} stopped while starting; its log ends with:\n"
