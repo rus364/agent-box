@@ -306,19 +306,22 @@ def wait_ready(workspace_id: str, timeout: float) -> None:
     deadline = time.monotonic() + timeout
     probe = ["exec", resource, "kubectl", "get", "nodes",
              "-o", "jsonpath={.items[*].status.conditions[?(@.type==\"Ready\")].status}"]
-    while True:
-        # Every call in the loop is cut off at the deadline, so neither a
-        # stalled kubectl nor a stalled Podman can hold the wait open.
-        remaining = max(1.0, min(PROBE_TIMEOUT, deadline - time.monotonic()))
-        if _podman(*probe, timeout=remaining).stdout.strip() == "True":
-            return
-        if not _running(inspect(workspace_id, max(1.0, min(PROBE_TIMEOUT, deadline - time.monotonic())))):
-            raise AgentBoxError(f"k3s: the cluster {resource} stopped while starting; its log ends with:\n"
-                                + _log_tail(workspace_id))
-        if time.monotonic() >= deadline:
+    def left() -> float:
+        # Every call in the loop gets only what is left, so neither a stalled
+        # kubectl nor a stalled Podman can hold the wait past the deadline.
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
             raise AgentBoxError(f"k3s: the cluster {resource} was not ready within {int(timeout)}s; "
                                 "its log ends with:\n" + _log_tail(workspace_id))
-        time.sleep(1)
+        return min(PROBE_TIMEOUT, remaining)
+
+    while True:
+        if _podman(*probe, timeout=left()).stdout.strip() == "True":
+            return
+        if not _running(inspect(workspace_id, left())):
+            raise AgentBoxError(f"k3s: the cluster {resource} stopped while starting; its log ends with:\n"
+                                + _log_tail(workspace_id))
+        time.sleep(min(1.0, left()))
 
 
 def api_port(workspace_id: str) -> int:

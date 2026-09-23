@@ -353,18 +353,18 @@ class EnsureTests(SidecarTestCase):
 
     def test_waiting_is_bounded_and_the_failure_shows_the_sidecar_log(self):
         self.podman.ready = False
-        with mock.patch.object(k3s.time, "monotonic", side_effect=[0, 0, 30, 30]), \
+        with mock.patch.object(k3s.time, "monotonic", side_effect=[0, 0, 30]), \
                 self.assertRaisesRegex(AgentBoxError, r"not ready within 30s(.|\n)*open /dev/kmsg"):
             k3s.ensure(WID, K3sConfig(enabled=True, ready_timeout=30), self.state, self.root)
 
     def test_a_hanging_probe_is_cut_off_so_the_deadline_still_holds(self):
         self.podman.probe_hangs = True
-        with mock.patch.object(k3s.time, "monotonic", side_effect=[0, 25, 30, 30]), \
+        with mock.patch.object(k3s.time, "monotonic", side_effect=[0, 25, 30]), \
                 self.assertRaisesRegex(AgentBoxError, "not ready within 30s"):
             k3s.ensure(WID, K3sConfig(enabled=True, ready_timeout=30), self.state, self.root)
         self.assertEqual(self.podman.probe_timeouts, [5])
-        # The liveness check gets what the hanging probe left, not what it started with.
-        self.assertEqual(self.podman.inspect_timeouts[-1], 1)
+        # The hanging probe used up the rest, so no liveness check runs past the deadline.
+        self.assertEqual([t for t in self.podman.inspect_timeouts if t is not None], [])
 
     def test_same_named_objects_agent_box_did_not_create_are_never_touched(self):
         """A user's own container, network or volume must not be reused or deleted."""
