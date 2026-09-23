@@ -47,6 +47,13 @@ class ProjectConfigTests(unittest.TestCase):
         self.assertTrue(result.tools.groups['analysis'])
         self.assertEqual(self.config.to_dict(), original)
 
+    def test_a_project_brings_its_own_registry_mirrors(self):
+        """Registry names are free-form keys, so the field rule must accept any of them."""
+        mirrors = {'docker.io': ['https://mirror.example'], 'quay.io': ['https://quay-mirror.example']}
+        data = {'tools': {'k3s': {'registry_mirrors': mirrors}}}
+        project_config.validate(data, self.path)
+        self.assertEqual(project_config.apply(self.config, data).tools.k3s.registry_mirrors, mirrors)
+
     def test_project_scout_limit_overrides_the_scout_section_without_changing_global(self):
         """A repository may allow fewer or more concurrent scouts; the host's own limit stays as saved."""
         data = {'workflow': {'scout': {'limit': 2}}}
