@@ -167,8 +167,11 @@ class ReleaseTests(K3sRuntimeTest):
         runtime.k3s.stop.assert_called_once()
 
     def test_a_cluster_switched_off_stops_before_a_new_box_but_keeps_its_data(self):
+        """Even a throwaway cluster: switching it off is not asking for its data to go."""
         self.started_once()
-        self.release(Config())
+        config = Config()
+        config.tools.k3s.persistent_data = False
+        self.release(config)
         settings = runtime.k3s.stop.call_args.args[1]
         self.assertTrue(settings.persistent_data)
 

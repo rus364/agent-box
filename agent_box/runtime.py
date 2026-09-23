@@ -23,7 +23,7 @@ import sys
 import time
 import uuid
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -1513,6 +1513,9 @@ def release_k3s(workspace: Workspace, config: Config | None = None,
     settings = (config or effective_config(runtime_config_base())).tools.k3s
     if settings.enabled and settings.lifetime != "box":
         return
+    if not settings.enabled:
+        # Switching the cluster off is not asking for its data to go.
+        settings = replace(settings, persistent_data=True)
     if inspect_workspace_container(workspace_container_name(workspace)) is not None:
         return
     if k3s.stop(workspace_identity(workspace), settings, state_dir):

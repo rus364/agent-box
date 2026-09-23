@@ -246,7 +246,8 @@ def _ensure_labeled(kind: str, workspace_id: str) -> None:
 
 
 def _log_tail(workspace_id: str) -> str:
-    result = _podman("logs", "--tail=15", name(workspace_id), timeout=PROBE_TIMEOUT)
+    # Read after the deadline has passed, so it gets only a short grace.
+    result = _podman("logs", "--tail=15", name(workspace_id), timeout=5)
     lines = (result.stdout + result.stderr).strip().splitlines()
     return "\n".join(line[:300] for line in lines[-15:]) or "(no log output)"
 
@@ -311,7 +312,7 @@ def wait_ready(workspace_id: str, timeout: float) -> None:
         remaining = max(1.0, min(PROBE_TIMEOUT, deadline - time.monotonic()))
         if _podman(*probe, timeout=remaining).stdout.strip() == "True":
             return
-        if not _running(inspect(workspace_id, remaining)):
+        if not _running(inspect(workspace_id, max(1.0, min(PROBE_TIMEOUT, deadline - time.monotonic())))):
             raise AgentBoxError(f"k3s: the cluster {resource} stopped while starting; its log ends with:\n"
                                 + _log_tail(workspace_id))
         if time.monotonic() >= deadline:
