@@ -19,6 +19,7 @@ from agent_box.config import Config, K3sConfig, ToolsConfig, load_config, save_c
 from agent_box.errors import AgentBoxError
 
 WID = "0123456789abcdef"
+STATE, ROOT = Path("/state/k3s"), Path("/project")
 NAME = f"agent-box-k3s-{WID}"
 KUBECONFIG = """apiVersion: v1
 clusters:
@@ -125,6 +126,8 @@ class SidecarTestCase(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.state = Path(tmp.name) / "k3s"
+        self.root = Path(tmp.name) / "project"
+        self.root.mkdir()
         self.podman = FakePodman()
         patcher = mock.patch.object(k3s.subprocess, "run", side_effect=lambda *a, **k: self.podman(*a, **k))
         patcher.start()
@@ -176,15 +179,15 @@ class DefinitionTests(unittest.TestCase):
         base = K3sConfig(enabled=True)
         variants = [K3sConfig(enabled=True, traefik=True), K3sConfig(enabled=True, metrics_server=True),
                     K3sConfig(enabled=True, version="v1.33.5-k3s1")]
-        hashes = {k3s.spec_hash(WID, config) for config in [base, *variants]}
+        hashes = {k3s.spec_hash(WID, config, STATE, ROOT) for config in [base, *variants]}
         self.assertEqual(len(hashes), 4)
         self.assertIn("--disable=traefik,metrics-server", k3s.server_args(base))
         self.assertNotIn("--disable=metrics-server", k3s.server_args(K3sConfig(traefik=True, metrics_server=True)))
 
     def test_lifetime_and_data_policy_do_not_recreate_a_running_cluster(self):
         base = K3sConfig(enabled=True)
-        self.assertEqual(k3s.spec_hash(WID, base), k3s.spec_hash(WID, K3sConfig(
-            enabled=True, lifetime="box", persistent_data=False)))
+        self.assertEqual(k3s.spec_hash(WID, base, STATE, ROOT), k3s.spec_hash(WID, K3sConfig(
+            enabled=True, lifetime="box", persistent_data=False, ready_timeout=900), STATE, ROOT))
 
     def test_the_pinned_release_is_addressed_by_digest(self):
         self.assertIn("@sha256:", k3s.image_ref(K3sConfig()))
@@ -192,13 +195,110 @@ class DefinitionTests(unittest.TestCase):
 
     def test_the_api_is_published_on_host_loopback_only(self):
         """Publishing on every address would hand the LAN a cluster-admin endpoint's door."""
-        published = [arg for arg in k3s.container_args(WID, K3sConfig()) if arg.startswith("--publish")]
+        published = [arg for arg in k3s.container_args(WID, K3sConfig(), STATE, ROOT) if arg.startswith("--publish")]
         self.assertEqual(published, ["--publish=127.0.0.1::6443/tcp"])
 
 
+
+class ClusterSettingsTests(unittest.TestCase):
+    """The submenu's cluster settings: each shapes only the sidecar, and safely."""
+
+    def test_defaults_keep_the_recipe_the_first_release_shipped(self):
+        """A user who never opens the submenu must not have their cluster recreated."""
+        args = k3s.container_args(WID, K3sConfig(), STATE, ROOT)
+        self.assertIn("--disable=traefik,metrics-server", args)
+        self.assertEqual([a for a in args if a.startswith(("--cpus", "--memory", "--disable-network-policy"))], [])
+        self.assertEqual([a for a in args if a.startswith("--mount=type=bind")], [])
+        self.assertEqual(args[-1], "--kube-proxy-arg=conntrack-max-per-core=0")
+
+    def test_every_sidecar_setting_changes_the_definition_but_the_wait_does_not(self):
+        variants = [dict(servicelb=False), dict(local_storage=False), dict(network_policy=False),
+                    dict(cpus="2"), dict(memory="4g"), dict(ports=["8080:80"]),
+                    dict(registry_mirrors={"docker.io": ["https://mirror.example"]}),
+                    dict(registry_mirrors={"docker.io": ["https://other.example"]}),
+                    dict(extra_args=["--cluster-cidr=10.60.0.0/16"])]
+        hashes = {k3s.spec_hash(WID, K3sConfig(**v), STATE, ROOT) for v in [{}, *variants]}
+        self.assertEqual(len(hashes), len(variants) + 1)
+        self.assertEqual(k3s.spec_hash(WID, K3sConfig(), STATE, ROOT),
+                         k3s.spec_hash(WID, K3sConfig(ready_timeout=900), STATE, ROOT))
+
+    def test_components_map_to_k3s_flags_and_extra_args_come_last(self):
+        args = k3s.server_args(K3sConfig(traefik=True, metrics_server=True, servicelb=False, local_storage=False,
+                                         network_policy=False, extra_args=["--node-label=x=y"]))
+        self.assertIn("--disable=servicelb,local-storage", args)
+        self.assertIn("--disable-network-policy", args)
+        self.assertEqual(args[-1], "--node-label=x=y")
+
+    def test_ports_are_published_on_host_loopback_only(self):
+        args = k3s.container_args(WID, K3sConfig(ports=["8080:80", "8443:443"]), STATE, ROOT)
+        self.assertEqual([a for a in args if a.startswith("--publish")], [
+            "--publish=127.0.0.1::6443/tcp", "--publish=127.0.0.1:8080:80", "--publish=127.0.0.1:8443:443"])
+
+    def test_malformed_settings_are_named_not_dropped(self):
+        for field, value in (("cpus", "0"), ("cpus", "two"), ("memory", "4x"), ("memory", "0g"),
+                             ("ports", ["80"]), ("ports", ["70000:80"]), ("ports", ["80:80", "80:81"]),
+                             ("ports", "8080:80"), ("manifests", "../deploy"), ("manifests", "/etc"),
+                             ("registry_mirrors", {"docker.io": []}),
+                             ("registry_mirrors", {"docker.io": ["https://user:secret@mirror.example"]}),
+                             ("registry_mirrors", {"docker.io": ["ftp://mirror.example"]}),
+                             ("extra_args", ["cluster-cidr=x"]), ("ready_timeout", 5), ("ready_timeout", 30.5)):
+            with self.subTest(field=field, value=value):
+                problems = K3sConfig.from_dict({field: value}).validate()
+                self.assertEqual(len(problems), 1)
+                self.assertIn(f"tools.k3s.{field}", problems[0])
+
+    def test_extended_settings_round_trip_sparsely(self):
+        config = Config()
+        config.tools.k3s.ports = ["8080:80"]
+        config.tools.k3s.registry_mirrors = {"docker.io": ["https://mirror.example"]}
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            save_config(config, path)
+            self.assertEqual(json.loads(path.read_text())["tools"]["k3s"], {
+                "ports": ["8080:80"], "registry_mirrors": {"docker.io": ["https://mirror.example"]}})
+            self.assertEqual(load_config(path).tools.k3s, config.tools.k3s)
+
+    def test_a_project_may_set_mirrors_but_never_credentials(self):
+        from agent_box import project_config
+        path = Path("/project/.agent-box.json")
+        project_config.validate({"tools": {"k3s": {"registry_mirrors": {"docker.io": ["https://m.example"]}}}}, path)
+        with self.assertRaisesRegex(AgentBoxError, "registry_mirrors"):
+            project_config.validate({"tools": {"k3s": {"registry_mirrors": {
+                "docker.io": ["https://user:secret@m.example"]}}}}, path)
+
+    def test_registries_yaml_lists_each_mirror_as_an_endpoint(self):
+        text = k3s.registries_yaml(K3sConfig(registry_mirrors={"docker.io": ["https://m.example"]}))
+        self.assertEqual(json.loads(text), {"mirrors": {"docker.io": {"endpoint": ["https://m.example"]}}})
+        self.assertEqual(k3s.registries_yaml(K3sConfig()), "")
+
+
+class ManifestsTests(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name) / "project"
+        (self.root / "deploy").mkdir(parents=True)
+        self.outside = Path(tmp.name) / "outside"
+        self.outside.mkdir()
+
+    def test_the_directory_is_mounted_read_only_beside_k3s_own_manifests(self):
+        args = k3s.container_args(WID, K3sConfig(manifests="deploy"), STATE, self.root)
+        self.assertIn(f"--mount=type=bind,src={(self.root / 'deploy').resolve()},"
+                      f"dst={k3s.DATA_DIR}/server/manifests/agent-box,ro=true", args)
+
+    def test_a_symlink_out_of_the_project_is_refused(self):
+        """The mount must never hand the sidecar an arbitrary host directory."""
+        (self.root / "escape").symlink_to(self.outside)
+        with self.assertRaisesRegex(AgentBoxError, "outside the project"):
+            k3s.container_args(WID, K3sConfig(manifests="escape"), STATE, self.root)
+
+    def test_a_missing_directory_is_an_error(self):
+        with self.assertRaisesRegex(AgentBoxError, "not a directory"):
+            k3s.container_args(WID, K3sConfig(manifests="nope"), STATE, self.root)
+
 class EnsureTests(SidecarTestCase):
     def test_first_start_creates_network_volume_and_container_and_renders_kubeconfig(self):
-        port = k3s.ensure(WID, K3sConfig(enabled=True), self.state)
+        port = k3s.ensure(WID, K3sConfig(enabled=True), self.state, self.root)
         self.assertEqual(port, 41234)
         self.assertEqual((self.podman.networks, self.podman.volumes), ({NAME}, {NAME}))
         self.assertTrue(self.podman.container["running"])
@@ -211,24 +311,24 @@ class EnsureTests(SidecarTestCase):
         self.assertIn("client-certificate-data: Q0VSVA==", text)
 
     def test_a_running_cluster_is_reused(self):
-        k3s.ensure(WID, K3sConfig(enabled=True), self.state)
+        k3s.ensure(WID, K3sConfig(enabled=True), self.state, self.root)
         self.podman.calls.clear()
-        k3s.ensure(WID, K3sConfig(enabled=True), self.state)
+        k3s.ensure(WID, K3sConfig(enabled=True), self.state, self.root)
         self.assertEqual(self.podman.did("create") + self.podman.did("start") + self.podman.did("rm"), [])
 
     def test_a_stopped_cluster_is_started_not_recreated(self):
-        k3s.ensure(WID, K3sConfig(enabled=True), self.state)
+        k3s.ensure(WID, K3sConfig(enabled=True), self.state, self.root)
         self.podman.container["running"] = False
         self.podman.calls.clear()
-        k3s.ensure(WID, K3sConfig(enabled=True), self.state)
+        k3s.ensure(WID, K3sConfig(enabled=True), self.state, self.root)
         self.assertEqual(len(self.podman.did("start")), 1)
         self.assertEqual(self.podman.did("create"), [])
 
     def test_a_changed_definition_recreates_the_container_on_the_same_volume(self):
         """Turning on Traefik must not cost the user their cluster's data."""
-        k3s.ensure(WID, K3sConfig(enabled=True), self.state)
+        k3s.ensure(WID, K3sConfig(enabled=True), self.state, self.root)
         self.podman.calls.clear()
-        k3s.ensure(WID, K3sConfig(enabled=True, traefik=True), self.state)
+        k3s.ensure(WID, K3sConfig(enabled=True, traefik=True), self.state, self.root)
         self.assertEqual(len(self.podman.did("rm")), 1)
         self.assertEqual(len(self.podman.did("create")), 1)
         self.assertEqual(self.podman.did("volume", "rm") + self.podman.did("volume", "create"), [])
@@ -237,20 +337,20 @@ class EnsureTests(SidecarTestCase):
     def test_a_host_without_delegated_controllers_is_refused_before_anything_is_created(self):
         self.podman.controllers = ["memory", "pids"]
         with self.assertRaisesRegex(AgentBoxError, "missing: cpu, cpuset, io"):
-            k3s.ensure(WID, K3sConfig(enabled=True), self.state)
+            k3s.ensure(WID, K3sConfig(enabled=True), self.state, self.root)
         self.assertEqual((self.podman.container, self.podman.networks, self.podman.volumes), (None, set(), set()))
 
     def test_waiting_is_bounded_and_the_failure_shows_the_sidecar_log(self):
         self.podman.ready = False
-        with mock.patch.object(k3s.time, "monotonic", side_effect=[0, 0, 5, 10]), \
-                self.assertRaisesRegex(AgentBoxError, r"not ready within 5s(.|\n)*open /dev/kmsg"):
-            k3s.ensure(WID, K3sConfig(enabled=True), self.state, timeout=5)
+        with mock.patch.object(k3s.time, "monotonic", side_effect=[0, 0, 30]), \
+                self.assertRaisesRegex(AgentBoxError, r"not ready within 30s(.|\n)*open /dev/kmsg"):
+            k3s.ensure(WID, K3sConfig(enabled=True, ready_timeout=30), self.state, self.root)
 
     def test_a_hanging_probe_is_cut_off_so_the_deadline_still_holds(self):
         self.podman.probe_hangs = True
-        with mock.patch.object(k3s.time, "monotonic", side_effect=[0, 0, 5, 10]), \
-                self.assertRaisesRegex(AgentBoxError, "not ready within 5s"):
-            k3s.ensure(WID, K3sConfig(enabled=True), self.state, timeout=5)
+        with mock.patch.object(k3s.time, "monotonic", side_effect=[0, 25, 30]), \
+                self.assertRaisesRegex(AgentBoxError, "not ready within 30s"):
+            k3s.ensure(WID, K3sConfig(enabled=True, ready_timeout=30), self.state, self.root)
         self.assertEqual(self.podman.probe_timeouts, [5])
         self.assertEqual(self.podman.inspect_timeouts[-1], 5)
 
@@ -259,7 +359,7 @@ class EnsureTests(SidecarTestCase):
         self.podman.networks.add(NAME)
         self.podman.owner = ""
         with self.assertRaisesRegex(AgentBoxError, "not created by agent-box"):
-            k3s.ensure(WID, K3sConfig(enabled=True), self.state)
+            k3s.ensure(WID, K3sConfig(enabled=True), self.state, self.root)
         self.assertEqual(self.podman.did("network", "rm") + self.podman.did("create"), [])
         self.podman.container = {"running": True, "spec": "other"}
         for action in (lambda: k3s.remove(WID, self.state, data=True),
@@ -276,15 +376,27 @@ class EnsureTests(SidecarTestCase):
             with self.assertRaisesRegex(AgentBoxError, "cannot connect to Podman"):
                 action()
 
+    def test_invalid_settings_are_refused_before_podman_is_touched(self):
+        with self.assertRaisesRegex(AgentBoxError, "tools.k3s.memory"):
+            k3s.ensure(WID, K3sConfig(enabled=True, memory="lots"), self.state, self.root)
+        self.assertEqual(self.podman.calls, [])
+
+    def test_mirrors_are_rendered_before_the_sidecar_that_mounts_them_is_created(self):
+        config = K3sConfig(enabled=True, registry_mirrors={"docker.io": ["https://m.example"]})
+        k3s.ensure(WID, config, self.state, self.root)
+        self.assertIn("https://m.example", (self.state / k3s.REGISTRIES_FILE).read_text())
+        k3s.remove(WID, self.state, data=True)
+        self.assertFalse((self.state / k3s.REGISTRIES_FILE).exists())
+
     def test_a_sidecar_that_dies_fails_at_once_instead_of_waiting_out_the_timeout(self):
         self.podman.ready, self.podman.dies = False, True
         with self.assertRaisesRegex(AgentBoxError, "stopped while starting"):
-            k3s.ensure(WID, K3sConfig(enabled=True), self.state, timeout=3600)
+            k3s.ensure(WID, K3sConfig(enabled=True, ready_timeout=1800), self.state, self.root)
 
 
 class StopAndRemoveTests(SidecarTestCase):
     def test_stop_keeps_the_data_of_a_persistent_cluster(self):
-        k3s.ensure(WID, K3sConfig(enabled=True), self.state)
+        k3s.ensure(WID, K3sConfig(enabled=True), self.state, self.root)
         self.assertTrue(k3s.stop(WID, K3sConfig(enabled=True), self.state))
         self.assertEqual(k3s.status(WID), "stopped")
         self.assertEqual(self.podman.volumes, {NAME})
@@ -292,13 +404,13 @@ class StopAndRemoveTests(SidecarTestCase):
 
     def test_stop_of_a_throwaway_cluster_deletes_its_data_and_credential(self):
         config = K3sConfig(enabled=True, persistent_data=False)
-        k3s.ensure(WID, config, self.state)
+        k3s.ensure(WID, config, self.state, self.root)
         k3s.stop(WID, config, self.state)
         self.assertEqual((self.podman.container, self.podman.networks, self.podman.volumes), (None, set(), set()))
         self.assertFalse(k3s.kubeconfig_path(self.state).exists())
 
     def test_remove_without_data_keeps_the_volume(self):
-        k3s.ensure(WID, K3sConfig(enabled=True), self.state)
+        k3s.ensure(WID, K3sConfig(enabled=True), self.state, self.root)
         k3s.remove(WID, self.state, data=False)
         self.assertEqual((self.podman.container, self.podman.networks, self.podman.volumes), (None, set(), {NAME}))
 
@@ -308,12 +420,12 @@ class StopAndRemoveTests(SidecarTestCase):
         self.assertEqual(k3s.status(WID), "absent")
 
     def test_uninstall_finds_every_workspace_that_still_owns_something(self):
-        k3s.ensure(WID, K3sConfig(enabled=True), self.state)
+        k3s.ensure(WID, K3sConfig(enabled=True), self.state, self.root)
         k3s.remove(WID, self.state, data=False)
         self.assertEqual(k3s.all_workspaces(), [WID])
 
     def test_status_distinguishes_a_ready_api(self):
-        k3s.ensure(WID, K3sConfig(enabled=True), self.state)
+        k3s.ensure(WID, K3sConfig(enabled=True), self.state, self.root)
         self.assertEqual(k3s.status(WID), "ready")
 
 

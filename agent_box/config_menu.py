@@ -64,6 +64,16 @@ HELP = {
     "tools.k3s.persistent_data": "Keep the cluster's volume when the sidecar stops. Off deletes it at every stop, so each start is a clean cluster. `agent-box stop --cluster-data` deletes it on demand.",
     "tools.k3s.traefik": "Run k3s's Traefik ingress controller. Ingresses are reachable inside the cluster or through kubectl port-forward; nothing is published on the host. Recreates the sidecar on the same data.",
     "tools.k3s.metrics_server": "Run metrics-server for kubectl top and HorizontalPodAutoscalers. Recreates the sidecar on the same data.",
+    "tools.k3s.servicelb": "Run k3s's ServiceLB so LoadBalancer services, Traefik's included, get an address on the node. Off leaves them pending. Recreates the sidecar on the same data.",
+    "tools.k3s.local_storage": "Run the local-path provisioner, the default StorageClass that binds PVCs to the cluster's volume. Recreates the sidecar on the same data.",
+    "tools.k3s.network_policy": "Enforce NetworkPolicy with k3s's embedded controller. Recreates the sidecar on the same data.",
+    "tools.k3s.cpus": "CPU limit of the sidecar, such as 2 or 1.5; empty means no limit. Recreates the sidecar on the same data.",
+    "tools.k3s.memory": "Memory limit of the sidecar, such as 4g or 512m; empty means no limit. Pods beyond it are OOM-killed inside the cluster. Recreates the sidecar on the same data.",
+    "tools.k3s.ports": "JSON list of HOST:CONTAINER pairs published on the host's 127.0.0.1 only, such as [\"8080:80\"] to open Traefik's ingress in your browser. Never exposed to the LAN. Recreates the sidecar on the same data.",
+    "tools.k3s.manifests": "Project-relative directory k3s applies at start and on every change (YAML and HelmChart resources), mounted read-only; empty mounts nothing. Must stay inside the project. Recreates the sidecar on the same data.",
+    "tools.k3s.registry_mirrors": "JSON object of registry name to mirror URLs, such as {\"docker.io\": [\"https://mirror.example\"]}, rendered into k3s's registries.yaml. No credentials: URLs with a user or password are refused. Recreates the sidecar on the same data.",
+    "tools.k3s.extra_args": "JSON list of extra `k3s server` flags, each starting with --, added after agent-box's own, such as [\"--cluster-cidr=10.60.0.0/16\"]. Recreates the sidecar on the same data.",
+    "tools.k3s.ready_timeout": "Seconds a launch waits for a Ready node before failing with the sidecar's log, from 30 through 1800.",
     "tools.k3s.version": "rancher/k3s tag such as v1.33.5-k3s1; empty uses the release agent-box pins by digest. k3s cannot downgrade existing data: use `agent-box stop --cluster-data` first.",
     "tracker": "Expose configured task-tracker connections to agents. Connections remain unavailable while this integration is disabled.",
     "tracker.enabled": "Expose configured tracker connections to agents. Keep credentials out of repository files.",
@@ -200,7 +210,7 @@ def label_for(key, path=()):
 
 
 def json_field(path):
-    return (path == ('env', 'set') or path[:1] == ('external_providers',)
+    return (path in (('env', 'set'), ('tools', 'k3s', 'registry_mirrors')) or path[:1] == ('external_providers',)
             and (len(path) == 4 and path[-1] in ('env', 'provider_options', 'config')
                  or len(path) == 6 and path[3] == 'models' and path[-1] in ('env', 'metadata')))
 

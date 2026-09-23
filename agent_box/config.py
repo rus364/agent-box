@@ -27,7 +27,7 @@ import os
 import re
 import stat
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .atomicio import atomic_write_json, read_json
@@ -465,6 +465,22 @@ TOOL_GROUP_HELP: dict[str, str] = {
 K3S_LIFETIMES = ("persistent", "box")
 #: A ``rancher/k3s`` release tag; the image spells k3s's ``+`` as ``-``.
 K3S_TAG_PATTERN = re.compile(r"v\d+\.\d+\.\d+(-rc\d+)?-k3s\d+")
+K3S_READY_TIMEOUT = (30, 1800)
+
+
+def _k3s_url_problem(url: Any) -> str:
+    from urllib.parse import urlsplit
+    if not isinstance(url, str):
+        return "must be a string"
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return "is not a URL"
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        return "must be an http(s) URL"
+    if parts.username is not None or parts.password is not None:
+        return "must not carry credentials"
+    return ""
 
 
 @dataclass
@@ -485,6 +501,12 @@ class K3sConfig:
     deployments survive between sessions; ``box`` stops it with the box.
     ``persistent_data`` false deletes the cluster's volume whenever the sidecar
     stops. An empty ``version`` is the release agent-box pins by digest.
+
+    Everything else shapes only the sidecar, which is why a project may set
+    it too: ``ports`` publish on host loopback and never on the LAN, the
+    ``manifests`` directory stays inside the project and is mounted read-only,
+    and registry mirrors carry no credentials. There is no CNI choice: Cilium
+    needs BPF privileges no rootless container can hold.
     """
 
     enabled: bool = False
@@ -492,12 +514,28 @@ class K3sConfig:
     persistent_data: bool = True
     traefik: bool = False
     metrics_server: bool = False
+    servicelb: bool = True
+    local_storage: bool = True
+    network_policy: bool = True
     version: str = ""
+    cpus: str = ""
+    memory: str = ""
+    ports: list = field(default_factory=list)
+    manifests: str = ""
+    registry_mirrors: dict = field(default_factory=dict)
+    extra_args: list = field(default_factory=list)
+    ready_timeout: int = 180
 
     def to_dict(self) -> dict[str, Any]:
+        import copy
         return {"enabled": self.enabled, "lifetime": self.lifetime,
                 "persistent_data": self.persistent_data, "traefik": self.traefik,
-                "metrics_server": self.metrics_server, "version": self.version}
+                "metrics_server": self.metrics_server, "servicelb": self.servicelb,
+                "local_storage": self.local_storage, "network_policy": self.network_policy,
+                "version": self.version, "cpus": self.cpus, "memory": self.memory,
+                "ports": list(self.ports), "manifests": self.manifests,
+                "registry_mirrors": copy.deepcopy(self.registry_mirrors),
+                "extra_args": list(self.extra_args), "ready_timeout": self.ready_timeout}
 
     @classmethod
     def from_dict(cls, data: Any) -> "K3sConfig":
@@ -508,7 +546,19 @@ class K3sConfig:
             persistent_data=_bool(data, "persistent_data", default.persistent_data),
             traefik=_bool(data, "traefik", default.traefik),
             metrics_server=_bool(data, "metrics_server", default.metrics_server),
+            servicelb=_bool(data, "servicelb", default.servicelb),
+            local_storage=_bool(data, "local_storage", default.local_storage),
+            network_policy=_bool(data, "network_policy", default.network_policy),
             version=_str(data, "version"),
+            cpus=_str(data, "cpus"),
+            memory=_str(data, "memory"),
+            manifests=_str(data, "manifests"),
+            # Kept as found, so validate() can name a malformed entry instead
+            # of the loader silently dropping what the user wrote.
+            ports=_copied(data, "ports", list),
+            registry_mirrors=_copied(data, "registry_mirrors", dict),
+            extra_args=_copied(data, "extra_args", list),
+            ready_timeout=_number(data, "ready_timeout", default.ready_timeout),
         )
 
     def validate(self) -> list[str]:
@@ -517,6 +567,36 @@ class K3sConfig:
             errors.append(f"tools.k3s.lifetime must be one of {', '.join(K3S_LIFETIMES)}")
         if self.version and not K3S_TAG_PATTERN.fullmatch(self.version):
             errors.append("tools.k3s.version must be empty or a rancher/k3s tag such as v1.33.5-k3s1")
+        if self.cpus and not (re.fullmatch(r"\d+(\.\d+)?", self.cpus) and float(self.cpus) > 0):
+            errors.append("tools.k3s.cpus must be empty or a positive number such as 2 or 1.5")
+        if self.memory and not (re.fullmatch(r"\d+[bkmg]?", self.memory, re.I) and int(re.sub(r"\D", "", self.memory))):
+            errors.append("tools.k3s.memory must be empty or a size such as 4g or 512m")
+        hosts = []
+        for port in self.ports if isinstance(self.ports, list) else [None]:
+            match = re.fullmatch(r"(\d{1,5}):(\d{1,5})", port) if isinstance(port, str) else None
+            if not match or not all(1 <= int(n) <= 65535 for n in match.groups()):
+                errors.append("tools.k3s.ports must be a list of HOST:CONTAINER port pairs such as 8080:80")
+                break
+            hosts.append(int(match.group(1)))
+        if len(hosts) != len(set(hosts)):
+            errors.append("tools.k3s.ports publishes one host port twice")
+        manifests = PurePosixPath(self.manifests)
+        if self.manifests and (manifests.is_absolute() or ".." in manifests.parts or "\\" in self.manifests):
+            errors.append("tools.k3s.manifests must be a path inside the project, without '..'")
+        mirrors = self.registry_mirrors
+        if not isinstance(mirrors, dict) or any(
+                not isinstance(registry, str) or not re.fullmatch(r"[A-Za-z0-9.:*-]+", registry)
+                or not isinstance(endpoints, list) or not endpoints
+                or any(_k3s_url_problem(url) for url in endpoints)
+                for registry, endpoints in mirrors.items()):
+            errors.append("tools.k3s.registry_mirrors must map registry names to nonempty lists of "
+                          "http(s) mirror URLs without credentials")
+        if not isinstance(self.extra_args, list) or any(
+                not isinstance(arg, str) or not arg.startswith("--") or "\n" in arg for arg in self.extra_args):
+            errors.append("tools.k3s.extra_args must be a list of k3s server flags, each starting with --")
+        low, high = K3S_READY_TIMEOUT
+        if not isinstance(self.ready_timeout, int) or not low <= self.ready_timeout <= high:
+            errors.append(f"tools.k3s.ready_timeout must be between {low} and {high} seconds")
         return errors
 
 
@@ -611,6 +691,13 @@ REVIEW_INCREMENTAL = ("off", "LOW", "MEDIUM", "HIGH", "CRITICAL")
 
 def _mapping(value):
     return value if isinstance(value, dict) else {}
+
+
+def _copied(data, key, kind):
+    """A list or object setting as found; absent means the empty default."""
+    import copy
+    value = _mapping(data).get(key, kind())
+    return copy.deepcopy(value)
 
 
 def _number(data, key, default):

@@ -40,8 +40,12 @@ API_PORT = "6443/tcp"
 DATA_DIR = "/var/lib/rancher/k3s"
 KUBECONFIG_SOURCE = "/etc/rancher/k3s/k3s.yaml"
 KUBECONFIG_FILE = "kubeconfig"
+REGISTRIES_FILE = "registries.yaml"
+REGISTRIES_TARGET = "/etc/rancher/k3s/registries.yaml"
+#: k3s applies every manifest under its manifests directory, subdirectories
+#: included; a subdirectory of its own keeps k3s's packaged manifests visible.
+MANIFESTS_TARGET = f"{DATA_DIR}/server/manifests/agent-box"
 CONTEXT = "agent-box"
-READY_TIMEOUT = 180
 #: Bounds one readiness probe, so a stalled ``podman exec`` cannot outlive
 #: the overall deadline.
 PROBE_TIMEOUT = 15
@@ -74,32 +78,74 @@ def image_ref(k3s: K3sConfig) -> str:
 
 
 def server_args(k3s: K3sConfig) -> list[str]:
-    disabled = [component for component, on in (("traefik", k3s.traefik), ("metrics-server", k3s.metrics_server))
-                if not on]
+    components = (("traefik", k3s.traefik), ("servicelb", k3s.servicelb),
+                  ("metrics-server", k3s.metrics_server), ("local-storage", k3s.local_storage))
+    disabled = [component for component, on in components if not on]
     return [
         "server", "--write-kubeconfig-mode=600",
         *([f"--disable={','.join(disabled)}"] if disabled else []),
+        *([] if k3s.network_policy else ["--disable-network-policy"]),
         f"--kubelet-arg={USERNS_GATE}",
         f"--kube-apiserver-arg={USERNS_GATE}",
         f"--kube-controller-manager-arg={USERNS_GATE}",
         "--kube-proxy-arg=conntrack-max-per-core=0",
+        # Last, so a user's flag can refine one of agent-box's.
+        *k3s.extra_args,
     ]
 
 
-def container_args(workspace_id: str, k3s: K3sConfig) -> list[str]:
+def registries_yaml(k3s: K3sConfig) -> str:
+    """k3s's registries.yaml for the configured mirrors; JSON is valid YAML."""
+    if not k3s.registry_mirrors:
+        return ""
+    mirrors = {registry: {"endpoint": list(endpoints)}
+               for registry, endpoints in sorted(k3s.registry_mirrors.items())}
+    return json.dumps({"mirrors": mirrors}, indent=2) + "\n"
+
+
+def manifests_dir(k3s: K3sConfig, project_root: Path) -> Path | None:
+    """The project's manifests directory, refused if it resolves outside the project.
+
+    It is mounted into the sidecar, so a symlink must not turn "a directory
+    of this project" into any directory of the host.
+    """
+    if not k3s.manifests:
+        return None
+    root = project_root.resolve()
+    path = (root / k3s.manifests).resolve()
+    if path != root and root not in path.parents:
+        raise AgentBoxError(f"k3s: tools.k3s.manifests resolves outside the project: {path}")
+    if not path.is_dir():
+        raise AgentBoxError(f"k3s: tools.k3s.manifests is not a directory: {path}")
+    if "," in str(path):
+        raise AgentBoxError(f"k3s: tools.k3s.manifests cannot contain a comma: {path}")
+    return path
+
+
+def container_args(workspace_id: str, k3s: K3sConfig, state_dir: Path, project_root: Path) -> list[str]:
     """Everything that defines the sidecar; its hash decides recreation."""
     resource = name(workspace_id)
+    manifests = manifests_dir(k3s, project_root)
     return [
         f"--hostname={resource}", f"--network={resource}",
         "--privileged", "--cgroupns=private", "--tmpfs=/run", "--tmpfs=/var/run",
+        *([f"--cpus={k3s.cpus}"] if k3s.cpus else []),
+        *([f"--memory={k3s.memory}"] if k3s.memory else []),
         f"--mount=type=volume,source={resource},target={DATA_DIR}",
+        *([f"--mount=type=bind,src={manifests},dst={MANIFESTS_TARGET},ro=true"] if manifests else []),
+        *([f"--mount=type=bind,src={state_dir / REGISTRIES_FILE},dst={REGISTRIES_TARGET},ro=true"]
+          if k3s.registry_mirrors else []),
         f"--publish=127.0.0.1::{API_PORT}",
+        # Loopback only: an ingress for the user's browser, never for the LAN.
+        *[f"--publish=127.0.0.1:{port}" for port in k3s.ports],
         "--entrypoint=/bin/sh", image_ref(k3s), "-c", ENTRYPOINT, "k3s", *server_args(k3s),
     ]
 
 
-def spec_hash(workspace_id: str, k3s: K3sConfig) -> str:
-    text = json.dumps(container_args(workspace_id, k3s), separators=(",", ":"))
+def spec_hash(workspace_id: str, k3s: K3sConfig, state_dir: Path, project_root: Path) -> str:
+    """Covers the mounted registries.yaml's content, not only its path."""
+    text = json.dumps([container_args(workspace_id, k3s, state_dir, project_root), registries_yaml(k3s)],
+                      separators=(",", ":"))
     return hashlib.sha256(text.encode()).hexdigest()[:16]
 
 
@@ -201,16 +247,19 @@ def _log_tail(workspace_id: str) -> str:
     return "\n".join(line[:300] for line in lines[-15:]) or "(no log output)"
 
 
-def ensure(workspace_id: str, k3s: K3sConfig, state_dir: Path, *, timeout: float = READY_TIMEOUT) -> int:
+def ensure(workspace_id: str, k3s: K3sConfig, state_dir: Path, project_root: Path) -> int:
     """Bring the workspace's cluster up and ready; return its host API port.
 
-    A container whose definition changed (version, components, recipe) is
-    recreated on the same volume, so the cluster's data survives. The
-    kubeconfig is rendered anew every time: a recreated sidecar publishes a
-    new port.
+    A container whose definition changed (version, components, limits,
+    ports, mounts, recipe) is recreated on the same volume, so the cluster's
+    data survives. The kubeconfig is rendered anew every time: a recreated
+    sidecar publishes a new port.
     """
+    problems = k3s.validate()
+    if problems:
+        raise AgentBoxError("; ".join(problems))
     resource = name(workspace_id)
-    wanted = spec_hash(workspace_id, k3s)
+    wanted = spec_hash(workspace_id, k3s, state_dir, project_root)
     container = inspect(workspace_id)
     labels = (container or {}).get("Config", {}).get("Labels") or {}
     if container is not None and labels.get(SPEC_LABEL) != wanted:
@@ -221,12 +270,15 @@ def ensure(workspace_id: str, k3s: K3sConfig, state_dir: Path, *, timeout: float
         pull(k3s)
         _ensure_labeled("network", workspace_id)
         _ensure_labeled("volume", workspace_id)
+        registries = registries_yaml(k3s)
+        if registries:
+            atomic_write_text(state_dir / REGISTRIES_FILE, registries, 0o644)
         _checked("create", f"--name={resource}", f"--label={LABEL}={workspace_id}",
-                 f"--label={SPEC_LABEL}={wanted}", *container_args(workspace_id, k3s))
+                 f"--label={SPEC_LABEL}={wanted}", *container_args(workspace_id, k3s, state_dir, project_root))
     if not _running(container):
         _say(f"starting the k3s cluster {resource}")
         _checked("start", resource)
-    wait_ready(workspace_id, timeout)
+    wait_ready(workspace_id, k3s.ready_timeout)
     port = api_port(workspace_id)
     render_kubeconfig(workspace_id, port, state_dir)
     return port
@@ -306,6 +358,7 @@ def remove(workspace_id: str, state_dir: Path | None, *, data: bool) -> None:
             _checked("volume", "rm", resource)
         if state_dir is not None:
             kubeconfig_path(state_dir).unlink(missing_ok=True)
+            (state_dir / REGISTRIES_FILE).unlink(missing_ok=True)
 
 
 def all_workspaces() -> list[str]:

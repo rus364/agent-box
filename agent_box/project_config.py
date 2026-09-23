@@ -12,11 +12,13 @@ from .repo_binding import BINDING_FILE, repository_root, server_identity
 
 
 def _fields(value, parts=()):
-    if isinstance(value, dict):
+    if isinstance(value, dict) and parts != ("k3s", "registry_mirrors"):
         return {key: _fields(item, (*parts, key)) for key, item in value.items()}
     # A candidate list holds objects; a one-element list carries the entry's own rule.
     if parts[:1] == ("workflow",) and ("models" in parts or "tiers" in parts):
         return [MODEL_ENTRY]
+    if parts == ("k3s", "registry_mirrors"):
+        return dict  # registry names are the user's own; ToolsConfig.validate checks entries
     return type(value)
 
 
