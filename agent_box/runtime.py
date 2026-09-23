@@ -1485,6 +1485,10 @@ def prepare_k3s(config: Config, workspace: Workspace, runtime_state: WorkspaceRu
                     workspace_id, config.tools.k3s, state_dir, workspace.host_root):
                 raise AgentBoxError("the k3s settings changed while this project's box is running; "
                                     "end it with agent-box stop first")
+            if box is None:
+                # A box-bound cluster whose box ended on its own is noticed
+                # only now, and the new box must not inherit it.
+                release_k3s(workspace, config, runtime_state)
             k3s.ensure(workspace_id, config.tools.k3s, state_dir, workspace.host_root)
         else:
             release_k3s(workspace, config, runtime_state)
@@ -2750,7 +2754,9 @@ def stop_main(args: list[str], workspace_root: str = "") -> int:
         if cluster_data:
             k3s.remove(workspace_id, k3s_state_dir(runtime_state), data=True)
             print(f"agent-box: removed the k3s cluster {sidecar} and its data", file=sys.stderr)
-        elif k3s.stop(workspace_id, config.tools.k3s, k3s_state_dir(runtime_state)):
+        # Only a workspace that ever created a sidecar asks Podman about one.
+        elif k3s_state_dir(runtime_state).is_dir() and k3s.stop(workspace_id, config.tools.k3s,
+                                                               k3s_state_dir(runtime_state)):
             kept = "" if config.tools.k3s.persistent_data else " and deleted its data"
             print(f"agent-box: stopped the k3s cluster {sidecar}{kept}", file=sys.stderr)
     return 0

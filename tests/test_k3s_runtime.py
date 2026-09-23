@@ -80,6 +80,20 @@ class PrepareTests(K3sRuntimeTest):
         with self.assertRaisesRegex(AgentBoxError, "agent-box stop"):
             self.prepare(box_running=True, outdated=True)
 
+    def test_a_box_bound_cluster_left_by_a_box_that_ended_on_its_own_restarts_clean(self):
+        """With persistent_data off the new box would otherwise inherit the old cluster."""
+        self.state.mkdir(parents=True)
+        for lifetime, stops in (("box", 1), ("persistent", 0)):
+            with self.subTest(lifetime=lifetime), \
+                    mock.patch.object(runtime, "workspace_transition_lock", return_value=nullcontext()), \
+                    mock.patch.object(runtime, "inspect_workspace_container", return_value=None), \
+                    mock.patch.multiple(runtime.k3s, ensure=mock.DEFAULT, stop=mock.DEFAULT) as sidecar, \
+                    redirect_stderr(io.StringIO()):
+                runtime.prepare_k3s(k3s_config(lifetime=lifetime, persistent_data=False), self.workspace,
+                                    runtime.workspace_runtime_state(self.workspace))
+            self.assertEqual(sidecar["stop"].call_count, stops)
+            sidecar["ensure"].assert_called_once()
+
     def test_changed_settings_apply_when_no_box_runs_and_unchanged_ones_always(self):
         for box_running, outdated in ((False, True), (True, False)):
             with self.subTest(box_running=box_running, outdated=outdated):
@@ -179,10 +193,15 @@ class StopCommandTests(K3sRuntimeTest):
         return err.getvalue()
 
     def test_stop_stops_the_cluster_whatever_its_lifetime_and_keeps_its_data(self):
+        self.state.mkdir(parents=True)
         output = self.stop(config=k3s_config())
         runtime.k3s.stop.assert_called_once()
         runtime.k3s.remove.assert_not_called()
         self.assertIn("stopped the k3s cluster", output)
+
+    def test_a_workspace_that_never_ran_a_cluster_asks_podman_nothing_about_one(self):
+        self.stop()
+        runtime.k3s.stop.assert_not_called()
 
     def test_cluster_data_deletes_the_cluster_even_without_a_box(self):
         output = self.stop("--cluster-data")
