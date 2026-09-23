@@ -169,6 +169,25 @@ class WorkflowConfigTests(unittest.TestCase):
             self.assertNotIn("default_agent", rows)
             self.assertIn(str(artifact), output.getvalue())
 
+    def test_show_from_a_snapshot_keeps_free_keyed_entries_but_not_foreign_accounts(self):
+        """A project's own mirror or variable is effective even when an older or another project's
+        snapshot never rendered it; a tracker account the snapshot does not carry is not this session's."""
+        config = Config.from_dict({
+            "tools": {"k3s": {"registry_mirrors": {"docker.io": ["https://mirror.example"]}}},
+            "env": {"set": {"PROJECT_VAR": "value"}},
+            "tracker": {"connections": {"vikunja": {"url": "https://tasks.example"},
+                                        "yandex": {"url": "https://other.example"}}}})
+        with tempfile.TemporaryDirectory() as directory:
+            artifact = Path(directory) / "runtime.json"
+            artifact.write_text(json.dumps({"tools": {"k3s": {"registry_mirrors": {}}}, "env": {"set": {}},
+                                            "tracker": {"connections": {"vikunja": {"url": "https://tasks.example"}}}}))
+            with patch.dict(os.environ, {"AGENT_BOX_RUNTIME_CONFIG": str(artifact)}):
+                rows = shown(config)
+        self.assertEqual(rows["tools.k3s.registry_mirrors"], 'docker.io=["https://mirror.example"]')
+        self.assertEqual(rows["env.set"], "PROJECT_VAR=<configured>")
+        self.assertIn("tracker.connections.vikunja", rows)
+        self.assertNotIn("tracker.connections.yandex", rows)
+
     def test_cleanup_opt_ins_round_trip_through_config_runtime_and_show(self):
         from agent_box import config_menu, runtime
         for local, remote in ((False, False), (True, False), (False, True), (True, True)):

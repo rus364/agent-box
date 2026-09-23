@@ -320,9 +320,17 @@ def _show_rows(data, path=()):
             yield from _show_rows(value, at)
 
 
-def _rendered_only(data, rendered):
-    """``data`` narrowed to the keys the snapshot carries, level by level."""
-    return {key: _rendered_only(value, rendered[key]) if isinstance(value, dict) and isinstance(rendered[key], dict)
+def _rendered_only(data, rendered, path=()):
+    """``data`` narrowed to the keys the snapshot carries, level by level.
+
+    A free-keyed value such as ``registry_mirrors`` stays whole: its entries
+    are the project's data, not settings, and a snapshot rendered for another
+    project would hide them. ``tracker.connections`` is not one, so its
+    accounts still narrow to the snapshot's.
+    """
+    from .config_menu import json_field
+    return {key: _rendered_only(value, rendered[key], (*path, key))
+            if isinstance(value, dict) and isinstance(rendered[key], dict) and not json_field((*path, key))
             else value for key, value in data.items() if key in rendered}
 
 
