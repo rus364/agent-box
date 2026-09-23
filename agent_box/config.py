@@ -504,7 +504,7 @@ class K3sConfig:
         default = cls()
         return cls(
             enabled=_bool(data, "enabled", default.enabled),
-            lifetime=_str(data, "lifetime") or default.lifetime,
+            lifetime=_str(data, "lifetime") if "lifetime" in _mapping(data) else default.lifetime,
             persistent_data=_bool(data, "persistent_data", default.persistent_data),
             traefik=_bool(data, "traefik", default.traefik),
             metrics_server=_bool(data, "metrics_server", default.metrics_server),

@@ -103,6 +103,9 @@ class FakePodman:
                 return ok("ok")
             case ["exec", _, "cat", _]:
                 return ok(KUBECONFIG)
+            case [("ps" | "network" | "volume"), *_] if any(a.startswith("--filter=label=") for a in args):
+                names = [NAME] if self.container else []
+                return ok("\n".join(sorted({*names, *self.networks, *self.volumes})))
             case ["port", *_]:
                 return ok("127.0.0.1:41234\n")
             case ["logs", *_]:
@@ -149,6 +152,7 @@ class ConfigTests(unittest.TestCase):
         problems = ToolsConfig.from_dict({"k3s": {"lifetime": "forever", "version": "1.33"}}).validate()
         self.assertEqual(len(problems), 2)
         self.assertEqual(ToolsConfig.from_dict({"k3s": {"version": "v1.35.0-rc1-k3s1"}}).validate(), [])
+        self.assertTrue(ToolsConfig.from_dict({"k3s": {"lifetime": ""}}).validate())
 
     def test_the_cluster_never_reaches_the_image_build_or_its_label(self):
         """k3s builds nothing into the image, so it must not be reported as drift."""
@@ -263,7 +267,8 @@ class EnsureTests(SidecarTestCase):
     def test_a_failing_podman_is_an_error_not_an_absent_cluster(self):
         """Reporting "absent" would let stop claim success while the cluster runs on."""
         self.podman.broken = True
-        for action in (lambda: k3s.status(WID), lambda: k3s.stop(WID, K3sConfig(enabled=True), self.state)):
+        for action in (lambda: k3s.status(WID), lambda: k3s.stop(WID, K3sConfig(enabled=True), self.state),
+                       k3s.all_workspaces):
             with self.assertRaisesRegex(AgentBoxError, "cannot connect to Podman"):
                 action()
 
@@ -297,6 +302,11 @@ class StopAndRemoveTests(SidecarTestCase):
         self.assertFalse(k3s.stop(WID, K3sConfig(enabled=True), self.state))
         k3s.remove(WID, self.state, data=True)
         self.assertEqual(k3s.status(WID), "absent")
+
+    def test_uninstall_finds_every_workspace_that_still_owns_something(self):
+        k3s.ensure(WID, K3sConfig(enabled=True), self.state)
+        k3s.remove(WID, self.state, data=False)
+        self.assertEqual(k3s.all_workspaces(), [WID])
 
     def test_status_distinguishes_a_ready_api(self):
         k3s.ensure(WID, K3sConfig(enabled=True), self.state)

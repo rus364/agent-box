@@ -310,10 +310,9 @@ def all_workspaces() -> list[str]:
     found: set[str] = set()
     for command in (("ps", "--all", "--format={{.Names}}"), ("network", "ls", "--format={{.Name}}"),
                     ("volume", "ls", "--format={{.Name}}")):
-        result = _podman(*command, f"--filter=label={LABEL}")
-        if result.returncode == 0:
-            found.update(match.group(1) for line in result.stdout.splitlines()
-                         if (match := re.fullmatch(r"agent-box-k3s-([0-9a-f]{16})", line.strip())))
+        output = _checked(*command, f"--filter=label={LABEL}")
+        found.update(match.group(1) for line in output.splitlines()
+                     if (match := re.fullmatch(r"agent-box-k3s-([0-9a-f]{16})", line.strip())))
     return sorted(found)
 
 
