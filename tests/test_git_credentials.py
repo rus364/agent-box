@@ -18,6 +18,17 @@ from agent_box import runtime
 from agent_box.config import Config
 
 
+def _unprompted_env() -> dict[str, str]:
+    """The suite's environment with every way for git to ask the user closed.
+
+    Run from an interactive terminal, ``git credential fill`` with nothing to
+    fill from asks for a username on /dev/tty and waits.
+    """
+    env = {name: value for name, value in os.environ.items() if name not in ("GIT_ASKPASS", "SSH_ASKPASS")}
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    return env
+
+
 def _git_config_get_all(config_file: Path, key: str) -> list[str]:
     result = subprocess.run(
         ["git", "config", "--file", str(config_file), "--get-all", key],
@@ -152,7 +163,7 @@ class CredentialHelperInvocationTests(unittest.TestCase):
             )
             fake_gh.chmod(fake_gh.stat().st_mode | stat.S_IEXEC)
 
-            env = dict(os.environ)
+            env = _unprompted_env()
             env["PATH"] = f"{fake_bin}:{env.get('PATH', '')}"
             env["GH_TOKEN"] = "sentinel-token-value"
             env["GIT_CONFIG_GLOBAL"] = str(config_file)
@@ -177,7 +188,7 @@ class CredentialHelperInvocationTests(unittest.TestCase):
             runtime.seed_git_config(target, config)
             config_file = target / "config"
 
-            env = dict(os.environ)
+            env = _unprompted_env()
             env["GIT_CONFIG_GLOBAL"] = str(config_file)
             env["GIT_CONFIG_NOSYSTEM"] = "1"
             env["HOME"] = str(tmp_path)
@@ -187,7 +198,7 @@ class CredentialHelperInvocationTests(unittest.TestCase):
                 input="protocol=https\nhost=github.com\n\n",
                 capture_output=True, text=True, env=env, timeout=5, check=False,
             )
-            # With no helper configured and no terminal, git has nothing to
+            # With no helper configured and prompts closed, git has nothing to
             # fill from and nothing to ask -- it must not have invoked any
             # credential helper that hands back our sentinel value.
             self.assertNotIn("x-access-token", result.stdout)
