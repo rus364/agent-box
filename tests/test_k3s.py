@@ -266,6 +266,11 @@ class ClusterSettingsTests(unittest.TestCase):
             project_config.validate({"tools": {"k3s": {"registry_mirrors": {
                 "docker.io": ["https://user:secret@m.example"]}}}}, path)
 
+    def test_a_mount_path_podman_would_split_is_refused(self):
+        with self.assertRaisesRegex(AgentBoxError, "without a comma"):
+            k3s.container_args(WID, K3sConfig(registry_mirrors={"docker.io": ["https://m.example"]}),
+                               Path("/state,ro=false/k3s"), ROOT)
+
     def test_registries_yaml_lists_each_mirror_as_an_endpoint(self):
         text = k3s.registries_yaml(K3sConfig(registry_mirrors={"docker.io": ["https://m.example"]}))
         self.assertEqual(json.loads(text), {"mirrors": {"docker.io": {"endpoint": ["https://m.example"]}}})

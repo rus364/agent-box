@@ -126,6 +126,9 @@ def container_args(workspace_id: str, k3s: K3sConfig, state_dir: Path, project_r
     """Everything that defines the sidecar; its hash decides recreation."""
     resource = name(workspace_id)
     manifests = manifests_dir(k3s, project_root)
+    if k3s.registry_mirrors and "," in str(state_dir):
+        # --mount is comma-delimited; a comma would split the path into options.
+        raise AgentBoxError(f"k3s: registry mirrors need a state directory without a comma: {state_dir}")
     return [
         f"--hostname={resource}", f"--network={resource}",
         "--privileged", "--cgroupns=private", "--tmpfs=/run", "--tmpfs=/var/run",
