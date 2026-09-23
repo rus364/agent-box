@@ -1515,6 +1515,25 @@ def release_k3s(workspace: Workspace, config: Config | None = None,
         print(f"agent-box: stopped the k3s cluster {k3s.name(workspace_identity(workspace))}", file=sys.stderr)
 
 
+def confirm_k3s(spec: WorkspaceContainerSpec) -> None:
+    """Refuse to start a box whose cluster moved after this launch prepared it.
+
+    The sidecar is prepared under one hold of the transition lock and the box
+    is created under a later one, so an ``agent-box stop`` in between would
+    leave a box forwarding to no cluster. Checked under the creation lock
+    instead of holding one lock from preparation to creation, which would
+    put the whole launch path, session prompts included, inside it.
+    """
+    config = spec.creation_config
+    if not config.tools.k3s.enabled:
+        return
+    sidecar = k3s.inspect(spec.workspace_id)
+    running = (sidecar or {}).get("State", {}).get("Status") == "running"
+    if not running or f"--network=pasta:-T,{k3s.api_port(spec.workspace_id)}" not in spec.create_argv:
+        raise AgentBoxError("the k3s cluster was stopped or recreated while this launch was starting; "
+                            "run the command again")
+
+
 def k3s_warnings(config: Config) -> list[str]:
     if config.tools.k3s.enabled and not config.tools.groups["kubernetes"]:
         return ["tools.k3s is on but the kubernetes tool group is off: the box has no kubectl or helm"]
@@ -2138,6 +2157,7 @@ def launch_in_workspace_container(
 ) -> int:
     """Start one exec under the transition lock, then clean up after it exits."""
     with workspace_transition_lock(workspace):
+        confirm_k3s(spec)
         ensure_workspace_container(spec)
         process = subprocess.Popen(exec_argv(spec.name, workspace, command, extra_env), env=process_env)
         # The keeper takes this same advisory lock before it makes its final

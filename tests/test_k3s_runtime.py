@@ -9,11 +9,11 @@ the lifetime setting decides whether a cluster outlives its box.
 import io
 import tempfile
 import unittest
-from contextlib import nullcontext, redirect_stderr
+from contextlib import nullcontext, redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
-from agent_box import runtime
+from agent_box import cli, runtime
 from agent_box.config import Config
 from agent_box.errors import AgentBoxError
 from agent_box.workspace import Workspace
@@ -84,6 +84,32 @@ class PrepareTests(K3sRuntimeTest):
         for box_running, outdated in ((False, True), (True, False)):
             with self.subTest(box_running=box_running, outdated=outdated):
                 self.prepare(box_running=box_running, outdated=outdated).assert_called_once()
+
+
+class CreationCheckTests(K3sRuntimeTest):
+    """An ``agent-box stop`` between preparing the sidecar and creating the box
+    must not leave a box forwarding to a cluster that is gone."""
+
+    def confirm(self, *, status="running", port=41234, config=None):
+        with mock.patch.object(runtime.k3s, "api_port", return_value=41234):
+            spec = runtime.workspace_container_spec(self.workspace, [], Path.cwd(), config or k3s_config())
+        sidecar = {"State": {"Status": status}} if status else None
+        with mock.patch.multiple(runtime.k3s, inspect=mock.Mock(return_value=sidecar),
+                                 api_port=mock.Mock(return_value=port)):
+            runtime.confirm_k3s(spec)
+
+    def test_the_prepared_cluster_is_accepted(self):
+        self.confirm()
+
+    def test_a_stopped_removed_or_recreated_cluster_refuses_the_box(self):
+        for status, port in (("exited", 41234), (None, 41234), ("running", 41235)):
+            with self.subTest(status=status, port=port), self.assertRaisesRegex(AgentBoxError, "run the command again"):
+                self.confirm(status=status, port=port)
+
+    def test_a_switched_off_cluster_asks_podman_nothing(self):
+        with mock.patch.object(runtime.k3s, "inspect") as inspect:
+            runtime.confirm_k3s(runtime.workspace_container_spec(self.workspace, [], Path.cwd(), Config()))
+        inspect.assert_not_called()
 
 
 class ReleaseTests(K3sRuntimeTest):
@@ -179,6 +205,15 @@ class BuildAndWarningTests(K3sRuntimeTest):
         config.tools.groups["kubernetes"] = False
         self.assertEqual(len(runtime.k3s_warnings(config)), 1)
         self.assertEqual(runtime.k3s_warnings(k3s_config()), [])
+
+    def test_config_show_carries_the_warning(self):
+        """``config show`` is where a user checks a setting before launching."""
+        config = k3s_config()
+        config.tools.groups["kubernetes"] = False
+        with mock.patch.object(cli, "effective_config", return_value=config), \
+                redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as err:
+            cli.config_show()
+        self.assertIn("no kubectl or helm", err.getvalue())
 
 
 class HostModeTests(K3sRuntimeTest):

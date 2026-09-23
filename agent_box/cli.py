@@ -763,6 +763,9 @@ def config_show() -> None:
         name = "  " * (depth + 1) + key
         note = notes.get(".".join(at), "")
         print(name + note if value is None else name.ljust(width + 2) + value + note)
+    from . import runtime
+    for problem in runtime.k3s_warnings(config):
+        print(f"agent-box: warning: {problem}", file=sys.stderr)
 
 
 def config_check() -> None:
