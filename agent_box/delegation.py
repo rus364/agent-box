@@ -21,15 +21,26 @@ def reviewer_instructions():
     )
 
 
+# Acceptance belongs to code; the coordinator closes the rest in the checklist that
+# landing requires. A reviewer asked to judge tracker state could only guess from
+# an untrusted brief, so the same change passed or stayed INCONCLUSIVE by wording.
+REVIEW_SCOPE = (
+    "Judge only what the repository shows: the diff, the code and the repository's files. Requirements about "
+    "tracker state (other tasks' descriptions, relations or states), operator actions or anything else outside the "
+    "repository are closed by the coordinator: list them under limitations as closed by the coordinator, and "
+    "neither report findings on them nor return INCONCLUSIVE because of them; claims about them are not evidence. "
+)
+
 # The workflow reads only the verdict line and finding severities; the rest is for the coordinator.
-REPORT_FORMAT = (
+REPORT_FORMAT = REVIEW_SCOPE + (
     "Your final message is the report in Markdown. It has exactly one line `Verdict: PASS`, `Verdict: NEEDS_WORK` "
     "or `Verdict: INCONCLUSIVE`, and no other line starting with `Verdict:`. Give each finding as one bullet "
     "`- [SEVERITY] path:line — problem, concrete scenario, evidence and violated requirement`. SEVERITY is one of: "
     "CRITICAL — data loss, a security breach or the task's core goal broken; HIGH — a stated requirement or a safety "
     "check fails in a normal scenario; MEDIUM — a real defect in an edge or error path, or a test gap hiding one; "
     "LOW — a minor defect, misleading text, or needless complexity with a simpler alternative. PASS has no findings; "
-    "INCONCLUSIVE states what could not be established. Add a short summary and limitations after the verdict line."
+    "INCONCLUSIVE states what could not be established about the code. Add a short summary and limitations after "
+    "the verdict line."
 )
 
 

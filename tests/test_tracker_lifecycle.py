@@ -3,8 +3,8 @@
 The repository binding used to carry a view ID and a bucket ID per state, which
 made a renamed or deleted column silently wrong and confined the workflow to one
 project. These tests protect the replacement: every project resolves its own
-board, an ambiguous board stops a mutation, and a recursive binding reaches the
-whole subtree and nothing beyond it.
+board, an ambiguous board stops a mutation, and a recursive binding writes to
+the whole subtree and nothing beyond it, while any readable task reads its state.
 """
 import unittest
 
@@ -20,23 +20,37 @@ class SubtreeLifecycleTests(unittest.TestCase):
         self.assertEqual(instance.get("5").state, "Ready")
         self.assertEqual(instance.get("6").state, "Doing")
 
-    def test_a_task_outside_the_subtree_has_no_workflow_state_and_cannot_be_moved(self):
-        tasks = {7: task(7, 9, 90, 902)}
+    def test_a_task_outside_the_subtree_reads_its_board_state_but_cannot_be_moved(self):
+        """Reading a column writes nothing; an outside blocker read as Unknown looked unfinished forever."""
+        tasks = {7: task(7, 9, 90, 900)}
         instance, client = adapter(tasks=tasks)
         outsider = instance.get("7")
-        self.assertEqual(outsider.state, "Unknown")
+        self.assertEqual((outsider.state, outsider.state_reason), ("Backlog", None))
         with self.assertRaisesRegex(TrackerError, "subtree"):
             instance.set_state(outsider, "Doing")
         self.assertEqual(client.writes, [])
 
-    def test_a_non_recursive_binding_stops_at_the_root_project(self):
+    def test_a_non_recursive_binding_reads_but_does_not_write_below_the_root_project(self):
         tasks = {6: task(6, 2, 20, 202)}
         instance, client = adapter(recursive=False, tasks=tasks)
         child = instance.get("6")
-        self.assertEqual(child.state, "Unknown")
+        self.assertEqual(child.state, "Doing")
         with self.assertRaisesRegex(TrackerError, "subtree"):
             instance.set_state(child, "Doing")
         self.assertEqual(client.writes, [])
+
+    def test_an_unknown_state_says_why_the_board_names_none(self):
+        """A bare Unknown sent the reader to the board to guess between a scope limit and a broken column."""
+        boards = {9: {"views": [{"id": 90, "title": "List", "view_kind": "list"}], "buckets": {}},
+                  2: board(20, 200, titles=("Backlog", "Ready", "Doing", "Review", "Done", "Icebox"))}
+        tasks = {7: task(7, 9, 90, 900), 6: task(6, 2, 20, 205), 5: task(5, 1, 10, 100, buckets=[])}
+        instance, _ = adapter(boards=boards, tasks=tasks)
+        cases = {"7": "project board: ", "6": "column 'Icebox' maps to no lifecycle state",
+                 "5": "no column of its project board"}
+        for ident, reason in cases.items():
+            read = instance.get(ident)
+            self.assertEqual(read.state, "Unknown")
+            self.assertIn(reason, read.state_reason)
 
     def test_a_subtree_task_moves_on_its_own_project_board(self):
         tasks = {6: task(6, 2, 20, 201)}

@@ -51,7 +51,10 @@ pull request, which is looked up on GitHub by head and base.
 With `--recursive` the binding covers the root project **and every project under
 it**: those projects are searched together, each resolves its own board, and
 tasks in them can be claimed and moved. Projects outside the subtree stay
-readable but can never be mutated by this repository's workflow.
+readable but can never be mutated by this repository's workflow. Any readable
+task, inside the binding or not, reads its state from its own project's board.
+A board without a usable lifecycle yields `Unknown`, and `state_reason` says why:
+a board problem, a card outside every column, or a column that maps to no state.
 
 Global configuration holds accounts, credentials and integration permissions.
 `.agent-box.json` stores `tracker.provider`, `tracker.project`,

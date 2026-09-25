@@ -48,6 +48,8 @@ class Task:
     revision: str = ""
     url: str = ""
     number: int | None = None
+    # Why state is Unknown, from the board itself; None whenever a state was read.
+    state_reason: str | None = None
 
     @property
     def tier(self):

@@ -15,6 +15,7 @@ from unittest.mock import patch
 from agent_box import git_workflow as gw
 from agent_box import github_review
 from agent_box import workflow
+from agent_box.delegation import REVIEW_SCOPE
 from agent_box.errors import AgentBoxError
 from workflow_fixtures import BINDING, LandingCase
 
@@ -508,7 +509,12 @@ class CloudReviewTests(LandingCase):
         self.parent.description = "The parent must keep the passwd-derived host home."
         self.review()
         self.assertIn("The parent must keep the passwd-derived host home.", self.published())
-        self.assertIn(f"# Task {self.parent.id}: {self.parent.title}", self.published())
+        self.assertIn(f"# {workflow.task_heading(self.parent)}", self.published())
+
+    def test_the_bot_judges_the_repository_and_leaves_tracker_acceptance_to_the_coordinator(self):
+        """The bot cannot read the tracker, so a tracker requirement once could only end INCONCLUSIVE."""
+        self.review()
+        self.assertIn(REVIEW_SCOPE.strip(), self.published())
 
     def test_a_request_longer_than_a_comment_is_refused_before_publishing(self):
         """A truncated requirement is a requirement nobody read, so nothing is published."""

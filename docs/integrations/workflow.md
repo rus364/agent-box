@@ -264,7 +264,16 @@ them. A new commit or a moved base retires all three; editing the description,
 checking items, changing the tier, relations or hierarchy retires nothing. The
 recorded pair is what still names the original diff once the base has
 fast-forwarded past the head, where Git can no longer derive the fork point. Move anything important from a discussion into the
-task description, since that is what the reviewer reads.
+task description, since that is what the reviewer reads. Each description file
+is headed with the task's visible number, ID and URL, so a card that cites
+`#N` or an ID maps to the other. The reviewer judges only what the repository
+shows. Requirements about tracker state (other tasks' descriptions, relations or
+states) or operator actions are closed by the coordinator. The reviewer lists
+them under limitations, and they are neither findings nor a reason for
+INCONCLUSIVE. Landing requires the whole checklist closed, so the coordinator
+records its evidence there. A reviewer that judged tracker claims from an
+untrusted brief was the rejected alternative: the same change passed or stayed
+INCONCLUSIVE depending on how the brief was worded.
 
 `--brief FILE` is optional for review: a short English note on what the tracker
 lacks, such as technical risks or validation limits. Keep it outside the working

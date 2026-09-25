@@ -43,7 +43,7 @@ def task_problems(task, get):
                          "severity": "warning" if advisory else "error"})
 
     if task.state == "Unknown":
-        report("no-state", "sits in no lifecycle column of its project board")
+        report("no-state", task.state_reason or "sits in no lifecycle column of its project board")
     try:
         # A task needs no tier; an explicit label must still be valid.
         task.tier

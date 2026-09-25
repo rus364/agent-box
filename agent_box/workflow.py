@@ -140,8 +140,14 @@ def review_descriptions(task, parent, tasks):
     related = [("parent.md", parent)] if task.id != parent.id else [
         (f"subtask-{index}.md", child)
         for index, child in enumerate((item for item in tasks if item.id != task.id), 1)]
-    return {name: f"# Task {item.id}: {item.title}\n\n{unchecked(item.description).strip()}\n"
+    return {name: f"# {task_heading(item)}\n\n{unchecked(item.description).strip()}\n"
             for name, item in [("task.md", task), *related]}
+
+
+def task_heading(task):
+    """Descriptions cite tasks by visible number or by ID; the heading carries both, so either maps."""
+    names = ", ".join(str(value) for value in (f"id {task.id}", task.url) if value)
+    return f"Task {'#' + str(task.number) + ' ' if task.number is not None else ''}({names}): {task.title}"
 
 
 def read_brief(path):

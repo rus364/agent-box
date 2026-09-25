@@ -270,14 +270,15 @@ class ReviewWorkflowTests(WorkflowCase):
         manifest, _ = package(payload)
         self.assertEqual(Path(manifest["artifacts"]["task.md"]["path"]), Path(payload["task_description"]))
         self.assertEqual(Path(payload["task_description"]).read_text(),
-                         "# Task 1: Task\n\n" + self.task.description.strip() + "\n")
+                         "# Task (id 1): Task\n\n" + self.task.description.strip() + "\n")
         self.assertIn("Changes and reasons", Path(manifest["artifacts"]["author-report.md"]["path"]).read_text())
         for absent in ("Current goal", "Previous verdict", finding, "Changes and reasons", "diff --git",
                        "+value = 2", "report_schema"):
             self.assertNotIn(absent, prompt)
         for present in (gw.head_sha(self.root), "diff_range", "untrusted English brief", "counterexamples",
                         'ask "then what?"', "discard the finding", "Prefer leaving correct code unchanged.",
-                        "Verdict: PASS", "[SEVERITY] path:line", "CRITICAL —", "LOW —"):
+                        "Verdict: PASS", "[SEVERITY] path:line", "CRITICAL —", "LOW —",
+                        "closed by the coordinator"):
             self.assertIn(present, prompt)
         self.adapter.comments.assert_not_called()
         self.native_result()
@@ -542,6 +543,18 @@ class ReviewWorkflowTests(WorkflowCase):
         self.assertIn("Keep hidden rule.", Path(manifest["artifacts"]["parent.md"]["path"]).read_text())
         self.assertTrue(all("PRIVATE_DISCUSSION" not in path.read_text() for path in paths))
         self.adapter.comments.assert_not_called()
+
+    def test_every_description_heading_maps_the_visible_number_to_the_id(self):
+        """Cards cite tasks as #N or by ID; a heading with only one left the reviewer unable to match them."""
+        parent = Task("607", "84", "Parent", description="See #59.", number=141,
+                      url="https://tracker.example/tasks/607")
+        child = Task("608", "84", "Child", description="Blocked by 607.", parent="607", number=142,
+                     url="https://tracker.example/tasks/608")
+        descriptions = workflow.review_descriptions(child, parent, [parent, child])
+        self.assertTrue(descriptions["task.md"].startswith(
+            "# Task #142 (id 608, https://tracker.example/tasks/608): Child\n"))
+        self.assertTrue(descriptions["parent.md"].startswith(
+            "# Task #141 (id 607, https://tracker.example/tasks/607): Parent\n"))
 
     def test_a_parent_review_carries_every_subtask_description(self):
         """The final review checks acceptance that lives in the subtasks, one file each."""

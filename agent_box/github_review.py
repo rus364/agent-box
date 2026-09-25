@@ -24,6 +24,7 @@ from pathlib import Path
 
 from .atomicio import atomic_write_text
 from . import git_workflow as gw
+from .delegation import REVIEW_SCOPE
 from .errors import AgentBoxError
 from .provider_runner import ProviderFailure, review_report
 
@@ -54,6 +55,7 @@ REQUEST_FORM = """@{provider} review
 Review commit {head}, as this pull request stands against base commit {base}, against the
 requirements quoted below, the repository's guidance and this pull request's description.
 Read only: change no files, push nothing, and answer in this pull request.
+{scope}
 
 Report every finding on its own line as
 
@@ -105,7 +107,7 @@ def request_body(provider, head, base, descriptions, review_context="", brief=No
     note = f"\n\nContext from the coordinator:\n\n{quoted(brief)}" if brief else ""
     cards = "\n\n---\n\n".join(quoted(text) for text in descriptions.values())
     return REQUEST_FORM.format(provider=provider, head=head, base=base, context=context,
-                               brief=note, cards=cards)
+                               brief=note, cards=cards, scope=REVIEW_SCOPE.strip())
 
 
 def paginate(root, repo, path):

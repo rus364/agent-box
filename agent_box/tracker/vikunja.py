@@ -270,15 +270,7 @@ class VikunjaAdapter:
 
     def normalize(self, raw):
         related = raw.get("related_tasks") or {}
-        # Done is Vikunja's own flag; the other states are where the card sits.
-        state = "Done" if raw.get("done") else "Unknown"
-        project = str(raw.get("project_id"))
-        if state != "Done" and project in self.projects_in_scope():
-            resolved = self.lifecycle(project)
-            bucket = api.task_bucket_in_view(raw, resolved["view"]["id"]) if not resolved["problems"] else None
-            if bucket:
-                state = next((name for name, ident in resolved["states"].items()
-                              if str(bucket["id"]) == ident), "Unknown")
+        state, reason = self.board_state(raw)
         parent = related.get("parenttask") or []
         if len(parent) > 1:
             raise TrackerError(f"Task {raw['id']} has multiple parents", "conflict")
@@ -293,7 +285,29 @@ class VikunjaAdapter:
                     priority=raw.get("priority") or 0,
                     revision=self.client.revisions.get(f"/tasks/{raw['id']}", ""),
                     url=f"{self.server}/tasks/{raw['id']}",
-                    number=raw.get("index"))
+                    number=raw.get("index"), state_reason=reason)
+
+    def board_state(self, raw):
+        """Where the card sits on its own project's board, and why that names no state.
+
+        Every project resolves its own board, inside the binding or not: reading a
+        column writes nothing, and a blocker in another project whose lifecycle read
+        as Unknown looked unfinished forever. Writes stay confined to the binding.
+        """
+        # Done is Vikunja's own flag; the other states are where the card sits.
+        if raw.get("done"):
+            return "Done", None
+        resolved = self.lifecycle(str(raw.get("project_id")))
+        if resolved["problems"]:
+            return "Unknown", "project board: " + "; ".join(resolved["problems"])
+        bucket = api.task_bucket_in_view(raw, resolved["view"]["id"])
+        if not bucket:
+            return "Unknown", "card sits in no column of its project board"
+        state = next((name for name, ident in resolved["states"].items() if str(bucket["id"]) == ident), None)
+        if state:
+            return state, None
+        title = next((item.get("title") for item in resolved["buckets"] if str(item["id"]) == str(bucket["id"])), "")
+        return "Unknown", f"column {title or bucket['id']!r} maps to no lifecycle state"
 
     def get(self, task_id):
         try:
