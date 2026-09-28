@@ -606,8 +606,8 @@ outside agent-box read too, so the line follows you there as well.
 
 Workspace resolution is intentionally simple:
 
-1. Inside a Git repository or worktree: its top-level directory.
-2. Outside Git: the current directory.
+1. Inside a Git worktree: its top-level directory.
+2. Outside a Git worktree, including beneath a bare repository: the current directory.
 3. `--workspace PATH` overrides both, when you deliberately want a broader tree.
 
 By default, every workspace box runs with:

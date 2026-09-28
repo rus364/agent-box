@@ -18,6 +18,18 @@ class WorkspaceResolutionTests(unittest.TestCase):
             self.assertEqual(ws.host_root, sub.resolve())
             self.assertEqual(ws.cwd, sub.resolve())
 
+    def test_bare_parent_does_not_become_workspace_root(self):
+        """Git finds a bare parent, but a launch still mounts the ordinary child directory."""
+        with tempfile.TemporaryDirectory() as tmp:
+            parent = Path(tmp) / "parent"
+            parent.mkdir()
+            subprocess.run(["git", "init", "--bare", "-q", str(parent / ".git")], check=True)
+            child = parent / "ordinary"
+            child.mkdir()
+            ws = resolve_workspace(cwd=child)
+            self.assertEqual(ws.host_root, child.resolve())
+            self.assertEqual(ws.cwd, child.resolve())
+
     def test_same_absolute_path_preserved_in_container(self):
         # The core invariant of the new model: no /workspace, no rewriting.
         with tempfile.TemporaryDirectory() as tmp:

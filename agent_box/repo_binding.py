@@ -107,10 +107,11 @@ def binding_document(root, binding):
 
 def repository_root(cwd: Path | None = None, *, fallback=False):
     directory = Path.cwd() if cwd is None else Path(cwd)
+    env = {**os.environ, "LC_ALL": "C"}
     try:
         result = subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=cwd,
                                 capture_output=True, text=True, timeout=15,
-                                env={**os.environ, "LC_ALL": "C"})
+                                env=env)
     except FileNotFoundError:
         if fallback and directory.is_dir():
             return directory
@@ -124,6 +125,16 @@ def repository_root(cwd: Path | None = None, *, fallback=False):
             if fallback:
                 return directory
             raise AgentBoxError("Run this command inside a Git repository")
+        # Git can discover a bare parent yet have no worktree top-level to show.
+        try:
+            probe = subprocess.run(["git", "rev-parse", "--is-inside-work-tree"], cwd=cwd,
+                                   capture_output=True, text=True, timeout=15, env=env)
+        except (OSError, subprocess.TimeoutExpired):
+            raise AgentBoxError(f"Git repository discovery failed in {directory} (exit {result.returncode})") from None
+        if probe.returncode == 0 and probe.stdout.strip() == "false":
+            if fallback:
+                return directory
+            raise AgentBoxError("Run this command inside a Git worktree")
         raise AgentBoxError(f"Git repository discovery failed in {directory} (exit {result.returncode})")
     return Path(result.stdout.strip()).resolve()
 

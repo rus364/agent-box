@@ -155,6 +155,26 @@ class ProjectConfigTests(unittest.TestCase):
         subprocess.run(['git', '-C', str(self.root), 'worktree', 'add', '-q', '--detach', str(worktree)], check=True)
         self.assertEqual(project_config.project_path(worktree), worktree / '.agent-box.json')
 
+    def test_directory_beneath_bare_repository_uses_its_own_project_file(self):
+        """A bare parent has Git metadata but no worktree, so child launch config stays local."""
+        subprocess.run(['git', 'init', '--bare', '-q', str(self.root / '.git')], check=True)
+        child = self.root / 'ordinary'
+        child.mkdir()
+        self.assertEqual(project_config.project_path(child), child / '.agent-box.json')
+        from agent_box.repo_binding import repository_root
+        with self.assertRaisesRegex(AgentBoxError, 'inside a Git worktree'):
+            repository_root(child)
+
+    def test_cli_help_loads_project_config_beneath_bare_repository(self):
+        """CLI startup must not reject an ordinary directory before parsing commands."""
+        subprocess.run(['git', 'init', '--bare', '-q', str(self.root / '.git')], check=True)
+        child = self.root / 'ordinary'
+        child.mkdir()
+        launcher = Path(__file__).resolve().parents[1] / 'agent-box'
+        result = subprocess.run([str(launcher), '--help'], cwd=child,
+                                capture_output=True, text=True, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_non_repository_and_missing_git_still_validate_the_cwd_project(self):
         """Help remains usable without Git but must still reject forbidden project fields."""
         from contextlib import redirect_stdout, redirect_stderr
