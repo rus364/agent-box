@@ -1463,7 +1463,10 @@ def execution(config, role, tier, task_id):
 def scout_diagnostics(config):
     return {"scout_limit": config.workflow.scout.limit,
             "scout_slots": "Managed scouts started by workflow delegate share these repository slots; "
-                           "the coordinator counts its own native scouts."}
+                           "the coordinator counts its own native scouts. With workflow enabled, "
+                           "agent-box interactive Codex launches set native subagent capacity to this limit "
+                           "plus a separate coordinator slot in V2; existing or independent IDE sessions "
+                           "are not reconfigured."}
 
 
 def delegate(args, root, adapter, config):

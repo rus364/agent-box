@@ -577,15 +577,40 @@ class CodexRuntimeOverridesTests(IsolatedRuntimeTest):
         config.workflow.enabled = True
         config.workflow.timeout_seconds = 45
         config.codex.native_agent_wait.interval_seconds = 1200
-        self.assertEqual(runtime.codex_workflow_overrides([], config), [
-            "features.multi_agent_v2.default_wait_timeout_ms=1200000",
-        ])
+        self.assertIn("features.multi_agent_v2.default_wait_timeout_ms=1200000",
+                      runtime.codex_workflow_overrides([], config))
         config.codex.native_agent_wait.interval_seconds = 3600
-        self.assertEqual(runtime.codex_workflow_overrides([], config), [
-            "features.multi_agent_v2.default_wait_timeout_ms=3600000",
-        ])
+        self.assertIn("features.multi_agent_v2.default_wait_timeout_ms=3600000",
+                      runtime.codex_workflow_overrides([], config))
         config.codex.native_agent_wait.interval_seconds = 3601
+        self.assertFalse(any("default_wait_timeout_ms" in setting
+                             for setting in runtime.codex_workflow_overrides([], config)))
+
+    def test_native_scout_capacity_tracks_project_limit_independently_of_wait(self):
+        """Native scouts must fit the effective limit even with the wait policy disabled."""
+        from agent_box import project_config
+        config = Config()
+        config.workflow.enabled = True
+        config.workflow.scout.limit = 6
+        config.codex.native_agent_wait.enabled = False
+        for limit in (1, 6, 16):
+            with self.subTest(limit=limit):
+                effective = project_config.apply(config, {"workflow": {"scout": {"limit": limit}}})
+                command = runtime.codex_command([], effective)
+                self.assertIn(f"agents.max_concurrent_threads_per_session={limit}", command)
+                self.assertIn(f"features.multi_agent_v2.max_concurrent_threads_per_session={limit + 1}",
+                              command)
+                self.assertFalse(any("default_wait_timeout_ms" in arg for arg in command))
+        self.assertEqual(config.workflow.scout.limit, 6)
+
+    def test_native_capacity_leaves_non_workflow_and_service_commands_alone(self):
+        """Managed workers and service processes must not acquire coordinator policy."""
+        config = Config()
         self.assertEqual(runtime.codex_workflow_overrides([], config), [])
+        config.workflow.enabled = True
+        for rest in (["exec", "hello"], ["review"], ["app-server"], ["--help"], ["--version"]):
+            with self.subTest(rest=rest):
+                self.assertEqual(runtime.codex_workflow_overrides(rest, config), [])
 
     def test_native_wait_override_never_writes_the_user_config(self):
         """A launch-time policy is an argv override, not integration application."""
@@ -811,10 +836,11 @@ class HostModeTests(IsolatedRuntimeTest):
                 self.assertEqual(runtime.host_main(agent, ["--model", "x"]), 0)
             self.assertEqual(call.call_args.args[0], [f"/usr/bin/{expected}", "--model", "x"])
 
-    def test_host_codex_gets_the_same_interactive_workflow_wait_policy(self):
+    def test_host_codex_gets_the_same_interactive_workflow_policy(self):
         """Host coordinators share workflow behavior without affecting host batch commands."""
         config = Config()
         config.workflow.enabled = True
+        config.workflow.scout.limit = 6
         with tempfile.TemporaryDirectory() as tmp, \
              mock.patch.object(runtime.shutil, "which", return_value="/usr/bin/codex"), \
              mock.patch.object(runtime, "resolve_workspace", return_value=Workspace(Path(tmp), Path(tmp))), \
@@ -824,6 +850,8 @@ class HostModeTests(IsolatedRuntimeTest):
             self.assertEqual(runtime.host_main("codex", []), 0)
             self.assertEqual(call.call_args.args[0], [
                 "/usr/bin/codex", "-c",
+                "agents.max_concurrent_threads_per_session=6", "-c",
+                "features.multi_agent_v2.max_concurrent_threads_per_session=7", "-c",
                 "features.multi_agent_v2.default_wait_timeout_ms=1680000",
             ])
 

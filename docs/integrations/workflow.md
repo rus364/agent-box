@@ -105,6 +105,19 @@ counted by per-repository slot locks that a finished or killed process releases;
 the coordinator counts its own native scouts. With no candidate configured for the
 role, `delegate` refuses and the coordinator does the work in its own session.
 
+With workflow enabled, interactive `agent-box codex` and `agent-box --host codex`
+launches derive native Codex capacity from the effective `workflow.scout.limit`,
+including project overrides. Codex V1 receives that many subagent slots; V2
+receives one additional slot for the coordinator. For example, a scout limit of 6
+sets `agents.max_concurrent_threads_per_session=6` and
+`features.multi_agent_v2.max_concurrent_threads_per_session=7`. Codex shares this
+capacity across native roles; the coordinator still enforces the scout count.
+These launch-time overrides do not depend on `codex.native_agent_wait.enabled`
+and do not write `~/.codex/config.toml`. Batch, managed and service commands
+(including `app-server`) receive no coordinator overrides. Already-running
+sessions and independently launched IDE/app-server sessions retain their own
+Codex settings; start a new interactive agent-box session to receive this policy.
+
 The brief is a compact English file outside the working tree: goal, scope and
 relevant paths, decisions and limitations, and for a scout its one question. Never
 pass conversation, tracker comments or other agents' history. Every assignment gets

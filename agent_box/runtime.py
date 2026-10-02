@@ -216,13 +216,18 @@ def codex_runtime_overrides() -> list[str]:
 
 
 def codex_workflow_overrides(rest: list[str], config: Config) -> list[str]:
-    """Keep native-agent waits cache-aware without changing Codex's config."""
-    policy = config.codex.native_agent_wait
-    if (not config.workflow.enabled or not policy.enabled
-            or policy.validate() or not host_interactive_invocation("codex", rest)):
+    """Apply coordinator capacity and waits without changing the user's Codex config."""
+    if not config.workflow.enabled or not host_interactive_invocation("codex", rest):
         return []
-    timeout_ms = policy.interval_seconds * 1000
-    return [f"features.multi_agent_v2.default_wait_timeout_ms={timeout_ms}"]
+    limit = config.workflow.scout.limit
+    # V2 counts the coordinator; its explicit feature setting takes precedence
+    # over agents.*. Set both from the same policy for either native tool surface.
+    overrides = [f"agents.max_concurrent_threads_per_session={limit}",
+                 f"features.multi_agent_v2.max_concurrent_threads_per_session={limit + 1}"]
+    policy = config.codex.native_agent_wait
+    if policy.enabled and not policy.validate():
+        overrides.append(f"features.multi_agent_v2.default_wait_timeout_ms={policy.interval_seconds * 1000}")
+    return overrides
 
 
 def codex_command(
