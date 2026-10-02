@@ -42,8 +42,9 @@ OPTIONS = (
     Option("kvm", LAUNCH, "Do not pass /dev/kvm through", form="negated", container=True, session=False),
     Option("worker", WORKFLOW, "Pin the managed worker model", "SPEC"),
     Option("reviewer", WORKFLOW, "Pin the reviewer model", "SPEC"),
+    Option("sync", WORKFLOW, "Pin the Plan sync model", "SPEC"),
     Option("scout", WORKFLOW, "Pin the scout model", "SPEC"),
-    Option("tiers", WORKFLOW, "Select worker and reviewer models by task tier", form="pair"),
+    Option("tiers", WORKFLOW, "Select worker, reviewer and Plan sync models by task tier", form="pair"),
     Option("review", WORKFLOW, "When review is required", "off|auto|always", choices=("off", "auto", "always")),
     Option("rounds", WORKFLOW, "Review attempt limit per task", "N"),
     Option("merge", WORKFLOW, "Delivery route", "github|local", choices=("github", "local")),
@@ -105,7 +106,7 @@ def parse_spec(flag, text):
 def convert(option, flag, text):
     if option.choices and text not in option.choices:
         raise AgentBoxError(f"{flag} expects {option.metavar}")
-    if option.name in ("worker", "reviewer", "scout"):
+    if option.name in ("worker", "reviewer", "scout", "sync"):
         parse_spec(flag, text)
     if option.name == "rounds":
         if not text.isdigit() or int(text) < 1:
@@ -169,7 +170,7 @@ def apply(config, overrides):
     if "workflow" in overrides and overrides.keys() & {"tracker", "project"}:
         raise AgentBoxError("--tracker and --project contradict --no-workflow")
     for key, value in overrides.items():
-        if key in ("worker", "reviewer", "scout"):
+        if key in ("worker", "reviewer", "scout", "sync"):
             workflow.pins[key] = parse_spec(f"--{key}", value)
         elif key == "review":
             workflow.review.policy = value

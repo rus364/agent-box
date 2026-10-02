@@ -34,8 +34,15 @@ def body(provider, role, tier, spec):
                   "developer_instructions": instructions}
         if spec["effort"] == "default":
             fields.pop("model_reasoning_effort")
-        return "\n".join(f"{key} = {_codex_field(value)}" for key, value in fields.items()) + "\n"
-    tools = "Read, Grep, Glob, Bash, Edit, Write" if role == "worker" else "Read, Grep, Glob"
+        suffix = ""
+        if role == "sync":
+            fields.pop("sandbox_mode")
+            fields["default_permissions"] = "agent_box_sync"
+            suffix = ('\n[permissions.agent_box_sync]\nextends = ":read-only"\n'
+                      '[permissions.agent_box_sync.network]\nenabled = true\n')
+        return "\n".join(f"{key} = {_codex_field(value)}" for key, value in fields.items()) + "\n" + suffix
+    tools = ("Read, Grep, Glob, Bash, Edit, Write" if role == "worker" else
+             "Read, Grep, Glob, Bash" if role == "sync" else "Read, Grep, Glob")
     effort = "" if spec["effort"] == "default" else f"effort: {json.dumps(spec['effort'])}\n"
     return (f"---\nname: {name}\ndescription: {description}\n"
             f"model: {json.dumps(spec['model'])}\n{effort}tools: {tools}\n---\n{instructions}\n")

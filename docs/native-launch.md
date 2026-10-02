@@ -53,8 +53,35 @@ are enforced by the exposed tool contract, not attested by a model's self-report
 The workflow of that time rejected ingesting the scout report as stale because the
 coordinator edited the working scope during the inspection; scout reports have
 since stopped being ingested at all (task 410). The smoke is execution evidence,
-not accepted workflow evidence. Real Claude native execution, profile-precedence
-collisions and effort-default smoke were not run.
+not accepted workflow evidence. At that time Claude native execution,
+profile-precedence collisions and effort-default smoke were not run.
 
 Validation: 995 isolated unittests, 45 selftests and Ruff E4/E9/F passed.
 The two targeted regressions failed before the fix and passed afterwards.
+
+## Tracker access for Plan sync
+
+Task 622, 2026-10-02: Codex 0.160.0 and Claude Code 2.1.287.
+Native Codex children read the bound live task and updated/read back a dummy
+task on a loopback tracker fixture. Claude `-p` launched a built-in Agent child;
+stream events with `parent_tool_use_id` showed that child performing tracker
+get, stdin description update and confirmation get. All three commands succeeded.
+Safe mode did not expose the custom probe profile, so the child test used
+`general-purpose`; this proves native tracker capability, not profile precedence.
+
+Managed runs of both providers updated and reread that same fixture through
+the sync role's commands. Codex used a named permission profile extending
+`:read-only` with network enabled: tracker writes succeeded, while a file-write
+attempt failed with `Read-only file system`. Managed Claude's tracker Bash rule
+allowed the stdin heredoc update without exposing Edit/Write. No business tasks
+were mutated by these probes. Native Claude's filesystem restriction remains
+the role contract; its inherited shell is not an isolation boundary.
+
+A subsequent managed-Claude semantic probe read an accepted SHA256 decision from
+Git/docs, found an open task still specifying MD5, and updated its goal,
+acceptance wording and stale document anchor. Readback confirmed the new text;
+unrelated acceptance, the Done source task and the repository remained unchanged.
+The fixture logged PATCH plus subsequent GET. Claude attempted a temporary
+description file first; the Bash allowlist denied it and the stdin update worked.
+The role now names the direct heredoc form. Its Markdown-bold outcome is accepted
+without rerunning possible writes.

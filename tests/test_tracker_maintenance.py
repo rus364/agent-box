@@ -208,6 +208,20 @@ class MaintenanceTests(unittest.TestCase):
             self.run_cli("check", "5", "1", "--revision", "")
         self.assertEqual(self.client.writes, [])
 
+    def test_description_sync_refuses_a_stale_revision_and_accepts_current_stdin(self):
+        """A sync agent's earlier read must not overwrite a description another writer changed."""
+        import io
+        self.client.tasks[5]["description"] = "Another writer's text"
+        self.client.revisions["/tasks/5"] = "rev-new"
+        with patch("sys.stdin", io.StringIO("Preserved text with corrected reference\n")):
+            with self.assertRaisesRegex(TrackerError, "revision"):
+                self.run_cli("update", "5", "--revision", "rev-old", "--description-file", "-")
+        self.assertEqual(self.client.writes, [])
+        with patch("sys.stdin", io.StringIO("Preserved text with corrected reference\n")):
+            result = self.run_cli("update", "5", "--revision", "rev-new", "--description-file", "-")
+        self.assertEqual(result.description, "Preserved text with corrected reference\n")
+        self.assertEqual(len(self.client.writes), 1)
+
     def test_naming_a_task_by_id_is_no_way_past_the_binding(self):
         """Every task write shares one boundary; a project outside it stays readable only."""
         self.client.tasks[7]["description"] = "- [ ] первый\n"

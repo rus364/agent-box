@@ -684,7 +684,7 @@ AGENT_EFFORTS = {
     "codex": ("default", "low", "medium", "high", "xhigh", "max", "ultra"),
     "claude": API_EFFORTS['claude'],
 }
-WORKFLOW_SKILLS = ("ab-setup", "ab-adopt", "ab-normalize", "ab-interview", "ab-plan", "ab-work", "ab-review", "ab-pr", "ab-land")
+WORKFLOW_SKILLS = ("ab-setup", "ab-adopt", "ab-normalize", "ab-interview", "ab-plan", "ab-work", "ab-sync", "ab-review", "ab-pr", "ab-land")
 REVIEW_PRESETS = {"thorough": (2, 80), "balanced": (5, 200), "light": (10, 500)}
 # Off, or the highest finding severity a NEEDS_WORK round may carry for its delta to count.
 REVIEW_INCREMENTAL = ("off", "LOW", "MEDIUM", "HIGH", "CRITICAL")
@@ -746,9 +746,9 @@ class TrackerConfig:
 
 
 MODEL_ENTRY = {"provider": str, "model": str, "effort": str, "speed": str, "api_provider": str}
-#: Task tiers that may select their own worker and reviewer lists; scouts have none.
+#: Task tiers select worker, sync and reviewer lists; scouts have none.
 TIERS = range(1, 4)
-TIERED_ROLES = ("worker", "reviewer")
+TIERED_ROLES = ("worker", "reviewer", "sync")
 
 
 def model_entry(data):
@@ -856,6 +856,33 @@ class ReviewConfig:
 
 
 @dataclass
+class PlanSyncConfig:
+    # Tracker-writing delegation is opt-in independently of code review.
+    policy: str = "off"
+    events: list[str] = field(default_factory=lambda: ["after"])
+    scope: str = "project"
+    references: bool = True
+    paths: list[str] = field(default_factory=lambda: ["docs/**", "*.md"])
+    models: list[dict] = field(default_factory=list)
+    tiers: dict[str, list] = field(default_factory=model_tiers)
+
+    @classmethod
+    def from_dict(cls, data):
+        data = _mapping(data)
+        result = cls()
+        for key in ("policy", "scope"):
+            if key in data:
+                setattr(result, key, data[key])
+        for key in ("events", "paths"):
+            if key in data:
+                setattr(result, key, data[key])
+        result.references = _bool(data, "references", True)
+        result.models = model_list(data.get("models"))
+        result.tiers = model_tiers(data.get("tiers"))
+        return result
+
+
+@dataclass
 class WorkflowConfig:
     """Optional workflow policy; only enabled integrations may publish or delegate.
 
@@ -866,17 +893,18 @@ class WorkflowConfig:
     """
     enabled: bool = False
     merge_mode: str = "github"
-    #: Off by default: a task's tier then selects nothing, and every worker and
-    #: reviewer runs its role's own list. The tiers stay configured and labelled.
+    #: Off by default: each role runs its own list regardless of the task tier.
+    #: The tiers stay configured and labelled.
     use_tiers: bool = False
     scout: ScoutConfig = field(default_factory=ScoutConfig)
     auto_push: bool = True
     timeout_seconds: int = 3600
     review: ReviewConfig = field(default_factory=ReviewConfig)
+    sync: PlanSyncConfig = field(default_factory=PlanSyncConfig)
     cleanup_local_branches: bool = False
     cleanup_remote_branches: bool = False
     worker: WorkerConfig = field(default_factory=WorkerConfig)
-    #: Launch-only candidate lists pinned by --worker/--reviewer/--scout, keyed by role.
+    #: Launch-only candidate lists pinned by --worker/--reviewer/--scout/--sync, keyed by role.
     #: Never serialized: a session re-derives them from its snapshot's launch
     #: flags, so no configuration file can hold one.
     pins: dict[str, list] = field(default_factory=dict)
@@ -888,7 +916,7 @@ class WorkflowConfig:
         return data
 
     def role(self, role):
-        return {"scout": self.scout, "worker": self.worker, "reviewer": self.review}[role]
+        return {"scout": self.scout, "worker": self.worker, "reviewer": self.review, "sync": self.sync}[role]
 
     def effective_tier(self, tier):
         """The task tier that selects models, or None while tiers are switched off."""
@@ -924,6 +952,15 @@ class WorkflowConfig:
             errors.append("workflow.timeout_seconds must be between 30 and 86400")
         if not isinstance(self.scout.limit, int) or not 1 <= self.scout.limit <= 16:
             errors.append("workflow.scout.limit must be between 1 and 16")
+        if self.sync.policy not in ("off", "auto", "always"):
+            errors.append("workflow.sync.policy must be off, auto, or always")
+        if self.sync.scope not in ("parent", "project"):
+            errors.append("workflow.sync.scope must be parent or project")
+        if (not isinstance(self.sync.events, list) or not self.sync.events
+                or any(event not in ("before", "after", "plan") for event in self.sync.events)):
+            errors.append("workflow.sync.events must list before, after, or plan")
+        if not isinstance(self.sync.paths, list) or any(not isinstance(path, str) or not path for path in self.sync.paths):
+            errors.append("workflow.sync.paths must be a list of nonempty glob patterns")
         if self.review.policy not in ("off", "auto", "always"):
             errors.append("workflow.review.policy must be off, auto, or always")
         if self.review.incremental not in REVIEW_INCREMENTAL:
@@ -992,6 +1029,7 @@ class WorkflowConfig:
         result.timeout_seconds = _number(data, "timeout_seconds", result.timeout_seconds)
         result.scout = ScoutConfig.from_dict(data.get("scout"))
         result.review = ReviewConfig.from_dict(data.get("review"))
+        result.sync = PlanSyncConfig.from_dict(data.get("sync"))
         result.worker = WorkerConfig.from_dict(data.get("worker"))
         return result
 

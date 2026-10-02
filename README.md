@@ -155,13 +155,13 @@ agent-box --host --no-tmux codex exec "run the tests"
 | Group | Options |
 | --- | --- |
 | Launch | `--host`, `--workspace PATH`, `--mount PATH[:ro]`, `--env NAME[=VALUE]`, `--no-tmux`, `--no-kvm` |
-| Workflow | `--worker SPEC`, `--reviewer SPEC`, `--scout SPEC`, `--[no-]tiers`, `--review off\|auto\|always`, `--rounds N`, `--merge github\|local`, `--[no-]push`, `--no-workflow` |
+| Workflow | `--worker SPEC`, `--reviewer SPEC`, `--scout SPEC`, `--sync SPEC`, `--[no-]tiers`, `--review off\|auto\|always`, `--rounds N`, `--merge github\|local`, `--[no-]push`, `--no-workflow` |
 | Tracker | `--tracker URL`, `--project ID` ([details](#project-configuration)) |
 | Access | `--[no-]gh-token`, `--[no-]gh-config`, `--[no-]git-config`, `--[no-]api-keys`, `--no-browser`, `--[no-]remote-control`, `--[no-]notify` |
 
 `SPEC` is `PROVIDER[@API]:MODEL[:EFFORT]`, for example `codex:gpt-5.5:high` or
-`claude@deepseek:deepseek-v4`. `--reviewer`, `--scout` and `--worker` pin
-that model outright: the role's candidate lists and task tiers choose no other. `--[no-]tiers` decides for the session whether a task's tier selects worker and reviewer lists. Workflow options need workflow enabled in
+`claude@deepseek:deepseek-v4`. `--reviewer`, `--scout`, `--sync` and `--worker` pin
+that model outright: the role's candidate lists and task tiers choose no other. `--[no-]tiers` decides for the session whether a task's tier selects worker, sync and reviewer lists. Workflow options need workflow enabled in
 `agent-box config`. Options that only a container can honour (mounts, KVM,
 credentials, browser) are refused with `--host` rather than ignored.
 
@@ -304,7 +304,7 @@ In the global editor, **R: Reset to default** restores the selected field or
 section to built-in program values and removes its stored override on save.
 Reset changes only the draft until you save.
 
-Worker, scout, and reviewer models are ordered candidate lists: add, reorder,
+Worker, scout, Plan sync and reviewer models are ordered candidate lists: add, reorder,
 change effort or fast, or remove a candidate. The picker offers Codex, Claude
 and enabled external API models together with manual model-ID entry per CLI and
 API, because any CLI's model may serve any role; a model of the other CLI than
@@ -395,7 +395,7 @@ bound project still require a complete tracker binding.
 The allowed shared paths are `workflow` except its top-level `enabled`,
 `tools`, `tracker.provider`, and
 `tracker.connections.<provider>.url`. Workflow includes each role's candidate lists
-(`models`, and `tiers.N` for workers and reviewers) and `use_tiers`. `tracker.project` and `tracker.recursive` are
+(`models`, and `tiers.N` for workers, sync agents and reviewers) and `use_tiers`. `tracker.project` and `tracker.recursive` are
 project identity fields. Missing fields inherit global settings; nested objects
 merge by key and lists replace the whole inherited list. Explicit `false`,
 empty lists, and allowed empty strings

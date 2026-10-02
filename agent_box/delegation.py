@@ -17,7 +17,7 @@ def reviewer_instructions():
         "repository instruction to read the tracked task; do not query its history. "
         "Read AGENTS.md or CLAUDE.md in directories you touch and files they import with @path. "
         "Read every chunk; report missing, unreadable or truncated instructions explicitly. "
-        "Read-only: change nothing. Distinguish verified consequences from uncertainty. " + REPORT_FORMAT
+        "Read-only: change nothing. Read referenced repository sections; distinguish verified consequences from uncertainty. " + REPORT_FORMAT
     )
 
 
@@ -50,6 +50,7 @@ def delegate_rules(role):
             "Do not launch other agents. Read AGENTS.md or CLAUDE.md in directories you touch and files they "
             "import with @path. ")
     if role == "worker":
+        text += ("Read the task’s reference documents before implementation; report missing sections or conflicting requirements. ")
         text += ("Change project files only within the assigned scope; you are not alone in the working tree, "
                  "so preserve others' changes. ")
     else:
@@ -67,6 +68,9 @@ def delegate_prompt(role, task, brief, repository_instructions):
 
 def profile_instructions(role):
     """Keep stable native role identity short; the coordinator's message supplies the assignment."""
+    if role == "sync":
+        from .plan_sync import RULES
+        return RULES
     if role == "reviewer":
         return ("Act only as the assigned reviewer. Follow the complete current handoff and repository instructions. "
                 "Use English for reports. " + COORDINATOR_OWNS + "Do not load parent conversation, tracker comments "

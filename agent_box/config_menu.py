@@ -18,6 +18,8 @@ CHOICES = {
     "default_agent": LAUNCH_AGENTS,
     "tracker.provider": TRACKER_PROVIDERS,
     "workflow.merge_mode": ("github", "local"),
+    "workflow.sync.policy": ("off", "auto", "always"),
+    "workflow.sync.scope": ("parent", "project"),
     "workflow.review.policy": ("off", "auto", "always"),
     "workflow.review.incremental": REVIEW_INCREMENTAL,
     "workflow.review.github_provider": ("auto", "local", "codex", "claude"),
@@ -85,7 +87,7 @@ HELP = {
     "audio.enabled": "Mount the host PulseAudio/PipeWire socket so agents can use the microphone and speakers, e.g. Claude Code /voice. Everything in the box gets both. Changing it recreates the box.",
     "workflow": "Opt-in tracked-work orchestration, role models, review, publication, and cleanup policy.",
     "workflow.enabled": "Enable agent-box's tracked-task workflow. Enabling it does not itself expose provider or tracker credentials.",
-    "workflow.use_tiers": "Let a task's tier 1-3 select the worker and reviewer Models by tier. Off runs every task on the role's own Models; tier lists and task tiers are kept. A project or --[no-]tiers may override it.",
+    "workflow.use_tiers": "Let a task's tier 1-3 select worker, reviewer and Plan sync Models by tier. Off runs each role's own Models; tier lists and task tiers are kept. A project or --[no-]tiers may override it.",
     "workflow.merge_mode": "Finish parent work through a GitHub pull request or a local fast-forward into origin's default branch.",
     "workflow.scout": "Read-only scouts the coordinator dispatches for bounded questions, and the models they run.",
     "workflow.scout.limit": "Maximum number of concurrent read-only scouts, from 1 through 16.",
@@ -95,6 +97,14 @@ HELP = {
     "workflow.worker": "The models managed workers run when the coordinator delegates with workflow delegate.",
     "workflow.worker.models": "Delegated worker candidates in preference order; the first available one runs and the rest are fallbacks. Empty: the coordinator implements in its own session. Used unless Use tiers is on and the task's tier has its own list. A candidate of the other CLI than the coordinator's runs as a managed CLI process.",
     "workflow.worker.tiers": "Optional worker candidates per task tier 1-3, used only when Use tiers is on. A nonempty tier list replaces Models for that tier; an empty one uses Models.",
+    "workflow.sync": "Plan sync reads the repository and updates live tracker tasks; it never edits project files.",
+    "workflow.sync.policy": "Off disables automatic runs. Always runs at every selected event; auto runs before work/after planning and after changes matching Paths. Manual sync works in every mode, independently of review.",
+    "workflow.sync.events": "JSON list: before (before implementation), after (after integration), plan (after planning or an accepted decision).",
+    "workflow.sync.scope": "Parent checks open tasks in the source task's parent tree. Project checks the bound tracker project, respecting its recursive setting.",
+    "workflow.sync.references": "Maintain Reference documents in task descriptions: repository path#heading and what to verify. Never edit the documents themselves.",
+    "workflow.sync.paths": "Repository-relative globs that trigger automatic after-event sync. Always ignores this filter.",
+    "workflow.sync.models": "Independent ordered candidates with model, effort and speed. Empty: configure a model before sync; the coordinator never performs it instead.",
+    "workflow.sync.tiers": "Optional candidates per source task tier, following Use tiers. Empty tier lists inherit Models.",
     "workflow.review": "Review thresholds, attempts, reviewer candidates and GitHub review.",
     "workflow.review.models": "Reviewer candidates in preference order; the first available one runs, skipping a missing CLI or an exhausted usage limit, and the rest are fallbacks. Used unless Use tiers is on and the task's tier has its own list; with no candidates a review inherits the active session.",
     "workflow.review.tiers": "Optional reviewer candidates per task tier 1-3, used only when Use tiers is on. A nonempty tier list replaces Models for that tier; an empty one uses Models.",
@@ -127,7 +137,7 @@ LABELS = {
     "url": "URL", "token": "Access token", "effort": "Reasoning effort",
     "github_model": "GitHub review model", "github_effort": "GitHub review effort",
     "telegram_chat_id": "Telegram chat ID",
-    "worker": "Workers", "scout": "Scouts", "use_tiers": "Use tiers",
+    "worker": "Workers", "scout": "Scouts", "sync": "Plan sync", "use_tiers": "Use tiers",
     "github_provider": "GitHub review provider",
     "external_providers": "External API providers", "api_provider": "API provider", "api_key": "API key",
 }
@@ -144,7 +154,7 @@ MENU_GROUPS = {
     ("workflow",): (
         ("Workflow", ("enabled",)),
         ("Delivery", ("merge_mode", "auto_push", "cleanup_local_branches", "cleanup_remote_branches")),
-        ("Roles", ("use_tiers", "worker", "scout", "review")),
+        ("Roles", ("use_tiers", "worker", "scout", "review", "sync")),
         ("Delegation", ("timeout_seconds",)),
     ),
     ("codex",): (
@@ -157,6 +167,11 @@ MENU_GROUPS = {
     ("workflow", "scout"): (
         ("Concurrency", ("limit",)),
         ("Models", ("models",)),
+    ),
+    ("workflow", "sync"): (
+        ("Run policy", ("policy", "events", "paths")),
+        ("Task scope", ("scope", "references")),
+        ("Models", ("models", "tiers")),
     ),
     ("workflow", "review"): (
         ("Review triggers", ("policy", "max_files", "max_lines", "sensitive_paths", "ignored_paths", "label", "incremental")),
@@ -323,7 +338,7 @@ def env_entries(name, value):
 
 def candidate_list(path):
     """A role's ordered candidate list: ``workflow.ROLE.models`` or ``workflow.ROLE.tiers.N``."""
-    return (len(path) >= 3 and path[0] == "workflow" and path[1] in ("scout", "worker", "review")
+    return (len(path) >= 3 and path[0] == "workflow" and path[1] in ("scout", "worker", "review", "sync")
             and (len(path) == 3 and path[2] == "models" or len(path) == 4 and path[2] == "tiers" and path[1] != "scout"))
 
 

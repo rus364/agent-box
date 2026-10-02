@@ -1,6 +1,6 @@
 """Small deterministic boundaries for skills; the tracker retains authoritative state.
 
-The coordinator is the only writer: of the tracker, of Git, of GitHub. A worker
+The coordinator owns Git, lifecycle and GitHub; Plan sync may update task text. A worker
 changes project files in the working tree and answers; a reviewer or scout reads
 and answers without changing anything. The coordinator decides from that answer
 what to record. That division is the whole contract, and it is identical whether
@@ -829,6 +829,8 @@ def inspect(root, binding, adapter, task, config):
                             "reviewer": ({"mode": "cloud", "command": f"agent-box workflow review {task.id}"}
                                          if cloud_review(config, task, parent) else
                                          execution(config, "reviewer", config.workflow.effective_tier(task.tier), task.id))}}
+    from .plan_sync import describe
+    result["plan_sync"] = describe(root, task, config)
     if unavailable:
         if task.state == "Done" or parent.state == "Done":
             next_step = completed_step(task, parent)
@@ -843,7 +845,7 @@ def inspect(root, binding, adapter, task, config):
                 next_step = f"Run agent-box workflow begin {task.id}; readiness and ownership checks still apply"
         else:
             next_step = f"Switch to task branch {expected}, then rerun agent-box workflow inspect {task.id}"
-        result["next_step"] = next_step
+        result["next_step"] = result["plan_sync"].get("next_step", next_step)
         return result
     fingerprint = scope(root, base)
     saved = evidence(root, task, fingerprint, base)
@@ -866,6 +868,8 @@ def inspect(root, binding, adapter, task, config):
                       task, parent, config, saved, blockers,
                       no_work=unmoved_child(saved, head, parent.id) if "child_start" in saved
                       else gw.base_commit(root, base) == head and task.state not in ("Review", "Done")))
+    if "next_step" in result["plan_sync"]:
+        result["next_step"] = result["plan_sync"]["next_step"]
     return result
 
 
@@ -945,6 +949,11 @@ def execute(config, selected, role, root, prompt, read_paths=(), on_completed=No
                     + {"worker": "; reconcile files and task progress before retrying",
                        "reviewer": "; the round counts as a failure without spending an attempt"}.get(role, ""),
                     failures) from None
+            if role == "sync":
+                if exc.stage not in ("preflight", "launch"):
+                    raise ProviderFailures("Plan sync may have written tasks; inspect before retrying", failures) from None
+                if exc.category not in ("unavailable", "model-unavailable", "authentication", "quota"):
+                    raise ProviderFailures("Plan sync configuration failed; no provider fallback", failures) from None
             if role == "reviewer" and exc.category not in (
                     "unavailable", "model-unavailable", "authentication", "quota", "timeout"):
                 raise ProviderFailures("Reviewer failure does not establish provider unavailability; "
@@ -1256,8 +1265,9 @@ class WorkflowParser(argparse.ArgumentParser):
 def parser():
     p = WorkflowParser(prog="agent-box workflow")
     sub = p.add_subparsers(dest="command", required=True)
-    for name in ("begin", "inspect", "approve", "delegate", "review", "review-result", "review-budget", "validate", "finish", "pr", "land"):
+    for name in ("begin", "inspect", "approve", "delegate", "review", "review-result", "review-budget", "validate", "finish", "pr", "land", "sync"):
         description = {
+            "sync": "Synchronize live tracker tasks with a separate agent; repository is read-only",
             "inspect": "Read branch, acceptance availability, review budget and next step; works before begin or with uncommitted files",
             "delegate": "Run a managed worker or scout on the role's first available candidate and print its Markdown answer; "
                         "records nothing. A worker needs the task branch",
@@ -1275,6 +1285,12 @@ def parser():
         if name == "review-budget":
             cmd.add_argument("--limit", type=int, help="Absolute task review attempt ceiling, including attempts already used")
             cmd.add_argument("--reason", required=True, help="The user's explicit decision; also clears the failure streak")
+        if name == "sync":
+            mode = cmd.add_mutually_exclusive_group()
+            mode.add_argument("--native", action="store_true", help="Return a short assignment for the configured native profile")
+            mode.add_argument("--result", metavar="FILE", help="Record the native agent's unchanged Markdown answer")
+            cmd.add_argument("--event", choices=("manual", "before", "after", "plan"), default="manual",
+                             help="Manual always runs; other events follow Workflow Plan sync settings")
         if name == "begin":
             cmd.add_argument("--resume", action="store_true")
         if name == "approve":
@@ -1432,7 +1448,7 @@ def execution(config, role, tier, task_id):
     """How the coordinator launches a configured role.
 
     An empty reviewer list requires an independent native reviewer; other
-    empty lists mean the coordinator's own session does the work: a
+    empty worker/scout lists mean the coordinator's own session does the work: a
     subagent on the session's model would only reread the same context. A
     configured list means delegation to its first candidate: natively when
     the session runs that candidate's CLI, else as a managed CLI. A profile
@@ -1440,23 +1456,24 @@ def execution(config, role, tier, task_id):
     choice unless it opens the list, so only the list's opening provider
     counts. Profiles are written by config apply from saved lists, so a
     session pin has none. The session's provider is the coordinator's to
-    know, so the route is named per provider.
+    know, so the route is named per provider. Sync always requires its own list.
     """
     from .agent_profiles import profile_name
     from .speed import configuration_error, native_limitation
     path, models = config.workflow.models_for(role, tier)
     if not models:
-        return {"mode": "native" if role == "reviewer" else "self", "models": path}
+        return {"mode": "unconfigured" if role == "sync" else "native" if role == "reviewer" else "self", "models": path}
     first, native = models[0], {}
     limitation = native_limitation(first["provider"], first.get("speed", "inherit"))
     if (not path.startswith("--") and config.workflow.enabled and not first.get("api_provider")
             and not configuration_error(first["provider"], first)
             and not limitation
-            and (role != "reviewer" or first["effort"] != "default")):
+            and (role not in ("reviewer", "sync") or first["effort"] != "default")):
         native[first["provider"]] = profile_name(role, tier if ".tiers." in path else None)
     return {"mode": "delegate", "models": path, "native": native,
             **({"native_limitation": limitation} if limitation else {}),
             "managed": (f"agent-box workflow review {task_id}" if role == "reviewer" else
+                        f"agent-box workflow sync {task_id}" if role == "sync" else
                         f"agent-box workflow delegate {task_id} --role {role} --brief FILE")}
 
 
@@ -1658,15 +1675,27 @@ def dispatch(args):
     if args.command == "review-result":
         return review_result(root, binding, adapter, SimpleNamespace(id=args.task), config,
                              args.round, reconcile=args.reconcile)
+    if args.command == "sync":
+        from .plan_sync import run as sync
+        return sync(root, binding, adapter, config, adapter.get(args.task), args.event, native=args.native, result_file=args.result)
     if args.command == "delegate":
         return delegate(args, root, adapter, config)
     if args.command == "review" and args.result is not None:
         # Recording needs no clean scope: application reports a dirty tree or wrong branch as blocked.
         return native_result(args, root, binding, adapter, config, adapter.get(args.task))
     if args.command == "finish":
-        return finish(root, config, adapter, args.task)
+        result = finish(root, config, adapter, args.task)
+        if result.get("state") == "Done" and config.workflow.sync.policy != "off":
+            from .plan_sync import schedule as sync
+            result["plan_sync"] = sync(root, binding, adapter, config, adapter.get(args.task), "after")
+        return result
     if args.command in ("pr", "land"):
-        return landing(args, root, config, adapter)
+        result = landing(args, root, config, adapter)
+        if (args.command == "land" and args.action == "merge" and config.workflow.sync.policy != "off"
+                and adapter.get(args.task).state == "Done"):
+            from .plan_sync import schedule as sync
+            result["plan_sync"] = sync(root, binding, adapter, config, adapter.get(args.task), "after")
+        return result
     task = adapter.get(args.task)
     if args.command == "review-budget":
         if (args.limit is not None and args.limit < 0) or not args.reason.strip():
@@ -1683,7 +1712,11 @@ def dispatch(args):
             return {"task": task.id, "review_budget": review_budget_summary(state, config.workflow.review.max_rounds)}
     if args.command == "begin":
         with lock(root, "review-budget"), lock(root, "work"):
-            return {**begin(root, adapter, task, args.resume), "configuration": configuration_summary(config)}
+            result = {**begin(root, adapter, task, args.resume), "configuration": configuration_summary(config)}
+        if config.workflow.sync.policy != "off":
+            from .plan_sync import schedule as sync
+            result["plan_sync"] = sync(root, binding, adapter, config, adapter.get(args.task), "before")
+        return result
     if args.command == "inspect":
         return inspect(root, binding, adapter, task, config)
     parent, info, current, base = resolve(root, adapter, task)

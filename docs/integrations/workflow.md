@@ -1,8 +1,8 @@
 # Task workflow
 
 Enable **workflow** in `agent-box config`, configure tracker access, and run
-`ab-setup` in a repository. This installs ten short owned skills:
-`ab-tracker`, `ab-setup`, `ab-adopt`, `ab-normalize`, `ab-interview`, `ab-plan`, `ab-work`, `ab-review`,
+`ab-setup` in a repository. This installs eleven short owned skills:
+`ab-tracker`, `ab-setup`, `ab-adopt`, `ab-normalize`, `ab-interview`, `ab-plan`, `ab-work`, `ab-sync`, `ab-review`,
 `ab-pr`, `ab-land`. They compose around the external tracker, without a `.flow`
 task database, bootstrap framework, update patches or agent-turn push hooks.
 
@@ -48,9 +48,10 @@ validating its now-empty diff; preserve the branches and restore the original
 acceptance or reconstruct the original change. Missing creation evidence also
 prevents claiming that an already-integrated child began without commits.
 
-The coordinator is the only writer. It alone writes tracker requirements,
-lifecycle state, assignees, relations and dependencies, progress comments and
-checkboxes; it alone creates branches, commits and pushes; it alone touches
+The coordinator owns requirements, lifecycle state, assignees, relations,
+dependencies and progress checkboxes. Plan sync may update descriptions and
+journal comments from accepted decisions. The coordinator alone creates
+branches, commits and pushes; it alone touches
 GitHub, pull requests and merges. Tracker comments and descriptions use the
 task's language; everything handed to an agent is English.
 
@@ -132,6 +133,63 @@ nested files and @path imports. Read errors and invalid UTF-8 fail explicitly; t
 is not silently truncated. Symlinked instruction files are excluded with an
 explicit limitation.
 
+### Plan sync
+
+**Workflow → Plan sync** configures a separate agent that reads Git, documents
+and the live tracker itself. It corrects stale technical assumptions and maintains
+reference documents as `path#heading` plus purpose. It preserves requirements and
+progress marks, verifies saved descriptions, and reports unresolved conflicts.
+It never edits project files, Git, lifecycle or dependencies. Reviewers still
+judge repository evidence; they do not maintain live tasks.
+
+| Setting | Behavior |
+| --- | --- |
+| `workflow.sync.policy` | `off` (default), `auto`, or `always`; independent of review |
+| `events` | `before` implementation, `after` integration (default), `plan` after planning or an accepted decision |
+| `paths` | Auto after-event filter, default `docs/**` and `*.md`; `*` also matches `/` |
+| `scope` | `project` (default, respects recursive binding) or source `parent` tree |
+| `references` | Maintain reference-document sections (default true) |
+| `models`, `tiers.N` | Own ordered candidates, effort/speed/API and normal task tiers |
+
+For every task, choose `always` and the desired events. Auto runs selected
+before/plan events and after events whose committed changes match `paths`;
+missing source commit evidence triggers inspection rather than a silent skip.
+Managed runs use the shared `workflow.timeout_seconds`.
+
+Begin, child finish and parent merge return a Plan sync request. The coordinator
+handles it through `ab-sync` before starting affected work; plan/interview invoke
+the plan event through the same skill. After means the code has already passed
+its configured review and been integrated. `workflow inspect TASK` retains the
+last request/result for recovery. Repeating a completed after event at the same
+head does not request another run.
+
+```bash
+agent-box workflow sync TASK                 # manual, even with policy off
+agent-box workflow sync TASK --event plan    # applies automatic policy
+agent-box workflow sync TASK --native        # message for configured native profile
+agent-box workflow sync TASK --result /tmp/sync-report.md
+```
+
+`ab-sync` prefers the first candidate's native profile when actually available
+with the requested settings in this session; otherwise it uses managed execution.
+The coordinator passes a task reference and scope, never assembled task texts or
+diffs. Empty models require configuration; the coordinator never substitutes
+itself. Session `--sync SPEC` pins the managed route. `config apply` installs
+`ab-sync` and nonempty tier profiles.
+
+Codex sync uses a read-only filesystem permission profile with network enabled.
+Managed Claude exposes Read/Grep/Glob and allows Bash for tracker CLI and read-only
+Git commands, without Edit/Write. Native Claude inherits session shell permissions;
+its no-file-edit rule is a role contract, not filesystem isolation. Both routes
+use tracker CLI binding and revision guards (`update --revision REV`), reread
+before edits and confirm saved text. Other active tasks and Done tasks are not
+edited; an affected task that cannot be updated is reported as blocked.
+
+Results are `UPDATED`, `UNCHANGED`, or `BLOCKED`, never review acceptance. An error
+or partial run can leave tracker writes behind: reconcile live tasks before retry.
+No provider fallback runs after possible writes; failure before launch may use
+the next configured candidate. Requirement conflicts return to ab-interview.
+
 ### Reviewer rounds
 
 A review round runs managed, native or, for a parent whose route is a cloud
@@ -175,8 +233,8 @@ external API it is the CLI's price estimate, not the provider's bill.
 
 ## Models and routing
 
-Each role owns an ordered candidate list: `workflow.scout`, `workflow.worker` and
-`workflow.review` each hold `models`; workers and reviewers also hold optional
+Each role owns an ordered candidate list: `workflow.scout`, `workflow.worker`,
+`workflow.sync` and `workflow.review` each hold `models`; workers, sync agents and reviewers also hold optional
 `tiers.N` for task tiers 1-3. Scouts have no tiers. A candidate names the CLI that
 runs it and what it runs: `provider` (`codex` or `claude`), `model`, `effort`,
 `speed` (`inherit`, `standard`, or `fast`; default `inherit`) and `api_provider` (empty for the built-in API). Roles
@@ -205,16 +263,16 @@ rather than guessing what the account can access.
 A task may carry one `ab:tier:1`, `ab:tier:2` or `ab:tier:3` label. It selects
 models only while `workflow.use_tiers` is on (default off): set it globally, in
 `.agent-box.json`, or for one session with `--tiers` / `--no-tiers`. Off, every
-worker and reviewer runs its role's `models` whatever the task's tier; tier lists
+worker, sync agent and reviewer runs its role's `models` whatever the task's tier; tier lists
 and tier labels stay as they are. When and how a tier is assigned is decided in
 ab-plan.
 
-| Worker or reviewer work | Candidates |
+| Worker, sync or reviewer work | Candidates |
 | --- | --- |
-| Session pin (`--worker SPEC`, `--reviewer SPEC`) | The pinned model only |
+| Session pin (`--worker SPEC`, `--sync SPEC`, `--reviewer SPEC`) | The pinned model only |
 | Tiers on, task tier N with a nonempty `tiers.N` | `tiers.N` |
 | Otherwise, nonempty `models` | `models` |
-| Otherwise | Reviewer: native review only (`review --native`); `delegate` refuses |
+| Otherwise | Reviewer: native review only (`review --native`); `delegate` and sync refuse |
 
 Scouts run `workflow.scout.models`, or `--scout SPEC`. Model selection never
 changes tracker labels or invents a tier. If no candidate is eligible, selection
@@ -243,8 +301,8 @@ A project can replace any role list in `.agent-box.json` without
 changing the global configuration; a project list replaces the global list whole.
 
 `config apply` installs owned native agent profiles with exact model/effort, one
-per CLI for each role's `models` (`ab-scout`, `ab-worker`, `ab-reviewer`) and for
-each nonempty worker or reviewer tier list (`ab-worker-N`, `ab-reviewer-N`); each
+per CLI for each role's `models` (`ab-scout`, `ab-worker`, `ab-sync`, `ab-reviewer`) and for
+each nonempty worker, sync or reviewer tier list (`ab-worker-N`, `ab-sync-N`, `ab-reviewer-N`); each
 takes the first candidate of that CLI on its built-in API. A profile agent-box no
 longer defines is removed while its content is unedited. A profile is a
 convenience for native subagents, not proof of the live tool's capabilities.

@@ -1,9 +1,9 @@
-<!-- BEGIN AGENT-BOX workflow sha256=06ea2059b2ed3b97039486d2463ef2fa4da171b29ac6c2a9e53a5eb9f3f45aca -->
+<!-- BEGIN AGENT-BOX workflow sha256=98bc9b8ea1c1ee0766607919331f90d7263bc4408086e97ee5f14af8486f794c -->
 Read the tracked task before work; .agent-box.json binds this repository to its tracker project.
 Use agent-box tracker for task state, progress and dependencies; read related history when context is missing.
-Use ab-interview, ab-plan, ab-work, ab-review, ab-pr, and ab-land as needed. ab-setup maintains this binding and ab-adopt brings an existing project in line with the workflow; ab-normalize processes unmarked tasks in a bound project.
+Use ab-interview, ab-plan, ab-work, ab-sync, ab-review, ab-pr, and ab-land as needed. ab-setup maintains this binding and ab-adopt brings an existing project in line with the workflow; ab-normalize processes unmarked tasks in a bound project.
 The coordinator owns branches, commits, lifecycle, dependencies, and GitHub actions. Delegate implementation sequentially and research to scouts, which may run in parallel, when their model lists are configured; with an empty list the coordinator does that work itself.
-A worker changes project files and answers; scouts and a fresh read-only reviewer only read. The coordinator verifies answers and findings and commits what it accepts.
+A worker changes project files and answers; scouts and a fresh reviewer only read. Plan sync reads the repository and updates tracker descriptions and comments through agent-box tracker; it never changes project files, Git or lifecycle. The coordinator verifies answers and findings and commits what it accepts.
 Tracker comments are a human journal. Branch, base branch, and pull request come from Git and GitHub; lifecycle comes from the tracker's own fields, never from comment text.
 Use the user's language with them and the task's language in the tracker. Use English for agent handoffs, reports and implementation; generated diagnostics may be English.
 Complete subtasks only after validation and integration into the parent branch; complete parents only after merge into the base branch.
@@ -79,7 +79,11 @@ project and holds the allowed project configuration overrides. Nothing machine-r
 comment: a comment is a human journal, and lifecycle is read from the tracker's
 own fields.
 
-**The coordinator is the only writer.** A delegated worker reads its brief and
+**Role ownership.** Plan sync may update tracker descriptions and comments through
+`agent-box tracker`, reading project files without changing them. The coordinator
+owns Git, lifecycle, dependencies and GitHub. Other roles keep their existing limits.
+
+**The coordinator accepts implementation.** A delegated worker reads its brief and
 the code, changes project files in the working tree, and answers in Markdown;
 a reviewer or scout reads and reports, changing nothing at all. The
 coordinator decides from that answer what to commit and what to record in the

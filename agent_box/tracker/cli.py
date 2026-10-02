@@ -95,6 +95,7 @@ def parser():
             cmd.add_argument("other")
             cmd.add_argument("--remove", action="store_true")
         elif name == "update":
+            cmd.add_argument("--revision", help="Revision read with tracker get; refuse a stale description")
             cmd.add_argument("--title")
             cmd.add_argument("--description-file")
             cmd.add_argument("--priority", type=int, choices=range(6))
@@ -394,6 +395,8 @@ def dispatch(args):
             task, _ = claim(adapter, task.id, args.resume)
             return task
     if args.command == "update":
+        if args.revision is not None and (not task.revision or task.revision != args.revision):
+            raise TrackerError("Task changed since that revision; reread tracker get before updating", "conflict")
         fields = {name: value for name in ("title", "priority") if (value := getattr(args, name)) is not None}
         if args.description_file:
             fields["description"] = text_file(args.description_file)

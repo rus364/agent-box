@@ -228,10 +228,17 @@ def preflight(route):
 def build_command(route, role, root, result_path, read_paths=()):
     check_settings(route)
     readonly = role != "worker"
+    sync = role == "sync"
     speed = route.get("speed", "inherit")
     if route["provider"] == "codex":
         command = ["codex", "exec", "--ephemeral", "--ignore-user-config", "--json", "-C", str(root),
-                   "--sandbox", "read-only" if readonly else "workspace-write", "--model", route["model"]]
+                   "--model", route["model"]]
+        if sync:
+            command += ["-c", 'default_permissions="agent_box_sync"',
+                        "-c", 'permissions.agent_box_sync.extends=":read-only"',
+                        "-c", "permissions.agent_box_sync.network.enabled=true"]
+        else:
+            command += ["--sandbox", "read-only" if readonly else "workspace-write"]
         if route["effort"] != "default":
             command += ["-c", 'model_reasoning_effort=' + toml_string(route["effort"])]
         if speed != "inherit":
@@ -248,10 +255,13 @@ def build_command(route, role, root, result_path, read_paths=()):
         command += ["--effort", route["effort"]]
     for path in read_paths:
         command += ["--add-dir", str(path)]
+    sync_tools = "Read,Grep,Glob,Bash"
+    sync_allowed = ("Read,Grep,Glob,Bash(agent-box tracker *),Bash(git diff *),Bash(git show *),"
+                    "Bash(git log *),Bash(git status *),Bash(git rev-parse *)")
     command += ["--output-format", "json", "--no-session-persistence", "--safe-mode", "--strict-mcp-config",
                "--mcp-config", '{"mcpServers":{}}', "--permission-mode", "dontAsk",
-               "--tools", "Read,Grep,Glob" if readonly else "Read,Grep,Glob,Bash,Edit,Write",
-               "--allowedTools", "Read,Grep,Glob" if readonly else "Read,Grep,Glob,Bash,Edit,Write"]
+               "--tools", sync_tools if sync else "Read,Grep,Glob" if readonly else "Read,Grep,Glob,Bash,Edit,Write",
+               "--allowedTools", sync_allowed if sync else "Read,Grep,Glob" if readonly else "Read,Grep,Glob,Bash,Edit,Write"]
     return command
 
 
@@ -356,7 +366,8 @@ def run(route, role, root, prompt, *, timeout=3600, read_paths=(), diagnostics=N
                             process.wait()
                             raise ProviderFailure("Provider timed out; inspect work before retrying", "timeout") from None
                     except OSError:
-                        raise ProviderFailure(f"Cannot start {route['provider']} CLI", "unavailable") from None
+                        raise ProviderFailure(f"Cannot start {route['provider']} CLI", "unavailable",
+                                              stage="launch" if process is None else "execution") from None
                 except (Interrupted, KeyboardInterrupt):
                     if process is not None:
                         with contextlib.suppress(ProcessLookupError):
