@@ -69,6 +69,15 @@ class PlanSyncTests(WorkflowCase):
         settings.paths = ["*.py"]
         self.assertTrue(plan_sync.decision(self.root, self.task, settings, "after")[0])
 
+    def test_enabling_default_sync_includes_accepted_decisions_without_a_run_at_every_begin(self):
+        """Interview decisions can stale sibling tasks before any documentation commit is merged."""
+        settings = Config().workflow.sync
+        self.assertFalse(plan_sync.decision(self.root, self.task, settings, "plan")[0])
+        settings.policy = "auto"
+        self.assertTrue(plan_sync.decision(self.root, self.task, settings, "plan")[0])
+        self.assertTrue(plan_sync.decision(self.root, self.task, settings, "after")[0])
+        self.assertFalse(plan_sync.decision(self.root, self.task, settings, "before")[0])
+
     def test_root_document_changes_trigger_auto_sync(self):
         """Root decisions such as STRATEGY.md must not fall through a subdirectory glob."""
         settings = self.config.workflow.sync

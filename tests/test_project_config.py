@@ -61,6 +61,21 @@ class ProjectConfigTests(unittest.TestCase):
         self.assertEqual(project_config.apply(self.config, data).workflow.scout.limit, 2)
         self.assertEqual(self.config.workflow.scout.limit, 3)
 
+    def test_explicit_sync_events_survive_project_and_runtime_overlays(self):
+        """New event defaults must not widen a user's intentionally narrower sync policy."""
+        self.config.workflow.enabled = True
+        self.config.workflow.sync.events = ["after"]
+        data = {"workflow": {"sync": {"events": ["before"]}}}
+        project_config.save(self.path, data)
+        effective = project_config.apply(self.config, data)
+        self.assertEqual(effective.workflow.sync.events, ["before"])
+        runtime.sync_tracker_runtime(self.config, self.root / "rendered")
+        with patch.dict(os.environ, {"AGENT_BOX_RUNTIME_CONFIG": str(self.root / "rendered/config.json")}), \
+                patch.object(project_config, "project_path", return_value=self.path):
+            self.assertEqual(effective_config(include_project=False).workflow.sync.events, ["after"])
+            self.assertEqual(effective_config().workflow.sync.events, ["before"])
+        self.assertEqual(self.config.workflow.sync.events, ["after"])
+
     def test_project_role_lists_replace_global_lists_whole_and_reach_runtime(self):
         """A project list replaces the global one entirely; merging entries would reorder preferences silently."""
         global_models = [{"provider": "codex", "model": "global-codex", "effort": "high", "speed": "inherit", "api_provider": ""},

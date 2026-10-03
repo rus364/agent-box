@@ -11,7 +11,7 @@ from ..config import effective_config
 from ..atomicio import atomic_write_json, read_json
 from ..errors import AgentBoxError
 from ..paths import WORKFLOW_STATE
-from ..repo_binding import Binding, repository_root, write_setup
+from ..repo_binding import BINDING_FILE, Binding, repository_root, server_identity, write_setup
 from .audit import audit_project
 from .core import (NORMALIZED_LABEL, STATES, Task, TrackerError, checkboxes, claim, ready_tasks,
                    root_task, set_checkboxes)
@@ -119,8 +119,8 @@ def parser():
     cmd.add_argument("--tier", type=int, choices=(1, 2, 3))
     cmd = sub.add_parser("setup", help="Preview repository binding; save with --apply")
     cmd.add_argument("--project", required=True)
-    cmd.add_argument("--recursive", action="store_true",
-                     help="Include every project under the root project in the workflow")
+    cmd.add_argument("--recursive", action=argparse.BooleanOptionalAction, default=None,
+                     help="Include child projects; omission preserves the same binding's scope, otherwise root only")
     cmd.add_argument("--apply", action="store_true", help="Save binding and managed repository instructions")
     cmd = sub.add_parser("adopt", help="Clone, normalize or activate a staging project tree")
     cmd.add_argument("operation", choices=("clone", "boards", "cutover"))
@@ -267,11 +267,19 @@ def dispatch(args):
         adapter, _, _ = context(args.provider)
         return run(adapter, args.arguments)
     if args.command == "setup":
+        from ..project_config import load
+        root = repository_root(fallback=not args.apply)
+        config = effective_config()
         project = make_adapter(provider=args.provider).project(args.project)
-        binding = Binding(args.provider or effective_config().tracker.provider,
-                          effective_config().tracker.connection(args.provider).url,
-                          str(project["id"]), args.recursive)
+        binding = Binding(args.provider or config.tracker.provider,
+                          config.tracker.connection(args.provider).url,
+                          str(project["id"]), args.recursive if args.recursive is not None else False)
         binding.validate()
+        if args.recursive is None and "project" in load(root / BINDING_FILE).get("tracker", {}):
+            previous = Binding.load(root)
+            if (previous.provider == binding.provider and previous.project == binding.project
+                    and server_identity(previous.server) == server_identity(binding.server)):
+                binding.recursive = previous.recursive
         # Binding stores only the project; the boards are checked here so a
         # misconfigured column is reported at setup rather than mid-workflow.
         report = make_adapter(binding, args.provider).lifecycle_report()
@@ -282,7 +290,7 @@ def dispatch(args):
             raise TrackerError("Fix the board lifecycle first: " + "; ".join(
                 f"project {entry['project']}: {', '.join(entry['problems'])}" for entry in broken),
                 "configuration")
-        return {"written": write_setup(repository_root(), binding), "binding": asdict(binding),
+        return {"written": write_setup(root, binding), "binding": asdict(binding),
                 "lifecycle": report}
     adapter, binding, root = context(args.provider, args.command in ("ready", "next", "claim", "state", "move", "delete-project"),
                                     args.adoption)

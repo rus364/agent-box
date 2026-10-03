@@ -859,7 +859,7 @@ class ReviewConfig:
 class PlanSyncConfig:
     # Tracker-writing delegation is opt-in independently of code review.
     policy: str = "off"
-    events: list[str] = field(default_factory=lambda: ["after"])
+    events: list[str] = field(default_factory=lambda: ["plan", "after"])
     scope: str = "project"
     references: bool = True
     paths: list[str] = field(default_factory=lambda: ["docs/**", "*.md"])

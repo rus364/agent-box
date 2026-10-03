@@ -137,15 +137,17 @@ explicit limitation.
 
 **Workflow → Plan sync** configures a separate agent that reads Git, documents
 and the live tracker itself. It corrects stale technical assumptions and maintains
-reference documents as `path#heading` plus purpose. It preserves requirements and
-progress marks, verifies saved descriptions, and reports unresolved conflicts.
+reference documents as `path#heading` plus purpose. It preserves the existing
+reference section's heading, language and location (for example, «Опорные документы»);
+when absent, it adds one in the task's language under Context. It preserves
+requirements and progress marks, verifies saved descriptions, and reports unresolved conflicts.
 It never edits project files, Git, lifecycle or dependencies. Reviewers still
 judge repository evidence; they do not maintain live tasks.
 
 | Setting | Behavior |
 | --- | --- |
 | `workflow.sync.policy` | `off` (default), `auto`, or `always`; independent of review |
-| `events` | `before` implementation, `after` integration (default), `plan` after planning or an accepted decision |
+| `events` | Default `plan` after planning or an accepted decision and `after` integration; optional `before` implementation |
 | `paths` | Auto after-event filter, default `docs/**` and `*.md`; `*` also matches `/` |
 | `scope` | `project` (default, respects recursive binding) or source `parent` tree |
 | `references` | Maintain reference-document sections (default true) |
@@ -154,6 +156,7 @@ judge repository evidence; they do not maintain live tasks.
 For every task, choose `always` and the desired events. Auto runs selected
 before/plan events and after events whose committed changes match `paths`;
 missing source commit evidence triggers inspection rather than a silent skip.
+Explicit event lists replace the defaults, including in project overrides.
 Managed runs use the shared `workflow.timeout_seconds`.
 
 Begin, child finish and parent merge return a Plan sync request. The coordinator

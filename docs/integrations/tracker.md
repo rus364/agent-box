@@ -48,6 +48,10 @@ or deleted column surfaces as an error instead of silently moving a card. The
 same holds for the base branch, which is origin's default branch, and for the
 pull request, which is looked up on GitHub by head and base.
 
+Repeating `tracker setup` for the same provider, server and project preserves the
+saved recursive scope when neither flag is given. Use `--recursive` to include
+children or `--no-recursive` to select only the root; new bindings default to root only.
+
 With `--recursive` the binding covers the root project **and every project under
 it**: those projects are searched together, each resolves its own board, and
 tasks in them can be claimed and moved. Projects outside the subtree stay
@@ -332,6 +336,12 @@ candidates with `tracker search --exclude-label ab:normalized`; exclusion happen
 before CLI output, after the adapter has read all result pages. This limits agent
 context, not necessarily API traffic. Compact unfiltered searches remain available
 to discover links to previously processed tasks.
+
+Normalization preserves each reference-document section's heading, language and
+location. It verifies `path#heading` links and their purpose against existing
+decisions; missing decisions stay explicit for interview. Adoption uses the same
+rules on staging. Run Plan sync only after cutover, because it uses the current
+repository binding rather than the adoption receipt.
 
 `tracker normalized ID` adds the shared `ab:normalized` label only after edits,
 journal writes and verification finish. Adoption uses the same marker. It means
