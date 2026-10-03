@@ -1,4 +1,6 @@
 """Plan sync changes tracker text through a separate role without rewriting code."""
+import contextlib
+import io
 import json
 import os
 import tomllib
@@ -42,6 +44,26 @@ class PlanSyncTests(WorkflowCase):
             cli.dispatch(cli.parser().parse_args(["comment", "1", "--file", str(self.report)]))
         self.adapter.update.assert_called_once_with(self.task, {"description": "Verified description"})
         self.adapter.comment.assert_called_once_with("1", "Verified description")
+
+    def test_cli_rejects_nested_sync_even_with_broken_project_configuration(self):
+        """The public entry point must diagnose the wrong role before reading a broken binding."""
+        from agent_box import cli, project_config
+        binding = self.root / ".agent-box.json"
+        binding.write_text("{")
+        for prefix in ([], ["--"]):
+            for flags in ([], ["--native"], ["--result", "missing"], ["--reconcile", "missing"]):
+                stderr = io.StringIO()
+                with self.subTest(prefix=prefix, flags=flags), \
+                        patch.dict(os.environ, {"AGENT_BOX_SYNC_EXECUTOR": "1"}), \
+                        patch("sys.argv", ["agent-box", *prefix, "workflow", "sync", "1", *flags]), \
+                        patch.object(project_config, "project_path", return_value=binding), \
+                        patch.object(project_config, "load", wraps=project_config.load) as load, \
+                        contextlib.redirect_stderr(stderr):
+                    with self.assertRaises(SystemExit):
+                        cli.main()
+                    self.assertRegex(stderr.getvalue(), "sync executor.*tracker")
+                    load.assert_not_called()
+        self.adapter.get.assert_not_called()
 
     def test_native_and_managed_technical_reports_preserve_partial_writes_for_recovery(self):
         """An executor can report a failed readback without disguising it as a decision conflict or retrying."""

@@ -969,8 +969,11 @@ def main() -> None:
         return
     from . import launch_options, project_config
     try:
-        project_config.load()
         options, args = launch_options.parse(sys.argv[1:])
+        if args[:2] == ["workflow", "sync"]:
+            from .provider_runner import require_sync_coordinator
+            require_sync_coordinator()
+        project_config.load()
     except AgentBoxError as exc:
         die(str(exc))
     script_dir = Path(__file__).resolve().parent.parent

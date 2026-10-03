@@ -33,6 +33,13 @@ STREAM_LIMIT = 8 * 1024 * 1024
 SYNC_EXECUTOR_ENV = "AGENT_BOX_SYNC_EXECUTOR"
 
 
+def require_sync_coordinator():
+    """Diagnose accidental recursion before configuration or read-only lock access."""
+    if os.environ.get(SYNC_EXECUTOR_ENV) == "1":
+        raise AgentBoxError("Already a managed sync executor; use agent-box tracker directly. "
+                            "Workflow sync launch/results/recovery belong to the coordinator")
+
+
 class Interrupted(Exception):
     pass
 
