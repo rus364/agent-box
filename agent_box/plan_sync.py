@@ -13,12 +13,14 @@ from .workflow_state import lock
 
 
 RULES = """Synchronize tracker tasks. Read AGENTS.md/CLAUDE.md and imports. Read the source with agent-box tracker get ID --no-comments; inspect its accepted decisions, commit range and referenced sections yourself. Discover candidates with tracker search: separate substring queries for changed paths, anchors and terms; follow source relations, including unreferenced tasks. Search defaults to open; --include-done finds history. Respect recursive scope. Scope bounds discovery, not a full-task audit: get --no-comments only plausible candidates; fetch comments ID only for missing decision evidence. Never fetch task URLs directly.
-Only tracker descriptions/comments may change through agent-box tracker. Never change files, Git, lifecycle, assignees, priorities, relations or progress marks; do not delegate. Done and other active tasks are read-only; affected unwritable tasks are BLOCKED.
+Only tracker descriptions/comments may change through agent-box tracker. Never change files, Git, lifecycle, assignees, priorities, relations or progress marks; do not delegate. Done tasks are read-only history: superseded text never blocks. Other active tasks are read-only; required corrections to unwritable open tasks are BLOCKED.
 Edit only a concrete stale assertion or a decision changing the task's scope/acceptance. No informational additions, Git/sync bookkeeping (commit hashes, sync-task IDs), or restated workflow instructions. Preserve intended requirements and unrelated text; unresolved contradictions need a decision, never weaker acceptance. No correction means no write.
 With references enabled, repair missing/stale references needed to implement affected tasks; do not backfill unrelated tasks. Preserve the section's heading, language and location; if absent, add a task-language section under Context. Use path#heading plus purpose; verify sections and meaning, never line numbers or invented decisions.
 Before each edit, reread the task; use agent-box tracker update ID --revision REV --description-file - with its full preserved description in a direct heredoc, without pipes or temporary files. Read back saved text; journal substantive corrections in task language. On unknown-outcome, reread task/comments before any further write; never blindly retry.
-Return concise English: task IDs, exact mismatch/correction and evidence, unresolved issues. End with exactly one line: Sync: UPDATED, Sync: UNCHANGED, or Sync: BLOCKED. Partial work or inaccessible sources is BLOCKED.
+Report in English: task IDs, corrections/evidence, unresolved issues. End with one line: Sync: UPDATED, Sync: UNCHANGED, or Sync: BLOCKED. Unresolved open-task corrections or inaccessible required sources are BLOCKED.
 """
+
+PENDING = ("RUNNING", "NATIVE", "ERROR", "BLOCKED")
 
 
 def record_path(root, task):
@@ -87,10 +89,13 @@ def describe(root, task, config):
               "execution": execution(config, "sync", config.workflow.effective_tier(task.tier), task.id),
               "command": f"agent-box workflow sync {task.id}", "last_result": last_result(root, task)}
     prior = result["last_result"] or {}
-    if prior.get("status") in ("REQUIRED", "RUNNING", "NATIVE", "ERROR", "BLOCKED"):
-        action = "Run" if prior["status"] == "REQUIRED" else "Reconcile the pending or partial result before retrying"
-        result["next_step"] = (f"{action} Plan sync through ab-sync: agent-box workflow sync {task.id} "
+    if prior.get("status") == "REQUIRED":
+        result["next_step"] = (f"Run Plan sync through ab-sync: agent-box workflow sync {task.id} "
                                f"--event {prior.get('event', 'manual')}; do this before starting affected work")
+    elif prior.get("status") in PENDING:
+        result["next_step"] = (f"Reconcile Plan sync through ab-sync: stop/await its executor, reread live tasks, "
+                               f"then agent-box workflow sync {task.id} --reconcile FILE; "
+                               "use --result FILE for a completed native answer")
     return result
 
 
@@ -99,33 +104,53 @@ def schedule(root, binding, adapter, config, task, event):
     if not required:
         return {"status": "SKIPPED", "reason": reason}
     from .workflow import gw
-    prior = last_result(root, task)
-    if (event == "after" and prior and prior.get("event") == event and prior.get("head") == gw.head_sha(root)
-            and prior.get("status") in ("UPDATED", "UNCHANGED")):
-        return prior
     result = {"status": "REQUIRED", "task": task.id, "head": gw.head_sha(root), "event": event,
             "command": f"agent-box workflow sync {task.id} --event {event}",
             "execution": describe(root, task, config)["execution"]}
     with lock(root, "work"):
+        prior = last_result(root, task)
+        if (event == "after" and prior and prior.get("event") == event and prior.get("head") == result["head"]
+                and prior.get("status") in ("UPDATED", "UNCHANGED")):
+            return prior
         # Do not hide an interrupted run behind a new automatic request.
-        if prior and prior.get("status") in ("NATIVE", "RUNNING", "ERROR", "BLOCKED"):
+        if prior and prior.get("status") in PENDING:
             return prior
         save(root, task, result)
     return result
 
 
-def complete(root, task, result, report):
-    statuses = re.findall(r"^(?:\*\*)?Sync: (UPDATED|UNCHANGED|BLOCKED)(?:\*\*)?[ \t]*$", report, re.M)
-    if len(statuses) != 1 or report.rstrip().splitlines()[-1].strip("* \t") != f"Sync: {statuses[0]}":
+def outcome(report, *, reconciliation=False):
+    statuses = re.findall(r"^(?:\*\*)?Sync: (\w+)(?:\*\*)?[ \t]*$", report, re.M)
+    allowed = ("UPDATED", "UNCHANGED", "BLOCKED", "REQUIRED") if reconciliation else ("UPDATED", "UNCHANGED", "BLOCKED")
+    if (len(statuses) != 1 or statuses[0] not in allowed
+            or report.rstrip().splitlines()[-1].strip("* \t") != f"Sync: {statuses[0]}"):
         raise AgentBoxError("Plan sync returned no single outcome; reread tasks before retrying")
-    result.update(status=statuses[0], report=report)
+    if reconciliation and not "\n".join(report.rstrip().splitlines()[:-1]).strip():
+        raise AgentBoxError("Plan sync reconciliation requires evidence of checked writes and resolved/remaining blockers")
+    return statuses[0]
+
+
+def complete(root, task, result, report):
+    result.update(status=outcome(report), report=report)
     save(root, task, result)
     return result
 
 
-def run(root, binding, adapter, config, task, event="manual", *, native=False, result_file=None):
+def run(root, binding, adapter, config, task, event="manual", *, native=False, result_file=None, reconcile_file=None):
     from . import workflow
     settings = config.workflow.sync
+    if reconcile_file is not None:
+        with lock(root, "work"):
+            result = last_result(root, task)
+            if not result or result.get("status") not in PENDING:
+                raise AgentBoxError("No pending Plan sync result to reconcile")
+            report = Path(reconcile_file).read_text()
+            status = outcome(report, reconciliation=True)
+            # Retain the original head, report and diagnostics; recovery is not a new run.
+            result["reconciliation"] = {"previous_status": result["status"], "report": report}
+            result["status"] = status
+            save(root, task, result)
+            return result
     if result_file is not None:
         with lock(root, "work"):
             result = last_result(root, task)
@@ -152,6 +177,10 @@ def run(root, binding, adapter, config, task, event="manual", *, native=False, r
     if saved.get("base_head") and saved.get("head"):
         prompt += f"Source commits: {saved['base_head']}..{saved['head']} (verify integration before propagation).\n"
     with lock(root, "work"):
+        prior = last_result(root, task)
+        if prior and prior.get("status") in PENDING:
+            raise AgentBoxError(f"Plan sync {prior['status']}; stop/await its executor and inspect live tasks, "
+                                f"then workflow sync {task.id} --reconcile FILE before retrying")
         result = {"task": task.id, "event": event, "head": workflow.gw.head_sha(root), "status": "RUNNING"}
         if native:
             route = workflow.execution(config, "sync", tier, task.id)

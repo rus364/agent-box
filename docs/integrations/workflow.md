@@ -183,6 +183,7 @@ agent-box workflow sync TASK                 # manual, even with policy off
 agent-box workflow sync TASK --event plan    # applies automatic policy
 agent-box workflow sync TASK --native        # message for configured native profile
 agent-box workflow sync TASK --result /tmp/sync-report.md
+agent-box workflow sync TASK --reconcile /tmp/sync-recovery.md
 ```
 
 `ab-sync` prefers the first candidate's native profile when actually available
@@ -198,12 +199,28 @@ Git commands, without Edit/Write. Native Claude inherits session shell permissio
 its no-file-edit rule is a role contract, not filesystem isolation. Both routes
 use tracker CLI binding and revision guards (`update --revision REV`), reread
 before edits and confirm saved text. Other active tasks and Done tasks are not
-edited; an affected task that cannot be updated is reported as blocked.
+edited. Done tasks are historical evidence: text superseded by accepted decisions
+and current documents is not a blocker. Required corrections to unwritable open
+tasks, unresolved contradictions or inaccessible required sources are blockers.
 
 Results are `UPDATED`, `UNCHANGED`, or `BLOCKED`, never review acceptance. An error
 or partial run can leave tracker writes behind: reconcile live tasks before retry.
 No provider fallback runs after possible writes; failure before launch may use
 the next configured candidate. Requirement conflicts return to ab-interview.
+
+`workflow sync TASK --reconcile FILE` records the coordinator's recovery after the
+previous executor has stopped and possibly changed tasks have been reread. The
+report describes verified writes and resolved/remaining blockers, ending with one
+`Sync: UPDATED|UNCHANGED|BLOCKED|REQUIRED` line. UPDATED/UNCHANGED closes the original
+scope; count earlier writes when choosing UPDATED. BLOCKED retains real issues;
+REQUIRED permits a fresh run when more synchronization remains. A historical Done
+task alone can be dismissed without another model run once the remaining scope is
+verified. Reconciliation invokes no model and edits no tracker tasks or Git; it
+preserves the original report, diagnostics, event and HEAD alongside the recovery
+report. A new HEAD still needs its own synchronization. Pending/error/BLOCKED
+results cannot be silently overwritten by a new run. Use `--result` for a completed
+native answer; use reconciliation for an interrupted executor or a corrected
+assessment, including a native spawn that failed before work began.
 
 ### Reviewer rounds
 

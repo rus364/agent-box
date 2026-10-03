@@ -1290,6 +1290,7 @@ def parser():
             mode = cmd.add_mutually_exclusive_group()
             mode.add_argument("--native", action="store_true", help="Return a short assignment for the configured native profile")
             mode.add_argument("--result", metavar="FILE", help="Record the native agent's unchanged Markdown answer")
+            mode.add_argument("--reconcile", metavar="FILE", help="After executor stops and live-task checks, record recovery evidence ending Sync: UPDATED|UNCHANGED|BLOCKED|REQUIRED; no model call")
             cmd.add_argument("--event", choices=("manual", "before", "after", "plan"), default="manual",
                              help="Manual always runs; other events follow Workflow Plan sync settings")
         if name == "begin":
@@ -1678,7 +1679,8 @@ def dispatch(args):
                              args.round, reconcile=args.reconcile)
     if args.command == "sync":
         from .plan_sync import run as sync
-        return sync(root, binding, adapter, config, adapter.get(args.task), args.event, native=args.native, result_file=args.result)
+        return sync(root, binding, adapter, config, adapter.get(args.task), args.event,
+                    native=args.native, result_file=args.result, reconcile_file=args.reconcile)
     if args.command == "delegate":
         return delegate(args, root, adapter, config)
     if args.command == "review" and args.result is not None:

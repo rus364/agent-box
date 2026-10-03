@@ -54,6 +54,85 @@ class PlanSyncTests(WorkflowCase):
             self.run_workflow("sync", "1")
         self.assertEqual(workflow.execution(self.config, "sync", None, "1")["mode"], "unconfigured")
 
+    def test_false_blocker_reconciliation_preserves_writes_and_original_evidence(self):
+        """Historical Done text must not force another paid run after verified corrections."""
+        self.config.workflow.sync.policy = "always"
+        self.config.workflow.sync.events = ["after"]
+        opened = self.run_workflow("sync", "1", "--native", "--event", "after")
+        original = "Updated task 2; historical Done task 3 differs.\nSync: BLOCKED\n"
+        self.report.write_text(original)
+        blocked = self.run_workflow("sync", "1", "--result", str(self.report))
+        self.assertIn("--reconcile FILE", self.run_workflow("inspect", "1")["next_step"])
+        report = "Reread task 2: corrections saved; task 3 is superseded history.\nSync: UPDATED\n"
+        self.report.write_text(report)
+        self.config.workflow.sync.models = []
+        with patch.object(workflow, "execute") as execute:
+            result = self.run_workflow("sync", "1", "--reconcile", str(self.report))
+            execute.assert_not_called()
+        self.assertEqual(result["status"], "UPDATED")
+        self.assertEqual(result["report"], original)
+        self.assertEqual(result["reconciliation"], {"previous_status": "BLOCKED", "report": report})
+        self.assertEqual(result["head"], opened["head"])
+        self.assertEqual(result["route"], blocked["route"])
+        self.assertEqual(plan_sync.schedule(self.root, self.binding, self.adapter, self.config,
+                                            self.task, "after"), result)
+        self.assertNotIn("next_step", plan_sync.describe(self.root, self.task, self.config))
+        self.adapter.update.assert_not_called()
+        self.adapter.set_state.assert_not_called()
+
+    def test_pending_sync_cannot_be_overwritten_without_verified_recovery(self):
+        """A manual retry must not silently discard possible tracker writes from either backend."""
+        for status in ("BLOCKED", "ERROR", "NATIVE", "RUNNING"):
+            prior = {"status": status, "head": workflow.gw.head_sha(self.root), "event": "plan"}
+            plan_sync.save(self.root, self.task, prior)
+            for flags in ([], ["--native"]):
+                with self.subTest(status=status, flags=flags), patch.object(workflow, "execute") as execute:
+                    with self.assertRaisesRegex(AgentBoxError, "--reconcile"):
+                        self.run_workflow("sync", "1", *flags)
+                    self.assertEqual(plan_sync.last_result(self.root, self.task), prior)
+                    execute.assert_not_called()
+
+    def test_reconciliation_can_require_a_fresh_run_after_interrupted_executor_stops(self):
+        """Recovery may verify partial writes without claiming synchronization is complete."""
+        prior = {"status": "ERROR", "head": workflow.gw.head_sha(self.root), "event": "plan",
+                 "reason": "response lost"}
+        plan_sync.save(self.root, self.task, prior)
+        self.report.write_text("Executor stopped; reread saved edits, remaining scope needs sync.\nSync: REQUIRED\n")
+        result = self.run_workflow("sync", "1", "--reconcile", str(self.report))
+        self.assertEqual(result["status"], "REQUIRED")
+        self.assertEqual(result["reason"], prior["reason"])
+        self.assertIn("--event plan", self.run_workflow("inspect", "1")["next_step"])
+        self.assertEqual(self.run_workflow("sync", "1", "--native")["status"], "NATIVE")
+
+    def test_reconciliation_never_credits_old_work_to_a_new_head(self):
+        """A moved checkout can reconcile old writes but must still schedule new decisions."""
+        prior = {"status": "BLOCKED", "head": workflow.gw.head_sha(self.root), "event": "after"}
+        plan_sync.save(self.root, self.task, prior)
+        workflow.gw.git(self.root, "commit", "--allow-empty", "-m", "new source")
+        self.report.write_text("Prior run verified; only blocker was historical Done text.\nSync: UNCHANGED\n")
+        result = self.run_workflow("sync", "1", "--reconcile", str(self.report))
+        self.assertEqual(result["head"], prior["head"])
+        self.config.workflow.sync.policy = "always"
+        self.config.workflow.sync.events = ["after"]
+        scheduled = plan_sync.schedule(self.root, self.binding, self.adapter, self.config, self.task, "after")
+        self.assertEqual(scheduled["status"], "REQUIRED")
+        self.assertNotEqual(scheduled["head"], prior["head"])
+
+    def test_invalid_or_unnecessary_reconciliation_preserves_saved_result(self):
+        """A bare outcome is not evidence, and successful results need no administrative override."""
+        prior = {"status": "BLOCKED", "head": workflow.gw.head_sha(self.root), "event": "after"}
+        for report in ("", "Sync: UPDATED\n", "Sync: UNCHANGED\nextra", "why\nSync: UPDATED\nSync: REQUIRED"):
+            plan_sync.save(self.root, self.task, prior)
+            self.report.write_text(report)
+            with self.subTest(report=report), self.assertRaises(AgentBoxError):
+                self.run_workflow("sync", "1", "--reconcile", str(self.report))
+            self.assertEqual(plan_sync.last_result(self.root, self.task), prior)
+        self.report.write_text("Verified all tasks.\nSync: UNCHANGED\n")
+        for status in ("UPDATED", "UNCHANGED", "REQUIRED"):
+            plan_sync.save(self.root, self.task, {**prior, "status": status})
+            with self.subTest(status=status), self.assertRaisesRegex(AgentBoxError, "No pending"):
+                self.run_workflow("sync", "1", "--reconcile", str(self.report))
+
     def test_events_and_paths_decide_frequency_independently_of_review(self):
         settings = self.config.workflow.sync
         settings.policy, settings.events = "always", ["before", "after"]
