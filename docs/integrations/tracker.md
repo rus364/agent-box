@@ -70,8 +70,9 @@ device needs a matching global connection, or `--tracker URL` with
 `VIKUNJA_TOKEN` exported for one session. Changing servers permanently requires
 updating the project binding. Setup and adoption
 preserve other project overrides. Setup maintains checksum blocks in
-`AGENTS.md` and the `CLAUDE.md` import, preserving outside text and refusing
-edited blocks, symlinks and ambiguous ownership.
+`AGENTS.md` and the import in an existing `CLAUDE.md`, preserving outside text
+and refusing edited blocks, symlinks and ambiguous ownership. Setup and adoption
+never create an absent `CLAUDE.md`, including one deliberately removed by the project.
 
 Search results are compact JSON; `get` includes the description, relationships
 and comments. `get` accepts the user's reference directly.

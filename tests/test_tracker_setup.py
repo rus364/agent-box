@@ -93,3 +93,61 @@ class SetupScopeTests(unittest.TestCase):
         """The safe narrowing option must be discoverable through the same parser as setup."""
         _, choices = completion.COMMANDS["tracker"](["setup", "--"])
         self.assertTrue({"--recursive", "--no-recursive"} <= {name for name, _ in choices})
+
+    def test_setup_leaves_absent_and_deliberately_removed_claude_file_absent(self):
+        """A project may use AGENTS.md alone; refreshing setup must respect that choice."""
+        claude = self.root / "CLAUDE.md"
+        result = self.setup("--apply")
+        self.assertNotIn(str(claude), result["written"])
+        self.assertFalse(claude.exists())
+        claude.write_text(block_text("@AGENTS.md\n", "instructions"))
+        claude.unlink()
+        self.setup("--apply")
+        self.assertFalse(claude.exists())
+        binding = Binding.load(self.root)
+        before = self.path.read_bytes()
+        binding.project = "13"
+        written = write_setup(self.root, binding, instructions_only=True)
+        self.assertNotIn(str(claude), written)
+        self.assertFalse(claude.exists())
+        self.assertEqual(self.path.read_bytes(), before)
+        self.assertIn("ab-sync", (self.root / "AGENTS.md").read_text())
+
+    def test_setup_keeps_existing_claude_import_and_user_text(self):
+        """Projects that keep CLAUDE.md still receive the import without duplicate or lost text."""
+        claude = self.root / "CLAUDE.md"
+        original = b"Project Claude rules\r\n"
+        claude.write_bytes(original)
+        self.setup("--apply")
+        maintained = claude.read_bytes()
+        self.assertTrue(maintained.endswith(original))
+        self.assertEqual(maintained.count(b"@AGENTS.md"), 1)
+        self.setup("--apply")
+        self.assertEqual(claude.read_bytes(), maintained)
+        imported = b"@AGENTS.md\r\n" + original
+        claude.write_bytes(imported)
+        self.setup("--apply")
+        self.assertEqual(claude.read_bytes(), imported)
+
+    def test_setup_refuses_edited_claude_block_before_writing_other_files(self):
+        """Skipping an absent Claude file must not weaken ownership checks on an existing one."""
+        claude = self.root / "CLAUDE.md"
+        modified = block_text("@AGENTS.md\n", "instructions").replace("@AGENTS.md", "Custom rule")
+        claude.write_text(modified)
+        with self.assertRaisesRegex(AgentBoxError, "User-edited block"):
+            self.setup("--apply")
+        self.assertEqual(claude.read_text(), modified)
+        self.assertFalse(self.path.exists())
+        self.assertFalse((self.root / "AGENTS.md").exists())
+
+    def test_setup_refuses_dangling_claude_symlink_before_writing_other_files(self):
+        """A dangling symlink is owned, not an absent file that setup may ignore or recreate."""
+        claude = self.root / "CLAUDE.md"
+        target = self.root / "absent-target"
+        claude.symlink_to(target)
+        with self.assertRaisesRegex(AgentBoxError, "Refusing to replace"):
+            self.setup("--apply")
+        self.assertTrue(claude.is_symlink())
+        self.assertFalse(target.exists())
+        self.assertFalse(self.path.exists())
+        self.assertFalse((self.root / "AGENTS.md").exists())

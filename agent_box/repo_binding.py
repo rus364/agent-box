@@ -195,6 +195,8 @@ def setup_content(root: Path, binding: Binding):
         path = root / name
         if path.is_symlink() or (path.exists() and not path.is_file()):
             raise AgentBoxError(f"Refusing to replace {path}")
+        if name == "CLAUDE.md" and not path.exists():
+            continue
         original = path.read_bytes().decode() if path.exists() else ""
         if name == "CLAUDE.md" and "@AGENTS.md" in original and "BEGIN AGENT-BOX instructions" not in original:
             continue
