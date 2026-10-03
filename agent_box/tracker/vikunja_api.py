@@ -159,8 +159,10 @@ class VikunjaClient:
         except (OSError, http.client.HTTPException) as exc:
             detail = str(exc).replace(self.token, "[redacted]")
             raise APIError(0, f"request failed: {detail}", method=method) from None
+        if not payload and (status in (204, 205) or method.upper() == "HEAD"):
+            return None
         try:
-            return None if not payload else json.loads(payload.decode("utf-8"))
+            return json.loads(payload.decode("utf-8"))
         except (UnicodeError, json.JSONDecodeError):
             raise APIError(status, "invalid JSON response", method=method) from None
 

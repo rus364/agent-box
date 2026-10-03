@@ -10,7 +10,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import MagicMock, Mock, patch
 
 from agent_box import workflow
+from agent_box.repo_binding import Binding
 from agent_box.tracker import cli
+from agent_box.tracker.vikunja import VikunjaAdapter
 from agent_box.tracker.vikunja_api import APIError, VikunjaClient
 
 
@@ -23,9 +25,9 @@ class TransportTests(unittest.TestCase):
         return json.loads(output.getvalue())
 
     def test_accepted_write_with_lost_reply_reports_unknown_without_repeating(self):
-        """A timeout before headers or in the body can follow a committed POST."""
-        for body_started in (False, True):
-            with self.subTest(body_started=body_started):
+        """A timeout or empty close-delimited success can follow a committed task creation."""
+        for reply in ('headers-timeout', 'body-timeout', 200, 201):
+            with self.subTest(reply=reply):
                 release = threading.Event()
                 received = []
 
@@ -35,7 +37,11 @@ class TransportTests(unittest.TestCase):
 
                     def do_POST(self):
                         received.append(json.loads(self.rfile.read(int(self.headers['Content-Length']))))
-                        if body_started:
+                        if isinstance(reply, int):
+                            self.send_response(reply)
+                            self.end_headers()
+                            return
+                        if reply == 'body-timeout':
                             self.send_response(200)
                             self.send_header('Content-Length', '100')
                             self.end_headers()
@@ -48,8 +54,9 @@ class TransportTests(unittest.TestCase):
                 thread.start()
                 try:
                     client = VikunjaClient(f'http://127.0.0.1:{server.server_port}', 'fixture-secret', timeout=0.1)
-                    result = self.diagnostic(cli, lambda: client.post('/tasks', {'title': 'fixture'}))
-                    self.assertEqual(received, [{'title': 'fixture'}])
+                    adapter = VikunjaAdapter(client.url, client.token, Binding('vikunja', client.url, '1'), client)
+                    result = self.diagnostic(cli, lambda: adapter.create('1', 'fixture'))
+                    self.assertEqual(received, [{'title': 'fixture', 'description': '', 'priority': 0}])
                     self.assertEqual((result['category'], result['retryable']), ('unknown-outcome', False))
                     self.assertIn('reread', result['error'])
                 finally:
@@ -128,7 +135,7 @@ class TransportTests(unittest.TestCase):
     def test_invalid_success_payload_is_not_bad_command_input(self):
         """A write can succeed before malformed JSON prevents receipt of its identity."""
         for method in ('GET', 'POST'):
-            for payload in (b'{', b'\xff'):
+            for payload in (b'', b'{', b'\xff'):
                 with self.subTest(method=method, payload=payload):
                     opener = Mock(return_value=io.BytesIO(payload))
                     client = VikunjaClient('https://example.invalid', 'fixture-secret', opener=opener)
@@ -137,6 +144,17 @@ class TransportTests(unittest.TestCase):
                     self.assertEqual(caught.exception.category, 'provider' if method == 'GET' else 'unknown-outcome')
                     self.assertFalse(caught.exception.retryable)
                     self.assertEqual(opener.call_count, 1)
+
+    def test_no_content_success_and_head_do_not_require_json(self):
+        """An empty delete/update response or HEAD is legitimate, not an uncertain write."""
+        for method, status in (('DELETE', 204), ('PUT', 204), ('POST', 205), ('HEAD', 200)):
+            with self.subTest(method=method, status=status):
+                response = io.BytesIO(b'')
+                response.status = status
+                opener = Mock(return_value=response)
+                client = VikunjaClient('https://example.invalid', 'fixture-secret', opener=opener)
+                self.assertIsNone(client.request(method, '/tasks/7'))
+                self.assertEqual(opener.call_count, 1)
 
     def test_cli_and_workflow_preserve_transport_diagnostics(self):
         """Both entrypoints must expose the same safe recovery after a failed request."""
