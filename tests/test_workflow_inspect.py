@@ -27,6 +27,7 @@ class InspectTests(unittest.TestCase):
         self.tasks = {"1": self.task}
         self.adapter = Mock()
         self.adapter.get.side_effect = self.tasks.__getitem__
+        self.adapter.resolve.side_effect = lambda reference, *args, **kwargs: self.adapter.get(reference)
         self.adapter.identity.return_value = {"id": 1}
         self.config = Config()
         self.config.workflow.enabled = True
@@ -63,7 +64,7 @@ class InspectTests(unittest.TestCase):
             return self.dispatch("inspect", task)
         finally:
             self.assertEqual(self.snapshot(), before, "inspect changed Git, working files or evidence")
-            self.assertTrue(all(call[0] == "get" for call in self.adapter.mock_calls), self.adapter.mock_calls)
+            self.assertTrue(all(call[0] in ("get", "resolve") for call in self.adapter.mock_calls), self.adapter.mock_calls)
 
     def test_before_begin_reports_missing_branch_and_lifecycle_appropriate_next_step(self):
         """A not-yet-started or cleaned-up task needs diagnosis without a fabricated scope."""

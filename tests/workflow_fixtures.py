@@ -126,6 +126,7 @@ class WorkflowCase(unittest.TestCase):
         self.config.workflow.review.models = [candidate("claude", "m", "high")]
         self.adapter = Mock()
         self.adapter.get.return_value = self.task
+        self.adapter.resolve.side_effect = lambda reference, *args, **kwargs: self.adapter.get(reference)
         self.adapter.identity.return_value = {"id": 1}
         self.report = Path(self.directory.name) / "report.md"
         self.report.write_text("Verdict: PASS\n\nReviewed.\n")

@@ -104,12 +104,24 @@ a visible number name different tasks, `get` refuses and asks for the quoted
 still reads when no visible number matches.
 
 Full and compact tasks expose `number` alongside canonical `id`, project and URL.
-Pass that `id` unchanged to mutations and workflow commands. Internal IDs,
+Pass that `id` unchanged to mutations and workflow commands; read-only
+`workflow inspect REFERENCE` also accepts the same references as `tracker get`. Internal IDs,
 relations and branch names retain their existing meaning. Text search only finds
 candidates; a substring match does not establish the user's intended task.
 
 Comments are not included in Vikunja's server-side text search. Task IDs resolve
 directly; ambiguous project names require an exact path or ID.
+
+Network timeouts and disconnected responses are reported as `transport` for reads.
+A lost write reply, server/gateway failure or invalid successful response yields
+`unknown-outcome`, `retryable: false`: the server may have applied the write.
+Explicit authentication and revision-conflict denials retain their categories.
+There are no automatic request retries. `retryable` describes the failed request,
+not the whole command: earlier writes may have completed. Reread task state or
+`comments ID` before another write. For an unknown create, use
+`search "task title" --include-done` and inspect candidates; absence in one read
+does not prove the original request cannot still complete. Tracker and workflow
+errors expose the same category and retry hint.
 
 Claims check status, dependencies and assignees, assign the authenticated user,
 move to Doing, and reread the result. Same-user Doing tasks require deliberate
@@ -168,9 +180,10 @@ may be English; they are stable system explanations rather than user-authored
 task content.
 
 Task content uses its language. Markdown checkboxes represent evidenced progress;
-only independent review can provide review acceptance. The coordinator is the
-only writer of the tracker: requirements, lifecycle, assignees, relations,
-progress comments and checkboxes. A worker changes project files and answers
+only independent review can provide review acceptance. The coordinator owns
+requirements, lifecycle, assignees, relations, progress comments and checkboxes.
+Plan sync may also update task descriptions and journal comments within its assigned scope.
+A worker changes project files and answers
 the coordinator; reviewers and scouts only read. That is a contract, not credential
 isolation, and it is the same for a native subagent and a managed CLI run.
 

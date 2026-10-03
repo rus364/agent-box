@@ -2,6 +2,8 @@
 import unittest
 from unittest.mock import patch
 
+from agent_box import workflow
+from agent_box.config import Config
 from agent_box.repo_binding import Binding
 from agent_box.tracker import cli
 from agent_box.tracker import vikunja_api as api
@@ -66,6 +68,47 @@ class ResolutionTests(unittest.TestCase):
             result = cli.dispatch(cli.parser().parse_args(['get', '#21']))
             self.assertEqual(result['comments'], [{'comment': 'History'}])
             comments.assert_called_once_with('319')
+
+    def inspect(self, reference):
+        config = Config()
+        config.workflow.enabled = True
+        with patch.object(workflow, 'effective_config', return_value=config), \
+             patch.object(workflow, 'repository_root'), \
+             patch.object(Binding, 'session', return_value=self.binding), \
+             patch.object(workflow, 'make_adapter', return_value=self.adapter), \
+             patch.object(workflow, 'inspect', side_effect=lambda root, binding, adapter, task, config: task.id):
+            return workflow.dispatch(workflow.parser().parse_args(['inspect', reference]))
+
+    def test_workflow_inspect_accepts_the_same_references_as_get(self):
+        """Read-only workflow diagnostics must understand a copied task link or UI number."""
+        for reference, expected in (('#21', '319'), ('24', '322'), ('Resolution', '322'),
+                                    (self.client.url + '/tasks/319', '319'), ('319', '319'), ('400', '400')):
+            with self.subTest(reference=reference):
+                self.assertEqual(self.inspect(reference), expected)
+        self.assertEqual(self.client.writes, [])
+
+    def test_workflow_inspect_preserves_reference_ambiguity_and_scope_refusals(self):
+        """Convenient reads cannot guess conflicting IDs or redirect an outside URL."""
+        for reference in ('21', 'Reviewer', self.client.url + '/tasks/400',
+                          'https://elsewhere.example/tasks/319'):
+            with self.subTest(reference=reference), self.assertRaises(TrackerError):
+                self.inspect(reference)
+        self.client.tasks[322]['index'] = 21
+        with self.assertRaisesRegex(TrackerError, 'Ambiguous'):
+            self.inspect('#21')
+        self.assertEqual(self.client.writes, [])
+
+    def test_recording_workflow_results_still_uses_canonical_ids(self):
+        """A read convenience must not retarget a mutating command to a visible number."""
+        config = Config()
+        config.workflow.enabled = True
+        with patch.object(workflow, 'effective_config', return_value=config), \
+             patch.object(workflow, 'repository_root'), \
+             patch.object(Binding, 'session', return_value=self.binding), \
+             patch.object(workflow, 'make_adapter', return_value=self.adapter), \
+             patch.object(workflow, 'native_result', side_effect=lambda args, root, binding, adapter, config, task: task.id):
+            args = workflow.parser().parse_args(['review', '21', '--result', '/unused/report'])
+            self.assertEqual(workflow.dispatch(args), '21')
 
     def test_get_refuses_a_number_that_is_one_tasks_id_and_anothers_visible_number(self):
         """Silently choosing either reading of 21 would show the wrong requirements."""

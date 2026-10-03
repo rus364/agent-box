@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import http.client
 import io
 import json
 import os
@@ -58,13 +59,22 @@ class ConfigError(VikunjaError):
 
 
 class APIError(VikunjaError):
-    def __init__(self, status, detail, code=None):
+    def __init__(self, status, detail, code=None, *, method="GET"):
         self.status = status
         self.code = code
+        writing = method.upper() not in ("GET", "HEAD", "OPTIONS")
+        transient = status in (0, 408, 429, 500, 502, 503, 504)
+        unknown = writing and (status in (0, 408) or status >= 500 or 200 <= status < 300)
         suffix = f" (code {code})" if code is not None else ""
-        super().__init__(f"Vikunja API HTTP {status}: {detail}{suffix}",
-                         "conflict" if status in (409, 412) else "authentication" if status in (401, 403) else "transport" if status in (0, 429, 502, 503, 504) else "provider",
-                         status in (0, 429, 502, 503, 504))
+        prefix = f"Vikunja API HTTP {status}" if status else "Vikunja transport"
+        if unknown:
+            suffix += ". Write outcome unknown; the server may have applied it. Do not repeat the write; reread task state/comments first"
+        elif transient and not writing:
+            suffix += ". Retry only the failed read; the command may have completed earlier writes"
+        super().__init__(f"{prefix}: {detail}{suffix}",
+                         "unknown-outcome" if unknown else "conflict" if status in (409, 412) else
+                         "authentication" if status in (401, 403) else "transport" if transient else "provider",
+                         transient and not writing)
 
 
 class AuthenticationError(APIError):
@@ -127,10 +137,13 @@ class VikunjaClient:
             with self.opener(request, timeout=self.timeout) as response:
                 self.revisions[path.split("?")[0]] = getattr(response, "headers", {}).get("ETag", "")
                 payload = response.read()
-                return None if not payload else json.loads(payload.decode("utf-8"))
+                status = getattr(response, "status", 200)
         except urllib.error.HTTPError as exc:
             try:
                 raw = exc.read().decode("utf-8", "replace")
+            except (OSError, http.client.HTTPException):
+                # The received status still establishes an explicit denial even if its body is lost.
+                raw = ""
             finally:
                 exc.close()
             try:
@@ -141,9 +154,15 @@ class VikunjaClient:
                 problem = {}
             detail = problem.get("detail") or problem.get("message") or problem.get("title") or exc.reason
             error_type = AuthenticationError if exc.code in (401, 403) else APIError
-            raise error_type(exc.code, str(detail).replace(self.token, "[redacted]"), problem.get("code")) from None
-        except urllib.error.URLError as exc:
-            raise APIError(0, f"cannot connect to {self.url}: {exc.reason}") from None
+            raise error_type(exc.code, str(detail).replace(self.token, "[redacted]"), problem.get("code"),
+                             method=method) from None
+        except (OSError, http.client.HTTPException) as exc:
+            detail = str(exc).replace(self.token, "[redacted]")
+            raise APIError(0, f"request failed: {detail}", method=method) from None
+        try:
+            return None if not payload else json.loads(payload.decode("utf-8"))
+        except (UnicodeError, json.JSONDecodeError):
+            raise APIError(status, "invalid JSON response", method=method) from None
 
     def get(self, path):
         return self.request("GET", path)

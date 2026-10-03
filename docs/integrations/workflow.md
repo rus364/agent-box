@@ -412,8 +412,10 @@ documentation-only change with `["**/*.md", "docs/**"]` needs no auto review. A
 rename leaves the counts only when both its old and new names are ignored. A
 path matching both lists stays counted and triggers review as sensitive. Ignoring
 never changes `always`, labels, scope, validation or the diff a reviewer reads.
-`agent-box workflow inspect TASK` is read-only and works before begin, from another
-branch or with uncommitted files. It reports current/found branches, effective
+`agent-box workflow inspect REFERENCE` is read-only and works before begin, from another
+branch or with uncommitted files. Like `tracker get`, it accepts a visible number,
+exact title, task URL or canonical ID, refusing ambiguity; other workflow commands
+still take canonical IDs. It reports current/found branches, effective
 configuration, review budget, acceptance availability/reasons and a next step. That step is
 derived from what is recorded for this head rather than from the shape of the cycle: a branch
 still at its fork point asks for work, a head without successful validation asks for it, a head

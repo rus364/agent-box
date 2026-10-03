@@ -36,7 +36,7 @@ from .paths import WORKFLOW_STATE
 from .provider_runner import SEVERITIES, ProviderFailure, preflight, review_report, run, save_private
 from .repo_binding import Binding, repository_root, server_identity
 from .routing import select
-from .tracker.core import claim, checkboxes, root_task, completion_reasons, blocking_reasons
+from .tracker.core import TrackerError, claim, checkboxes, root_task, completion_reasons, blocking_reasons
 from .tracker.registry import make_adapter
 from .usage import usage_snapshot
 from .workflow_state import lock, scout_slot
@@ -1278,7 +1278,8 @@ def parser():
             "approve": "Record the user's explicit acceptance of the current head instead of a required review",
         }.get(name)
         cmd = sub.add_parser(name, **({"help": description, "description": description} if description else {}))
-        cmd.add_argument("task")
+        cmd.add_argument("task", help="Visible number, exact title, task URL or canonical ID" if name == "inspect"
+                         else "Canonical task ID returned by tracker get/resolve")
         if name == "review-result":
             cmd.add_argument("--round", help="Saved round identifier; defaults to the last received result")
             cmd.add_argument("--reconcile", action="store_true", help="Apply a still-pending result to its original scope")
@@ -1696,6 +1697,9 @@ def dispatch(args):
             from .plan_sync import schedule as sync
             result["plan_sync"] = sync(root, binding, adapter, config, adapter.get(args.task), "after")
         return result
+    if args.command == "inspect":
+        task = adapter.resolve(args.task, binding.project, binding.recursive, canonical=True)
+        return inspect(root, binding, adapter, task, config)
     task = adapter.get(args.task)
     if args.command == "review-budget":
         if (args.limit is not None and args.limit < 0) or not args.reason.strip():
@@ -1717,8 +1721,6 @@ def dispatch(args):
             from .plan_sync import schedule as sync
             result["plan_sync"] = sync(root, binding, adapter, config, adapter.get(args.task), "before")
         return result
-    if args.command == "inspect":
-        return inspect(root, binding, adapter, task, config)
     parent, info, current, base = resolve(root, adapter, task)
     tasks = tree(adapter, task)
     fingerprint = scope(root, base)
@@ -1782,6 +1784,9 @@ def main(argv):
         return 0
     except ProviderFailures as exc:
         print(json.dumps({"error": exc.message, "failures": exc.failures}, ensure_ascii=False))
+        return 2
+    except TrackerError as exc:
+        print(json.dumps({"error": str(exc), "category": exc.category, "retryable": exc.retryable}))
         return 2
     except (AgentBoxError, OSError, ValueError, subprocess.TimeoutExpired) as exc:
         print(json.dumps({"error": str(exc)}))
