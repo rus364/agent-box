@@ -188,6 +188,11 @@ agent-box workflow sync TASK --reconcile /tmp/sync-recovery.md
 
 `ab-sync` prefers the first candidate's native profile when actually available
 with the requested settings in this session; otherwise it uses managed execution.
+This skill and `workflow sync` are coordinator operations. The already launched
+sync executor uses `agent-box tracker` directly; it never starts another sync or
+runs workflow commands. Tracker description/comment writes need network access,
+not filesystem writes; a nested workflow launch instead tries to create local
+locks/state and fails under the executor's read-only filesystem policy.
 The coordinator passes a task reference and scope, never assembled task texts or
 diffs. Empty models require configuration; the coordinator never substitutes
 itself. Session `--sync SPEC` pins the managed route. `config apply` installs

@@ -12,7 +12,7 @@ from .tracker.core import root_task
 from .workflow_state import lock
 
 
-RULES = """Synchronize tracker tasks. Read AGENTS.md/CLAUDE.md and imports. Read the source with agent-box tracker get ID --no-comments; inspect its accepted decisions, commit range and referenced sections yourself. Discover candidates with tracker search: separate substring queries for changed paths, anchors and terms; follow source relations, including unreferenced tasks. Search defaults to open; --include-done finds history. Respect recursive scope. Scope bounds discovery, not a full-task audit: get --no-comments only plausible candidates; fetch comments ID only for missing decision evidence. Never fetch task URLs directly.
+RULES = """Act as the sync executor. Use tracker CLI; never invoke workflow commands or the coordinator's ab-sync skill. Read AGENTS.md/CLAUDE.md and imports. Read the source with agent-box tracker get ID --no-comments; inspect decisions, commits and referenced sections. Find candidates with tracker search: separate substring queries for paths, anchors and terms; follow relations, including unreferenced tasks. Search defaults to open; --include-done finds history. Respect recursive scope; do not audit every task. Read plausible candidates with get --no-comments; fetch comments ID only for missing evidence. Never fetch task URLs directly.
 Only tracker descriptions/comments may change through agent-box tracker. Never change files, Git, lifecycle, assignees, priorities, relations or progress marks; do not delegate. Done tasks are read-only history: superseded text never blocks. Other active tasks are read-only; required corrections to unwritable open tasks are BLOCKED.
 Edit only a concrete stale assertion or a decision changing the task's scope/acceptance. No informational additions, Git/sync bookkeeping (commit hashes, sync-task IDs), or restated workflow instructions. Preserve intended requirements and unrelated text; unresolved contradictions need a decision, never weaker acceptance. No correction means no write.
 With references enabled, repair missing/stale references needed to implement affected tasks; do not backfill unrelated tasks. Preserve the section's heading, language and location; if absent, add a task-language section under Context. Use path#heading plus purpose; verify sections and meaning, never line numbers or invented decisions.
@@ -171,7 +171,7 @@ def run(root, binding, adapter, config, task, event="manual", *, native=False, r
         raise AgentBoxError("Plan sync source is outside the repository binding")
     target = (f"parent tree {parent.id}" if settings.scope == "parent" else
               f"project {binding.project}; recursive={str(binding.recursive).lower()}")
-    prompt = (f"Source: {task.id}\nRead: agent-box tracker get {task.url or task.id} --no-comments\nEvent: {event}\nScope: {target}\n"
+    prompt = (f"Assigned role: sync executor\nSource: {task.id}\nRead: agent-box tracker get {task.url or task.id} --no-comments\nEvent: {event}\nScope: {target}\n"
               f"References: {str(settings.references).lower()}\n")
     saved = workflow.read_evidence(root, task)
     if saved.get("base_head") and saved.get("head"):
