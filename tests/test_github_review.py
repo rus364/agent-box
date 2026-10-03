@@ -390,8 +390,9 @@ class CloudReviewTests(LandingCase):
     def test_an_answer_stamped_with_the_request_s_own_second_is_not_its_answer(self):
         """GitHub stamps whole seconds; a reviewer needs minutes, so that second belongs to the past."""
         self.review()
-        self.comments.append(self.request_comment(created=when(120)))
-        self.answer(CLAUDE_PASS, created=when(120))
+        created = when(120)
+        self.comments.append(self.request_comment(created=created))
+        self.answer(CLAUDE_PASS, created=created)
         self.assertIn("no answer", self.review()["outcome"])
 
     def test_an_answer_echoing_another_base_answered_the_older_question(self):
