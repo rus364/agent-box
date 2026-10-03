@@ -30,6 +30,7 @@ STDERR_LIMIT = 64 * 1024
 DIAGNOSTIC_MAX_FILES = 20
 DIAGNOSTIC_MAX_AGE = 7 * 24 * 3600
 STREAM_LIMIT = 8 * 1024 * 1024
+SYNC_EXECUTOR_ENV = "AGENT_BOX_SYNC_EXECUTOR"
 
 
 class Interrupted(Exception):
@@ -347,6 +348,8 @@ def run(route, role, root, prompt, *, timeout=3600, read_paths=(), diagnostics=N
                 with contextlib.suppress(OSError):
                     output_directory.rmdir()
             raise
+        if role == "sync":
+            env[SYNC_EXECUTOR_ENV] = "1"
         with (output_directory / "stdout").open("w+") as stdout, (output_directory / "stderr").open("w+") as stderr:
             try:
                 # The CLI runs in its own session, so a signal to this process

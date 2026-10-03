@@ -12,6 +12,34 @@ from unittest.mock import patch
 
 
 class ProviderRunnerTests(unittest.TestCase):
+    def test_sync_marker_reaches_only_child_environment_after_provider_preparation(self):
+        """Both CLIs and API routes must identify nested sync without marking the coordinator or other roles."""
+        from agent_box import config, external_launch, provider_runner as r
+        marker = "AGENT_BOX_SYNC_EXECUTOR"
+        for provider in ("codex", "claude"):
+            for api in ("", "fixture"):
+                for role in ("sync", "worker"):
+                    report = "No corrections.\nSync: UNCHANGED\n"
+                    def popen(command, **kwargs):
+                        self.assertEqual(kwargs["env"].get(marker), "1" if role == "sync" else None)
+                        self.assertNotIn(marker, os.environ)
+                        if provider == "codex":
+                            Path(command[command.index("-o") + 1]).write_text(report)
+                        else:
+                            kwargs["stdout"].write(json.dumps({"result": report}))
+                            kwargs["stdout"].flush()
+                        return unittest.mock.Mock(returncode=0)
+                    def prepare(command, name, cli, cfg, directory, env, **kwargs):
+                        return command, {key: value for key, value in env.items() if key != marker}
+                    with self.subTest(provider=provider, api=api, role=role), tempfile.TemporaryDirectory() as directory, \
+                            patch.dict(os.environ, {key: value for key, value in os.environ.items() if key != marker}, clear=True), \
+                            patch.object(r.subprocess, "Popen", side_effect=popen), \
+                            patch.object(config, "effective_config", return_value=config.Config()), \
+                            patch.object(external_launch, "check_route"), patch.object(external_launch, "check_model_effort"), \
+                            patch.object(external_launch, "prepare", side_effect=prepare):
+                        self.assertEqual(r.run({"provider": provider, "model": "fixture", "effort": "high",
+                                                "api_provider": api}, role, directory, "brief"), report)
+
     def test_claude_exit_zero_error_is_not_a_review_verdict(self):
         r = importlib.import_module("agent_box.provider_runner")
         with self.assertRaises(r.ProviderFailure) as caught:

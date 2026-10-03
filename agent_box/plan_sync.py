@@ -12,12 +12,12 @@ from .tracker.core import root_task
 from .workflow_state import lock
 
 
-RULES = """Act as the sync executor. Use tracker CLI; never invoke workflow commands or the coordinator's ab-sync skill. Read AGENTS.md/CLAUDE.md and imports. Read the source with agent-box tracker get ID --no-comments; inspect decisions, commits and referenced sections. Find candidates with tracker search: separate substring queries for paths, anchors and terms; follow relations, including unreferenced tasks. Search defaults to open; --include-done finds history. Respect recursive scope; do not audit every task. Read plausible candidates with get --no-comments; fetch comments ID only for missing evidence. Never fetch task URLs directly.
-Only tracker descriptions/comments may change through agent-box tracker. Never change files, Git, lifecycle, assignees, priorities, relations or progress marks; do not delegate. Done tasks are read-only history: superseded text never blocks. Other active tasks are read-only; required corrections to unwritable open tasks are BLOCKED.
+RULES = """Act as the sync executor. Use tracker CLI; never invoke workflow commands or the coordinator's ab-sync skill. Read AGENTS.md/CLAUDE.md and imports. Read source with agent-box tracker get ID --no-comments; inspect decisions, commits and referenced sections. Use tracker search with separate path/anchor/term substrings; follow relations, including unreferenced tasks. Search defaults to open; --include-done finds history. Respect recursive scope; use get --no-comments for plausible candidates, not every task; comments ID only for missing evidence. Never fetch task URLs directly.
+Edit open tasks in scope yourself, including Backlog, Ready, Doing and Review. Only Done is read-only history; superseded text never blocks. Change only tracker descriptions/comments through agent-box tracker. Never change files, Git, lifecycle, assignees, priorities, relations or progress marks; never delegate.
 Edit only a concrete stale assertion or a decision changing the task's scope/acceptance. No informational additions, Git/sync bookkeeping (commit hashes, sync-task IDs), or restated workflow instructions. Preserve intended requirements and unrelated text; unresolved contradictions need a decision, never weaker acceptance. No correction means no write.
 With references enabled, repair missing/stale references needed to implement affected tasks; do not backfill unrelated tasks. Preserve the section's heading, language and location; if absent, add a task-language section under Context. Use path#heading plus purpose; verify sections and meaning, never line numbers or invented decisions.
 Before each edit, reread the task; use agent-box tracker update ID --revision REV --description-file - with its full preserved description in a direct heredoc, without pipes or temporary files. Read back saved text; journal substantive corrections in task language. On unknown-outcome, reread task/comments before any further write; never blindly retry.
-Report in English: task IDs, corrections/evidence, unresolved issues. End with one line: Sync: UPDATED, Sync: UNCHANGED, or Sync: BLOCKED. Unresolved open-task corrections or inaccessible required sources are BLOCKED.
+Report in English: task IDs, saved/partial corrections, evidence, unresolved issues. End with one line: Sync: UPDATED, Sync: UNCHANGED, Sync: BLOCKED, or Sync: ERROR. BLOCKED needs a decision; ERROR means reading, writing or verification failed.
 """
 
 PENDING = ("RUNNING", "NATIVE", "ERROR", "BLOCKED")
@@ -121,7 +121,7 @@ def schedule(root, binding, adapter, config, task, event):
 
 def outcome(report, *, reconciliation=False):
     statuses = re.findall(r"^(?:\*\*)?Sync: (\w+)(?:\*\*)?[ \t]*$", report, re.M)
-    allowed = ("UPDATED", "UNCHANGED", "BLOCKED", "REQUIRED") if reconciliation else ("UPDATED", "UNCHANGED", "BLOCKED")
+    allowed = ("UPDATED", "UNCHANGED", "BLOCKED", "ERROR") + (("REQUIRED",) if reconciliation else ())
     if (len(statuses) != 1 or statuses[0] not in allowed
             or report.rstrip().splitlines()[-1].strip("* \t") != f"Sync: {statuses[0]}"):
         raise AgentBoxError("Plan sync returned no single outcome; reread tasks before retrying")

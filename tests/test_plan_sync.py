@@ -1,5 +1,6 @@
 """Plan sync changes tracker text through a separate role without rewriting code."""
 import json
+import os
 import tomllib
 from unittest.mock import patch
 
@@ -18,6 +19,54 @@ class PlanSyncTests(WorkflowCase):
         self.config.workflow.sync.models = [candidate("codex", "gpt-sync", "high")]
         self.adapter.subtree.return_value = ["1"]
         self.binding = BINDING
+
+    def test_managed_executor_cannot_start_or_record_sync_before_any_context_access(self):
+        """Wrong-role calls must name the mistake before tracker access or a read-only lock failure."""
+        for flags in ([], ["--native"], ["--result", "missing"], ["--reconcile", "missing"]):
+            with self.subTest(flags=flags), patch.dict(os.environ, {"AGENT_BOX_SYNC_EXECUTOR": "1"}), \
+                    patch.object(workflow, "effective_config", side_effect=AssertionError("context accessed")):
+                with self.assertRaisesRegex(AgentBoxError, "sync executor.*tracker"):
+                    self.run_workflow("sync", "1", *flags)
+        self.adapter.get.assert_not_called()
+        self.assertIsNone(plan_sync.last_result(self.root, self.task))
+
+    def test_executor_marker_does_not_block_direct_tracker_edits(self):
+        """The recursion diagnostic must leave the executor's actual description/comment work usable."""
+        from agent_box.tracker import cli
+        self.task.revision = '"current"'
+        self.report.write_text("Verified description")
+        with patch.dict(os.environ, {"AGENT_BOX_SYNC_EXECUTOR": "1"}), \
+                patch.object(cli, "context", return_value=(self.adapter, self.binding, self.root)):
+            cli.dispatch(cli.parser().parse_args(["update", "1", "--revision", self.task.revision,
+                                                 "--description-file", str(self.report)]))
+            cli.dispatch(cli.parser().parse_args(["comment", "1", "--file", str(self.report)]))
+        self.adapter.update.assert_called_once_with(self.task, {"description": "Verified description"})
+        self.adapter.comment.assert_called_once_with("1", "Verified description")
+
+    def test_native_and_managed_technical_reports_preserve_partial_writes_for_recovery(self):
+        """An executor can report a failed readback without disguising it as a decision conflict or retrying."""
+        report = "Task 2 saved; task 3 write outcome unknown after timeout.\nSync: ERROR\n"
+        for native in (True, False):
+            with self.subTest(native=native), patch.object(workflow, "candidates", return_value={}), \
+                    patch.object(workflow, "execute", return_value={"report": report, "route": {"model": "sync"},
+                                                                   "diagnostics": {"usage": None}}) as execute:
+                if native:
+                    self.run_workflow("sync", "1", "--native")
+                    self.report.write_text(report)
+                    result = self.run_workflow("sync", "1", "--result", str(self.report))
+                else:
+                    result = self.run_workflow("sync", "1")
+                self.assertEqual(execute.call_count, 0 if native else 1)
+                self.assertEqual(result["status"], "ERROR")
+                self.assertEqual(result["report"], report)
+                self.assertEqual(plan_sync.last_result(self.root, self.task), result)
+                self.assertIn("--reconcile FILE", self.run_workflow("inspect", "1")["next_step"])
+                self.report.write_text("Readback still unavailable; do not repeat writes.\nSync: ERROR\n")
+                unresolved = self.run_workflow("sync", "1", "--reconcile", str(self.report))
+                self.assertEqual(unresolved["status"], "ERROR")
+                self.assertEqual(unresolved["report"], report)
+                self.report.write_text("Both tasks reread; writes confirmed, scope complete.\nSync: UPDATED\n")
+                self.assertEqual(self.run_workflow("sync", "1", "--reconcile", str(self.report))["status"], "UPDATED")
 
     def test_disabled_auto_event_never_launches_but_manual_uses_independent_models(self):
         """Turning review off must not disable an explicitly requested tracker sync."""

@@ -191,8 +191,12 @@ with the requested settings in this session; otherwise it uses managed execution
 This skill and `workflow sync` are coordinator operations. The already launched
 sync executor uses `agent-box tracker` directly; it never starts another sync or
 runs workflow commands. Tracker description/comment writes need network access,
-not filesystem writes; a nested workflow launch instead tries to create local
-locks/state and fails under the executor's read-only filesystem policy.
+not filesystem writes. Managed Codex/Claude executors, including external API
+routes, receive `AGENT_BOX_SYNC_EXECUTOR=1` only in their child environment.
+`workflow sync` rejects marked callers before configuration, tracker access or
+local locks, including `--native`, `--result` and `--reconcile`. Tracker commands
+remain usable. This diagnoses accidental recursion, not credential isolation;
+native subagents follow the role contract without this process marker.
 The coordinator passes a task reference and scope, never assembled task texts or
 diffs. Empty models require configuration; the coordinator never substitutes
 itself. Session `--sync SPEC` pins the managed route. `config apply` installs
@@ -203,22 +207,27 @@ Managed Claude exposes Read/Grep/Glob and allows Bash for tracker CLI and read-o
 Git commands, without Edit/Write. Native Claude inherits session shell permissions;
 its no-file-edit rule is a role contract, not filesystem isolation. Both routes
 use tracker CLI binding and revision guards (`update --revision REV`), reread
-before edits and confirm saved text. Other active tasks and Done tasks are not
-edited. Done tasks are historical evidence: text superseded by accepted decisions
-and current documents is not a blocker. Required corrections to unwritable open
-tasks, unresolved contradictions or inaccessible required sources are blockers.
+before edits and confirm saved text. The executor itself edits open tasks in scope,
+including Backlog, Ready, Doing and Review; being open never makes a task read-only.
+Only Done tasks remain historical evidence: text superseded by accepted decisions
+and current documents is not a blocker. Lifecycle, assignees, dependencies and
+progress marks remain unchanged; actual decision conflicts require clarification.
 
-Results are `UPDATED`, `UNCHANGED`, or `BLOCKED`, never review acceptance. An error
-or partial run can leave tracker writes behind: reconcile live tasks before retry.
+Results are `UPDATED`, `UNCHANGED`, `BLOCKED` (a decision/clarification is needed),
+or `ERROR` (reading, writing or verification failed), never review acceptance.
+Native and managed reports accept the same outcomes; runner failures also record
+ERROR. Both BLOCKED and ERROR can follow partial writes: retain the report and
+reconcile live tasks before retrying, especially after an unknown write outcome.
 No provider fallback runs after possible writes; failure before launch may use
 the next configured candidate. Requirement conflicts return to ab-interview.
 
 `workflow sync TASK --reconcile FILE` records the coordinator's recovery after the
 previous executor has stopped and possibly changed tasks have been reread. The
 report describes verified writes and resolved/remaining blockers, ending with one
-`Sync: UPDATED|UNCHANGED|BLOCKED|REQUIRED` line. UPDATED/UNCHANGED closes the original
-scope; count earlier writes when choosing UPDATED. BLOCKED retains real issues;
-REQUIRED permits a fresh run when more synchronization remains. A historical Done
+`Sync: UPDATED|UNCHANGED|BLOCKED|ERROR|REQUIRED` line. UPDATED/UNCHANGED closes the original
+scope; count earlier writes when choosing UPDATED. BLOCKED retains decision issues,
+ERROR retains technical failures; REQUIRED permits a fresh run after partial writes
+have been checked and more synchronization remains. A historical Done
 task alone can be dismissed without another model run once the remaining scope is
 verified. Reconciliation invokes no model and edits no tracker tasks or Git; it
 preserves the original report, diagnostics, event and HEAD alongside the recovery

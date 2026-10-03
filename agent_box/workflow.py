@@ -18,6 +18,7 @@ import contextlib
 import fnmatch
 import hashlib
 import json
+import os
 import re
 import secrets
 import shutil
@@ -33,7 +34,7 @@ from .delegation import bootstrap, delegate_prompt, render_handoff
 from .errors import AgentBoxError
 from . import git_workflow as gw
 from .paths import WORKFLOW_STATE
-from .provider_runner import SEVERITIES, ProviderFailure, preflight, review_report, run, save_private
+from .provider_runner import SEVERITIES, SYNC_EXECUTOR_ENV, ProviderFailure, preflight, review_report, run, save_private
 from .repo_binding import Binding, repository_root, server_identity
 from .routing import select
 from .tracker.core import TrackerError, claim, checkboxes, root_task, completion_reasons, blocking_reasons
@@ -1290,7 +1291,7 @@ def parser():
             mode = cmd.add_mutually_exclusive_group()
             mode.add_argument("--native", action="store_true", help="Return a short assignment for the configured native profile")
             mode.add_argument("--result", metavar="FILE", help="Record the native agent's unchanged Markdown answer")
-            mode.add_argument("--reconcile", metavar="FILE", help="After executor stops and live-task checks, record recovery evidence ending Sync: UPDATED|UNCHANGED|BLOCKED|REQUIRED; no model call")
+            mode.add_argument("--reconcile", metavar="FILE", help="After executor stops and live-task checks, record recovery evidence ending Sync: UPDATED|UNCHANGED|BLOCKED|ERROR|REQUIRED; no model call")
             cmd.add_argument("--event", choices=("manual", "before", "after", "plan"), default="manual",
                              help="Manual always runs; other events follow Workflow Plan sync settings")
         if name == "begin":
@@ -1665,6 +1666,9 @@ def diagnostic_path(failure):
 
 
 def dispatch(args):
+    if args.command == "sync" and os.environ.get(SYNC_EXECUTOR_ENV) == "1":
+        raise AgentBoxError("Already a managed sync executor; use agent-box tracker directly. "
+                            "Workflow sync launch/results/recovery belong to the coordinator")
     config = effective_config()
     if not config.workflow.enabled:
         raise AgentBoxError("Enable workflow in agent-box config first")
