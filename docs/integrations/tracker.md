@@ -74,8 +74,17 @@ preserve other project overrides. Setup maintains checksum blocks in
 and refusing edited blocks, symlinks and ambiguous ownership. Setup and adoption
 never create an absent `CLAUDE.md`, including one deliberately removed by the project.
 
-Search results are compact JSON; `get` includes the description, relationships
-and comments. `get` accepts the user's reference directly.
+Search returns compact summaries of open tasks, including `Unknown`; use
+`search QUERY --include-done` for completed tasks and historical decisions.
+Vikunja filters completed flags, project scope and query on the server; all result
+pages are read, and cards mapped to Done are excluded before output. Query is one
+case-insensitive substring of title or description, not comments or an AND/OR
+expression. Search distinct paths, anchors or terms separately.
+
+`get REFERENCE --no-comments` reads a candidate's description, relationships and
+revision without fetching its journal. `get` includes comments by default;
+`comments ID` reads them separately when decision evidence is needed. `get`
+accepts the user's reference directly.
 
 `tracker resolve REFERENCE` selects by visible project number (`21` or quoted
 `"#21"`), exact title, or a task URL from the configured tracker. It searches the
@@ -335,8 +344,8 @@ host mapping. Remote URLs stay unchanged. Secrets never enter Podman argv.
 Use `ab-normalize` for unprocessed tasks in an already bound project. It selects
 candidates with `tracker search --exclude-label ab:normalized`; exclusion happens
 before CLI output, after the adapter has read all result pages. This limits agent
-context, not necessarily API traffic. Compact unfiltered searches remain available
-to discover links to previously processed tasks.
+context, not necessarily API traffic. Compact searches with `--include-done` and
+no label exclusion discover links to previously processed or completed tasks.
 
 Normalization preserves each reference-document section's heading, language and
 location. It verifies `path#heading` links and their purpose against existing

@@ -45,12 +45,14 @@ def parser():
     cmd.add_argument("--title", action="store_true", help="Treat the reference as an exact title, including numeric titles")
     cmd.add_argument("--project", help="Narrow resolution to one project inside the binding")
     for name in ("search", "ready", "next"):
-        description = {"search": "Find tasks; return compact summaries",
+        description = {"search": "Find open tasks; return compact summaries",
                        "ready": "List Ready tasks eligible for the current user",
                        "next": "Select the first eligible Ready task"}[name]
         cmd = sub.add_parser(name, help=description, description=description + "; output is JSON.")
         if name == "search":
-            cmd.add_argument("query", nargs="?", default="")
+            cmd.add_argument("query", nargs="?", default="",
+                             help="One case-insensitive substring in title/description, not comments; search distinct terms separately")
+            cmd.add_argument("--include-done", action="store_true", help="Include completed tasks for history or relation discovery")
             cmd.add_argument("--exclude-label", help="Exclude tasks carrying this exact label before output")
         cmd.add_argument("--project")
         cmd.add_argument("--recursive", action="store_true")
@@ -71,7 +73,10 @@ def parser():
         cmd.add_argument("task", **({"nargs": several[name]} if name in several else {}),
                          help="Visible number, exact title, task URL or canonical ID" if name == "get"
                          else "Canonical task ID returned by resolve/get/search")
-        if name == "claim":
+        if name == "get":
+            cmd.add_argument("--comments", action=argparse.BooleanOptionalAction, default=True,
+                             help="Fetch the task journal (default); --no-comments reads the task without requesting history")
+        elif name == "claim":
             cmd.add_argument("--resume", action="store_true")
         elif name == "state":
             cmd.add_argument("state", choices=STATES)
@@ -348,7 +353,9 @@ def dispatch(args):
             task = adapter.create(project, args.title,
                                   text_file(args.description_file), args.parent, priority=args.priority)
             return adapter.set_tier(task.id, args.tier) if args.tier else task
-        tasks = adapter.search(project, getattr(args, "query", ""), args.recursive or bool(binding and binding.recursive))
+        options = {"open_only": not args.include_done} if args.command == "search" else {}
+        tasks = adapter.search(project, getattr(args, "query", ""), args.recursive or bool(binding and binding.recursive),
+                               **options)
         if args.command == "search" and args.exclude_label:
             tasks = [task for task in tasks if args.exclude_label not in task.labels]
         if args.command in ("ready", "next"):
@@ -390,7 +397,10 @@ def dispatch(args):
             raise TrackerError("Adoption relations must stay inside staging" if args.adoption else
                                "Relations must stay inside the repository binding", "conflict")
     if args.command == "get":
-        return {**task.to_dict(), "comments": adapter.comments(task.id)}
+        result = task.to_dict()
+        if args.comments:
+            result["comments"] = adapter.comments(task.id)
+        return result
     if args.command == "comments":
         return adapter.comments(task.id)
     if args.command == "checklist":

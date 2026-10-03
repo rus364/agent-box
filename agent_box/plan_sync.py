@@ -3,6 +3,7 @@ import fnmatch
 import hashlib
 import json
 import re
+import subprocess
 from pathlib import Path
 
 from .atomicio import atomic_write_text
@@ -11,11 +12,12 @@ from .tracker.core import root_task
 from .workflow_state import lock
 
 
-RULES = """Synchronize tracker tasks. Read AGENTS.md/CLAUDE.md and their imports. Use agent-box tracker get ID for tasks/history and agent-box tracker search --recursive for discovery (omit --recursive for nonrecursive scope); never fetch task URLs directly. Inspect Git and referenced documents yourself.
-Only tracker descriptions and concise task-language comments may change, through agent-box tracker. Never edit repository files, Git, lifecycle, assignees, priorities, relations or progress marks. Do not delegate. Inspect open tasks in the assigned scope, including affected tasks lacking references; read Done history as evidence, but never edit it or other active tasks. Report affected tasks you cannot update as BLOCKED.
-Correct stale technical assumptions from accepted decisions and integrated code. Preserve requirements and unrelated text; unresolved contradictions need a decision, never weaker acceptance. When references are enabled, reuse the existing reference section, preserving its heading, language and location; never duplicate it. If absent, add a task-language section under Context. Use path#heading plus purpose; verify headings and meaning. No line numbers or invented decisions.
-Before each update, reread the task and use agent-box tracker update ID --revision REV --description-file - with the full preserved description in a direct shell heredoc, without pipes or temporary files. Read back the saved description. Journal meaningful changes only; retries first inspect what already changed. No change needs no write.
-Return a concise English report with task IDs, changes/evidence and unresolved issues. End with exactly one line: Sync: UPDATED, Sync: UNCHANGED, or Sync: BLOCKED. Partial work or inaccessible sources is BLOCKED, not success.
+RULES = """Synchronize tracker tasks. Read AGENTS.md/CLAUDE.md and imports. Read the source with agent-box tracker get ID --no-comments; inspect its accepted decisions, commit range and referenced sections yourself. Discover candidates with tracker search: separate substring queries for changed paths, anchors and terms; follow source relations, including unreferenced tasks. Search defaults to open; --include-done finds history. Respect recursive scope. Scope bounds discovery, not a full-task audit: get --no-comments only plausible candidates; fetch comments ID only for missing decision evidence. Never fetch task URLs directly.
+Only tracker descriptions/comments may change through agent-box tracker. Never change files, Git, lifecycle, assignees, priorities, relations or progress marks; do not delegate. Done and other active tasks are read-only; affected unwritable tasks are BLOCKED.
+Edit only a concrete stale assertion or a decision changing the task's scope/acceptance. No informational additions, Git/sync bookkeeping (commit hashes, sync-task IDs), or restated workflow instructions. Preserve intended requirements and unrelated text; unresolved contradictions need a decision, never weaker acceptance. No correction means no write.
+With references enabled, repair missing/stale references needed to implement affected tasks; do not backfill unrelated tasks. Preserve the section's heading, language and location; if absent, add a task-language section under Context. Use path#heading plus purpose; verify sections and meaning, never line numbers or invented decisions.
+Before each edit, reread the task; use agent-box tracker update ID --revision REV --description-file - with its full preserved description in a direct heredoc, without pipes or temporary files. Read back saved text; journal substantive corrections in task language. Before retrying, inspect completed writes.
+Return concise English: task IDs, exact mismatch/correction and evidence, unresolved issues. End with exactly one line: Sync: UPDATED, Sync: UNCHANGED, or Sync: BLOCKED. Partial work or inaccessible sources is BLOCKED.
 """
 
 
@@ -39,6 +41,25 @@ def save(root, task, result):
     atomic_write_text(path, json.dumps(result, ensure_ascii=False, indent=2) + "\n", 0o600)
 
 
+def managed_workflow_only(root, base, head):
+    """Normalize verified owned blocks, preserving surrounding bytes and uncertain changes."""
+    from .repo_binding import update_block
+    versions = []
+    for revision in (base, head):
+        try:
+            result = subprocess.run(["git", "cat-file", "blob", f"{revision}:AGENTS.md"],
+                                    cwd=root, capture_output=True, timeout=30)
+            if result.returncode:
+                return False
+            original = result.stdout.decode("utf-8")
+            if "<!-- BEGIN AGENT-BOX workflow" not in original:
+                return False
+            versions.append(update_block(original, "", "workflow", root / "AGENTS.md"))
+        except (AgentBoxError, OSError, UnicodeError, subprocess.TimeoutExpired):
+            return False
+    return versions[0] == versions[1]
+
+
 def decision(root, task, settings, event):
     if event == "manual":
         return True, "manual"
@@ -53,8 +74,10 @@ def decision(root, task, settings, event):
         # Missing provenance cannot safely mean an unchanged source.
         return True, "source range unavailable; inspect Git history"
     paths = workflow.gw.git(root, "diff", "--name-only", base, head).splitlines()
-    match = any(fnmatch.fnmatchcase(path, pattern) for path in paths for pattern in settings.paths)
-    return match, "changed path matched" if match else "no changed path matched"
+    matched = [path for path in paths if any(fnmatch.fnmatchcase(path, pattern) for pattern in settings.paths)]
+    if matched == ["AGENTS.md"] and managed_workflow_only(root, base, head):
+        return False, "only managed workflow block changed"
+    return bool(matched), "changed path matched" if matched else "no changed path matched"
 
 
 def describe(root, task, config):
@@ -123,7 +146,7 @@ def run(root, binding, adapter, config, task, event="manual", *, native=False, r
         raise AgentBoxError("Plan sync source is outside the repository binding")
     target = (f"parent tree {parent.id}" if settings.scope == "parent" else
               f"project {binding.project}; recursive={str(binding.recursive).lower()}")
-    prompt = (f"Source: {task.id}\nRead: agent-box tracker get {task.url or task.id}\nEvent: {event}\nScope: {target}\n"
+    prompt = (f"Source: {task.id}\nRead: agent-box tracker get {task.url or task.id} --no-comments\nEvent: {event}\nScope: {target}\n"
               f"References: {str(settings.references).lower()}\n")
     saved = workflow.read_evidence(root, task)
     if saved.get("base_head") and saved.get("head"):

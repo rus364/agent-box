@@ -53,6 +53,20 @@ class ResolutionTests(unittest.TestCase):
                 self.assertEqual(self.get(reference)['id'], expected)
         self.assertEqual(self.client.writes, [])
 
+    def test_get_without_comments_preserves_reference_resolution_and_revision_without_fetching_history(self):
+        """Reading a sync candidate must not load its whole journal just to obtain the description."""
+        with patch.object(cli, 'context', return_value=(self.adapter, self.binding, None)), \
+                patch.object(self.adapter, 'comments', return_value=[{'comment': 'History'}]) as comments:
+            result = cli.dispatch(cli.parser().parse_args(['get', '#21', '--no-comments']))
+            self.assertEqual(result['id'], '319')
+            self.assertIn('description', result)
+            self.assertIn('revision', result)
+            self.assertNotIn('comments', result)
+            comments.assert_not_called()
+            result = cli.dispatch(cli.parser().parse_args(['get', '#21']))
+            self.assertEqual(result['comments'], [{'comment': 'History'}])
+            comments.assert_called_once_with('319')
+
     def test_get_refuses_a_number_that_is_one_tasks_id_and_anothers_visible_number(self):
         """Silently choosing either reading of 21 would show the wrong requirements."""
         with self.assertRaises(TrackerError) as caught:

@@ -8,6 +8,7 @@ from agent_box.config import Config
 from agent_box.errors import AgentBoxError
 from agent_box.provider_runner import ProviderFailure
 from agent_box.project_config import PROJECT_FIELDS, apply
+from agent_box.repo_binding import block_text
 from workflow_fixtures import BINDING, WorkflowCase, candidate
 
 
@@ -88,6 +89,94 @@ class PlanSyncTests(WorkflowCase):
         workflow.gw.git(self.root, "commit", "-m", "decision")
         workflow.save_evidence(self.root, self.task, {"base_head": base, "head": workflow.gw.head_sha(self.root)})
         self.assertTrue(plan_sync.decision(self.root, self.task, settings, "after")[0])
+
+    def source_instructions(self, before, after, extra=None):
+        path = self.root / "AGENTS.md"
+        for title, content in (("source base", before), ("source update", after)):
+            if content is None:
+                path.unlink(missing_ok=True)
+            else:
+                path.write_bytes(content)
+            if title == "source update" and extra:
+                for name, body in extra.items():
+                    target = self.root / name
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_text(body)
+            workflow.gw.git(self.root, "add", "-A")
+            workflow.gw.git(self.root, "commit", "--allow-empty", "-m", title)
+            if title == "source base":
+                base = workflow.gw.head_sha(self.root)
+        workflow.save_evidence(self.root, self.task, {"base_head": base, "head": workflow.gw.head_sha(self.root)})
+        self.config.workflow.sync.policy = "auto"
+
+    def test_managed_workflow_refresh_never_launches_auto_after_sync(self):
+        """Refreshing shipped instructions has no project decision to propagate or model work to pay for."""
+        outside = "\n# Решения\r\nUse project authority.\r\n".encode()
+        self.source_instructions(block_text("Old workflow\n", "workflow").encode() + outside,
+                                 block_text("New workflow\n", "workflow").encode() + outside)
+        with patch.object(workflow, "execute", return_value={"report": "Sync: UNCHANGED\n",
+                                                           "route": {}, "diagnostics": {"usage": None}}) as execute:
+            for flags in ((), ("--native",)):
+                result = self.run_workflow("sync", "1", "--event", "after", *flags)
+                self.assertEqual(result["status"], "SKIPPED")
+            execute.assert_not_called()
+        self.assertEqual(plan_sync.schedule(self.root, self.binding, self.adapter, self.config,
+                                            self.task, "after")["status"], "SKIPPED")
+        settings = self.config.workflow.sync
+        self.assertTrue(plan_sync.decision(self.root, self.task, settings, "manual")[0])
+        settings.events = ["before", "plan", "after"]
+        for event in ("before", "plan"):
+            self.assertTrue(plan_sync.decision(self.root, self.task, settings, event)[0])
+        settings.policy = "always"
+        self.assertTrue(plan_sync.decision(self.root, self.task, settings, "after")[0])
+
+    def test_project_text_around_managed_block_still_triggers_sync(self):
+        """The exception must not hide project decisions or whitespace outside the owned block."""
+        old = block_text("Old workflow\n", "workflow").encode()
+        new = block_text("New workflow\n", "workflow").encode()
+        for before, after in ((old + b"Decision A\n", new + b"Decision B\n"),
+                              (b"\n" + old + b"Decision\n", new + b"Decision\n"),
+                              (old + b"Decision\n", new + b"Decision\n\n"),
+                              (old + b"Decision\r\n", new + b"Decision\n")):
+            with self.subTest(before=before, after=after):
+                self.source_instructions(before, after)
+                self.assertTrue(plan_sync.decision(self.root, self.task, self.config.workflow.sync, "after")[0])
+
+    def test_managed_refresh_does_not_hide_another_matching_document(self):
+        """A mixed commit still propagates actual documentation decisions."""
+        self.source_instructions(block_text("Old\n", "workflow").encode(),
+                                 block_text("New\n", "workflow").encode(),
+                                 {"docs/decision.md": "Accepted decision\n"})
+        self.assertTrue(plan_sync.decision(self.root, self.task, self.config.workflow.sync, "after")[0])
+
+    def test_unverified_instruction_changes_keep_sync_required(self):
+        """Missing or damaged ownership evidence cannot justify silently ignoring a changed file."""
+        old = block_text("Old\n", "workflow").encode()
+        new = block_text("New\n", "workflow").encode()
+        for before, after in ((None, new), (old, None),
+                              (b"Project decision A\n", b"Project decision B\n"),
+                              (old.replace(b"Old", b"Edited"), new),
+                              (old, new.replace(b"New", b"Edited")),
+                              (old + old, new), (old, new + new),
+                              (old, new.replace(b"<!-- END AGENT-BOX workflow -->", b"")),
+                              (old + b"\xff", new + b"\xff")):
+            with self.subTest(before=before, after=after):
+                self.source_instructions(before, after)
+                self.assertTrue(plan_sync.decision(self.root, self.task, self.config.workflow.sync, "after")[0])
+
+    def test_unreadable_committed_instructions_do_not_silently_skip_sync(self):
+        """A failed blob read leaves the matched path eligible; absence of proof is not no drift."""
+        self.source_instructions(block_text("Old\n", "workflow").encode(),
+                                 block_text("New\n", "workflow").encode())
+        run = plan_sync.subprocess.run
+
+        def unreadable(args, **kwargs):
+            if args[:3] == ["git", "cat-file", "blob"]:
+                raise OSError("blob read unavailable")
+            return run(args, **kwargs)
+
+        with patch.object(plan_sync.subprocess, "run", side_effect=unreadable):
+            self.assertTrue(plan_sync.decision(self.root, self.task, self.config.workflow.sync, "after")[0])
 
     def test_only_completed_after_event_is_reused_at_the_same_head(self):
         """Planning may change task text without a commit; interrupted writes need reconciliation."""

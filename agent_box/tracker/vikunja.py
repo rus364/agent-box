@@ -384,9 +384,11 @@ class VikunjaAdapter:
             raise TrackerError(f"Ambiguous task reference: {choices}. Use --project or a task URL", "conflict")
         return self.get(matches[0].id)
 
-    def search(self, project, query="", recursive=False):
-        return [self.normalize(raw) for raw in api.collect_tasks(
-            self.client, query=query, project=project, recursive=recursive)]
+    def search(self, project, query="", recursive=False, *, open_only=False):
+        tasks = [self.normalize(raw) for raw in api.collect_tasks(
+            self.client, query=query, project=project, recursive=recursive,
+            filter_expr="done = false" if open_only else None)]
+        return [task for task in tasks if not open_only or task.state != "Done"]
 
     def update(self, task, fields):
         current = self.get(task.id)

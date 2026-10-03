@@ -46,6 +46,25 @@ class NormalizationTests(unittest.TestCase):
             rows = self.run_cli('search', '--exclude-label', NORMALIZED_LABEL)
         self.assertEqual([r['id'] for r in rows], ['5'])
 
+    def test_search_filters_completed_by_default_without_hiding_unknown_or_later_pages(self):
+        """Sync needs compact live candidates, including tasks whose board cannot establish readiness."""
+        for row in self.client.tasks.values():
+            row['description'] = 'docs/design.md#format'
+        self.client.tasks[5]['done'] = True
+        self.client.tasks[8]['buckets'] = []
+        rows = self.run_cli('search', 'docs/design.md#format')
+        self.assertEqual([r['id'] for r in rows], ['6', '8'])
+        self.assertEqual(rows[1]['state'], 'Unknown')
+        self.assertTrue(all('description' not in r for r in rows))
+        from urllib.parse import parse_qs, urlsplit
+        requests = [parse_qs(urlsplit(r).query) for r in self.client.reads if r.startswith('/tasks?')]
+        self.assertTrue(all('done = false' in r['filter'][0] for r in requests))
+        self.assertTrue(any(r['page'] == ['2'] for r in requests))
+        self.assertEqual([r['id'] for r in self.run_cli('search', 'docs/design.md#format',
+                                                     '--exclude-label', NORMALIZED_LABEL)], ['8'])
+        self.assertEqual([r['id'] for r in self.run_cli('search', 'docs/design.md#format', '--include-done')], ['5', '6', '8'])
+        self.assertEqual(self.client.writes, [])
+
     def test_new_candidate_can_depend_on_marked_task_without_renormalizing_it(self):
         """Candidate filtering must not become a prohibition on legitimate old-task links."""
         before = copy.deepcopy(self.client.tasks[6])

@@ -136,8 +136,15 @@ explicit limitation.
 ### Plan sync
 
 **Workflow → Plan sync** configures a separate agent that reads Git, documents
-and the live tracker itself. It corrects stale technical assumptions and maintains
-reference documents as `path#heading` plus purpose. It preserves the existing
+and the live tracker itself. It starts from the source decisions and finds candidates
+by changed paths, anchors, domain terms and relations, including tasks without links.
+Scope bounds discovery; it does not require reading every task or its history.
+It changes descriptions only for a concrete stale assertion, a decision changing
+scope or acceptance, or a missing/stale reference needed by an affected task.
+No informational recaps, commit hashes, sync-task bookkeeping or copies of workflow
+instructions belong in descriptions. No correction means no write.
+
+Reference documents use `path#heading` plus purpose. It preserves the existing
 reference section's heading, language and location (for example, «Опорные документы»);
 when absent, it adds one in the task's language under Context. It preserves
 requirements and progress marks, verifies saved descriptions, and reports unresolved conflicts.
@@ -156,6 +163,11 @@ judge repository evidence; they do not maintain live tasks.
 For every task, choose `always` and the desired events. Auto runs selected
 before/plan events and after events whose committed changes match `paths`;
 missing source commit evidence triggers inspection rather than a silent skip.
+Auto after-events ignore changes confined to an intact, checksum-verified managed
+`workflow` block in root `AGENTS.md`, comparing both committed versions. Project
+text outside that block and other matching paths still trigger sync. Missing files,
+damaged blocks or unreadable contents cannot qualify for this exception. Manual
+runs and `always` retain their selected scope and event behavior.
 Explicit event lists replace the defaults, including in project overrides.
 Managed runs use the shared `workflow.timeout_seconds`.
 

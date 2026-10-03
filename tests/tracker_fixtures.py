@@ -245,6 +245,8 @@ class NormalizationClient(NativeClient):
             params = parse_qs(urlsplit(path).query)
             ids = {int(n) for n in re.findall(r'\d+', params.get('filter', [''])[0])}
             rows = [r for r in self.tasks.values() if r['project_id'] in ids]
+            if 'done = false' in params.get('filter', [''])[0]:
+                rows = [r for r in rows if not r.get('done')]
             query = params.get('q', [''])[0].casefold()
             rows = [r for r in rows if query in (r['title'] + r['description']).casefold()]
             page = int(params['page'][0])
