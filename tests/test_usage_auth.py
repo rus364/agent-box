@@ -41,7 +41,9 @@ class UsageAuthTests(unittest.TestCase):
         self.save(self.oauth)
 
     def rejected(self, status=401):
-        return urllib.error.HTTPError('https://example.invalid/SECRET', status, 'SECRET', {}, None)
+        error = urllib.error.HTTPError('https://example.invalid/SECRET', status, 'SECRET', {}, None)
+        self.addCleanup(error.close)
+        return error
 
     def snapshot(self):
         return usage.usage_snapshot('claude', no_cache=True)
