@@ -197,6 +197,7 @@ class LandingCase(unittest.TestCase):
         self.adapter = Mock()
         self.adapter.identity.return_value = {"id": 1}
         self.adapter.get.side_effect = lambda ident: {"7": self.parent}[ident]
+        self.adapter.resolve.side_effect = lambda reference, *args, **kwargs: self.adapter.get(reference)
         self.config = Config()
         self.config.workflow.enabled = True
         self.config.workflow.merge_mode = "local"
