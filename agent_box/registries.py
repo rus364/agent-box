@@ -210,15 +210,16 @@ def _entry_name(lines: list[str], dashes: int):
     return None
 
 
-def parse_repositories(text: str) -> tuple[list[dict], list[tuple[str | None, str]]]:
+def parse_repositories(text: str) -> tuple[list[dict], list[tuple[str | None, str, int]]]:
     """The readable entries of a Helm ``repositories.yaml``, and the unreadable ones.
 
     The standard library has no YAML parser and agent-box has no
     dependencies, so this reads what Helm itself writes: top-level keys and a
     ``repositories`` list of flat mappings whose values are plain, quoted,
     folded onto further lines or literal blocks. An entry beyond that is
-    returned as ``(name or None, problem)`` and left out instead of being
-    half-read; the others still count. Raises ValueError when the file's own
+    returned as ``(name or None, problem, position)``, position counting the
+    readable entries before it, and left out instead of being half-read; the
+    others still count. Raises ValueError when the file's own
     structure is not understood.
     """
     if text.lstrip().startswith("{"):
@@ -272,7 +273,7 @@ def parse_repositories(text: str) -> tuple[list[dict], list[tuple[str | None, st
             except ValueError as exc:
                 where = str(exc).split(":", 1)
                 number = start + int(where[0].split()[1])
-                failures.append((_entry_name(chunk, dashes), f"line {number}:{where[1]}"))
+                failures.append((_entry_name(chunk, dashes), f"line {number}:{where[1]}", len(entries)))
     return entries, failures
 
 
@@ -296,17 +297,22 @@ def _repositories(problems: list[str], chosen=None) -> tuple[dict[str, dict], se
     except ValueError as exc:
         problems.append(f"{HELM_REPOSITORY_CONFIG}: {exc}; no Helm repository is forwarded")
         return {}, None
-    for name, problem in failures:
+    # The first entry of a name decides it, read or not; a later one changes nothing.
+    first = {}
+    for position, entry in enumerate(entries):
+        name = entry.get("name")
+        if isinstance(name, str):
+            first.setdefault(name, (position, entry))
+    unreadable = set()
+    for name, problem, position in failures:
+        if name is not None and name in first and first[name][0] < position or name in unreadable:
+            continue
+        if name is not None:
+            unreadable.add(name)
         if chosen is None or name is None or name in chosen:
             label = f"the entry for {name}" if name is not None else "an entry"
             problems.append(f"{HELM_REPOSITORY_CONFIG}: {problem}; {label} cannot be read and is not forwarded")
-    unreadable = {name for name, _ in failures}
-    available = {}
-    for entry in entries:
-        name = entry.get("name")
-        if isinstance(name, str) and name not in unreadable:
-            available.setdefault(name, entry)
-    return available, unreadable
+    return {name: entry for name, (_, entry) in first.items() if name not in unreadable}, unreadable
 
 
 def _auth_sources(problems: list[str]) -> dict[str, list[tuple[Path, dict]]]:
@@ -349,8 +355,11 @@ def discover() -> Found:
                     found.hosts.setdefault(host, []).append(f"{path} ({tools[kind]}; credential helper, not forwarded)")
     for name, entry in _repositories(found.problems)[0].items():
         # The origin only: user information, the path and the query may all carry a token.
-        url = urllib.parse.urlsplit(str(entry.get("url", "")))
-        found.repositories[name] = urllib.parse.urlunsplit((url.scheme, url.netloc.rpartition("@")[2], "", "", ""))
+        try:
+            url = urllib.parse.urlsplit(str(entry.get("url", "")))
+            found.repositories[name] = urllib.parse.urlunsplit((url.scheme, url.netloc.rpartition("@")[2], "", "", ""))
+        except ValueError:
+            found.repositories[name] = "(unreadable URL)"
     return found
 
 

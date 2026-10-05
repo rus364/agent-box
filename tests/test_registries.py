@@ -177,6 +177,9 @@ class FilteringTests(IsolatedSources):
         problems = registries.sync(registry_config(repositories=["dup"]), "ws")
         self.assertEqual(self.rendered("helm-repositories.yaml")["repositories"], [])
         self.assertEqual(len(problems), 1)
+        self.write(self.repositories, "repositories:\n- name: dup\n  password: first\n- name: dup\n  password: >\n    x\n")
+        self.assertEqual(registries.sync(registry_config(repositories=["dup"]), "ws"), [])
+        self.assertEqual([entry["password"] for entry in self.rendered("helm-repositories.yaml")["repositories"]], ["first"])
 
     def test_values_folded_onto_more_lines_read_as_one(self):
         """go-yaml wraps a long value containing spaces; refusing it lost the repository."""
@@ -195,7 +198,7 @@ class FilteringTests(IsolatedSources):
         for value in ("p\n    name: other", "p # note\n    more"):
             with self.subTest(value=value):
                 _, failures = registries.parse_repositories(f"repositories:\n- name: n\n  password: {value}\n")
-                self.assertEqual(failures, [("n", "line 4: unsupported YAML structure")])
+                self.assertEqual(failures, [("n", "line 4: unsupported YAML structure", 0)])
 
     def test_a_repeated_top_level_key_makes_the_file_ambiguous(self):
         with self.assertRaisesRegex(ValueError, "line 3"):
@@ -324,6 +327,12 @@ class MenuTests(IsolatedSources):
         hosts, details, _ = registries.choices("hosts", ["docker.io"])
         self.assertEqual(hosts, ["docker.io"])
         self.assertIn("credential helper, not forwarded", details[0])
+
+    def test_a_malformed_repository_url_leaves_the_menu_usable(self):
+        self.write(self.repositories, "repositories:\n- name: odd\n  url: https://[charts.example\n- name: fine\n  url: https://f\n")
+        names, details, _ = registries.choices("helm_repositories", [])
+        self.assertEqual(names, ["fine", "odd"])
+        self.assertIn("(unreadable URL)", details[1])
 
     def test_an_unreadable_source_is_named_rather_than_looking_empty(self):
         self.write(self.config_auth, "[]")
