@@ -68,7 +68,7 @@ class ConfigMenuTests(unittest.TestCase):
             ('agents',): ['default', 'claude', 'codex', 'host_env', 'external_apis'],
             ('agents', 'codex'): ['native_agent_wait', 'remote_control'],
             ('box',): ['tools', 'k3s', 'audio', 'env'],
-            ('credentials',): ['git', 'github'],
+            ('credentials',): ['git', 'github', 'registries'],
             ('host',): ['notifications', 'claude_skill_links'],
             ('workflow',): ['enabled', 'merge_mode', 'auto_push', 'cleanup_local_branches',
                            'cleanup_remote_branches', 'use_tiers', 'worker', 'scout', 'review', 'sync', 'timeout_seconds'],
@@ -305,6 +305,26 @@ class ConfigMenuTests(unittest.TestCase):
                             for frame in screen.frames))
         result, _ = self.edit(Config(), [*toggles, "\x1b", *save])
         self.assertEqual(result.config.workflow.sync.events, ["plan", "after"])
+
+    def test_registry_hosts_are_ticked_from_what_the_host_holds(self):
+        """A vanished earlier choice stays visible so it can be unticked; no login value is drawn."""
+        import curses
+        from agent_box import registries
+        with tempfile.TemporaryDirectory() as temp:
+            auth = Path(temp) / "auth.json"
+            auth.write_text(json.dumps({"auths": {"cr.yandex": {"auth": "SECRET-LOGIN"}}}))
+            config = Config()
+            config.credentials.registries.hosts = ["old.example"]
+            keys = [*select("credentials"), "\n", *select("registries", ("credentials",)), "\n",
+                    *select("hosts", ("credentials", "registries")), "\n", curses.KEY_HOME, " ", curses.KEY_END, " ", "\n",
+                    "\x1b", "\x1b", curses.KEY_END, curses.KEY_UP, "\n"]
+            with patch.object(registries, "CONTAINERS_AUTH_FILES", (auth,)), \
+                 patch.object(registries, "HELM_REGISTRY_CONFIG", Path(temp) / "missing.json"), \
+                 patch.object(registries, "HELM_REPOSITORY_CONFIG", Path(temp) / "missing.yaml"):
+                result, screen = self.edit(config, keys)
+        self.assertEqual(result.config.credentials.registries.hosts, ["cr.yandex"])
+        self.assertTrue(any("[ ] cr.yandex" in frame and "[x] old.example" in frame for frame in screen.frames))
+        self.assertFalse(any("SECRET-LOGIN" in frame for frame in screen.frames))
 
     def edit(self, config, keys, choices=(), link=None, screen=None, project=None, catalogs=None):
         import curses

@@ -16,6 +16,7 @@ describes one thing you can turn on, what it exposes, and what it costs.
 | [Telegram](telegram.md) | off | Anthropic's official channel for control, plus one-way notifications |
 | [Remote Control](remote-control.md) | off | Native Claude/Codex remote access for new interactive sessions |
 | [Git and GitHub](git.md) | identity on, credentials off | What of your Git and GitHub setup reaches a session |
+| [Container registries](registries.md) | off | Chosen podman, skopeo and Helm logins from the host |
 
 All of them are answered in one place:
 

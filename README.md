@@ -157,7 +157,7 @@ agent-box --host --no-tmux codex exec "run the tests"
 | Launch | `--host`, `--workspace PATH`, `--mount PATH[:ro]`, `--env NAME[=VALUE]`, `--no-tmux`, `--no-kvm` |
 | Workflow | `--worker SPEC`, `--reviewer SPEC`, `--scout SPEC`, `--sync SPEC`, `--[no-]tiers`, `--review off\|auto\|always`, `--rounds N`, `--merge github\|local`, `--[no-]push`, `--no-workflow` |
 | Tracker | `--tracker URL`, `--project ID` ([details](#project-configuration)) |
-| Access | `--[no-]gh-token`, `--[no-]gh-config`, `--[no-]git-config`, `--[no-]api-keys`, `--no-browser`, `--[no-]remote-control`, `--[no-]notify` |
+| Access | `--[no-]gh-token`, `--[no-]gh-config`, `--[no-]git-config`, `--[no-]registries`, `--[no-]api-keys`, `--no-browser`, `--[no-]remote-control`, `--[no-]notify` |
 
 `SPEC` is `PROVIDER[@API]:MODEL[:EFFORT]`, for example `codex:gpt-5.5:high` or
 `claude@deepseek:deepseek-v4`. `--reviewer`, `--scout`, `--sync` and `--worker` pin

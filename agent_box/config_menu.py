@@ -50,6 +50,10 @@ HELP = {
     "credentials.github": "Choose which host GitHub credentials, if any, are exposed inside workspace boxes.",
     "credentials.github.token": "Read the host gh token and forward it as GH_TOKEN. Disabled by default because it exposes a live credential to the box.",
     "credentials.github.config": "Copy the host gh configuration into the box. Disabled by default because that directory normally contains authentication data.",
+    "credentials.registries": "Forward the container registry and Helm repository logins you choose from the host's own login files. Copies are re-rendered at every launch, so a login renewed on the host reaches the box at its next launch. Off by default; --[no-]registries overrides it for one session.",
+    "credentials.registries.enabled": "Forward the chosen logins into workspace boxes, read-only. Disabled by default because they reach private images and charts. Changing it recreates the box.",
+    "credentials.registries.hosts": "Registry hosts found in the podman/skopeo and Helm OCI auth files on the host. Each source is filtered into its own copy; logins kept by a credential helper cannot be forwarded.",
+    "credentials.registries.helm_repositories": "Helm repositories found in the host's repositories.yaml, forwarded with their credentials. The box keeps its own index cache; refresh it with helm repo update.",
     "credentials.git": "Configure how much host Git configuration is copied into workspace boxes.",
     "credentials.git.identity": "Copy only user.name and user.email for commit attribution. This exposes no Git credential settings.",
     "credentials.git.full_config": "Copy the complete host Git configuration, which may include credential helpers, headers, URL rewrites, and included files.",
@@ -136,6 +140,7 @@ LABELS = {
     "claude": "Claude", "codex": "Codex", "github": "GitHub", "git": "Git",
     "command": "Custom command", "k3s": "k3s cluster", "claude_skill_links": "Claude skill links",
     "env": "Environment", "host_env": "Provider environment", "tools": "Image tools",
+    "registries": "Container registries", "hosts": "Registry hosts", "helm_repositories": "Helm repositories",
     "url": "URL", "token": "Access token", "effort": "Reasoning effort",
     "github_model": "GitHub review model", "github_effort": "GitHub review effort",
     "telegram_chat_id": "Telegram chat ID",
@@ -228,6 +233,8 @@ MODALITY_HELP = {
 MULTI_CHOICES = {
     "workflow.sync.events": ("before", "after", "plan"),
 }
+#: Lists ticked from what the host holds, found when the field is opened.
+HOST_CHOICES = {("credentials", "registries", "hosts"), ("credentials", "registries", "helm_repositories")}
 
 # Presentation follows the user's decisions, not dataclass serialization order.
 MENU_GROUPS = {
@@ -245,7 +252,7 @@ MENU_GROUPS = {
         ("Inside the box", ("audio", "env")),
     ),
     ("credentials",): (
-        ("", ("git", "github")),
+        ("", ("git", "github", "registries")),
     ),
     ("host",): (
         ("", ("notifications", "claude_skill_links")),
@@ -1038,7 +1045,7 @@ def edit(config, *, project=None):
                     shown = "<configured>" if value else "<empty>"
                 elif candidate_list(full) and isinstance(value, list):
                     shown = ", ".join(candidate_label(spec) for spec in value) or "(none)"
-                elif list_vocabulary(full) and isinstance(value, list):
+                elif (list_vocabulary(full) or full in HOST_CHOICES) and isinstance(value, list):
                     shown = ", ".join(map(str, value)) or "(none)"
                 elif isinstance(value, str):
                     shown = value or "(not set)"
@@ -1207,6 +1214,17 @@ def edit(config, *, project=None):
                 elif candidate_list(full) and isinstance(value, list):
                     if edit_candidates(screen, value, full):
                         notice = "Draft updated; save to keep changes"
+                        accepted = True
+                elif full in HOST_CHOICES and isinstance(value, list):
+                    from . import registries
+                    options, details, problems = registries.choices(name, value)
+                    if not options:
+                        notice = (problems or ["Nothing found on the host: log in with podman, helm registry or helm repo add first"])[0]
+                        continue
+                    picked = check(screen, options, ".".join(full), value, details,
+                                   "\n\n".join([help_for(full), *problems]))
+                    if picked is not None:
+                        data[name], notice = picked, "Draft updated; save to keep changes"
                         accepted = True
                 elif list_vocabulary(full) and isinstance(value, list):
                     vocabulary = list_vocabulary(full)

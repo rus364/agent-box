@@ -241,6 +241,45 @@ class GitConfig:
         return cls(identity=_bool(data, "identity", True), full_config=_bool(data, "full_config", False))
 
 
+def _names(data, key):
+    """Distinct non-empty strings without whitespace, in their saved order."""
+    value = _mapping(data).get(key)
+    names = [item.strip() for item in value if isinstance(item, str)] if isinstance(value, list) else []
+    return list(dict.fromkeys(name for name in names if name and not any(c.isspace() for c in name)))
+
+
+@dataclass
+class RegistriesConfig:
+    """Container registry and Helm repository logins forwarded from the host.
+
+    Off and empty by default: a forwarded login reaches every private image
+    and chart behind it. The lists hold what the user ticked among the logins
+    ``agent-box config`` found on the host; ``enabled`` is kept apart from them
+    so ``--[no-]registries`` can turn forwarding on or off for one session
+    without losing the choice. Entries are copied from the files the host's
+    tools already wrote, never obtained by running a login command on the
+    host: agent-box does not run the user's credential tooling.
+    """
+
+    enabled: bool = False
+    #: Registry hosts; each one filters the podman and Helm OCI auth files.
+    hosts: list[str] = field(default_factory=list)
+    #: Helm repository names from ``repositories.yaml``.
+    helm_repositories: list[str] = field(default_factory=list)
+
+    @property
+    def active(self) -> bool:
+        return self.enabled and bool(self.hosts or self.helm_repositories)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"enabled": self.enabled, "hosts": list(self.hosts), "helm_repositories": list(self.helm_repositories)}
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "RegistriesConfig":
+        return cls(enabled=_bool(data, "enabled", False), hosts=_names(data, "hosts"),
+                   helm_repositories=_names(data, "helm_repositories"))
+
+
 @dataclass
 class HostEnvConfig:
     """Agent provider variables forwarded from the launching shell, split by sensitivity.
@@ -1042,14 +1081,16 @@ class CredentialsConfig:
 
     git: GitConfig = field(default_factory=GitConfig)
     github: GitHubConfig = field(default_factory=GitHubConfig)
+    registries: RegistriesConfig = field(default_factory=RegistriesConfig)
 
     def to_dict(self) -> dict[str, Any]:
-        return {"git": self.git.to_dict(), "github": self.github.to_dict()}
+        return {"git": self.git.to_dict(), "github": self.github.to_dict(), "registries": self.registries.to_dict()}
 
     @classmethod
     def from_dict(cls, data: Any) -> "CredentialsConfig":
         data = _mapping(data)
-        return cls(git=GitConfig.from_dict(data.get("git")), github=GitHubConfig.from_dict(data.get("github")))
+        return cls(git=GitConfig.from_dict(data.get("git")), github=GitHubConfig.from_dict(data.get("github")),
+                   registries=RegistriesConfig.from_dict(data.get("registries")))
 
 
 @dataclass

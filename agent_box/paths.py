@@ -149,3 +149,11 @@ CONTAINER_POLICY_RUNTIME_DIR = HOST_HOME / ".local/share/agent-box/runtime/polic
 TRACKER_RUNTIME_DIR = STATE_ROOT / "runtime/tracker"
 CONTAINER_TRACKER_RUNTIME_DIR = HOST_HOME / ".local/share/agent-box/runtime/tracker"
 CONTAINER_WORKFLOW_STATE = HOST_HOME / ".local/share/agent-box/workflow"
+
+# Registry and Helm logins the host's own tools keep, in the order podman reads
+# the auth files. Only entries the user chose are copied out of them.
+CONTAINERS_AUTH_FILES = (HOST_RUNTIME_DIR / "containers/auth.json", XDG_CONFIG_HOME / "containers/auth.json")
+HELM_REGISTRY_CONFIG = XDG_CONFIG_HOME / "helm/registry/config.json"
+HELM_REPOSITORY_CONFIG = XDG_CONFIG_HOME / "helm/repositories.yaml"
+REGISTRY_RUNTIME_DIR = STATE_ROOT / "runtime/registries"
+CONTAINER_REGISTRY_RUNTIME_DIR = HOST_HOME / ".local/share/agent-box/runtime/registries"

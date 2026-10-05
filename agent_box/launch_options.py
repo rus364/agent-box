@@ -55,6 +55,8 @@ OPTIONS = (
     Option("gh-token", ACCESS, "GitHub token", form="pair", container=True),
     Option("gh-config", ACCESS, "Copy of the host gh configuration", form="pair", container=True),
     Option("git-config", ACCESS, "Copy of the full host Git configuration", form="pair", container=True),
+    Option("registries", ACCESS, "Container registry and Helm logins chosen in agent-box config",
+           form="pair", container=True),
     Option("api-keys", ACCESS, "Provider API key variables", form="pair", container=True),
     Option("browser", ACCESS, "Do not start the agent browser MCP server", form="negated", container=True),
     Option("remote-control", ACCESS, "Remote control; the --no- form also keeps Claude off Telegram", form="pair"),
@@ -192,6 +194,8 @@ def apply(config, overrides):
             config.credentials.github.config = value
         elif key == "git-config":
             config.credentials.git.full_config = value
+        elif key == "registries":
+            config.credentials.registries.enabled = value
         elif key == "api-keys":
             config.agents.host_env.api_keys = value
         elif key == "browser":
