@@ -41,6 +41,7 @@ ARG TOOLS_KUBERNETES=1
 ARG TOOLS_VIRTUALIZATION=0
 ARG TOOLS_BROWSER=0
 ARG TOOLS_PODMAN=0
+ARG TOOLS_SKOPEO=0
 ARG PODMAN_UID_RANGES=[]
 ARG PODMAN_GID_RANGES=[]
 # The canonical, comma-separated set the flags above add up to. Passed
@@ -191,6 +192,21 @@ RUN --mount=type=cache,id=agent-box-apt,target=/var/cache/apt,sharing=locked \
         qemu-block-extra \
         ovmf \
         qemu-efi-aarch64; \
+    rm -rf /var/lib/apt/lists/*
+
+#
+# skopeo (group: skopeo)
+#
+# Registry inspection and copying without a container engine. Separate from
+# the podman group, which needs extra namespace permissions that skopeo does
+# not, so a box can reach registries without them.
+#
+
+RUN --mount=type=cache,id=agent-box-apt,target=/var/cache/apt,sharing=locked \
+    set -eux; \
+    if [ "${TOOLS_SKOPEO}" != "1" ]; then echo "agent-box: skopeo skipped"; exit 0; fi; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends skopeo; \
     rm -rf /var/lib/apt/lists/*
 
 #
@@ -659,6 +675,10 @@ RUN set -eux; \
     playwright-mcp --version; \
     test -d /opt/ms-playwright; \
     agent-box-browser-smoke
+
+RUN set -eux; \
+    if [ "${TOOLS_SKOPEO}" != "1" ]; then exit 0; fi; \
+    skopeo --version
 
 RUN set -eux; \
     if [ "${TOOLS_PODMAN}" != "1" ]; then exit 0; fi; \

@@ -27,6 +27,10 @@ class ToolsConfigSchemaTests(unittest.TestCase):
         self.assertFalse(Config().box.tools.groups["virtualization"])
         self.assertFalse(Config().box.tools.groups["browser"])
 
+    def test_narrow_groups_are_off_until_asked_for(self):
+        """Registry work with skopeo is rare enough that nobody else should pay for it."""
+        self.assertFalse(Config().box.tools.groups["skopeo"])
+
     def test_round_trips(self):
         config = _config(virtualization=True, kubernetes=False)
         loaded = Config.from_dict(config.to_dict()).box.tools

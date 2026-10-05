@@ -66,6 +66,22 @@ class SessionToolingTests(unittest.TestCase):
         self.assertRegex(text, r"(?m)^\s+tmux -V$")
 
 
+class ToolGroupTests(unittest.TestCase):
+    def test_every_configured_group_is_built_and_verified_with_its_default(self):
+        """A group the configuration offers but the image ignores would build
+        nothing while its label claims it, and a different Containerfile default
+        would make a plain ``podman build`` disagree with ``agent-box build``."""
+        from agent_box.config import TOOL_GROUPS
+        text = containerfile_text()
+        checks = text[text.index("# Sanity checks"):]
+        for group, default in TOOL_GROUPS.items():
+            flag = f"TOOLS_{group.upper()}"
+            with self.subTest(group=group):
+                self.assertEqual(re.findall(rf"^ARG {flag}=(.*)$", text, re.MULTILINE),
+                                 ["1" if default else "0"])
+                self.assertIn(f'if [ "${{{flag}}}" != "1" ]; then exit 0; fi;', checks)
+
+
 class CodexBwrapCapabilitiesTests(unittest.TestCase):
     """Exercise the image step without changing installed binaries or xattrs."""
 

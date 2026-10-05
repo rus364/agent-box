@@ -406,6 +406,8 @@ TOOL_GROUPS: dict[str, bool] = {
     "virtualization": False,
     # Nested rootless Podman; gates ID capabilities, TUN and namespace setup
     "podman": False,
+    # skopeo alone: registry work needs no namespace permissions, unlike Podman
+    "skopeo": False,
     # Playwright MCP + headless Chromium, wired into every box session
     "browser": False,
 }
@@ -417,6 +419,7 @@ TOOL_GROUP_HELP: dict[str, str] = {
     "kubernetes": "Kubernetes (kubectl, Helm, yq)",
     "virtualization": "Virtualization (QEMU x86-64/arm64, KVM passthrough; large)",
     "podman": "Nested Podman (rootless builds/containers; extra namespace permissions)",
+    "skopeo": "skopeo (inspect, copy and list tags in container registries without Podman)",
     "browser": ("Agent browser (Playwright MCP + headless Chromium; large). Isolated in-memory "
                 "profile, same trust boundary as agents; unavailable in --host mode"),
 }

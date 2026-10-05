@@ -513,6 +513,7 @@ A base set everyone gets, plus optional groups you choose under **Workspace box 
 | `kubernetes` | on | kubectl, Helm, yq |
 | `virtualization` | off | QEMU x86-64 + aarch64, OVMF; also gates `/dev/kvm` passthrough |
 | `podman` | off | Nested rootless Podman, userspace networking and image builds (see [nested Podman](docs/nested-podman.md)) |
+| `skopeo` | off | skopeo for inspecting, copying and listing images in registries, without Podman's namespace permissions |
 | `browser` | off | Playwright MCP + headless Chromium, wired into every box session (see [agent browser](docs/integrations/browser.md)) |
 
 Anything else your projects need belongs in the project, through `mise` — a

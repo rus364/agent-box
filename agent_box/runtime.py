@@ -2267,6 +2267,9 @@ if has_group kubernetes; then
   printf "%-20s %s\n" "kubectl:" "$(kubectl version --client 2>/dev/null | head -1)"
   printf "%-20s %s\n" "helm:" "$(helm version --short)"
 fi
+if has_group skopeo; then
+  printf "%-20s %s\n" "skopeo:" "$(skopeo --version)"
+fi
 echo
 if has_group virtualization; then
   printf "%-20s %s\n" "qemu-x86:" "$(qemu-system-x86_64 --version | head -1)"
