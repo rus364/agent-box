@@ -117,6 +117,11 @@ class FilteringTests(IsolatedSources):
         self.assertEqual((public["password"], public["username"], public["url"]),
                          ("", "it's", "https://charts.example/public"))
 
+    def test_an_escaped_backslash_keeps_the_password_it_belongs_to(self):
+        """Reading "\\\\x41" as an escape would forward a different password than the host's."""
+        entries = registries.parse_repositories('repositories:\n- name: a\n  password: "p\\\\x41\\\\\\"q"\n')
+        self.assertEqual(entries[0]["password"], 'p\\x41\\"q')
+
     def test_yaml_beyond_what_helm_writes_is_refused_rather_than_half_read(self):
         self.write(self.repositories, "repositories:\n- name: private\n  password: |\n    secret\n")
         problems = registries.sync(registry_config(repositories=["private"]), "ws")
@@ -161,11 +166,21 @@ class DiagnosticTests(IsolatedSources):
         self.assertEqual(len(problems), 5, problems)
         text = "\n".join(problems)
         self.assertIn(str(self.helm_auth), text)
-        self.assertIn("Registry cr.yandex is logged in through a credential helper", text)
-        self.assertIn("Registry docker.io is logged in through a credential helper", text)
+        self.assertIn(f"Registry cr.yandex: the login in {self.runtime_auth} is kept by a credential helper", text)
+        self.assertIn(f"Registry docker.io: the login in {self.runtime_auth} is kept by a credential helper", text)
         self.assertIn("Registry gone.example has no stored login", text)
         self.assertIn("Helm repository missing is not in", text)
         self.assertEqual(self.rendered("auth.json"), {"auths": {}})
+
+    def test_a_login_stored_for_one_tool_does_not_hide_the_others_helper(self):
+        """Helm working says nothing about podman, whose auth file would stay silently empty."""
+        self.write(self.runtime_auth, {"auths": {}, "credHelpers": {"cr.yandex": "yc"}})
+        self.write(self.helm_auth, {"auths": {"cr.yandex": {"auth": "helm"}}})
+        problems = registries.sync(registry_config(["cr.yandex"]), "ws")
+        self.assertEqual(self.rendered("helm-registry.json"), {"auths": {"cr.yandex": {"auth": "helm"}}})
+        self.assertEqual(self.rendered("auth.json"), {"auths": {}})
+        self.assertEqual(len(problems), 1)
+        self.assertIn(str(self.runtime_auth), problems[0])
 
     def test_missing_sources_forward_nothing_and_say_so(self):
         problems = registries.sync(registry_config(["cr.yandex"], ["private"]), "ws")
@@ -190,6 +205,13 @@ class MenuTests(IsolatedSources):
         shown = "\n".join([*host_details, *name_details, *problems])
         for secret in ("SECRET", "secret@", "user:", 'p\\"a'):
             self.assertNotIn(secret, shown)
+
+    def test_a_credential_store_host_is_listed_as_one(self):
+        """The menu must show what launch will report, not call the host missing."""
+        self.write(self.runtime_auth, {"auths": {"docker.io": {}}, "credsStore": "secretservice"})
+        hosts, details, _ = registries.choices("hosts", ["docker.io"])
+        self.assertEqual(hosts, ["docker.io"])
+        self.assertIn("credential helper, not forwarded", details[0])
 
     def test_an_unreadable_source_is_named_rather_than_looking_empty(self):
         self.write(self.config_auth, "[]")

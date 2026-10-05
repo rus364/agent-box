@@ -54,6 +54,11 @@ def _read_auth(path: Path):
     return data
 
 
+def _entries(data, host) -> dict:
+    """The stored logins a file holds for this host, under their own keys."""
+    return {key: entry for key, entry in data.get("auths", {}).items() if registry_host(key) == host and _stored(entry)}
+
+
 def _helper(data, host) -> bool:
     """Whether the file hands this host to a credential helper instead of storing its login."""
     helpers = data.get("credHelpers")
@@ -63,7 +68,8 @@ def _helper(data, host) -> bool:
     return bool(data.get("credsStore")) and host in map(registry_host, data.get("auths", {}))
 
 
-_ESCAPE = re.compile(r"\\x([0-9A-Fa-f]{2})")
+#: Read left to right, so an escaped backslash before "x41" stays a backslash.
+_ESCAPE = re.compile(r"\\(\\|x[0-9A-Fa-f]{2})")
 
 
 def _scalar(text: str, number: int):
@@ -74,7 +80,8 @@ def _scalar(text: str, number: int):
         if not end or text[end.end():].strip()[:1] not in ("", "#"):
             raise ValueError(f"line {number}: unterminated double-quoted value")
         try:
-            return json.loads(_ESCAPE.sub(r"\\u00\1", end.group()))
+            return json.loads(_ESCAPE.sub(lambda m: "\\\\" if m.group(1) == "\\" else "\\u00" + m.group(1)[1:],
+                                          end.group()))
         except json.JSONDecodeError:
             raise ValueError(f"line {number}: unsupported escape in a double-quoted value") from None
     if text.startswith("'"):
@@ -166,12 +173,11 @@ def discover() -> Found:
     tools = {"containers": "podman, skopeo", "helm": "helm"}
     for kind, files in _auth_sources(found.problems).items():
         for path, data in files:
-            keys = [registry_host(key) for key, entry in data.get("auths", {}).items() if _stored(entry)]
             helpers = data.get("credHelpers") if isinstance(data.get("credHelpers"), dict) else {}
-            for host in dict.fromkeys(keys):
-                found.hosts.setdefault(host, []).append(f"{path} ({tools[kind]})")
-            for host in dict.fromkeys(map(registry_host, helpers)):
-                if host not in keys:
+            for host in dict.fromkeys(map(registry_host, [*data.get("auths", {}), *helpers])):
+                if _entries(data, host):
+                    found.hosts.setdefault(host, []).append(f"{path} ({tools[kind]})")
+                elif _helper(data, host):
                     found.hosts.setdefault(host, []).append(f"{path} ({tools[kind]}; credential helper, not forwarded)")
     for name, entry in _repositories(found.problems).items():
         url = urllib.parse.urlsplit(str(entry.get("url", "")))
@@ -232,23 +238,21 @@ def sync(config, workspace_id: str) -> list[str]:
     sources = _auth_sources(problems)
     rendered = {"containers": {}, "helm": {}}
     for host in registries.hosts:
-        wanted, forwarded, helper = host.lower(), False, False
+        wanted, forwarded, helpers = registry_host(host), False, []
         for kind, files in sources.items():
-            for _, data in files:
-                entries = {key: entry for key, entry in data.get("auths", {}).items()
-                           if registry_host(key) == wanted and _stored(entry)}
-                if entries:
-                    # The first file holding the host wins, as in podman's own lookup.
-                    rendered[kind].update(entries)
-                    forwarded = True
-                    break
-                helper = helper or _helper(data, wanted)
-        if not forwarded:
-            problems.append(
-                f"Registry {host} is logged in through a credential helper on the host; only stored logins are forwarded"
-                if helper else
-                f"Registry {host} has no stored login on the host; run podman login or helm registry login there, "
-                "or untick it in agent-box config")
+            # The first file holding the host wins, as in podman's own lookup.
+            stored = next((entries for _, data in files if (entries := _entries(data, wanted))), None)
+            if stored:
+                rendered[kind].update(stored)
+                forwarded = True
+            else:
+                # Reported per source: a login stored for Helm does not make podman's helper usable.
+                helpers += [path for path, data in files if _helper(data, wanted)]
+        problems += [f"Registry {host}: the login in {path} is kept by a credential helper; "
+                     "only stored logins are forwarded" for path in helpers]
+        if not forwarded and not helpers:
+            problems.append(f"Registry {host} has no stored login on the host; run podman login or helm registry "
+                            "login there, or untick it in agent-box config")
     for kind, name in (("containers", AUTH_FILE), ("helm", HELM_REGISTRY_FILE)):
         if registries.hosts:
             atomic_write_json(directory / name, {"auths": rendered[kind]}, 0o600)
