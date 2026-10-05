@@ -28,9 +28,14 @@ shown.
 | `~/.config/helm/registry/config.json` | helm (OCI) | `HELM_REGISTRY_CONFIG` |
 | `~/.config/helm/repositories.yaml` | helm repositories | `HELM_REPOSITORY_CONFIG` |
 
+When `REGISTRY_AUTH_FILE`, `HELM_REGISTRY_CONFIG` or `HELM_REPOSITORY_CONFIG` is
+set, that file is read instead, as the tools themselves do. This is also how a
+launch nested inside a box forwards the copies that box was given.
+
 Each file is filtered into its own copy and never merged with another: Helm
-often holds registries podman does not. For a host present in both container
-auth files, the runtime one wins, as in podman. agent-box copies entries
+often holds registries podman does not. Where both container auth files hold
+logins for one registry, a key from the second counts unless the first has the
+same or a wider one, matching podman's lookup. agent-box copies entries
 already written; it never runs a login command on the host. Logins kept by a
 credential helper (`credHelpers`, `credsStore`) cannot be copied and are
 reported at launch, as are chosen hosts or repositories the host no longer has

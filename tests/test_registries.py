@@ -102,6 +102,15 @@ class FilteringTests(IsolatedSources):
         self.assertEqual(self.rendered("helm-registry.json"), {"auths": {"https://registry.b/v2/": {"auth": "helm"}}})
         self.assertFalse((registries.runtime_dir("ws") / "helm-repositories.yaml").exists())
 
+    def test_scoped_logins_follow_podmans_order_across_both_files(self):
+        """Podman tries the files in order per image: a later scope counts unless an earlier key covers it."""
+        self.write(self.runtime_auth, {"auths": {"reg.a/team-a": {"auth": "a"}, "reg.b": {"auth": "host"}}})
+        self.write(self.config_auth, {"auths": {"reg.a/team-b": {"auth": "b"}, "reg.a/team-a": {"auth": "stale"},
+                                                "https://reg.b/v2/": {"auth": "legacy"}, "reg.b/team": {"auth": "covered"}}})
+        registries.sync(registry_config(["reg.a", "reg.b"]), "ws")
+        self.assertEqual(self.rendered("auth.json"), {"auths": {
+            "reg.a/team-a": {"auth": "a"}, "reg.a/team-b": {"auth": "b"}, "reg.b": {"auth": "host"}}})
+
     def test_chosen_helm_repositories_keep_their_credentials_and_types(self):
         self.write(self.repositories, REPOSITORIES)
         self.assertEqual(registries.sync(registry_config(repositories=["private"]), "ws"), [])
@@ -117,13 +126,22 @@ class FilteringTests(IsolatedSources):
         self.assertEqual((public["password"], public["username"], public["url"]),
                          ("", "it's", "https://charts.example/public"))
 
+    def test_a_multi_line_password_survives_as_helm_writes_it(self):
+        """Helm puts a JSON key used as a password in a literal block; refusing it lost every repository."""
+        entries = registries.parse_repositories(
+            'repositories:\n- name: gcr\n  password: |-\n    {\n      "type": "key"\n    }\n\n  url: https://g\n'
+            '- name: kept\n  password: |\n    line\n  username: u\n')
+        self.assertEqual([(e["name"], e["password"]) for e in entries],
+                         [("gcr", '{\n  "type": "key"\n}'), ("kept", "line\n")])
+        self.assertEqual(entries[0]["url"], "https://g")
+
     def test_an_escaped_backslash_keeps_the_password_it_belongs_to(self):
         """Reading "\\\\x41" as an escape would forward a different password than the host's."""
         entries = registries.parse_repositories('repositories:\n- name: a\n  password: "p\\\\x41\\\\\\"q"\n')
         self.assertEqual(entries[0]["password"], 'p\\x41\\"q')
 
     def test_yaml_beyond_what_helm_writes_is_refused_rather_than_half_read(self):
-        self.write(self.repositories, "repositories:\n- name: private\n  password: |\n    secret\n")
+        self.write(self.repositories, "repositories:\n- name: private\n  password: >\n    secret\n")
         problems = registries.sync(registry_config(repositories=["private"]), "ws")
         self.assertEqual(len(problems), 1)
         self.assertIn("line 3", problems[0])
@@ -154,6 +172,22 @@ class FilteringTests(IsolatedSources):
             self.assertEqual(registries.sync(config, "ws"), [])
             self.assertFalse(registries.runtime_dir("ws").exists())
             self.assertEqual((registries.mounts(config, "ws"), registries.container_env(config)), ([], []))
+
+
+class SourceLocationTests(unittest.TestCase):
+    def test_logins_are_read_where_the_tools_read_them(self):
+        """A nested launch finds the copies its box names; a moved file on the host is followed too."""
+        import os
+        import subprocess
+        import sys
+        env = {**os.environ, "REGISTRY_AUTH_FILE": "/copies/auth.json",
+               "HELM_REGISTRY_CONFIG": "/copies/helm-registry.json", "HELM_REPOSITORY_CONFIG": "/copies/repos.yaml"}
+        shown = subprocess.run(
+            [sys.executable, "-c", "from agent_box import paths; print(paths.CONTAINERS_AUTH_FILES, "
+             "paths.HELM_REGISTRY_CONFIG, paths.HELM_REPOSITORY_CONFIG)"],
+            cwd=Path(registries.__file__).parent.parent, env=env, capture_output=True, text=True, check=True).stdout
+        self.assertEqual(shown.split(), ["(PosixPath('/copies/auth.json'),)", "/copies/helm-registry.json",
+                                         "/copies/repos.yaml"])
 
 
 class DiagnosticTests(IsolatedSources):

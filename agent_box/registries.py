@@ -54,6 +54,12 @@ def _read_auth(path: Path):
     return data
 
 
+def _scope(key: str) -> str:
+    """A key as podman matches it: host or host/path, without a scheme or a legacy /v1/ or /v2/ suffix."""
+    key = re.sub(r"^[a-z]+://", "", key.strip().lower()).rstrip("/")
+    return registry_host(key) if re.search(r"/v[12]$", key) else key
+
+
 def _entries(data, host) -> dict:
     """The stored logins a file holds for this host, under their own keys."""
     return {key: entry for key, entry in data.get("auths", {}).items() if registry_host(key) == host and _stored(entry)}
@@ -95,31 +101,64 @@ def _scalar(text: str, number: int):
     return {"true": True, "false": False}.get(text, text)
 
 
+_BLOCK = re.compile(r"^\|([1-9]?)([+-]?)\s*(?:#.*)?$")
+
+
+def _value(text: str, lines: list[str], index: int, column: int):
+    """The value starting on line ``index`` and the index after it.
+
+    Helm's YAML writer puts a multi-line string, such as a JSON key used as a
+    password, in a literal block; its lines are those indented past the key.
+    """
+    block = _BLOCK.match(text.strip())
+    if not block:
+        return _scalar(text, index + 1), index + 1
+    end = index + 1
+    while end < len(lines) and (not lines[end].strip() or len(lines[end]) - len(lines[end].lstrip()) > column):
+        end += 1
+    body = lines[index + 1:end]
+    content = [line for line in body if line.strip()]
+    indent = column + int(block.group(1)) if block.group(1) else min(
+        (len(line) - len(line.lstrip()) for line in content), default=0)
+    value = "\n".join(line[indent:] for line in body)
+    chomp = block.group(2)
+    if chomp != "+":
+        value = value.rstrip("\n") + ("" if chomp == "-" or not content else "\n")
+    elif body:
+        value += "\n"
+    return value, end
+
+
 def parse_repositories(text: str) -> list[dict]:
     """The entries of a Helm ``repositories.yaml``.
 
     The standard library has no YAML parser and agent-box has no
-    dependencies, so this reads the subset Helm itself writes: top-level keys
-    and a ``repositories`` list of flat mappings. Anything else raises
-    ValueError with the line, so a hand-written file is reported instead of
-    being half-read.
+    dependencies, so this reads what Helm itself writes: top-level keys and a
+    ``repositories`` list of flat mappings whose values are plain, quoted or
+    literal blocks. Anything else raises ValueError with the line, so a
+    hand-written file is reported instead of being half-read.
     """
-    entries, current, section, indent = [], None, None, None
-    for number, line in enumerate(text.splitlines(), 1):
+    lines = text.splitlines()
+    entries, current, section, indent, index = [], None, None, None, 0
+    while index < len(lines):
+        line, number = lines[index], index + 1
         if not line.strip() or line.lstrip().startswith("#"):
+            index += 1
             continue
         item = re.match(r"^(\s*)-\s+([A-Za-z_][\w-]*):(?:\s+(.*))?$", line)
         pair = re.match(r"^(\s*)([A-Za-z_][\w-]*):(?:\s+(.*))?$", line)
         if item and section == "repositories":
-            current, indent = {item.group(2): _scalar(item.group(3) or "", number)}, len(item.group(1))
+            current, indent = {}, len(item.group(1))
             entries.append(current)
+            current[item.group(2)], index = _value(item.group(3) or "", lines, index, indent + 2)
         elif pair and not pair.group(1):
             section, current = pair.group(2), None
             value = (pair.group(3) or "").strip()
             if section == "repositories" and value not in ("", "[]"):
                 raise ValueError(f"line {number}: unsupported repositories value")
+            index += 1
         elif pair and current is not None and len(pair.group(1)) > indent:
-            current[pair.group(2)] = _scalar(pair.group(3) or "", number)
+            current[pair.group(2)], index = _value(pair.group(3) or "", lines, index, len(pair.group(1)))
         else:
             raise ValueError(f"line {number}: unsupported YAML structure")
     return entries
@@ -240,8 +279,14 @@ def sync(config, workspace_id: str) -> list[str]:
     for host in registries.hosts:
         wanted, forwarded, helpers = registry_host(host), False, []
         for kind, files in sources.items():
-            # The first file holding the host wins, as in podman's own lookup.
-            stored = next((entries for _, data in files if (entries := _entries(data, wanted))), None)
+            # Podman tries the files in order for each image, so a later file's key
+            # counts only where no earlier key covers the same or a wider scope.
+            stored = {}
+            for _, data in files:
+                earlier = [_scope(key) for key in stored]
+                stored.update({key: entry for key, entry in _entries(data, wanted).items()
+                               if not any(_scope(key) == scope or _scope(key).startswith(scope + "/")
+                                          for scope in earlier)})
             if stored:
                 rendered[kind].update(stored)
                 forwarded = True
