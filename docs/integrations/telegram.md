@@ -62,7 +62,7 @@ Separate from control, and useful without it: a message when a long run finishes
 in a box you are not watching.
 
 ```bash
-agent-box config      # bot token + chat id
+agent-box config      # Host → Notifications: bot token + chat id
 agent-box notify test
 ```
 
