@@ -182,7 +182,7 @@ def _cleanup_branch(root, config, task, *, branch=None, base=None, expected_head
                 if kind == "local":
                     gw.git(root, "update-ref", "--no-deref", "-d", ref, head)
                 else:
-                    gw.git(root, *gw._push_config_args(), "push", "--no-mirror", "--no-follow-tags",
+                    gw.git(root, *gw._url_push_config_args(root, url), "push", "--no-mirror", "--no-follow-tags",
                            "--recurse-submodules=no", f"--force-with-lease={ref}:{head}",
                            url, f":{ref}", timeout=120)
                 result[kind] = {"status": "deleted", "head": head}

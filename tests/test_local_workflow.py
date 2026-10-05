@@ -793,6 +793,16 @@ class LocalPushTests(LandingCase):
         self.operate("merge", saved=saved)
         self.assertEqual(self.remote_head(), gw.head_sha(self.root))
 
+    def test_a_configured_remote_with_the_reserved_name_stops_publication(self):
+        """Its own push URL could keep Git's tracking match unique and let Git write through symrefs."""
+        self.config.workflow.auto_push = True
+        before = self.remote_head()
+        gw.git(self.root, "remote", "add", gw._URL_PUSH_DECOY, "elsewhere:repo")
+        gw.git(self.root, "config", f"remote.{gw._URL_PUSH_DECOY}.pushurl", "elsewhere:repo")
+        with self.assertRaisesRegex(AgentBoxError, "reserved"):
+            self.operate("merge")
+        self.assertEqual(self.remote_head(), before)
+
     def test_a_merge_of_a_done_task_never_publishes_later_base_work(self):
         """A completed task has only cleanup left; it is not a publication retry."""
         self.operate("merge")

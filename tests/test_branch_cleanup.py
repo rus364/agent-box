@@ -763,6 +763,17 @@ class CleanupTests(unittest.TestCase):
         self.assertIn('symbolic', result['remote']['reason'])
         self.assertTrue(self.exists(remote=True))
 
+    def test_remote_deletion_leaves_a_symbolic_tracking_target_alone(self):
+        """Git 2.56 deletes the tracking ref of a URL push through symrefs; a user's branch would go."""
+        self.integrated()
+        gw.git(self.root, 'branch', 'unrelated', 'main')
+        tracking = 'refs/remotes/origin/' + self.branch
+        gw.git(self.root, 'symbolic-ref', tracking, 'refs/heads/unrelated')
+        result = self.run_cleanup()
+        self.assertEqual(result['remote']['status'], 'deleted')
+        self.assertEqual(gw.local_branch_head(self.root, 'unrelated'), self.head)
+        self.assertEqual(gw.git(self.root, 'symbolic-ref', tracking), 'refs/heads/unrelated')
+
     def test_expected_merge_head_preserves_refs_that_moved_after_merge(self):
         self.integrated()
         gw.git(self.root, 'commit', '--allow-empty', '-m', 'new work')

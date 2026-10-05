@@ -15,6 +15,22 @@ _PUSH_CONFIG_OVERRIDES = {"push.followTags": "false", "push.recurseSubmodules": 
 def _push_config_args() -> list[str]:
     return [arg for key, value in _PUSH_CONFIG_OVERRIDES.items() for arg in ('-c', f'{key}={value}')]
 
+_URL_PUSH_DECOY = "agent-box-url-push"
+
+
+def _url_push_config_args(root, url) -> list[str]:
+    """Keep Git from writing remote-tracking refs on a push to a frozen URL.
+
+    Since 2.56 Git updates, through symrefs, the tracking refs of the one
+    configured remote whose push URL equals the URL, but leaves them alone when
+    several remotes match. A command-line remote with the same URL makes the
+    match ambiguous on every version, so the guarded local writes stay the only
+    ones. Pushing by remote name instead would reapply its push configuration.
+    """
+    if _URL_PUSH_DECOY in git(root, "remote").splitlines():
+        raise AgentBoxError(f"Remote {_URL_PUSH_DECOY} is reserved for agent-box URL pushes")
+    return [*_push_config_args(), "-c", f"remote.{_URL_PUSH_DECOY}.url={url}"]
+
 def _run(args: list[str], cwd: Path | str | None=None, timeout: float=10) -> subprocess.CompletedProcess:
     env = {**os.environ, 'GIT_TERMINAL_PROMPT': '0'}
     return subprocess.run(args, cwd=str(cwd) if cwd else None, capture_output=True, text=True, timeout=timeout, check=False, env=env)
@@ -516,7 +532,7 @@ def push_local_base(root, base, accepted_head):
     if local_branch_head(root, base) != accepted_head or push_destination(root) != url:
         raise AgentBoxError("Local base or origin destination changed before publication")
     if state.branch_sha != accepted_head:
-        git(root, *_push_config_args(), "push", "--no-force", "--no-mirror",
+        git(root, *_url_push_config_args(root, url), "push", "--no-force", "--no-mirror",
             "--no-follow-tags", "--recurse-submodules=no", "--", url,
             f"{accepted_head}:refs/heads/{base}", timeout=120)
     published = _query_origin(root, base, url)
