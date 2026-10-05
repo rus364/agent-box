@@ -100,7 +100,7 @@ HELP = {
     "workflow.worker.tiers": "Optional worker candidates per task tier 1-3, used only when Use tiers is on. A nonempty tier list replaces Models for that tier; an empty one uses Models.",
     "workflow.sync": "Plan sync reads the repository and updates live tracker tasks; it never edits project files.",
     "workflow.sync.policy": "Off disables automatic runs. Always runs at every selected event; auto runs before work/after planning and after changes matching Paths. Manual sync works in every mode, independently of review.",
-    "workflow.sync.events": "JSON list: before (before implementation), after (after integration), plan (after planning or an accepted decision).",
+    "workflow.sync.events": "Events that start automatic Plan sync: before (before implementation), after (after integration), plan (after planning or an accepted decision).",
     "workflow.sync.scope": "Discovery boundary: source parent tree or bound project, respecting recursion. Read affected candidates, not every task.",
     "workflow.sync.references": "Repair references needed by affected tasks: repository path#heading and purpose. Never edit documents or backfill unrelated tasks.",
     "workflow.sync.paths": "Repository-relative globs for auto after-events; intact managed AGENTS.md workflow-block-only changes are skipped. Always ignores this filter.",
@@ -146,6 +146,82 @@ LABELS = {
 #: Labels a bare key cannot carry because the same key means something else elsewhere.
 PATH_LABELS = {
     "credentials.github.token": "Forward gh token", "credentials.github.config": "Copy gh config",
+}
+
+#: What each offered value means, shown for the value under the cursor; the field's own
+#: help stays behind "?". One shared paragraph for every value made the reader map the
+#: prose back to the row themselves.
+OPTION_HELP = {
+    "agents.default": {
+        "claude": "A bare `agent-box` starts Claude Code.",
+        "codex": "A bare `agent-box` starts Codex CLI.",
+    },
+    "tracker.provider": {
+        "vikunja": "Vikunja: the implemented adapter for projects, columns and task relations.",
+        "jira": "Jira: reserved; its adapter is not implemented yet, so tracker commands refuse it.",
+        "linear": "Linear: reserved; its adapter is not implemented yet, so tracker commands refuse it.",
+        "github": "GitHub Issues: reserved; its adapter is not implemented yet, so tracker commands refuse it.",
+    },
+    "workflow.merge_mode": {
+        "github": "Parent work lands through a GitHub pull request; publishing needs GitHub integration.",
+        "local": "Parent work fast-forwards into origin's default branch locally; no pull request.",
+    },
+    "workflow.sync.policy": {
+        "off": "No automatic Plan sync; `workflow sync` still runs on demand.",
+        "auto": "Runs before work and after planning, and after changes matching Paths.",
+        "always": "Runs at every selected event, whatever changed.",
+    },
+    "workflow.sync.scope": {
+        "parent": "Look for affected tasks only in the source task's parent tree.",
+        "project": "Look for affected tasks anywhere in the bound project, respecting recursion.",
+    },
+    "workflow.sync.events": {
+        "before": "Before implementation starts on a task.",
+        "after": "After a task is integrated into its parent or base.",
+        "plan": "After planning or an accepted decision changes tasks.",
+    },
+    "workflow.review.policy": {
+        "off": "No workflow review; GitHub merge may still require independent approval.",
+        "auto": "Review when file or line thresholds, sensitive paths or the review label trigger it.",
+        "always": "Review every task and the complete parent diff.",
+    },
+    "workflow.review.incremental": {
+        "off": "After an applied round, new commits are reviewed against the whole task diff.",
+        "LOW": "A NEEDS_WORK round with only LOW findings lets its fixes be judged by their delta.",
+        "MEDIUM": "A NEEDS_WORK round with findings up to MEDIUM lets its fixes be judged by their delta.",
+        "HIGH": "A NEEDS_WORK round with findings up to HIGH lets its fixes be judged by their delta.",
+        "CRITICAL": "Any NEEDS_WORK round lets its fixes be judged by their delta.",
+    },
+    "workflow.review.github_provider": {
+        "auto": "Use local review; the same as local.",
+        "local": "Review locally with the configured reviewer candidates.",
+        "codex": "Ask the Codex GitHub review bot in the parent pull request; it cannot pin model or effort.",
+        "claude": "Ask the configured Claude GitHub Action in the parent pull request.",
+    },
+    "box.k3s.lifetime": {
+        "persistent": "The cluster runs until `agent-box stop`, so deployments survive between sessions.",
+        "box": "The cluster stops when agent-box removes the box, or at the next agent-box command after the box ended.",
+    },
+}
+EFFORT_HELP = {
+    "default": "Send no effort override; the CLI or provider default applies.",
+    "none": "No reasoning; the quickest answers.",
+    "minimal": "The least reasoning short of none.",
+    "low": "Light reasoning for simple, well-specified work.",
+    "medium": "Balanced reasoning for ordinary tasks.",
+    "high": "Deeper reasoning for harder tasks; slower and more expensive.",
+    "xhigh": "Extra-high reasoning for difficult problems.",
+    "max": "Maximum reasoning the model offers.",
+    "ultra": "Codex's highest reasoning level; the slowest and most expensive.",
+}
+SPEED_HELP = {
+    "inherit": "Keep the session's or provider's speed; the only choice for external APIs and native agents.",
+    "standard": "Explicitly turn fast mode off; runs as a managed CLI.",
+    "fast": "Request faster output at higher provider usage or cost; runs as a managed CLI.",
+}
+#: Fields whose list holds members of a fixed vocabulary, edited as checkboxes; order is the vocabulary's.
+MULTI_CHOICES = {
+    "workflow.sync.events": ("before", "after", "plan"),
 }
 
 # Presentation follows the user's decisions, not dataclass serialization order.
@@ -396,6 +472,28 @@ def value_choices(path, section, tree):
     return options
 
 
+def option_help(path, options):
+    """What each offered value means, or None when only the field's own help describes them."""
+    rel = external(path)
+    if rel is not None and len(rel) == 3 and path[-1] == 'default_model':
+        return ["Launches without --model use the first configured model." if not option
+                else f"Launches without --model use {option}." for option in options]
+    known = EFFORT_HELP if rel is not None and path[-1] == 'effort' else OPTION_HELP.get(".".join(path))
+    if not known:
+        return None
+    return [known.get(option) or help_for(path) for option in options]
+
+
+def group_headings(keys, path):
+    """Row index -> heading for the first row of each named group; an unnamed group draws none."""
+    headings = {}
+    for heading, fields in MENU_GROUPS.get(path, ()):
+        first = next((index for index, key in enumerate(keys) if key in fields), None)
+        if heading and first is not None:
+            headings[first] = heading
+    return headings
+
+
 def edit(config, *, project=None):
     if not sys.stdin.isatty() or not sys.stdout.isatty():
         raise AgentBoxError("agent-box config needs a terminal; edit config.json and run config apply for noninteractive use")
@@ -508,7 +606,7 @@ def edit(config, *, project=None):
             # A resize can arrive between measuring the screen and drawing it.
             pass
 
-    def paint(screen, rows, selected, title, help_text="", notice="", controls=None, group=""):
+    def paint(screen, rows, selected, title, help_text="", notice="", controls=None, headings=None):
         screen.erase()
         height, width = screen.getmaxyx()
         if height < 8 or width < 40:
@@ -530,18 +628,29 @@ def edit(config, *, project=None):
         add_line(screen, 0, title, title_width, curses.A_BOLD)
         add_line(screen, 0, count, len(count) + 1, x=width - len(count) - 1)
         add_line(screen, 1, "Up/Down: move  Home/End  PgUp/PgDn", width)
-        add_line(screen, 2, group, list_width, curses.A_BOLD)
         label_width = min(max((display_width(row[0]) for row in rows if isinstance(row, tuple)), default=0),
                           32, list_width // 2 - 2)
-        offset = min(max(0, selected - list_height + 1), max(0, len(rows) - list_height))
-        for y, (index, row) in enumerate(list(enumerate(rows))[offset:offset + list_height], 3):
+        # Headings are drawn between rows, never stored in them, so selection and the
+        # counter only ever see rows that can be chosen.
+        lines = []
+        for index, row in enumerate(rows):
+            if headings and index in headings:
+                lines.append((None, headings[index]))
+            lines.append((index, row))
+        indent = "  " if headings else ""
+        at = next((line for line, (index, _) in enumerate(lines) if index == selected), 0)
+        offset = min(max(0, at - list_height + 1), max(0, len(lines) - list_height))
+        for y, (index, row) in enumerate(lines[offset:offset + list_height], 3):
+            if index is None:
+                add_line(screen, y, row, list_width, curses.A_BOLD | curses.A_UNDERLINE)
+                continue
             attr = curses.A_REVERSE | curses.A_BOLD if index == selected else 0
             if "Global only" in (row[1] if isinstance(row, tuple) else row):
                 attr = global_only_color | (curses.A_BOLD | curses.A_UNDERLINE if index == selected else 0)
             if isinstance(row, tuple):
                 label, value = row
-                row = padded(clipped(label, label_width), label_width) + ": " + clipped(value, list_width - label_width - 3)
-            add_line(screen, y, row, list_width, attr)
+                row = padded(clipped(label, label_width), label_width) + ": " + clipped(value, list_width - label_width - 3 - len(indent))
+            add_line(screen, y, indent + row, list_width, attr)
         message = help_text
         if notice:
             message = notice + "\n\n" + help_text
@@ -703,6 +812,7 @@ def edit(config, *, project=None):
                 pass
 
     def choose(screen, rows, title, index=0, explanation="", details=None):
+        """Pick one row; ``details`` describe each row under the cursor, ``explanation`` is the field's help behind ?."""
         while True:
             help_text = details[index] if details else explanation
             usable = paint(screen, rows, index, title, help_text,
@@ -720,7 +830,32 @@ def edit(config, *, project=None):
             elif key in ("\x1b", curses.KEY_LEFT):
                 return None
             elif key in ("?", curses.KEY_F1):
-                full_help(screen, title, help_text)
+                full_help(screen, title, explanation or help_text)
+
+    def check(screen, options, title, chosen, details, explanation=""):
+        """Toggle members of a fixed vocabulary; the result keeps the vocabulary's order, None on Esc.
+
+        Options and their descriptions come from the caller, so a vocabulary found at run
+        time, such as the registries logged in on the host, uses the same screen."""
+        marked, index = {option for option in options if option in chosen}, 0
+        while True:
+            rows = [("[x] " if option in marked else "[ ] ") + option for option in options]
+            usable = paint(screen, rows, index, title, details[index],
+                           controls="Space toggle  Enter accept  ? help  Esc cancel")
+            key = screen.get_wch()
+            if key in ("\x1b", curses.KEY_LEFT):
+                return None
+            if not usable:
+                continue
+            destination = moved(key, index, len(rows), screen)
+            if destination is not None:
+                index = destination
+            elif key == " ":
+                marked ^= {options[index]}
+            elif key in ("\n", "\r"):
+                return [option for option in options if option in marked]
+            elif key in ("?", curses.KEY_F1):
+                full_help(screen, title, explanation or details[index])
 
     def pick_model(screen, spec):
         """``(provider, api, model)`` chosen together, or None; any CLI's model may serve any role."""
@@ -739,12 +874,17 @@ def edit(config, *, project=None):
         if current and current not in [row[:3] for row in suggestions]:
             suggestions.insert(0, (*current, f'{current[2]} [{current[0]}{"@" + current[1] if current[1] else ""}]'))
         rows = [f'Enter a custom model ID... [{provider}{"@" + api if api else ""}]' for provider, api in apis]
+        details = [f'Type any model ID for the {provider} CLI '
+                   + (f'through the {api} external API.' if api else 'through its own login.') for provider, api in apis]
         offset = len(rows)
         rows += [row[3] + (' (current)' if row[:3] == current else '') for row in suggestions]
+        details += [f'{model}: configured under External APIs / {api} / {provider}, reached through that endpoint.' if api
+                    else f'{model}: from the {provider} CLI\'s model list, through its own login.'
+                    for provider, api, model, _ in suggestions]
         index = next((i + offset for i, row in enumerate(suggestions) if row[:3] == current), offset)
         about = ('Select the CLI, API and model together. A candidate of the other CLI than the coordinator\'s runs as a '
                  'managed CLI process. Configured external models are not live discovery; availability depends on the provider account.')
-        picked = choose(screen, rows, 'Model', index, explanation=about)
+        picked = choose(screen, rows, 'Model', index, explanation=about, details=details)
         if picked is None:
             return None
         if picked < offset:
@@ -776,8 +916,9 @@ def edit(config, *, project=None):
             actions = [f"Model: {spec['model']} [{spec['provider']}{'@' + spec['api_provider'] if spec.get('api_provider') else ''}]",
                        f"Effort: {spec['effort']}", f"Speed: {spec.get('speed', 'inherit')}",
                        "Move up", "Move down", "Remove"]
+            effort_about = "Reasoning effort; default omits agent-box's effort override."
             action = choose(screen, actions, f"{title} / {index + 1}", 0,
-                            details=["Choose the CLI, API and model.", "Reasoning effort; default omits agent-box's effort override.",
+                            details=["Choose the CLI, API and model.", effort_about,
                                      help_for(("workflow", "speed")), "Prefer this candidate earlier.",
                                      "Prefer this candidate later.", "Delete this candidate from the list."])
             if action == 0:
@@ -788,14 +929,15 @@ def edit(config, *, project=None):
             elif action == 1:
                 options = candidate_efforts(spec, draft)
                 picked = choose(screen, list(options), f"{title} / {index + 1} / effort",
-                                options.index(spec["effort"]) if spec["effort"] in options else 0)
+                                options.index(spec["effort"]) if spec["effort"] in options else 0,
+                                explanation=effort_about, details=[EFFORT_HELP.get(option, effort_about) for option in options])
                 if picked is not None:
                     spec["effort"], changed = options[picked], True
             elif action == 2:
                 from .speed import SPEEDS
                 picked = choose(screen, list(SPEEDS), f"{title} / {index + 1} / speed",
                                 SPEEDS.index(spec.get("speed", "inherit")) if spec.get("speed", "inherit") in SPEEDS else 0,
-                                explanation=help_for(("workflow", "speed")))
+                                explanation=help_for(("workflow", "speed")), details=[SPEED_HELP[speed] for speed in SPEEDS])
                 if picked is not None:
                     spec["speed"], changed = SPEEDS[picked], True
             elif action == 3 and index:
@@ -860,6 +1002,8 @@ def edit(config, *, project=None):
                     shown = "<configured>" if value else "<empty>"
                 elif candidate_list(full) and isinstance(value, list):
                     shown = ", ".join(candidate_label(spec) for spec in value) or "(none)"
+                elif ".".join(full) in MULTI_CHOICES and isinstance(value, list):
+                    shown = ", ".join(map(str, value)) or "(none)"
                 elif isinstance(value, str):
                     shown = value or "(not set)"
                 else:
@@ -889,9 +1033,11 @@ def edit(config, *, project=None):
                 hint, help_title = extras[selected - len(keys)][2], extras[selected - len(keys)][0]
             title = ("agent-box config --project" if project_mode else "agent-box config") + (" / " + " / ".join(label_for(part, path[:index]) for index, part in enumerate(path)) if path else "")
             controls = ("Enter R reset G copy " if project_mode else "Enter open R reset ") + "? help Esc back"
-            group = next((heading for heading, fields in MENU_GROUPS.get(path, ())
-                          if selected < len(keys) and keys[selected] in fields), "")
-            usable = paint(screen, rows, selected, title, hint, notice, controls=controls, group=group)
+            headings = group_headings(keys, path)
+            if headings and extras:
+                # Otherwise the actions would read as members of the last group.
+                headings[len(keys)] = "Actions"
+            usable = paint(screen, rows, selected, title, hint, notice, controls=controls, headings=headings)
             key = screen.get_wch()
             if key in ("\x1b", curses.KEY_LEFT):
                 return None
@@ -1026,12 +1172,19 @@ def edit(config, *, project=None):
                     if edit_candidates(screen, value, full):
                         notice = "Draft updated; save to keep changes"
                         accepted = True
+                elif ".".join(full) in MULTI_CHOICES and isinstance(value, list):
+                    vocabulary = MULTI_CHOICES[".".join(full)]
+                    picked = check(screen, vocabulary, ".".join(full), value, option_help(full, vocabulary), help_for(full))
+                    if picked is not None:
+                        data[name], notice = picked, "Draft updated; save to keep changes"
+                        accepted = True
                 elif options:
                     if key == " ":
                         data[name] = options[(options.index(value) + 1) % len(options)] if value in options else options[0]
                         accepted = True
                     else:
-                        picked = choose(screen, [option or ('First configured model' if name == 'default_model' else "Built-in API") for option in options], ".".join(full), options.index(value) if value in options else 0, help_for(full))
+                        picked = choose(screen, [option or ('First configured model' if name == 'default_model' else "Built-in API") for option in options], ".".join(full), options.index(value) if value in options else 0, help_for(full),
+                                        details=option_help(full, options))
                         if picked is not None:
                             data[name] = options[picked]
                             accepted = True

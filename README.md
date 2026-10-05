@@ -296,8 +296,12 @@ packages or installer. It keeps the terminal's default background and remains
 usable down to 40 columns by 8 rows. Up and Down move, Space toggles or cycles
 the current value, Enter opens a section, choice list, or editor, `?` opens the
 complete scrollable help for the selected item, and Escape goes back without
-the usual curses delay. Home/End and Page Up/Down navigate long lists. Details
-sit beside the list on wide terminals and below it on narrow ones. Editors
+the usual curses delay. Home/End and Page Up/Down navigate long lists; group
+headings inside a section are skipped. A choice list describes the value under
+the cursor, and `?` there shows the setting's own help. A list of fixed values,
+such as Plan sync events, opens as checkboxes: Space toggles, Enter keeps,
+Escape discards. Details sit beside the list on wide terminals and below it on
+narrow ones. Editors
 support cursor movement, Home, End, Backspace, Delete, insertion, and long
 values; secret values remain masked. F1 shows the editor's keyboard help.
 In the global editor, **R: Reset to default** restores the selected field or

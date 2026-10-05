@@ -109,7 +109,7 @@ class ConfigMenuTests(unittest.TestCase):
                     if 'Models  ' not in frame or 'Models by tier' not in frame:
                         continue
                     columns = [text.index(':') for _, x, text, _ in writes
-                               if x == 0 and re.match(r'(Models|Models by tier) *: ', text)]
+                               if x == 0 and re.match(r' *(Models|Models by tier) *: ', text)]
                     self.assertEqual(len(set(columns)), 1)
                 full_help = next(frame for frame in screen.frames if 'Help: workflow.worker.tiers' in frame)
                 self.assertIn('Optional worker', full_help)
@@ -140,7 +140,8 @@ class ConfigMenuTests(unittest.TestCase):
         """Wide characters use two columns; combining marks stay with their base."""
         keys = [*select('workflow'), '\n', *select('review', ('workflow',)), '\n',
                 *select('label', ('workflow', 'review')), *['\x1b'] * 3]
-        for width, label_columns, value_columns in ((40, 18, 19), (100, 22, 25)):
+        # Grouped rows sit two columns in, under their heading.
+        for width, label_columns, value_columns in ((40, 18, 17), (100, 22, 23)):
             for character, columns in (('界', 2), ('e\u0301', 1)):
                 with self.subTest(width=width, character=character):
                     config = Config()
@@ -148,8 +149,8 @@ class ConfigMenuTests(unittest.TestCase):
                     screen = Screen(keys, sizes=[(24, width)])
                     self.edit(config, [], screen=screen)
                     rows = [text for _, x, text, _ in screen.writes
-                            if x == 0 and text.startswith('Label') and ':' in text]
-                    expected = 'Label'.ljust(label_columns) + ': ' + character * ((value_columns - 3) // columns) + '...'
+                            if x == 0 and text.startswith('  Label') and ':' in text]
+                    expected = '  ' + 'Label'.ljust(label_columns) + ': ' + character * ((value_columns - 3) // columns) + '...'
                     self.assertTrue(rows)
                     self.assertTrue(all(text == expected for text in rows))
 
@@ -225,6 +226,62 @@ class ConfigMenuTests(unittest.TestCase):
 
     def test_merge_mode_is_an_explicit_menu_choice(self):
         self.assertEqual(config_menu.CHOICES["workflow.merge_mode"], ("github", "local"))
+
+    def test_group_headings_are_drawn_in_the_list_but_never_selected(self):
+        """A heading sits above its group; Down from the last field of one group lands on the next group's first field."""
+        import curses
+        keys = config_menu.menu_keys(Config().to_dict()["workflow"], ("workflow",))
+        result, screen = self.edit(Config(), [*select("workflow"), "\n", curses.KEY_HOME, curses.KEY_DOWN, " ",
+                                              "\x1b", curses.KEY_END, curses.KEY_UP, "\n"])
+        frame = next(frame for frame in screen.frames if "Merge mode" in frame)
+        lines = [line.split("|")[0].strip() for line in frame.splitlines()]
+        self.assertLess(lines.index("Delivery"), next(i for i, line in enumerate(lines) if line.startswith("Merge mode")))
+        self.assertIn(f"1/{len(keys)}", frame)
+        self.assertEqual(result.config.workflow.merge_mode, "local")
+
+    def test_every_offered_value_of_a_fixed_choice_has_its_own_description(self):
+        """A value without one would fall back to the field's paragraph and read as describing every row."""
+        for dotted, options in config_menu.CHOICES.items():
+            with self.subTest(field=dotted):
+                self.assertEqual(set(config_menu.OPTION_HELP[dotted]), set(options))
+        for dotted, options in config_menu.MULTI_CHOICES.items():
+            self.assertEqual(set(config_menu.OPTION_HELP[dotted]), set(options))
+        from agent_box.config import AGENT_EFFORTS
+        from agent_box.external_config import EFFORTS
+        from agent_box.speed import SPEEDS
+        self.assertLessEqual({*EFFORTS, *(e for efforts in AGENT_EFFORTS.values() for e in efforts)}, set(config_menu.EFFORT_HELP))
+        self.assertEqual(set(config_menu.SPEED_HELP), set(SPEEDS))
+
+    def test_a_choice_describes_the_value_under_the_cursor_and_keeps_the_field_help_behind_question_mark(self):
+        """Moving changes the description, in the sidebar and in the bottom area of a narrow terminal."""
+        import curses
+        keys = [*select("agents"), "\n", *select("default", ("agents",)), "\n",
+                curses.KEY_HOME, curses.KEY_DOWN, "?", "\x1b", "\x1b", "\x1b", "\x1b", "\x1b"]
+        claude, codex = (config_menu.OPTION_HELP["agents.default"][agent] for agent in ("claude", "codex"))
+        for size in ((24, 80), (24, 140)):
+            with self.subTest(size=size):
+                screen = Screen(keys, sizes=[size])
+                self.edit(Config(), [], screen=screen)
+                text = [" ".join(frame.split()) for frame in screen.frames]
+                first = next(i for i, frame in enumerate(text) if claude in frame)
+                self.assertNotIn(codex, text[first])
+                moved = next(i for i, frame in enumerate(text) if i > first and codex in frame)
+                self.assertNotIn(claude, text[moved])
+                self.assertIn(config_menu.help_for(("agents", "default")), text[moved + 1])
+
+    def test_sync_events_are_toggled_as_checkboxes_and_escape_keeps_the_saved_list(self):
+        """Space toggles, Enter keeps the selection in vocabulary order, Esc discards it."""
+        import curses
+        toggles = [*select("workflow"), "\n", *select("sync", ("workflow",)), "\n", *select("events", ("workflow", "sync")), "\n",
+                   curses.KEY_HOME, " ", curses.KEY_END, " "]
+        save = ["\x1b", "\x1b", curses.KEY_END, curses.KEY_UP, "\n"]
+        result, screen = self.edit(Config(), [*toggles, "\n", *save])
+        self.assertEqual(result.config.workflow.sync.events, ["before", "after"])
+        self.assertTrue(any("[x] before" in frame and "[ ] plan" in frame for frame in screen.frames))
+        self.assertTrue(any(config_menu.OPTION_HELP["workflow.sync.events"]["plan"] in " ".join(frame.split())
+                            for frame in screen.frames))
+        result, _ = self.edit(Config(), [*toggles, "\x1b", *save])
+        self.assertEqual(result.config.workflow.sync.events, ["plan", "after"])
 
     def edit(self, config, keys, choices=(), link=None, screen=None, project=None, catalogs=None):
         import curses
@@ -390,7 +447,7 @@ class ConfigMenuTests(unittest.TestCase):
         self.assertEqual(result.config.workflow.scout.models, [
             {"provider": "codex", "model": "gpt-6-astra", "effort": "high", "speed": "fast", "api_provider": ""},
             {"provider": "claude", "model": BUNDLED_MODELS["claude"][0], "effort": "medium", "speed": "inherit", "api_provider": ""}])
-        self.assertTrue(any(line.startswith("Models") and "codex:gpt-6-astra:high speed=fast" in line for line in screen.drawn))
+        self.assertTrue(any(line.lstrip().startswith("Models") and "codex:gpt-6-astra:high speed=fast" in line for line in screen.drawn))
         self.assertEqual(result.config.workflow.worker, config.workflow.worker)
         removed, _ = self.edit(result.config, [*opened, curses.KEY_HOME, "\n", curses.KEY_END, "\n", "\x1b",
                                                "\x1b", "\x1b", curses.KEY_END, curses.KEY_UP, "\n"])
@@ -570,7 +627,7 @@ class ProjectMenuTests(unittest.TestCase):
         self.assertEqual(result.project, {})
         self.assertTrue(result.config.workflow.enabled)
         rows = [(text, attr) for _, x, text, attr in screen.writes
-                if x == 0 and text.startswith('Enabled') and ':' in text]
+                if x == 0 and text.lstrip().startswith('Enabled') and ':' in text]
         self.assertTrue(rows)
         self.assertTrue(all('[Global only]' in text for text, _ in rows))
         self.assertTrue(all(not attr & curses.A_REVERSE for _, attr in rows))
