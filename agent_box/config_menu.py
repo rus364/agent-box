@@ -915,7 +915,7 @@ def edit(config, *, project=None):
         details += [f'{model}: the saved ID, entered by hand; neither the {provider} CLI\'s model list nor a configured API lists it.'
                     if unlisted and number == 0
                     else f'{model}: configured under External APIs / {api} / {provider}, reached through that endpoint.' if api
-                    else f'{model}: from the {provider} CLI\'s model list, through its own login.'
+                    else f'{model}: a suggested {provider} model, run through the CLI\'s own login.'
                     for number, (provider, api, model, _) in enumerate(suggestions)]
         index = next((i + offset for i, row in enumerate(suggestions) if row[:3] == current), offset)
         about = ('Select the CLI, API and model together. A candidate of the other CLI than the coordinator\'s runs as a '
