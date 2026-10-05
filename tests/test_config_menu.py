@@ -238,6 +238,14 @@ class ConfigMenuTests(unittest.TestCase):
         self.assertLess(lines.index("Delivery"), next(i for i, line in enumerate(lines) if line.startswith("Merge mode")))
         self.assertIn(f"1/{len(keys)}", frame)
         self.assertEqual(result.config.workflow.merge_mode, "local")
+        # At the supported minimum the list holds one row; its group's heading stays above it.
+        screen = Screen([*select("workflow"), "\n", curses.KEY_HOME, curses.KEY_DOWN, curses.KEY_END, "\x1b", "\x1b"],
+                        sizes=[(8, 40)])
+        self.edit(Config(), [], screen=screen)
+        for row, heading in (("Merge mode", "Delivery"), ("Timeout seconds", "Delegation")):
+            with self.subTest(row=row):
+                frame = next(frame for frame in screen.frames if row in frame)
+                self.assertIn(heading, frame)
 
     def test_every_offered_value_of_a_fixed_choice_has_its_own_description(self):
         """A value without one would fall back to the field's paragraph and read as describing every row."""

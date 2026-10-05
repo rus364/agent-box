@@ -310,6 +310,30 @@ class ExternalModelTests(unittest.TestCase):
         self.assertNotIn('metadata', edited.config.agents.external_apis['deepseek'].codex.models)
         self.assertEqual(edited.config.agents.external_apis['deepseek'].codex.default_model, '')
 
+    def test_fixed_vocabulary_model_lists_are_toggled_as_checkboxes(self):
+        """Supported efforts and Codex input types hold known names, so they are ticked rather than typed as JSON."""
+        config = rich_config()
+        data = config.to_dict()
+        path = ('agents', 'external_apis', 'deepseek', 'codex', 'models', 'v4-pro')
+        keys = []
+        for index, part in enumerate(path):
+            rows = config_menu.menu_keys(data, path[:index])
+            keys += [curses.KEY_HOME, *[curses.KEY_DOWN] * rows.index(part), '\n']
+            data = data[part]
+        rows = config_menu.menu_keys(data, path)
+        efforts = config_menu.list_vocabulary((*path, 'supported_efforts'))
+        keys += [curses.KEY_HOME, *[curses.KEY_DOWN] * rows.index('supported_efforts'), '\n',
+                 curses.KEY_HOME, *[curses.KEY_DOWN] * efforts.index('medium'), ' ', '\n',
+                 curses.KEY_HOME, *[curses.KEY_DOWN] * rows.index('input_modalities'), '\n',
+                 curses.KEY_END, ' ', '\n',
+                 *['\x1b'] * len(path), curses.KEY_END, curses.KEY_UP, '\n']
+        edited, screen = menu_tests.ConfigMenuTests().edit(config, keys)
+        model = edited.config.agents.external_apis['deepseek'].codex.models['v4-pro']
+        self.assertEqual(model['supported_efforts'], ['low', 'medium', 'high', 'max'])
+        self.assertEqual(model['input_modalities'], ['text'])
+        self.assertTrue(any('[x] medium' in frame and '[ ] none' in frame for frame in screen.frames))
+        self.assertIsNone(config_menu.list_vocabulary(('agents', 'external_apis', 'deepseek', 'claude', 'models', 'v4-pro', 'input_modalities')))
+
     def test_advanced_metadata_editor_is_readable_while_environment_stays_masked(self):
         """Non-secret metadata needs visible JSON editing; env values must stay private."""
         config = rich_config()

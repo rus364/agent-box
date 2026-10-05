@@ -219,7 +219,12 @@ SPEED_HELP = {
     "standard": "Explicitly turn fast mode off; runs as a managed CLI.",
     "fast": "Request faster output at higher provider usage or cost; runs as a managed CLI.",
 }
+MODALITY_HELP = {
+    "text": "Text prompts.",
+    "image": "Images attached to prompts, such as screenshots.",
+}
 #: Fields whose list holds members of a fixed vocabulary, edited as checkboxes; order is the vocabulary's.
+#: External API model lists are keyed by dynamic names, so `list_vocabulary` adds those.
 MULTI_CHOICES = {
     "workflow.sync.events": ("before", "after", "plan"),
 }
@@ -360,10 +365,10 @@ def help_for(path):
                 "default_model": "Configured model used without --model; empty uses the first entry. Explicit selection is stable across file ordering.",
                 "display_name": "Optional model picker label; the model ID sent to the API stays unchanged.",
                 "effort": "Model reasoning default; default leaves the CLI/provider choice. Explicit CLI/workflow effort takes priority.",
-                "supported_efforts": "JSON array of supported effort names. Empty means unknown; declared levels constrain explicit requests.",
+                "supported_efforts": "Effort names the model supports. None checked means unknown; declared levels constrain explicit requests.",
                 "context_window": "Tokens; 0 leaves the CLI default. Claude accepts 200000 or 1048576; 1048576 adds [1m] to its launch model.",
                 "auto_compact_token_limit": "Compaction threshold in tokens; 0 leaves the CLI default. Must be below a configured context window.",
-                "input_modalities": "Codex input types: JSON array containing text and/or image.",
+                "input_modalities": "Codex input types: text, image or both; at least one.",
                 "supports_parallel_tool_calls": "Advertise parallel tool calls in the Codex model catalog.",
                 "supports_reasoning_summaries": "Advertise reasoning summaries in the Codex model catalog.",
                 "metadata": "Additional native Codex model metadata as JSON. Typed model fields cannot be overridden here; fields must be supported by your CLI.",
@@ -478,10 +483,26 @@ def option_help(path, options):
     if rel is not None and len(rel) == 3 and path[-1] == 'default_model':
         return ["Launches without --model use the first configured model." if not option
                 else f"Launches without --model use {option}." for option in options]
-    known = EFFORT_HELP if rel is not None and path[-1] == 'effort' else OPTION_HELP.get(".".join(path))
+    if rel is not None and path[-1] in ('effort', 'supported_efforts'):
+        known = EFFORT_HELP
+    elif rel is not None and path[-1] == 'input_modalities':
+        known = MODALITY_HELP
+    else:
+        known = OPTION_HELP.get(".".join(path))
     if not known:
         return None
     return [known.get(option) or help_for(path) for option in options]
+
+
+def list_vocabulary(path):
+    """The fixed values a list field may hold, edited as checkboxes, or None for a free list."""
+    rel = external(path)
+    if rel is not None and len(rel) == 5 and rel[2] == 'models':
+        if path[-1] == 'supported_efforts':
+            return API_EFFORTS[rel[1]][1:]
+        if path[-1] == 'input_modalities' and rel[1] == 'codex':
+            return tuple(MODALITY_HELP)
+    return MULTI_CHOICES.get(".".join(path))
 
 
 def group_headings(keys, path):
@@ -640,6 +661,10 @@ def edit(config, *, project=None):
         indent = "  " if headings else ""
         at = next((line for line, (index, _) in enumerate(lines) if index == selected), 0)
         offset = min(max(0, at - list_height + 1), max(0, len(lines) - list_height))
+        if offset and lines[offset][0] is not None:
+            # A group whose heading scrolled away, or never fits a short terminal, keeps it above the list.
+            add_line(screen, 2, next((row for index, row in reversed(lines[:offset]) if index is None), ""),
+                     list_width, curses.A_BOLD | curses.A_UNDERLINE)
         for y, (index, row) in enumerate(lines[offset:offset + list_height], 3):
             if index is None:
                 add_line(screen, y, row, list_width, curses.A_BOLD | curses.A_UNDERLINE)
@@ -1002,7 +1027,7 @@ def edit(config, *, project=None):
                     shown = "<configured>" if value else "<empty>"
                 elif candidate_list(full) and isinstance(value, list):
                     shown = ", ".join(candidate_label(spec) for spec in value) or "(none)"
-                elif ".".join(full) in MULTI_CHOICES and isinstance(value, list):
+                elif list_vocabulary(full) and isinstance(value, list):
                     shown = ", ".join(map(str, value)) or "(none)"
                 elif isinstance(value, str):
                     shown = value or "(not set)"
@@ -1172,8 +1197,8 @@ def edit(config, *, project=None):
                     if edit_candidates(screen, value, full):
                         notice = "Draft updated; save to keep changes"
                         accepted = True
-                elif ".".join(full) in MULTI_CHOICES and isinstance(value, list):
-                    vocabulary = MULTI_CHOICES[".".join(full)]
+                elif list_vocabulary(full) and isinstance(value, list):
+                    vocabulary = list_vocabulary(full)
                     picked = check(screen, vocabulary, ".".join(full), value, option_help(full, vocabulary), help_for(full))
                     if picked is not None:
                         data[name], notice = picked, "Draft updated; save to keep changes"
