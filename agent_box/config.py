@@ -241,11 +241,11 @@ class GitConfig:
         return cls(identity=_bool(data, "identity", True), full_config=_bool(data, "full_config", False))
 
 
-def _names(data, key, *, spaces=False):
-    """Distinct non-empty strings in their saved order; without inner whitespace unless ``spaces``."""
+def _names(data, key, *, exact=False):
+    """Distinct non-empty strings in their saved order: hosts trimmed and without whitespace, or ``exact``."""
     value = _mapping(data).get(key)
-    names = [item.strip() for item in value if isinstance(item, str)] if isinstance(value, list) else []
-    return list(dict.fromkeys(name for name in names if name and (spaces or not any(c.isspace() for c in name))))
+    names = [item if exact else item.strip() for item in value if isinstance(item, str)] if isinstance(value, list) else []
+    return list(dict.fromkeys(name for name in names if name and (exact or not any(c.isspace() for c in name))))
 
 
 @dataclass
@@ -277,8 +277,8 @@ class RegistriesConfig:
     @classmethod
     def from_dict(cls, data: Any) -> "RegistriesConfig":
         return cls(enabled=_bool(data, "enabled", False), hosts=_names(data, "hosts"),
-                   # Helm accepts any repository name, spaces included; a host has none.
-                   helm_repositories=_names(data, "helm_repositories", spaces=True))
+                   # A Helm repository name is matched exactly, as Helm writes it; a host has no spaces.
+                   helm_repositories=_names(data, "helm_repositories", exact=True))
 
 
 @dataclass

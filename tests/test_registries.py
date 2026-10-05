@@ -79,9 +79,9 @@ class ConfigTests(unittest.TestCase):
     def test_round_trips_and_drops_entries_no_registry_could_match(self):
         loaded = Config.from_dict({"credentials": {"registries": {
             "enabled": True, "hosts": ["cr.yandex", " cr.yandex ", "", "two words", 7],
-            "helm_repositories": ["private", " private charts ", ""]}}}).credentials.registries
+            "helm_repositories": ["private", " private charts ", "", "private"]}}}).credentials.registries
         self.assertEqual((loaded.enabled, loaded.hosts, loaded.helm_repositories),
-                         (True, ["cr.yandex"], ["private", "private charts"]))
+                         (True, ["cr.yandex"], ["private", " private charts "]))
         self.assertEqual(Config.from_dict(Config().to_dict()).credentials.registries.to_dict(),
                          Config().credentials.registries.to_dict())
 
