@@ -106,41 +106,120 @@ def _scalar(text: str, number: int):
 
 
 _BLOCK = re.compile(r"^\|([1-9]?)([+-]?)\s*(?:#.*)?$")
+_KEY = re.compile(r"^(\s*)([A-Za-z_][\w-]*):(?:\s+(.*))?$")
+
+
+def _indent(line: str) -> int:
+    return len(line) - len(line.lstrip())
+
+
+def _folded(first: str, rest: list[str], quoted: bool) -> str:
+    """Join a flow scalar's lines as YAML folds them: a break is a space, an empty line a newline.
+
+    In a double-quoted value a trailing backslash escapes the break, and a
+    newline is written as its escape so the JSON decoder in ``_scalar`` reads it.
+    """
+    text, breaks = first.rstrip(), 0
+    for part in rest:
+        if not part:
+            breaks += 1
+            continue
+        escaped = quoted and (len(text) - len(text.rstrip("\\"))) % 2 == 1
+        if escaped:
+            text = text[:-1] + part
+        else:
+            text += ("\\n" if quoted else "\n") * breaks if breaks else " "
+            text += part
+        breaks = 0
+    return text
 
 
 def _value(text: str, lines: list[str], index: int, column: int):
     """The value starting on line ``index`` and the index after it.
 
     Helm's YAML writer puts a multi-line string, such as a JSON key used as a
-    password, in a literal block; its lines are those indented past the key.
+    password, in a literal block, and folds a long one containing spaces onto
+    lines indented past the key. Either way its lines are those indented past
+    the key's column.
     """
-    block = _BLOCK.match(text.strip())
-    if not block:
-        return _scalar(text, index + 1), index + 1
+    stripped = text.strip()
     end = index + 1
-    while end < len(lines) and (not lines[end].strip() or len(lines[end]) - len(lines[end].lstrip()) > column):
+    while end < len(lines) and (not lines[end].strip() or _indent(lines[end]) > column):
         end += 1
-    body = lines[index + 1:end]
-    content = [line for line in body if line.strip()]
-    indent = column + int(block.group(1)) if block.group(1) else min(
-        (len(line) - len(line.lstrip()) for line in content), default=0)
-    value = "\n".join(line[indent:] for line in body)
-    chomp = block.group(2)
-    if chomp != "+":
-        value = value.rstrip("\n") + ("" if chomp == "-" or not content else "\n")
-    elif body:
-        value += "\n"
-    return value, end
+    block = _BLOCK.match(stripped)
+    if block:
+        body = lines[index + 1:end]
+        content = [line for line in body if line.strip()]
+        indent = column + int(block.group(1)) if block.group(1) else min(map(_indent, content), default=0)
+        value = "\n".join(line[indent:] for line in body)
+        chomp = block.group(2)
+        if chomp != "+":
+            value = value.rstrip("\n") + ("" if chomp == "-" or not content else "\n")
+        elif body:
+            value += "\n"
+        return value, end
+    while end > index + 1 and not lines[end - 1].strip():
+        end -= 1
+    rest = [line.strip() for line in lines[index + 1:end]]
+    closed = re.fullmatch(r'"(?:[^"\\]|\\.)*"(?:\s+#.*)?|\'(?:[^\']|\'\')*\'(?:\s+#.*)?', stripped)
+    if not rest or not stripped or closed:
+        # Deeper lines after an empty or complete value are nested structure,
+        # which the caller refuses.
+        return _scalar(stripped, index + 1), index + 1
+    # A comment ends a plain value, so nothing may follow one.
+    if stripped[0] not in "\"'" and (re.search(r":\s|\s#", stripped)
+                                     or any(re.search(r":\s|\s#|^#|^- ", part) for part in rest)):
+        raise ValueError(f"line {index + 2}: unsupported YAML structure")
+    return _scalar(_folded(stripped, rest, stripped[0] == '"'), index + 1), end
 
 
-def parse_repositories(text: str) -> list[dict]:
-    """The entries of a Helm ``repositories.yaml``.
+def _entry(lines: list[str], start: int, dashes: int) -> dict:
+    """One repository entry: a flat mapping whose keys all sit in its first key's column."""
+    first = re.match(rf"^ {{{dashes}}}-(\s+)([A-Za-z_][\w-]*):(?:\s+(.*))?$", lines[start])
+    if not first:
+        raise ValueError(f"line {start + 1}: unsupported YAML structure")
+    column = first.start(2)
+    entry = {}
+    entry[first.group(2)], index = _value(first.group(3) or "", lines, start, column)
+    while index < len(lines):
+        line = lines[index]
+        if not line.strip() or line.lstrip().startswith("#"):
+            index += 1
+            continue
+        pair = _KEY.match(line)
+        if not pair or len(pair.group(1)) != column or pair.group(2) in entry:
+            # Deeper is a nested mapping or list, whose fields must not pass
+            # for the entry's own; a repeated key is ambiguous.
+            raise ValueError(f"line {index + 1}: unsupported YAML structure")
+        entry[pair.group(2)], index = _value(pair.group(3) or "", lines, index, column)
+    return entry
+
+
+def _entry_name(lines: list[str], dashes: int):
+    """The name an unreadable entry gives, if a line in its key column states it plainly."""
+    first = re.match(rf"^ {{{dashes}}}-(\s+)", lines[0])
+    column = first.end() if first else dashes + 2
+    for number, line in enumerate(lines):
+        named = re.match(r"^(\s*)(?:-\s+)?name:\s+(.*)$", line)
+        if named and (number == 0 or len(named.group(1)) == column):
+            try:
+                name = _scalar(named.group(2), 0)
+            except ValueError:
+                return None
+            return name if isinstance(name, str) else None
+    return None
+
+
+def parse_repositories(text: str) -> tuple[list[dict], list[tuple[str | None, str]]]:
+    """The readable entries of a Helm ``repositories.yaml``, and the unreadable ones.
 
     The standard library has no YAML parser and agent-box has no
     dependencies, so this reads what Helm itself writes: top-level keys and a
-    ``repositories`` list of flat mappings whose values are plain, quoted or
-    literal blocks. Anything else raises ValueError with the line, so a
-    hand-written file is reported instead of being half-read.
+    ``repositories`` list of flat mappings whose values are plain, quoted,
+    folded onto further lines or literal blocks. An entry beyond that is
+    returned as ``(name or None, problem)`` and left out instead of being
+    half-read; the others still count. Raises ValueError when the file's own
+    structure is not understood.
     """
     if text.lstrip().startswith("{"):
         # agent-box's own JSON copy, which a launch nested in a box reads.
@@ -151,50 +230,83 @@ def parse_repositories(text: str) -> list[dict]:
         entries = data.get("repositories") if isinstance(data, dict) else None
         if not isinstance(entries, list) or not all(isinstance(entry, dict) for entry in entries):
             raise ValueError("line 1: JSON without a repositories list")
-        return entries
-    lines = text.splitlines()
-    entries, current, section, column, dashes, index = [], None, None, None, None, 0
+        return entries, []
+    lines, entries, failures, index, seen = text.splitlines(), [], [], 0, set()
     while index < len(lines):
-        line, number = lines[index], index + 1
+        line = lines[index]
         if not line.strip() or line.lstrip().startswith("#"):
             index += 1
             continue
-        item = re.match(r"^(\s*)-\s+([A-Za-z_][\w-]*):(?:\s+(.*))?$", line)
-        pair = re.match(r"^(\s*)([A-Za-z_][\w-]*):(?:\s+(.*))?$", line)
-        if item and section == "repositories" and dashes in (None, len(item.group(1))):
-            # Entries share the first one's dash and every key of an entry sits
-            # in its column; anything deeper is nested and must not pass for an
-            # entry or an entry's own field.
-            current, column, dashes = {}, item.start(2), len(item.group(1))
-            entries.append(current)
-            current[item.group(2)], index = _value(item.group(3) or "", lines, index, column)
-        elif pair and not pair.group(1):
-            section, current = pair.group(2), None
-            value = (pair.group(3) or "").strip()
-            if section == "repositories" and value not in ("", "[]"):
-                raise ValueError(f"line {number}: unsupported repositories value")
+        top = _KEY.match(line)
+        if not top or top.group(1) or top.group(2) in seen:
+            raise ValueError(f"line {index + 1}: unsupported YAML structure")
+        seen.add(top.group(2))
+        index += 1
+        value = re.split(r"\s#", top.group(3) or "", maxsplit=1)[0].strip()
+        if top.group(2) != "repositories":
+            # A value nobody here reads, apiVersion or generated: skip its lines.
+            while index < len(lines) and (not lines[index].strip() or lines[index][0].isspace()
+                                          or lines[index].startswith("#")):
+                index += 1
+            continue
+        if value not in ("", "[]"):
+            raise ValueError(f"line {index}: unsupported repositories value")
+        dashes = None
+        while index < len(lines):
+            line = lines[index]
+            if not line.strip() or line.lstrip().startswith("#"):
+                index += 1
+                continue
+            if not re.match(r"^\s*- ", line) or dashes not in (None, _indent(line)):
+                break
+            dashes, start = _indent(line), index
             index += 1
-        elif pair and current is not None and len(pair.group(1)) == column:
-            current[pair.group(2)], index = _value(pair.group(3) or "", lines, index, column)
-        else:
-            raise ValueError(f"line {number}: unsupported YAML structure")
-    return entries
+            # An entry runs to the next line at or left of its dash; a value's
+            # lines are always indented past its keys.
+            while index < len(lines) and (not lines[index].strip() or _indent(lines[index]) > dashes
+                                          or lines[index].lstrip().startswith("#")):
+                index += 1
+            chunk = lines[start:index]
+            try:
+                entries.append(_entry(chunk, 0, dashes))
+            except ValueError as exc:
+                where = str(exc).split(":", 1)
+                number = start + int(where[0].split()[1])
+                failures.append((_entry_name(chunk, dashes), f"line {number}:{where[1]}"))
+    return entries, failures
 
 
-def _repositories(problems: list[str]) -> dict[str, dict]:
+def _repositories(problems: list[str], chosen=None) -> tuple[dict[str, dict], set | None]:
+    """Readable entries by name, the first of each name as in Helm's own lookup.
+
+    Also returns the names already reported, None when the whole file was.
+    An entry that cannot be read is reported when it is chosen, or nameless,
+    or for the menu (``chosen`` None); a name that one of them gives is left
+    out altogether, so a later entry with the same name cannot stand in for it.
+    """
     try:
         text = HELM_REPOSITORY_CONFIG.read_text(encoding="utf-8")
     except FileNotFoundError:
-        return {}
+        return {}, set()
     except (OSError, UnicodeDecodeError) as exc:
         problems.append(f"{HELM_REPOSITORY_CONFIG}: unreadable ({exc.__class__.__name__}); no Helm repository is forwarded")
-        return {}
+        return {}, None
     try:
-        entries = parse_repositories(text)
+        entries, failures = parse_repositories(text)
     except ValueError as exc:
         problems.append(f"{HELM_REPOSITORY_CONFIG}: {exc}; no Helm repository is forwarded")
-        return {}
-    return {entry["name"]: entry for entry in entries if isinstance(entry.get("name"), str)}
+        return {}, None
+    for name, problem in failures:
+        if chosen is None or name is None or name in chosen:
+            label = f"the entry for {name}" if name is not None else "an entry"
+            problems.append(f"{HELM_REPOSITORY_CONFIG}: {problem}; {label} cannot be read and is not forwarded")
+    unreadable = {name for name, _ in failures}
+    available = {}
+    for entry in entries:
+        name = entry.get("name")
+        if isinstance(name, str) and name not in unreadable:
+            available.setdefault(name, entry)
+    return available, unreadable
 
 
 def _auth_sources(problems: list[str]) -> dict[str, list[tuple[Path, dict]]]:
@@ -235,7 +347,7 @@ def discover() -> Found:
                     found.hosts.setdefault(host, []).append(f"{path} ({tools[kind]})")
                 elif _helper(data, host):
                     found.hosts.setdefault(host, []).append(f"{path} ({tools[kind]}; credential helper, not forwarded)")
-    for name, entry in _repositories(found.problems).items():
+    for name, entry in _repositories(found.problems)[0].items():
         # The origin only: user information, the path and the query may all carry a token.
         url = urllib.parse.urlsplit(str(entry.get("url", "")))
         found.repositories[name] = urllib.parse.urlunsplit((url.scheme, url.netloc.rpartition("@")[2], "", "", ""))
@@ -322,11 +434,9 @@ def sync(config, workspace_id: str) -> list[str]:
         else:
             (directory / name).unlink(missing_ok=True)
     if registries.helm_repositories:
-        before = len(problems)
-        available = _repositories(problems)
-        readable = len(problems) == before
+        available, reported = _repositories(problems, registries.helm_repositories)
         for name in registries.helm_repositories:
-            if readable and name not in available:
+            if reported is not None and name not in available and name not in reported:
                 problems.append(f"Helm repository {name} is not in {HELM_REPOSITORY_CONFIG}; "
                                 "run helm repo add there, or untick it in agent-box config")
         # JSON is YAML, so Helm reads it without agent-box writing YAML.

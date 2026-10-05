@@ -41,6 +41,12 @@ credential helper (`credHelpers`, `credsStore`) cannot be copied and are
 reported at launch, as are chosen hosts or repositories the host no longer has
 and files it cannot read. A launch never fails over them.
 
+`repositories.yaml` is read without a YAML library, as Helm writes it: plain,
+quoted, wrapped and literal-block values. An entry written beyond that, such
+as one with nested fields, anchors or a folded `>` block, is left out and
+reported with its line, and the other entries still count. Of two entries
+with the same name the first counts, as in Helm.
+
 ## How it reaches the container
 
 The copies are rendered into a private per-workspace directory (mode 0700,

@@ -139,7 +139,7 @@ class FilteringTests(IsolatedSources):
         self.assertFalse((registries.runtime_dir("ws") / "auth.json").exists())
 
     def test_quoted_and_commented_values_read_as_helm_wrote_them(self):
-        public = {entry["name"]: entry for entry in registries.parse_repositories(REPOSITORIES)}["public"]
+        public = {entry["name"]: entry for entry in registries.parse_repositories(REPOSITORIES)[0]}["public"]
         self.assertEqual((public["password"], public["username"], public["url"]),
                          ("", "it's", "https://charts.example/public"))
 
@@ -149,13 +149,61 @@ class FilteringTests(IsolatedSources):
             with self.subTest(nested=nested):
                 self.write(self.repositories, "repositories:\n- name: other\n  password: theirs\n" + nested
                            + "- name: private\n  password: mine\n")
-                problems = registries.sync(registry_config(repositories=["private"]), "ws")
+                self.assertEqual(registries.sync(registry_config(repositories=["private"]), "ws"), [])
+                self.assertEqual([(entry["name"], entry["password"]) for entry in
+                                  self.rendered("helm-repositories.yaml")["repositories"]], [("private", "mine")])
+                problems = registries.sync(registry_config(repositories=["other"]), "ws")
+                self.assertEqual(len(problems), 1)
                 self.assertIn("line 5", problems[0])
+                self.assertIn("the entry for other cannot be read", problems[0])
                 self.assertEqual(self.rendered("helm-repositories.yaml")["repositories"], [])
+
+    def test_an_unreadable_entry_costs_only_itself(self):
+        """One odd entry must not withhold every other repository; a nameless one is always reported."""
+        self.write(self.repositories, "repositories:\n- url: https://x\n  password: &a x\n"
+                                      "- name: kept\n  password: k\n")
+        problems = registries.sync(registry_config(repositories=["kept"]), "ws")
+        self.assertEqual([entry["name"] for entry in self.rendered("helm-repositories.yaml")["repositories"]], ["kept"])
+        self.assertEqual(len(problems), 1)
+        self.assertIn("line 3", problems[0])
+        self.assertIn("an entry cannot be read", problems[0])
+
+    def test_a_repeated_name_forwards_the_entry_helm_would_use(self):
+        """Helm takes the first entry of a name, and an unreadable first one must not let the second stand in."""
+        self.write(self.repositories, "repositories:\n- name: dup\n  password: first\n- name: dup\n  password: second\n")
+        registries.sync(registry_config(repositories=["dup"]), "ws")
+        self.assertEqual([entry["password"] for entry in self.rendered("helm-repositories.yaml")["repositories"]], ["first"])
+        self.write(self.repositories, "repositories:\n- name: dup\n  password: >\n    x\n- name: dup\n  password: second\n")
+        problems = registries.sync(registry_config(repositories=["dup"]), "ws")
+        self.assertEqual(self.rendered("helm-repositories.yaml")["repositories"], [])
+        self.assertEqual(len(problems), 1)
+
+    def test_values_folded_onto_more_lines_read_as_one(self):
+        """go-yaml wraps a long value containing spaces; refusing it lost the repository."""
+        entries, failures = registries.parse_repositories(
+            'repositories:\n- name: plain\n  password: first part\n    second part\n\n    third\n  url: https://p\n'
+            '- name: hash\n  password: a#b\n    c\n'
+            '- name: quoted\n  password: "a b\n    c\\\n    d\\x41"\n'
+            "- name: single\n  password: 'it''s\n    folded'\n")
+        self.assertEqual(failures, [])
+        self.assertEqual({entry["name"]: entry["password"] for entry in entries},
+                         {"plain": "first part second part\nthird", "hash": "a#b c", "quoted": "a b cdA",
+                          "single": "it's folded"})
+        self.assertEqual(entries[0]["url"], "https://p")
+
+    def test_a_folded_plain_value_cannot_swallow_a_nested_key_or_a_comment(self):
+        for value in ("p\n    name: other", "p # note\n    more"):
+            with self.subTest(value=value):
+                _, failures = registries.parse_repositories(f"repositories:\n- name: n\n  password: {value}\n")
+                self.assertEqual(failures, [("n", "line 4: unsupported YAML structure")])
+
+    def test_a_repeated_top_level_key_makes_the_file_ambiguous(self):
+        with self.assertRaisesRegex(ValueError, "line 3"):
+            registries.parse_repositories("repositories:\n- name: a\nrepositories:\n- name: b\n")
 
     def test_a_multi_line_password_survives_as_helm_writes_it(self):
         """Helm puts a JSON key used as a password in a literal block; refusing it lost every repository."""
-        entries = registries.parse_repositories(
+        entries, _ = registries.parse_repositories(
             'repositories:\n- name: gcr\n  password: |-\n    {\n      "type": "key"\n    }\n\n  url: https://g\n'
             '- name: kept\n  password: |\n    line\n  username: u\n')
         self.assertEqual([(e["name"], e["password"]) for e in entries],
@@ -164,7 +212,7 @@ class FilteringTests(IsolatedSources):
 
     def test_an_escaped_backslash_keeps_the_password_it_belongs_to(self):
         """Reading "\\\\x41" as an escape would forward a different password than the host's."""
-        entries = registries.parse_repositories('repositories:\n- name: a\n  password: "p\\\\x41\\\\\\"q"\n')
+        entries, _ = registries.parse_repositories('repositories:\n- name: a\n  password: "p\\\\x41\\\\\\"q"\n')
         self.assertEqual(entries[0]["password"], 'p\\x41\\"q')
 
     def test_yaml_beyond_what_helm_writes_is_refused_rather_than_half_read(self):
@@ -172,6 +220,9 @@ class FilteringTests(IsolatedSources):
         problems = registries.sync(registry_config(repositories=["private"]), "ws")
         self.assertEqual(len(problems), 1)
         self.assertIn("line 3", problems[0])
+        self.write(self.repositories, "repositories:\n  key: value\n")
+        problems = registries.sync(registry_config(repositories=["private"]), "ws")
+        self.assertIn("no Helm repository is forwarded", problems[0])
         self.assertEqual(self.rendered("helm-repositories.yaml")["repositories"], [])
 
     def test_rendered_copies_are_private_to_the_user(self):
