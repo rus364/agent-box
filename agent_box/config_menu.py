@@ -896,16 +896,19 @@ def edit(config, *, project=None):
         suggestions += [(provider, api, model, (settings['display_name'] or model) + f' [{provider}@{api}: {model}]')
                         for provider, api in apis if api and api in draft['agents']['external_apis']
                         for model, settings in draft['agents']['external_apis'][api][provider]['models'].items()]
-        if current and current not in [row[:3] for row in suggestions]:
+        unlisted = current and current not in [row[:3] for row in suggestions]
+        if unlisted:
             suggestions.insert(0, (*current, f'{current[2]} [{current[0]}{"@" + current[1] if current[1] else ""}]'))
         rows = [f'Enter a custom model ID... [{provider}{"@" + api if api else ""}]' for provider, api in apis]
         details = [f'Type any model ID for the {provider} CLI '
                    + (f'through the {api} external API.' if api else 'through its own login.') for provider, api in apis]
         offset = len(rows)
         rows += [row[3] + (' (current)' if row[:3] == current else '') for row in suggestions]
-        details += [f'{model}: configured under External APIs / {api} / {provider}, reached through that endpoint.' if api
+        details += [f'{model}: the saved ID, entered by hand; neither the {provider} CLI\'s model list nor a configured API lists it.'
+                    if unlisted and number == 0
+                    else f'{model}: configured under External APIs / {api} / {provider}, reached through that endpoint.' if api
                     else f'{model}: from the {provider} CLI\'s model list, through its own login.'
-                    for provider, api, model, _ in suggestions]
+                    for number, (provider, api, model, _) in enumerate(suggestions)]
         index = next((i + offset for i, row in enumerate(suggestions) if row[:3] == current), offset)
         about = ('Select the CLI, API and model together. A candidate of the other CLI than the coordinator\'s runs as a '
                  'managed CLI process. Configured external models are not live discovery; availability depends on the provider account.')

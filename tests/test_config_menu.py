@@ -496,6 +496,10 @@ class ConfigMenuTests(unittest.TestCase):
                 self.assertIn("new-codex [codex]", screen.drawn)
                 self.assertIn("new-claude [claude]", screen.drawn)
                 self.assertIn("Enter a custom model ID... [codex]", screen.drawn)
+                # A kept ID is described as entered by hand, never as coming from a catalog it is not in.
+                text = [" ".join(frame.split()) for frame in screen.frames]
+                self.assertTrue(any("private-model: the saved ID, entered by hand" in frame for frame in text))
+                self.assertFalse(any("private-model: from the" in frame for frame in text))
 
     def test_project_list_edit_records_the_whole_list_and_reset_inherits_again(self):
         """A list is one value: a project either owns all of it or inherits all of it."""
