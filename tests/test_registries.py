@@ -27,7 +27,7 @@ repositories:
   name: private
   pass_credentials_all: true
   password: "p\\"a#ss\\x41"
-  url: https://user:secret@charts.example/private?token=SECRET#frag
+  url: https://user:secret@charts.example/PATH-SECRET/private?token=SECRET#frag
   username: robot
 - name: public
   password: ''
@@ -79,8 +79,9 @@ class ConfigTests(unittest.TestCase):
     def test_round_trips_and_drops_entries_no_registry_could_match(self):
         loaded = Config.from_dict({"credentials": {"registries": {
             "enabled": True, "hosts": ["cr.yandex", " cr.yandex ", "", "two words", 7],
-            "helm_repositories": ["private"]}}}).credentials.registries
-        self.assertEqual((loaded.enabled, loaded.hosts, loaded.helm_repositories), (True, ["cr.yandex"], ["private"]))
+            "helm_repositories": ["private", " private charts ", ""]}}}).credentials.registries
+        self.assertEqual((loaded.enabled, loaded.hosts, loaded.helm_repositories),
+                         (True, ["cr.yandex"], ["private", "private charts"]))
         self.assertEqual(Config.from_dict(Config().to_dict()).credentials.registries.to_dict(),
                          Config().credentials.registries.to_dict())
 
@@ -261,7 +262,7 @@ class MenuTests(IsolatedSources):
         self.assertIn("no longer found", host_details[3])
         names, name_details, _ = registries.choices("helm_repositories", [])
         self.assertEqual(names, ["private", "public"])
-        self.assertIn("https://charts.example/private in", name_details[0])
+        self.assertIn("https://charts.example in", name_details[0])
         shown = "\n".join([*host_details, *name_details, *problems])
         for secret in ("SECRET", "secret@", "user:", 'p\\"a'):
             self.assertNotIn(secret, shown)

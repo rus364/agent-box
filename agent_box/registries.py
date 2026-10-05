@@ -219,7 +219,7 @@ class Found:
 
     #: Host -> where its login is stored, in words.
     hosts: dict[str, list[str]] = field(default_factory=dict)
-    #: Repository name -> its URL without user information.
+    #: Repository name -> the origin of its URL.
     repositories: dict[str, str] = field(default_factory=dict)
     problems: list[str] = field(default_factory=list)
 
@@ -236,10 +236,9 @@ def discover() -> Found:
                 elif _helper(data, host):
                     found.hosts.setdefault(host, []).append(f"{path} ({tools[kind]}; credential helper, not forwarded)")
     for name, entry in _repositories(found.problems).items():
-        # Scheme, host and path only: user information or a query may carry a token.
+        # The origin only: user information, the path and the query may all carry a token.
         url = urllib.parse.urlsplit(str(entry.get("url", "")))
-        found.repositories[name] = urllib.parse.urlunsplit(
-            (url.scheme, url.netloc.rpartition("@")[2], url.path, "", ""))
+        found.repositories[name] = urllib.parse.urlunsplit((url.scheme, url.netloc.rpartition("@")[2], "", "", ""))
     return found
 
 
