@@ -7,11 +7,13 @@ import pty
 import select
 import shutil
 import signal
+import socket
 import struct
 import subprocess
 import sys
 import tempfile
 import termios
+import threading
 import time
 import unittest
 from unittest import mock
@@ -355,6 +357,39 @@ class NativeHostSessionsTests(unittest.TestCase):
             self.until(output.exists)
             os.write(client[1], b'0\n')
             self.assertEqual(self.wait_client(client), 0)
+
+    def test_listing_while_the_server_exits_finds_no_sessions(self):
+        """Right after kill-server tmux answers 'server exited unexpectedly'; stop then polled into an error."""
+        root = self.session_root(self.projects[0])
+        socket_name = sessions.tmux_argv(host_root=root)[-1]
+        server = ['tmux', '-f', os.devnull, '-L', socket_name]
+        env = sessions.host_tmux_env()
+        subprocess.run([*server, 'new-session', '-d', 'sleep 60'], check=True, env=env)
+        path = subprocess.run([*server, 'display-message', '-p', '#{socket_path}'],
+                              check=True, capture_output=True, text=True, env=env).stdout.strip()
+        subprocess.run([*server, 'kill-server'], check=True, env=env)
+
+        def gone():
+            with socket.socket(socket.AF_UNIX) as probe:
+                return probe.connect_ex(path) != 0
+        self.until(gone)
+        if os.path.exists(path):
+            os.unlink(path)
+        # Accepting and closing at once is exactly what a server caught mid-exit does.
+        listener = socket.socket(socket.AF_UNIX)
+        listener.bind(path)
+        self.addCleanup(os.unlink, path)
+        self.addCleanup(listener.close)
+        listener.listen()
+
+        def exiting_server():
+            try:
+                while True:
+                    listener.accept()[0].close()
+            except OSError:
+                pass
+        threading.Thread(target=exiting_server, daemon=True).start()
+        self.assertEqual(sessions.tmux_sessions(None, host_root=root), [])
 
     def test_socket_discovery_survives_a_changed_tmux_tmpdir(self):
         """A later shell must find and stop the same project's existing server."""

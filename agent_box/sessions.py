@@ -55,7 +55,10 @@ def tmux_sessions(container: str | None, *, host_root: Path | None = None) -> li
     if result.returncode:
         detail = (result.stderr or result.stdout or "").strip()
         # An empty box has no server yet; that is an answer, not a failure.
-        if "no server running" in detail or "error connecting" in detail:
+        # A server that exits while the client connects (just after
+        # kill-server) leaves no sessions either.
+        if any(text in detail for text in ("no server running", "error connecting",
+                                           "server exited unexpectedly")):
             return []
         if "not found" in detail:
             if host_root is not None:
