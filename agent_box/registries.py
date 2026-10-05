@@ -33,7 +33,9 @@ AUTH_FILE, HELM_REGISTRY_FILE, HELM_REPOSITORIES_FILE = "auth.json", "helm-regis
 
 def registry_host(key: str) -> str:
     """``cr.yandex`` for ``cr.yandex``, ``cr.yandex/folder/repo`` or ``https://cr.yandex/v2/``."""
-    return re.sub(r"^[a-z]+://", "", key.strip().lower()).split("/", 1)[0]
+    host = re.sub(r"^[a-z]+://", "", key.strip().lower()).split("/", 1)[0]
+    # Podman's own alias for Docker Hub's legacy credential key.
+    return "docker.io" if host == "index.docker.io" else host
 
 
 def _stored(entry) -> bool:
@@ -55,9 +57,11 @@ def _read_auth(path: Path):
 
 
 def _scope(key: str) -> str:
-    """A key as podman matches it: host or host/path, without a scheme or a legacy /v1/ or /v2/ suffix."""
-    key = re.sub(r"^[a-z]+://", "", key.strip().lower()).rstrip("/")
-    return registry_host(key) if re.search(r"/v[12]$", key) else key
+    """A key as podman matches it: a URL-form legacy key covers its whole host, any other is host[/path]."""
+    if re.match(r"^[a-z]+://", key.strip().lower()):
+        return registry_host(key)
+    host, slash, path = key.strip().lower().rstrip("/").partition("/")
+    return registry_host(host) + slash + path
 
 
 def _entries(data, host) -> dict:
@@ -138,6 +142,16 @@ def parse_repositories(text: str) -> list[dict]:
     literal blocks. Anything else raises ValueError with the line, so a
     hand-written file is reported instead of being half-read.
     """
+    if text.lstrip().startswith("{"):
+        # agent-box's own JSON copy, which a launch nested in a box reads.
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"line {exc.lineno}: not valid JSON") from None
+        entries = data.get("repositories") if isinstance(data, dict) else None
+        if not isinstance(entries, list) or not all(isinstance(entry, dict) for entry in entries):
+            raise ValueError("line 1: JSON without a repositories list")
+        return entries
     lines = text.splitlines()
     entries, current, section, indent, index = [], None, None, None, 0
     while index < len(lines):
@@ -219,8 +233,10 @@ def discover() -> Found:
                 elif _helper(data, host):
                     found.hosts.setdefault(host, []).append(f"{path} ({tools[kind]}; credential helper, not forwarded)")
     for name, entry in _repositories(found.problems).items():
+        # Scheme, host and path only: user information or a query may carry a token.
         url = urllib.parse.urlsplit(str(entry.get("url", "")))
-        found.repositories[name] = url._replace(netloc=url.netloc.rpartition("@")[2]).geturl()
+        found.repositories[name] = urllib.parse.urlunsplit(
+            (url.scheme, url.netloc.rpartition("@")[2], url.path, "", ""))
     return found
 
 

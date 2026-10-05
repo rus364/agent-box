@@ -66,4 +66,5 @@ agent-box --registries claude       # forward the chosen logins for this session
 agent-box --no-registries claude    # withhold them for this session
 ```
 
-Both act on the saved choice of hosts and repositories and save nothing.
+Both act on the saved choice of hosts and repositories and save nothing;
+`--registries` with nothing chosen is refused.

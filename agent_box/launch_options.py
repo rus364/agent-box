@@ -213,6 +213,10 @@ def apply(config, overrides):
     if tracker_keys and not config.tracker.enabled:
         # A session may point the tracker elsewhere, never open a gate the saved configuration keeps closed.
         raise AgentBoxError(f"--{tracker_keys[0]} needs the tracker; enable it in agent-box config")
+    chosen = config.credentials.registries
+    if overrides.get("registries") and not (chosen.hosts or chosen.helm_repositories):
+        raise AgentBoxError("--registries has nothing to forward; choose registry hosts or Helm repositories "
+                            "in agent-box config (Credentials > Container registries)")
     for role, models in workflow.pins.items():
         api = models[0]["api_provider"]
         if api and not (api in config.agents.external_apis and config.agents.external_apis[api].enabled):

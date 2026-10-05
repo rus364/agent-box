@@ -27,7 +27,7 @@ repositories:
   name: private
   pass_credentials_all: true
   password: "p\\"a#ss\\x41"
-  url: https://user:secret@charts.example/private
+  url: https://user:secret@charts.example/private?token=SECRET#frag
   username: robot
 - name: public
   password: ''
@@ -110,6 +110,22 @@ class FilteringTests(IsolatedSources):
         registries.sync(registry_config(["reg.a", "reg.b"]), "ws")
         self.assertEqual(self.rendered("auth.json"), {"auths": {
             "reg.a/team-a": {"auth": "a"}, "reg.a/team-b": {"auth": "b"}, "reg.b": {"auth": "host"}}})
+
+    def test_a_path_ending_like_a_legacy_key_covers_only_its_own_path(self):
+        """Only a URL-form key covers its whole host in podman; reg.a/team/v2 is one repository path."""
+        self.write(self.runtime_auth, {"auths": {"reg.a/team/v2": {"auth": "team"}}})
+        self.write(self.config_auth, {"auths": {"reg.a/other": {"auth": "other"}}})
+        registries.sync(registry_config(["reg.a"]), "ws")
+        self.assertEqual(sorted(self.rendered("auth.json")["auths"]), ["reg.a/other", "reg.a/team/v2"])
+
+    def test_a_nested_launch_reads_the_copy_its_box_was_given(self):
+        """Inside a box HELM_REPOSITORY_CONFIG names agent-box's JSON copy, which must forward again."""
+        self.write(self.repositories, REPOSITORIES)
+        registries.sync(registry_config(repositories=["private"]), "outer")
+        copy = registries.runtime_dir("outer") / "helm-repositories.yaml"
+        with mock.patch.object(registries, "HELM_REPOSITORY_CONFIG", copy):
+            self.assertEqual(registries.sync(registry_config(repositories=["private"]), "nested"), [])
+        self.assertEqual(self.rendered("helm-repositories.yaml", "nested"), self.rendered("helm-repositories.yaml", "outer"))
 
     def test_chosen_helm_repositories_keep_their_credentials_and_types(self):
         self.write(self.repositories, REPOSITORIES)
@@ -235,7 +251,7 @@ class MenuTests(IsolatedSources):
         self.assertIn("no longer found", host_details[3])
         names, name_details, _ = registries.choices("helm_repositories", [])
         self.assertEqual(names, ["private", "public"])
-        self.assertIn("https://charts.example/private", name_details[0])
+        self.assertIn("https://charts.example/private in", name_details[0])
         shown = "\n".join([*host_details, *name_details, *problems])
         for secret in ("SECRET", "secret@", "user:", 'p\\"a'):
             self.assertNotIn(secret, shown)
@@ -293,6 +309,11 @@ class SessionSwitchTests(unittest.TestCase):
             launch_options.apply(config, options.overrides)
             self.assertIs(config.credentials.registries.enabled, expected)
             self.assertEqual(config.credentials.registries.hosts, ["cr.yandex"])
+
+    def test_turning_forwarding_on_with_nothing_chosen_says_what_is_missing(self):
+        with self.assertRaisesRegex(launch_options.AgentBoxError, "nothing to forward"):
+            launch_options.apply(registry_config(enabled=False), {"registries": True})
+        launch_options.apply(registry_config(), {"registries": False})
 
 
 if __name__ == "__main__":
