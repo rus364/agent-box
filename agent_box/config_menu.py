@@ -730,7 +730,9 @@ def edit(config, *, project=None):
                     add_line(screen, 1, "Resize terminal to at least 40 columns x 8 rows (Esc: back)", width)
                 lines, page = [], 1
             else:
-                lines = textwrap.wrap(content, width - 1, break_long_words=True, break_on_hyphens=False) or [""]
+                lines = []
+                for paragraph in content.split("\n"):
+                    lines.extend(textwrap.wrap(paragraph, width - 1, break_long_words=True, break_on_hyphens=False) or [""])
                 page = max(1, height - 3)
                 offset = min(offset, max(0, len(lines) - page))
                 add_line(screen, 0, title, width, curses.A_BOLD)
@@ -836,6 +838,12 @@ def edit(config, *, project=None):
             except curses.error:
                 pass
 
+    def described(detail, explanation):
+        """Full help for a row: its own description, which a short terminal may have cut, then the field's."""
+        if not explanation or detail == explanation:
+            return detail or explanation
+        return detail + "\n\n" + explanation
+
     def choose(screen, rows, title, index=0, explanation="", details=None):
         """Pick one row; ``details`` describe each row under the cursor, ``explanation`` is the field's help behind ?."""
         while True:
@@ -855,7 +863,7 @@ def edit(config, *, project=None):
             elif key in ("\x1b", curses.KEY_LEFT):
                 return None
             elif key in ("?", curses.KEY_F1):
-                full_help(screen, title, explanation or help_text)
+                full_help(screen, title, described(help_text, explanation))
 
     def check(screen, options, title, chosen, details, explanation=""):
         """Toggle members of a fixed vocabulary; the result keeps the vocabulary's order, None on Esc.
@@ -880,7 +888,7 @@ def edit(config, *, project=None):
             elif key in ("\n", "\r"):
                 return [option for option in options if option in marked]
             elif key in ("?", curses.KEY_F1):
-                full_help(screen, title, explanation or details[index])
+                full_help(screen, title, described(details[index], explanation))
 
     def pick_model(screen, spec):
         """``(provider, api, model)`` chosen together, or None; any CLI's model may serve any role."""

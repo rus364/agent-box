@@ -106,7 +106,7 @@ class ConfigMenuTests(unittest.TestCase):
                 screen = Screen(keys, sizes=[size])
                 self.edit(Config(), [], screen=screen)
                 for frame, writes in zip(screen.frames, screen.attributes):
-                    if 'Models  ' not in frame or 'Models by tier' not in frame:
+                    if 'Models  ' not in frame or 'Models by tier' not in frame or 'PgUp/PgDn: scroll' in frame:
                         continue
                     columns = [text.index(':') for _, x, text, _ in writes
                                if x == 0 and re.match(r' *(Models|Models by tier) *: ', text)]
@@ -276,6 +276,21 @@ class ConfigMenuTests(unittest.TestCase):
                 moved = next(i for i, frame in enumerate(text) if i > first and codex in frame)
                 self.assertNotIn(claude, text[moved])
                 self.assertIn(config_menu.help_for(("agents", "default")), text[moved + 1])
+
+    def test_question_mark_shows_an_option_description_a_short_terminal_cut_together_with_the_field_help(self):
+        """At 40x8 the bottom area holds two lines; the rest of the option's text must stay reachable."""
+        import curses
+        from agent_box.config import TRACKER_PROVIDERS
+        keys = [*select("tracker"), "\n", *select("provider", ("tracker",)), "\n",
+                curses.KEY_HOME, *[curses.KEY_DOWN] * TRACKER_PROVIDERS.index("jira"), "?", "\x1b", *["\x1b"] * 3]
+        screen = Screen(keys, sizes=[(8, 40)])
+        self.edit(Config(), [], screen=screen)
+        jira = config_menu.OPTION_HELP["tracker.provider"]["jira"]
+        cut = next(" ".join(frame.split()) for frame in screen.frames if "?: full explanation" in frame and "jira" in frame)
+        self.assertNotIn(jira, cut)
+        shown = [" ".join(frame.split()) for frame in screen.frames if "Up/Down PgUp/PgDn: scroll" in frame]
+        self.assertTrue(any(jira in frame and " ".join(config_menu.help_for(("tracker", "provider")).split()[:3]) in frame
+                            for frame in shown))
 
     def test_sync_events_are_toggled_as_checkboxes_and_escape_keeps_the_saved_list(self):
         """Space toggles, Enter keeps the selection in vocabulary order, Esc discards it."""
