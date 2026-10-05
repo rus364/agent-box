@@ -153,7 +153,7 @@ def parse_repositories(text: str) -> list[dict]:
             raise ValueError("line 1: JSON without a repositories list")
         return entries
     lines = text.splitlines()
-    entries, current, section, column, index = [], None, None, None, 0
+    entries, current, section, column, dashes, index = [], None, None, None, None, 0
     while index < len(lines):
         line, number = lines[index], index + 1
         if not line.strip() or line.lstrip().startswith("#"):
@@ -161,10 +161,11 @@ def parse_repositories(text: str) -> list[dict]:
             continue
         item = re.match(r"^(\s*)-\s+([A-Za-z_][\w-]*):(?:\s+(.*))?$", line)
         pair = re.match(r"^(\s*)([A-Za-z_][\w-]*):(?:\s+(.*))?$", line)
-        if item and section == "repositories":
-            # Every key of an entry sits in this column; a deeper one would be
-            # a nested mapping, whose fields must not pass for the entry's own.
-            current, column = {}, item.start(2)
+        if item and section == "repositories" and dashes in (None, len(item.group(1))):
+            # Entries share the first one's dash and every key of an entry sits
+            # in its column; anything deeper is nested and must not pass for an
+            # entry or an entry's own field.
+            current, column, dashes = {}, item.start(2), len(item.group(1))
             entries.append(current)
             current[item.group(2)], index = _value(item.group(3) or "", lines, index, column)
         elif pair and not pair.group(1):
