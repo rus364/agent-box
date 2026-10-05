@@ -2966,7 +2966,8 @@ def uninstall_main(args: list[str]) -> int:
     NOTIFY_CREDENTIALS.unlink(missing_ok=True)
     shutil.rmtree(TRACKER_RUNTIME_DIR, ignore_errors=True)
     shutil.rmtree(POLICY_RUNTIME_DIR, ignore_errors=True)
-    done.append("removed the rendered notification and tracker credentials")
+    shutil.rmtree(registries.REGISTRY_RUNTIME_DIR, ignore_errors=True)
+    done.append("removed the rendered notification, tracker and registry credentials")
 
     from . import pathsetup
     for link in pathsetup.remove_symlinks():

@@ -142,6 +142,14 @@ class FilteringTests(IsolatedSources):
         self.assertEqual((public["password"], public["username"], public["url"]),
                          ("", "it's", "https://charts.example/public"))
 
+    def test_a_nested_field_cannot_pass_for_an_entrys_own(self):
+        """A nested name would index an unchosen repository, and its password, under a chosen name."""
+        self.write(self.repositories, "repositories:\n- name: other\n  password: theirs\n  metadata:\n"
+                                      "    name: private\n- name: private\n  password: mine\n")
+        problems = registries.sync(registry_config(repositories=["private"]), "ws")
+        self.assertIn("line 5", problems[0])
+        self.assertEqual(self.rendered("helm-repositories.yaml")["repositories"], [])
+
     def test_a_multi_line_password_survives_as_helm_writes_it(self):
         """Helm puts a JSON key used as a password in a literal block; refusing it lost every repository."""
         entries = registries.parse_repositories(
