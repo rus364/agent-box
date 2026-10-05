@@ -85,6 +85,7 @@ class ConfigMenuTests(unittest.TestCase):
                 section = section[part]
             with self.subTest(path=path):
                 self.assertEqual(config_menu.menu_keys(dict(reversed(section.items())), path), keys)
+                self.assertEqual(config_menu.menu_keys(section, path), keys)
                 self.assertCountEqual(keys, section)
 
     def test_role_model_settings_read_as_their_purpose(self):
@@ -200,6 +201,17 @@ class ConfigMenuTests(unittest.TestCase):
             path = Path(tmp) / 'config.json'
             save_config(result.config, path)
             self.assertEqual(json.loads(path.read_text()), {'version': 1})
+
+    def test_resetting_host_keeps_the_path_directory_an_action(self):
+        """A section reset restores fields; the PATH directory belongs to its own row and survives."""
+        import curses
+        config = Config()
+        config.host.claude_skill_links = False
+        config.host.bin_dir = "/kept/bin"
+        result, screen = self.edit(config, [*select("host"), 'r', '\n', '\x1b', curses.KEY_END, curses.KEY_UP, '\n'])
+        self.assertTrue(result.config.host.claude_skill_links)
+        self.assertEqual(result.config.host.bin_dir, "/kept/bin")
+        self.assertFalse(any(line.startswith("Bin dir") for line in screen.drawn))
 
     def test_cleanup_toggles_save_independently_without_enabling_the_other(self):
         import curses

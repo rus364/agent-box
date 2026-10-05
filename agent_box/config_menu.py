@@ -175,7 +175,7 @@ MENU_GROUPS = {
         ("Roles", ("use_tiers", "worker", "scout", "review", "sync")),
         ("Delegation", ("timeout_seconds",)),
     ),
-    ("codex",): (
+    ("agents", "codex"): (
         ("Native agents", ("native_agent_wait",)),
         ("Remote access", ("remote_control",)),
     ),
@@ -459,6 +459,8 @@ def edit(config, *, project=None):
         return copy.deepcopy(value)
 
     defaults = Config().to_dict()
+    # Resetting Host must not bring the PATH directory back as a free-text field.
+    defaults["host"].pop("bin_dir")
     for provider in TRACKER_PROVIDERS:
         defaults['tracker']['connections'][provider] = TrackerConnection().to_dict()
 
