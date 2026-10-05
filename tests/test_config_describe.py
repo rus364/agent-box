@@ -61,14 +61,14 @@ class ConfigDescribeTests(unittest.TestCase):
             data.pop("version")
             check(data)
             self.assertTrue(all(field["help"] for field in fields.values()))
-        self.assertIn("external_providers.deepseek.codex.models.v4-pro.metadata", fields)
-        self.assertIn("install.bin_dir", fields)
+        self.assertIn("agents.external_apis.deepseek.codex.models.v4-pro.metadata", fields)
+        self.assertIn("host.bin_dir", fields)
         self.assertEqual(fields["tracker.project"]["help"], config_menu.help_for(("tracker", "project")))
         # Only names the user chooses share generic help; a new fixed field needs its own.
         with self.assertRaises(KeyError):
-            config_menu.help_for(("external_providers", "deepseek", "claude", "models", "v4-pro", "new_field"))
+            config_menu.help_for(("agents", "external_apis", "deepseek", "claude", "models", "v4-pro", "new_field"))
         with self.assertRaises(KeyError):
-            config_menu.help_for(("external_providers", "deepseek", "new_field"))
+            config_menu.help_for(("agents", "external_apis", "deepseek", "new_field"))
 
     def test_layers_sources_and_project_eligibility_follow_the_project_loader(self):
         """The agent must know which value wins, where it comes from, and whether a project may change it."""
@@ -82,9 +82,9 @@ class ConfigDescribeTests(unittest.TestCase):
                           "source": "global", "effective": config.workflow.review.max_files})
         self.assertEqual((fields["workflow.review.max_lines"]["project"], fields["workflow.review.max_lines"]["source"],
                           fields["workflow.review.max_lines"]["effective"]), (10, "project", 10))
-        self.assertEqual(fields["tools.browser"]["source"], "default")
+        self.assertEqual(fields["box.tools.browser"]["source"], "default")
         self.assertTrue(fields["workflow.review.sensitive_paths"]["project_allowed"])
-        self.assertFalse(fields["audio.enabled"]["project_allowed"])
+        self.assertFalse(fields["box.audio"]["project_allowed"])
         self.assertEqual(fields["workflow.merge_mode"]["choices"], ["github", "local"])
         self.assertEqual(fields["workflow.worker.tiers.1"]["type"], "list")
         self.assertIn("opus", fields["workflow.worker.tiers.1"]["suggestions"]["claude"])
@@ -97,44 +97,44 @@ class ConfigDescribeTests(unittest.TestCase):
         config = rich_config()
         save_config(config, self.global_file)
         output, fields = self.describe()
-        self.assertEqual(fields["external_providers.deepseek.claude.models.v4-pro.effort"]["choices"],
+        self.assertEqual(fields["agents.external_apis.deepseek.claude.models.v4-pro.effort"]["choices"],
                          ["default", "low", "high", "max"])
-        self.assertEqual(fields["external_providers.deepseek.claude.default_model"]["choices"], ["", "v4-flash", "v4-pro"])
-        self.assertNotIn(config.external_providers["deepseek"].api_key, output)
+        self.assertEqual(fields["agents.external_apis.deepseek.claude.default_model"]["choices"], ["", "v4-flash", "v4-pro"])
+        self.assertNotIn(config.agents.external_apis["deepseek"].api_key, output)
 
     def test_secrets_are_reported_as_set_without_their_values(self):
         """Describe output lands in an agent transcript, so a credential must never appear in it."""
         config = Config()
-        config.notifications.telegram_token = "tg-secret-value"
+        config.host.notifications.telegram_token = "tg-secret-value"
         config.tracker.connections["vikunja"] = TrackerConnection("https://tracker.example", "tracker-secret-value")
-        config.env.set = {"LITERAL": "env-secret-value"}
-        config.env.forward = ["FORWARDED_NAME"]
-        config.claude.statusline.command = "curl -H 'Authorization: command-secret-value'"
-        config.github.gh_token = True
+        config.box.env.set = {"LITERAL": "env-secret-value"}
+        config.box.env.forward = ["FORWARDED_NAME"]
+        config.agents.claude.statusline.command = "curl -H 'Authorization: command-secret-value'"
+        config.credentials.github.token = True
         save_config(config, self.global_file)
         output, fields = self.describe()
         for secret in ("tg-secret-value", "tracker-secret-value", "env-secret-value", "command-secret-value"):
             self.assertNotIn(secret, output)
-        self.assertEqual(fields["notifications.telegram_token"]["effective"], "<redacted>")
+        self.assertEqual(fields["host.notifications.telegram_token"]["effective"], "<redacted>")
         self.assertEqual(fields["tracker.connections.vikunja.token"]["global"], "<redacted>")
         self.assertEqual({key: fields["tracker.connections.jira.token"][key] for key in ("default", "source", "effective")},
                          {"default": "", "source": "default", "effective": ""})
-        self.assertEqual(fields["env.set"]["global"], {"LITERAL": "<redacted>"})
-        self.assertEqual(fields["env.forward"]["global"], ["FORWARDED_NAME"])
+        self.assertEqual(fields["box.env.set"]["global"], {"LITERAL": "<redacted>"})
+        self.assertEqual(fields["box.env.forward"]["global"], ["FORWARDED_NAME"])
         # A token-named switch stores no credential; masking it would hide the setting itself.
-        self.assertIs(fields["github.gh_token"]["effective"], True)
+        self.assertIs(fields["credentials.github.token"]["effective"], True)
 
     def test_a_session_snapshot_claims_no_global_value_for_host_only_settings(self):
         """Inside a box a missing section is unknown; reporting defaults would misstate the host's choices."""
         config = Config()
         config.tracker.enabled = True
-        config.claude.statusline.enabled = False
+        config.agents.claude.statusline.enabled = False
         _, fields = self.in_session(config)
-        statusline = fields["claude.statusline.enabled"]
+        statusline = fields["agents.claude.statusline.enabled"]
         self.assertEqual(statusline["source"], "host-only")
         self.assertNotIn("global", statusline)
         self.assertNotIn("effective", statusline)
-        self.assertEqual(fields["install.bin_dir"]["source"], "host-only")
+        self.assertEqual(fields["host.bin_dir"]["source"], "host-only")
         self.assertEqual(fields["tracker.enabled"]["effective"], True)
 
     def test_a_snapshot_without_tracker_accounts_keeps_global_urls_and_an_unknown_token(self):

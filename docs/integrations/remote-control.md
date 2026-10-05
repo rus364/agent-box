@@ -1,6 +1,6 @@
 # Remote Control
 
-In `agent-box config`, enable `claude.remote_control` or `codex.remote_control`
+In `agent-box config`, enable `agents.claude.remote_control` or `agents.codex.remote_control`
 under Agents, then save. Both default to off. The choice applies to
 new interactive terminal launches, in containers and with `--host`.
 

@@ -62,12 +62,14 @@ class ConfigMenuTests(unittest.TestCase):
         """Routing, review and delivery stay together even if storage order changes."""
         data = Config().to_dict()
         data.pop('version')
-        data.pop('install')
+        data['host'].pop('bin_dir')
         expected = {
-            (): ['default_agent', 'claude', 'codex', 'external_providers', 'tracker', 'workflow',
-                 'tools', 'audio', 'git', 'github', 'providers', 'env',
-                 'skills', 'notifications'],
-            ('codex',): ['native_agent_wait', 'remote_control'],
+            (): ['agents', 'box', 'credentials', 'tracker', 'workflow', 'host'],
+            ('agents',): ['default', 'claude', 'codex', 'host_env', 'external_apis'],
+            ('agents', 'codex'): ['native_agent_wait', 'remote_control'],
+            ('box',): ['tools', 'k3s', 'audio', 'env'],
+            ('credentials',): ['git', 'github'],
+            ('host',): ['notifications', 'claude_skill_links'],
             ('workflow',): ['enabled', 'merge_mode', 'auto_push', 'cleanup_local_branches',
                            'cleanup_remote_branches', 'use_tiers', 'worker', 'scout', 'review', 'sync', 'timeout_seconds'],
             ('workflow', 'worker'): ['models', 'tiers'],
@@ -115,13 +117,13 @@ class ConfigMenuTests(unittest.TestCase):
         """Input stays legible at 40 columns, with both hidden ends and no reverse fill."""
         import curses
         config = Config()
-        config.notifications.telegram_chat_id = 'a' * 90
-        keys = [*select('notifications'), '\n', curses.KEY_DOWN, curses.KEY_DOWN, '\n',
+        config.host.notifications.telegram_chat_id = 'a' * 90
+        keys = [*select('host'), '\n', *select('notifications', ('host',)), '\n', curses.KEY_DOWN, curses.KEY_DOWN, '\n',
                 curses.KEY_HOME, *[curses.KEY_RIGHT] * 35, curses.KEY_END, 'Z', '\n',
-                '\x1b', curses.KEY_END, curses.KEY_UP, '\n']
+                '\x1b', '\x1b', curses.KEY_END, curses.KEY_UP, '\n']
         screen = Screen(keys, sizes=[(8, 40)])
         result, _ = self.edit(config, [], screen=screen)
-        self.assertEqual(result.config.notifications.telegram_chat_id, 'a' * 90 + 'Z')
+        self.assertEqual(result.config.host.notifications.telegram_chat_id, 'a' * 90 + 'Z')
         editors = [(frame, attrs) for frame, attrs in zip(screen.frames, screen.attributes)
                    if frame.startswith('Edit ')]
         self.assertTrue(editors)
@@ -158,16 +160,16 @@ class ConfigMenuTests(unittest.TestCase):
             ('e\u0301' * 20, 'e\u0301' * 20 + ' ' * 8, [29, 9, 10, 10, 29], False),
             ('e\u0301' * 40, 'e\u0301' * 27 + ' ', [36, 9, 10, 10, 36], True),
         )
-        keys = [*select('notifications'), '\n', curses.KEY_DOWN, curses.KEY_DOWN, '\n',
+        keys = [*select('host'), '\n', *select('notifications', ('host',)), '\n', curses.KEY_DOWN, curses.KEY_DOWN, '\n',
                 curses.KEY_HOME, curses.KEY_RIGHT, curses.KEY_RIGHT, curses.KEY_END, '\n',
-                '\x1b', curses.KEY_END, curses.KEY_UP, '\n']
+                '\x1b', '\x1b', curses.KEY_END, curses.KEY_UP, '\n']
         for value, first_field, cursor_columns, overflow in cases:
             with self.subTest(value=value):
                 config = Config()
-                config.notifications.telegram_chat_id = value
+                config.host.notifications.telegram_chat_id = value
                 screen = Screen(keys, sizes=[(8, 40)])
                 result, _ = self.edit(config, [], screen=screen)
-                self.assertEqual(result.config.notifications.telegram_chat_id, value)
+                self.assertEqual(result.config.host.notifications.telegram_chat_id, value)
                 fields = [text for y, x, text, _ in screen.writes if y == 3 and x == 9]
                 self.assertEqual(fields[0], first_field)
                 self.assertTrue(all(not text.startswith('\u0301') for text in fields))
@@ -183,13 +185,13 @@ class ConfigMenuTests(unittest.TestCase):
         import curses
         from agent_box.config import save_config
         config = Config()
-        config.tools.groups['browser'] = True
+        config.box.tools.groups['browser'] = True
         config.workflow.auto_push = False
         config.workflow.review.max_lines = 31
-        browser = [*select("tools"), '\n', *select("browser", ("tools",)), 'r', '\x1b']
+        browser = [*select("box"), '\n', *select("tools", ("box",)), '\n', *select("browser", ("box", "tools")), 'r', '\x1b', '\x1b']
         cancelled, _ = self.edit(config, [*browser, '\x1b'])
         self.assertIsNone(cancelled)
-        self.assertTrue(config.tools.groups['browser'])
+        self.assertTrue(config.box.tools.groups['browser'])
         result, screen = self.edit(config, [*browser, *select("workflow"), 'r',
                                            curses.KEY_END, curses.KEY_UP, '\n'])
         self.assertEqual(result.config.to_dict(), Config().to_dict())
@@ -229,15 +231,15 @@ class ConfigMenuTests(unittest.TestCase):
     def test_cancel_discards_draft_while_save_returns_the_selected_values(self):
         import curses
         config = Config()
-        keys = [*select("claude"), "\n", *select("statusline", ("claude",)), "\n",
-                *select("enabled", ("claude", "statusline")), " ", "\x1b", "\x1b"]
+        keys = [*select("agents"), "\n", *select("claude", ("agents",)), "\n", *select("statusline", ("agents", "claude")), "\n",
+                *select("enabled", ("agents", "claude", "statusline")), " ", "\x1b", "\x1b", "\x1b"]
         result, _ = self.edit(config, [*keys, "\x1b"])
         self.assertIsNone(result)
-        self.assertTrue(config.claude.statusline.enabled)
+        self.assertTrue(config.agents.claude.statusline.enabled)
         result, _ = self.edit(config, [*keys, curses.KEY_END, curses.KEY_UP, "\n"])
-        self.assertFalse(result.config.claude.statusline.enabled)
-        self.assertTrue(config.claude.statusline.enabled)
-        self.assertEqual(result.config.install.bin_dir, "")
+        self.assertFalse(result.config.agents.claude.statusline.enabled)
+        self.assertTrue(config.agents.claude.statusline.enabled)
+        self.assertEqual(result.config.host.bin_dir, "")
 
     def test_saved_token_is_not_drawn_when_opening_its_connection(self):
         import curses
@@ -266,7 +268,7 @@ class ConfigMenuTests(unittest.TestCase):
     def test_every_generated_section_and_field_has_specific_help(self):
         data = Config().to_dict()
         data.pop("version")
-        data.pop("install")
+        data["host"].pop("bin_dir")
         for provider in ("vikunja", "jira", "linear", "github"):
             data["tracker"]["connections"].setdefault(provider, {"url": "", "token": ""})
 
@@ -284,25 +286,25 @@ class ConfigMenuTests(unittest.TestCase):
     def test_editor_inserts_and_deletes_at_the_visible_cursor(self):
         import curses
         config = Config()
-        config.notifications.telegram_chat_id = "abcd"
-        keys = [*select("notifications"), "\n", curses.KEY_DOWN, curses.KEY_DOWN, "\n",
+        config.host.notifications.telegram_chat_id = "abcd"
+        keys = [*select("host"), "\n", *select("notifications", ("host",)), "\n", curses.KEY_DOWN, curses.KEY_DOWN, "\n",
                 curses.KEY_HOME, "X", curses.KEY_RIGHT, curses.KEY_DC,
                 curses.KEY_END, curses.KEY_LEFT, curses.KEY_BACKSPACE, "\n",
-                "\x1b", curses.KEY_END, curses.KEY_UP, "\n"]
+                "\x1b", "\x1b", curses.KEY_END, curses.KEY_UP, "\n"]
         result, screen = self.edit(config, keys)
-        self.assertEqual(result.config.notifications.telegram_chat_id, "Xad")
+        self.assertEqual(result.config.host.notifications.telegram_chat_id, "Xad")
         self.assertIn((3, len("Value: [ ")), screen.cursor)
 
     def test_secret_editor_masks_the_value_and_escape_restores_it(self):
         import curses
         config = Config()
-        config.notifications.telegram_token = "do-not-draw-this"
-        result, screen = self.edit(config, [*select("notifications"), "\n", curses.KEY_DOWN,
+        config.host.notifications.telegram_token = "do-not-draw-this"
+        result, screen = self.edit(config, [*select("host"), "\n", *select("notifications", ("host",)), "\n", curses.KEY_DOWN,
                                             "\n", curses.KEY_LEFT, "X", "\x1b",
-                                            "\x1b", "\x1b"])
+                                            "\x1b", "\x1b", "\x1b"])
         self.assertIsNone(result)
         self.assertNotIn("do-not-draw-this", "\n".join(screen.drawn))
-        self.assertEqual(config.notifications.telegram_token, "do-not-draw-this")
+        self.assertEqual(config.host.notifications.telegram_token, "do-not-draw-this")
 
     def test_environment_values_are_visible_and_malformed_names_are_refused_while_editing(self):
         """env.set and env.forward hold no secrets by design.
@@ -312,21 +314,21 @@ class ConfigMenuTests(unittest.TestCase):
         """
         import curses
         config = Config()
-        config.env.set = {"TZ": "UTC"}
-        open_set = [*select("env"), "\n", *select("set", ("env",)), "\n"]
-        save = ["\x1b", curses.KEY_END, curses.KEY_UP, "\n"]
+        config.box.env.set = {"TZ": "UTC"}
+        open_set = [*select("box"), "\n", *select("env", ("box",)), "\n", *select("set", ("box", "env")), "\n"]
+        save = ["\x1b", "\x1b", curses.KEY_END, curses.KEY_UP, "\n"]
         result, screen = self.edit(config, [*open_set, curses.KEY_LEFT, *', "LANG": "C"', "\n", *save])
-        self.assertEqual(result.config.env.set, {"TZ": "UTC", "LANG": "C"})
+        self.assertEqual(result.config.box.env.set, {"TZ": "UTC", "LANG": "C"})
         self.assertTrue(any(line.startswith("Set") and '{"TZ": "UTC"}' in line for line in screen.drawn))
         self.assertTrue(any(line.startswith('{"TZ": "UTC"}') for line in screen.drawn), "editor field is masked")
 
         refused, screen = self.edit(config, [*open_set, "\x15", *'{"my-var": "x"}', "\n", *save])
-        self.assertEqual(refused.config.env.set, {"TZ": "UTC"})
+        self.assertEqual(refused.config.box.env.set, {"TZ": "UTC"})
         self.assertTrue(any(line.startswith('Not saved: "my-var"') for line in screen.drawn))
 
-        open_forward = [*select("env"), "\n", *select("forward", ("env",)), "\n"]
+        open_forward = [*select("box"), "\n", *select("env", ("box",)), "\n", *select("forward", ("box", "env")), "\n"]
         refused, screen = self.edit(config, [*open_forward, "\x15", *'["TOKEN", "1BAD"]', "\n", *save])
-        self.assertEqual(refused.config.env.forward, [])
+        self.assertEqual(refused.config.box.env.forward, [])
         self.assertTrue(any(line.startswith('Not saved: "1BAD"') for line in screen.drawn))
 
     def test_default_terminal_colors_and_short_escape_delay_are_restored(self):
@@ -455,10 +457,10 @@ class ConfigMenuTests(unittest.TestCase):
         """Editing the visible tail and then shrinking the terminal must retain the full value."""
         import curses
         config = Config()
-        config.notifications.telegram_chat_id = "a" * 150
-        keys = [*select("notifications"), "\n", curses.KEY_DOWN, curses.KEY_DOWN, "\n",
+        config.host.notifications.telegram_chat_id = "a" * 150
+        keys = [*select("host"), "\n", *select("notifications", ("host",)), "\n", curses.KEY_DOWN, curses.KEY_DOWN, "\n",
                 curses.KEY_LEFT, "Z", curses.KEY_RESIZE, curses.KEY_RESIZE,
-                curses.KEY_HOME, "Q", curses.KEY_END, "\n", "\x1b",
+                curses.KEY_HOME, "Q", curses.KEY_END, "\n", "\x1b", "\x1b",
                 curses.KEY_END, curses.KEY_UP, "\n"]
         screen = Screen(keys)
         # Resize on actual editor key events instead of depending on draw-call counts.
@@ -471,7 +473,7 @@ class ConfigMenuTests(unittest.TestCase):
             return key
         screen.get_wch = keypress
         result, _ = self.edit(config, [], screen=screen)
-        self.assertEqual(result.config.notifications.telegram_chat_id, "Q" + "a" * 149 + "Za")
+        self.assertEqual(result.config.host.notifications.telegram_chat_id, "Q" + "a" * 149 + "Za")
         self.assertTrue(any("Resize terminal" in frame for frame in screen.frames))
         self.assertTrue(all(0 <= x < 120 for _, x in screen.cursor))
 
@@ -494,14 +496,16 @@ class PathIntegrationTests(unittest.TestCase):
         return ConfigMenuTests.edit(self, config or Config(), keys, choices, link or self.missing)
 
     def test_menu_opens_on_the_path_row_and_says_agent_box_is_not_on_path(self):
-        result, screen = self.edit(["\x1b"], choices=[self.bin])
+        """The root points at Host, and Host opens on its PATH row."""
+        result, screen = self.edit(["\n", "\x1b", "\x1b"], choices=[self.bin])
         self.assertIsNone(result)
+        self.assertIn("Setup starts here: agent-box is not on PATH yet (open Host)", " ".join(screen.drawn))
         self.assertIn("PATH integration: agent-box is not on PATH yet", screen.drawn)
         self.assertIn("Setup starts here: agent-box is not on PATH yet", screen.drawn)
 
     def test_saving_without_a_path_answer_asks_before_leaving_the_shell_broken(self):
         import curses
-        # Down to "Save and apply"; the gate opens, and Escape declines it,
+        # The cursor starts on Host; down to "Save and apply"; the gate opens, and Escape declines it,
         # so nothing is saved.
         result, screen = self.edit([curses.KEY_DOWN, "\n", "\x1b", "\x1b"], choices=[self.bin])
         self.assertIsNone(result)
@@ -509,23 +513,24 @@ class PathIntegrationTests(unittest.TestCase):
         # Saving anyway stays available: it is the gate's second answer.
         result, _ = self.edit(
             [curses.KEY_DOWN, "\n", curses.KEY_DOWN, "\n"], choices=[self.bin])
-        self.assertEqual(result.config.install.bin_dir, "")
+        self.assertEqual(result.config.host.bin_dir, "")
 
     def test_the_path_submenu_starts_on_the_directory_rather_than_on_declining(self):
         import curses
-        # The cursor opens on the PATH row, Enter opens its submenu, and the
-        # directory -- not "leave PATH alone" -- is what Enter takes there.
-        result, _ = self.edit(["\n", "\n", curses.KEY_DOWN, "\n"], choices=[self.bin])
-        self.assertEqual(result.config.install.bin_dir, str(self.bin.path))
+        # The cursor opens on Host and then on its PATH row, Enter opens the
+        # PATH submenu, and the directory -- not "leave PATH alone" -- is what
+        # Enter takes there.
+        result, _ = self.edit(["\n", "\n", "\n", "\x1b", curses.KEY_DOWN, "\n"], choices=[self.bin])
+        self.assertEqual(result.config.host.bin_dir, str(self.bin.path))
         self.assertFalse(result.edit_rc)
 
     def test_a_recorded_directory_is_shown_and_kept_without_reopening_the_menu(self):
         import curses
         config = Config()
-        config.install.bin_dir = "/home/somebody/.local/bin"
+        config.host.bin_dir = "/home/somebody/.local/bin"
         result, screen = self.edit(
-            [curses.KEY_UP, curses.KEY_UP, "\n"], config=config, choices=[self.bin])
-        self.assertEqual(result.config.install.bin_dir, "/home/somebody/.local/bin")
+            [*select("host"), "\n", "\x1b", curses.KEY_DOWN, "\n"], config=config, choices=[self.bin])
+        self.assertEqual(result.config.host.bin_dir, "/home/somebody/.local/bin")
         self.assertIn(
             "PATH integration: agent-box keeps /home/somebody/.local/bin/agent-box",
             screen.drawn)
@@ -533,7 +538,7 @@ class PathIntegrationTests(unittest.TestCase):
     def test_a_link_agent_box_did_not_make_is_reported_as_unmaintained(self):
         from agent_box import pathsetup
         ours = pathsetup.LinkState("ours", Path("/usr/local/bin/agent-box"))
-        _, screen = self.edit(["\x1b"], choices=[self.bin], link=ours)
+        _, screen = self.edit([*select("host"), "\n", "\x1b", "\x1b"], choices=[self.bin], link=ours)
         self.assertIn(
             "PATH integration: found /usr/local/bin/agent-box, kept by you, not agent-box",
             screen.drawn)
@@ -563,16 +568,16 @@ class ProjectMenuTests(unittest.TestCase):
         import curses
         from agent_box import project_config
         config = Config()
-        browser = [*select("tools"), '\n', *select("browser", ("tools",))]
-        save = ['\x1b', curses.KEY_END, curses.KEY_UP, '\n']
+        browser = [*select("box"), '\n', *select("tools", ("box",)), '\n', *select("browser", ("box", "tools"))]
+        save = ['\x1b', '\x1b', curses.KEY_END, curses.KEY_UP, '\n']
         pinned, screen = self.edit(config, [*browser, 'g', *save], project={})
-        self.assertEqual(pinned.project, {'tools': {'browser': False}})
+        self.assertEqual(pinned.project, {'box': {'tools': {'browser': False}}})
         self.assertIn('copy and pin', '\n'.join(screen.drawn))
         reset, _ = self.edit(config, [*browser, 'r', *save], project=pinned.project)
         self.assertEqual(reset.project, {})
-        config.tools.groups['browser'] = True
-        self.assertFalse(project_config.apply(config, pinned.project).tools.browser())
-        self.assertTrue(project_config.apply(config, reset.project).tools.browser())
+        config.box.tools.groups['browser'] = True
+        self.assertFalse(project_config.apply(config, pinned.project).box.tools.browser())
+        self.assertTrue(project_config.apply(config, reset.project).box.tools.browser())
 
     def test_section_copy_filters_global_only_and_keeps_empty_explicit_values(self):
         """Section pinning must never serialize the global integration permission."""
@@ -730,15 +735,15 @@ class ProjectMenuTests(unittest.TestCase):
         """Explicit equality is a choice; reset removes the choice from the file."""
         import curses
         config = Config()
-        browser = [*select("tools"), '\n', *select("browser", ("tools",))]
-        save = ['\x1b', curses.KEY_END, curses.KEY_UP, '\n']
+        browser = [*select("box"), '\n', *select("tools", ("box",)), '\n', *select("browser", ("box", "tools"))]
+        save = ['\x1b', '\x1b', curses.KEY_END, curses.KEY_UP, '\n']
         result, screen = self.edit(config, [*browser, ' ', ' ', *save], project={})
-        self.assertEqual(result.project, {'tools': {'browser': False}})
+        self.assertEqual(result.project, {'box': {'tools': {'browser': False}}})
         self.assertIn('Inherited', '\n'.join(screen.drawn))
         self.assertIn('Overridden', '\n'.join(screen.drawn))
         reset, _ = self.edit(config, [*browser, 'r', *save], project=result.project)
         self.assertEqual(reset.project, {})
-        blocked, screen = self.edit(config, [*select('claude'), ' ', 'r', 'g', curses.KEY_END, curses.KEY_UP, '\n'], project={})
+        blocked, screen = self.edit(config, [*select('agents'), ' ', 'r', 'g', curses.KEY_END, curses.KEY_UP, '\n'], project={})
         self.assertEqual(blocked.project, {})
         self.assertIn('Global only', '\n'.join(screen.drawn))
 
@@ -748,7 +753,7 @@ class ProjectMenuTests(unittest.TestCase):
         import io
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / '.agent-box.json'
-            result = config_menu.EditResult(Config(), project={'tools': {'browser': False}})
+            result = config_menu.EditResult(Config(), project={'box': {'tools': {'browser': False}}})
             with patch.object(project_config, 'project_path', return_value=path), \
                  patch.object(cli, 'effective_config', return_value=Config()), \
                  patch.object(config_menu, 'edit', return_value=result), \

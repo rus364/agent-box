@@ -224,7 +224,7 @@ def codex_workflow_overrides(rest: list[str], config: Config) -> list[str]:
     # over agents.*. Set both from the same policy for either native tool surface.
     overrides = [f"agents.max_concurrent_threads_per_session={limit}",
                  f"features.multi_agent_v2.max_concurrent_threads_per_session={limit + 1}"]
-    policy = config.codex.native_agent_wait
+    policy = config.agents.codex.native_agent_wait
     if policy.enabled and not policy.validate():
         overrides.append(f"features.multi_agent_v2.default_wait_timeout_ms={policy.interval_seconds * 1000}")
     return overrides
@@ -280,9 +280,9 @@ def tool_build_args(config: Config) -> list[str]:
     build layer sees as turning one on.
     """
     args: list[str] = []
-    for name, enabled in sorted(config.tools.groups.items()):
+    for name, enabled in sorted(config.box.tools.groups.items()):
         args += ["--build-arg", f"TOOLS_{name.upper()}={'1' if enabled else '0'}"]
-    args += ["--build-arg", f"AGENT_BOX_TOOLS={','.join(config.tools.enabled_groups())}"]
+    args += ["--build-arg", f"AGENT_BOX_TOOLS={','.join(config.box.tools.enabled_groups())}"]
     return args
 
 
@@ -320,15 +320,15 @@ def build_image(script_dir: Path, refresh: bool, no_cache: bool,
         args.append("--no-cache")
     args.append(str(script_dir))
     rc = subprocess.call(args)
-    if rc == 0 and config.tools.k3s.enabled:
+    if rc == 0 and config.box.k3s.enabled:
         # The sidecar's image is not part of this one; fetched here so the
         # first launch does not stall on it.
-        k3s.pull(config.tools.k3s)
+        k3s.pull(config.box.k3s)
     return rc
 
 
 def nested_podman_build_args(config: Config, identity: HostIdentity) -> list[str]:
-    if not config.tools.groups["podman"]:
+    if not config.box.tools.groups["podman"]:
         return []
     try:
         mappings = nested_podman.host_info()["idMappings"]
@@ -342,7 +342,7 @@ def nested_podman_build_args(config: Config, identity: HostIdentity) -> list[str
 
 
 def nested_podman_args(config: Config, workspace: Workspace) -> list[str]:
-    if not config.tools.groups["podman"]:
+    if not config.box.tools.groups["podman"]:
         return []
     try:
         if not os.access("/dev/net/tun", os.R_OK | os.W_OK):
@@ -394,7 +394,7 @@ def image_tool_drift(config: Config) -> tuple[list[str], list[str]]:
     built = image_tool_groups()
     if built is None:
         return ([], [])
-    wanted = config.tools.enabled_groups()
+    wanted = config.box.tools.enabled_groups()
     return ([g for g in wanted if g not in built], [g for g in built if g not in wanted])
 
 
@@ -542,7 +542,7 @@ def claude_skill_links(config: Config) -> None:
     def points_into_tree(link: Path) -> bool:
         return link.is_symlink() and os.readlink(link).startswith(str(source) + os.sep)
 
-    if not config.skills.claude_links:
+    if not config.host.claude_skill_links:
         if target_root.is_dir():
             for link in target_root.iterdir():
                 if points_into_tree(link):
@@ -633,11 +633,11 @@ def seed_git_config(target: Path, config: Config) -> None:
     this, forwarding ``GH_TOKEN`` into the container environment alone does
     nothing, because plain git never consults it on its own.
     """
-    if config.git.full_config:
+    if config.credentials.git.full_config:
         seed_state_dir(target, HOST_HOME / ".config/git", HOST_HOME / ".gitconfig")
     else:
         seed_state_dir(target)
-        if config.git.identity:
+        if config.credentials.git.identity:
             lines = []
             for key in GIT_IDENTITY_KEYS:
                 result = subprocess.run(
@@ -699,7 +699,7 @@ def prepare_container_lifetime_state(
     seed_git_config(runtime_state.git, config)
     seed_state_dir(
         runtime_state.gh,
-        *((HOST_HOME / ".config/gh",) if config.github.gh_config else ()),
+        *((HOST_HOME / ".config/gh",) if config.credentials.github.config else ()),
     )
     if mount_notifications:
         notify_module.sync_credentials(config, NOTIFY_CREDENTIALS)
@@ -869,7 +869,7 @@ def sync_tracker_runtime(config: Config, directory: Path | None = None, *, polic
     tracker = config.tracker.to_dict()
     if not config.tracker.enabled:
         tracker["connections"] = {}
-    external = {name: spec.to_dict() for name, spec in config.external_providers.items() if spec.enabled}
+    external = {name: spec.to_dict() for name, spec in config.agents.external_apis.items() if spec.enabled}
     if container:
         for spec in external.values():
             for cli in ("codex", "claude"):
@@ -884,14 +884,15 @@ def sync_tracker_runtime(config: Config, directory: Path | None = None, *, polic
         "workflow": config.workflow.to_dict(),
         # Claude's status line is drawn inside the box, where the saved file is not
         # mounted; whether agent-box owns the host's statusLine slot stays host-only.
-        "claude": {"remote_control": config.claude.remote_control,
-                   "statusline": {"command": config.claude.statusline.command}},
-        "codex": config.codex.to_dict(),
-        "github": config.github.to_dict(),
+        "agents": {
+            "claude": {"remote_control": config.agents.claude.remote_control,
+                       "statusline": {"command": config.agents.claude.statusline.command}},
+            "codex": config.agents.codex.to_dict(),
+            "external_apis": external,
+        },
+        "credentials": {"github": config.credentials.github.to_dict()},
         # A nested box inherits the outer box's sound socket at the same path.
-        "audio": config.audio.to_dict(),
-        "tools": config.tools.to_dict(),
-        "external_providers": external,
+        "box": {"tools": config.box.tools.to_dict(), "k3s": config.box.k3s.to_dict(), "audio": config.box.audio},
         "container": container,
         # Re-applied over the project configuration inside the session.
         "launch": launch,
@@ -920,7 +921,7 @@ def launch_config(options=None):
     options = options or launch_options.LaunchOptions()
     base = runtime_config_base()
     overrides = {**getattr(base, "_launch", {}), **options.overrides}
-    policy = base.env.overlay(options.env)
+    policy = base.box.env.overlay(options.env)
     config = effective_config(base)
     launch_options.apply(config, overrides)
     # The snapshot renders from the layer beneath the project overlay. Only
@@ -933,9 +934,9 @@ def launch_config(options=None):
     if options.overrides.get("notify"):
         if os.environ.get("AGENT_BOX_RUNTIME_CONFIG"):
             raise AgentBoxError("--notify applies to launches from the host; a session cannot turn notifications on")
-        if not config.notifications.usable:
+        if not config.host.notifications.usable:
             raise AgentBoxError("--notify needs Telegram notifications enabled and set up in agent-box config")
-    config.env = policy
+    config.box.env = policy
     if config.tracker.enabled:
         from .project_config import load
         from .repo_binding import server_identity
@@ -997,7 +998,7 @@ def tracker_host_args(config: Config) -> list[str]:
     rebuilds the box rather than silently diverging from the running one.
     """
     urls = [connection.url for connection in config.tracker.connections.values()] if config.tracker.enabled else []
-    urls += [getattr(spec, cli).url for spec in config.external_providers.values() if spec.enabled
+    urls += [getattr(spec, cli).url for spec in config.agents.external_apis.values() if spec.enabled
              for cli in ("codex", "claude")]
     hosts = {tracker_host_alias(url) for url in urls}
     return [f"--add-host={host}:{CONTAINER_HOST_GATEWAY}" for host in sorted(hosts) if host]
@@ -1007,7 +1008,7 @@ def tracker_host_args(config: Config) -> list[str]:
 def tracker_warnings(config: Config) -> list[str]:
     from .external_config import validate_connections
     problems = validate_connections(config)
-    problems += config.workflow.validate() + config.codex.validate() if config.workflow.enabled else []
+    problems += config.workflow.validate() + config.agents.codex.validate() if config.workflow.enabled else []
     if config.tracker.enabled:
         if not config.tracker.connection().usable:
             problems.append("Tracker is enabled but its default connection needs a server URL and token")
@@ -1179,7 +1180,7 @@ def browser_session(
     browser" rather than aborting: a browser is an extra capability, and
     losing it is not a reason to refuse to start the agent.
     """
-    if not config.tools.browser() or agent not in {"claude", "codex"}:
+    if not config.box.tools.browser() or agent not in {"claude", "codex"}:
         return None
     session_id = browser_session_id(agent)
     try:
@@ -1251,7 +1252,7 @@ def build_mounts(
         # The keeper needs only this workspace's lifecycle lock and snapshots,
         # never another workspace's writable runtime state.
         pairs.append((runtime_state.root, runtime_state.root, False))
-        if config is not None and config.tools.k3s.enabled:
+        if config is not None and config.box.k3s.enabled:
             # Read-only over the writable runtime root: the sidecar mounts
             # registries.yaml from here, and the box must not rewrite it.
             pairs.append((k3s_state_dir(runtime_state), k3s_state_dir(runtime_state), True))
@@ -1310,7 +1311,7 @@ def kvm_args(config: Config, enabled: bool = True) -> list[str]:
     device is a bind with no consumer, and handing a container a device it has
     no use for is not a neutral default. ``--no-kvm`` withholds it for a launch.
     """
-    if not config.tools.groups["virtualization"]:
+    if not config.box.tools.groups["virtualization"]:
         return []
     if not enabled or not Path("/dev/kvm").exists():
         return []
@@ -1345,14 +1346,14 @@ def audio_args(config: Config) -> list[str]:
     says so.
     """
     socket = PULSE_DIR / "native"
-    if not config.audio.enabled or not socket.is_socket():
+    if not config.box.audio or not socket.is_socket():
         return []
     return ["--mount", f"type=bind,src={PULSE_DIR},dst={PULSE_DIR},ro=true", f"--env=PULSE_SERVER=unix:{socket}"]
 
 
 def audio_warnings(config: Config) -> list[str]:
     socket = PULSE_DIR / "native"
-    if config.audio.enabled and not socket.is_socket():
+    if config.box.audio and not socket.is_socket():
         return [f"Audio is enabled but {socket} is not a sound-server socket; workspace boxes start without sound"]
     return []
 
@@ -1367,7 +1368,7 @@ def github_enabled(config: Config) -> bool:
     config switch gates *both* the host-derived token and any already-exported
     one; ``--[no-]gh-token`` sets that switch for one launch.
     """
-    return config.github.gh_token
+    return config.credentials.github.token
 
 
 def github_env(config: Config) -> list[str]:
@@ -1414,7 +1415,7 @@ PROVIDER_TRANSPORT_ENV = (
 def user_env(config: Config) -> list[str]:
     """``--env`` flags for the variables the user asked agent-box to pass.
 
-    Two spellings, matching the two halves of ``config.env``. A forwarded
+    Two spellings, matching the two halves of ``config.box.env``. A forwarded
     name becomes ``--env=NAME``, which tells Podman to inherit the value from
     the client process, so a secret never lands in an argv that ``/proc``
     exposes to other processes on the host; a name with no value in the
@@ -1428,9 +1429,9 @@ def user_env(config: Config) -> list[str]:
     more specific statement, and letting the shell silently override a value
     written in the config file would make the file a suggestion.
     """
-    assignments = config.env.set
+    assignments = config.box.env.set
     names = [
-        name for name in config.env.forward
+        name for name in config.box.env.forward
         if name not in assignments and os.environ.get(name)
     ]
     return [
@@ -1441,8 +1442,8 @@ def user_env(config: Config) -> list[str]:
 
 def provider_env(config: Config) -> list[str]:
     names = (
-        *(PROVIDER_API_KEY_ENV if config.providers.api_keys else ()),
-        *(PROVIDER_TRANSPORT_ENV if config.providers.transport else ()),
+        *(PROVIDER_API_KEY_ENV if config.agents.host_env.api_keys else ()),
+        *(PROVIDER_TRANSPORT_ENV if config.agents.host_env.transport else ()),
     )
     # --env=NAME (not NAME=value) so a secret never lands in the argv, which
     # is world-readable via /proc on most systems.
@@ -1465,7 +1466,7 @@ def k3s_box_args(
     Structural: the port is fixed when the sidecar is created, so a
     recreated sidecar recreates the box too.
     """
-    if not config.tools.k3s.enabled:
+    if not config.box.k3s.enabled:
         return []
     runtime_state = runtime_state or workspace_runtime_state(workspace)
     port = k3s.api_port(workspace_identity(workspace))
@@ -1481,20 +1482,20 @@ def prepare_k3s(config: Config, workspace: Workspace, runtime_state: WorkspaceRu
     do not create the sidecar twice.
     """
     with workspace_transition_lock(workspace):
-        if config.tools.k3s.enabled:
+        if config.box.k3s.enabled:
             workspace_id, state_dir = workspace_identity(workspace), k3s_state_dir(runtime_state)
             box = inspect_workspace_container(workspace_container_name(workspace))
             box_running = (box or {}).get("State", {}).get("Status") == "running"
             # Recreating the sidecar under a running box would pull the
             # cluster out from under its sessions, as a recreated box would.
-            if box_running and k3s.is_outdated(workspace_id, config.tools.k3s, state_dir, workspace.host_root):
+            if box_running and k3s.is_outdated(workspace_id, config.box.k3s, state_dir, workspace.host_root):
                 raise AgentBoxError("the k3s settings changed while this project's box is running; "
                                     "end it with agent-box stop first")
             if not box_running:
                 # A box-bound cluster whose box ended on its own is noticed
                 # only now, and the new box must not inherit it.
                 release_k3s(workspace, config, runtime_state)
-            k3s.ensure(workspace_id, config.tools.k3s, state_dir, workspace.host_root)
+            k3s.ensure(workspace_id, config.box.k3s, state_dir, workspace.host_root)
         else:
             release_k3s(workspace, config, runtime_state)
 
@@ -1515,7 +1516,7 @@ def release_k3s(workspace: Workspace, config: Config | None = None,
     # nor Podman need be asked.
     if not state_dir.is_dir():
         return
-    settings = (config or effective_config(runtime_config_base())).tools.k3s
+    settings = (config or effective_config(runtime_config_base())).box.k3s
     if settings.enabled and settings.lifetime != "box":
         return
     if not settings.enabled:
@@ -1539,7 +1540,7 @@ def confirm_k3s(spec: WorkspaceContainerSpec) -> None:
     put the whole launch path, session prompts included, inside it.
     """
     config = spec.creation_config
-    if not config.tools.k3s.enabled:
+    if not config.box.k3s.enabled:
         return
     sidecar = k3s.inspect(spec.workspace_id)
     running = (sidecar or {}).get("State", {}).get("Status") == "running"
@@ -1549,8 +1550,8 @@ def confirm_k3s(spec: WorkspaceContainerSpec) -> None:
 
 
 def k3s_warnings(config: Config) -> list[str]:
-    if config.tools.k3s.enabled and not config.tools.groups["kubernetes"]:
-        return ["tools.k3s is on but the kubernetes tool group is off: the box has no kubectl or helm"]
+    if config.box.k3s.enabled and not config.box.tools.groups["kubernetes"]:
+        return ["box.k3s is on but the kubernetes tool group is off: the box has no kubectl or helm"]
     return []
 
 
@@ -2218,9 +2219,9 @@ def invocation_env(config: Config, agent: str) -> tuple[list[str], dict[str, str
     # current process environment. Snapshot only after that deliberate
     # discovery so podman exec can inherit the name it forwards.
     env = dict(os.environ)
-    if config.notifications.usable and agent in {"claude", "codex"}:
-        env[notify_module.NOTIFY_TOKEN_ENV] = config.notifications.telegram_token
-        env[notify_module.NOTIFY_CHAT_ID_ENV] = config.notifications.telegram_chat_id
+    if config.host.notifications.usable and agent in {"claude", "codex"}:
+        env[notify_module.NOTIFY_TOKEN_ENV] = config.host.notifications.telegram_token
+        env[notify_module.NOTIFY_CHAT_ID_ENV] = config.host.notifications.telegram_chat_id
         forwarded += [
             f"--env={notify_module.NOTIFY_TOKEN_ENV}",
             f"--env={notify_module.NOTIFY_CHAT_ID_ENV}",
@@ -2230,7 +2231,7 @@ def invocation_env(config: Config, agent: str) -> tuple[list[str], dict[str, str
     # Every agent gets the reaper opt-out, not only Claude: a tmux server keeps
     # the environment of the launch that started it, so a later Claude session
     # in a box first opened by `agent-box codex` would otherwise lack it.
-    # Listed before user flags so an explicit env.set still wins.
+    # Listed before user flags so an explicit box.env.set still wins.
     return [f"TERM={env.get('TERM', 'xterm-256color')}", f"{PRESSURE_REAP_OPT_OUT}=1",
             *(item[6:] for item in forwarded)], env
 
@@ -2359,7 +2360,7 @@ if [[ "${AGENT_BOX_K3S:-0}" == "1" ]]; then
     printf "  %s\n" "${nodes}"
   fi
 else
-  echo "k3s cluster:         disabled (turn on tools.k3s in 'agent-box config')"
+  echo "k3s cluster:         disabled (turn on box.k3s in 'agent-box config')"
 fi
 '''
 
@@ -2496,7 +2497,7 @@ def claude_channel_args(
     isolated = ["TELEGRAM_BOT_TOKEN="]
     if not is_claude_session_invocation(rest or []):
         return [], isolated
-    if not config.claude.telegram_channel:
+    if not config.agents.claude.telegram_channel:
         return [], isolated
     missing = channel_module.missing_requirements()
     if missing:
@@ -2544,7 +2545,7 @@ def runtime_main(
     ensure_state_dirs()
     ensure_refresh_token()
     config = launch_config(options)
-    agent, rest = config.default_agent, args
+    agent, rest = config.agents.default, args
     if args and args[0] in {"claude", "codex", "shell", "doctor"}:
         agent, rest = args[0], args[1:]
     if agent not in {"claude", "codex", "shell", "doctor"}:
@@ -2606,10 +2607,10 @@ def runtime_main(
             # so the one bit it needs is forwarded per-exec.
             extra_env = [
                 *extra_env,
-                f"{BROWSER_ENABLED_ENV}={'1' if config.tools.browser() else '0'}",
-                f"AGENT_BOX_K3S={'1' if config.tools.k3s.enabled else '0'}",
-                f"{CLAUDE_SKILL_LINKS_ENV}={'1' if config.skills.claude_links else '0'}",
-                f"{IMAGE_TOOLS_ENV}={','.join(config.tools.enabled_groups())}",
+                f"{BROWSER_ENABLED_ENV}={'1' if config.box.tools.browser() else '0'}",
+                f"AGENT_BOX_K3S={'1' if config.box.k3s.enabled else '0'}",
+                f"{CLAUDE_SKILL_LINKS_ENV}={'1' if config.host.claude_skill_links else '0'}",
+                f"{IMAGE_TOOLS_ENV}={','.join(config.box.tools.enabled_groups())}",
                 f"AGENT_BOX_IMAGE={IMAGE}",
             ]
             command = ["bash", "-c", DOCTOR_SCRIPT]
@@ -2765,9 +2766,9 @@ def stop_main(args: list[str], workspace_root: str = "") -> int:
             k3s.remove(workspace_id, k3s_state_dir(runtime_state), data=True)
             print(f"agent-box: removed the k3s cluster {sidecar} and its data", file=sys.stderr)
         # Only a workspace that ever created a sidecar asks Podman about one.
-        elif k3s_state_dir(runtime_state).is_dir() and k3s.stop(workspace_id, config.tools.k3s,
+        elif k3s_state_dir(runtime_state).is_dir() and k3s.stop(workspace_id, config.box.k3s,
                                                                k3s_state_dir(runtime_state)):
-            kept = "" if config.tools.k3s.persistent_data else " and deleted its data"
+            kept = "" if config.box.k3s.persistent_data else " and deleted its data"
             print(f"agent-box: stopped the k3s cluster {sidecar}{kept}", file=sys.stderr)
     return 0
 
@@ -2777,7 +2778,7 @@ def apply_path_symlink(config: Config) -> list[str]:
 
     Applying re-creates a link that something else removed, which is the whole
     reason the directory is remembered. It never *chooses* one: an empty
-    ``install.bin_dir`` means the user declined the question or links the shim
+    ``host.bin_dir`` means the user declined the question or links the shim
     themselves, and inventing a location here would be agent-box putting a
     command on PATH that nobody asked for.
 
@@ -2786,10 +2787,10 @@ def apply_path_symlink(config: Config) -> list[str]:
     the skills and settings that follow it.
     """
     from . import pathsetup
-    if not config.install.bin_dir:
+    if not config.host.bin_dir:
         return []
     try:
-        return [pathsetup.install_symlink(Path(config.install.bin_dir))]
+        return [pathsetup.install_symlink(Path(config.host.bin_dir))]
     except AgentBoxError as exc:
         return [f"warning: {exc}"]
 
@@ -2828,7 +2829,7 @@ def apply_config(config: Config, *, session=False) -> list[str]:
         report.extend(apply_path_symlink(config))
         notify_module.sync_credentials(config, path=NOTIFY_CREDENTIALS)
         from . import codex_settings
-        report.extend(codex_settings.reconcile_notify(CODEX_HOME / "config.toml", config.notifications.enabled))
+        report.extend(codex_settings.reconcile_notify(CODEX_HOME / "config.toml", config.host.notifications.enabled))
         sync_tracker_runtime(config)
 
     wanted = managed_skills(config)
@@ -2842,12 +2843,12 @@ def apply_config(config: Config, *, session=False) -> list[str]:
         claude_skill_links(config)
         report.append(
             f"shared skills linked into {CLAUDE_HOME / 'skills'}: "
-            f"{'yes' if config.skills.claude_links else 'no'}")
+            f"{'yes' if config.host.claude_skill_links else 'no'}")
 
         settings = CLAUDE_HOME / "settings.json"
-        statusline = claude_settings.statusline_intent(config.claude.statusline.enabled)
+        statusline = claude_settings.statusline_intent(config.agents.claude.statusline.enabled)
         claude_settings.reconcile_claude_settings(
-            settings, notifications=config.notifications.enabled, statusline=statusline)
+            settings, notifications=config.host.notifications.enabled, statusline=statusline)
         report.append(
             f"reconciled {settings}"
             + ("" if statusline is not None else " (status line left untouched)"))
@@ -2940,7 +2941,7 @@ def uninstall_main(args: list[str]) -> int:
     done.extend(codex_settings.reconcile_notify(CODEX_HOME / "config.toml", False))
 
     disabled = Config()
-    disabled.skills.claude_links = False
+    disabled.host.claude_skill_links = False
     claude_skill_links(disabled)
     done.append(f"removed agent-box's skill links from {CLAUDE_HOME / 'skills'}")
 
@@ -3024,7 +3025,7 @@ def host_main(
     options = options or LaunchOptions()
     workspace = resolved_workspace(options.workspace)
     config = launch_config(options)
-    agent = agent or config.default_agent
+    agent = agent or config.agents.default
     executable = shutil.which(agent)
     if not executable:
         raise AgentBoxError(f"'{agent}' not found on PATH; install it on the host to use --host")
@@ -3034,14 +3035,14 @@ def host_main(
     # As in container mode: a launch applies nothing to the user's own files.
     env = builtin_environment(os.environ)
     env[PRESSURE_REAP_OPT_OUT] = "1"
-    # ``env.set`` states what a session should have; a host session is still a
-    # session. ``env.forward`` has nothing to do here -- host mode already
+    # ``box.env.set`` states what a session should have; a host session is still a
+    # session. ``box.env.forward`` has nothing to do here -- host mode already
     # runs in the very shell those names would have been forwarded from, so
     # the values are present already.
-    env.update(config.env.set)
-    if config.tools.k3s.enabled:
-        print("agent-box: tools.k3s is on; --host sessions get no cluster", file=sys.stderr)
-    # Owned metadata describes this launch, even when env.set names these keys.
+    env.update(config.box.env.set)
+    if config.box.k3s.enabled:
+        print("agent-box: box.k3s is on; --host sessions get no cluster", file=sys.stderr)
+    # Owned metadata describes this launch, even when box.env.set names these keys.
     env["AGENT_BOX_RUNTIME_CONFIG"] = str(session_runtime(config, container=False))
     if getattr(config, "_launch", {}).get("notify") is False:
         env[notify_module.NOTIFY_OFF_ENV] = "1"
@@ -3069,7 +3070,7 @@ def external_command(command: list[str], agent: str, name: str, *, container: bo
 
 
 def remote_control_command(command: list[str], agent: str, config: Config, *, container: bool) -> list[str]:
-    if not getattr(config, agent).remote_control:
+    if not getattr(config.agents, agent).remote_control:
         return command
     launcher = CONTAINER_LAUNCHER_ROOT / "agent-box" if container else LOCAL_LAUNCHER
     return ["python3" if container else sys.executable, str(launcher), "_session",

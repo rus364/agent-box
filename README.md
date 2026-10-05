@@ -135,7 +135,7 @@ agent-box codex exec "inspect this repository"
 ```
 
 Choose the default under **Agents → Default agent** in `agent-box config`
-(`default_agent`: `claude` or `codex`). It is a global setting, not a
+(`agents.default`: `claude` or `codex`). It is a global setting, not a
 project one; an explicit `claude` or `codex` always wins.
 
 ### Session options
@@ -388,12 +388,12 @@ bound project still require a complete tracker binding.
     "connections": {"vikunja": {"url": "https://tasks.example.org"}}
   },
   "workflow": {"auto_push": false},
-  "tools": {"browser": true}
+  "box": {"tools": {"browser": true}}
 }
 ```
 
 The allowed shared paths are `workflow` except its top-level `enabled`,
-`tools`, `tracker.provider`, and
+`box.tools`, `box.k3s`, `tracker.provider`, and
 `tracker.connections.<provider>.url`. Workflow includes each role's candidate lists
 (`models`, and `tiers.N` for workers, sync agents and reviewers) and `use_tiers`. `tracker.project` and `tracker.recursive` are
 project identity fields. Missing fields inherit global settings; nested objects
@@ -494,7 +494,7 @@ Image tool changes still need `agent-box build`.
 
 ## The workspace image
 
-A base set everyone gets, plus optional groups you choose under **Tools** in `agent-box config` (`tools.<group>`).
+A base set everyone gets, plus optional groups you choose under **Workspace box → Image tools** in `agent-box config` (`box.tools.<group>`).
 
 | Always | Included |
 | --- | --- |
@@ -514,9 +514,9 @@ A base set everyone gets, plus optional groups you choose under **Tools** in `ag
 Anything else your projects need belongs in the project, through `mise` — a
 per-project toolchain is not an image everyone shares.
 
-**Tools → k3s** is not an image group. It runs a per-project
+**Workspace box → k3s cluster** is not an image group. It runs a per-project
 [k3s cluster](docs/integrations/k3s.md) in a sidecar container beside the box
-(`tools.k3s.enabled`, off by default).
+(`box.k3s.enabled`, off by default).
 
 ```bash
 agent-box build      # normal cached build

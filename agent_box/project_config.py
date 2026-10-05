@@ -18,17 +18,17 @@ def _fields(value, parts=()):
     if parts[:1] == ("workflow",) and ("models" in parts or "tiers" in parts):
         return [MODEL_ENTRY]
     if parts == ("k3s", "registry_mirrors"):
-        return dict  # registry names are the user's own; ToolsConfig.validate checks entries
+        return dict  # registry names are the user's own; K3sConfig.validate checks entries
     return type(value)
 
 
 PROJECT_FIELDS = {
     "workflow": {key: _fields(value, ("workflow", key)) for key, value in Config().workflow.to_dict().items() if key != "enabled"},
-    "tools": _fields(Config().tools.to_dict()),
+    "box": {"tools": _fields(Config().box.tools.to_dict()), "k3s": _fields(Config().box.k3s.to_dict(), ("k3s",))},
     "tracker": {"provider": str, "project": str, "recursive": bool,
                 "connections": {provider: {"url": str} for provider in TRACKER_PROVIDERS}},
 }
-CREDENTIAL_FIELDS = {("notifications", "telegram_token"), ("github", "gh_token"),
+CREDENTIAL_FIELDS = {("host", "notifications", "telegram_token"), ("credentials", "github", "token"),
                      *(("tracker", "connections", provider, "token") for provider in TRACKER_PROVIDERS)}
 
 
@@ -85,7 +85,7 @@ def validate(data, path):
             return
         for key, item in value.items():
             full = (*parts, key)
-            if full == ("external_providers",) or full in CREDENTIAL_FIELDS or (len(full) == 4 and full[:2] == ("tracker", "connections") and full[-1] == "token"):
+            if full == ("agents", "external_apis") or full in CREDENTIAL_FIELDS or (len(full) == 4 and full[:2] == ("tracker", "connections") and full[-1] == "token"):
                 raise AgentBoxError(f"PROJECT_CREDENTIALS_FORBIDDEN: {path}: {'.'.join(full)}; stop, notify the user, and do not commit this file")
             credentials(item, full)
 
@@ -127,7 +127,7 @@ def validate(data, path):
         if key in workflow and not workflow[key]:
             raise AgentBoxError(f"Invalid project configuration: {path}: workflow.{key} must be nonempty")
     merged = Config.from_dict(merge(Config().to_dict(), data))
-    errors = merged.workflow.validate() + merged.tools.validate()
+    errors = merged.workflow.validate() + merged.box.validate()
     if errors:
         raise AgentBoxError(f"Invalid project configuration: {path}: {errors[0]}")
 

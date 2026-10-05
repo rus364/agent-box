@@ -317,7 +317,7 @@ class RecordedSymlinkTests(unittest.TestCase):
         from agent_box import runtime
         from agent_box.config import Config
         config = Config()
-        config.install.bin_dir = str(bin_dir)
+        config.host.bin_dir = str(bin_dir)
         return runtime.apply_path_symlink(config)
 
     def test_applying_restores_a_link_that_something_else_removed(self):

@@ -71,14 +71,14 @@ class GitHubCredentialGatingTests(unittest.TestCase):
 
     def test_enabled_forwards_the_host_derived_token(self):
         config = Config()
-        config.github.gh_token = True
+        config.credentials.github.token = True
         argv = _argv(config)
         self.assertIn("--env=GH_TOKEN", argv)
         self.assertNotIn("gho_secrettoken", " ".join(argv))
 
     def test_enabled_forwards_an_exported_token_by_name_only(self):
         config = Config()
-        config.github.gh_token = True
+        config.credentials.github.token = True
         argv = _argv(config, env={"GH_TOKEN": "gho_from_shell"})
         self.assertIn("--env=GH_TOKEN", argv)
         self.assertNotIn("gho_from_shell", " ".join(argv))
@@ -92,13 +92,13 @@ class GitHubCredentialGatingTests(unittest.TestCase):
     def test_launch_flag_denies_even_when_configured_on(self):
         from agent_box import launch_options
         config = Config()
-        config.github.gh_token = True
+        config.credentials.github.token = True
         argv = _argv(launch_options.apply(config, {"gh-token": False}), env={"GH_TOKEN": "gho_from_shell"})
         self.assertFalse([f for f in _env_flags(argv) if "GH_TOKEN" in f])
 
     def test_no_host_token_available_forwards_nothing(self):
         config = Config()
-        config.github.gh_token = True
+        config.credentials.github.token = True
         self.assertFalse([f for f in _env_flags(_argv(config, gh_token="")) if "GH_TOKEN" in f])
 
 
@@ -110,7 +110,7 @@ class ProviderEnvTests(unittest.TestCase):
 
     def test_api_keys_forwarded_when_enabled(self):
         config = Config()
-        config.providers.api_keys = True
+        config.agents.host_env.api_keys = True
         argv = _argv(config, env={"ANTHROPIC_API_KEY": "sk-test"})
         self.assertIn("--env=ANTHROPIC_API_KEY", argv)
         # By name, never by value: the argv is world-readable through /proc.
@@ -122,7 +122,7 @@ class ProviderEnvTests(unittest.TestCase):
 
     def test_transport_settings_withheld_when_disabled(self):
         config = Config()
-        config.providers.transport = False
+        config.agents.host_env.transport = False
         argv = _argv(config, env={"HTTPS_PROXY": "http://proxy:3128"})
         self.assertNotIn("--env=HTTPS_PROXY", argv)
 
@@ -170,14 +170,14 @@ class GitSeedingTests(unittest.TestCase):
 
     def test_full_copy_is_opt_in_and_brings_everything(self):
         config = Config()
-        config.git.full_config = True
+        config.credentials.git.full_config = True
         text = (self._seed(config) / "git/config").read_text()
         self.assertIn("sekrit", text)
         self.assertIn("helper = store", text)
 
     def test_both_off_leaves_an_empty_directory(self):
         config = Config()
-        config.git.identity = False
+        config.credentials.git.identity = False
         state = self._seed(config)
         self.assertTrue((state / "git").is_dir())
         self.assertEqual(list((state / "git").iterdir()), [])
@@ -193,7 +193,7 @@ class GitSeedingTests(unittest.TestCase):
 
     def test_gh_config_copied_when_enabled(self):
         config = Config()
-        config.github.gh_config = True
+        config.credentials.github.config = True
         self.assertIn("gho_secret", (self._seed(config) / "gh/hosts.yml").read_text())
 
 
@@ -211,7 +211,7 @@ class NotificationCredentialMountTests(unittest.TestCase):
         project.mkdir()
         state = root / "state"
         config_file = root / "config.json"
-        config_file.write_text('{"notifications": {"telegram_token": "123:SECRETTOKEN"}}')
+        config_file.write_text('{"host": {"notifications": {"telegram_token": "123:SECRETTOKEN"}}}')
         with mock.patch.object(runtime, "STATE_ROOT", state), \
              mock.patch.object(runtime, "BUILD_STATE", state / "build"), \
              mock.patch.object(runtime, "NOTIFY_STATE_ROOT", state / "notify"), \
@@ -241,9 +241,9 @@ class NotificationCredentialMountTests(unittest.TestCase):
 
     def test_enabled_notifications_mount_the_credential_file_read_only(self):
         config = Config()
-        config.notifications.enabled = True
-        config.notifications.telegram_token = "123:SECRETTOKEN"
-        config.notifications.telegram_chat_id = "555"
+        config.host.notifications.enabled = True
+        config.host.notifications.telegram_token = "123:SECRETTOKEN"
+        config.host.notifications.telegram_chat_id = "555"
         flags, state = self._mounts(config)
         mount = next(f for f in flags if "notify.json" in f)
         self.assertIn("ro=true", mount)
@@ -255,9 +255,9 @@ class NotificationCredentialMountTests(unittest.TestCase):
 
     def test_callers_that_cannot_send_notifications_can_skip_the_credential(self):
         config = Config()
-        config.notifications.enabled = True
-        config.notifications.telegram_token = "123:SECRETTOKEN"
-        config.notifications.telegram_chat_id = "555"
+        config.host.notifications.enabled = True
+        config.host.notifications.telegram_token = "123:SECRETTOKEN"
+        config.host.notifications.telegram_chat_id = "555"
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         root = Path(tmp.name)
@@ -286,9 +286,9 @@ class NotificationCredentialMountTests(unittest.TestCase):
 
     def test_turning_notifications_off_removes_a_previously_written_file(self):
         config = Config()
-        config.notifications.enabled = True
-        config.notifications.telegram_token = "123:SECRETTOKEN"
-        config.notifications.telegram_chat_id = "555"
+        config.host.notifications.enabled = True
+        config.host.notifications.telegram_token = "123:SECRETTOKEN"
+        config.host.notifications.telegram_chat_id = "555"
         flags, state = self._mounts(config)
         self.assertTrue((state / "runtime/notify.json").exists())
         credentials = state / "runtime/notify.json"

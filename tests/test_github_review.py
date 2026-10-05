@@ -107,7 +107,7 @@ class CloudReviewTests(LandingCase):
         self.config.workflow.merge_mode = "github"
         self.config.workflow.review.policy = "always"
         self.config.workflow.review.github_provider = "claude"
-        self.config.github.gh_token = True
+        self.config.credentials.github.token = True
         self.action = self.root / ".github/workflows/claude.yml"
         self.action.parent.mkdir(parents=True, exist_ok=True)
         self.comments = []
@@ -663,7 +663,7 @@ class CloudReviewTests(LandingCase):
 
     def test_a_disabled_github_integration_refuses_before_any_call(self):
         """The bot lives on GitHub; without that integration there is nothing to ask."""
-        self.config.github.gh_token = False
+        self.config.credentials.github.token = False
         with self.assertRaisesRegex(AgentBoxError, "Enable the GitHub integration"):
             self.review()
         self.assertIsNone(self.published())

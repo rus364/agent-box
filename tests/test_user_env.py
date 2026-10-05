@@ -18,7 +18,7 @@ from agent_box.config import Config, EnvConfig, parse_env_spec
 
 def _config(forward=(), assignments=None):
     config = Config()
-    config.env = EnvConfig(forward=list(forward), set=dict(assignments or {}))
+    config.box.env = EnvConfig(forward=list(forward), set=dict(assignments or {}))
     return config
 
 
@@ -82,52 +82,52 @@ class InvocationEnvTests(unittest.TestCase):
     """
 
     def test_a_flag_sets_a_variable_for_this_launch(self):
-        merged = Config().env.overlay([parse_env_spec("TZ=Europe/Moscow")], {})
+        merged = Config().box.env.overlay([parse_env_spec("TZ=Europe/Moscow")], {})
         self.assertEqual(merged.set, {"TZ": "Europe/Moscow"})
 
     def test_a_bare_flag_name_forwards_by_name(self):
         """The secret-safe form: the value never enters the argv."""
-        merged = Config().env.overlay([parse_env_spec("MY_TOKEN")], {})
+        merged = Config().box.env.overlay([parse_env_spec("MY_TOKEN")], {})
         self.assertEqual(merged.forward, ["MY_TOKEN"])
         self.assertEqual(merged.set, {})
 
     def test_the_shell_prefix_namespace_is_honoured(self):
-        merged = Config().env.overlay([], {"AGENT_BOX_ENV_DATABASE_URL": "postgres://x"})
+        merged = Config().box.env.overlay([], {"AGENT_BOX_ENV_DATABASE_URL": "postgres://x"})
         self.assertEqual(merged.set, {"DATABASE_URL": "postgres://x"})
 
     def test_an_unrelated_host_variable_is_never_picked_up(self):
-        merged = Config().env.overlay([], {"DATABASE_URL": "postgres://x", "HOME": "/root"})
+        merged = Config().box.env.overlay([], {"DATABASE_URL": "postgres://x", "HOME": "/root"})
         self.assertEqual(merged.set, {})
         self.assertEqual(merged.forward, [])
 
     def test_a_flag_beats_the_shell_prefix(self):
-        merged = Config().env.overlay(
+        merged = Config().box.env.overlay(
             [parse_env_spec("TZ=UTC")], {"AGENT_BOX_ENV_TZ": "Europe/Moscow"})
         self.assertEqual(merged.set, {"TZ": "UTC"})
 
     def test_an_invocation_value_beats_the_stored_lists(self):
         config = _config(assignments={"TZ": "UTC"})
-        merged = config.env.overlay([parse_env_spec("TZ=Europe/Moscow")], {})
+        merged = config.box.env.overlay([parse_env_spec("TZ=Europe/Moscow")], {})
         self.assertEqual(merged.set, {"TZ": "Europe/Moscow"})
 
     def test_forwarding_a_name_that_is_stored_as_an_assignment_replaces_it(self):
         """The two lists must never claim the same name at once."""
         config = _config(assignments={"TOKEN": "written-down"})
-        merged = config.env.overlay([parse_env_spec("TOKEN")], {})
+        merged = config.box.env.overlay([parse_env_spec("TOKEN")], {})
         self.assertEqual(merged.forward, ["TOKEN"])
         self.assertEqual(merged.set, {})
 
     def test_setting_a_name_that_is_stored_as_a_forward_replaces_it(self):
         config = _config(forward=["TOKEN"])
-        merged = config.env.overlay([parse_env_spec("TOKEN=literal")], {})
+        merged = config.box.env.overlay([parse_env_spec("TOKEN=literal")], {})
         self.assertEqual(merged.forward, [])
         self.assertEqual(merged.set, {"TOKEN": "literal"})
 
     def test_the_overlay_leaves_the_stored_configuration_alone(self):
         config = _config(forward=["A"], assignments={"B": "1"})
-        config.env.overlay([parse_env_spec("C=3")], {})
-        self.assertEqual(config.env.forward, ["A"])
-        self.assertEqual(config.env.set, {"B": "1"})
+        config.box.env.overlay([parse_env_spec("C=3")], {})
+        self.assertEqual(config.box.env.forward, ["A"])
+        self.assertEqual(config.box.env.set, {"B": "1"})
 
     def test_a_malformed_flag_is_rejected(self):
         for spec in ("=value", "not a name=1", "2LEADING=1", ""):
@@ -136,13 +136,13 @@ class InvocationEnvTests(unittest.TestCase):
                     parse_env_spec(spec)
 
     def test_a_malformed_namespace_entry_is_ignored(self):
-        merged = Config().env.overlay([], {"AGENT_BOX_ENV_": "x", "AGENT_BOX_ENV_2BAD": "y"})
+        merged = Config().box.env.overlay([], {"AGENT_BOX_ENV_": "x", "AGENT_BOX_ENV_2BAD": "y"})
         self.assertEqual(merged.set, {})
 
     def test_the_request_channel_does_not_leak_into_the_session(self):
         """AGENT_BOX_ENV_FOO asks for FOO; the container gets FOO, not both."""
         config = Config()
-        config.env = config.env.overlay([], {"AGENT_BOX_ENV_FOO": "bar"})
+        config.box.env = config.box.env.overlay([], {"AGENT_BOX_ENV_FOO": "bar"})
         flags = runtime.user_env(config)
         self.assertEqual(flags, ["--env=FOO=bar"])
 
@@ -171,12 +171,12 @@ class EnvConfigSchemaTests(unittest.TestCase):
     rather than carried to Podman, where it would define something else."""
 
     def test_defaults_are_empty(self):
-        self.assertEqual(Config().env.forward, [])
-        self.assertEqual(Config().env.set, {})
+        self.assertEqual(Config().box.env.forward, [])
+        self.assertEqual(Config().box.env.set, {})
 
     def test_round_trips(self):
         config = _config(forward=["A"], assignments={"B": "2"})
-        loaded = Config.from_dict(config.to_dict()).env
+        loaded = Config.from_dict(config.to_dict()).box.env
         self.assertEqual(loaded.forward, ["A"])
         self.assertEqual(loaded.set, {"B": "2"})
 
@@ -198,8 +198,8 @@ class EnvConfigSchemaTests(unittest.TestCase):
         self.assertEqual(loaded.set, {})
 
     def test_a_config_file_without_the_section_loads(self):
-        config = Config.from_dict({"version": 1, "github": {}})
-        self.assertEqual(config.env.forward, [])
+        config = Config.from_dict({"version": 1, "credentials": {"github": {}}})
+        self.assertEqual(config.box.env.forward, [])
 
 
 if __name__ == "__main__":

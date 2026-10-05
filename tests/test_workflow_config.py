@@ -67,15 +67,15 @@ class ConfigShowTests(unittest.TestCase):
         """Tokens, literal env values and a usage command line may all carry credentials."""
         from agent_box import cli
         config = Config.from_dict({
-            "notifications": {"telegram_token": "SECRET-telegram"},
+            "host": {"notifications": {"telegram_token": "SECRET-telegram"}},
             "tracker": {"connections": {"vikunja": {"url": "https://tasks.example", "token": "SECRET-tracker"}}},
-            "env": {"forward": ["FORWARDED"], "set": {"LITERAL": "SECRET-env"}},
-            "claude": {"statusline": {"command": "curl -H 'Authorization: Bearer SECRET-usage'"}},
-            "external_providers": {"api": {
+            "box": {"env": {"forward": ["FORWARDED"], "set": {"LITERAL": "SECRET-env"}}},
+            "agents": {"claude": {"statusline": {"command": "curl -H 'Authorization: Bearer SECRET-usage'"}},
+                       "external_apis": {"api": {
                 "enabled": True, "api_key": "SECRET-key",
                 "codex": {"url": "https://api.example/v1", "env": {"ENDPOINT_ENV": "SECRET-endpoint-env"},
                           "provider_options": {"http_headers": {"X-Key": "SECRET-header"}},
-                          "models": {"small": {"env": {"MODEL_ENV": "SECRET-model-env"}}}}}}})
+                          "models": {"small": {"env": {"MODEL_ENV": "SECRET-model-env"}}}}}}}})
         output = io.StringIO()
         with contextlib.redirect_stdout(output), patch.object(cli, 'effective_config', return_value=config), \
              patch.object(cli, '_statusline_note', return_value=''), \
@@ -83,9 +83,9 @@ class ConfigShowTests(unittest.TestCase):
             cli.config_show()
         self.assertNotIn("SECRET", output.getvalue())
         rows = show_paths(output.getvalue())
-        self.assertEqual(rows["env.forward"], "FORWARDED")
-        self.assertEqual(rows["env.set"], "LITERAL=<configured>")
-        self.assertEqual(rows["claude.statusline.command"], "(set)")
+        self.assertEqual(rows["box.env.forward"], "FORWARDED")
+        self.assertEqual(rows["box.env.set"], "LITERAL=<configured>")
+        self.assertIn("command (set)", rows["agents.claude.statusline"])
         self.assertIn("token (set)", rows["tracker.connections.vikunja"])
 
 
@@ -101,7 +101,7 @@ class WorkflowConfigTests(unittest.TestCase):
                 config = Config.from_dict({"workflow": {"enabled": True,
                     "worker": {"tiers": {tier: models[:1]}},
                     "scout": {"models": models}, "review": {"models": models[::-1]}}})
-                config.notifications.telegram_token = "host-secret"
+                config.host.notifications.telegram_token = "host-secret"
                 path = Path(directory) / "global.json"
                 save_config(config, path)
                 loaded = load_config(path)
@@ -153,7 +153,7 @@ class WorkflowConfigTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             artifact = Path(directory) / "runtime.json"
             artifact.write_text(json.dumps({"workflow": {"enabled": True, "merge_mode": "local"},
-                                            "claude": {"remote_control": True},
+                                            "agents": {"claude": {"remote_control": True}},
                                             "launch": {"push": False}}))
             output = io.StringIO()
             with patch.dict(os.environ, {"AGENT_BOX_RUNTIME_CONFIG": str(artifact)}), \
@@ -163,28 +163,28 @@ class WorkflowConfigTests(unittest.TestCase):
                 cli.config_show()
             rows = show_paths(output.getvalue())
             self.assertEqual(rows["workflow.merge_mode"], "local")
-            self.assertNotIn("notifications.enabled", rows)
-            self.assertEqual(rows["claude.remote_control"], "on")
-            self.assertNotIn("statusline.enabled", rows)
-            self.assertNotIn("default_agent", rows)
+            self.assertNotIn("host.notifications.enabled", rows)
+            self.assertEqual(rows["agents.claude.remote_control"], "on")
+            self.assertNotIn("agents.claude.statusline.enabled", rows)
+            self.assertNotIn("agents.default", rows)
             self.assertIn(str(artifact), output.getvalue())
 
     def test_show_from_a_snapshot_keeps_free_keyed_entries_but_not_foreign_accounts(self):
         """A project's own mirror or variable is effective even when an older or another project's
         snapshot never rendered it; a tracker account the snapshot does not carry is not this session's."""
         config = Config.from_dict({
-            "tools": {"k3s": {"registry_mirrors": {"docker.io": ["https://mirror.example"]}}},
-            "env": {"set": {"PROJECT_VAR": "value"}},
+            "box": {"k3s": {"registry_mirrors": {"docker.io": ["https://mirror.example"]}},
+                    "env": {"set": {"PROJECT_VAR": "value"}}},
             "tracker": {"connections": {"vikunja": {"url": "https://tasks.example"},
                                         "yandex": {"url": "https://other.example"}}}})
         with tempfile.TemporaryDirectory() as directory:
             artifact = Path(directory) / "runtime.json"
-            artifact.write_text(json.dumps({"tools": {"k3s": {"registry_mirrors": {}}}, "env": {"set": {}},
+            artifact.write_text(json.dumps({"box": {"k3s": {"registry_mirrors": {}}, "env": {"set": {}}},
                                             "tracker": {"connections": {"vikunja": {"url": "https://tasks.example"}}}}))
             with patch.dict(os.environ, {"AGENT_BOX_RUNTIME_CONFIG": str(artifact)}):
                 rows = shown(config)
-        self.assertEqual(rows["tools.k3s.registry_mirrors"], 'docker.io=["https://mirror.example"]')
-        self.assertEqual(rows["env.set"], "PROJECT_VAR=<configured>")
+        self.assertEqual(rows["box.k3s.registry_mirrors"], 'docker.io=["https://mirror.example"]')
+        self.assertEqual(rows["box.env.set"], "PROJECT_VAR=<configured>")
         self.assertIn("tracker.connections.vikunja", rows)
         self.assertNotIn("tracker.connections.yandex", rows)
 

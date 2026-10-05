@@ -208,8 +208,8 @@ class DelegateCommandTests(WorkflowCase):
 
     def test_inspect_exposes_the_root_native_wait_policy(self):
         """The coordinator can follow the global switch without passing it to delegates."""
-        self.config.codex.native_agent_wait.enabled = False
-        self.config.codex.native_agent_wait.interval_seconds = 900
+        self.config.agents.codex.native_agent_wait.enabled = False
+        self.config.agents.codex.native_agent_wait.interval_seconds = 900
         summary = self.run_workflow("inspect", "1")["configuration"]
         self.assertEqual(summary["native_agent_wait"], {"enabled": False, "interval_seconds": 900})
 

@@ -104,9 +104,9 @@ class ExternalRoutingTests(unittest.TestCase):
         config = external_config()
         route = {'provider': 'codex', 'model': 'external-small', 'effort': 'high',
                  **external_launch.route_identity(config, 'deepseek', 'codex')}
-        config.external_providers['deepseek'].api_key = 'rotated-key'
+        config.agents.external_apis['deepseek'].api_key = 'rotated-key'
         self.assertEqual(route['api_fingerprint'], external_launch.route_identity(config, 'deepseek', 'codex')['api_fingerprint'])
-        config.external_providers['deepseek'].codex.url = 'https://changed.example/v1'
+        config.agents.external_apis['deepseek'].codex.url = 'https://changed.example/v1'
         with tempfile.TemporaryDirectory() as tmp, \
              patch.object(provider_runner, 'WORKFLOW_STATE', Path(tmp)), \
              patch('agent_box.config.effective_config', return_value=config), \
@@ -142,7 +142,7 @@ class ExternalDelegateTests(unittest.TestCase):
         fixture = workflow_fixtures.WorkflowCase()
         fixture.setUp()
         self.addCleanup(fixture.doCleanups)
-        fixture.config.external_providers = external_config().external_providers
+        fixture.config.agents.external_apis = external_config().agents.external_apis
         fixture.config.workflow.worker.tiers['1'] = [candidate()]
         def run(route, *args, **kwargs):
             self.assertEqual(route['api_provider'], 'deepseek')

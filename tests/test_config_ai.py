@@ -74,14 +74,14 @@ class ConfigAiTests(unittest.TestCase):
         self.assertFalse(self.proposal.exists())
 
     def test_a_pending_proposal_is_offered_first_and_the_session_exit_code_survives(self):
-        config_proposal.save(self.proposal, {"set": {"tools.browser": True}, "reset": []})
+        config_proposal.save(self.proposal, {"set": {"box.tools.browser": True}, "reset": []})
         self.answers[:] = ["n"]
         self.launch.side_effect = SystemExit(3)
         with self.assertRaises(SystemExit) as exited:
             self.run_ai()
         self.assertEqual(exited.exception.code, 3)
         self.assertFalse(self.proposal.exists(), "declined before the session")
-        self.assertFalse(load_config().tools.browser())
+        self.assertFalse(load_config().box.tools.browser())
         self.apply.assert_not_called()
 
     def test_an_unreadable_proposal_is_reported_and_the_session_still_starts(self):

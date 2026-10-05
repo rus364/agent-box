@@ -15,21 +15,21 @@ from agent_box.config import TOOL_GROUPS, Config, ToolsConfig
 
 def _config(**groups: bool) -> Config:
     config = Config()
-    config.tools.groups.update(groups)
+    config.box.tools.groups.update(groups)
     return config
 
 
 class ToolsConfigSchemaTests(unittest.TestCase):
     def test_the_defaults_favour_small_and_widely_useful(self):
-        self.assertEqual(Config().tools.enabled_groups(), ["analysis", "kubernetes"])
+        self.assertEqual(Config().box.tools.enabled_groups(), ["analysis", "kubernetes"])
 
     def test_the_large_groups_are_off_until_asked_for(self):
-        self.assertFalse(Config().tools.groups["virtualization"])
-        self.assertFalse(Config().tools.groups["browser"])
+        self.assertFalse(Config().box.tools.groups["virtualization"])
+        self.assertFalse(Config().box.tools.groups["browser"])
 
     def test_round_trips(self):
         config = _config(virtualization=True, kubernetes=False)
-        loaded = Config.from_dict(config.to_dict()).tools
+        loaded = Config.from_dict(config.to_dict()).box.tools
         self.assertTrue(loaded.groups["virtualization"])
         self.assertFalse(loaded.groups["kubernetes"])
 
@@ -40,13 +40,13 @@ class ToolsConfigSchemaTests(unittest.TestCase):
         self.assertFalse(loaded.groups["analysis"])
 
     def test_a_config_file_without_the_section_gets_the_defaults(self):
-        config = Config.from_dict({"version": 1, "github": {}})
-        self.assertEqual(config.tools.groups, TOOL_GROUPS)
+        config = Config.from_dict({"version": 1, "credentials": {"github": {}}})
+        self.assertEqual(config.box.tools.groups, TOOL_GROUPS)
 
     def test_enabled_groups_are_ordered(self):
         """The label is compared as text, so its order cannot be incidental."""
         config = _config(virtualization=True, browser=True)
-        self.assertEqual(config.tools.enabled_groups(), sorted(config.tools.enabled_groups()))
+        self.assertEqual(config.box.tools.enabled_groups(), sorted(config.box.tools.enabled_groups()))
 
 
 class BuildArgumentTests(unittest.TestCase):

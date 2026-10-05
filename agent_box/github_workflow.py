@@ -182,7 +182,7 @@ def _current_head(root, pr):
 
 def _operate(args, root, config, adapter, task, parent, info, saved, tasks):
     from .workflow import delta_review, evidence, integrated_parent, review_route, save_evidence, scope
-    if not (config.github.gh_token or config.github.gh_config):
+    if not (config.credentials.github.token or config.credentials.github.config):
         raise AgentBoxError("Enable the GitHub integration in agent-box config before workflow GitHub actions")
     if task.id != parent.id:
         raise AgentBoxError("Create and land one PR for the parent task")

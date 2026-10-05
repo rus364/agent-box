@@ -23,8 +23,8 @@ X11/Wayland forwarding.
 
 ## Enabling it
 
-Turn on the **`browser` tool group** under **Tools** in `agent-box config`
-(`tools.browser`). Chromium and Playwright MCP are roughly 400 MB, so they are
+Turn on the **`browser` tool group** under **Workspace box → Image tools** in
+`agent-box config` (`box.tools.browser`). Chromium and Playwright MCP are roughly 400 MB, so they are
 built only when asked for. The group both builds them into the image and wires
 the MCP server into every containerized Claude and Codex session; a separate
 switch for the server would isolate nothing, because an agent can drive the
@@ -116,7 +116,7 @@ browser integration: disabled (turn on the browser tool group in 'agent-box conf
 ## Troubleshooting
 
 **The agent says it has no browser tools.** Check `agent-box config show`:
-`tools` → `browser` must be `on`, and `tools` must not say the image lacks it. The server
+`box.tools.browser` must be `on`, and `box.tools` must not say the image lacks it. The server
 is added per invocation, so a session started before you enabled it, or with
 `--no-browser`, keeps running without one — start a new session.
 

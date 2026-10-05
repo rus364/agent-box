@@ -23,9 +23,9 @@ from test_runtime import IsolatedRuntimeTest
 
 def k3s_config(**settings) -> Config:
     config = Config()
-    config.tools.k3s.enabled = True
+    config.box.k3s.enabled = True
     for key, value in settings.items():
-        setattr(config.tools.k3s, key, value)
+        setattr(config.box.k3s, key, value)
     return config
 
 
@@ -177,7 +177,7 @@ class ReleaseTests(K3sRuntimeTest):
         """Even a throwaway cluster: switching it off is not asking for its data to go."""
         self.started_once()
         config = Config()
-        config.tools.k3s.persistent_data = False
+        config.box.k3s.persistent_data = False
         self.release(config)
         settings = runtime.k3s.stop.call_args.args[1]
         self.assertTrue(settings.persistent_data)
@@ -237,14 +237,14 @@ class BuildAndWarningTests(K3sRuntimeTest):
 
     def test_a_cluster_without_kubectl_in_the_image_is_reported(self):
         config = k3s_config()
-        config.tools.groups["kubernetes"] = False
+        config.box.tools.groups["kubernetes"] = False
         self.assertEqual(len(runtime.k3s_warnings(config)), 1)
         self.assertEqual(runtime.k3s_warnings(k3s_config()), [])
 
     def test_config_show_carries_the_warning(self):
         """``config show`` is where a user checks a setting before launching."""
         config = k3s_config()
-        config.tools.groups["kubernetes"] = False
+        config.box.tools.groups["kubernetes"] = False
         with mock.patch.object(cli, "effective_config", return_value=config), \
                 redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as err:
             cli.config_show()

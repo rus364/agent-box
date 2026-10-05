@@ -108,14 +108,14 @@ class NestedRuntimeTests(IsolatedRuntimeTest):
                      "idMappings": {name: [{"container_id": 0, "size": count}]
                                     for name, count in (("uidmap", 65537), ("gidmap", 65536))}}
         self.config = Config()
-        self.config.tools.groups["podman"] = True
+        self.config.box.tools.groups["podman"] = True
         self.workspace = Workspace(Path("/project"), Path("/project"))
         self.identity = HostIdentity("tester", 1000, 1000, Path("/home/tester"))
 
     def test_disabled_group_does_not_probe_podman_or_widen_access(self):
         """An installed Podman or TUN device must never opt the user in."""
         config = Config()
-        self.assertFalse(config.tools.groups["podman"])
+        self.assertFalse(config.box.tools.groups["podman"])
         with mock.patch.object(nested_podman, "host_info") as info:
             self.assertEqual(runtime.nested_podman_args(config, self.workspace), [])
             self.assertEqual(runtime.nested_podman_build_args(config, self.identity), [])
@@ -142,7 +142,7 @@ class NestedRuntimeTests(IsolatedRuntimeTest):
              mock.patch.object(runtime.subprocess, "call", return_value=0) as call:
             runtime.build_image(Path("/source"), refresh=False, no_cache=False)
             self.assertIn("TOOLS_PODMAN=1", call.call_args.args[0])
-            self.assertTrue(runtime.launch_config().tools.groups["podman"])
+            self.assertTrue(runtime.launch_config().box.tools.groups["podman"])
 
     def test_enabled_lifetime_preserves_nnp_and_only_adds_required_access(self):
         """Nested support must not grant SYS_ADMIN, privileged mode or a host socket."""

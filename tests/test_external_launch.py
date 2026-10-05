@@ -40,7 +40,7 @@ class ExternalProcessTests(unittest.TestCase):
         for search in (None, 'live', 'cached'):
             with self.subTest(search=search), tempfile.TemporaryDirectory() as temp:
                 raw = external_config().to_dict()
-                endpoint = raw['external_providers']['deepseek']['codex']
+                endpoint = raw['agents']['external_apis']['deepseek']['codex']
                 if search:
                     endpoint['config'] = {'web_search': search, 'model_context_window': 64000,
                                           'model_auto_compact_token_limit': 48000}
@@ -63,7 +63,7 @@ class ExternalProcessTests(unittest.TestCase):
         them passes validation.
         """
         raw = external_config().to_dict()
-        endpoint = raw['external_providers']['deepseek']['codex']
+        endpoint = raw['agents']['external_apis']['deepseek']['codex']
         endpoint['config'] = {'🚀': 'del\x7fhere', 'web_search': 'live'}
         with tempfile.TemporaryDirectory() as temp:
             command, _ = ext.prepare(['codex'], 'deepseek', 'codex', Config.from_dict(raw), temp, {})
@@ -76,7 +76,7 @@ class ExternalProcessTests(unittest.TestCase):
     def test_native_options_preserve_auth_and_keep_header_values_out_of_argv(self):
         """Native search/transport settings must work without touching subscription auth."""
         raw = external_config().to_dict()
-        endpoint = raw['external_providers']['deepseek']['codex']
+        endpoint = raw['agents']['external_apis']['deepseek']['codex']
         endpoint['provider_options'] = {'query_params': {'api-version': 'test'},
                                         'http_headers': {'X-Tenant': 'private-header'},
                                         'stream_idle_timeout_ms': 12345}
@@ -110,7 +110,7 @@ class ExternalProcessTests(unittest.TestCase):
                              ('config', {'web_search': None})]:
             with self.subTest(field=field, value=value), self.assertRaises(AgentBoxError):
                 raw = external_config().to_dict()
-                raw['external_providers']['deepseek']['codex'][field] = value
+                raw['agents']['external_apis']['deepseek']['codex'][field] = value
                 Config.from_dict(raw)
         with self.assertRaises(AgentBoxError):
             ext.selected_model(external_config(), 'deepseek', 'codex',
@@ -119,7 +119,7 @@ class ExternalProcessTests(unittest.TestCase):
     def test_native_effort_default_still_obeys_declared_model_support(self):
         """A native config default must not bypass the model's supported effort list."""
         raw = external_config().to_dict()
-        endpoint = raw['external_providers']['deepseek']['codex']
+        endpoint = raw['agents']['external_apis']['deepseek']['codex']
         endpoint['config'] = {'model_reasoning_effort': 'high'}
         endpoint['models']['external-small']['supported_efforts'] = ['low']
         with self.assertRaisesRegex(AgentBoxError, 'default effort is not supported'):
@@ -247,10 +247,10 @@ class ExternalProcessTests(unittest.TestCase):
                 ext.selected_model(config, 'deepseek', cli, args)
         self.assertEqual(ext.selected_model(config, 'deepseek', 'codex', ['-mother']), 'other')
         self.assertEqual(ext.selected_model(config, 'deepseek', 'claude', []), 'external-small')
-        config.external_providers['deepseek'].claude.models = {}
+        config.agents.external_apis['deepseek'].claude.models = {}
         with self.assertRaisesRegex(AgentBoxError, 'requires a model ID'):
             ext.selected_model(config, 'deepseek', 'claude', [])
-        config.external_providers['deepseek'].enabled = False
+        config.agents.external_apis['deepseek'].enabled = False
         with self.assertRaisesRegex(AgentBoxError, 'disabled'):
             ext.selected_model(config, 'deepseek', 'codex', [])
 
@@ -294,7 +294,7 @@ class ExternalRuntimeTests(IsolatedRuntimeTest):
     def test_ext_host_and_container_bypass_rc_while_builtin_launch_keeps_it(self):
         """An occupied RC slot must never be inspected by the external launcher."""
         config = external_config()
-        config.codex.remote_control = config.claude.remote_control = True
+        config.agents.codex.remote_control = config.agents.claude.remote_control = True
         for cli in ('codex', 'claude'):
             for host in (True, False):
                 with self.subTest(cli=cli, host=host), \
@@ -328,14 +328,14 @@ class ExternalRuntimeTests(IsolatedRuntimeTest):
     def test_disabled_connections_are_absent_from_private_session_snapshot(self):
         """Opt-out definitions must not expose unused credentials to the workspace."""
         config = external_config()
-        config.external_providers['disabled'] = Config.from_dict({'external_providers': {
-            'disabled': {'api_key': 'unused-secret'}}}).external_providers['disabled']
+        config.agents.external_apis['disabled'] = Config.from_dict({'agents': {'external_apis': {
+            'disabled': {'api_key': 'unused-secret'}}}}).agents.external_apis['disabled']
         with tempfile.TemporaryDirectory() as tmp:
             runtime.sync_tracker_runtime(config, Path(tmp), policy=True)
             path = Path(tmp) / 'config.json'
             rendered = path.read_text()
             self.assertNotIn('unused-secret', rendered)
-            self.assertEqual(set(json.loads(rendered)['external_providers']), {'deepseek'})
+            self.assertEqual(set(json.loads(rendered)['agents']['external_apis']), {'deepseek'})
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
 
     def test_invalid_ext_is_rejected_before_snapshot_or_process(self):
@@ -352,7 +352,7 @@ class ExternalRuntimeTests(IsolatedRuntimeTest):
     def test_container_snapshots_map_host_apis_without_changing_host_definitions(self):
         """A shared provider definition must reach the host service in either launch mode."""
         config = external_config()
-        spec = config.external_providers['deepseek']
+        spec = config.agents.external_apis['deepseek']
         spec.codex.url = 'http://127.0.0.1:8123/v1'
         spec.claude.url = 'http://localhost:8124/anthropic'
         with tempfile.TemporaryDirectory() as tmp:

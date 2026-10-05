@@ -77,7 +77,7 @@ class CleanupTests(unittest.TestCase):
 
     def github_proof(self):
         self.config.workflow.merge_mode = 'github'
-        self.config.github.gh_token = True
+        self.config.credentials.github.token = True
         pr = {'number': 9, 'headRefName': self.branch, 'headRefOid': self.head,
               'baseRefName': 'main', 'mergedAt': '2026-09-08T12:00:00Z',
               'mergeCommit': {'oid': gw.head_sha(self.root)}, 'state': 'MERGED'}
@@ -230,7 +230,7 @@ class CleanupTests(unittest.TestCase):
             for enabled in (False, True):
                 with self.subTest(mode=mode, cleanup=enabled):
                     self.config.workflow.merge_mode = mode
-                    self.config.github.gh_token = True
+                    self.config.credentials.github.token = True
                     self.config.workflow.cleanup_local_branches = enabled
                     self.config.workflow.cleanup_remote_branches = enabled
                     with patch.object(github, 'gh') as gh:
@@ -346,7 +346,7 @@ class CleanupTests(unittest.TestCase):
             gw.git(root, 'update-ref', '-d', self.ref)
         gw.git(self.root, 'update-ref', '-d', 'refs/remotes/origin/' + self.branch)
         self.config.workflow.merge_mode = 'github'
-        self.config.github.gh_token = False
+        self.config.credentials.github.token = False
         original_remote = cleanup._remote_refs
         reason = 'Task 8 is Doing, not Done'
         for scenario in ('unique', 'ambiguous-local', 'ambiguous-remote', 'absent', 'remote-error'):
@@ -959,7 +959,7 @@ class CleanupTests(unittest.TestCase):
         with patch.object(github, 'gh', return_value=[{'number': 9, 'state': 'MERGED', 'headRefName': self.branch},
                                                     {'number': 10, 'state': 'OPEN', 'headRefName': self.branch}]):
             self.assertIn('ambiguous', self.run_cleanup()['local']['reason'])
-        self.config.github.gh_token = False
+        self.config.credentials.github.token = False
         with patch.object(github, 'gh') as gh:
             self.assertIn('Enable GitHub', self.run_cleanup()['remote']['reason'])
         gh.assert_not_called()

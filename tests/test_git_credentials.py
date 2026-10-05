@@ -46,7 +46,7 @@ class SeedGitConfigCredentialHelperTests(unittest.TestCase):
             repo.mkdir()
             subprocess.run(["git", "init", "-q", str(repo)], check=True)
             config = Config()
-            config.git.identity = False
+            config.credentials.git.identity = False
             cases = {
                 "git@github.com:owner/repo.git": "https://github.com/owner/repo.git",
                 "ssh://git@github.com/owner/repo.git": "https://github.com/owner/repo.git",
@@ -54,7 +54,7 @@ class SeedGitConfigCredentialHelperTests(unittest.TestCase):
                 "git@github.com.evil:owner/repo.git": "git@github.com.evil:owner/repo.git",
             }
             for enabled in (False, True):
-                config.github.gh_token = enabled
+                config.credentials.github.token = enabled
                 runtime.seed_git_config(target, config)
                 env = dict(os.environ, GIT_CONFIG_GLOBAL=str(target / "config"), GIT_CONFIG_NOSYSTEM="1")
                 for original, rewritten in cases.items():
@@ -71,7 +71,7 @@ class SeedGitConfigCredentialHelperTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "git"
             config = Config()
-            config.github.gh_token = True
+            config.credentials.github.token = True
             runtime.seed_git_config(target, config)
             values = _git_config_get_all(target / "config", "credential.https://github.com.helper")
             self.assertEqual(values, ["!gh auth git-credential"])
@@ -80,7 +80,7 @@ class SeedGitConfigCredentialHelperTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "git"
             config = Config()
-            config.github.gh_token = False
+            config.credentials.github.token = False
             runtime.seed_git_config(target, config)
             config_file = target / "config"
             if config_file.exists():
@@ -91,7 +91,7 @@ class SeedGitConfigCredentialHelperTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "git"
             config = Config()
-            config.github.gh_token = True
+            config.credentials.github.token = True
             runtime.seed_git_config(target, config)
             content = (target / "config").read_text()
             self.assertIn("https://github.com", content)
@@ -112,7 +112,7 @@ class SeedGitConfigCredentialHelperTests(unittest.TestCase):
                 "\thelper = !/usr/bin/gh auth git-credential\n"
             )
             config = Config()
-            config.github.gh_token = True
+            config.credentials.github.token = True
             with mock.patch.object(runtime, "seed_state_dir"):  # keep our hand-seeded file as-is
                 runtime.seed_git_config(target, config)
             values = _git_config_get_all(config_file, "credential.https://github.com.helper")
@@ -122,8 +122,8 @@ class SeedGitConfigCredentialHelperTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "git"
             config = Config()
-            config.git.full_config = True
-            config.github.gh_token = True
+            config.credentials.git.full_config = True
+            config.credentials.github.token = True
             with mock.patch.object(runtime, "HOST_HOME", Path(tmp)):
                 (Path(tmp) / ".gitconfig").write_text("[user]\n\tname = Someone\n")
                 runtime.seed_git_config(target, config)
@@ -141,7 +141,7 @@ class CredentialHelperInvocationTests(unittest.TestCase):
             tmp_path = Path(tmp)
             target = tmp_path / "git"
             config = Config()
-            config.github.gh_token = True
+            config.credentials.github.token = True
             runtime.seed_git_config(target, config)
             config_file = target / "config"
 
@@ -184,7 +184,7 @@ class CredentialHelperInvocationTests(unittest.TestCase):
             tmp_path = Path(tmp)
             target = tmp_path / "git"
             config = Config()
-            config.github.gh_token = False
+            config.credentials.github.token = False
             runtime.seed_git_config(target, config)
             config_file = target / "config"
 

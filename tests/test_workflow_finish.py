@@ -165,7 +165,7 @@ class ChildFinishTests(LandingCase):
         """Publishing the accepted parent precedes Done and can retry after Git succeeds."""
         self.config.workflow.merge_mode = "github"
         self.config.workflow.auto_push = True
-        self.config.github.gh_token = True
+        self.config.credentials.github.token = True
         with patch.object(gw, "push_parent", side_effect=AgentBoxError("publication unavailable")):
             with self.assertRaisesRegex(AgentBoxError, "publication unavailable"):
                 self.dispatch(["finish", "8"])
@@ -181,7 +181,7 @@ class ChildFinishTests(LandingCase):
         parent_head = gw.head_sha(self.root)
         self.config.workflow.merge_mode = "github"
         self.config.workflow.auto_push = True
-        self.config.github.gh_token = True
+        self.config.credentials.github.token = True
 
         def publish(root, branch, base):
             self.adapter.set_state.assert_not_called()
@@ -202,7 +202,7 @@ class ChildFinishTests(LandingCase):
         self.commit("parent-later.py")
         self.config.workflow.merge_mode = "github"
         self.config.workflow.auto_push = True
-        self.config.github.gh_token = True
+        self.config.credentials.github.token = True
         for branch in ("ab/8-child", "ab/7-parent"):
             original = gw.local_branch_head(self.root, branch)
 
@@ -613,7 +613,7 @@ class NoCodeChildFinishTests(LandingCase):
         self.dispatch(["validate", "8", "--", "true"])
         self.config.workflow.merge_mode = "github"
         self.config.workflow.auto_push = True
-        self.config.github.gh_token = True
+        self.config.credentials.github.token = True
         with patch.object(gw, "push_parent", side_effect=AgentBoxError("publication unavailable")):
             with self.assertRaisesRegex(AgentBoxError, "publication unavailable"):
                 self.dispatch(["finish", "8"])
@@ -807,7 +807,7 @@ class TransitionReadTests(LandingCase):
         from agent_box import github_review, github_workflow as github
 
         self.config.workflow.merge_mode = "github"
-        self.config.github.gh_token = True
+        self.config.credentials.github.token = True
         workflow.save_evidence(self.root, self.parent, {**self.saved, "review": {"verdict": "PASS"}})
         events = []
 
@@ -905,7 +905,7 @@ class TransitionReadTests(LandingCase):
         self.parent.children = ["8"]
         self.adapter.get.side_effect = lambda ident: {"7": self.parent, "8": child}[ident]
         self.config.workflow.merge_mode = "github"
-        self.config.github.gh_token = True
+        self.config.credentials.github.token = True
         self.saved["scope"] = workflow.scope(self.root, "main")
         self.saved["review"] = {"verdict": "PASS"}
         workflow.save_evidence(self.root, self.parent, self.saved)

@@ -19,7 +19,7 @@ from test_external_config import external_config
 def rich_config():
     data = external_config().to_dict()
     for cli in ('codex', 'claude'):
-        endpoint = data['external_providers']['deepseek'][cli]
+        endpoint = data['agents']['external_apis']['deepseek'][cli]
         endpoint.update(default_model='v4-pro', env={'MODEL_OPTION': 'endpoint', 'ENDPOINT_ONLY': 'private-value'})
         model = dict(display_name='V4 Pro', effort='high', supported_efforts=['low', 'high', 'max'],
                      context_window=1048576, auto_compact_token_limit=786432, env={'MODEL_OPTION': 'model'})
@@ -119,7 +119,7 @@ class ExternalModelTests(unittest.TestCase):
     def test_model_environment_is_restored_across_external_and_builtin_children(self):
         """Endpoint tuning must not contaminate a nested API or its built-in fallback."""
         config = rich_config()
-        config.external_providers['deepseek'].claude.env['CLAUDE_CODE_SUBAGENT_MODEL'] = 'auxiliary-model'
+        config.agents.external_apis['deepseek'].claude.env['CLAUDE_CODE_SUBAGENT_MODEL'] = 'auxiliary-model'
         original = {'MODEL_OPTION': 'parent', 'CLAUDE_CODE_AUTO_COMPACT_WINDOW': '100', 'OPENAI_API_KEY': 'parent-key'}
         with tempfile.TemporaryDirectory() as one, tempfile.TemporaryDirectory() as two:
             _, first = ext.prepare(['claude'], 'deepseek', 'claude', config, one, original)
@@ -167,13 +167,13 @@ class ExternalModelTests(unittest.TestCase):
                {'env': {'BAD=NAME': 'private-value'}}, {'env': {'OPTION': 1}}]
         for spec in bad:
             with self.subTest(fields=list(spec)), self.assertRaises(AgentBoxError) as error:
-                Config.from_dict({'external_providers': {'test': {'codex': {'models': {'model': spec}}}}})
+                Config.from_dict({'agents': {'external_apis': {'test': {'codex': {'models': {'model': spec}}}}}})
             self.assertNotIn('private-value', str(error.exception))
         for cli, model in (('codex', 'v4[1m]'), ('claude', 'v4[garbage]')):
             with self.subTest(cli=cli), self.assertRaises(AgentBoxError):
-                Config.from_dict({'external_providers': {'test': {cli: {'models': {model: {}}}}}})
+                Config.from_dict({'agents': {'external_apis': {'test': {cli: {'models': {model: {}}}}}}})
         with self.assertRaises(AgentBoxError):
-            Config.from_dict({'external_providers': {'test': {'codex': {'models': ['model']}}}})
+            Config.from_dict({'agents': {'external_apis': {'test': {'codex': {'models': ['model']}}}}})
 
     def test_custom_headers_cannot_replace_the_configured_api_credentials(self):
         """Claude custom headers can carry auth, so neither env level may set them."""
@@ -181,7 +181,7 @@ class ExternalModelTests(unittest.TestCase):
             for source in ('endpoint', 'model'):
                 for header in ('Authorization: Bearer private-value', 'x-api-key: private-value'):
                     data = rich_config().to_dict()
-                    endpoint = data['external_providers']['deepseek'][cli]
+                    endpoint = data['agents']['external_apis']['deepseek'][cli]
                     target = endpoint if source == 'endpoint' else next(iter(endpoint['models'].values()))
                     target['env']['ANTHROPIC_CUSTOM_HEADERS'] = header
                     with self.subTest(cli=cli, source=source, header=header.split(':')[0]):
@@ -196,19 +196,19 @@ class ExternalModelTests(unittest.TestCase):
         for ordered in (entries, entries[::-1]):
             with self.subTest(order=[model for model, _ in ordered]):
                 with self.assertRaisesRegex(AgentBoxError, 'duplicate launched Claude model') as raised:
-                    Config.from_dict({'external_providers': {'test': {'claude': {'models': dict(ordered)}}}})
+                    Config.from_dict({'agents': {'external_apis': {'test': {'claude': {'models': dict(ordered)}}}}})
                 self.assertNotIn('private-value', str(raised.exception))
         for context in (0, 200000):
             models = {'v4': {'context_window': context}, 'v4[1m]': {}}
-            loaded = Config.from_dict({'external_providers': {'test': {'claude': {'models': models}}}})
-            self.assertEqual(set(loaded.external_providers['test'].claude.models), set(models))
+            loaded = Config.from_dict({'agents': {'external_apis': {'test': {'claude': {'models': models}}}}})
+            self.assertEqual(set(loaded.agents.external_apis['test'].claude.models), set(models))
 
     def test_claude_environment_effort_is_validated_at_load_with_typed_priority(self):
         """A configured default must work without requiring an explicit effort to repair it."""
         for source in ('endpoint', 'model'):
             for effort in ('medium', 'ultra', 'private-value'):
                 data = rich_config().to_dict()
-                endpoint = data['external_providers']['deepseek']['claude']
+                endpoint = data['agents']['external_apis']['deepseek']['claude']
                 model = endpoint['models']['v4-pro']
                 model['effort'] = 'default'
                 target = endpoint if source == 'endpoint' else model
@@ -217,7 +217,7 @@ class ExternalModelTests(unittest.TestCase):
                     Config.from_dict(data)
                 self.assertNotIn('private-value', str(raised.exception))
         data = rich_config().to_dict()
-        endpoint = data['external_providers']['deepseek']['claude']
+        endpoint = data['agents']['external_apis']['deepseek']['claude']
         endpoint['env']['CLAUDE_CODE_EFFORT_LEVEL'] = 'medium'
         # v4-pro's typed high wins; v4-flash has unknown supported levels.
         loaded = Config.from_dict(data)
@@ -251,11 +251,11 @@ class ExternalModelTests(unittest.TestCase):
         config = rich_config()
         route = {'provider': 'codex', **ext.route_identity(config, 'deepseek', 'codex')}
         rotated = copy.deepcopy(config)
-        rotated.external_providers['deepseek'].api_key = 'rotated'
+        rotated.agents.external_apis['deepseek'].api_key = 'rotated'
         ext.check_route(rotated, route)
         for field, value in (('context_window', 200000), ('effort', 'max'), ('env', {'OPTION': 'changed'})):
             changed = copy.deepcopy(config)
-            changed.external_providers['deepseek'].codex.models['v4-pro'][field] = value
+            changed.agents.external_apis['deepseek'].codex.models['v4-pro'][field] = value
             with self.subTest(field=field), self.assertRaisesRegex(AgentBoxError, 'changed after prepare'):
                 ext.check_route(changed, route)
 
@@ -282,7 +282,7 @@ class ExternalModelTests(unittest.TestCase):
         """The structured editor must work with dynamic IDs, including names matching UI keys."""
         config = external_config()
         data = config.to_dict()
-        path = ('external_providers', 'deepseek', 'codex', 'models')
+        path = ('agents', 'external_apis', 'deepseek', 'codex', 'models')
         keys = []
         for index, part in enumerate(path):
             rows = config_menu.menu_keys(data, path[:index])
@@ -290,32 +290,32 @@ class ExternalModelTests(unittest.TestCase):
             data = data[part]
         add = [*keys, curses.KEY_END, '\n', *'metadata', '\n', '\n', *'Nice model', '\n',
                curses.KEY_END, curses.KEY_UP, '\n']
-        save = ['\x1b'] * 5 + [curses.KEY_END, curses.KEY_UP, '\n']
+        save = ['\x1b'] * 6 + [curses.KEY_END, curses.KEY_UP, '\n']
         edited, screen = menu_tests.ConfigMenuTests().edit(config, [*add, *save])
-        endpoint = edited.config.external_providers['deepseek'].codex
+        endpoint = edited.config.agents.external_apis['deepseek'].codex
         self.assertEqual(endpoint.default_model, 'metadata')
         self.assertEqual(endpoint.models['metadata']['display_name'], 'Nice model')
-        self.assertNotIn('metadata', config.external_providers['deepseek'].codex.models)
+        self.assertNotIn('metadata', config.agents.external_apis['deepseek'].codex.models)
         self.assertNotIn('Deepseek', '\n'.join(screen.drawn))
         self.assertEqual(config_menu.label_for('api'), 'API')
-        cancelled, _ = menu_tests.ConfigMenuTests().edit(config, [*add, *['\x1b'] * 6])
+        cancelled, _ = menu_tests.ConfigMenuTests().edit(config, [*add, *['\x1b'] * 7])
         self.assertIsNone(cancelled)
         # The dynamic model has no entry in Config() defaults; reset still knows its schema.
         reset = [*add, curses.KEY_HOME, 'R', *save]
         edited, _ = menu_tests.ConfigMenuTests().edit(config, reset)
-        self.assertEqual(edited.config.external_providers['deepseek'].codex.models['metadata'], model_defaults('codex'))
+        self.assertEqual(edited.config.agents.external_apis['deepseek'].codex.models['metadata'], model_defaults('codex'))
         delete = [*add, curses.KEY_END, '\n', curses.KEY_DOWN, '\n',
-                  *['\x1b'] * 4, curses.KEY_END, curses.KEY_UP, '\n']
+                  *['\x1b'] * 5, curses.KEY_END, curses.KEY_UP, '\n']
         edited, _ = menu_tests.ConfigMenuTests().edit(config, delete)
-        self.assertNotIn('metadata', edited.config.external_providers['deepseek'].codex.models)
-        self.assertEqual(edited.config.external_providers['deepseek'].codex.default_model, '')
+        self.assertNotIn('metadata', edited.config.agents.external_apis['deepseek'].codex.models)
+        self.assertEqual(edited.config.agents.external_apis['deepseek'].codex.default_model, '')
 
     def test_advanced_metadata_editor_is_readable_while_environment_stays_masked(self):
         """Non-secret metadata needs visible JSON editing; env values must stay private."""
         config = rich_config()
-        config.external_providers['deepseek'].codex.models['v4-pro']['env']['MODEL_OPTION'] = 'env-secret-value'
+        config.agents.external_apis['deepseek'].codex.models['v4-pro']['env']['MODEL_OPTION'] = 'env-secret-value'
         data = config.to_dict()
-        path = ('external_providers', 'deepseek', 'codex', 'models', 'v4-pro')
+        path = ('agents', 'external_apis', 'deepseek', 'codex', 'models', 'v4-pro')
         keys = []
         for index, part in enumerate(path):
             rows = config_menu.menu_keys(data, path[:index])
@@ -336,6 +336,6 @@ class ExternalModelTests(unittest.TestCase):
         self.assertIn('786432', drawn)
         self.assertIn('524288', drawn)
         self.assertNotIn('env-secret-value', drawn)
-        self.assertEqual(edited.config.external_providers['deepseek'].codex.models['v4-pro']['metadata'], updated)
-        self.assertEqual(edited.config.external_providers['deepseek'].codex.models['v4-pro']['auto_compact_token_limit'], 524288)
-        self.assertNotEqual(config.external_providers['deepseek'].codex.models['v4-pro']['metadata'], updated)
+        self.assertEqual(edited.config.agents.external_apis['deepseek'].codex.models['v4-pro']['metadata'], updated)
+        self.assertEqual(edited.config.agents.external_apis['deepseek'].codex.models['v4-pro']['auto_compact_token_limit'], 524288)
+        self.assertNotEqual(config.agents.external_apis['deepseek'].codex.models['v4-pro']['metadata'], updated)

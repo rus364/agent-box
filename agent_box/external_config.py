@@ -248,12 +248,12 @@ def parse_connections(data):
     def invalid(path):
         raise AgentBoxError(f"Invalid external provider configuration: {path}")
     if not isinstance(data, dict):
-        invalid("external_providers must be an object")
+        invalid("agents.external_apis must be an object")
     result = {}
     for name, raw in data.items():
         if not valid_name(name):
             invalid("provider name must match [a-z][a-z0-9_-]{0,47}")
-        path = f"external_providers.{name}"
+        path = f"agents.external_apis.{name}"
         if not isinstance(raw, dict) or set(raw) - {"enabled", "api_key", "codex", "claude"}:
             invalid(path)
         unspelled = unspelled_path(raw, path)
@@ -308,13 +308,13 @@ def parse_connections(data):
 
 def validate_connections(config):
     errors = []
-    for name, spec in config.external_providers.items():
+    for name, spec in config.agents.external_apis.items():
         if spec.enabled and (not spec.api_key.strip() or not (spec.codex.url or spec.claude.url)):
-            errors.append(f"external_providers.{name}: enabled provider requires an API key and a CLI URL")
+            errors.append(f"agents.external_apis.{name}: enabled provider requires an API key and a CLI URL")
     for path, candidate in config.workflow.candidates():
         api, cli = candidate.get('api_provider'), candidate.get('provider')
         # A malformed name is WorkflowConfig.validate's error to report, not a lookup to crash on.
-        connection = config.external_providers.get(api) if isinstance(api, str) else None
+        connection = config.agents.external_apis.get(api) if isinstance(api, str) else None
         if connection and cli in ('codex', 'claude') and candidate.get('model'):
             error = model_effort_error(getattr(connection, cli), candidate['model'], cli, candidate['effort'])
             if error:

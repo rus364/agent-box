@@ -187,20 +187,20 @@ def apply(config, overrides):
         elif key == "tracker":
             config.tracker.connections.setdefault(config.tracker.provider, TrackerConnection()).url = value
         elif key == "gh-token":
-            config.github.gh_token = value
+            config.credentials.github.token = value
         elif key == "gh-config":
-            config.github.gh_config = value
+            config.credentials.github.config = value
         elif key == "git-config":
-            config.git.full_config = value
+            config.credentials.git.full_config = value
         elif key == "api-keys":
-            config.providers.api_keys = value
+            config.agents.host_env.api_keys = value
         elif key == "browser":
-            config.tools.browser_off = True
+            config.box.tools.browser_off = True
         elif key == "remote-control":
-            config.claude.remote_control = config.codex.remote_control = value
-            config.claude.telegram_channel = config.claude.telegram_channel and value
+            config.agents.claude.remote_control = config.agents.codex.remote_control = value
+            config.agents.claude.telegram_channel = config.agents.claude.telegram_channel and value
         elif key == "notify" and not value:
-            config.notifications.enabled = False
+            config.host.notifications.enabled = False
     used = [key for key in overrides if key in WORKFLOW_KEYS]
     if used and not workflow.enabled:
         raise AgentBoxError(f"--{used[0]} needs workflow; enable it in agent-box config"
@@ -211,7 +211,7 @@ def apply(config, overrides):
         raise AgentBoxError(f"--{tracker_keys[0]} needs the tracker; enable it in agent-box config")
     for role, models in workflow.pins.items():
         api = models[0]["api_provider"]
-        if api and not (api in config.external_providers and config.external_providers[api].enabled):
+        if api and not (api in config.agents.external_apis and config.agents.external_apis[api].enabled):
             raise AgentBoxError(f"--{role} names API provider {api}, which is not an enabled external provider")
     errors = workflow.validate() if used else []
     if errors:

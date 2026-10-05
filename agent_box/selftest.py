@@ -73,15 +73,15 @@ def _checks() -> int:
         notify.update_claude_background_state("session-1", [], root)
         check(notify.claude_background_active("session-1", root), False, "background cleared")
 
-    check(Config.from_dict(None).claude.telegram_channel, False, "channel off by default")
-    check(Config.from_dict(None).github.gh_token, False, "gh token passthrough off by default")
-    check(Config.from_dict(None).providers.api_keys, False, "provider API keys off by default")
-    check(Config.from_dict(None).providers.transport, True, "provider transport on by default")
-    check(Config.from_dict(None).git.full_config, False, "full git config copy off by default")
-    check(Config.from_dict(None).git.identity, True, "git identity seeding on by default")
-    check(Config.from_dict(None).notifications.usable, False, "notifications off by default")
-    check(Config.from_dict({"notifications": {"enabled": True, "telegram_token": "t",
-                                              "telegram_chat_id": "1"}}).notifications.usable,
+    check(Config.from_dict(None).agents.claude.telegram_channel, False, "channel off by default")
+    check(Config.from_dict(None).credentials.github.token, False, "gh token passthrough off by default")
+    check(Config.from_dict(None).agents.host_env.api_keys, False, "provider API keys off by default")
+    check(Config.from_dict(None).agents.host_env.transport, True, "provider transport on by default")
+    check(Config.from_dict(None).credentials.git.full_config, False, "full git config copy off by default")
+    check(Config.from_dict(None).credentials.git.identity, True, "git identity seeding on by default")
+    check(Config.from_dict(None).host.notifications.usable, False, "notifications off by default")
+    check(Config.from_dict({"host": {"notifications": {"enabled": True, "telegram_token": "t",
+                                              "telegram_chat_id": "1"}}}).host.notifications.usable,
           True, "notifications need token and chat id")
 
     from .workspace import resolve_workspace
@@ -152,12 +152,12 @@ def _checks() -> int:
         config = Config()
         notify.sync_credentials(config, creds)
         check(creds.exists(), False, "disabled notifications write no credential file")
-        config.notifications.enabled = True
-        config.notifications.telegram_token = "t"
-        config.notifications.telegram_chat_id = "1"
+        config.host.notifications.enabled = True
+        config.host.notifications.telegram_token = "t"
+        config.host.notifications.telegram_chat_id = "1"
         notify.sync_credentials(config, creds)
         check(notify.load_credentials(creds), ("t", "1"), "credential file round trip")
-        config.notifications.enabled = False
+        config.host.notifications.enabled = False
         notify.sync_credentials(config, creds)
         check(creds.exists(), False, "disabling removes the credential file")
 

@@ -101,7 +101,7 @@ def _merged_parent(root, config, task, branch, base, expected_head):
         return None
     if expected_head is not None:
         return expected_head
-    if not (config.github.gh_token or config.github.gh_config):
+    if not (config.credentials.github.token or config.credentials.github.config):
         raise AgentBoxError("Enable GitHub integration before GitHub-mode cleanup")
     return _merged_head(root, gw.push_destination(root), branch, base or gw.default_base(root),
                         prefix=gw.branch_prefix(task.id))

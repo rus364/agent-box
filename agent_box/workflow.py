@@ -707,7 +707,7 @@ def acceptance_reasons(root, review, tasks, saved, head, base_head=None, *, no_w
 def configuration_summary(config):
     return {"source": effective_config_source(), "merge_mode": config.workflow.merge_mode,
             "auto_push": config.workflow.auto_push, "use_tiers": config.workflow.use_tiers,
-            "native_agent_wait": config.codex.native_agent_wait.to_dict(),
+            "native_agent_wait": config.agents.codex.native_agent_wait.to_dict(),
             **scout_diagnostics(config),
             "cleanup_local_branches": config.workflow.cleanup_local_branches,
             "cleanup_remote_branches": config.workflow.cleanup_remote_branches}
@@ -1422,7 +1422,7 @@ def finish_child(root, config, adapter, task, parent, info, branch, tasks):
         raise AgentBoxError("Child or parent head changed during integration; reconcile before completion")
     result = {"task": task.id, "state": "Done", "parent_branch": base}
     if (config.workflow.merge_mode == "github" and config.workflow.auto_push
-            and (config.github.gh_token or config.github.gh_config)):
+            and (config.credentials.github.token or config.credentials.github.config)):
         parent_head = base_head if integrated else head
         if gw.local_branch_head(root, branch) != head or gw.local_branch_head(root, base) != parent_head:
             raise AgentBoxError("Child or parent head changed before publication; inspect before completion")
@@ -1670,7 +1670,7 @@ def dispatch(args):
     config = effective_config()
     if not config.workflow.enabled:
         raise AgentBoxError("Enable workflow in agent-box config first")
-    errors = config.workflow.validate() + config.codex.validate()
+    errors = config.workflow.validate() + config.agents.codex.validate()
     if errors:
         raise AgentBoxError("; ".join(errors))
     root = repository_root()

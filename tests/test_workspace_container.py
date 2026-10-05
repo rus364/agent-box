@@ -254,7 +254,7 @@ class WorkspaceContainerLifecycleTests(unittest.TestCase):
 
     def test_preparing_recreated_workspace_reseeds_its_own_snapshot(self):
         config = runtime.Config()
-        config.git.identity = False
+        config.credentials.git.identity = False
         state = self.spec.runtime_state
         runtime.prepare_container_lifetime_state(
             config, mount_notifications=False, runtime_state=state,

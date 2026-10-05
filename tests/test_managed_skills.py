@@ -180,12 +180,12 @@ class ClaudeSkillLinkTests(unittest.TestCase):
 
     def _linked(self):
         config = Config()
-        config.skills.claude_links = True
+        config.host.claude_skill_links = True
         return config
 
     def _unlinked(self):
         config = Config()
-        config.skills.claude_links = False
+        config.host.claude_skill_links = False
         return config
 
     def test_a_shared_skill_is_linked_for_claude(self):

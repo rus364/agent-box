@@ -18,8 +18,8 @@ Podman reaches.
 
 ## Enabling it
 
-In `agent-box config`, open **Tools → k3s** and turn on `enabled`
-(`tools.k3s.enabled`). `kubectl` and `helm` come from the `kubernetes` tool
+In `agent-box config`, open **Workspace box → k3s cluster** and turn on `enabled`
+(`box.k3s.enabled`). `kubectl` and `helm` come from the `kubernetes` tool
 group, which is on by default; agent-box warns when the cluster is on and that
 group is off.
 
@@ -40,7 +40,7 @@ helm install ...
 A project can switch it on for itself in `.agent-box.json`:
 
 ```json
-{"tools": {"k3s": {"enabled": true, "traefik": true, "ports": ["8080:80"], "manifests": "deploy/k3s"}}}
+{"box": {"k3s": {"enabled": true, "traefik": true, "ports": ["8080:80"], "manifests": "deploy/k3s"}}}
 ```
 
 `agent-box --host` sessions get no cluster. A host agent works in your own
@@ -49,7 +49,7 @@ environment with your own kube contexts, and agent-box does not redirect its
 
 ## Settings
 
-Every field lives under **Tools → k3s**; all of them may also be set per project.
+Every field lives under **Workspace box → k3s cluster** (`box.k3s`); all of them may also be set per project.
 
 | Setting | Default | Effect |
 | --- | --- | --- |
@@ -157,7 +157,7 @@ k3s cluster:         OK (agent-box-k3s-0123456789abcdef   Ready   control-plane 
 Disabled is a normal state:
 
 ```text
-k3s cluster:         disabled (turn on tools.k3s in 'agent-box config')
+k3s cluster:         disabled (turn on box.k3s in 'agent-box config')
 ```
 
 ## Troubleshooting

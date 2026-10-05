@@ -57,7 +57,7 @@ class MergeAcceptanceTests(unittest.TestCase):
         adapter.identity.return_value = {"id": 1}
         adapter.get.side_effect = lambda ident: {"1": parent}[ident]
         config = Config()
-        config.github.gh_token = True
+        config.credentials.github.token = True
         merged = {"number": 9, "url": "https://github.com/o/r/pull/9", "state": "MERGED",
                   "isDraft": False, "headRefOid": "oldhead", "headRefName": "ab/task",
                   "baseRefName": "main", "mergedAt": "2026-01-01T00:00:00Z",
@@ -100,7 +100,7 @@ class MergeAcceptanceTests(unittest.TestCase):
         adapter.identity.return_value = {"id": 1}
         adapter.get.side_effect = lambda ident: {"1": parent}[ident]
         config = Config()
-        config.github.gh_token = True
+        config.credentials.github.token = True
         merged = {"number": 9, "url": "https://github.com/o/r/pull/9", "state": "MERGED",
                   "isDraft": False, "headRefOid": "A", "headRefName": "ab/task",
                   "baseRefName": "main", "mergedAt": "2026-01-01T00:00:00Z",
@@ -145,7 +145,7 @@ class MergeAcceptanceTests(unittest.TestCase):
         adapter.identity.return_value = {"id": 1}
         adapter.get.side_effect = lambda ident: {"1": parent}[ident]
         config = Config()
-        config.github.gh_token = True
+        config.credentials.github.token = True
         merged = {"number": 9, "url": "https://github.com/o/r/pull/9", "state": "MERGED",
                   "isDraft": False, "headRefOid": "A", "headRefName": "ab/task",
                   "baseRefName": "main", "mergedAt": "2026-01-01T00:00:00Z",
@@ -242,7 +242,7 @@ class LandingFreshnessTests(LandingCase):
         from copy import deepcopy
         from agent_box import git_workflow as gw, workflow
         super().setUp()
-        self.config.github.gh_token = True
+        self.config.credentials.github.token = True
         self.config.workflow.merge_mode = "github"
         self.saved["review"] = {"verdict": "PASS"}
         workflow.save_evidence(self.root, self.parent, self.saved)

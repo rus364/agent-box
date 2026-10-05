@@ -51,7 +51,7 @@ def usage_text() -> None:
 
 Options go before the agent; everything after it reaches the agent unchanged,
 and '--' ends them early. Without claude/codex the default agent starts
-(default_agent). Launch options shape only this launch. Options in the
+(agents.default). Launch options shape only this launch. Options in the
 "for this session" groups travel with the session, are never saved, and
 'agent-box config show' inside the session lists them.
 SPEC is {SPEC}, for example claude:opus:high.
@@ -211,7 +211,7 @@ def _statusline_note(config) -> str:
     Reconciliation never overwrites a status line it does not own, so "on"
     alone could otherwise look like a promise agent-box is not keeping.
     """
-    if not config.claude.statusline.enabled:
+    if not config.agents.claude.statusline.enabled:
         return ""
     settings_path = CLAUDE_HOME / "settings.json"
     try:
@@ -246,13 +246,13 @@ def _browser_note(config) -> str:
     and everything it loads is inside the workspace box with the agent, the
     project and every other enabled integration.
     """
-    if not config.tools.groups["browser"]:
+    if not config.box.tools.groups["browser"]:
         return ""
     return " (headless Chromium in the box; --host sessions unaffected)"
 
 
 def _k3s_note(config) -> str:
-    if not config.tools.k3s.enabled:
+    if not config.box.k3s.enabled:
         return ""
     return " (sidecar cluster per project; --host sessions get none)"
 
@@ -265,10 +265,11 @@ def _show_notes(config) -> dict[str, str]:
     rejected alternative, one print per field, silently lost fields.
     """
     notes = {
-        "claude.statusline.enabled": _statusline_note(config),
-        "tools": _image_note(config),
-        "tools.browser": _browser_note(config),
-        "tools.k3s.enabled": _k3s_note(config),
+        # The status line's two settings print as one row, so the note qualifies the row.
+        "agents.claude.statusline": _statusline_note(config),
+        "box.tools": _image_note(config),
+        "box.tools.browser": _browser_note(config),
+        "box.k3s.enabled": _k3s_note(config),
         "workflow.auto_push": (" (accepted base after local merge)" if config.workflow.merge_mode == "local"
                                else " (parent task branch after subtask integration)"),
     }
@@ -279,7 +280,7 @@ def _show_value(value, hidden: bool) -> str:
     if isinstance(value, bool):
         return "on" if value else "off"
     if isinstance(value, list):
-        # A hidden list holds variable names (env.forward), never their values.
+        # A hidden list holds variable names (box.env.forward), never their values.
         from .config import candidate_label
         return ", ".join(candidate_label(item) if isinstance(item, dict) else str(item) for item in value) or "(none)"
     if isinstance(value, dict):
@@ -294,7 +295,7 @@ def _hidden(at) -> bool:
     from . import config_menu
     # A command line routinely carries a bearer token and a literal env value
     # may be one despite its help; the menu shows both for editing.
-    return config_menu.secret(at) or at == ("claude", "statusline", "command") or at[:1] == ("env",)
+    return config_menu.secret(at) or at == ("agents", "claude", "statusline", "command") or at[:2] == ("box", "env")
 
 
 def _show_rows(data, path=()):
@@ -346,7 +347,7 @@ _DESCRIBED_TYPES = {bool: "boolean", int: "integer", float: "number", str: "stri
 def _masked(value, hidden: bool):
     """Whether a secret is set, without the secret."""
     if not hidden or isinstance(value, (bool, list)):
-        # A switch is its own value, and a hidden list holds variable names (env.forward).
+        # A switch is its own value, and a hidden list holds variable names (box.env.forward).
         return value
     if isinstance(value, dict):
         return {key: "<redacted>" for key in value}
@@ -573,7 +574,7 @@ def _checked_global(baseline: dict, proposal: dict):
     for dotted in [*proposal["set"], *proposal["reset"]]:
         path = tuple(dotted.split("."))
         current = _lookup(baseline, path)
-        if path[0] in ("version", "install") or _hidden(path):
+        if path in (("version",), ("host", "bin_dir")) or _hidden(path):
             raise AgentBoxError(f"config set --global: {dotted} is a credential, environment or installation "
                                 "setting; change it in 'agent-box config'")
         if current is _MISSING or isinstance(current, dict) and not config_menu.json_field(path):
@@ -758,7 +759,7 @@ def config_show() -> None:
     if source["kind"] == "runtime":
         print("Rendered container configuration; host-only settings are not included.")
         # A setting the snapshot omits would otherwise print as its default,
-        # at any depth: `claude` carries only remote_control.
+        # at any depth: `agents.claude` carries only remote_control and the status line command.
         data = _rendered_only(data, _snapshot_sections(source))
     if getattr(config, "_launch", None):
         from .launch_options import describe
@@ -779,7 +780,7 @@ def config_show() -> None:
 def config_check() -> None:
     """Report on the official Claude Telegram channel, without changing anything."""
     config = load_config()
-    enabled = config.claude.telegram_channel
+    enabled = config.agents.claude.telegram_channel
     ready = not channel_module.missing_requirements()
     owner = channel_module.channel_owner()
 
@@ -819,8 +820,8 @@ def path_status(config) -> list[str]:
     from . import pathsetup
     if pathsetup.link_state().kind == "ours":
         return []
-    bin_dir = Path(config.install.bin_dir) if config.install.bin_dir else pathsetup.DEFAULT_BIN_DIR
-    if config.install.bin_dir:
+    bin_dir = Path(config.host.bin_dir) if config.host.bin_dir else pathsetup.DEFAULT_BIN_DIR
+    if config.host.bin_dir:
         return [f"{bin_dir} is not on PATH yet in this shell; open a new one, or add it:",
                 *pathsetup.rc_block(bin_dir).splitlines()]
     return ["agent-box is not on PATH. Run 'agent-box config' and answer PATH "
@@ -850,7 +851,7 @@ def config_interactive(project=False) -> None:
     for line in runtime.apply_config(config):
         print(line)
     if result.edit_rc:
-        print(pathsetup.append_rc_block(pathsetup.rc_file(), Path(config.install.bin_dir)))
+        print(pathsetup.append_rc_block(pathsetup.rc_file(), Path(config.host.bin_dir)))
     config_show()
     for line in path_status(config):
         print(f"agent-box: {line}")

@@ -37,7 +37,7 @@ class ConfigProposalTests(unittest.TestCase):
             self.addCleanup(patcher.stop)
         config = Config()
         config.workflow.review.max_files = 3
-        config.notifications.telegram_token = "tg-secret-value"
+        config.host.notifications.telegram_token = "tg-secret-value"
         save_config(config)
 
     def command(self, *args, answer=None, tty=True):
@@ -66,15 +66,15 @@ class ConfigProposalTests(unittest.TestCase):
 
     def test_a_confirmed_proposal_is_saved_sparse_applied_and_removed(self):
         """Consent is the only way in; afterwards the file must hold the change and keep everything else."""
-        self.command("set", "--global", "workflow.review.max_files=9", "tools.browser=true")
+        self.command("set", "--global", "workflow.review.max_files=9", "box.tools.browser=true")
         self.assertEqual(load_config().workflow.review.max_files, 3, "proposing must not write")
         output = self.command("proposal", "apply", answer="y")
         self.assertIn("- workflow.review.max_files = 3", output)
         self.assertNotIn("tg-secret-value", output)
         saved = json.loads(self.global_file.read_text())
-        self.assertEqual((saved["workflow"]["review"]["max_files"], saved["tools"]["browser"]), (9, True))
-        self.assertNotIn("install", saved)
-        self.assertEqual(load_config().notifications.telegram_token, "tg-secret-value")
+        self.assertEqual((saved["workflow"]["review"]["max_files"], saved["box"]["tools"]["browser"]), (9, True))
+        self.assertNotIn("bin_dir", saved.get("host", {}))
+        self.assertEqual(load_config().host.notifications.telegram_token, "tg-secret-value")
         self.apply.assert_called_once()
         self.assertFalse(self.proposal.exists())
 
@@ -92,9 +92,9 @@ class ConfigProposalTests(unittest.TestCase):
 
     def test_credentials_installation_and_invalid_values_are_refused_before_a_proposal_exists(self):
         """An agent must not propose what it may not read, and a bad value must fail where the agent can fix it."""
-        for args, message in ((('notifications.telegram_token="token-secret-value"',), "credential"),
-                              (('install.bin_dir="/tmp/elsewhere"',), "installation"),
-                              (('env.forward=["NAME"]',), "environment"),
+        for args, message in ((('host.notifications.telegram_token="token-secret-value"',), "credential"),
+                              (('host.bin_dir="/tmp/elsewhere"',), "installation"),
+                              (('box.env.forward=["NAME"]',), "environment"),
                               (('workflow.review.max_files="nine"',), "invalid type"),
                               (('workflow.scout.models=["codex:gpt-5.5"]',), r"models\.0 must be an object"),
                               (('workflow.worker.tiers.2=[{"provider": "codex", "model": 5}]',), r"tiers\.2\.0 must be an object"),
@@ -110,15 +110,15 @@ class ConfigProposalTests(unittest.TestCase):
         """The file may be edited by hand, and global settings may change after the proposal was made."""
         before = self.global_file.read_text()
         self.proposal.parent.mkdir(parents=True)
-        self.proposal.write_text(json.dumps({"set": {"notifications.telegram_token": "token-secret-value"}, "reset": []}))
+        self.proposal.write_text(json.dumps({"set": {"host.notifications.telegram_token": "token-secret-value"}, "reset": []}))
         with self.assertRaisesRegex(AgentBoxError, "nothing changed") as error:
             self.command("proposal", "apply", answer="y")
         self.assertNotIn("secret-value", str(error.exception))
         self.proposal.unlink()
         self.command("set", "--global", 'workflow.worker.models=[{"provider": "claude", "api_provider": "deepseek", "model": "v4", "effort": "high"}]')
         config = load_config()
-        config.external_providers = config_module.Config.from_dict({"external_providers": {"deepseek": {"claude": {
-            "url": "https://api.example/anthropic", "models": {"v4": {"supported_efforts": ["low"]}}}}}}).external_providers
+        config.agents.external_apis = config_module.Config.from_dict({"agents": {"external_apis": {"deepseek": {"claude": {
+            "url": "https://api.example/anthropic", "models": {"v4": {"supported_efforts": ["low"]}}}}}}}).agents.external_apis
         save_config(config)
         before = self.global_file.read_text()
         with self.assertRaisesRegex(AgentBoxError, "nothing changed"):
@@ -135,11 +135,11 @@ class ConfigProposalTests(unittest.TestCase):
         paths = [REAL_PROPOSAL_PATH(repo) for repo in repos]
         for repo, path in zip(repos, paths):
             self.assertIn(repo.resolve() / ".git", path.resolve().parents)
-        config_proposal.save(paths[0], {"set": {"tools.browser": True}, "reset": []})
+        config_proposal.save(paths[0], {"set": {"box.tools.browser": True}, "reset": []})
         self.assertEqual(config_proposal.load(paths[1]), {"set": {}, "reset": []})
-        self.assertEqual(config_proposal.merged({"set": {"workflow.review.max_files": 9, "tools.browser": True}, "reset": []},
-                                                [(("workflow", "review", "max_files"), 4)], [("tools", "browser")]),
-                         {"set": {"workflow.review.max_files": 4}, "reset": ["tools.browser"]})
+        self.assertEqual(config_proposal.merged({"set": {"workflow.review.max_files": 9, "box.tools.browser": True}, "reset": []},
+                                                [(("workflow", "review", "max_files"), 4)], [("box", "tools", "browser")]),
+                         {"set": {"workflow.review.max_files": 4}, "reset": ["box.tools.browser"]})
 
     def test_apply_is_refused_inside_any_agent_session(self):
         """An agent must not answer the confirmation itself, in a box or in a --host session with a saved file."""
@@ -171,14 +171,14 @@ class ConfigProposalTests(unittest.TestCase):
     def test_reset_never_takes_a_flag_for_its_path(self):
         """`--reset --dry-run` reading --dry-run as a path would turn a preview into a write."""
         for scope in ("--project", "--global"):
-            for args in (("--reset",), ("--reset", "--dry-run", "tools.browser=true")):
+            for args in (("--reset",), ("--reset", "--dry-run", "box.tools.browser=true")):
                 with self.subTest(scope=scope, args=args), self.assertRaisesRegex(AgentBoxError, "expected"):
                     self.command("set", scope, *args)
         self.assertFalse(self.proposal.exists())
 
     def test_the_scope_is_explicit_and_the_commands_are_documented(self):
         """A write without a scope must not guess one."""
-        for args in (("tools.browser=true",), ("--project", "--global", "tools.browser=true")):
+        for args in (("box.tools.browser=true",), ("--project", "--global", "box.tools.browser=true")):
             with self.subTest(args=args), self.assertRaisesRegex(AgentBoxError, "expected"):
                 self.command("set", *args)
         self.assertIn("No pending global proposal", self.command("proposal"))

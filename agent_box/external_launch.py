@@ -92,7 +92,7 @@ def builtin_environment(environment):
 def connection(config, name, cli):
     if not valid_name(name) or cli not in {'codex', 'claude'}:
         raise AgentBoxError('External launch requires a provider name and codex or claude')
-    spec = config.external_providers.get(name)
+    spec = config.agents.external_apis.get(name)
     if spec is None or not spec.enabled:
         raise AgentBoxError(f'External provider {name} is missing or disabled; configure External API providers')
     endpoint = getattr(spec, cli)

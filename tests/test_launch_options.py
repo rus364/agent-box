@@ -90,9 +90,9 @@ class SessionPrecedenceTests(IsolatedLaunchTest):
         with self.assertRaisesRegex(AgentBoxError, "--notify needs"):
             self.launch(Config(), {"notify": True})
         config = Config()
-        config.notifications.enabled, config.notifications.telegram_token, config.notifications.telegram_chat_id = True, "t", "c"
+        config.host.notifications.enabled, config.host.notifications.telegram_token, config.host.notifications.telegram_chat_id = True, "t", "c"
         launched, _ = self.launch(config, {"notify": True})
-        self.assertTrue(launched.notifications.usable)
+        self.assertTrue(launched.host.notifications.usable)
         with patch.object(runtime.shutil, "which", return_value="/usr/bin/codex"), \
              patch.object(runtime, "resolve_workspace", return_value=Workspace(self.root, self.root)), \
              patch.object(runtime, "launch_config", return_value=launched), \
@@ -147,10 +147,10 @@ class SessionPrecedenceTests(IsolatedLaunchTest):
     def test_no_browser_keeps_the_mcp_server_out_without_changing_the_image(self):
         """The session opts out; the build and drift check still see the group."""
         config = Config()
-        config.tools.groups["browser"] = True
+        config.box.tools.groups["browser"] = True
         result = launch_options.apply(config, {"browser": False})
-        self.assertFalse(result.tools.browser())
-        self.assertIn("browser", result.tools.enabled_groups())
+        self.assertFalse(result.box.tools.browser())
+        self.assertIn("browser", result.box.tools.enabled_groups())
 
     def test_copies_seeded_at_box_creation_are_refused_for_a_running_box(self):
         """A running box keeps the gh/Git copies it was created with; the flag must not look applied."""

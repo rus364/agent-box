@@ -113,7 +113,7 @@ receives one additional slot for the coordinator. For example, a scout limit of 
 sets `agents.max_concurrent_threads_per_session=6` and
 `features.multi_agent_v2.max_concurrent_threads_per_session=7`. Codex shares this
 capacity across native roles; the coordinator still enforces the scout count.
-These launch-time overrides do not depend on `codex.native_agent_wait.enabled`
+These launch-time overrides do not depend on `agents.codex.native_agent_wait.enabled`
 and do not write `~/.codex/config.toml`. Batch, managed and service commands
 (including `app-server`) receive no coordinator overrides. Already-running
 sessions and independently launched IDE/app-server sessions retain their own

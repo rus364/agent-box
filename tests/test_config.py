@@ -18,50 +18,66 @@ from agent_box.config import Config, load_config, save_config
 class DefaultsAreSafeTests(unittest.TestCase):
     def test_credential_passthrough_is_off_by_default(self):
         config = Config()
-        self.assertFalse(config.github.gh_token)
-        self.assertFalse(config.github.gh_config)
-        self.assertFalse(config.claude.telegram_channel)
-        self.assertFalse(config.notifications.enabled)
+        self.assertFalse(config.credentials.github.token)
+        self.assertFalse(config.credentials.github.config)
+        self.assertFalse(config.agents.claude.telegram_channel)
+        self.assertFalse(config.host.notifications.enabled)
 
     def test_provider_api_keys_are_off_by_default(self):
         """An ANTHROPIC_API_KEY exported in your shell is not a decision to
         hand it to an agent container; the agents authenticate through the
         mounted ~/.claude / ~/.codex directories instead."""
-        self.assertFalse(Config().providers.api_keys)
+        self.assertFalse(Config().agents.host_env.api_keys)
 
     def test_full_git_config_copy_is_off_by_default(self):
         """A real ~/.gitconfig routinely carries credential.helper entries,
         http.<url>.extraHeader tokens and include.path directives."""
-        self.assertFalse(Config().git.full_config)
+        self.assertFalse(Config().credentials.git.full_config)
 
     def test_non_secret_conveniences_default_on(self):
         config = Config()
-        self.assertTrue(config.git.identity)       # only user.name / user.email
-        self.assertTrue(config.providers.transport)  # endpoints, proxies, CA bundle
+        self.assertTrue(config.credentials.git.identity)       # only user.name / user.email
+        self.assertTrue(config.agents.host_env.transport)  # endpoints, proxies, CA bundle
 
     def test_missing_file_yields_defaults(self):
         with tempfile.TemporaryDirectory() as tmp:
             config = load_config(Path(tmp) / "missing.json")
-            self.assertFalse(config.github.gh_token)
+            self.assertFalse(config.credentials.github.token)
 
     def test_unreadable_file_yields_defaults_rather_than_crashing(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "config.json"
             path.write_text("{ not json")
-            self.assertFalse(load_config(path).github.gh_token)
+            self.assertFalse(load_config(path).credentials.github.token)
 
     def test_partial_file_does_not_silently_enable_anything(self):
         """A file written by a future/older agent-box must not turn a
         credential switch on just by omitting it."""
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "config.json"
-            path.write_text(json.dumps({"version": 1, "claude": {"telegram_channel": True}}))
+            path.write_text(json.dumps({"version": 1, "agents": {"claude": {"telegram_channel": True}}}))
             config = load_config(path)
-            self.assertTrue(config.claude.telegram_channel)
-            self.assertFalse(config.github.gh_token)
-            self.assertFalse(config.notifications.enabled)
-            self.assertFalse(config.providers.api_keys)
-            self.assertFalse(config.git.full_config)
+            self.assertTrue(config.agents.claude.telegram_channel)
+            self.assertFalse(config.credentials.github.token)
+            self.assertFalse(config.host.notifications.enabled)
+            self.assertFalse(config.agents.host_env.api_keys)
+            self.assertFalse(config.credentials.git.full_config)
+
+
+class SectionedSchemaTests(unittest.TestCase):
+    def test_keys_of_the_former_flat_layout_are_ignored(self):
+        """Pre-release: no migration reads an old key, so it must not switch anything on either."""
+        old = {"version": 1, "default_agent": "codex", "github": {"gh_token": True, "gh_config": True},
+               "tools": {"browser": True, "k3s": {"enabled": True}}, "audio": {"enabled": True},
+               "notifications": {"enabled": True, "telegram_token": "t", "telegram_chat_id": "1"},
+               "providers": {"api_keys": True}, "git": {"full_config": True},
+               "install": {"bin_dir": "/somewhere"}, "skills": {"claude_links": False}}
+        self.assertEqual(Config.from_dict(old).to_dict(), Config().to_dict())
+
+    def test_the_root_holds_one_section_per_menu_entry(self):
+        """The file and the menu share one tree, so a path read in one is found in the other."""
+        self.assertEqual(list(Config().to_dict()),
+                         ["version", "agents", "box", "credentials", "tracker", "workflow", "host"])
 
 
 class RoundTripTests(unittest.TestCase):
@@ -75,32 +91,32 @@ class RoundTripTests(unittest.TestCase):
 
     def test_native_agent_wait_defaults_are_cache_aware_and_round_trip_custom_values(self):
         """A user can disable or tune the launch policy without editing Codex config."""
-        defaults = Config().codex.native_agent_wait
+        defaults = Config().agents.codex.native_agent_wait
         self.assertTrue(defaults.enabled)
         self.assertEqual(defaults.interval_seconds, 28 * 60)
         config = Config()
-        config.codex.native_agent_wait.enabled = False
-        config.codex.native_agent_wait.interval_seconds = 900
+        config.agents.codex.native_agent_wait.enabled = False
+        config.agents.codex.native_agent_wait.interval_seconds = 900
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / 'config.json'
             save_config(config, path)
             self.assertEqual(json.loads(path.read_text()), {
                 'version': 1,
-                'codex': {'native_agent_wait': {'enabled': False, 'interval_seconds': 900}},
+                'agents': {'codex': {'native_agent_wait': {'enabled': False, 'interval_seconds': 900}}},
             })
             loaded = load_config(path)
-        self.assertFalse(loaded.codex.native_agent_wait.enabled)
-        self.assertEqual(loaded.codex.native_agent_wait.interval_seconds, 900)
+        self.assertFalse(loaded.agents.codex.native_agent_wait.enabled)
+        self.assertEqual(loaded.agents.codex.native_agent_wait.interval_seconds, 900)
 
     def test_native_agent_wait_rejects_values_codex_cannot_accept(self):
         """The editable interval stays within the installed wait tool's bounds."""
         for value in (9, 3601, 28.0):
             with self.subTest(value=value):
-                config = Config.from_dict({"codex": {"native_agent_wait": {"interval_seconds": value}}})
-                self.assertTrue(config.codex.validate())
-        self.assertEqual(Config.from_dict({"codex": {"native_agent_wait": {
+                config = Config.from_dict({"agents": {"codex": {"native_agent_wait": {"interval_seconds": value}}}})
+                self.assertTrue(config.agents.codex.validate())
+        self.assertEqual(Config.from_dict({"agents": {"codex": {"native_agent_wait": {
             "interval_seconds": 3600,
-        }}}).codex.validate(), [])
+        }}}}).agents.codex.validate(), [])
 
     def test_sparse_global_roundtrip_keeps_nested_false_empty_lists_and_custom_values(self):
         """An omitted sibling inherits; false and empty lists can still override defaults."""
@@ -108,14 +124,14 @@ class RoundTripTests(unittest.TestCase):
         config.workflow.auto_push = False
         config.workflow.review.sensitive_paths = []
         config.workflow.review.models = [{'provider': 'codex', 'model': 'custom-model', 'effort': 'medium', 'speed': 'inherit', 'api_provider': ''}]
-        config.tools.groups['analysis'] = False
-        config.env.set['CUSTOM'] = ''
+        config.box.tools.groups['analysis'] = False
+        config.box.env.set['CUSTOM'] = ''
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / 'config.json'
             save_config(config, path)
             data = json.loads(path.read_text())
             self.assertEqual(data, {
-                'version': 1, 'env': {'set': {'CUSTOM': ''}}, 'tools': {'analysis': False},
+                'version': 1, 'box': {'tools': {'analysis': False}, 'env': {'set': {'CUSTOM': ''}}},
                 'workflow': {'auto_push': False, 'review': {'sensitive_paths': [],
                     'models': [{'provider': 'codex', 'model': 'custom-model', 'effort': 'medium', 'speed': 'inherit', 'api_provider': ''}]}}})
             self.assertEqual(load_config(path).to_dict(), config.to_dict())
@@ -125,14 +141,14 @@ class RoundTripTests(unittest.TestCase):
 
     def test_save_load_roundtrip_and_permissions(self):
         config = Config()
-        config.claude.telegram_channel = True
-        config.notifications.enabled = True
-        config.notifications.telegram_token = "123:abc"
-        config.notifications.telegram_chat_id = "555"
-        config.github.gh_token = True
-        config.git.identity = False
-        config.git.full_config = True
-        config.providers.api_keys = True
+        config.agents.claude.telegram_channel = True
+        config.host.notifications.enabled = True
+        config.host.notifications.telegram_token = "123:abc"
+        config.host.notifications.telegram_chat_id = "555"
+        config.credentials.github.token = True
+        config.credentials.git.identity = False
+        config.credentials.git.full_config = True
+        config.agents.host_env.api_keys = True
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "config.json"
             save_config(config, path)
@@ -140,13 +156,13 @@ class RoundTripTests(unittest.TestCase):
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
             self.assertEqual(json.loads(path.read_text())["version"], 1)
             loaded = load_config(path)
-        self.assertTrue(loaded.claude.telegram_channel)
-        self.assertEqual(loaded.notifications.telegram_token, "123:abc")
-        self.assertEqual(loaded.notifications.telegram_chat_id, "555")
-        self.assertTrue(loaded.github.gh_token)
-        self.assertFalse(loaded.git.identity)
-        self.assertTrue(loaded.git.full_config)
-        self.assertTrue(loaded.providers.api_keys)
+        self.assertTrue(loaded.agents.claude.telegram_channel)
+        self.assertEqual(loaded.host.notifications.telegram_token, "123:abc")
+        self.assertEqual(loaded.host.notifications.telegram_chat_id, "555")
+        self.assertTrue(loaded.credentials.github.token)
+        self.assertFalse(loaded.credentials.git.identity)
+        self.assertTrue(loaded.credentials.git.full_config)
+        self.assertTrue(loaded.agents.host_env.api_keys)
 
     def test_unknown_keys_are_dropped_on_save(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -164,17 +180,17 @@ class BrowserToolTests(unittest.TestCase):
     capability here: off until asked for, and never silently on."""
 
     def test_defaults_disabled(self):
-        self.assertFalse(Config().tools.groups["browser"])
-        self.assertFalse(Config().tools.browser())
+        self.assertFalse(Config().box.tools.groups["browser"])
+        self.assertFalse(Config().box.tools.browser())
 
     def test_round_trips(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "config.json"
             config = Config()
-            config.tools.groups["browser"] = True
+            config.box.tools.groups["browser"] = True
             save_config(config, path)
-            self.assertEqual(json.loads(path.read_text())["tools"], {"browser": True})
-            self.assertTrue(load_config(path).tools.browser())
+            self.assertEqual(json.loads(path.read_text())["box"]["tools"], {"browser": True})
+            self.assertTrue(load_config(path).box.tools.browser())
 
     def test_a_non_boolean_is_not_treated_as_enabled(self):
         self.assertFalse(config_module.ToolsConfig.from_dict({"browser": "yes"}).groups["browser"])
@@ -185,11 +201,11 @@ class BrowserToolTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "config.json"
             config = Config()
-            config.tools.groups["browser"] = True
-            config.tools.browser_off = True
-            self.assertFalse(config.tools.browser())
+            config.box.tools.groups["browser"] = True
+            config.box.tools.browser_off = True
+            self.assertFalse(config.box.tools.browser())
             save_config(config, path)
-            self.assertTrue(load_config(path).tools.browser())
+            self.assertTrue(load_config(path).box.tools.browser())
 
 
 class AudioConfigTests(unittest.TestCase):
@@ -197,44 +213,44 @@ class AudioConfigTests(unittest.TestCase):
     until asked for and never read as on from a malformed value."""
 
     def test_defaults_disabled(self):
-        self.assertFalse(Config().audio.enabled)
+        self.assertFalse(Config().box.audio)
 
     def test_round_trips(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "config.json"
             config = Config()
-            config.audio.enabled = True
+            config.box.audio = True
             save_config(config, path)
-            self.assertTrue(json.loads(path.read_text())["audio"]["enabled"])
-            self.assertTrue(load_config(path).audio.enabled)
+            self.assertTrue(json.loads(path.read_text())["box"]["audio"])
+            self.assertTrue(load_config(path).box.audio)
 
     def test_a_non_boolean_is_not_treated_as_enabled(self):
-        self.assertFalse(config_module.AudioConfig.from_dict({"enabled": "yes"}).enabled)
-        self.assertFalse(config_module.AudioConfig.from_dict("nonsense").enabled)
+        self.assertFalse(config_module.BoxConfig.from_dict({"audio": "yes"}).audio)
+        self.assertFalse(config_module.BoxConfig.from_dict("nonsense").audio)
 
 
 class NotificationsUsableTests(unittest.TestCase):
     def test_enabled_alone_is_not_enough(self):
         config = Config()
-        config.notifications.enabled = True
-        self.assertFalse(config.notifications.usable)
-        config.notifications.telegram_token = "t"
-        self.assertFalse(config.notifications.usable)
-        config.notifications.telegram_chat_id = "1"
-        self.assertTrue(config.notifications.usable)
+        config.host.notifications.enabled = True
+        self.assertFalse(config.host.notifications.usable)
+        config.host.notifications.telegram_token = "t"
+        self.assertFalse(config.host.notifications.usable)
+        config.host.notifications.telegram_chat_id = "1"
+        self.assertTrue(config.host.notifications.usable)
 
     def test_credentials_without_enabled_stay_inactive(self):
         config = Config()
-        config.notifications.telegram_token = "t"
-        config.notifications.telegram_chat_id = "1"
-        self.assertFalse(config.notifications.usable)
+        config.host.notifications.telegram_token = "t"
+        config.host.notifications.telegram_chat_id = "1"
+        self.assertFalse(config.host.notifications.usable)
 
 
 class StatuslineDefaultTests(unittest.TestCase):
     """The status line switch and its extra segment are one section of one line."""
 
     def test_statusline_defaults_on_without_an_extra_segment(self):
-        statusline = Config().claude.statusline
+        statusline = Config().agents.claude.statusline
         self.assertTrue(statusline.enabled)
         self.assertEqual(statusline.command, "")
 
@@ -243,16 +259,16 @@ class StatuslineDefaultTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "config.json"
             config = Config()
-            config.claude.statusline.command = "echo balance"
+            config.agents.claude.statusline.command = "echo balance"
             save_config(config, path)
-            self.assertEqual(json.loads(path.read_text())["claude"]["statusline"], {"command": "echo balance"})
-            self.assertTrue(load_config(path).claude.statusline.enabled)
+            self.assertEqual(json.loads(path.read_text())["agents"]["claude"]["statusline"], {"command": "echo balance"})
+            self.assertTrue(load_config(path).agents.claude.statusline.enabled)
 
     def test_switch_and_command_survive_a_round_trip_together(self):
         config = Config()
-        config.claude.statusline.enabled = False
-        config.claude.statusline.command = "echo balance"
-        self.assertEqual(Config.from_dict(config.to_dict()).claude.statusline, config.claude.statusline)
+        config.agents.claude.statusline.enabled = False
+        config.agents.claude.statusline.command = "echo balance"
+        self.assertEqual(Config.from_dict(config.to_dict()).agents.claude.statusline, config.agents.claude.statusline)
 
 
 class DefaultAgentTests(unittest.TestCase):
@@ -263,20 +279,20 @@ class DefaultAgentTests(unittest.TestCase):
             path = Path(tmp) / "config.json"
             save_config(Config(), path)
             self.assertNotIn("default_agent", json.loads(path.read_text()))
-            self.assertEqual(load_config(path).default_agent, "claude")
+            self.assertEqual(load_config(path).agents.default, "claude")
 
     def test_codex_choice_survives_save_and_load(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "config.json"
             config = Config()
-            config.default_agent = "codex"
+            config.agents.default = "codex"
             save_config(config, path)
-            self.assertEqual(load_config(path).default_agent, "codex")
+            self.assertEqual(load_config(path).agents.default, "codex")
 
     def test_an_unknown_agent_reads_as_claude_instead_of_failing_every_launch(self):
         for value in ("shell", "gemini", "", 3, None):
             with self.subTest(value=value):
-                self.assertEqual(Config.from_dict({"default_agent": value}).default_agent, "claude")
+                self.assertEqual(Config.from_dict({"agents": {"default": value}}).agents.default, "claude")
 
 
 if __name__ == "__main__":

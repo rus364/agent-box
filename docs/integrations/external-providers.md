@@ -1,6 +1,6 @@
 # External API providers
 
-Open `agent-box config` → **External API providers** → **Add provider**.
+Open `agent-box config` → **Agents** → **External APIs** → **Add provider**.
 Choose a name such as `deepseek`, enter the API key, and configure the URL and
 models under Codex, Claude, or both. Under **Models**, use **Add model**, edit
 its fields, then **Use as default**. Each CLI has its own endpoint and model
@@ -16,7 +16,7 @@ URLs or keys. Cancel leaves the saved configuration unchanged.
 ## Launch
 
 ```bash
-agent-box ext deepseek                 # the default agent (default_agent)
+agent-box ext deepseek                 # the default agent (agents.default)
 agent-box ext deepseek codex
 agent-box ext deepseek claude --model your-model-id
 agent-box --host ext deepseek codex exec 'Inspect this repository'
@@ -146,38 +146,40 @@ connection must be configured before use.
 
 ```json
 {
-  "external_providers": {
-    "deepseek": {
-      "enabled": false,
-      "api_key": "",
-      "codex": {
-        "url": "https://api.deepseek.com",
-        "default_model": "deepseek-v4-pro",
-        "models": {
-          "deepseek-v4-pro": {
-            "display_name": "DeepSeek V4 Pro",
-            "effort": "high",
-            "supported_efforts": ["low", "high", "max"],
-            "context_window": 1048576,
-            "auto_compact_token_limit": 786432,
-            "input_modalities": ["text"],
-            "supports_parallel_tool_calls": true,
-            "supports_reasoning_summaries": true,
-            "metadata": {"support_verbosity": true, "default_verbosity": "low"}
+  "agents": {
+    "external_apis": {
+      "deepseek": {
+        "enabled": false,
+        "api_key": "",
+        "codex": {
+          "url": "https://api.deepseek.com",
+          "default_model": "deepseek-v4-pro",
+          "models": {
+            "deepseek-v4-pro": {
+              "display_name": "DeepSeek V4 Pro",
+              "effort": "high",
+              "supported_efforts": ["low", "high", "max"],
+              "context_window": 1048576,
+              "auto_compact_token_limit": 786432,
+              "input_modalities": ["text"],
+              "supports_parallel_tool_calls": true,
+              "supports_reasoning_summaries": true,
+              "metadata": {"support_verbosity": true, "default_verbosity": "low"}
+            }
           }
-        }
-      },
-      "claude": {
-        "url": "https://api.deepseek.com/anthropic",
-        "default_model": "deepseek-v4-pro",
-        "env": {"API_TIMEOUT_MS": "600000"},
-        "models": {
-          "deepseek-v4-pro": {
-            "display_name": "DeepSeek V4 Pro",
-            "effort": "max",
-            "supported_efforts": ["low", "high", "max"],
-            "context_window": 1048576,
-            "auto_compact_token_limit": 786432
+        },
+        "claude": {
+          "url": "https://api.deepseek.com/anthropic",
+          "default_model": "deepseek-v4-pro",
+          "env": {"API_TIMEOUT_MS": "600000"},
+          "models": {
+            "deepseek-v4-pro": {
+              "display_name": "DeepSeek V4 Pro",
+              "effort": "max",
+              "supported_efforts": ["low", "high", "max"],
+              "context_window": 1048576,
+              "auto_compact_token_limit": 786432
+            }
           }
         }
       }

@@ -33,7 +33,7 @@ class ProjectConfigTests(unittest.TestCase):
     def test_partial_override_preserves_false_empty_list_and_global(self):
         self.config.workflow.review.models = [{"provider": "codex", "model": "global", "effort": "high", "speed": "inherit", "api_provider": ""}]
         original = self.config.to_dict()
-        data = {'tools': {'browser': True},
+        data = {'box': {'tools': {'browser': True}},
                 'workflow': {'review': {'sensitive_paths': [], 'ignored_paths': ['**/*.md'], 'tiers': {'2': []}},
                              'auto_push': False}}
         project_config.validate(data, self.path)
@@ -43,16 +43,16 @@ class ProjectConfigTests(unittest.TestCase):
         self.assertEqual(result.workflow.review.models, self.config.workflow.review.models)
         self.assertEqual(result.workflow.review.tiers['2'], [])
         self.assertFalse(result.workflow.auto_push)
-        self.assertTrue(result.tools.groups['browser'])
-        self.assertTrue(result.tools.groups['analysis'])
+        self.assertTrue(result.box.tools.groups['browser'])
+        self.assertTrue(result.box.tools.groups['analysis'])
         self.assertEqual(self.config.to_dict(), original)
 
     def test_a_project_brings_its_own_registry_mirrors(self):
         """Registry names are free-form keys, so the field rule must accept any of them."""
         mirrors = {'docker.io': ['https://mirror.example'], 'quay.io': ['https://quay-mirror.example']}
-        data = {'tools': {'k3s': {'registry_mirrors': mirrors}}}
+        data = {'box': {'k3s': {'registry_mirrors': mirrors}}}
         project_config.validate(data, self.path)
-        self.assertEqual(project_config.apply(self.config, data).tools.k3s.registry_mirrors, mirrors)
+        self.assertEqual(project_config.apply(self.config, data).box.k3s.registry_mirrors, mirrors)
 
     def test_project_scout_limit_overrides_the_scout_section_without_changing_global(self):
         """A repository may allow fewer or more concurrent scouts; the host's own limit stays as saved."""
@@ -101,15 +101,15 @@ class ProjectConfigTests(unittest.TestCase):
                 project_config.validate({'workflow': {'worker': bad}}, self.path)
 
     def test_unknown_forbidden_and_malformed_values_never_fall_back(self):
-        for data in ({'tools': {'browser': 1}}, {'env': {}}, {'workflow': {'enabled': False}},
-                     {'default_agent': 'codex'}, {'claude': {'statusline': {'command': 'echo'}}},
+        for data in ({'box': {'tools': {'browser': 1}}}, {'env': {}}, {'workflow': {'enabled': False}},
+                     {'agents': {'default': 'codex'}}, {'claude': {'statusline': {'command': 'echo'}}},
                      {'workflow': {'unknown': 1}}, {'workflow': {'merge_mode': ''}},
                      {'workflow': {'review': {'sensitive_paths': [None]}}},
                      {'workflow': {'review': {'ignored_paths': [None]}}},
                      {'workflow': {'review': {'ignored_paths': '**/*.md'}}},
                      {'workflow': {'tiers': {'0': {'codex': {'effort': ''}}}}},
                      {'tracker': {'connections': {'vikunja': {'url': 'https://u:secret@host'}}}},
-                     {'tools': {'k3s': {'version': 'v1.33'}}}, {'tools': {'k3s': {'lifetime': 'forever'}}},
+                     {'box': {'k3s': {'version': 'v1.33'}}}, {'box': {'k3s': {'lifetime': 'forever'}}},
                      [], None):
             with self.subTest(data=data), self.assertRaises(AgentBoxError):
                 project_config.validate(data, self.path)
@@ -142,20 +142,30 @@ class ProjectConfigTests(unittest.TestCase):
             self.assertIn('tracker.connections.vikunja.token', message)
             self.assertNotIn('do-not-display', message)
 
+    def test_every_credential_path_of_the_sectioned_schema_is_named_as_forbidden(self):
+        """A credential under its section must stop the commit, not read as an unknown field to fix."""
+        for data, dotted in (({'credentials': {'github': {'token': True}}}, 'credentials.github.token'),
+                             ({'host': {'notifications': {'telegram_token': 'x'}}}, 'host.notifications.telegram_token'),
+                             ({'agents': {'external_apis': {}}}, 'agents.external_apis')):
+            with self.subTest(path=dotted), self.assertRaises(AgentBoxError) as caught:
+                project_config.validate(data, self.path)
+            self.assertIn('PROJECT_CREDENTIALS_FORBIDDEN', str(caught.exception))
+            self.assertIn(dotted, str(caught.exception))
+
     def test_binding_setup_and_cutover_preserve_project_overrides(self):
-        project_config.save(self.path, {'tools': {'browser': True}, 'workflow': {'auto_push': False}})
+        project_config.save(self.path, {'box': {'tools': {'browser': True}}, 'workflow': {'auto_push': False}})
         write_binding(self.root, self.binding)
         self.assertEqual(Binding.load(self.root), self.binding)
         data = json.loads(setup_content(self.root, Binding('vikunja', self.binding.server, '25'))[self.path])
-        self.assertTrue(data['tools']['browser'])
+        self.assertTrue(data['box']['tools']['browser'])
         self.assertFalse(data['workflow']['auto_push'])
         self.assertEqual(data['tracker']['project'], '25')
         self.assertNotIn('server', data)
 
     def test_launch_settings_need_no_binding_but_tracker_binding_does(self):
-        project_config.save(self.path, {'tools': {'browser': True}})
+        project_config.save(self.path, {'box': {'tools': {'browser': True}}})
         with patch.object(project_config, 'project_path', return_value=self.path):
-            self.assertTrue(effective_config(self.config).tools.browser())
+            self.assertTrue(effective_config(self.config).box.tools.browser())
         with self.assertRaisesRegex(AgentBoxError, 'Incomplete repository binding'):
             Binding.load(self.root)
 
@@ -291,7 +301,7 @@ class ProjectConfigTests(unittest.TestCase):
 
     def test_session_tracker_token_comes_only_from_the_named_shell_variable(self):
         """Environment lists and a blank export cannot stand in for the token --tracker reads by name."""
-        self.config.env.set = {'VIKUNJA_TOKEN': 'from-config'}
+        self.config.box.env.set = {'VIKUNJA_TOKEN': 'from-config'}
         for environment in ({}, {'VIKUNJA_TOKEN': ' '}):
             with self.subTest(environment=environment), patch.dict(os.environ, environment, clear=True), \
                  patch.object(runtime, 'load_config', return_value=self.config), \
@@ -365,8 +375,8 @@ class ProjectConfigTests(unittest.TestCase):
         # Older shapes fail either while validating or already while loading.
         validating = Config().to_dict()
         validating['workflow']['review']['tiers'] = {'1': {'provider': 'codex'}}
-        loading = {**Config().to_dict(), 'external_providers': {'legacy': 'openai'}}
-        for rendered, cause in ((validating, r"workflow\.review\.tiers\.1"), (loading, r"external_providers\.legacy")):
+        loading = {**Config().to_dict(), 'agents': {'external_apis': {'legacy': 'openai'}}}
+        for rendered, cause in ((validating, r"workflow\.review\.tiers\.1"), (loading, r"agents\.external_apis\.legacy")):
             snapshot.write_text(json.dumps(rendered))
             with self.subTest(cause=cause), patch.dict(os.environ, {'AGENT_BOX_RUNTIME_CONFIG': str(snapshot)}), \
                  patch.object(project_config, 'load', return_value={}):
@@ -400,10 +410,10 @@ class ProjectConfigTests(unittest.TestCase):
         import io
         from agent_box import cli
         self.config.tracker.enabled = False
-        self.config.tools.groups['browser'] = True
-        self.config.tools.groups['virtualization'] = True
-        self.config.env.set['PRIVATE_VALUE'] = 'not-for-the-box'
-        data = {'workflow': {'auto_push': False}, 'tools': {'analysis': False}}
+        self.config.box.tools.groups['browser'] = True
+        self.config.box.tools.groups['virtualization'] = True
+        self.config.box.env.set['PRIVATE_VALUE'] = 'not-for-the-box'
+        data = {'workflow': {'auto_push': False}, 'box': {'tools': {'analysis': False}}}
         config = project_config.apply(self.config, data)
         with patch.object(runtime, 'TRACKER_RUNTIME_DIR', self.root / 'credentials'), \
              patch.object(runtime, 'POLICY_RUNTIME_DIR', self.root / 'policy'):
@@ -422,9 +432,9 @@ class ProjectConfigTests(unittest.TestCase):
                  contextlib.redirect_stdout(io.StringIO()) as output:
                 cli.config_show()
                 effective = effective_config()
-            self.assertTrue(effective.tools.browser())
-            self.assertTrue(effective.tools.groups['virtualization'])
-            self.assertFalse(effective.tools.groups['analysis'])
+            self.assertTrue(effective.box.tools.browser())
+            self.assertTrue(effective.box.tools.groups['virtualization'])
+            self.assertFalse(effective.box.tools.groups['analysis'])
             self.assertFalse(effective.workflow.auto_push)
             from test_workflow_config import show_paths
-            self.assertEqual(show_paths(output.getvalue())['tools.browser'], 'on')
+            self.assertEqual(show_paths(output.getvalue())['box.tools.browser'], 'on')

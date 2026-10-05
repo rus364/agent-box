@@ -96,10 +96,10 @@ def sync_credentials(config: Any, path: Path = NOTIFY_CREDENTIALS) -> None:
     notifications are actually usable. Turning notifications off removes it,
     so the credential stops being reachable rather than merely being ignored.
     """
-    if config.notifications.usable:
+    if config.host.notifications.usable:
         atomic_write_json(path, {
-            "token": config.notifications.telegram_token,
-            "chat_id": config.notifications.telegram_chat_id,
+            "token": config.host.notifications.telegram_token,
+            "chat_id": config.host.notifications.telegram_chat_id,
         }, stat.S_IRUSR | stat.S_IWUSR)
     else:
         path.unlink(missing_ok=True)

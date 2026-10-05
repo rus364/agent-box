@@ -158,7 +158,7 @@ class LocalLandTests(LandingCase):
 
         self.config.workflow.merge_mode = "github"
         self.config.workflow.review.policy = "always"
-        self.config.github.gh_token = True
+        self.config.credentials.github.token = True
         self.saved["review"] = {"verdict": "PASS"}
         head = gw.head_sha(self.root)
         opened = {"number": 9, "url": "https://github.com/o/r/pull/9", "state": "OPEN",

@@ -115,11 +115,11 @@ def manifests_dir(k3s: K3sConfig, project_root: Path) -> Path | None:
     root = project_root.resolve()
     path = (root / k3s.manifests).resolve()
     if path != root and root not in path.parents:
-        raise AgentBoxError(f"k3s: tools.k3s.manifests resolves outside the project: {path}")
+        raise AgentBoxError(f"k3s: box.k3s.manifests resolves outside the project: {path}")
     if not path.is_dir():
-        raise AgentBoxError(f"k3s: tools.k3s.manifests is not a directory: {path}")
+        raise AgentBoxError(f"k3s: box.k3s.manifests is not a directory: {path}")
     if "," in str(path):
-        raise AgentBoxError(f"k3s: tools.k3s.manifests cannot contain a comma: {path}")
+        raise AgentBoxError(f"k3s: box.k3s.manifests cannot contain a comma: {path}")
     return path
 
 

@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest import mock
 
 from agent_box import claude_settings, external_launch, notify, runtime
-from agent_box.config import Config, NotificationsConfig, TrackerConnection
+from agent_box.config import Config, HostConfig, NotificationsConfig, TrackerConnection
 from agent_box.errors import AgentBoxError
 from agent_box.mounts import MountSpec
 from agent_box.workspace import Workspace
@@ -305,7 +305,7 @@ class HostReaperOptOutTests(IsolatedRuntimeTest):
         name = runtime.PRESSURE_REAP_OPT_OUT
         for configured, expected in (({}, "1"), ({name: "0"}, "0")):
             config = Config()
-            config.env.set = configured
+            config.box.env.set = configured
             with self.subTest(configured=configured), \
                  mock.patch.object(runtime.shutil, "which", return_value="/usr/bin/claude"), \
                  mock.patch.object(runtime, "resolve_workspace", return_value=Workspace(Path.cwd(), Path.cwd())), \
@@ -547,9 +547,9 @@ class CodexRuntimeOverridesTests(IsolatedRuntimeTest):
                 "[mcp_servers.node_repl]\n"
                 'command = "/usr/lib/chatgpt/resources/cua_node/bin/node_repl"\n'
             )
-            config = Config(notifications=NotificationsConfig(
+            config = Config(host=HostConfig(notifications=NotificationsConfig(
                 enabled=True, telegram_token="token", telegram_chat_id="chat",
-            ))
+            )))
             with mock.patch.object(runtime, "CODEX_HOME", codex_home):
                 command = runtime.codex_command(["exec", "hello"], config)
         self.assertEqual(command, [
@@ -568,7 +568,7 @@ class CodexRuntimeOverridesTests(IsolatedRuntimeTest):
         config.workflow.enabled = True
         self.assertIn(setting, runtime.codex_command([], config))
         self.assertNotIn(setting, runtime.codex_command(["exec", "hello"], config))
-        config.codex.native_agent_wait.enabled = False
+        config.agents.codex.native_agent_wait.enabled = False
         self.assertNotIn(setting, runtime.codex_command([], config))
 
     def test_native_wait_override_uses_the_configured_bounded_interval(self):
@@ -576,13 +576,13 @@ class CodexRuntimeOverridesTests(IsolatedRuntimeTest):
         config = Config()
         config.workflow.enabled = True
         config.workflow.timeout_seconds = 45
-        config.codex.native_agent_wait.interval_seconds = 1200
+        config.agents.codex.native_agent_wait.interval_seconds = 1200
         self.assertIn("features.multi_agent_v2.default_wait_timeout_ms=1200000",
                       runtime.codex_workflow_overrides([], config))
-        config.codex.native_agent_wait.interval_seconds = 3600
+        config.agents.codex.native_agent_wait.interval_seconds = 3600
         self.assertIn("features.multi_agent_v2.default_wait_timeout_ms=3600000",
                       runtime.codex_workflow_overrides([], config))
-        config.codex.native_agent_wait.interval_seconds = 3601
+        config.agents.codex.native_agent_wait.interval_seconds = 3601
         self.assertFalse(any("default_wait_timeout_ms" in setting
                              for setting in runtime.codex_workflow_overrides([], config)))
 
@@ -592,7 +592,7 @@ class CodexRuntimeOverridesTests(IsolatedRuntimeTest):
         config = Config()
         config.workflow.enabled = True
         config.workflow.scout.limit = 6
-        config.codex.native_agent_wait.enabled = False
+        config.agents.codex.native_agent_wait.enabled = False
         for limit in (1, 6, 16):
             with self.subTest(limit=limit):
                 effective = project_config.apply(config, {"workflow": {"scout": {"limit": limit}}})
@@ -652,7 +652,7 @@ class CodexRuntimeOverridesTests(IsolatedRuntimeTest):
         """An explicit claude/codex wins over default_agent."""
         workspace = Workspace(Path.cwd(), Path.cwd())
         config = Config()
-        config.default_agent = "codex"
+        config.agents.default = "codex"
         for args, expected in (([], "codex"), (["claude"], "claude"), (["codex"], "codex")):
             with self.subTest(args=args), \
                  mock.patch.object(runtime.shutil, "which", return_value="/usr/bin/podman"), \
@@ -672,7 +672,7 @@ class CodexRuntimeOverridesTests(IsolatedRuntimeTest):
     def test_external_launch_selects_the_model_for_the_default_agent(self):
         """`ext NAME` without a CLI must pick the model of the agent that will actually start."""
         config = Config()
-        config.default_agent = "codex"
+        config.agents.default = "codex"
         with mock.patch.object(runtime.shutil, "which", return_value="/usr/bin/podman"), \
              mock.patch.object(runtime, "resolve_workspace", return_value=Workspace(Path.cwd(), Path.cwd())), \
              mock.patch.object(runtime, "ensure_state_dirs"), \
@@ -718,9 +718,9 @@ class ClaudeNotifyHookLifecycleTests(IsolatedRuntimeTest):
         return settings_path
 
     def _notifying(self) -> Config:
-        return Config(notifications=NotificationsConfig(
+        return Config(host=HostConfig(notifications=NotificationsConfig(
             enabled=True, telegram_token="token", telegram_chat_id="chat",
-        ))
+        )))
 
     def test_apply_and_disable_reconcile_codex_alongside_claude(self):
         """Both providers must gain and lose notifications at the apply boundary."""
@@ -825,7 +825,7 @@ class HostModeTests(IsolatedRuntimeTest):
     def test_bare_host_launch_uses_the_default_agent_like_a_box_launch(self):
         """--host must not answer 'which agent' differently from a box launch."""
         config = Config()
-        config.default_agent = "codex"
+        config.agents.default = "codex"
         for agent, expected in ((None, "codex"), ("claude", "claude")):
             with self.subTest(agent=agent), tempfile.TemporaryDirectory() as tmp, \
                  mock.patch.object(runtime.shutil, "which", side_effect=lambda name: f"/usr/bin/{name}"), \
@@ -859,7 +859,7 @@ class HostModeTests(IsolatedRuntimeTest):
         for agent in ("claude", "codex"):
             for enabled in (False, True):
                 config = Config()
-                getattr(config, agent).remote_control = enabled
+                getattr(config.agents, agent).remote_control = enabled
                 with self.subTest(agent=agent, enabled=enabled), tempfile.TemporaryDirectory() as tmp, \
                      mock.patch.object(runtime.shutil, "which", return_value=f"/usr/bin/{agent}"), \
                      mock.patch.object(runtime, "resolve_workspace", return_value=Workspace(Path(tmp), Path(tmp))), \
@@ -880,7 +880,7 @@ class HostModeTests(IsolatedRuntimeTest):
         from agent_box.config import effective_config
         config = Config()
         config.workflow.review.max_lines = 47
-        config.env.set = {'AGENT_BOX_RUNTIME_CONFIG': '/missing/wrong.json',
+        config.box.env.set = {'AGENT_BOX_RUNTIME_CONFIG': '/missing/wrong.json',
                           'CUSTOM_ENV': 'retained'}
         with tempfile.TemporaryDirectory() as tmp, \
              mock.patch.object(runtime.shutil, 'which', return_value='/usr/bin/codex'), \

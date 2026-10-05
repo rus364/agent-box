@@ -15,10 +15,10 @@ import test_config_menu as menu_tests
 
 
 def external_config():
-    return Config.from_dict({'external_providers': {'deepseek': {
+    return Config.from_dict({'agents': {'external_apis': {'deepseek': {
         'enabled': True, 'api_key': 'private-api-key',
         'codex': {'url': 'https://api.example/v1', 'models': {'external-small': {}, 'external-large': {}}},
-        'claude': {'url': 'https://api.example/anthropic', 'models': {'external-small': {}}}}}})
+        'claude': {'url': 'https://api.example/anthropic', 'models': {'external-small': {}}}}}}})
 
 
 class ExternalTomlRenderingTests(unittest.TestCase):
@@ -53,15 +53,15 @@ class ExternalTomlRenderingTests(unittest.TestCase):
         refused with the field named instead of failing at spawn.
         """
         for connection, field in (
-            ({"api_key": "\ud83d"}, "external_providers.x.api_key"),
-            ({"codex": {"url": "https://api.example/\ud83d"}}, "external_providers.x.codex.url"),
+            ({"api_key": "\ud83d"}, "agents.external_apis.x.api_key"),
+            ({"codex": {"url": "https://api.example/\ud83d"}}, "agents.external_apis.x.codex.url"),
             ({"codex": {"env": {"API_TIMEOUT_MS": "\ud83d"}}},
-             "external_providers.x.codex.env.API_TIMEOUT_MS"),
+             "agents.external_apis.x.codex.env.API_TIMEOUT_MS"),
             ({"codex": {"models": {"m\ud83d": {"display_name": "x"}}}},
-             "external_providers.x.codex.models"),
+             "agents.external_apis.x.codex.models"),
         ):
             with self.subTest(field=field), self.assertRaises(AgentBoxError) as raised:
-                Config.from_dict({"external_providers": {"x": connection}})
+                Config.from_dict({"agents": {"external_apis": {"x": connection}}})
             self.assertIn(field, str(raised.exception))
             self.assertIn("a lone surrogate has no UTF-8 form", str(raised.exception))
 
@@ -72,7 +72,7 @@ class ExternalConfigTests(unittest.TestCase):
         import curses
         config = external_config()
         model = menu_tests.BUNDLED_MODELS['codex'][0]
-        config.external_providers['deepseek'].codex.models = {model: config.external_providers['deepseek'].codex.models['external-small']}
+        config.agents.external_apis['deepseek'].codex.models = {model: config.agents.external_apis['deepseek'].codex.models['external-small']}
         path = ('workflow', 'scout', 'models')
         prefix = []
         for index, part in enumerate(path):
@@ -100,13 +100,13 @@ class ExternalConfigTests(unittest.TestCase):
             save_config(config, path)
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
             loaded = load_config(path)
-            self.assertEqual(loaded.external_providers, config.external_providers)
+            self.assertEqual(loaded.agents.external_apis, config.agents.external_apis)
         with patch.object(cli, 'effective_config', return_value=config), contextlib.redirect_stdout(io.StringIO()) as output:
             cli.config_show()
         self.assertNotIn('private-api-key', output.getvalue())
         self.assertIn('https://api.example/anthropic', output.getvalue())
-        self.assertTrue(config_menu.secret(('external_providers', 'deepseek', 'api_key')))
-        self.assertFalse(Config.from_dict({'external_providers': {'new': {}}}).external_providers['new'].enabled)
+        self.assertTrue(config_menu.secret(('agents', 'external_apis', 'deepseek', 'api_key')))
+        self.assertFalse(Config.from_dict({'agents': {'external_apis': {'new': {}}}}).agents.external_apis['new'].enabled)
         self.assertFalse(validate_connections(config))
 
     def test_a_malformed_candidate_api_name_is_a_validation_error_not_a_crash(self):
@@ -125,12 +125,12 @@ class ExternalConfigTests(unittest.TestCase):
         for data in bad:
             with self.subTest(data_type=type(data).__name__):
                 with self.assertRaises(AgentBoxError) as raised:
-                    Config.from_dict({'external_providers': data})
+                    Config.from_dict({'agents': {'external_apis': data}})
                 self.assertNotIn('private-api-key', str(raised.exception))
         config = external_config()
-        config.external_providers['deepseek'].api_key = ''
+        config.agents.external_apis['deepseek'].api_key = ''
         self.assertTrue(validate_connections(config))
-        config.external_providers['deepseek'].enabled = False
+        config.agents.external_apis['deepseek'].enabled = False
         self.assertFalse(validate_connections(config))
 
     def test_project_routes_reference_global_connections_without_owning_secrets(self):
@@ -146,7 +146,7 @@ class ExternalConfigTests(unittest.TestCase):
                 project_config.validate({'workflow': {'scout': {'models': [invalid]}}}, Path('.agent-box.json'))
             self.assertNotIn('private-api-key', str(raised.exception))
         with self.assertRaisesRegex(AgentBoxError, 'PROJECT_CREDENTIALS_FORBIDDEN') as raised:
-            project_config.validate({'external_providers': {'x': {'api_key': 'private-api-key'}}}, Path('.agent-box.json'))
+            project_config.validate({'agents': {'external_apis': {'x': {'api_key': 'private-api-key'}}}}, Path('.agent-box.json'))
         self.assertNotIn('private-api-key', str(raised.exception))
 
     def test_endpoint_syntax_rejects_ambiguous_authorities_and_keeps_local_urls(self):
@@ -154,28 +154,28 @@ class ExternalConfigTests(unittest.TestCase):
         for url in [r'https://host\evil', 'https://@host', 'https://%20',
                     'https://host?', 'https://host#', 'https://host\x7f', 'https://<host>']:
             with self.subTest(url=url), self.assertRaises(AgentBoxError):
-                Config.from_dict({'external_providers': {'x': {'codex': {'url': url}}}})
+                Config.from_dict({'agents': {'external_apis': {'x': {'codex': {'url': url}}}}})
         for url in ['http://localhost:8000/v1', 'http://127.0.0.1:9',
                     'http://[::1]:8000/v1', 'https://api.example/a%20b']:
-            config = Config.from_dict({'external_providers': {'x': {'codex': {'url': url}}}})
-            self.assertEqual(config.external_providers['x'].codex.url, url)
+            config = Config.from_dict({'agents': {'external_apis': {'x': {'codex': {'url': url}}}}})
+            self.assertEqual(config.agents.external_apis['x'].codex.url, url)
 
     def test_menu_creation_and_deletion_are_draft_only(self):
         """Adding/deleting a connection must respect cancel and confirmation."""
         import curses
-        start = [*menu_tests.select('external_providers'), '\n']
-        add = [*start, '\n', *'new-api', '\n', '\x1b', '\x1b']
+        start = [*menu_tests.select('agents'), '\n', *menu_tests.select('external_apis', ('agents',)), '\n']
+        add = [*start, '\n', *'new-api', '\n', '\x1b', '\x1b', '\x1b']
         edited, _ = menu_tests.ConfigMenuTests().edit(Config(), [*add, curses.KEY_END, curses.KEY_UP, '\n'])
-        self.assertIn('new-api', edited.config.external_providers)
-        self.assertFalse(edited.config.external_providers['new-api'].enabled)
+        self.assertIn('new-api', edited.config.agents.external_apis)
+        self.assertFalse(edited.config.agents.external_apis['new-api'].enabled)
         cancelled, _ = menu_tests.ConfigMenuTests().edit(Config(), [*add, '\x1b'])
         self.assertIsNone(cancelled)
-        delete = [*start, '\n', curses.KEY_END, '\n', curses.KEY_DOWN, '\n', '\x1b',
+        delete = [*start, '\n', curses.KEY_END, '\n', curses.KEY_DOWN, '\n', '\x1b', '\x1b',
                   curses.KEY_END, curses.KEY_UP, '\n']
         config = external_config()
         edited, screen = menu_tests.ConfigMenuTests().edit(config, delete)
-        self.assertEqual(edited.config.external_providers, {})
-        self.assertIn('deepseek', config.external_providers)
+        self.assertEqual(edited.config.agents.external_apis, {})
+        self.assertIn('deepseek', config.agents.external_apis)
         self.assertNotIn('private-api-key', '\n'.join(screen.drawn))
 
     def test_all_candidate_lists_select_external_models_and_preserve_other_roles(self):
@@ -206,9 +206,9 @@ class ExternalConfigTests(unittest.TestCase):
         path = ('workflow', 'worker', 'models')
         for deleted in (False, True):
             config = external_config()
-            config.external_providers['deepseek'].codex.models = {}
+            config.agents.external_apis['deepseek'].codex.models = {}
             if deleted:
-                del config.external_providers['deepseek']
+                del config.agents.external_apis['deepseek']
             config.workflow.worker.models = [{'provider': 'codex', 'model': 'old', 'effort': 'medium', 'speed': 'inherit',
                                               'api_provider': 'deepseek'}]
             keys = []
@@ -226,9 +226,9 @@ class ExternalConfigTests(unittest.TestCase):
         """Dynamic fields need real defaults, just like fixed connection fields."""
         import curses
         config = external_config()
-        config.external_providers['deepseek'].enabled = False
-        keys = [*menu_tests.select('external_providers'), '\n', '\n', curses.KEY_DOWN, 'R',
-                '\x1b', '\x1b', curses.KEY_END, curses.KEY_UP, '\n']
+        config.agents.external_apis['deepseek'].enabled = False
+        keys = [*menu_tests.select('agents'), '\n', *menu_tests.select('external_apis', ('agents',)), '\n', '\n', curses.KEY_DOWN, 'R',
+                '\x1b', '\x1b', '\x1b', curses.KEY_END, curses.KEY_UP, '\n']
         edited, _ = menu_tests.ConfigMenuTests().edit(config, keys)
-        self.assertEqual(edited.config.external_providers['deepseek'].api_key, '')
-        self.assertEqual(config.external_providers['deepseek'].api_key, 'private-api-key')
+        self.assertEqual(edited.config.agents.external_apis['deepseek'].api_key, '')
+        self.assertEqual(config.agents.external_apis['deepseek'].api_key, 'private-api-key')

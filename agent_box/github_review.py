@@ -387,7 +387,7 @@ def review(root, binding, adapter, config, task, parent, tasks, base, fingerprin
     from .workflow import lock, read_evidence, review_result, scope_fingerprint
 
     settings = config.workflow.review
-    if not (config.github.gh_token or config.github.gh_config):
+    if not (config.credentials.github.token or config.credentials.github.config):
         raise AgentBoxError("Enable the GitHub integration in agent-box config before a cloud review, "
                             "or select local review with workflow.review.github_provider")
     repo = gw.github_origin(root)

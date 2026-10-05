@@ -22,30 +22,30 @@ class RemoteControlTests(unittest.TestCase):
     def test_nested_launch_snapshot_preserves_remote_choices_without_other_host_integrations(self):
         """A new nested launcher must see its captured opt-in settings."""
         config = Config()
-        config.claude.remote_control = True
-        config.codex.remote_control = True
-        config.claude.telegram_channel = True
+        config.agents.claude.remote_control = True
+        config.agents.codex.remote_control = True
+        config.agents.claude.telegram_channel = True
         with tempfile.TemporaryDirectory() as temp:
             directory = Path(temp)
             runtime.sync_tracker_runtime(config, directory, policy=True)
             data = json.loads((directory / 'config.json').read_text())
             loaded = Config.from_dict(data)
-            self.assertTrue(loaded.claude.remote_control)
-            self.assertTrue(loaded.codex.remote_control)
-            self.assertEqual(loaded.codex.native_agent_wait.interval_seconds, 28 * 60)
-            self.assertEqual(data['claude'], {'remote_control': True, 'statusline': {'command': ''}})
+            self.assertTrue(loaded.agents.claude.remote_control)
+            self.assertTrue(loaded.agents.codex.remote_control)
+            self.assertEqual(loaded.agents.codex.native_agent_wait.interval_seconds, 28 * 60)
+            self.assertEqual(data['agents']['claude'], {'remote_control': True, 'statusline': {'command': ''}})
 
     def test_off_preserves_exact_native_command_for_both_launch_modes(self):
         """Disabled RC must not impose server limitations on profiles or arguments."""
         config = Config.from_dict(Config().to_dict())
         for provider in ('claude', 'codex'):
-            self.assertFalse(getattr(config, provider).remote_control)
+            self.assertFalse(getattr(config.agents, provider).remote_control)
             command = [provider, '-p', 'custom', '--', 'prompt']
             for container in (False, True):
                 self.assertEqual(runtime.remote_control_command(command, provider, config, container=container), command)
-        config.codex.remote_control = True
-        self.assertTrue(Config.from_dict(config.to_dict()).codex.remote_control)
-        self.assertFalse(Config.from_dict(config.to_dict()).claude.remote_control)
+        config.agents.codex.remote_control = True
+        self.assertTrue(Config.from_dict(config.to_dict()).agents.codex.remote_control)
+        self.assertFalse(Config.from_dict(config.to_dict()).agents.claude.remote_control)
 
     def test_managed_and_redirected_calls_never_enable_rc(self):
         """Delegated providers retain their own route, even inside an RC session."""

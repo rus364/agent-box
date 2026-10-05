@@ -49,8 +49,8 @@ class ConfigSetTests(unittest.TestCase):
     def test_dry_run_prints_the_same_diff_and_writes_nothing(self):
         """Previewing is how the agent asks for consent, so it must not already have changed the file."""
         before = self.file.read_text()
-        output = self.run_set("--project", "--dry-run", "tools.browser=true")
-        self.assertIn('+    "browser": true', output)
+        output = self.run_set("--project", "--dry-run", "box.tools.browser=true")
+        self.assertIn('+      "browser": true', output)
         self.assertIn("Dry run: nothing written", output)
         self.assertEqual(self.file.read_text(), before)
 
@@ -64,10 +64,10 @@ class ConfigSetTests(unittest.TestCase):
         self.assertEqual(workflow["review"]["ignored_paths"], [])
 
     def test_reset_removes_the_override_and_empty_sections_so_the_path_inherits(self):
-        self.run_set("--project", "workflow.review.max_files=5", "tools.browser=false")
+        self.run_set("--project", "workflow.review.max_files=5", "box.tools.browser=false")
         output = self.run_set("--project", "--reset", "workflow.review.max_files")
         self.assertIn('-      "max_files": 5', output)
-        self.assertEqual(self.saved(), {**self.binding, "tools": {"browser": False}})
+        self.assertEqual(self.saved(), {**self.binding, "box": {"tools": {"browser": False}}})
         self.assertIn("No changes", self.run_set("--project", "--reset", "workflow.review.max_lines"))
 
     def test_invalid_changes_leave_the_file_untouched_and_never_echo_the_value(self):
@@ -80,7 +80,7 @@ class ConfigSetTests(unittest.TestCase):
             ("statusline.command=curl-secret-value",): "must be JSON",
             ("workflow.review.policy=\"sometimes\"",): "",
             ("--reset",): "expected",
-            ("tools.browser=true", "tools.browser=false"): "once",
+            ("box.tools.browser=true", "box.tools.browser=false"): "once",
             ('workflow.review={"max_files": 5}', "workflow.review.max_lines=3"): "containing",
             ("--reset", "workflow.review", "workflow.review.max_lines=3"): "containing",
         }

@@ -282,7 +282,7 @@ class PathStatusTests(unittest.TestCase):
         from agent_box.cli import path_status
         from agent_box.config import Config
         config = Config()
-        config.install.bin_dir = bin_dir
+        config.host.bin_dir = bin_dir
         found = Path(bin_dir or "/nowhere") / "agent-box"
         with unittest.mock.patch.object(
                 pathsetup, "link_state", return_value=pathsetup.LinkState(kind, found)):

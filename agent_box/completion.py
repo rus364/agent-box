@@ -66,7 +66,7 @@ def external_command(args):
     if len(args) == 1:
         from .config import effective_config
         config = effective_config(include_project=False)
-        return "words", [(name, "") for name, spec in config.external_providers.items() if spec.enabled]
+        return "words", [(name, "") for name, spec in config.agents.external_apis.items() if spec.enabled]
     if len(args) == 2:
         return "words", [("claude", ""), ("codex", "")]
     return files(args)

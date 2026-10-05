@@ -15,7 +15,7 @@ from .external_config import API_EFFORTS, ExternalProvider, model_defaults, mode
 from .model_catalog import load_model_catalogs
 
 CHOICES = {
-    "default_agent": LAUNCH_AGENTS,
+    "agents.default": LAUNCH_AGENTS,
     "tracker.provider": TRACKER_PROVIDERS,
     "workflow.merge_mode": ("github", "local"),
     "workflow.sync.policy": ("off", "auto", "always"),
@@ -23,68 +23,69 @@ CHOICES = {
     "workflow.review.policy": ("off", "auto", "always"),
     "workflow.review.incremental": REVIEW_INCREMENTAL,
     "workflow.review.github_provider": ("auto", "local", "codex", "claude"),
-    "tools.k3s.lifetime": K3S_LIFETIMES,
+    "box.k3s.lifetime": K3S_LIFETIMES,
 }
 HELP = {
-    "default_agent": "Agent started by `agent-box` without claude/codex; an explicit claude or codex always wins. Global only; not a project setting.",
-    "install": "Where agent-box keeps its PATH symlink. Global only; set through the menu's PATH integration.",
-    "install.bin_dir": "Directory holding the agent-box PATH symlink; empty means agent-box manages none. `agent-box config apply` restores the link here.",
-    "claude": "Claude session settings, including --host, and its status line. Global only.",
-    "claude.telegram_channel": "Start Claude with Anthropic's official Telegram channel plugin. This requires its host-side setup and exposes the session through that channel.",
-    "claude.remote_control": "Request Remote Control for new interactive Claude sessions, including --host. Off preserves native behavior. Resume and explicit settings use the ordinary launch. Requires eligible Claude login.",
-    "claude.statusline": "Claude's status line and its extra usage segment. Global only; changes apply after Save and apply.",
-    "claude.statusline.enabled": "Keep Claude's status line pointed at agent-box. An existing user-owned status line is never overwritten.",
-    "claude.statusline.command": "Extra segment in Claude's status line and `agent-box usage all`: shell command whose first output line is shown after Codex usage; empty shows nothing. Runs where the line is drawn (Claude's status line runs inside the box), cached 60s, 5s timeout, failures show —. Pass keys via environment, not in the command.",
-    "codex": "Codex interactive session settings, including --host.",
-    "codex.remote_control": "Request Remote Control through a private app-server; one agent-box RC session per CODEX_HOME. Unsupported launches keep the ordinary CLI. Off leaves native behavior unchanged.",
-    "codex.native_agent_wait": "Cache-aware waiting for native Codex subagents in tracked workflow sessions. Global only.",
-    "codex.native_agent_wait.enabled": "Set the root coordinator's default wait interval for native subagents. Off leaves Codex's native wait default unchanged.",
-    "codex.native_agent_wait.interval_seconds": "Seconds between coordinator turns while native subagents are still running, from 10 through 3600. Default 1680 keeps each turn inside the 30-minute prompt-cache guarantee.",
-    "notifications": "Outbound Telegram completion notifications. The bot token and chat ID stay disabled until this section is enabled and fully configured.",
-    "notifications.enabled": "Send outbound completion notifications through Telegram when a bot token and chat ID are configured.",
-    "notifications.telegram_token": "Telegram bot token used only for outbound notifications. The value is masked in the menu and saved in the protected config file.",
-    "notifications.telegram_chat_id": "Telegram destination chat ID for outbound notifications. It has no effect while notifications are disabled.",
-    "github": "Choose which host GitHub credentials, if any, are exposed inside workspace boxes.",
-    "github.gh_token": "Read the host gh token and forward it as GH_TOKEN. Disabled by default because it exposes a live credential to the box.",
-    "github.gh_config": "Copy the host gh configuration into the box. Disabled by default because that directory normally contains authentication data.",
-    "git": "Configure how much host Git configuration is copied into workspace boxes.",
-    "git.identity": "Copy only user.name and user.email for commit attribution. This exposes no Git credential settings.",
-    "git.full_config": "Copy the complete host Git configuration, which may include credential helpers, headers, URL rewrites, and included files.",
-    "external_providers": "Named external APIs. Enable explicitly to expose their keys to agent-box sessions. Each CLI has its own URL and model list; `ext NAME` without claude/codex uses the default agent.",
-    "providers": "Control which provider-related environment variables are forwarded from the host.",
-    "providers.api_keys": "Forward known Claude and Codex API-key variables by name. Disabled by default because these values are credentials.",
-    "providers.transport": "Forward provider endpoint, proxy, CA, Bedrock, and Vertex transport variables. Proxy URLs may themselves contain credentials.",
-    "env": "Additional per-launch environment policy. Forward secrets by variable name; literal values are stored in config and exposed in process arguments.",
-    "env.forward": "JSON list of host variable names to forward without putting their values in process arguments. Use this form for secrets.",
-    "env.set": "JSON object of literal environment values. These values are stored in config and appear in Podman arguments, so do not put secrets here.",
-    "skills": "Configure agent-box-owned skill integration with host agent clients.",
-    "skills.claude_links": "Link agent-box's managed shared skills into Claude's skill directory when applying configuration.",
-    "tools": "Tool groups baked into the workspace image, and the k3s cluster beside the box. Each image group changes box identity and may make the image larger; a changed selection takes effect after the image is rebuilt.",
-    "tools.k3s": "Per-project k3s cluster in a sidecar container of the host's rootless Podman; the box gets kubectl access, never extra privileges. Not in the image and not available in --host mode.",
-    "tools.k3s.enabled": "Run the cluster and give the box a kubeconfig. The agent becomes cluster-admin; privileged pods reach only the sidecar, never host files. kubectl comes from the kubernetes group. Changes box identity.",
-    "tools.k3s.lifetime": "persistent keeps the cluster running until `agent-box stop`, so deployments survive between sessions. box stops it when agent-box removes the box, or at the next agent-box command for the project if the box ended on its own.",
-    "tools.k3s.persistent_data": "Keep the cluster's volume when the sidecar stops. Off deletes it at every stop, so each start is a clean cluster. `agent-box stop --cluster-data` deletes it on demand.",
-    "tools.k3s.traefik": "Run k3s's Traefik ingress controller. Ingresses are reachable inside the cluster or through kubectl port-forward; nothing is published on the host. Recreates the sidecar on the same data.",
-    "tools.k3s.metrics_server": "Run metrics-server for kubectl top and HorizontalPodAutoscalers. Recreates the sidecar on the same data.",
-    "tools.k3s.servicelb": "Run k3s's ServiceLB so LoadBalancer services, Traefik's included, get an address on the node. Off leaves them pending. Recreates the sidecar on the same data.",
-    "tools.k3s.local_storage": "Run the local-path provisioner, the default StorageClass that binds PVCs to the cluster's volume. Recreates the sidecar on the same data.",
-    "tools.k3s.network_policy": "Enforce NetworkPolicy with k3s's embedded controller. Recreates the sidecar on the same data.",
-    "tools.k3s.cpus": "CPU limit of the sidecar, such as 2 or 1.5; empty means no limit. Recreates the sidecar on the same data.",
-    "tools.k3s.memory": "Memory limit of the sidecar, such as 4g or 512m; empty means no limit. Pods beyond it are OOM-killed inside the cluster. Recreates the sidecar on the same data.",
-    "tools.k3s.ports": "JSON list of HOST:CONTAINER pairs published on the host's 127.0.0.1 only, such as [\"8080:80\"] to open Traefik's ingress in your browser. Never exposed to the LAN. Recreates the sidecar on the same data.",
-    "tools.k3s.manifests": "Project-relative directory k3s applies at start and on every change (YAML and HelmChart resources), mounted read-only; empty mounts nothing. Must stay inside the project. Recreates the sidecar on the same data.",
-    "tools.k3s.registry_mirrors": "JSON object of registry name to mirror URLs, such as {\"docker.io\": [\"https://mirror.example\"]}, rendered into k3s's registries.yaml. No credentials: URLs with a user or password are refused. Recreates the sidecar on the same data.",
-    "tools.k3s.extra_args": "JSON list of extra `k3s server` flags, each starting with --, added after agent-box's own, such as [\"--cluster-cidr=10.60.0.0/16\"]. Recreates the sidecar on the same data.",
-    "tools.k3s.ready_timeout": "Seconds a launch waits for a Ready node before failing with the sidecar's log, from 30 through 1800.",
-    "tools.k3s.version": "rancher/k3s tag such as v1.33.5-k3s1; empty uses the release agent-box pins by digest. k3s cannot downgrade existing data: use `agent-box stop --cluster-data` first.",
+    "agents": "Which agent starts, how Claude and Codex run, and which provider APIs and host variables they may use.",
+    "box": "What the workspace box is built with, the k3s cluster beside it, sound, and its environment.",
+    "credentials": "Host identity and credentials the box's own tools may use. Everything that exposes a credential is off by default.",
+    "host": "What agent-box does on the host itself: notifications, Claude skill links and the PATH symlink. Global only.",
+    "agents.default": "Agent started by `agent-box` without claude/codex; an explicit claude or codex always wins. Global only; not a project setting.",
+    "host.bin_dir": "Directory holding the agent-box PATH symlink; empty means agent-box manages none. `agent-box config apply` restores the link here.",
+    "agents.claude": "Claude session settings, including --host, and its status line. Global only.",
+    "agents.claude.telegram_channel": "Start Claude with Anthropic's official Telegram channel plugin. This requires its host-side setup and exposes the session through that channel.",
+    "agents.claude.remote_control": "Request Remote Control for new interactive Claude sessions, including --host. Off preserves native behavior. Resume and explicit settings use the ordinary launch. Requires eligible Claude login.",
+    "agents.claude.statusline": "Claude's status line and its extra usage segment. Global only; changes apply after Save and apply.",
+    "agents.claude.statusline.enabled": "Keep Claude's status line pointed at agent-box. An existing user-owned status line is never overwritten.",
+    "agents.claude.statusline.command": "Extra segment in Claude's status line and `agent-box usage all`: shell command whose first output line is shown after Codex usage; empty shows nothing. Runs where the line is drawn (Claude's status line runs inside the box), cached 60s, 5s timeout, failures show —. Pass keys via environment, not in the command.",
+    "agents.codex": "Codex interactive session settings, including --host.",
+    "agents.codex.remote_control": "Request Remote Control through a private app-server; one agent-box RC session per CODEX_HOME. Unsupported launches keep the ordinary CLI. Off leaves native behavior unchanged.",
+    "agents.codex.native_agent_wait": "Cache-aware waiting for native Codex subagents in tracked workflow sessions. Global only.",
+    "agents.codex.native_agent_wait.enabled": "Set the root coordinator's default wait interval for native subagents. Off leaves Codex's native wait default unchanged.",
+    "agents.codex.native_agent_wait.interval_seconds": "Seconds between coordinator turns while native subagents are still running, from 10 through 3600. Default 1680 keeps each turn inside the 30-minute prompt-cache guarantee.",
+    "host.notifications": "Outbound Telegram completion notifications. The bot token and chat ID stay disabled until this section is enabled and fully configured.",
+    "host.notifications.enabled": "Send outbound completion notifications through Telegram when a bot token and chat ID are configured.",
+    "host.notifications.telegram_token": "Telegram bot token used only for outbound notifications. The value is masked in the menu and saved in the protected config file.",
+    "host.notifications.telegram_chat_id": "Telegram destination chat ID for outbound notifications. It has no effect while notifications are disabled.",
+    "credentials.github": "Choose which host GitHub credentials, if any, are exposed inside workspace boxes.",
+    "credentials.github.token": "Read the host gh token and forward it as GH_TOKEN. Disabled by default because it exposes a live credential to the box.",
+    "credentials.github.config": "Copy the host gh configuration into the box. Disabled by default because that directory normally contains authentication data.",
+    "credentials.git": "Configure how much host Git configuration is copied into workspace boxes.",
+    "credentials.git.identity": "Copy only user.name and user.email for commit attribution. This exposes no Git credential settings.",
+    "credentials.git.full_config": "Copy the complete host Git configuration, which may include credential helpers, headers, URL rewrites, and included files.",
+    "agents.external_apis": "Named external APIs. Enable explicitly to expose their keys to agent-box sessions. Each CLI has its own URL and model list; `ext NAME` without claude/codex uses the default agent.",
+    "agents.host_env": "Control which provider-related environment variables are forwarded from the host.",
+    "agents.host_env.api_keys": "Forward known Claude and Codex API-key variables by name. Disabled by default because these values are credentials.",
+    "agents.host_env.transport": "Forward provider endpoint, proxy, CA, Bedrock, and Vertex transport variables. Proxy URLs may themselves contain credentials.",
+    "box.env": "Additional per-launch environment policy. Forward secrets by variable name; literal values are stored in config and exposed in process arguments.",
+    "box.env.forward": "JSON list of host variable names to forward without putting their values in process arguments. Use this form for secrets.",
+    "box.env.set": "JSON object of literal environment values. These values are stored in config and appear in Podman arguments, so do not put secrets here.",
+    "host.claude_skill_links": "Link agent-box's managed shared skills into Claude's skill directory when applying configuration.",
+    "box.tools": "Tool groups baked into the workspace image. Each group changes box identity and may make the image larger; a changed selection takes effect after the image is rebuilt.",
+    "box.k3s": "Per-project k3s cluster in a sidecar container of the host's rootless Podman; the box gets kubectl access, never extra privileges. Not in the image and not available in --host mode.",
+    "box.k3s.enabled": "Run the cluster and give the box a kubeconfig. The agent becomes cluster-admin; privileged pods reach only the sidecar, never host files. kubectl comes from the kubernetes group. Changes box identity.",
+    "box.k3s.lifetime": "persistent keeps the cluster running until `agent-box stop`, so deployments survive between sessions. box stops it when agent-box removes the box, or at the next agent-box command for the project if the box ended on its own.",
+    "box.k3s.persistent_data": "Keep the cluster's volume when the sidecar stops. Off deletes it at every stop, so each start is a clean cluster. `agent-box stop --cluster-data` deletes it on demand.",
+    "box.k3s.traefik": "Run k3s's Traefik ingress controller. Ingresses are reachable inside the cluster or through kubectl port-forward; nothing is published on the host. Recreates the sidecar on the same data.",
+    "box.k3s.metrics_server": "Run metrics-server for kubectl top and HorizontalPodAutoscalers. Recreates the sidecar on the same data.",
+    "box.k3s.servicelb": "Run k3s's ServiceLB so LoadBalancer services, Traefik's included, get an address on the node. Off leaves them pending. Recreates the sidecar on the same data.",
+    "box.k3s.local_storage": "Run the local-path provisioner, the default StorageClass that binds PVCs to the cluster's volume. Recreates the sidecar on the same data.",
+    "box.k3s.network_policy": "Enforce NetworkPolicy with k3s's embedded controller. Recreates the sidecar on the same data.",
+    "box.k3s.cpus": "CPU limit of the sidecar, such as 2 or 1.5; empty means no limit. Recreates the sidecar on the same data.",
+    "box.k3s.memory": "Memory limit of the sidecar, such as 4g or 512m; empty means no limit. Pods beyond it are OOM-killed inside the cluster. Recreates the sidecar on the same data.",
+    "box.k3s.ports": "JSON list of HOST:CONTAINER pairs published on the host's 127.0.0.1 only, such as [\"8080:80\"] to open Traefik's ingress in your browser. Never exposed to the LAN. Recreates the sidecar on the same data.",
+    "box.k3s.manifests": "Project-relative directory k3s applies at start and on every change (YAML and HelmChart resources), mounted read-only; empty mounts nothing. Must stay inside the project. Recreates the sidecar on the same data.",
+    "box.k3s.registry_mirrors": "JSON object of registry name to mirror URLs, such as {\"docker.io\": [\"https://mirror.example\"]}, rendered into k3s's registries.yaml. No credentials: URLs with a user or password are refused. Recreates the sidecar on the same data.",
+    "box.k3s.extra_args": "JSON list of extra `k3s server` flags, each starting with --, added after agent-box's own, such as [\"--cluster-cidr=10.60.0.0/16\"]. Recreates the sidecar on the same data.",
+    "box.k3s.ready_timeout": "Seconds a launch waits for a Ready node before failing with the sidecar's log, from 30 through 1800.",
+    "box.k3s.version": "rancher/k3s tag such as v1.33.5-k3s1; empty uses the release agent-box pins by digest. k3s cannot downgrade existing data: use `agent-box stop --cluster-data` first.",
     "tracker": "Expose configured task-tracker connections to agents. Connections remain unavailable while this integration is disabled.",
     "tracker.enabled": "Expose configured tracker connections to agents. Keep credentials out of repository files.",
     "tracker.provider": "Default tracker for repositories without a more specific binding. Choose one of the supported adapters.",
     "tracker.project": "Project tracker identity: the tracker project ID this repository's tasks belong to. Project setting only; setup and adopt write it.",
     "tracker.recursive": "Project tracker identity: include every project under the bound project in the workflow. Project setting only.",
     "tracker.connections": "Provider URLs and tokens rendered into minimal runtime credential files only when tracker integration is enabled.",
-    "audio": "Configure access to the host's sound server from workspace boxes.",
-    "audio.enabled": "Mount the host PulseAudio/PipeWire socket so agents can use the microphone and speakers, e.g. Claude Code /voice. Everything in the box gets both. Changing it recreates the box.",
+    "box.audio": "Mount the host PulseAudio/PipeWire socket so agents can use the microphone and speakers, e.g. Claude Code /voice. Everything in the box gets both. Changing it recreates the box.",
     "workflow": "Opt-in tracked-work orchestration, role models, review, publication, and cleanup policy.",
     "workflow.enabled": "Enable agent-box's tracked-task workflow. Enabling it does not itself expose provider or tracker credentials.",
     "workflow.use_tiers": "Let a task's tier 1-3 select worker, reviewer and Plan sync Models by tier. Off runs each role's own Models; tier lists and task tiers are kept. A project or --[no-]tiers may override it.",
@@ -130,26 +131,43 @@ ACTION_HELP = {
     "preset": "Set file and line thresholds together from a named review preset; all review fields remain editable.",
 }
 LABELS = {
-    "default_agent": "Default agent", "statusline": "Status line",
+    "agents": "Agents", "box": "Workspace box", "credentials": "Credentials", "host": "Host",
+    "default": "Default agent", "statusline": "Status line",
     "claude": "Claude", "codex": "Codex", "github": "GitHub", "git": "Git",
-    "command": "Custom command",
-    "env": "Environment", "providers": "Provider environment", "tools": "Tools",
+    "command": "Custom command", "k3s": "k3s cluster", "claude_skill_links": "Claude skill links",
+    "env": "Environment", "host_env": "Provider environment", "tools": "Image tools",
     "url": "URL", "token": "Access token", "effort": "Reasoning effort",
     "github_model": "GitHub review model", "github_effort": "GitHub review effort",
     "telegram_chat_id": "Telegram chat ID",
     "worker": "Workers", "scout": "Scouts", "sync": "Plan sync", "use_tiers": "Use tiers",
     "github_provider": "GitHub review provider",
-    "external_providers": "External API providers", "api_provider": "API provider", "api_key": "API key",
+    "external_apis": "External APIs", "api_provider": "API provider", "api_key": "API key",
+}
+#: Labels a bare key cannot carry because the same key means something else elsewhere.
+PATH_LABELS = {
+    "credentials.github.token": "Forward gh token", "credentials.github.config": "Copy gh config",
 }
 
 # Presentation follows the user's decisions, not dataclass serialization order.
 MENU_GROUPS = {
     (): (
-        ("Agents", ("default_agent", "claude", "codex", "external_providers")),
-        ("Tracked work", ("tracker", "workflow")),
-        ("Workspace box", ("tools", "audio")),
-        ("From host into the box", ("git", "github", "providers", "env")),
-        ("On the host", ("skills", "notifications")),
+        ("", ("agents", "box", "credentials", "tracker", "workflow", "host")),
+    ),
+    ("agents",): (
+        ("Launch", ("default",)),
+        ("Agent CLIs", ("claude", "codex")),
+        ("Provider access", ("host_env", "external_apis")),
+    ),
+    ("box",): (
+        ("Image", ("tools",)),
+        ("Beside the box", ("k3s",)),
+        ("Inside the box", ("audio", "env")),
+    ),
+    ("credentials",): (
+        ("", ("git", "github")),
+    ),
+    ("host",): (
+        ("", ("notifications", "claude_skill_links")),
     ),
     ("workflow",): (
         ("Workflow", ("enabled",)),
@@ -216,8 +234,19 @@ def clipped(text, width):
     return text if display_width(text) <= width else column_prefix(text, max(0, width - 3)) + "." * min(3, width)
 
 
+#: Named external APIs; every path below holds user-chosen provider and model names.
+EXTERNAL = ("agents", "external_apis")
+
+
+def external(path):
+    """The part of ``path`` below ``agents.external_apis``, or None outside it."""
+    return path[len(EXTERNAL):] if path[:len(EXTERNAL)] == EXTERNAL else None
+
+
 def label_for(key, path=()):
-    if path == ('external_providers',) or path[:1] == ('external_providers',) and path[-1:] == ('models',):
+    if ".".join((*path, key)) in PATH_LABELS:
+        return PATH_LABELS[".".join((*path, key))]
+    if path == EXTERNAL or external(path) is not None and path[-1:] == ('models',):
         return key
     if len(path) == 2 and path[0] == "workflow" and key == "tiers":
         return "Models by tier"
@@ -225,9 +254,10 @@ def label_for(key, path=()):
 
 
 def json_field(path):
-    return (path in (('env', 'set'), ('tools', 'k3s', 'registry_mirrors')) or path[:1] == ('external_providers',)
-            and (len(path) == 4 and path[-1] in ('env', 'provider_options', 'config')
-                 or len(path) == 6 and path[3] == 'models' and path[-1] in ('env', 'metadata')))
+    rel = external(path)
+    return (path in (('box', 'env', 'set'), ('box', 'k3s', 'registry_mirrors')) or rel is not None
+            and (len(rel) == 3 and rel[-1] in ('env', 'provider_options', 'config')
+                 or len(rel) == 5 and rel[2] == 'models' and rel[-1] in ('env', 'metadata')))
 
 
 def help_for(path):
@@ -238,13 +268,14 @@ def help_for(path):
                 "Independent of effort. Explicit speed uses managed CLI; native agents inherit speed. External APIs support inherit only.")
     if dotted in HELP:
         return HELP[dotted]
-    if path[:1] == ("external_providers",):
+    rel = external(path)
+    if rel is not None:
         # Provider names and model IDs are the user's own; every fixed field below needs its own help.
-        if len(path) == 2:
-            return HELP["external_providers"]
-        if len(path) == 3 and path[-1] in LAUNCH_AGENTS:
+        if len(rel) == 1:
+            return HELP["agents.external_apis"]
+        if len(rel) == 2 and path[-1] in LAUNCH_AGENTS:
             return f"{path[-1].title()} endpoint of this API: its own URL, models and environment, used only when {path[-1]} runs against it."
-        if len(path) == 5 and path[3] == "models":
+        if len(rel) == 4 and rel[2] == "models":
             return "Settings for this model ID. Workflow candidates select it through the model picker; the ID sent to the API is the key itself."
         text = {"enabled": "Expose this API connection to agent-box sessions. Off by default.",
                 "api_key": "Stored in the protected global config; masked in displays and excluded from command arguments.",
@@ -265,7 +296,7 @@ def help_for(path):
                 "env": "JSON object of per-process environment strings. Model values override endpoint values; typed effort/compact fields and explicit effort take priority. API/auth/RC ownership cannot be overridden. Values are masked and never placed in argv."}.get(path[-1])
         if text:
             return text
-    if len(path) == 2 and path[0] == "tools":
+    if len(path) == 3 and path[:2] == ("box", "tools"):
         return f"{TOOL_GROUP_HELP.get(path[-1], path[-1])}. Rebuild the workspace image to install or remove this group; browsing and saving this selection do not rebuild it."
     if len(path) == 3 and path[:2] == ("tracker", "connections"):
         return f"Connection settings for the {path[-1]} tracker. It is exposed only when tracker integration is enabled."
@@ -281,9 +312,9 @@ def help_for(path):
 
 
 def validate(config):
-    errors = (config.workflow.validate() + config.codex.validate() + config.tools.validate()
+    errors = (config.workflow.validate() + config.agents.codex.validate() + config.box.validate()
               + validate_connections(config))
-    if config.claude.telegram_channel:
+    if config.agents.claude.telegram_channel:
         from .channel import missing_requirements
         errors.extend(missing_requirements())
     return errors
@@ -347,7 +378,7 @@ def candidate_efforts(spec, tree):
     provider, api, value = spec["provider"], spec.get("api_provider"), spec["effort"]
     if not api:
         return tuple(dict.fromkeys([*AGENT_EFFORTS.get(provider, ()), value]))
-    models = tree["external_providers"].get(api, {}).get(provider, {}).get("models", {})
+    models = tree["agents"]["external_apis"].get(api, {}).get(provider, {}).get("models", {})
     model = model_settings(models, spec["model"], provider)
     return tuple(dict.fromkeys(["default", *(model.get("supported_efforts") or API_EFFORTS[provider][1:]), value]))
 
@@ -356,10 +387,11 @@ def value_choices(path, section, tree):
     """The values the menu offers for ``path``, or None for free input; `config describe` reports the same."""
     name, value = path[-1], section[path[-1]]
     options = CHOICES.get(".".join(path))
-    if path[:1] == ('external_providers',):
-        if len(path) == 6 and name == 'effort':
-            options = tuple(dict.fromkeys(['default', *(section['supported_efforts'] or API_EFFORTS[path[2]][1:]), value]))
-        elif len(path) == 4 and name == 'default_model':
+    rel = external(path)
+    if rel is not None:
+        if len(rel) == 5 and name == 'effort':
+            options = tuple(dict.fromkeys(['default', *(section['supported_efforts'] or API_EFFORTS[rel[1]][1:]), value]))
+        elif len(rel) == 3 and name == 'default_model':
             options = ['', *section['models']]
     return options
 
@@ -386,7 +418,8 @@ def edit(config, *, project=None):
     global_values = copy.deepcopy(inherited)
     draft = merge(inherited, overrides) if project_mode else copy.deepcopy(inherited)
     draft.pop("version", None)
-    draft.pop("install", None)
+    # PATH integration is an action in the Host section, not a free-text field.
+    draft["host"].pop("bin_dir", None)
     for provider in TRACKER_PROVIDERS:
         inherited["tracker"]["connections"].setdefault(provider, TrackerConnection().to_dict())
         draft["tracker"]["connections"].setdefault(provider, TrackerConnection().to_dict())
@@ -394,7 +427,7 @@ def edit(config, *, project=None):
         for target in (inherited, draft):
             target["tracker"].setdefault("project", "")
             target["tracker"].setdefault("recursive", False)
-    path_state = {"bin": Path(config.install.bin_dir) if config.install.bin_dir else None, "rc": False}
+    path_state = {"bin": Path(config.host.bin_dir) if config.host.bin_dir else None, "rc": False}
 
     def explicit(path):
         value = overrides
@@ -435,10 +468,11 @@ def edit(config, *, project=None):
             if part not in value:
                 # Connection rows are editable defaults, but a section copy
                 # must not create accounts that the global map does not hold.
-                if path[:1] == ('external_providers',) and len(path) >= 2:
-                    model_path = len(path) >= 5 and path[3] == 'models'
-                    value = model_defaults(path[2]) if model_path else ExternalProvider().to_dict()
-                    for part in path[5:] if model_path else path[2:]:
+                rel = external(path)
+                if rel:
+                    model_path = len(rel) >= 4 and rel[2] == 'models'
+                    value = model_defaults(rel[1]) if model_path else ExternalProvider().to_dict()
+                    for part in rel[4:] if model_path else rel[1:]:
                         value = value[part]
                     break
                 if path[:2] == ('tracker', 'connections') and len(path) >= 3:
@@ -456,7 +490,7 @@ def edit(config, *, project=None):
         return copy.deepcopy(value)
 
     def drafted():
-        result = Config.from_dict({**draft, "install": {"bin_dir": str(path_state["bin"]) if path_state["bin"] else ""}})
+        result = Config.from_dict({**draft, "host": {**draft["host"], "bin_dir": str(path_state["bin"]) if path_state["bin"] else ""}})
         # Empty connection rows exist for editing, not as configured accounts.
         result.tracker.connections = {provider: connection for provider, connection in result.tracker.connections.items()
                                       if connection != TrackerConnection()}
@@ -690,7 +724,7 @@ def edit(config, *, project=None):
         """``(provider, api, model)`` chosen together, or None; any CLI's model may serve any role."""
         current = (spec["provider"], spec.get("api_provider", ""), spec["model"]) if spec else None
         apis = [(provider, '') for provider in AGENT_PROVIDERS]
-        apis += [(provider, name) for name, connection in draft['external_providers'].items()
+        apis += [(provider, name) for name, connection in draft['agents']['external_apis'].items()
                  for provider in AGENT_PROVIDERS if connection['enabled'] and connection[provider]['url']]
         if current and current[:2] not in apis:
             # A deleted or disabled API stays editable by hand rather than silently moving the candidate.
@@ -698,8 +732,8 @@ def edit(config, *, project=None):
         suggestions = [(provider, '', model, f'{model} [{provider}]')
                        for provider in AGENT_PROVIDERS for model in model_suggestions[provider]]
         suggestions += [(provider, api, model, (settings['display_name'] or model) + f' [{provider}@{api}: {model}]')
-                        for provider, api in apis if api and api in draft['external_providers']
-                        for model, settings in draft['external_providers'][api][provider]['models'].items()]
+                        for provider, api in apis if api and api in draft['agents']['external_apis']
+                        for model, settings in draft['agents']['external_apis'][api][provider]['models'].items()]
         if current and current not in [row[:3] for row in suggestions]:
             suggestions.insert(0, (*current, f'{current[2]} [{current[0]}{"@" + current[1] if current[1] else ""}]'))
         rows = [f'Enter a custom model ID... [{provider}{"@" + api if api else ""}]' for provider, api in apis]
@@ -787,24 +821,31 @@ def edit(config, *, project=None):
         return "PATH integration: agent-box is not on PATH yet"
 
     def menu(screen, data, path=()):
-        selected, notice = (len(data), "Setup starts here: agent-box is not on PATH yet") if not path and path_pending() else (0, "")
+        selected, notice = 0, ""
+        if path_pending() and path in ((), ("host",)):
+            # Lead an unfinished setup to the PATH row inside Host.
+            selected = menu_keys(data, path).index("host") if not path else len(data)
+            notice = "Setup starts here: agent-box is not on PATH yet" + (" (open Host)" if not path else "")
         while True:
             keys = menu_keys(data, path)
             extras = [("Review preset", "preset", ACTION_HELP["preset"])] if path == ("workflow", "review") else []
-            if path == ("external_providers",) and not project_mode:
+            rel = external(path)
+            if path == EXTERNAL and not project_mode:
                 extras = [("Add provider", "add_provider", "Create a disabled provider with separate Codex/Claude endpoints.")]
-            elif len(path) == 2 and path[0] == "external_providers" and not project_mode:
+            elif rel is not None and len(rel) == 1 and not project_mode:
                 extras = [("Delete provider", "delete_provider", "Remove this definition from the draft. Existing workflow references remain visible and must be changed before use.")]
-            elif path[:1] == ('external_providers',) and not project_mode:
-                if len(path) == 4 and path[-1] == 'models':
+            elif rel is not None and not project_mode:
+                if len(rel) == 3 and path[-1] == 'models':
                     extras = [('Add model', 'add_model', 'Create a model with editable settings for this CLI.')]
-                elif len(path) == 5 and path[3] == 'models':
+                elif len(rel) == 4 and rel[2] == 'models':
                     extras = [('Use as default', 'default_model', 'Select this model for launches without --model.'),
                               ('Delete model', 'delete_model', 'Remove this model and clear its default selection if needed.')]
             if not path:
-                extras = [(path_row(), "path", path_row() + ". " + ACTION_HELP["path"]), ("Save and apply", "save", ACTION_HELP["save"]), ("Cancel", "cancel", ACTION_HELP["cancel"])]
+                extras = [("Save and apply", "save", ACTION_HELP["save"]), ("Cancel", "cancel", ACTION_HELP["cancel"])]
                 if project_mode:
-                    extras = [("PATH integration: Global only", "global", "Global only: configure host integration in agent-box config."), ("Save project", "save", "Save explicit project overrides without applying host integrations."), ("Cancel", "cancel", ACTION_HELP["cancel"])]
+                    extras = [("Save project", "save", "Save explicit project overrides without applying host integrations."), ("Cancel", "cancel", ACTION_HELP["cancel"])]
+            elif path == ("host",):
+                extras = [(path_row(), "path", path_row() + ". " + ACTION_HELP["path"])]
             labels = [label_for(key, path) for key in keys]
             rows = []
             for key, label in zip(keys, labels):
@@ -893,22 +934,22 @@ def edit(config, *, project=None):
                     if action == 'add_model':
                         model = input_value(screen, 'Model ID ([1m] suffix allowed for Claude)', '', False)
                         if model is not None:
-                            if not valid_model(model, path[2]):
+                            if not valid_model(model, path[3]):
                                 notice = 'Invalid model ID for this CLI'
                             elif model in data:
                                 notice = 'Model already exists'
                             else:
-                                data[model] = model_defaults(path[2])
+                                data[model] = model_defaults(path[3])
                                 menu(screen, data[model], (*path, model))
                         continue
                     if action in ('default_model', 'delete_model'):
-                        endpoint = draft['external_providers'][path[1]][path[2]]
+                        endpoint = draft['agents']['external_apis'][path[2]][path[3]]
                         if action == 'default_model':
-                            endpoint['default_model'] = path[4]
+                            endpoint['default_model'] = path[5]
                             notice = 'Default model updated in draft'
-                        elif choose(screen, ['Keep model', 'Delete model'], 'Delete ' + path[4], 0) == 1:
-                            del endpoint['models'][path[4]]
-                            if endpoint['default_model'] == path[4]:
+                        elif choose(screen, ['Keep model', 'Delete model'], 'Delete ' + path[5], 0) == 1:
+                            del endpoint['models'][path[5]]
+                            if endpoint['default_model'] == path[5]:
                                 endpoint['default_model'] = ''
                             return None
                         continue
@@ -924,13 +965,11 @@ def edit(config, *, project=None):
                                 menu(screen, data[name], (*path, name))
                         continue
                     if action == "delete_provider":
-                        chosen = choose(screen, ["Keep provider", "Delete provider"], "Delete " + path[1], 0)
+                        chosen = choose(screen, ["Keep provider", "Delete provider"], "Delete " + path[2], 0)
                         if chosen == 1:
-                            del draft["external_providers"][path[1]]
+                            del draft["agents"]["external_apis"][path[2]]
                             return None
                         continue
-                    if action == "global":
-                        notice = "Global only"
                     if action == "cancel":
                         return None
                     if action == "path":
@@ -1002,7 +1041,7 @@ def edit(config, *, project=None):
                     if changed is not None:
                         try:
                             parsed = parse_value(changed, value)
-                            if full[:1] == ("env",):
+                            if full[:2] == ("box", "env"):
                                 parsed = env_entries(name, parsed)
                             data[name], notice = parsed, "Draft updated; save to keep changes"
                             accepted = True

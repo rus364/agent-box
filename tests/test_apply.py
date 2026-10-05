@@ -75,9 +75,9 @@ class ApplyConfigTests(unittest.TestCase):
     def _fully_enabled(self):
         """A saved configuration whose apply leaves every kind of artifact behind."""
         config = self._enabled()
-        config.notifications.enabled = True
-        config.notifications.telegram_token = "123456:token"
-        config.notifications.telegram_chat_id = "42"
+        config.host.notifications.enabled = True
+        config.host.notifications.telegram_token = "123456:token"
+        config.host.notifications.telegram_chat_id = "42"
         config.workflow.enabled = True
         config.workflow.worker.tiers["1"] = [{"provider": "codex", "model": "chosen-model", "effort": "medium", "speed": "inherit", "api_provider": ""}]
         return config
@@ -92,7 +92,7 @@ class ApplyConfigTests(unittest.TestCase):
 
     def test_the_link_switch_is_honoured(self):
         config = self._enabled()
-        config.skills.claude_links = False
+        config.host.claude_skill_links = False
         runtime.apply_config(config)
         self.assertFalse((self.claude / "skills/ab-tracker").exists())
 

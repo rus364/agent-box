@@ -19,11 +19,11 @@ from pathlib import Path
 from unittest import mock
 
 from agent_box import runtime
-from agent_box.config import AudioConfig, Config
+from agent_box.config import BoxConfig, Config
 
 
 def audio_config(enabled: bool = True) -> Config:
-    return Config(audio=AudioConfig(enabled=enabled))
+    return Config(box=BoxConfig(audio=enabled))
 
 
 class AudioPassthroughTests(unittest.TestCase):

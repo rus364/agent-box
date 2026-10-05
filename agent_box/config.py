@@ -9,7 +9,7 @@ Design rules this file exists to enforce:
 
 * **Every host integration that exposes credentials is opt-in.** Notably a
   GitHub token is never taken from the host just because ``gh`` happens to be
-  authenticated -- ``github.gh_token`` must be turned on deliberately. Same for
+  authenticated -- ``credentials.github.token`` must be turned on deliberately. Same for
   copying the host's ``~/.config/gh`` (which contains that token on disk).
 * **Defaults are the safe answer.** A fresh install runs the container with no
   host credentials beyond the agent's own Claude/Codex config directories.
@@ -136,7 +136,7 @@ class NativeAgentWaitConfig:
     def validate(self) -> list[str]:
         value = self.interval_seconds
         if not isinstance(value, int) or not 10 <= value <= 3600:
-            return ["codex.native_agent_wait.interval_seconds must be between 10 and 3600"]
+            return ["agents.codex.native_agent_wait.interval_seconds must be between 10 and 3600"]
         return []
 
 
@@ -196,22 +196,22 @@ class NotificationsConfig:
 class GitHubConfig:
     """Both default to False on purpose.
 
-    ``gh_token`` runs ``gh auth token`` on the host and forwards the result as
-    ``GH_TOKEN``; ``gh_config`` copies ``~/.config/gh`` (which stores that same
+    ``token`` runs ``gh auth token`` on the host and forwards the result as
+    ``GH_TOKEN``; ``config`` copies ``~/.config/gh`` (which stores that same
     token) into the container. An earlier agent-box did the first
     unconditionally whenever ``gh`` was authenticated, which handed every
     container a live GitHub credential nobody asked for.
     """
 
-    gh_token: bool = False
-    gh_config: bool = False
+    token: bool = False
+    config: bool = False
 
     def to_dict(self) -> dict[str, Any]:
-        return {"gh_token": self.gh_token, "gh_config": self.gh_config}
+        return {"token": self.token, "config": self.config}
 
     @classmethod
     def from_dict(cls, data: Any) -> "GitHubConfig":
-        return cls(gh_token=_bool(data, "gh_token", False), gh_config=_bool(data, "gh_config", False))
+        return cls(token=_bool(data, "token", False), config=_bool(data, "config", False))
 
 
 @dataclass
@@ -242,8 +242,8 @@ class GitConfig:
 
 
 @dataclass
-class ProvidersConfig:
-    """Shell variables forwarded into the container, split by sensitivity.
+class HostEnvConfig:
+    """Agent provider variables forwarded from the launching shell, split by sensitivity.
 
     ``api_keys`` covers the ones that *are* the credential
     (``ANTHROPIC_API_KEY``, ``ANTHROPIC_AUTH_TOKEN``). Having one exported in
@@ -267,48 +267,8 @@ class ProvidersConfig:
         return {"api_keys": self.api_keys, "transport": self.transport}
 
     @classmethod
-    def from_dict(cls, data: Any) -> "ProvidersConfig":
+    def from_dict(cls, data: Any) -> "HostEnvConfig":
         return cls(api_keys=_bool(data, "api_keys", False), transport=_bool(data, "transport", True))
-
-
-@dataclass
-class SkillsConfig:
-    """Claude links expose the shared skills to host Claude sessions as well."""
-    claude_links: bool = True
-
-    def to_dict(self):
-        return {"claude_links": self.claude_links}
-
-    @classmethod
-    def from_dict(cls, data):
-        return cls(claude_links=_bool(data, "claude_links", True))
-
-
-@dataclass
-class InstallConfig:
-    """Which directory agent-box keeps its own ``agent-box`` symlink in.
-
-    Stored because the symlink is the one part of setup that something else
-    can undo: a directory cleaned by a version manager, a home restored from
-    backup, a ``~/.local/bin`` rebuilt by another installer. Remembering the
-    answer turns "run the menu again and find the PATH question" into
-    ``agent-box config apply``, which relinks whatever went missing.
-
-    Empty means agent-box maintains no symlink -- the honest default, since a
-    user who declined the question, or who links the shim themselves, must not
-    have one appear later. The value is a directory the user picked from
-    :func:`agent_box.pathsetup.bin_dir_choices`; the safety rules about what
-    may be replaced live in ``install_symlink`` and apply every time.
-    """
-    bin_dir: str = ""
-
-    def to_dict(self):
-        return {"bin_dir": self.bin_dir}
-
-    @classmethod
-    def from_dict(cls, data):
-        value = data.get("bin_dir") if isinstance(data, dict) else None
-        return cls(bin_dir=value if isinstance(value, str) else "")
 
 
 #: Namespace for the shell-prefix spelling: ``AGENT_BOX_ENV_FOO=bar agent-box
@@ -565,39 +525,39 @@ class K3sConfig:
     def validate(self) -> list[str]:
         errors = []
         if self.lifetime not in K3S_LIFETIMES:
-            errors.append(f"tools.k3s.lifetime must be one of {', '.join(K3S_LIFETIMES)}")
+            errors.append(f"box.k3s.lifetime must be one of {', '.join(K3S_LIFETIMES)}")
         if self.version and not K3S_TAG_PATTERN.fullmatch(self.version):
-            errors.append("tools.k3s.version must be empty or a rancher/k3s tag such as v1.33.5-k3s1")
+            errors.append("box.k3s.version must be empty or a rancher/k3s tag such as v1.33.5-k3s1")
         if self.cpus and not (re.fullmatch(r"\d+(\.\d+)?", self.cpus) and float(self.cpus) > 0):
-            errors.append("tools.k3s.cpus must be empty or a positive number such as 2 or 1.5")
+            errors.append("box.k3s.cpus must be empty or a positive number such as 2 or 1.5")
         if self.memory and not (re.fullmatch(r"\d+[bkmg]?", self.memory, re.I) and int(re.sub(r"\D", "", self.memory))):
-            errors.append("tools.k3s.memory must be empty or a size such as 4g or 512m")
+            errors.append("box.k3s.memory must be empty or a size such as 4g or 512m")
         hosts = []
         for port in self.ports if isinstance(self.ports, list) else [None]:
             match = re.fullmatch(r"(\d{1,5}):(\d{1,5})", port) if isinstance(port, str) else None
             if not match or not all(1 <= int(n) <= 65535 for n in match.groups()):
-                errors.append("tools.k3s.ports must be a list of HOST:CONTAINER port pairs such as 8080:80")
+                errors.append("box.k3s.ports must be a list of HOST:CONTAINER port pairs such as 8080:80")
                 break
             hosts.append(int(match.group(1)))
         if len(hosts) != len(set(hosts)):
-            errors.append("tools.k3s.ports publishes one host port twice")
+            errors.append("box.k3s.ports publishes one host port twice")
         manifests = PurePosixPath(self.manifests)
         if self.manifests and (manifests.is_absolute() or ".." in manifests.parts or "\\" in self.manifests):
-            errors.append("tools.k3s.manifests must be a path inside the project, without '..'")
+            errors.append("box.k3s.manifests must be a path inside the project, without '..'")
         mirrors = self.registry_mirrors
         if not isinstance(mirrors, dict) or any(
                 not isinstance(registry, str) or not re.fullmatch(r"[A-Za-z0-9.:*-]+", registry)
                 or not isinstance(endpoints, list) or not endpoints
                 or any(_k3s_url_problem(url) for url in endpoints)
                 for registry, endpoints in mirrors.items()):
-            errors.append("tools.k3s.registry_mirrors must map registry names to nonempty lists of "
+            errors.append("box.k3s.registry_mirrors must map registry names to nonempty lists of "
                           "http(s) mirror URLs without credentials")
         if not isinstance(self.extra_args, list) or any(
                 not isinstance(arg, str) or not arg.startswith("--") or "\n" in arg for arg in self.extra_args):
-            errors.append("tools.k3s.extra_args must be a list of k3s server flags, each starting with --")
+            errors.append("box.k3s.extra_args must be a list of k3s server flags, each starting with --")
         low, high = K3S_READY_TIMEOUT
         if not isinstance(self.ready_timeout, int) or not low <= self.ready_timeout <= high:
-            errors.append(f"tools.k3s.ready_timeout must be between {low} and {high} seconds")
+            errors.append(f"box.k3s.ready_timeout must be between {low} and {high} seconds")
         return errors
 
 
@@ -621,13 +581,12 @@ class ToolsConfig:
     Unknown group names are dropped on load rather than carried, so the file
     can never ask the build for a group that no longer exists.
 
-    ``k3s`` sits beside the groups rather than among them: it builds nothing
-    into the image, so it never reaches the build args, the image label or
-    the drift report.
+    The k3s cluster is a sibling section of the box, not a group: it builds
+    nothing into the image, so it never reaches the build args, the image
+    label or the drift report.
     """
 
     groups: dict[str, bool] = field(default_factory=lambda: dict(TOOL_GROUPS))
-    k3s: K3sConfig = field(default_factory=K3sConfig)
     #: ``--no-browser`` for one session: the image keeps Chromium, the session
     #: gets no MCP server. Never saved; the launch snapshot re-applies it.
     browser_off: bool = False
@@ -641,41 +600,11 @@ class ToolsConfig:
         return self.groups["browser"] and not self.browser_off
 
     def to_dict(self) -> dict[str, Any]:
-        return {**{name: bool(self.groups.get(name, default)) for name, default in TOOL_GROUPS.items()},
-                "k3s": self.k3s.to_dict()}
+        return {name: bool(self.groups.get(name, default)) for name, default in TOOL_GROUPS.items()}
 
     @classmethod
     def from_dict(cls, data: Any) -> "ToolsConfig":
-        return cls(groups={name: _bool(data, name, default) for name, default in TOOL_GROUPS.items()},
-                   k3s=K3sConfig.from_dict(_mapping(data).get("k3s")))
-
-    def validate(self) -> list[str]:
-        return self.k3s.validate()
-
-
-@dataclass
-class AudioConfig:
-    """The host's sound server inside workspace boxes.
-
-    Off by default: turning it on lets everything in the box -- agents, their
-    tools, the project's own code -- record from the host microphone and play
-    through its speakers. The PulseAudio socket grants both directions and
-    control of the server, so there is deliberately one switch rather than a
-    microphone/speaker pair that the protocol could not actually separate.
-
-    The socket, not ``/dev/snd``: raw ALSA devices would contend with the
-    host's PipeWire or PulseAudio for exclusive access, while the socket works
-    with either server. Structural, because a bind mount is part of the box.
-    """
-
-    enabled: bool = False
-
-    def to_dict(self) -> dict[str, Any]:
-        return {"enabled": self.enabled}
-
-    @classmethod
-    def from_dict(cls, data: Any) -> "AudioConfig":
-        return cls(enabled=_bool(data, "enabled", False))
+        return cls(groups={name: _bool(data, name, default) for name, default in TOOL_GROUPS.items()})
 
 
 TRACKER_PROVIDERS = ("vikunja", "jira", "linear", "github")
@@ -1035,66 +964,161 @@ class WorkflowConfig:
 
 
 @dataclass
-class Config:
-    claude: ClaudeConfig = field(default_factory=ClaudeConfig)
-    codex: CodexConfig = field(default_factory=CodexConfig)
-    notifications: NotificationsConfig = field(default_factory=NotificationsConfig)
-    github: GitHubConfig = field(default_factory=GitHubConfig)
-    git: GitConfig = field(default_factory=GitConfig)
-    providers: ProvidersConfig = field(default_factory=ProvidersConfig)
-    external_providers: dict[str, ExternalProvider] = field(default_factory=dict)
-    env: EnvConfig = field(default_factory=EnvConfig)
-    skills: SkillsConfig = field(default_factory=SkillsConfig)
-    install: InstallConfig = field(default_factory=InstallConfig)
-    tools: ToolsConfig = field(default_factory=ToolsConfig)
-    tracker: TrackerConfig = field(default_factory=TrackerConfig)
-    audio: AudioConfig = field(default_factory=AudioConfig)
-    workflow: WorkflowConfig = field(default_factory=WorkflowConfig)
+class AgentsConfig:
+    """Which agent starts, how each CLI runs, and which APIs it may reach."""
+
     #: The agent a bare ``agent-box`` starts; an explicit ``claude``/``codex`` wins.
     #: Global only: which TUI to open is the user's habit, not a repository's policy.
-    default_agent: str = "claude"
+    default: str = "claude"
+    claude: ClaudeConfig = field(default_factory=ClaudeConfig)
+    codex: CodexConfig = field(default_factory=CodexConfig)
+    host_env: HostEnvConfig = field(default_factory=HostEnvConfig)
+    external_apis: dict[str, ExternalProvider] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "default": self.default,
+            "claude": self.claude.to_dict(),
+            "codex": self.codex.to_dict(),
+            "host_env": self.host_env.to_dict(),
+            "external_apis": {name: spec.to_dict() for name, spec in self.external_apis.items()},
+        }
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "AgentsConfig":
+        data = _mapping(data)
+        agent = _str(data, "default")
+        return cls(
+            default=agent if agent in LAUNCH_AGENTS else "claude",
+            claude=ClaudeConfig.from_dict(data.get("claude")),
+            codex=CodexConfig.from_dict(data.get("codex")),
+            host_env=HostEnvConfig.from_dict(data.get("host_env")),
+            external_apis=parse_connections(data.get("external_apis")),
+        )
+
+
+@dataclass
+class BoxConfig:
+    """What the workspace box is built with and runs beside it."""
+
+    tools: ToolsConfig = field(default_factory=ToolsConfig)
+    k3s: K3sConfig = field(default_factory=K3sConfig)
+    #: The host's sound server inside workspace boxes.
+    #:
+    #: Off by default: turning it on lets everything in the box -- agents,
+    #: their tools, the project's own code -- record from the host microphone
+    #: and play through its speakers. The PulseAudio socket grants both
+    #: directions and control of the server, so there is deliberately one
+    #: switch rather than a microphone/speaker pair that the protocol could not
+    #: actually separate.
+    #:
+    #: The socket, not ``/dev/snd``: raw ALSA devices would contend with the
+    #: host's PipeWire or PulseAudio for exclusive access, while the socket
+    #: works with either server. Structural, because a bind mount is part of
+    #: the box.
+    audio: bool = False
+    env: EnvConfig = field(default_factory=EnvConfig)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"tools": self.tools.to_dict(), "k3s": self.k3s.to_dict(),
+                "audio": self.audio, "env": self.env.to_dict()}
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "BoxConfig":
+        data = _mapping(data)
+        return cls(tools=ToolsConfig.from_dict(data.get("tools")), k3s=K3sConfig.from_dict(data.get("k3s")),
+                   audio=_bool(data, "audio", False), env=EnvConfig.from_dict(data.get("env")))
+
+    def validate(self) -> list[str]:
+        return self.k3s.validate()
+
+
+@dataclass
+class CredentialsConfig:
+    """Host credentials and identity the box's own tools may use; all opt-in but Git identity."""
+
+    git: GitConfig = field(default_factory=GitConfig)
+    github: GitHubConfig = field(default_factory=GitHubConfig)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"git": self.git.to_dict(), "github": self.github.to_dict()}
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "CredentialsConfig":
+        data = _mapping(data)
+        return cls(git=GitConfig.from_dict(data.get("git")), github=GitHubConfig.from_dict(data.get("github")))
+
+
+@dataclass
+class HostConfig:
+    """What agent-box itself does on the host: notifications, skill links, PATH."""
+
+    notifications: NotificationsConfig = field(default_factory=NotificationsConfig)
+    #: Link the shared skills into Claude's skill directory, so host Claude
+    #: sessions see them as well.
+    claude_skill_links: bool = True
+    #: Which directory agent-box keeps its own ``agent-box`` symlink in.
+    #:
+    #: Stored because the symlink is the one part of setup that something
+    #: else can undo: a directory cleaned by a version manager, a home restored
+    #: from backup, a ``~/.local/bin`` rebuilt by another installer.
+    #: Remembering the answer turns "run the menu again and find the PATH
+    #: question" into ``agent-box config apply``, which relinks whatever went
+    #: missing.
+    #:
+    #: Empty means agent-box maintains no symlink -- the honest default, since
+    #: a user who declined the question, or who links the shim themselves,
+    #: must not have one appear later. The value is a directory the user picked
+    #: from :func:`agent_box.pathsetup.bin_dir_choices`; the safety rules about
+    #: what may be replaced live in ``install_symlink`` and apply every time.
+    bin_dir: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"notifications": self.notifications.to_dict(),
+                "claude_skill_links": self.claude_skill_links, "bin_dir": self.bin_dir}
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "HostConfig":
+        data = _mapping(data)
+        bin_dir = data.get("bin_dir")
+        return cls(notifications=NotificationsConfig.from_dict(data.get("notifications")),
+                   claude_skill_links=_bool(data, "claude_skill_links", True),
+                   bin_dir=bin_dir if isinstance(bin_dir, str) else "")
+
+
+@dataclass
+class Config:
+    """The whole file, one section per menu entry at the root."""
+
+    agents: AgentsConfig = field(default_factory=AgentsConfig)
+    box: BoxConfig = field(default_factory=BoxConfig)
+    credentials: CredentialsConfig = field(default_factory=CredentialsConfig)
+    tracker: TrackerConfig = field(default_factory=TrackerConfig)
+    workflow: WorkflowConfig = field(default_factory=WorkflowConfig)
+    host: HostConfig = field(default_factory=HostConfig)
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "version": VERSION,
-            "default_agent": self.default_agent,
-            "claude": self.claude.to_dict(),
-            "codex": self.codex.to_dict(),
-            "notifications": self.notifications.to_dict(),
-            "github": self.github.to_dict(),
-            "git": self.git.to_dict(),
-            "providers": self.providers.to_dict(),
-            "external_providers": {name: spec.to_dict() for name, spec in self.external_providers.items()},
-            "env": self.env.to_dict(),
-            "skills": self.skills.to_dict(),
-            "install": self.install.to_dict(),
-            "tools": self.tools.to_dict(),
+            "agents": self.agents.to_dict(),
+            "box": self.box.to_dict(),
+            "credentials": self.credentials.to_dict(),
             "tracker": self.tracker.to_dict(),
-            "audio": self.audio.to_dict(),
             "workflow": self.workflow.to_dict(),
+            "host": self.host.to_dict(),
         }
 
     @classmethod
     def from_dict(cls, data: Any) -> "Config":
         if not isinstance(data, dict):
             return cls()
-        agent = _str(data, "default_agent")
         return cls(
-            default_agent=agent if agent in LAUNCH_AGENTS else "claude",
-            claude=ClaudeConfig.from_dict(data.get("claude")),
-            codex=CodexConfig.from_dict(data.get("codex")),
-            notifications=NotificationsConfig.from_dict(data.get("notifications")),
-            github=GitHubConfig.from_dict(data.get("github")),
-            git=GitConfig.from_dict(data.get("git")),
-            providers=ProvidersConfig.from_dict(data.get("providers")),
-            external_providers=parse_connections(data.get("external_providers")),
-            env=EnvConfig.from_dict(data.get("env")),
-            skills=SkillsConfig.from_dict(data.get("skills")),
-            install=InstallConfig.from_dict(data.get("install")),
-            tools=ToolsConfig.from_dict(data.get("tools")),
+            agents=AgentsConfig.from_dict(data.get("agents")),
+            box=BoxConfig.from_dict(data.get("box")),
+            credentials=CredentialsConfig.from_dict(data.get("credentials")),
             tracker=TrackerConfig.from_dict(data.get("tracker")),
-            audio=AudioConfig.from_dict(data.get("audio")),
             workflow=WorkflowConfig.from_dict(data.get("workflow")),
+            host=HostConfig.from_dict(data.get("host")),
         )
 
 
@@ -1152,7 +1176,7 @@ def effective_config(base=None, *, include_project=True) -> Config:
             try:
                 base = Config.from_dict(rendered)
                 # Only agent-box's own messages are shown: other exceptions may quote values.
-                errors = base.workflow.validate() + base.codex.validate()
+                errors = base.workflow.validate() + base.agents.codex.validate()
             except AgentBoxError as exc:
                 errors = [str(exc)]
             except (ValueError, TypeError, AttributeError):

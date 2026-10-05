@@ -109,8 +109,9 @@ class CandidateTests(unittest.TestCase):
         self.assertEqual(completion.parser_candidates(parser, ["fresh", "1", "--file", ""]), ("files", []))
 
     def test_ext_offers_only_enabled_external_providers(self):
-        config = unittest.mock.Mock(external_providers={
-            "deepseek": unittest.mock.Mock(enabled=True), "idle": unittest.mock.Mock(enabled=False)})
+        config = unittest.mock.Mock()
+        config.agents.external_apis = {
+            "deepseek": unittest.mock.Mock(enabled=True), "idle": unittest.mock.Mock(enabled=False)}
         with unittest.mock.patch("agent_box.config.effective_config", return_value=config):
             self.assertEqual(words("ext ")[1], ["deepseek"])
             self.assertEqual(words("ext deepseek ")[1], ["claude", "codex"])

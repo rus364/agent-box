@@ -15,7 +15,7 @@ from subprocess import CompletedProcess
 from unittest import mock
 
 from agent_box import k3s, runtime
-from agent_box.config import Config, K3sConfig, ToolsConfig, load_config, save_config
+from agent_box.config import BoxConfig, Config, K3sConfig, load_config, save_config
 from agent_box.errors import AgentBoxError
 
 WID = "0123456789abcdef"
@@ -140,36 +140,36 @@ class SidecarTestCase(unittest.TestCase):
 class ConfigTests(unittest.TestCase):
     def test_the_cluster_is_off_by_default_and_a_saved_file_stays_sparse(self):
         """The agent becomes cluster-admin, so the cluster must be asked for."""
-        self.assertFalse(Config().tools.k3s.enabled)
+        self.assertFalse(Config().box.k3s.enabled)
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "config.json"
             config = Config()
-            config.tools.k3s.enabled = True
-            config.tools.k3s.lifetime = "box"
+            config.box.k3s.enabled = True
+            config.box.k3s.lifetime = "box"
             save_config(config, path)
-            self.assertEqual(json.loads(path.read_text())["tools"], {"k3s": {"enabled": True, "lifetime": "box"}})
-            self.assertEqual(load_config(path).tools.k3s, config.tools.k3s)
+            self.assertEqual(json.loads(path.read_text())["box"], {"k3s": {"enabled": True, "lifetime": "box"}})
+            self.assertEqual(load_config(path).box.k3s, config.box.k3s)
 
     def test_a_non_boolean_does_not_enable_the_cluster(self):
-        self.assertFalse(ToolsConfig.from_dict({"k3s": {"enabled": "yes"}}).k3s.enabled)
-        self.assertFalse(ToolsConfig.from_dict({"k3s": "on"}).k3s.enabled)
+        self.assertFalse(BoxConfig.from_dict({"k3s": {"enabled": "yes"}}).k3s.enabled)
+        self.assertFalse(BoxConfig.from_dict({"k3s": "on"}).k3s.enabled)
 
     def test_an_unknown_lifetime_or_malformed_version_is_reported(self):
         """A typo must not silently run the pinned release or a different lifetime."""
-        problems = ToolsConfig.from_dict({"k3s": {"lifetime": "forever", "version": "1.33"}}).validate()
+        problems = BoxConfig.from_dict({"k3s": {"lifetime": "forever", "version": "1.33"}}).validate()
         self.assertEqual(len(problems), 2)
-        self.assertEqual(ToolsConfig.from_dict({"k3s": {"version": "v1.35.0-rc1-k3s1"}}).validate(), [])
-        self.assertTrue(ToolsConfig.from_dict({"k3s": {"lifetime": ""}}).validate())
+        self.assertEqual(BoxConfig.from_dict({"k3s": {"version": "v1.35.0-rc1-k3s1"}}).validate(), [])
+        self.assertTrue(BoxConfig.from_dict({"k3s": {"lifetime": ""}}).validate())
 
     def test_the_cluster_never_reaches_the_image_build_or_its_label(self):
         """k3s builds nothing into the image, so it must not be reported as drift."""
         config = Config()
-        config.tools.k3s.enabled = True
+        config.box.k3s.enabled = True
         args = " ".join(runtime.tool_build_args(config))
         self.assertNotIn("K3S", args)
         self.assertNotIn("k3s", args)
-        self.assertNotIn("k3s", config.tools.enabled_groups())
-        with mock.patch.object(runtime, "image_tool_groups", return_value=config.tools.enabled_groups()):
+        self.assertNotIn("k3s", config.box.tools.enabled_groups())
+        with mock.patch.object(runtime, "image_tool_groups", return_value=config.box.tools.enabled_groups()):
             self.assertEqual(runtime.image_tool_drift(config), ([], []))
 
 
@@ -247,25 +247,25 @@ class ClusterSettingsTests(unittest.TestCase):
             with self.subTest(field=field, value=value):
                 problems = K3sConfig.from_dict({field: value}).validate()
                 self.assertEqual(len(problems), 1)
-                self.assertIn(f"tools.k3s.{field}", problems[0])
+                self.assertIn(f"box.k3s.{field}", problems[0])
 
     def test_extended_settings_round_trip_sparsely(self):
         config = Config()
-        config.tools.k3s.ports = ["8080:80"]
-        config.tools.k3s.registry_mirrors = {"docker.io": ["https://mirror.example"]}
+        config.box.k3s.ports = ["8080:80"]
+        config.box.k3s.registry_mirrors = {"docker.io": ["https://mirror.example"]}
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "config.json"
             save_config(config, path)
-            self.assertEqual(json.loads(path.read_text())["tools"]["k3s"], {
+            self.assertEqual(json.loads(path.read_text())["box"]["k3s"], {
                 "ports": ["8080:80"], "registry_mirrors": {"docker.io": ["https://mirror.example"]}})
-            self.assertEqual(load_config(path).tools.k3s, config.tools.k3s)
+            self.assertEqual(load_config(path).box.k3s, config.box.k3s)
 
     def test_a_project_may_set_mirrors_but_never_credentials(self):
         from agent_box import project_config
         path = Path("/project/.agent-box.json")
-        project_config.validate({"tools": {"k3s": {"registry_mirrors": {"docker.io": ["https://m.example"]}}}}, path)
+        project_config.validate({"box": {"k3s": {"registry_mirrors": {"docker.io": ["https://m.example"]}}}}, path)
         with self.assertRaisesRegex(AgentBoxError, "registry_mirrors"):
-            project_config.validate({"tools": {"k3s": {"registry_mirrors": {
+            project_config.validate({"box": {"k3s": {"registry_mirrors": {
                 "docker.io": ["https://user:secret@m.example"]}}}}, path)
 
     def test_a_mount_path_podman_would_split_is_refused(self):
@@ -391,7 +391,7 @@ class EnsureTests(SidecarTestCase):
                 action()
 
     def test_invalid_settings_are_refused_before_podman_is_touched(self):
-        with self.assertRaisesRegex(AgentBoxError, "tools.k3s.memory"):
+        with self.assertRaisesRegex(AgentBoxError, "box.k3s.memory"):
             k3s.ensure(WID, K3sConfig(enabled=True, memory="lots"), self.state, self.root)
         self.assertEqual(self.podman.calls, [])
 

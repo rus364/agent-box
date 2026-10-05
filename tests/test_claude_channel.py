@@ -266,7 +266,7 @@ class LaunchDecisionTests(unittest.TestCase):
         self.lock = self.root / "runtime/telegram-channel.json"
         self.workspace = Workspace(self.root, self.root)
         self.config = Config()
-        self.config.claude.telegram_channel = True
+        self.config.agents.claude.telegram_channel = True
 
     def _decide(self, *, ready=True, rest=None):
         home = claude_home(str(self.root / "claude"), plugin=ready, token=ready)
@@ -349,7 +349,7 @@ class LaunchDecisionTests(unittest.TestCase):
         self.assertIn("starting Claude without it", err)
 
     def test_disabled_setting_takes_no_lock(self):
-        self.config.claude.telegram_channel = False
+        self.config.agents.claude.telegram_channel = False
         flags, env, _ = self._decide()
         self.assertEqual(flags, [])
         self.assertEqual(env, ["TELEGRAM_BOT_TOKEN="])
@@ -394,7 +394,7 @@ class ClaudeManagementArgvTests(unittest.TestCase):
         self.lock = self.root / "runtime/telegram-channel.json"
         self.workspace = Workspace(self.root, self.root)
         self.config = Config()
-        self.config.claude.telegram_channel = True
+        self.config.agents.claude.telegram_channel = True
 
     def _launch(self, rest):
         home = claude_home(str(self.root / "claude"), plugin=True, token=True)
@@ -535,9 +535,9 @@ class RuntimeNotificationSelectionTests(unittest.TestCase):
 
     def _run(self, agent, channel):
         config = Config()
-        config.notifications.enabled = True
-        config.notifications.telegram_token = "token"
-        config.notifications.telegram_chat_id = "chat"
+        config.host.notifications.enabled = True
+        config.host.notifications.telegram_token = "token"
+        config.host.notifications.telegram_chat_id = "chat"
         workspace = Workspace(Path("/project"), Path("/project"))
         captured = []
 
@@ -577,7 +577,7 @@ class ConfigEnableGatingTests(unittest.TestCase):
     def test_missing_channel_prerequisites_prevent_menu_save(self):
         from agent_box import config_menu
         config = Config()
-        config.claude.telegram_channel = True
+        config.agents.claude.telegram_channel = True
         with mock.patch.object(cli.channel_module, "missing_requirements", return_value=["Install the Telegram plugin"]):
             self.assertIn("Install the Telegram plugin", config_menu.validate(config))
 
@@ -586,7 +586,7 @@ class ConfigEnableGatingTests(unittest.TestCase):
         with mock.patch.object(cli.channel_module, "missing_requirements", return_value=[]):
             for enabled in (True, False):
                 config = Config()
-                config.claude.telegram_channel = enabled
+                config.agents.claude.telegram_channel = enabled
                 self.assertEqual(config_menu.validate(config), [])
 
 
@@ -619,21 +619,21 @@ class ConfigCheckHonestyTests(unittest.TestCase):
 
     def test_enabled_and_ready_reports_the_flag(self):
         config = Config()
-        config.claude.telegram_channel = True
+        config.agents.claude.telegram_channel = True
         text, code = self._check(config, ready=True)
         self.assertIn(f"--channels {CLAUDE_TELEGRAM_CHANNEL}", text)
         self.assertEqual(code, 0)
 
     def test_missing_prerequisites_print_setup_steps(self):
         config = Config()
-        config.claude.telegram_channel = True
+        config.agents.claude.telegram_channel = True
         text, code = self._check(config, ready=False)
         self.assertIn("/telegram:configure", text)
         self.assertEqual(code, 1)
 
     def test_reports_whether_the_channel_is_currently_active(self):
         config = Config()
-        config.claude.telegram_channel = True
+        config.agents.claude.telegram_channel = True
         with mock.patch.object(cli.channel_module, "CHANNEL_LOCK", self.root / "lock.json"):
             channel.acquire_channel("/p", self.root / "lock.json")
         text, _ = self._check(config, ready=True)
