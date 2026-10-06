@@ -141,6 +141,19 @@ class DescribeTests(unittest.TestCase):
         self.assertEqual(summary.auth, ["auth-provider: oidc"])
         self.assertIn("may not authenticate", summary.warnings[0])
 
+    def test_authentication_the_scanner_cannot_read_is_flagged_not_called_absent(self):
+        """Flow-style YAML is valid; a file whose exec went unseen must not look like one with no credentials."""
+        for user in ("user: {exec: {command: yc}}", "user: {token: SECRET}", "user:\n    other: 1"):
+            text = STATIC.replace("user:\n    token: SECRET-TOKEN", user)
+            summary = kubeconfigs.describe(text)
+            self.assertIn("unrecognised", summary.auth, user)
+            self.assertIn("could not be read", summary.warnings[-1])
+        mixed = STATIC + "- name: other\n  user: {exec: {command: yc}}\n"
+        self.assertEqual(kubeconfigs.describe(mixed).auth, ["token", "unrecognised"])
+        self.assertEqual(kubeconfigs.describe("kind: Config\nusers: [{name: u, user: {exec: {command: yc}}}]\n").auth,
+                         ["unrecognised"])
+        self.assertEqual(kubeconfigs.describe("kind: Config\nusers: []\n").auth, [])
+
     def test_other_yaml_is_not_offered_as_a_kubeconfig(self):
         self.assertFalse(kubeconfigs.describe("apiVersion: v1\nkind: Pod\nmetadata:\n  name: x\n").kubeconfig)
 

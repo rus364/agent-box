@@ -85,6 +85,7 @@ class Summary:
 
 def describe(text: str) -> Summary:
     summary, lines, section, dash = Summary(), text.splitlines(), "", None
+    users, unread = False, False
     for index, line in enumerate(lines):
         match = _LINE.match(line)
         if not match:
@@ -92,6 +93,8 @@ def describe(text: str) -> Summary:
         indent, item, key, value = len(match.group(1)), match.group(2), match.group(3), _scalar(match.group(4))
         if indent == 0 and not item:
             section, dash = key, None
+            if key == "users" and value not in ("", "[]", "null", "~"):
+                users = unread = True
             if (key, value) == ("kind", "Config") or key == "contexts":
                 summary.kubeconfig = True
             continue
@@ -101,7 +104,9 @@ def describe(text: str) -> Summary:
             if key == "name" and dash is not None and indent == (dash if item else dash + 2):
                 summary.contexts.append(value)
         elif section == "users":
-            label = None
+            users, label = True, None
+            # Flow style ({exec: ...}) hides keys from a line scanner; unread must not pass for safe.
+            unread = unread or value[:1] in ("{", "[")
             if key == "exec":
                 label = _exec_label(_block(lines, index, indent))
                 summary.warnings.append(f"{label} does not run inside the box, so this user cannot authenticate there")
@@ -120,6 +125,9 @@ def describe(text: str) -> Summary:
                 summary.auth.append(label)
         if section in ("clusters", "users") and key in _FILE_KEYS and value:
             summary.warnings.append(f"{key} refers to the file {value}; the box has it only where that path is mounted")
+    if users and (unread or not summary.auth):
+        summary.auth.append("unrecognised")
+        summary.warnings.append("its authentication could not be read, so it may not work inside the box")
     summary.warnings = list(dict.fromkeys(summary.warnings))
     return summary
 
