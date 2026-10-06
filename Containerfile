@@ -701,6 +701,7 @@ USER ${USER_NAME}
 
 ENV HOME=${USER_HOME} \
     MISE_DATA_DIR=${USER_HOME}/.local/share/mise \
+    MISE_STATE_DIR=${USER_HOME}/.local/share/mise/state \
     UV_CACHE_DIR=${USER_HOME}/.cache/uv
 
 # No fixed WORKDIR: agent_box.runtime always passes an explicit --workdir

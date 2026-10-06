@@ -120,7 +120,7 @@ class ContainerStatePreparationTests(IsolatedRuntimeTest):
                 self.assertTrue((state_root / "notify").is_dir())
 
 
-class MiseGlobalConfigTests(IsolatedRuntimeTest):
+class MiseStateAcrossBoxesTests(IsolatedRuntimeTest):
     def test_global_tool_choice_outlives_the_box_and_is_shared(self):
         """`mise use -g` writes ~/.config/mise; in the box's own home it died with the box,
         leaving installed tools behind a shim with no version. It must come from agent-box
@@ -134,6 +134,16 @@ class MiseGlobalConfigTests(IsolatedRuntimeTest):
                 seen.append([flag for flag in argv if flag.endswith(f"dst={runtime.HOST_HOME}/.config/mise")])
             self.assertEqual(seen[0], [f"type=bind,src={runtime.STATE_ROOT}/mise-config,dst={runtime.HOST_HOME}/.config/mise"])
             self.assertEqual(seen[0], seen[1])
+
+    def test_trusted_project_configs_outlive_the_box(self):
+        """`mise trust` writes to mise's state directory; in the box's own home it died with
+        the box and every project tool shim then failed as untrusted. It must sit inside the
+        persistent, shared mise data mount."""
+        with tempfile.TemporaryDirectory() as tmp:
+            argv = runtime.container_argv(Workspace(Path(tmp), Path(tmp)), [], Path(tmp), ["codex"])
+        data = f"type=bind,src={runtime.STATE_ROOT}/mise,dst={runtime.HOST_HOME}/.local/share/mise"
+        self.assertIn(data, argv)
+        self.assertIn(f"--env=MISE_STATE_DIR={runtime.HOST_HOME}/.local/share/mise/state", argv)
 
 class ImageExistenceTests(unittest.TestCase):
     def test_missing_image_is_distinct_from_podman_storage_failure(self):

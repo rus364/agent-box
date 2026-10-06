@@ -1601,6 +1601,12 @@ def container_lifetime_args(
         # the container-only cache so it survives across disposable runs.
         f"--env=BUN_INSTALL_CACHE_DIR={XDG_CACHE_HOME}/bun",
         f"--env=MISE_DATA_DIR={home}/.local/share/mise",
+        # `mise trust` records live in the state directory; in the box's own
+        # home they died with it and every project tool shim failed as
+        # untrusted. Inside the persistent data mount, because a mount at
+        # ~/.local/state/mise would have Podman create ~/.local/state
+        # root-owned on any image without it, locking every other tool out.
+        f"--env=MISE_STATE_DIR={home}/.local/share/mise/state",
         "--env=DISABLE_AUTOUPDATER=1",
         # Notification credentials are deliberately *not* a container mount.
         # A workspace box is shared by shell/Claude/Codex, while notification

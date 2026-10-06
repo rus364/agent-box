@@ -518,9 +518,9 @@ A base set everyone gets, plus optional groups you choose under **Workspace box 
 
 Anything else your projects need belongs in the project, through `mise` — a
 per-project toolchain is not an image everyone shares. A tool you add for
-yourself with `mise use -g` survives box recreation: mise's installs and its
-global config live in agent-box state shared by every box, apart from the
-host's own mise.
+yourself with `mise use -g`, and a project config you `mise trust`, survive box
+recreation: mise's installs, global config and trust records live in agent-box
+state shared by every box, apart from the host's own mise.
 
 **Workspace box → k3s cluster** is not an image group. It runs a per-project
 [k3s cluster](docs/integrations/k3s.md) in a sidecar container beside the box
