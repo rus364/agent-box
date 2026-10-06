@@ -29,8 +29,11 @@ untick it. No token, key or other value is shown.
 
 ## The yc tool
 
-`yc` is the image's `yc` tool group, off by default. Choosing a profile while
-forwarding is on ticks that group for you, and `agent-box build` installs it;
+`yc` is the image's `yc` tool group, off by default. It is installed on `PATH`
+and at `~/yandex-cloud/bin/yc`, where yc's own installer puts it and so where
+the kubeconfigs `yc managed-kubernetes cluster get-credentials` writes look for
+it. Choosing a profile while forwarding is on ticks that group for you, and
+`agent-box build` installs it;
 the group can also be ticked alone, for `yc` without any profile. The menu
 will not untick the group while profiles are forwarded. If forwarding is on
 and the group is off anyway (through `config set` or `--cloud-profiles`), or

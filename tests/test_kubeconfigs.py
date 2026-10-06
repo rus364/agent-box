@@ -13,7 +13,7 @@ from contextlib import nullcontext
 from pathlib import Path
 from unittest import mock
 
-from agent_box import kubeconfigs, launch_options, runtime
+from agent_box import kubeconfigs, launch_options, paths, runtime
 from agent_box.config import Config
 from agent_box.workspace import Workspace
 
@@ -65,6 +65,8 @@ users:
 
 
 HELPER = EXEC.replace("command: /home/someone/yandex-cloud/bin/yc", "command: kubectl-helper-cloudera")
+# yc where the box has it too: the installer's path under the home the box mirrors.
+YC = EXEC.replace("/home/someone/yandex-cloud/bin/yc", str(paths.YC_INSTALLER_BIN))
 
 
 def kube_config(files=(), enabled=True, yc=()):
@@ -124,11 +126,19 @@ class DescribeTests(unittest.TestCase):
         """Other exec arguments may carry a credential, so only the profile is shown. A helper
         the box cannot run is a warning by itself; yc runs there once its profile is forwarded,
         so whether yc is a problem is left to the launch that knows."""
-        summary = kubeconfigs.describe(EXEC)
+        summary = kubeconfigs.describe(YC)
         self.assertEqual(summary.contexts, ["yc-managed", "second"])
         self.assertEqual((summary.auth, summary.warnings, summary.yc_profiles),
                          (["exec: yc --profile=dixy"], [], ["dixy"]))
         self.assertNotIn("SECRET", repr(summary))
+
+    def test_a_yc_the_box_does_not_have_is_named_by_its_path(self):
+        """kubectl runs the command as written; a host-only path fails whatever profile is forwarded."""
+        summary = kubeconfigs.describe(EXEC)
+        self.assertEqual((summary.auth, summary.yc_profiles), (["exec: yc --profile=dixy"], []))
+        self.assertEqual(len(summary.warnings), 1)
+        self.assertIn("runs /home/someone/yandex-cloud/bin/yc, which the box does not have", summary.warnings[0])
+        self.assertEqual(kubeconfigs.describe(YC.replace(str(paths.YC_INSTALLER_BIN), "yc")).yc_profiles, ["dixy"])
         helper = kubeconfigs.describe(HELPER)
         self.assertEqual(helper.auth, ["exec: kubectl-helper-cloudera --profile=dixy"])
         self.assertEqual(len(helper.warnings), 1)
@@ -178,7 +188,7 @@ class DiscoveryTests(IsolatedKube):
 
     def test_choices_mark_each_file_and_keep_vanished_choices_visible(self):
         self.write("prod.kubeconfig", STATIC)
-        self.write("dev", EXEC)
+        self.write("dev", YC)
         options, details, marks, problems = kubeconfigs.choices(["gone", "dev"])
         self.assertEqual(options, ["dev", "prod.kubeconfig", "gone"])
         self.assertEqual(marks, ["exec: yc --profile=dixy", "token", "missing"])
@@ -257,7 +267,7 @@ class SyncTests(IsolatedKube):
                                     "not forwarded"])
 
     def test_what_cannot_authenticate_in_the_box_is_reported_without_failing(self):
-        self.write("dev", EXEC)
+        self.write("dev", YC)
         self.write("helper", HELPER)
         problems = kubeconfigs.sync(kube_config(["dev", "helper"]), "ws")
         self.assertTrue(self.copy("dev").exists() and self.copy("helper").exists())
@@ -268,12 +278,12 @@ class SyncTests(IsolatedKube):
     def test_a_yc_user_signs_in_once_its_own_profile_is_forwarded(self):
         """With the profile forwarded yc signs in inside the box, so a warning would be noise;
         another profile does not stand in for the one the kubeconfig names."""
-        self.write("dev", EXEC)
+        self.write("dev", YC)
         self.assertEqual(kubeconfigs.sync(kube_config(["dev"], yc=["dixy"]), "ws"), [])
         problems = kubeconfigs.sync(kube_config(["dev"], yc=["gb"]), "ws")
         self.assertEqual(len(problems), 1)
         self.assertIn("yc profile dixy is not forwarded", problems[0])
-        current = EXEC.replace("        - --profile\n        - dixy\n", "")
+        current = YC.replace("        - --profile\n        - dixy\n", "")
         self.write("current", current)
         self.assertEqual(kubeconfigs.sync(kube_config(["current"], yc=["gb"]), "ws"), [])
         self.assertIn("no yc profile is forwarded", kubeconfigs.sync(kube_config(["current"]), "ws")[0])

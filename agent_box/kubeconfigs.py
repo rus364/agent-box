@@ -23,12 +23,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .atomicio import atomic_write_bytes
-from .paths import KUBECONFIG_DIR, KUBECONFIG_RUNTIME_DIR, XDG_CACHE_HOME
+from .paths import KUBECONFIG_DIR, KUBECONFIG_RUNTIME_DIR, XDG_CACHE_HOME, YC_INSTALLER_BIN
 
 #: Larger files in ~/.kube are not offered: no kubeconfig is this big, a stray archive may be.
 MAX_SCANNED = 1 << 20
 _LINE = re.compile(r"^(\s*)(-\s+)?([A-Za-z][\w-]*):(?:\s+(.*?))?\s*$")
 _ITEM = re.compile(r"^\s*-\s+(.*?)\s*$")
+#: The yc commands the image's yc group answers to; any other path to a yc is the host's alone.
+BOX_YC_COMMANDS = ("yc", "/usr/local/bin/yc", str(YC_INSTALLER_BIN))
 #: Keys whose value is a path to another file the kubeconfig needs.
 _FILE_KEYS = ("certificate-authority", "client-certificate", "client-key", "tokenFile")
 
@@ -54,14 +56,14 @@ def _block(lines: list[str], start: int, column: int) -> list[str]:
 
 
 def _exec(block: list[str]) -> tuple[str, str]:
-    """The exec command's name and its ``--profile``, never its other arguments."""
+    """The exec command as written and its ``--profile``, never its other arguments."""
     command, args, in_args = "", [], False
     for line in block:
         key = _LINE.match(line)
         if key and not key.group(2):
             in_args = key.group(3) == "args"
             if key.group(3) == "command":
-                command = Path(_scalar(key.group(4))).name
+                command = _scalar(key.group(4))
             continue
         item = _ITEM.match(line)
         if in_args and item:
@@ -73,8 +75,8 @@ def _exec(block: list[str]) -> tuple[str, str]:
 
 
 def _exec_label(command: str, profile: str) -> str:
-    """``exec: yc --profile=dixy``."""
-    return " ".join(["exec:", command or "(no command)", *([f"--profile={profile}"] if profile else [])])
+    """``exec: yc --profile=dixy``: the command's name only, as its path may be long."""
+    return " ".join(["exec:", Path(command).name or "(no command)", *([f"--profile={profile}"] if profile else [])])
 
 
 @dataclass
@@ -119,8 +121,11 @@ def describe(text: str) -> Summary:
             if key == "exec":
                 command, profile = _exec(_block(lines, index, indent))
                 label = _exec_label(command, profile)
-                if command == "yc":
+                if command in BOX_YC_COMMANDS:
                     summary.yc_profiles.append(profile)
+                elif Path(command).name == "yc":
+                    summary.warnings.append(f"{label} runs {command}, which the box does not have: its yc is "
+                                            f"yc on PATH or {YC_INSTALLER_BIN}")
                 else:
                     summary.warnings.append(f"{label} does not run inside the box, so this user cannot authenticate there")
             elif key == "auth-provider":

@@ -1,4 +1,5 @@
 """Menu cancellation and secret display are independent of terminal escape codes."""
+import copy
 import json
 import re
 import tempfile
@@ -369,22 +370,30 @@ class ConfigMenuTests(unittest.TestCase):
         lines = [line for frame in screen.frames for line in frame.splitlines()]
         self.assertTrue(any("[ ] dixy" in line and ": federation" in line for line in lines))
         self.assertTrue(any("[ ] lenta" in line and ": service account key" in line for line in lines))
-        self.assertTrue(any("Image tools: yc turned on" in " ".join(frame.split()) for frame in screen.frames))
+        self.assertTrue(any("Image tools: yc on for" in " ".join(frame.split()) for frame in screen.frames))
         self.assertFalse(any("SECRET" in frame for frame in screen.frames))
 
     def test_a_tool_group_stays_ticked_while_configuration_needing_it_is_forwarded(self):
-        """Unticking kubectl under forwarded kubeconfigs would build a box with configs and no
-        tool to read them; the menu refuses and names what needs the group."""
+        """Unticking kubectl or yc under forwarded configuration would build a box with configs
+        and no tool to read them. Every way to the tick counts: the toggle, a reset of the row
+        and a reset of the whole tools section."""
         import curses
         config = Config()
         config.credentials.kubernetes.enabled = True
         config.credentials.kubernetes.files = ["prod"]
-        keys = [*select("box"), "\n", *select("tools", ("box",)), "\n", *select("kubernetes", ("box", "tools")), " ",
-                "\x1b", "\x1b", curses.KEY_END, curses.KEY_UP, "\n"]
-        result, screen = self.edit(config, keys)
-        self.assertTrue(result.config.box.tools.groups["kubernetes"])
-        self.assertTrue(any("Kubernetes configs need this group;" in " ".join(frame.split())
-                            for frame in screen.frames))
+        config.credentials.cloud.enabled = True
+        config.credentials.cloud.yc = ["gb"]
+        config.box.tools.groups["yc"] = True
+        tools = [*select("box"), "\n", *select("tools", ("box",)), "\n"]
+        save = [curses.KEY_END, curses.KEY_UP, "\n"]
+        for name, keys in (("toggle", [*tools, *select("kubernetes", ("box", "tools")), " ", "\x1b", "\x1b", *save]),
+                           ("row reset", [*tools, *select("yc", ("box", "tools")), "r", "\x1b", "\x1b", *save]),
+                           ("section reset", [*select("box"), "\n", *select("tools", ("box",)), "r", "\x1b", *save])):
+            with self.subTest(name):
+                result, screen = self.edit(copy.deepcopy(config), keys)
+                self.assertTrue(result.config.box.tools.groups["kubernetes"])
+                self.assertTrue(result.config.box.tools.groups["yc"])
+                self.assertTrue(any("Image tools:" in frame and " on for " in frame for frame in screen.frames))
 
     def edit(self, config, keys, choices=(), link=None, screen=None, project=None, catalogs=None):
         import curses

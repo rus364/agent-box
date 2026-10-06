@@ -133,6 +133,29 @@ class SyncTests(IsolatedYc):
         self.assertEqual(len(problems), 1)
         self.assertIn("yc profile dixy is not in", problems[0])
 
+    def test_links_the_box_plants_never_steer_a_launch_into_the_hosts_yc_directory(self):
+        """The box writes its copy; links planted there must not lead the next launch's writes
+        and deletions into the host's own yc directory, which would delete unchosen profiles'
+        sign-ins on the host."""
+        cloud.sync(cloud_config(["gb"]), "ws")
+        before = self.host_files()
+        import shutil
+        shutil.rmtree(self.box("credentials"))
+        self.box("credentials").symlink_to(self.yc / "credentials")
+        self.box("config.yaml").unlink()
+        self.box("config.yaml").symlink_to(self.yc / "config.yaml")
+        self.assertEqual(cloud.sync(cloud_config(["gb"]), "ws"), [])
+        self.assertEqual(self.host_files(), before)
+        self.assertFalse(self.box("credentials").is_symlink() or self.box("config.yaml").is_symlink())
+        self.assertEqual(sorted(path.name for path in self.box("credentials").iterdir()), ["gb"])
+        self.box("credentials/gb").unlink()
+        self.box("credentials/gb").symlink_to(self.yc / "credentials/dixy")
+        self.box("credentials/dixy").mkdir()
+        cloud.sync(cloud_config(["gb"]), "ws")
+        self.assertEqual(self.host_files(), before)
+        self.assertFalse(self.box("credentials/gb").is_symlink())
+        self.assertEqual(sorted(path.name for path in self.box("credentials").iterdir()), ["gb"])
+
     def test_a_host_renewal_replaces_the_boxs_sign_in_at_the_next_launch(self):
         cloud.sync(cloud_config(["gb"]), "ws")
         self.box("credentials/gb").write_text("renewed in the box")

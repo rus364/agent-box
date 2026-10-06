@@ -170,4 +170,7 @@ KUBECONFIG_RUNTIME_DIR = STATE_ROOT / "runtime/kubeconfigs"
 # Cloud CLI profiles offered for forwarding: yc reads ~/.config/yandex-cloud
 # whatever XDG_CONFIG_HOME says, and the box gets the chosen ones there too.
 YC_CONFIG_DIR = HOST_HOME / ".config/yandex-cloud"
+# Where yc's own installer puts it, and so the command kubeconfigs it writes
+# name; the image's yc group links it there as well as onto PATH.
+YC_INSTALLER_BIN = HOST_HOME / "yandex-cloud/bin/yc"
 CLOUD_RUNTIME_DIR = STATE_ROOT / "runtime/cloud"

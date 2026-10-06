@@ -631,7 +631,9 @@ RUN set -eux; \
 # files and plant a self-updater under the home directory; `agent-box update`
 # refreshes it with the image. Yandex publishes no checksum for it, and its
 # own installer verifies none either, so HTTPS from Yandex's storage is the
-# integrity there is.
+# integrity there is. Kubeconfigs written by `yc managed-kubernetes cluster
+# get-credentials` name the installer's absolute path; the home mirrors the
+# host's, so a link there lets those run unchanged.
 
 RUN set -eux; \
     if [ "${TOOLS_YC}" != "1" ]; then echo "agent-box: yc skipped"; exit 0; fi; \
@@ -647,7 +649,9 @@ RUN set -eux; \
     curl -fsSL \
         "https://storage.yandexcloud.net/yandexcloud-yc/release/${yc_version}/linux/${arch}/yc" \
         -o /usr/local/bin/yc; \
-    chmod 0755 /usr/local/bin/yc
+    chmod 0755 /usr/local/bin/yc; \
+    install -d -o "${USER_UID}" -g "${USER_GID}" -m 0755 "${USER_HOME}/yandex-cloud" "${USER_HOME}/yandex-cloud/bin"; \
+    ln -s /usr/local/bin/yc "${USER_HOME}/yandex-cloud/bin/yc"
 
 #
 # ---------------------------------------------------------------------------
@@ -708,7 +712,8 @@ RUN set -eux; \
 
 RUN set -eux; \
     if [ "${TOOLS_YC}" != "1" ]; then exit 0; fi; \
-    yc version
+    yc version; \
+    "${USER_HOME}/yandex-cloud/bin/yc" version
 
 RUN set -eux; \
     if [ "${TOOLS_PODMAN}" != "1" ]; then exit 0; fi; \

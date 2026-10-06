@@ -64,7 +64,8 @@ The launch warns about these and still starts:
   works in the box once profile `NAME` is forwarded in
   [Cloud CLI profiles](cloud-profiles.md); the warning names the profile it
   is missing. Forwarding it gives the agent that whole cloud account, not one
-  cluster.
+  cluster. The command must be one the box has: `yc` on `PATH` or
+  `~/yandex-cloud/bin/yc`; any other path is named in the warning.
 - **Other exec plugins** (`kubectl-helper-*`, other cloud CLIs) and
   **auth-providers**. They run a program with the host's own login, and the
   box has neither the program nor that login.

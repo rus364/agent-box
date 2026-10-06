@@ -1027,6 +1027,24 @@ def edit(config, *, project=None):
             return f"PATH integration: found {link.found}, kept by you, not agent-box"
         return "PATH integration: agent-box is not on PATH yet"
 
+    def keep_tools(notice):
+        """Forwarded configuration keeps its tool group ticked, whichever action took the tick away.
+
+        Checked after every action rather than guarded per action: a toggle,
+        a reset of the row and a reset of the whole tools section all reach
+        the same draft, and forwarding turned on needs the same tick.
+        """
+        needed = needed_tools(draft)
+        kept = [group for group in needed if not draft["box"]["tools"].get(group)]
+        for group in kept:
+            draft["box"]["tools"][group] = True
+            if project_mode:
+                record(("box", "tools", group), True)
+        if not kept:
+            return notice
+        return (f"Image tools: {', '.join(kept)} on for {', '.join(needed[group] for group in kept)}; "
+                "built by the next agent-box build and kept on while they are forwarded")
+
     def menu(screen, data, path=()):
         selected, notice = 0, ""
         if path_pending() and path in ((), ("host",)):
@@ -1034,6 +1052,7 @@ def edit(config, *, project=None):
             selected = menu_keys(data, path).index("host") if not path else len(data)
             notice = "Setup starts here: agent-box is not on PATH yet" + (" (open Host)" if not path else "")
         while True:
+            notice = keep_tools(notice)
             keys = menu_keys(data, path)
             extras = [("Review preset", "preset", ACTION_HELP["preset"])] if path == ("workflow", "review") else []
             rel = external(path)
@@ -1228,9 +1247,6 @@ def edit(config, *, project=None):
                     continue
                 accepted = False
                 options = value_choices(full, data, draft)
-                if full[:2] == ("box", "tools") and value is True and name in needed_tools(draft):
-                    notice = f"{needed_tools(draft)[name]} need this group; stop forwarding them first"
-                    continue
                 if isinstance(value, bool):
                     data[name] = not value
                     accepted = True
@@ -1291,15 +1307,6 @@ def edit(config, *, project=None):
                             notice = str(exc)
                 if project_mode and accepted:
                     record(full, data[name])
-                # Credentials are global; a project's own tool choice is left to the launch warning.
-                if accepted and not project_mode:
-                    ticked = [group for group in needed_tools(draft) if not draft["box"]["tools"].get(group)]
-                    for group in ticked:
-                        draft["box"]["tools"][group] = True
-                    if ticked:
-                        notice = (f"Image tools: {', '.join(ticked)} turned on for "
-                                  f"{', '.join(needed_tools(draft)[group] for group in ticked)}; "
-                                  "built by the next agent-box build")
 
     def path_menu(screen):
         """Prefer the relevant safe directory while retaining an explicit decline."""

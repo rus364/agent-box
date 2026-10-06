@@ -21,12 +21,15 @@ therefore ends at the next line indented no deeper than its name.
 from __future__ import annotations
 
 import json
+import os
 import re
+import secrets
 import shutil
+import stat
+from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .atomicio import atomic_write_bytes, atomic_write_text
 from .paths import CLOUD_RUNTIME_DIR, YC_CONFIG_DIR
 
 _KEY = re.compile(r"^(\s*)([^\s:#][^:#]*?):(?:\s+(.*?))?\s*$")
@@ -141,40 +144,105 @@ def mounts(config, workspace_id: str) -> list[tuple[Path, Path, bool]]:
     return [(runtime_dir(workspace_id), YC_CONFIG_DIR, False)]
 
 
+def _remove(dir_fd: int, name: str) -> None:
+    """Whatever the box left under this name goes, without following it anywhere."""
+    try:
+        if _is_directory(dir_fd, name):
+            shutil.rmtree(name, dir_fd=dir_fd)
+        else:
+            os.unlink(name, dir_fd=dir_fd)
+    except FileNotFoundError:
+        pass
+
+
+def _directory(name: str | Path, dir_fd: int | None = None) -> int:
+    """A rendered directory, opened without following a link; anything else in its place is replaced."""
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    try:
+        fd = os.open(name, flags, dir_fd=dir_fd)
+    except OSError:
+        if dir_fd is None:
+            raise
+        _remove(dir_fd, str(name))
+        os.mkdir(name, 0o700, dir_fd=dir_fd)
+        fd = os.open(name, flags, dir_fd=dir_fd)
+    os.fchmod(fd, 0o700)
+    return fd
+
+
+def _write(dir_fd: int, name: str, data: bytes) -> None:
+    """Atomically through a fresh name; the rename replaces a link in the box instead of following it."""
+    temp = f".agent-box.{secrets.token_hex(8)}"
+    fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=dir_fd)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if _is_directory(dir_fd, name):
+            # A rename cannot replace a directory the box put in the way.
+            shutil.rmtree(name, dir_fd=dir_fd)
+        os.replace(temp, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+    except BaseException:
+        with suppress(FileNotFoundError):
+            os.unlink(temp, dir_fd=dir_fd)
+        raise
+
+
+def _is_directory(dir_fd: int, name: str) -> bool:
+    try:
+        return stat.S_ISDIR(os.stat(name, dir_fd=dir_fd, follow_symlinks=False).st_mode)
+    except FileNotFoundError:
+        return False
+
+
 def sync(config, workspace_id: str) -> list[str]:
-    """Render the chosen profiles for one workspace, or remove them; return what was not forwarded."""
+    """Render the chosen profiles for one workspace, or remove them; return what was not forwarded.
+
+    The box writes into the rendered directory, so everything under it is
+    the box's to shape: a ``credentials`` swapped for a link to the host's
+    own would otherwise steer these writes and deletions into the host's
+    yc directory. Each step therefore works through directory descriptors
+    and never follows a link the box could have planted.
+    """
     cloud, directory = config.credentials.cloud, runtime_dir(workspace_id)
     if not cloud.active:
         shutil.rmtree(directory, ignore_errors=True)
         return []
-    credentials = directory / "credentials"
-    credentials.mkdir(parents=True, exist_ok=True)
-    directory.chmod(0o700)
-    credentials.chmod(0o700)
     found, problems = _read()
     forwarded = [name for name in cloud.yc if name in found.blocks]
     problems += [f"yc profile {name} is not in {YC_CONFIG_DIR / 'config.yaml'}; untick it in agent-box config"
                  for name in cloud.yc if name not in found.blocks and found.blocks]
     if not found.blocks and not problems:
         problems.append(f"{YC_CONFIG_DIR / 'config.yaml'} has no yc profiles; none forwarded")
-    if forwarded:
-        atomic_write_text(directory / "config.yaml", render(found, forwarded), 0o600)
-    else:
-        (directory / "config.yaml").unlink(missing_ok=True)
-    for name in forwarded:
-        source = YC_CONFIG_DIR / "credentials" / name
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    root = _directory(directory)
+    try:
+        if forwarded:
+            _write(root, "config.yaml", render(found, forwarded).encode("utf-8"))
+        else:
+            _remove(root, "config.yaml")
+        credentials = _directory("credentials", root)
         try:
-            data = source.read_bytes()
-        except FileNotFoundError:
-            # A key-based profile has none; a stale copy would sign in as a federation no longer there.
-            (credentials / name).unlink(missing_ok=True)
-            continue
-        except OSError as exc:
-            (credentials / name).unlink(missing_ok=True)
-            problems.append(f"yc profile {name}: {source} unreadable ({exc.__class__.__name__}); its sign-in not forwarded")
-            continue
-        atomic_write_bytes(credentials / name, data, 0o600)
-    for path in credentials.iterdir():
-        if path.name not in forwarded:
-            path.unlink(missing_ok=True)
+            for name in forwarded:
+                source = YC_CONFIG_DIR / "credentials" / name
+                try:
+                    data = source.read_bytes()
+                except FileNotFoundError:
+                    # A key-based profile has none; a stale copy would sign in as a federation no longer there.
+                    _remove(credentials, name)
+                    continue
+                except OSError as exc:
+                    _remove(credentials, name)
+                    problems.append(f"yc profile {name}: {source} unreadable ({exc.__class__.__name__}); "
+                                    "its sign-in not forwarded")
+                    continue
+                _write(credentials, name, data)
+            for name in os.listdir(credentials):
+                if name not in forwarded:
+                    _remove(credentials, name)
+        finally:
+            os.close(credentials)
+    finally:
+        os.close(root)
     return problems
