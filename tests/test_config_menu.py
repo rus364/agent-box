@@ -68,7 +68,7 @@ class ConfigMenuTests(unittest.TestCase):
             ('agents',): ['default', 'claude', 'codex', 'host_env', 'external_apis'],
             ('agents', 'codex'): ['native_agent_wait', 'remote_control'],
             ('box',): ['tools', 'k3s', 'audio', 'env'],
-            ('credentials',): ['git', 'github', 'registries', 'kubernetes'],
+            ('credentials',): ['git', 'github', 'registries', 'kubernetes', 'cloud'],
             ('host',): ['notifications', 'claude_skill_links'],
             ('workflow',): ['enabled', 'merge_mode', 'auto_push', 'cleanup_local_branches',
                            'cleanup_remote_branches', 'use_tiers', 'worker', 'scout', 'review', 'sync', 'timeout_seconds'],
@@ -344,6 +344,47 @@ class ConfigMenuTests(unittest.TestCase):
         self.assertTrue(any("[ ] dev" in line and "exec: yc" in line for line in lines))
         self.assertTrue(any("[ ] prod" in line and ": token" in line for line in lines))
         self.assertFalse(any("SECRET-TOKEN" in frame for frame in screen.frames))
+
+    def test_yc_profiles_are_ticked_with_their_sign_in_and_bring_their_tool_group(self):
+        """Forwarded profiles without yc in the image look set up and are not, so choosing
+        one ticks the yc group; the sign-in kind is drawn, never a token or a key."""
+        import curses
+        from agent_box import cloud
+        with tempfile.TemporaryDirectory() as temp:
+            yc = Path(temp)
+            (yc / "credentials").mkdir()
+            (yc / "config.yaml").write_text("current: dixy\nprofiles:\n  dixy:\n    federation-id: fed\n"
+                                            "  lenta:\n    service-account-key:\n      private_key: |\n"
+                                            "        SECRET-KEY\n")
+            (yc / "credentials/dixy").write_text('{"token": "SECRET-TOKEN"}')
+            config = Config()
+            config.credentials.cloud.enabled = True
+            keys = [*select("credentials"), "\n", *select("cloud", ("credentials",)), "\n",
+                    *select("yc", ("credentials", "cloud")), "\n", *select("profiles", ("credentials", "cloud", "yc")),
+                    "\n", curses.KEY_HOME, " ", "\n", "\x1b", "\x1b", "\x1b", curses.KEY_END, curses.KEY_UP, "\n"]
+            with patch.object(cloud, "YC_CONFIG_DIR", yc):
+                result, screen = self.edit(config, keys)
+        self.assertEqual(result.config.credentials.cloud.yc, ["dixy"])
+        self.assertTrue(result.config.box.tools.groups["yc"])
+        lines = [line for frame in screen.frames for line in frame.splitlines()]
+        self.assertTrue(any("[ ] dixy" in line and ": federation" in line for line in lines))
+        self.assertTrue(any("[ ] lenta" in line and ": service account key" in line for line in lines))
+        self.assertTrue(any("Image tools: yc turned on" in " ".join(frame.split()) for frame in screen.frames))
+        self.assertFalse(any("SECRET" in frame for frame in screen.frames))
+
+    def test_a_tool_group_stays_ticked_while_configuration_needing_it_is_forwarded(self):
+        """Unticking kubectl under forwarded kubeconfigs would build a box with configs and no
+        tool to read them; the menu refuses and names what needs the group."""
+        import curses
+        config = Config()
+        config.credentials.kubernetes.enabled = True
+        config.credentials.kubernetes.files = ["prod"]
+        keys = [*select("box"), "\n", *select("tools", ("box",)), "\n", *select("kubernetes", ("box", "tools")), " ",
+                "\x1b", "\x1b", curses.KEY_END, curses.KEY_UP, "\n"]
+        result, screen = self.edit(config, keys)
+        self.assertTrue(result.config.box.tools.groups["kubernetes"])
+        self.assertTrue(any("Kubernetes configs need this group;" in " ".join(frame.split())
+                            for frame in screen.frames))
 
     def edit(self, config, keys, choices=(), link=None, screen=None, project=None, catalogs=None):
         import curses

@@ -166,3 +166,8 @@ CONTAINER_REGISTRY_RUNTIME_DIR = HOST_HOME / ".local/share/agent-box/runtime/reg
 # the same ~/.kube, so a nested launch finds the copies its box was given.
 KUBECONFIG_DIR = HOST_HOME / ".kube"
 KUBECONFIG_RUNTIME_DIR = STATE_ROOT / "runtime/kubeconfigs"
+
+# Cloud CLI profiles offered for forwarding: yc reads ~/.config/yandex-cloud
+# whatever XDG_CONFIG_HOME says, and the box gets the chosen ones there too.
+YC_CONFIG_DIR = HOST_HOME / ".config/yandex-cloud"
+CLOUD_RUNTIME_DIR = STATE_ROOT / "runtime/cloud"

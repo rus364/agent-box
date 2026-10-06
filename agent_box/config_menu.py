@@ -9,7 +9,7 @@ import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 
-from .config import AGENT_EFFORTS, AGENT_PROVIDERS, K3S_LIFETIMES, TOOL_GROUP_HELP, LAUNCH_AGENTS, Config, EnvConfig, REVIEW_INCREMENTAL, REVIEW_PRESETS, TRACKER_PROVIDERS, TrackerConnection, candidate_label, model_entry
+from .config import AGENT_EFFORTS, AGENT_PROVIDERS, K3S_LIFETIMES, TOOL_GROUP_HELP, LAUNCH_AGENTS, Config, CredentialsConfig, EnvConfig, REVIEW_INCREMENTAL, REVIEW_PRESETS, TRACKER_PROVIDERS, TrackerConnection, candidate_label, model_entry
 from .errors import AgentBoxError
 from .external_config import API_EFFORTS, ExternalProvider, model_defaults, model_settings, valid_model, valid_name, validate_connections
 from .model_catalog import load_model_catalogs
@@ -55,8 +55,12 @@ HELP = {
     "credentials.registries.hosts": "Registry hosts found in the podman/skopeo and Helm OCI auth files on the host. Each source is filtered into its own copy; logins kept by a credential helper cannot be forwarded.",
     "credentials.registries.helm_repositories": "Helm repositories found in the host's repositories.yaml, forwarded with their credentials. The box keeps its own index cache; refresh it with helm repo update.",
     "credentials.kubernetes": "Forward the kubeconfig files you choose from the host's ~/.kube into the box's ~/.kube, each whole, unmerged and under its own name; the box's ~/.kube is then read-only. KUBECONFIG is left to k3s. Copies are re-rendered at every launch. Off by default; --[no-]kubeconfigs overrides it for one session.",
-    "credentials.kubernetes.enabled": "Forward the chosen kubeconfigs into workspace boxes, read-only. Disabled by default because a kubeconfig reaches a real cluster. Changing it recreates the box.",
-    "credentials.kubernetes.files": "Kubeconfigs found in the host's ~/.kube, symlinks included, each marked with how it authenticates. exec plugins (yc, helpers) do not run inside the box, so those files cannot authenticate there. A chosen config is kubectl's default cluster unless k3s is on, which keeps its own as the default.",
+    "credentials.kubernetes.enabled": "Forward the chosen kubeconfigs into workspace boxes, read-only. Disabled by default because a kubeconfig reaches a real cluster. Turning it on with files chosen also ticks the kubernetes tool group. Changing it recreates the box.",
+    "credentials.kubernetes.files": "Kubeconfigs found in the host's ~/.kube, symlinks included, each marked with how it authenticates. exec: yc works once its yc profile is forwarded in Cloud CLI profiles; other exec plugins do not run inside the box. A chosen config is kubectl's default cluster unless k3s is on, which keeps its own as the default.",
+    "credentials.cloud": "Forward the cloud CLI profiles you choose from the host into the box, each with its sign-in: the agent can then do everything those accounts may do in the cloud, not only reach one cluster. Re-rendered at every launch; nothing runs or changes on the host. Off by default; --[no-]cloud-profiles overrides it for one session.",
+    "credentials.cloud.enabled": "Forward the chosen profiles into workspace boxes. Disabled by default because a profile reaches a whole cloud account. Turning it on with profiles chosen also ticks their tool group. Changing it recreates the box.",
+    "credentials.cloud.yc": "Yandex Cloud CLI profiles from the host's ~/.config/yandex-cloud. The box gets a config.yaml with only these profiles and their credentials as its writable ~/.config/yandex-cloud; history and logs stay on the host.",
+    "credentials.cloud.yc.profiles": "Profiles found in the host's yc config, each marked with how it signs in. A federated profile's refresh token is forwarded too, so yc in the box renews IAM tokens for up to 31 days; after that, sign in again with yc on the host. Choosing one ticks the yc tool group.",
     "credentials.git": "Configure how much host Git configuration is copied into workspace boxes.",
     "credentials.git.identity": "Copy only user.name and user.email for commit attribution. This exposes no Git credential settings.",
     "credentials.git.full_config": "Copy the complete host Git configuration, which may include credential helpers, headers, URL rewrites, and included files.",
@@ -156,6 +160,8 @@ PATH_LABELS = {
     "credentials.github.token": "Forward gh token", "credentials.github.config": "Copy gh config",
     # The image's kubernetes tool group keeps its own label.
     "credentials.kubernetes": "Kubernetes configs", "credentials.kubernetes.files": "Kubeconfig files",
+    "credentials.cloud": "Cloud CLI profiles", "credentials.cloud.yc": "Yandex Cloud (yc)",
+    "credentials.cloud.yc.profiles": "yc profiles", "box.tools.yc": "Yandex Cloud CLI (yc)",
 }
 
 #: What each offered value means, shown for the value under the cursor; the field's own
@@ -240,7 +246,7 @@ MULTI_CHOICES = {
 }
 #: Lists ticked from what the host holds, found when the field is opened.
 HOST_CHOICES = {("credentials", "registries", "hosts"), ("credentials", "registries", "helm_repositories"),
-                ("credentials", "kubernetes", "files")}
+                ("credentials", "kubernetes", "files"), ("credentials", "cloud", "yc", "profiles")}
 
 # Presentation follows the user's decisions, not dataclass serialization order.
 MENU_GROUPS = {
@@ -258,7 +264,7 @@ MENU_GROUPS = {
         ("Inside the box", ("audio", "env")),
     ),
     ("credentials",): (
-        ("", ("git", "github", "registries", "kubernetes")),
+        ("", ("git", "github", "registries", "kubernetes", "cloud")),
     ),
     ("host",): (
         ("", ("notifications", "claude_skill_links")),
@@ -403,6 +409,11 @@ def help_for(path):
         return (f"{role.title()} candidates for tier {path[-1]} in preference order, used only when Use tiers is on. Nonempty replaces the role's Models for this tier; "
                 "empty uses them. Enter edits the list: add, reorder, change or remove candidates.")
     raise KeyError(f"No menu help for {dotted}")
+
+
+def needed_tools(draft):
+    """Tool groups the drafted forwarding needs: the menu keeps their ticks with it."""
+    return CredentialsConfig.from_dict(draft.get("credentials")).needed_tools()
 
 
 def validate(config):
@@ -1217,6 +1228,9 @@ def edit(config, *, project=None):
                     continue
                 accepted = False
                 options = value_choices(full, data, draft)
+                if full[:2] == ("box", "tools") and value is True and name in needed_tools(draft):
+                    notice = f"{needed_tools(draft)[name]} need this group; stop forwarding them first"
+                    continue
                 if isinstance(value, bool):
                     data[name] = not value
                     accepted = True
@@ -1229,6 +1243,10 @@ def edit(config, *, project=None):
                         from . import kubeconfigs
                         options, details, marks, problems = kubeconfigs.choices(value)
                         empty = f"No kubeconfig found in {kubeconfigs.KUBECONFIG_DIR}"
+                    elif name == "profiles":
+                        from . import cloud
+                        options, details, marks, problems = cloud.choices(value)
+                        empty = f"No yc profile found in {cloud.YC_CONFIG_DIR / 'config.yaml'}"
                     else:
                         from . import registries
                         (options, details, problems), marks = registries.choices(name, value), None
@@ -1273,6 +1291,15 @@ def edit(config, *, project=None):
                             notice = str(exc)
                 if project_mode and accepted:
                     record(full, data[name])
+                # Credentials are global; a project's own tool choice is left to the launch warning.
+                if accepted and not project_mode:
+                    ticked = [group for group in needed_tools(draft) if not draft["box"]["tools"].get(group)]
+                    for group in ticked:
+                        draft["box"]["tools"][group] = True
+                    if ticked:
+                        notice = (f"Image tools: {', '.join(ticked)} turned on for "
+                                  f"{', '.join(needed_tools(draft)[group] for group in ticked)}; "
+                                  "built by the next agent-box build")
 
     def path_menu(screen):
         """Prefer the relevant safe directory while retaining an explicit decline."""

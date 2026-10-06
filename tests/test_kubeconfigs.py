@@ -64,10 +64,15 @@ users:
 """
 
 
-def kube_config(files=(), enabled=True):
+HELPER = EXEC.replace("command: /home/someone/yandex-cloud/bin/yc", "command: kubectl-helper-cloudera")
+
+
+def kube_config(files=(), enabled=True, yc=()):
     config = Config()
     config.credentials.kubernetes.enabled = enabled
     config.credentials.kubernetes.files = list(files)
+    config.credentials.cloud.enabled = bool(yc)
+    config.credentials.cloud.yc = list(yc)
     return config
 
 
@@ -116,13 +121,18 @@ class DescribeTests(unittest.TestCase):
                          (True, ["default"], ["token"], []))
 
     def test_an_exec_user_is_named_by_command_and_profile_and_warned_about(self):
-        """Other exec arguments may carry a credential, so only the profile is shown."""
+        """Other exec arguments may carry a credential, so only the profile is shown. A helper
+        the box cannot run is a warning by itself; yc runs there once its profile is forwarded,
+        so whether yc is a problem is left to the launch that knows."""
         summary = kubeconfigs.describe(EXEC)
         self.assertEqual(summary.contexts, ["yc-managed", "second"])
-        self.assertEqual(summary.auth, ["exec: yc --profile=dixy"])
-        self.assertEqual(len(summary.warnings), 1)
-        self.assertIn("does not run inside the box", summary.warnings[0])
+        self.assertEqual((summary.auth, summary.warnings, summary.yc_profiles),
+                         (["exec: yc --profile=dixy"], [], ["dixy"]))
         self.assertNotIn("SECRET", repr(summary))
+        helper = kubeconfigs.describe(HELPER)
+        self.assertEqual(helper.auth, ["exec: kubectl-helper-cloudera --profile=dixy"])
+        self.assertEqual(len(helper.warnings), 1)
+        self.assertIn("does not run inside the box", helper.warnings[0])
 
     def test_files_the_kubeconfig_points_at_are_reported(self):
         """A copy in another directory loses the host files it names; the box may not have them."""
@@ -172,7 +182,7 @@ class DiscoveryTests(IsolatedKube):
         options, details, marks, problems = kubeconfigs.choices(["gone", "dev"])
         self.assertEqual(options, ["dev", "prod.kubeconfig", "gone"])
         self.assertEqual(marks, ["exec: yc --profile=dixy", "token", "missing"])
-        self.assertIn("does not run inside the box", details[0])
+        self.assertIn("works in the box once yc profile dixy is forwarded in Cloud CLI profiles", details[0])
         self.assertIn("no longer found", details[2])
         self.assertNotIn("SECRET", "\n".join([*details, *marks, *problems]))
 
@@ -248,10 +258,25 @@ class SyncTests(IsolatedKube):
 
     def test_what_cannot_authenticate_in_the_box_is_reported_without_failing(self):
         self.write("dev", EXEC)
-        problems = kubeconfigs.sync(kube_config(["dev"]), "ws")
-        self.assertTrue(self.copy("dev").exists())
+        self.write("helper", HELPER)
+        problems = kubeconfigs.sync(kube_config(["dev", "helper"]), "ws")
+        self.assertTrue(self.copy("dev").exists() and self.copy("helper").exists())
+        self.assertEqual([problem.split(":", 1)[0] for problem in problems], ["Kubeconfig dev", "Kubeconfig helper"])
+        self.assertIn("yc profile dixy is not forwarded", problems[0])
+        self.assertIn("kubectl-helper-cloudera --profile=dixy does not run", problems[1])
+
+    def test_a_yc_user_signs_in_once_its_own_profile_is_forwarded(self):
+        """With the profile forwarded yc signs in inside the box, so a warning would be noise;
+        another profile does not stand in for the one the kubeconfig names."""
+        self.write("dev", EXEC)
+        self.assertEqual(kubeconfigs.sync(kube_config(["dev"], yc=["dixy"]), "ws"), [])
+        problems = kubeconfigs.sync(kube_config(["dev"], yc=["gb"]), "ws")
         self.assertEqual(len(problems), 1)
-        self.assertTrue(problems[0].startswith("Kubeconfig dev: exec: yc --profile=dixy does not run"))
+        self.assertIn("yc profile dixy is not forwarded", problems[0])
+        current = EXEC.replace("        - --profile\n        - dixy\n", "")
+        self.write("current", current)
+        self.assertEqual(kubeconfigs.sync(kube_config(["current"], yc=["gb"]), "ws"), [])
+        self.assertIn("no yc profile is forwarded", kubeconfigs.sync(kube_config(["current"]), "ws")[0])
 
     def test_turning_forwarding_off_removes_the_copies(self):
         self.write("a", STATIC)

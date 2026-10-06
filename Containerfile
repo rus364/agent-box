@@ -42,6 +42,7 @@ ARG TOOLS_VIRTUALIZATION=0
 ARG TOOLS_BROWSER=0
 ARG TOOLS_PODMAN=0
 ARG TOOLS_SKOPEO=0
+ARG TOOLS_YC=0
 ARG PODMAN_UID_RANGES=[]
 ARG PODMAN_GID_RANGES=[]
 # The canonical, comma-separated set the flags above add up to. Passed
@@ -624,6 +625,31 @@ RUN set -eux; \
         "/tmp/linux-${arch}"
 
 #
+# Yandex Cloud CLI (group: yc)
+#
+# The release binary itself, not the installer, which would also edit rc
+# files and plant a self-updater under the home directory; `agent-box update`
+# refreshes it with the image. Yandex publishes no checksum for it, and its
+# own installer verifies none either, so HTTPS from Yandex's storage is the
+# integrity there is.
+
+RUN set -eux; \
+    if [ "${TOOLS_YC}" != "1" ]; then echo "agent-box: yc skipped"; exit 0; fi; \
+    arch="$(dpkg --print-architecture)"; \
+    case "${arch}" in \
+        amd64|arm64) ;; \
+        *) \
+            echo "Unsupported architecture for yc: ${arch}" >&2; \
+            exit 1; \
+            ;; \
+    esac; \
+    yc_version="$(curl -fsSL https://storage.yandexcloud.net/yandexcloud-yc/release/stable)"; \
+    curl -fsSL \
+        "https://storage.yandexcloud.net/yandexcloud-yc/release/${yc_version}/linux/${arch}/yc" \
+        -o /usr/local/bin/yc; \
+    chmod 0755 /usr/local/bin/yc
+
+#
 # ---------------------------------------------------------------------------
 # Sanity checks
 # ---------------------------------------------------------------------------
@@ -679,6 +705,10 @@ RUN set -eux; \
 RUN set -eux; \
     if [ "${TOOLS_SKOPEO}" != "1" ]; then exit 0; fi; \
     skopeo --version
+
+RUN set -eux; \
+    if [ "${TOOLS_YC}" != "1" ]; then exit 0; fi; \
+    yc version
 
 RUN set -eux; \
     if [ "${TOOLS_PODMAN}" != "1" ]; then exit 0; fi; \

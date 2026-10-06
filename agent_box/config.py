@@ -312,6 +312,39 @@ class KubernetesConfig:
                    files=[name for name in _names(data, "files", exact=True) if "/" not in name and name not in (".", "..")])
 
 
+def _profile_names(data, key):
+    # A name is also a file name under credentials/; one that leaves it could copy any file.
+    return [name for name in _names(data, key, exact=True) if "/" not in name and name not in (".", "..")]
+
+
+@dataclass
+class CloudConfig:
+    """Cloud CLI profiles forwarded from the host, one list per provider.
+
+    Off and empty by default: unlike a kubeconfig, which reaches one
+    cluster, a profile carries everything its account may do in the cloud,
+    and a federated one a refresh token valid for a month. ``enabled`` is
+    kept apart from the choices so ``--[no-]cloud-profiles`` can switch all
+    providers for one session without losing them; a new provider adds a
+    list here, not a flag.
+    """
+
+    enabled: bool = False
+    #: Profile names in the host's yc ``config.yaml``.
+    yc: list[str] = field(default_factory=list)
+
+    @property
+    def active(self) -> bool:
+        return self.enabled and bool(self.yc)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"enabled": self.enabled, "yc": {"profiles": list(self.yc)}}
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "CloudConfig":
+        return cls(enabled=_bool(data, "enabled", False), yc=_profile_names(_mapping(data).get("yc"), "profiles"))
+
+
 @dataclass
 class HostEnvConfig:
     """Agent provider variables forwarded from the launching shell, split by sensitivity.
@@ -481,6 +514,8 @@ TOOL_GROUPS: dict[str, bool] = {
     "skopeo": False,
     # Playwright MCP + headless Chromium, wired into every box session
     "browser": False,
+    # Yandex Cloud CLI; what forwarded yc profiles and exec kubeconfigs run
+    "yc": False,
 }
 
 
@@ -493,6 +528,7 @@ TOOL_GROUP_HELP: dict[str, str] = {
     "skopeo": "skopeo (inspect, copy and list tags in container registries without Podman)",
     "browser": ("Agent browser (Playwright MCP + headless Chromium; large). Isolated in-memory "
                 "profile, same trust boundary as agents; unavailable in --host mode"),
+    "yc": "Yandex Cloud CLI (yc)",
 }
 
 
@@ -1115,17 +1151,33 @@ class CredentialsConfig:
     github: GitHubConfig = field(default_factory=GitHubConfig)
     registries: RegistriesConfig = field(default_factory=RegistriesConfig)
     kubernetes: KubernetesConfig = field(default_factory=KubernetesConfig)
+    cloud: CloudConfig = field(default_factory=CloudConfig)
 
     def to_dict(self) -> dict[str, Any]:
         return {"git": self.git.to_dict(), "github": self.github.to_dict(), "registries": self.registries.to_dict(),
-                "kubernetes": self.kubernetes.to_dict()}
+                "kubernetes": self.kubernetes.to_dict(), "cloud": self.cloud.to_dict()}
+
+    def needed_tools(self) -> dict[str, str]:
+        """Image tool groups the active forwarding needs, and what needs each.
+
+        Forwarded configuration without its tool is a box that looks set up
+        and is not; the menu ticks these groups when forwarding is turned on
+        and launch warns when they are missing anyway.
+        """
+        needed = {}
+        if self.kubernetes.active:
+            needed["kubernetes"] = "Kubernetes configs"
+        if self.cloud.active:
+            needed["yc"] = "Cloud CLI profiles (Yandex Cloud)"
+        return needed
 
     @classmethod
     def from_dict(cls, data: Any) -> "CredentialsConfig":
         data = _mapping(data)
         return cls(git=GitConfig.from_dict(data.get("git")), github=GitHubConfig.from_dict(data.get("github")),
                    registries=RegistriesConfig.from_dict(data.get("registries")),
-                   kubernetes=KubernetesConfig.from_dict(data.get("kubernetes")))
+                   kubernetes=KubernetesConfig.from_dict(data.get("kubernetes")),
+                   cloud=CloudConfig.from_dict(data.get("cloud")))
 
 
 @dataclass

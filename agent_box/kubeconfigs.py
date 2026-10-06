@@ -53,8 +53,8 @@ def _block(lines: list[str], start: int, column: int) -> list[str]:
     return nested
 
 
-def _exec_label(block: list[str]) -> str:
-    """``exec: yc --profile=dixy``: the command's name and profile, never its other arguments."""
+def _exec(block: list[str]) -> tuple[str, str]:
+    """The exec command's name and its ``--profile``, never its other arguments."""
     command, args, in_args = "", [], False
     for line in block:
         key = _LINE.match(line)
@@ -66,10 +66,15 @@ def _exec_label(block: list[str]) -> str:
         item = _ITEM.match(line)
         if in_args and item:
             args.append(_scalar(item.group(1)))
-    profile = next((arg for arg in args if arg.startswith("--profile=")), "")
+    profile = next((arg.split("=", 1)[1] for arg in args if arg.startswith("--profile=")), "")
     if not profile and "--profile" in args[:-1]:
-        profile = "--profile=" + args[args.index("--profile") + 1]
-    return " ".join(part for part in ("exec:", command or "(no command)", profile) if part)
+        profile = args[args.index("--profile") + 1]
+    return command, profile
+
+
+def _exec_label(command: str, profile: str) -> str:
+    """``exec: yc --profile=dixy``."""
+    return " ".join(["exec:", command or "(no command)", *([f"--profile={profile}"] if profile else [])])
 
 
 @dataclass
@@ -82,6 +87,9 @@ class Summary:
     auth: list[str] = field(default_factory=list)
     #: Why the file may not work inside the box.
     warnings: list[str] = field(default_factory=list)
+    #: The yc profiles its users sign in with, "" for yc's current one. yc runs in the box when
+    #: its profile is forwarded, so whether that is a problem depends on the launch.
+    yc_profiles: list[str] = field(default_factory=list)
 
 
 def describe(text: str) -> Summary:
@@ -109,8 +117,12 @@ def describe(text: str) -> Summary:
             # Flow style ({exec: ...}) hides keys from a line scanner; unread must not pass for safe.
             unread = unread or value[:1] in ("{", "[")
             if key == "exec":
-                label = _exec_label(_block(lines, index, indent))
-                summary.warnings.append(f"{label} does not run inside the box, so this user cannot authenticate there")
+                command, profile = _exec(_block(lines, index, indent))
+                label = _exec_label(command, profile)
+                if command == "yc":
+                    summary.yc_profiles.append(profile)
+                else:
+                    summary.warnings.append(f"{label} does not run inside the box, so this user cannot authenticate there")
             elif key == "auth-provider":
                 provider = next((_scalar(m.group(4)) for m in map(_LINE.match, _block(lines, index, indent))
                                  if m and m.group(3) == "name"), "")
@@ -180,9 +192,24 @@ def choices(chosen: list[str]) -> tuple[list[str], list[str], list[str], list[st
         auth = ", ".join(summary.auth) or "no credentials"
         details.append("\n".join([f"{KUBECONFIG_DIR / name}",
                                   f"Contexts: {', '.join(summary.contexts) or 'none'}",
-                                  f"Authentication: {auth}", *summary.warnings]))
+                                  f"Authentication: {auth}", *summary.warnings,
+                                  *[f"{_exec_label('yc', profile)} works in the box once yc profile "
+                                    f"{profile or '(the current one)'} is forwarded in Cloud CLI profiles"
+                                    for profile in dict.fromkeys(summary.yc_profiles)]]))
         marks.append(auth)
     return options, details, marks, found.problems
+
+
+def _yc_warnings(config, summary: Summary) -> list[str]:
+    """yc exec users whose profile this launch does not forward; a missing yc itself is the tool warning's."""
+    cloud = config.credentials.cloud
+    forwarded = cloud.yc if cloud.active else []
+    return [f"{_exec_label('yc', profile)} cannot sign in: yc profile {profile} is not forwarded "
+            "(Cloud CLI profiles in agent-box config)" if profile else
+            f"{_exec_label('yc', profile)} cannot sign in: no yc profile is forwarded "
+            "(Cloud CLI profiles in agent-box config)"
+            for profile in dict.fromkeys(summary.yc_profiles)
+            if (profile not in forwarded if profile else not forwarded)]
 
 
 def runtime_dir(workspace_id: str) -> Path:
@@ -228,7 +255,8 @@ def sync(config, workspace_id: str) -> list[str]:
                 problems.append(f"Kubeconfig {name} is not in {KUBECONFIG_DIR}; untick it in agent-box config")
             continue
         atomic_write_bytes(directory / name, data, 0o600)
-        problems += [f"Kubeconfig {name}: {warning}" for warning in describe(data.decode("utf-8", "replace")).warnings]
+        summary = describe(data.decode("utf-8", "replace"))
+        problems += [f"Kubeconfig {name}: {warning}" for warning in [*summary.warnings, *_yc_warnings(config, summary)]]
     for path in directory.iterdir():
         if path.name not in chosen.files:
             path.unlink(missing_ok=True)

@@ -35,7 +35,7 @@ from . import claude_settings
 from . import notify as notify_module
 from . import k3s
 from . import nested_podman
-from . import kubeconfigs, registries
+from . import cloud, kubeconfigs, registries
 from .atomicio import atomic_write_json, atomic_write_text, read_json
 from .config import ENV_PREFIX, WORKFLOW_SKILLS, Config, load_config, effective_config, session_account
 from .errors import AgentBoxError
@@ -706,7 +706,8 @@ def prepare_container_lifetime_state(
         notify_module.sync_credentials(config, NOTIFY_CREDENTIALS)
     tracker_mounts(config, runtime_state)[0][0].mkdir(parents=True, exist_ok=True)
     for source, _, _ in [*registries.mounts(config, runtime_state.root.name),
-                         *kubeconfigs.mounts(config, runtime_state.root.name)]:
+                         *kubeconfigs.mounts(config, runtime_state.root.name),
+                         *cloud.mounts(config, runtime_state.root.name)]:
         source.mkdir(mode=0o700, parents=True, exist_ok=True)
     if config.tracker.enabled or config.workflow.enabled:
         WORKFLOW_STATE.mkdir(parents=True, exist_ok=True)
@@ -896,7 +897,8 @@ def sync_tracker_runtime(config: Config, directory: Path | None = None, *, polic
         },
         "credentials": {"github": config.credentials.github.to_dict(),
                         "registries": config.credentials.registries.to_dict(),
-                        "kubernetes": config.credentials.kubernetes.to_dict()},
+                        "kubernetes": config.credentials.kubernetes.to_dict(),
+                        "cloud": config.credentials.cloud.to_dict()},
         # A nested box inherits the outer box's sound socket at the same path.
         "box": {"tools": config.box.tools.to_dict(), "k3s": config.box.k3s.to_dict(), "audio": config.box.audio},
         "container": container,
@@ -1301,6 +1303,7 @@ def build_mounts(
     pairs += tracker_mounts(config, runtime_state)
     pairs += registries.mounts(config, runtime_state.root.name)
     pairs += kubeconfigs.mounts(config, runtime_state.root.name)
+    pairs += cloud.mounts(config, runtime_state.root.name)
 
     out = []
     seen_paths: set[Path] = set()
@@ -1566,6 +1569,17 @@ def k3s_warnings(config: Config) -> list[str]:
     if config.box.k3s.enabled and not config.box.tools.groups["kubernetes"]:
         return ["box.k3s is on but the kubernetes tool group is off: the box has no kubectl or helm"]
     return []
+
+
+def tool_warnings(config: Config) -> list[str]:
+    """Forwarded configuration whose tool group is off; one built but missing is the image drift warning's.
+
+    The menu ticks the group when forwarding is turned on, so this is what
+    ``config set`` or a one-session flag left behind.
+    """
+    return [f"{needer} need the {group} tool group, which is off: turn it on in agent-box config "
+            f"(Workspace box > Image tools) and run 'agent-box build'"
+            for group, needer in config.credentials.needed_tools().items() if not config.box.tools.groups[group]]
 
 
 def container_lifetime_args(
@@ -2198,7 +2212,8 @@ def launch_in_workspace_container(
         # Only now does the box match this launch: a launch refused for
         # mounting differently must not rewrite a running box's logins.
         for problem in [*registries.sync(spec.creation_config, spec.runtime_state.root.name),
-                        *kubeconfigs.sync(spec.creation_config, spec.runtime_state.root.name)]:
+                        *kubeconfigs.sync(spec.creation_config, spec.runtime_state.root.name),
+                        *cloud.sync(spec.creation_config, spec.runtime_state.root.name)]:
             warn(problem)
         process = subprocess.Popen(exec_argv(spec.name, workspace, command, extra_env), env=process_env)
         # The keeper takes this same advisory lock before it makes its final
@@ -2602,7 +2617,7 @@ def runtime_main(
                  f" -- run 'agent-box build' to drop them")
     # Every launch, not only box creation: joining a running box with the
     # switch on and no socket leaves box identity unchanged and would say nothing.
-    for problem in audio_warnings(config) + k3s_warnings(config):
+    for problem in audio_warnings(config) + k3s_warnings(config) + tool_warnings(config):
         warn(problem)
 
 
@@ -2984,7 +2999,8 @@ def uninstall_main(args: list[str]) -> int:
     shutil.rmtree(POLICY_RUNTIME_DIR, ignore_errors=True)
     shutil.rmtree(registries.REGISTRY_RUNTIME_DIR, ignore_errors=True)
     shutil.rmtree(kubeconfigs.KUBECONFIG_RUNTIME_DIR, ignore_errors=True)
-    done.append("removed the rendered notification, tracker, registry and kubeconfig credentials")
+    shutil.rmtree(cloud.CLOUD_RUNTIME_DIR, ignore_errors=True)
+    done.append("removed the rendered notification, tracker, registry, kubeconfig and cloud CLI credentials")
 
     from . import pathsetup
     for link in pathsetup.remove_symlinks():

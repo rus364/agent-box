@@ -60,10 +60,14 @@ forwarding off, the box's `~/.kube` is an ordinary directory.
 
 The launch warns about these and still starts:
 
-- **exec plugins** (`yc k8s create-token`, `kubectl-helper-*`, cloud CLIs) and
-  **auth-providers**. They run a program with the host's own cloud login,
-  and the box has neither the program nor that login. Forwarding the cloud
-  login itself would give the agent the whole cloud account, not one cluster.
+- **`exec: yc` without its profile.** `yc k8s create-token --profile=NAME`
+  works in the box once profile `NAME` is forwarded in
+  [Cloud CLI profiles](cloud-profiles.md); the warning names the profile it
+  is missing. Forwarding it gives the agent that whole cloud account, not one
+  cluster.
+- **Other exec plugins** (`kubectl-helper-*`, other cloud CLIs) and
+  **auth-providers**. They run a program with the host's own login, and the
+  box has neither the program nor that login.
 - **Files the kubeconfig names**: `certificate-authority`,
   `client-certificate`, `client-key` and `tokenFile`. The box has such a file
   only where its path is mounted, for example with `--mount`; a relative path
@@ -73,6 +77,11 @@ The launch warns about these and still starts:
 
 Files with an embedded token or certificate (`token`, `client-certificate-data`)
 work as they are.
+
+Forwarding kubeconfigs needs `kubectl`, which is the image's `kubernetes`
+tool group (on by default). Turning forwarding on in the menu ticks that group,
+and the menu will not untick it while kubeconfigs are forwarded; if it is off
+anyway, the launch says so.
 
 ## How it reaches the container
 

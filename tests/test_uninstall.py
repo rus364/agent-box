@@ -17,7 +17,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from agent_box import claude_settings, kubeconfigs, pathsetup, registries, runtime
+from agent_box import claude_settings, cloud, kubeconfigs, pathsetup, registries, runtime
 from agent_box.config import Config
 
 
@@ -61,6 +61,10 @@ class UninstallTestCase(unittest.TestCase):
         kubeconfig_patch = mock.patch.object(kubeconfigs, "KUBECONFIG_RUNTIME_DIR", self.kubeconfig_copies)
         kubeconfig_patch.start()
         self.addCleanup(kubeconfig_patch.stop)
+        self.cloud_copies = self.state / "runtime/cloud"
+        cloud_patch = mock.patch.object(cloud, "CLOUD_RUNTIME_DIR", self.cloud_copies)
+        cloud_patch.start()
+        self.addCleanup(cloud_patch.stop)
         # uninstall removes every k3s sidecar Podman lists; the developer's
         # own clusters must never be in reach of the suite.
         self.clusters = mock.patch.multiple(runtime.k3s, all_workspaces=mock.Mock(return_value=[]),
@@ -110,6 +114,8 @@ class UninstallTestCase(unittest.TestCase):
         (self.registry_copies / "workspaces/ws/auth.json").write_text("{}")
         (self.kubeconfig_copies / "workspaces/ws").mkdir(parents=True)
         (self.kubeconfig_copies / "workspaces/ws/config").write_text("kind: Config\n")
+        (self.cloud_copies / "workspaces/ws/yc/credentials").mkdir(parents=True)
+        (self.cloud_copies / "workspaces/ws/yc/credentials/dixy").write_text("{}")
         self.config_root.mkdir(parents=True, exist_ok=True)
         (self.config_root / "config.json").write_text("{}")
         return settings
@@ -175,6 +181,7 @@ class UninstallTests(UninstallTestCase):
         self.assertFalse(self.notify_credentials.exists())
         self.assertFalse(self.registry_copies.exists())
         self.assertFalse(self.kubeconfig_copies.exists())
+        self.assertFalse(self.cloud_copies.exists())
 
     def test_config_and_state_survive_without_purge(self):
         """Uninstalling the wiring is not the same as discarding the settings."""
