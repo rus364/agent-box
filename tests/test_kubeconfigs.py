@@ -7,8 +7,6 @@ or on the menu, and a file that cannot authenticate in the box passing
 silently for one that can.
 """
 import os
-import subprocess
-import sys
 import tempfile
 import unittest
 from contextlib import nullcontext
@@ -225,6 +223,29 @@ class SyncTests(IsolatedKube):
         self.assertFalse(self.copy("a").exists())
         self.assertEqual(problems, [f"Kubeconfig {path}: unreadable (PermissionError); not forwarded"])
 
+    def test_a_symlink_is_offered_by_its_name_and_copied_as_its_targets_content(self):
+        """The box mounts the copies, not the links, so where a link points must not matter there."""
+        elsewhere = self.root / "elsewhere"
+        elsewhere.mkdir()
+        (elsewhere / "real.yaml").write_text(STATIC)
+        (self.kube / "linked.kubeconfig").symlink_to(elsewhere / "real.yaml")
+        (self.kube / "folder").symlink_to(elsewhere)
+        self.assertEqual(kubeconfigs.choices([])[0], ["linked.kubeconfig"])
+        self.assertEqual(kubeconfigs.sync(kube_config(["linked.kubeconfig"]), "ws"), [])
+        self.assertFalse(self.copy("linked.kubeconfig").is_symlink())
+        self.assertEqual(self.copy("linked.kubeconfig").read_text(), STATIC)
+
+    def test_a_broken_chosen_symlink_is_named_as_one_and_its_copy_withdrawn(self):
+        link = self.kube / "linked.kubeconfig"
+        link.symlink_to(self.root / "real.yaml")
+        (self.root / "real.yaml").write_text(STATIC)
+        kubeconfigs.sync(kube_config(["linked.kubeconfig"]), "ws")
+        (self.root / "real.yaml").unlink()
+        problems = kubeconfigs.sync(kube_config(["linked.kubeconfig"]), "ws")
+        self.assertFalse(self.copy("linked.kubeconfig").exists())
+        self.assertEqual(problems, [f"Kubeconfig linked.kubeconfig is a symlink to the missing {self.root / 'real.yaml'}; "
+                                    "not forwarded"])
+
     def test_what_cannot_authenticate_in_the_box_is_reported_without_failing(self):
         self.write("dev", EXEC)
         problems = kubeconfigs.sync(kube_config(["dev"]), "ws")
@@ -241,30 +262,27 @@ class SyncTests(IsolatedKube):
             self.assertEqual((kubeconfigs.mounts(config, "ws"), kubeconfigs.container_env(config)), ([], []))
 
 
-class SourceLocationTests(unittest.TestCase):
-    def test_a_nested_launch_offers_the_copies_its_box_was_given(self):
-        env = {**os.environ, "AGENT_BOX_KUBECONFIGS": "/copies"}
-        shown = subprocess.run([sys.executable, "-c", "from agent_box import paths; print(paths.KUBECONFIG_DIR)"],
-                               cwd=Path(kubeconfigs.__file__).parent.parent, env=env, capture_output=True,
-                               text=True, check=True).stdout
-        self.assertEqual(shown.strip(), "/copies")
+class BoxTargetTests(unittest.TestCase):
+    def test_the_copies_become_the_boxs_own_kube_and_never_kubeconfig_or_a_credential(self):
+        """Paths match the host's; KUBECONFIG stays k3s's, since a merged list resolves shared names wrongly.
 
-
-class BoxTests(IsolatedKube):
-    def test_the_box_gets_a_read_only_directory_and_its_path_never_kubeconfig_or_a_credential(self):
-        """KUBECONFIG belongs to k3s; a merged list would resolve shared names to the wrong cluster."""
-        self.write("prod.kubeconfig", STATIC)
+        The box's ~/.kube is the directory discovery reads, so a nested launch offers the
+        copies its box was given; it is read-only, so kubectl's cache moves to the box's cache.
+        """
         workspace = Workspace(Path("/project"), Path("/project"))
         state = runtime.workspace_runtime_state(workspace)
         args = runtime.container_lifetime_args(workspace, [], Path("/checkout"), kube_config(["prod.kubeconfig"]),
                                                runtime_state=state)
-        target = kubeconfigs.CONTAINER_KUBECONFIG_RUNTIME_DIR
+        target = runtime.HOST_HOME / ".kube"
+        self.assertEqual(kubeconfigs.KUBECONFIG_DIR, target)
         self.assertIn(f"type=bind,src={kubeconfigs.runtime_dir(state.root.name)},dst={target},ro=true", args)
-        self.assertIn(f"--env=AGENT_BOX_KUBECONFIGS={target}", args)
+        self.assertIn(f"--env=KUBECACHEDIR={runtime.XDG_CACHE_HOME / 'kube'}", args)
         self.assertFalse(any("SECRET" in arg or arg.startswith("--env=KUBECONFIG=") for arg in args))
         plain = runtime.container_lifetime_args(workspace, [], Path("/checkout"), Config(), runtime_state=state)
-        self.assertFalse(any(str(target) in arg for arg in plain))
+        self.assertFalse(any(f"dst={target}," in arg or "KUBECACHEDIR" in arg for arg in plain))
 
+
+class BoxTests(IsolatedKube):
     def test_a_launch_refused_by_a_running_box_leaves_its_copies_alone(self):
         """--no-kubeconfigs against a running box with copies must not delete them under it."""
         self.write("a", STATIC)

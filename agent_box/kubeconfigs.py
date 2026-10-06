@@ -3,9 +3,10 @@
 Whole files are copied byte for byte and never merged: the same context,
 cluster and user names recur across a user's kubeconfigs, and a merged
 ``KUBECONFIG`` would silently send kubectl to whichever file came first.
-Each copy keeps its file name in a directory the box mounts read-only and
-finds through ``AGENT_BOX_KUBECONFIGS``; ``KUBECONFIG`` is left to k3s.
-The copies are re-rendered at every launch, so a file changed on the host
+Each copy keeps its file name in a directory the box mounts read-only as
+its own ``~/.kube``, so paths and commands match the host's. ``KUBECONFIG``
+is left to k3s: with it on, its cluster stays the default and a forwarded
+``~/.kube/config`` is used only when named. The copies are re-rendered at every launch, so a file changed on the host
 reaches a running box through the atomic replace inside the mounted
 directory; a mounted file would keep the old inode.
 
@@ -22,7 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .atomicio import atomic_write_bytes
-from .paths import CONTAINER_KUBECONFIG_RUNTIME_DIR, KUBECONFIG_DIR, KUBECONFIG_RUNTIME_DIR
+from .paths import KUBECONFIG_DIR, KUBECONFIG_RUNTIME_DIR, XDG_CACHE_HOME
 
 #: Larger files in ~/.kube are not offered: no kubeconfig is this big, a stray archive may be.
 MAX_SCANNED = 1 << 20
@@ -192,14 +193,14 @@ def mounts(config, workspace_id: str) -> list[tuple[Path, Path, bool]]:
     """The directory, never single files: an atomic replace must reach a running box."""
     if not config.credentials.kubernetes.active:
         return []
-    return [(runtime_dir(workspace_id), CONTAINER_KUBECONFIG_RUNTIME_DIR, True)]
+    return [(runtime_dir(workspace_id), KUBECONFIG_DIR, True)]
 
 
 def container_env(config) -> list[str]:
-    """The directory's path only; the kubeconfigs stay in the mounted files, out of Podman's argv."""
+    """kubectl's cache, out of the read-only ``~/.kube`` into the box's persistent cache."""
     if not config.credentials.kubernetes.active:
         return []
-    return [f"--env=AGENT_BOX_KUBECONFIGS={CONTAINER_KUBECONFIG_RUNTIME_DIR}"]
+    return [f"--env=KUBECACHEDIR={XDG_CACHE_HOME / 'kube'}"]
 
 
 def sync(config, workspace_id: str) -> list[str]:
@@ -212,14 +213,19 @@ def sync(config, workspace_id: str) -> list[str]:
     directory.chmod(0o700)
     problems: list[str] = []
     for name in chosen.files:
+        source = KUBECONFIG_DIR / name
         try:
-            data = (KUBECONFIG_DIR / name).read_bytes()
+            # A symlink is followed: the box gets its target's content as a plain file.
+            data = source.read_bytes()
         except OSError as exc:
             # A file gone from the host must not live on in the box as a stale copy.
             (directory / name).unlink(missing_ok=True)
-            problems.append(f"Kubeconfig {name} is not in {KUBECONFIG_DIR}; untick it in agent-box config"
-                            if isinstance(exc, FileNotFoundError) else
-                            f"Kubeconfig {KUBECONFIG_DIR / name}: unreadable ({exc.__class__.__name__}); not forwarded")
+            if not isinstance(exc, FileNotFoundError):
+                problems.append(f"Kubeconfig {source}: unreadable ({exc.__class__.__name__}); not forwarded")
+            elif source.is_symlink():
+                problems.append(f"Kubeconfig {name} is a symlink to the missing {source.readlink()}; not forwarded")
+            else:
+                problems.append(f"Kubeconfig {name} is not in {KUBECONFIG_DIR}; untick it in agent-box config")
             continue
         atomic_write_bytes(directory / name, data, 0o600)
         problems += [f"Kubeconfig {name}: {warning}" for warning in describe(data.decode("utf-8", "replace")).warnings]
