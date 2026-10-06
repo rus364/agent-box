@@ -17,7 +17,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from agent_box import claude_settings, pathsetup, registries, runtime
+from agent_box import claude_settings, kubeconfigs, pathsetup, registries, runtime
 from agent_box.config import Config
 
 
@@ -57,6 +57,10 @@ class UninstallTestCase(unittest.TestCase):
         registry_patch = mock.patch.object(registries, "REGISTRY_RUNTIME_DIR", self.registry_copies)
         registry_patch.start()
         self.addCleanup(registry_patch.stop)
+        self.kubeconfig_copies = self.state / "runtime/kubeconfigs"
+        kubeconfig_patch = mock.patch.object(kubeconfigs, "KUBECONFIG_RUNTIME_DIR", self.kubeconfig_copies)
+        kubeconfig_patch.start()
+        self.addCleanup(kubeconfig_patch.stop)
         # uninstall removes every k3s sidecar Podman lists; the developer's
         # own clusters must never be in reach of the suite.
         self.clusters = mock.patch.multiple(runtime.k3s, all_workspaces=mock.Mock(return_value=[]),
@@ -104,6 +108,8 @@ class UninstallTestCase(unittest.TestCase):
         self.notify_credentials.write_text("{}")
         (self.registry_copies / "workspaces/ws").mkdir(parents=True)
         (self.registry_copies / "workspaces/ws/auth.json").write_text("{}")
+        (self.kubeconfig_copies / "workspaces/ws").mkdir(parents=True)
+        (self.kubeconfig_copies / "workspaces/ws/config").write_text("kind: Config\n")
         self.config_root.mkdir(parents=True, exist_ok=True)
         (self.config_root / "config.json").write_text("{}")
         return settings
@@ -168,6 +174,7 @@ class UninstallTests(UninstallTestCase):
         self.assertFalse(self.credentials.exists())
         self.assertFalse(self.notify_credentials.exists())
         self.assertFalse(self.registry_copies.exists())
+        self.assertFalse(self.kubeconfig_copies.exists())
 
     def test_config_and_state_survive_without_purge(self):
         """Uninstalling the wiring is not the same as discarding the settings."""

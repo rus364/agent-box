@@ -161,3 +161,9 @@ HELM_REGISTRY_CONFIG = env_path("HELM_REGISTRY_CONFIG", XDG_CONFIG_HOME / "helm/
 HELM_REPOSITORY_CONFIG = env_path("HELM_REPOSITORY_CONFIG", XDG_CONFIG_HOME / "helm/repositories.yaml")
 REGISTRY_RUNTIME_DIR = STATE_ROOT / "runtime/registries"
 CONTAINER_REGISTRY_RUNTIME_DIR = HOST_HOME / ".local/share/agent-box/runtime/registries"
+
+# Kubeconfigs offered for forwarding: the user's ~/.kube, or in a nested launch
+# the copies its box was given. Only the files the user chose are copied.
+KUBECONFIG_DIR = env_path("AGENT_BOX_KUBECONFIGS", HOST_HOME / ".kube")
+KUBECONFIG_RUNTIME_DIR = STATE_ROOT / "runtime/kubeconfigs"
+CONTAINER_KUBECONFIG_RUNTIME_DIR = HOST_HOME / ".local/share/agent-box/runtime/kubeconfigs"

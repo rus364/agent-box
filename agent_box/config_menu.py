@@ -54,6 +54,9 @@ HELP = {
     "credentials.registries.enabled": "Forward the chosen logins into workspace boxes, read-only. Disabled by default because they reach private images and charts. Changing it recreates the box.",
     "credentials.registries.hosts": "Registry hosts found in the podman/skopeo and Helm OCI auth files on the host. Each source is filtered into its own copy; logins kept by a credential helper cannot be forwarded.",
     "credentials.registries.helm_repositories": "Helm repositories found in the host's repositories.yaml, forwarded with their credentials. The box keeps its own index cache; refresh it with helm repo update.",
+    "credentials.kubernetes": "Forward the kubeconfig files you choose from the host's ~/.kube, each whole and unmerged, read-only under $AGENT_BOX_KUBECONFIGS; agents pass --kubeconfig. KUBECONFIG is left to k3s. Copies are re-rendered at every launch. Off by default; --[no-]kubeconfigs overrides it for one session.",
+    "credentials.kubernetes.enabled": "Forward the chosen kubeconfigs into workspace boxes, read-only. Disabled by default because a kubeconfig reaches a real cluster. Changing it recreates the box.",
+    "credentials.kubernetes.files": "Kubeconfigs found in the host's ~/.kube, each marked with how it authenticates. exec plugins (yc, helpers) do not run inside the box, so those files cannot authenticate there.",
     "credentials.git": "Configure how much host Git configuration is copied into workspace boxes.",
     "credentials.git.identity": "Copy only user.name and user.email for commit attribution. This exposes no Git credential settings.",
     "credentials.git.full_config": "Copy the complete host Git configuration, which may include credential helpers, headers, URL rewrites, and included files.",
@@ -151,6 +154,8 @@ LABELS = {
 #: Labels a bare key cannot carry because the same key means something else elsewhere.
 PATH_LABELS = {
     "credentials.github.token": "Forward gh token", "credentials.github.config": "Copy gh config",
+    # The image's kubernetes tool group keeps its own label.
+    "credentials.kubernetes": "Kubernetes configs", "credentials.kubernetes.files": "Kubeconfig files",
 }
 
 #: What each offered value means, shown for the value under the cursor; the field's own
@@ -234,7 +239,8 @@ MULTI_CHOICES = {
     "workflow.sync.events": ("before", "after", "plan"),
 }
 #: Lists ticked from what the host holds, found when the field is opened.
-HOST_CHOICES = {("credentials", "registries", "hosts"), ("credentials", "registries", "helm_repositories")}
+HOST_CHOICES = {("credentials", "registries", "hosts"), ("credentials", "registries", "helm_repositories"),
+                ("credentials", "kubernetes", "files")}
 
 # Presentation follows the user's decisions, not dataclass serialization order.
 MENU_GROUPS = {
@@ -252,7 +258,7 @@ MENU_GROUPS = {
         ("Inside the box", ("audio", "env")),
     ),
     ("credentials",): (
-        ("", ("git", "github", "registries")),
+        ("", ("git", "github", "registries", "kubernetes")),
     ),
     ("host",): (
         ("", ("notifications", "claude_skill_links")),
@@ -872,14 +878,17 @@ def edit(config, *, project=None):
             elif key in ("?", curses.KEY_F1):
                 full_help(screen, title, described(help_text, explanation))
 
-    def check(screen, options, title, chosen, details, explanation=""):
+    def check(screen, options, title, chosen, details, explanation="", marks=None):
         """Toggle members of a fixed vocabulary; the result keeps the vocabulary's order, None on Esc.
 
         Options and their descriptions come from the caller, so a vocabulary found at run
-        time, such as the registries logged in on the host, uses the same screen."""
+        time, such as the registries logged in on the host, uses the same screen. ``marks``
+        puts a short note beside each option, readable without moving the cursor onto it."""
         marked, index = {option for option in options if option in chosen}, 0
         while True:
             rows = [("[x] " if option in marked else "[ ] ") + option for option in options]
+            if marks:
+                rows = list(zip(rows, marks))
             usable = paint(screen, rows, index, title, details[index],
                            controls="Space toggle  Enter accept  ? help  Esc cancel")
             key = screen.get_wch()
@@ -1216,13 +1225,19 @@ def edit(config, *, project=None):
                         notice = "Draft updated; save to keep changes"
                         accepted = True
                 elif full in HOST_CHOICES and isinstance(value, list):
-                    from . import registries
-                    options, details, problems = registries.choices(name, value)
+                    if name == "files":
+                        from . import kubeconfigs
+                        options, details, marks, problems = kubeconfigs.choices(value)
+                        empty = f"No kubeconfig found in {kubeconfigs.KUBECONFIG_DIR}"
+                    else:
+                        from . import registries
+                        (options, details, problems), marks = registries.choices(name, value), None
+                        empty = "Nothing found on the host: log in with podman, helm registry or helm repo add first"
                     if not options:
-                        notice = (problems or ["Nothing found on the host: log in with podman, helm registry or helm repo add first"])[0]
+                        notice = (problems or [empty])[0]
                         continue
                     picked = check(screen, options, ".".join(full), value, details,
-                                   "\n\n".join([help_for(full), *problems]))
+                                   "\n\n".join([help_for(full), *problems]), marks)
                     if picked is not None:
                         data[name], notice = picked, "Draft updated; save to keep changes"
                         accepted = True

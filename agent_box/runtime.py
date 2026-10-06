@@ -35,7 +35,7 @@ from . import claude_settings
 from . import notify as notify_module
 from . import k3s
 from . import nested_podman
-from . import registries
+from . import kubeconfigs, registries
 from .atomicio import atomic_write_json, atomic_write_text, read_json
 from .config import ENV_PREFIX, WORKFLOW_SKILLS, Config, load_config, effective_config, session_account
 from .errors import AgentBoxError
@@ -705,7 +705,8 @@ def prepare_container_lifetime_state(
     if mount_notifications:
         notify_module.sync_credentials(config, NOTIFY_CREDENTIALS)
     tracker_mounts(config, runtime_state)[0][0].mkdir(parents=True, exist_ok=True)
-    for source, _, _ in registries.mounts(config, runtime_state.root.name):
+    for source, _, _ in [*registries.mounts(config, runtime_state.root.name),
+                         *kubeconfigs.mounts(config, runtime_state.root.name)]:
         source.mkdir(mode=0o700, parents=True, exist_ok=True)
     if config.tracker.enabled or config.workflow.enabled:
         WORKFLOW_STATE.mkdir(parents=True, exist_ok=True)
@@ -894,7 +895,8 @@ def sync_tracker_runtime(config: Config, directory: Path | None = None, *, polic
             "external_apis": external,
         },
         "credentials": {"github": config.credentials.github.to_dict(),
-                        "registries": config.credentials.registries.to_dict()},
+                        "registries": config.credentials.registries.to_dict(),
+                        "kubernetes": config.credentials.kubernetes.to_dict()},
         # A nested box inherits the outer box's sound socket at the same path.
         "box": {"tools": config.box.tools.to_dict(), "k3s": config.box.k3s.to_dict(), "audio": config.box.audio},
         "container": container,
@@ -1293,6 +1295,7 @@ def build_mounts(
     pairs += agent_tree_mounts()
     pairs += tracker_mounts(config, runtime_state)
     pairs += registries.mounts(config, runtime_state.root.name)
+    pairs += kubeconfigs.mounts(config, runtime_state.root.name)
 
     out = []
     seen_paths: set[Path] = set()
@@ -1585,6 +1588,7 @@ def container_lifetime_args(
         f"--env=GIT_CONFIG_GLOBAL={home}/.config/git/config",
         f"--env=GH_CONFIG_DIR={home}/.config/gh",
         *registries.container_env(config),
+        *kubeconfigs.container_env(config),
         f"--env=XDG_CACHE_HOME={XDG_CACHE_HOME}",
         f"--env=UV_CACHE_DIR={XDG_CACHE_HOME}/uv",
         # The official Telegram channel plugin runs its MCP server under Bun
@@ -2182,7 +2186,8 @@ def launch_in_workspace_container(
         ensure_workspace_container(spec)
         # Only now does the box match this launch: a launch refused for
         # mounting differently must not rewrite a running box's logins.
-        for problem in registries.sync(spec.creation_config, spec.runtime_state.root.name):
+        for problem in [*registries.sync(spec.creation_config, spec.runtime_state.root.name),
+                        *kubeconfigs.sync(spec.creation_config, spec.runtime_state.root.name)]:
             warn(problem)
         process = subprocess.Popen(exec_argv(spec.name, workspace, command, extra_env), env=process_env)
         # The keeper takes this same advisory lock before it makes its final
@@ -2967,7 +2972,8 @@ def uninstall_main(args: list[str]) -> int:
     shutil.rmtree(TRACKER_RUNTIME_DIR, ignore_errors=True)
     shutil.rmtree(POLICY_RUNTIME_DIR, ignore_errors=True)
     shutil.rmtree(registries.REGISTRY_RUNTIME_DIR, ignore_errors=True)
-    done.append("removed the rendered notification, tracker and registry credentials")
+    shutil.rmtree(kubeconfigs.KUBECONFIG_RUNTIME_DIR, ignore_errors=True)
+    done.append("removed the rendered notification, tracker, registry and kubeconfig credentials")
 
     from . import pathsetup
     for link in pathsetup.remove_symlinks():

@@ -57,6 +57,7 @@ OPTIONS = (
     Option("git-config", ACCESS, "Copy of the full host Git configuration", form="pair", container=True),
     Option("registries", ACCESS, "Container registry and Helm logins chosen in agent-box config",
            form="pair", container=True),
+    Option("kubeconfigs", ACCESS, "Kubeconfig files chosen in agent-box config", form="pair", container=True),
     Option("api-keys", ACCESS, "Provider API key variables", form="pair", container=True),
     Option("browser", ACCESS, "Do not start the agent browser MCP server", form="negated", container=True),
     Option("remote-control", ACCESS, "Remote control; the --no- form also keeps Claude off Telegram", form="pair"),
@@ -196,6 +197,8 @@ def apply(config, overrides):
             config.credentials.git.full_config = value
         elif key == "registries":
             config.credentials.registries.enabled = value
+        elif key == "kubeconfigs":
+            config.credentials.kubernetes.enabled = value
         elif key == "api-keys":
             config.agents.host_env.api_keys = value
         elif key == "browser":
@@ -217,6 +220,9 @@ def apply(config, overrides):
     if overrides.get("registries") and not (chosen.hosts or chosen.helm_repositories):
         raise AgentBoxError("--registries has nothing to forward; choose registry hosts or Helm repositories "
                             "in agent-box config (Credentials > Container registries)")
+    if overrides.get("kubeconfigs") and not config.credentials.kubernetes.files:
+        raise AgentBoxError("--kubeconfigs has nothing to forward; choose kubeconfig files "
+                            "in agent-box config (Credentials > Kubernetes configs)")
     for role, models in workflow.pins.items():
         api = models[0]["api_provider"]
         if api and not (api in config.agents.external_apis and config.agents.external_apis[api].enabled):

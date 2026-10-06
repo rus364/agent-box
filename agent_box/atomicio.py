@@ -13,13 +13,13 @@ def read_json(path: Path) -> Any:
         return json.load(f)
 
 
-def atomic_write_text(path: Path, text: str, mode: int | None = None) -> None:
+def atomic_write_bytes(path: Path, data: bytes, mode: int | None = None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, name = tempfile.mkstemp(prefix=".agent-box.", dir=path.parent)
     tmp = Path(name)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(text)
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
             f.flush()
             os.fsync(f.fileno())
         if mode is not None:
@@ -28,6 +28,10 @@ def atomic_write_text(path: Path, text: str, mode: int | None = None) -> None:
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
+
+
+def atomic_write_text(path: Path, text: str, mode: int | None = None) -> None:
+    atomic_write_bytes(path, text.encode("utf-8"), mode)
 
 
 def atomic_write_json(path: Path, value: Any, mode: int | None = None) -> None:

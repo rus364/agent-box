@@ -17,6 +17,7 @@ describes one thing you can turn on, what it exposes, and what it costs.
 | [Remote Control](remote-control.md) | off | Native Claude/Codex remote access for new interactive sessions |
 | [Git and GitHub](git.md) | identity on, credentials off | What of your Git and GitHub setup reaches a session |
 | [Container registries](registries.md) | off | Chosen podman, skopeo and Helm logins from the host |
+| [Kubernetes configs](kubeconfigs.md) | off | Chosen kubeconfig files from the host's `~/.kube` |
 
 All of them are answered in one place:
 

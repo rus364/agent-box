@@ -282,6 +282,37 @@ class RegistriesConfig:
 
 
 @dataclass
+class KubernetesConfig:
+    """Kubeconfig files from the host's ``~/.kube`` forwarded into the box.
+
+    Off and empty by default: a kubeconfig usually reaches a real cluster,
+    often a production one. ``files`` holds what the user ticked among the
+    kubeconfigs ``agent-box config`` found; ``enabled`` is kept apart so
+    ``--[no-]kubeconfigs`` can switch forwarding for one session without
+    losing the choice. Whole files are copied unchanged and never merged:
+    the same context and user names recur across files, and a merged
+    ``KUBECONFIG`` would silently resolve one to the wrong cluster.
+    """
+
+    enabled: bool = False
+    #: File names in ``~/.kube``.
+    files: list[str] = field(default_factory=list)
+
+    @property
+    def active(self) -> bool:
+        return self.enabled and bool(self.files)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"enabled": self.enabled, "files": list(self.files)}
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "KubernetesConfig":
+        # A name that leaves ~/.kube could copy any file the user can read into the box.
+        return cls(enabled=_bool(data, "enabled", False),
+                   files=[name for name in _names(data, "files", exact=True) if "/" not in name and name not in (".", "..")])
+
+
+@dataclass
 class HostEnvConfig:
     """Agent provider variables forwarded from the launching shell, split by sensitivity.
 
@@ -1083,15 +1114,18 @@ class CredentialsConfig:
     git: GitConfig = field(default_factory=GitConfig)
     github: GitHubConfig = field(default_factory=GitHubConfig)
     registries: RegistriesConfig = field(default_factory=RegistriesConfig)
+    kubernetes: KubernetesConfig = field(default_factory=KubernetesConfig)
 
     def to_dict(self) -> dict[str, Any]:
-        return {"git": self.git.to_dict(), "github": self.github.to_dict(), "registries": self.registries.to_dict()}
+        return {"git": self.git.to_dict(), "github": self.github.to_dict(), "registries": self.registries.to_dict(),
+                "kubernetes": self.kubernetes.to_dict()}
 
     @classmethod
     def from_dict(cls, data: Any) -> "CredentialsConfig":
         data = _mapping(data)
         return cls(git=GitConfig.from_dict(data.get("git")), github=GitHubConfig.from_dict(data.get("github")),
-                   registries=RegistriesConfig.from_dict(data.get("registries")))
+                   registries=RegistriesConfig.from_dict(data.get("registries")),
+                   kubernetes=KubernetesConfig.from_dict(data.get("kubernetes")))
 
 
 @dataclass

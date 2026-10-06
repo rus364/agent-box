@@ -68,7 +68,7 @@ class ConfigMenuTests(unittest.TestCase):
             ('agents',): ['default', 'claude', 'codex', 'host_env', 'external_apis'],
             ('agents', 'codex'): ['native_agent_wait', 'remote_control'],
             ('box',): ['tools', 'k3s', 'audio', 'env'],
-            ('credentials',): ['git', 'github', 'registries'],
+            ('credentials',): ['git', 'github', 'registries', 'kubernetes'],
             ('host',): ['notifications', 'claude_skill_links'],
             ('workflow',): ['enabled', 'merge_mode', 'auto_push', 'cleanup_local_branches',
                            'cleanup_remote_branches', 'use_tiers', 'worker', 'scout', 'review', 'sync', 'timeout_seconds'],
@@ -325,6 +325,25 @@ class ConfigMenuTests(unittest.TestCase):
         self.assertEqual(result.config.credentials.registries.hosts, ["cr.yandex"])
         self.assertTrue(any("[ ] cr.yandex" in frame and "[x] old.example" in frame for frame in screen.frames))
         self.assertFalse(any("SECRET-LOGIN" in frame for frame in screen.frames))
+
+    def test_kubeconfigs_are_ticked_with_their_authentication_beside_each_row(self):
+        """An exec file is visible as one before it is chosen, without moving onto it; no token is drawn."""
+        import curses
+        from agent_box import kubeconfigs
+        with tempfile.TemporaryDirectory() as temp:
+            kube = Path(temp)
+            (kube / "dev").write_text("kind: Config\nusers:\n- name: u\n  user:\n    exec:\n      command: yc\n")
+            (kube / "prod").write_text("kind: Config\nusers:\n- name: u\n  user:\n    token: SECRET-TOKEN\n")
+            keys = [*select("credentials"), "\n", *select("kubernetes", ("credentials",)), "\n",
+                    *select("files", ("credentials", "kubernetes")), "\n", curses.KEY_END, " ", "\n",
+                    "\x1b", "\x1b", curses.KEY_END, curses.KEY_UP, "\n"]
+            with patch.object(kubeconfigs, "KUBECONFIG_DIR", kube):
+                result, screen = self.edit(Config(), keys)
+        self.assertEqual(result.config.credentials.kubernetes.files, ["prod"])
+        lines = [line for frame in screen.frames for line in frame.splitlines()]
+        self.assertTrue(any("[ ] dev" in line and "exec: yc" in line for line in lines))
+        self.assertTrue(any("[ ] prod" in line and ": token" in line for line in lines))
+        self.assertFalse(any("SECRET-TOKEN" in frame for frame in screen.frames))
 
     def edit(self, config, keys, choices=(), link=None, screen=None, project=None, catalogs=None):
         import curses
