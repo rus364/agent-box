@@ -114,10 +114,26 @@ class ContainerStatePreparationTests(IsolatedRuntimeTest):
                 self.assertTrue((state_root / "cache").is_dir())
                 self.assertTrue((state_root / "uv").is_dir())
                 self.assertTrue((state_root / "mise").is_dir())
+                self.assertTrue((state_root / "mise-config").is_dir())
                 self.assertTrue((state_root / "cargo").is_dir())
                 self.assertTrue((state_root / "rustup").is_dir())
                 self.assertTrue((state_root / "notify").is_dir())
 
+
+class MiseGlobalConfigTests(IsolatedRuntimeTest):
+    def test_global_tool_choice_outlives_the_box_and_is_shared(self):
+        """`mise use -g` writes ~/.config/mise; in the box's own home it died with the box,
+        leaving installed tools behind a shim with no version. It must come from agent-box
+        state shared by every workspace, as the installed tools do, and never from the host."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            seen = []
+            for name in ("first", "second"):
+                (root / name).mkdir()
+                argv = runtime.container_argv(Workspace(root / name, root / name), [], root, ["codex"])
+                seen.append([flag for flag in argv if flag.endswith(f"dst={runtime.HOST_HOME}/.config/mise")])
+            self.assertEqual(seen[0], [f"type=bind,src={runtime.STATE_ROOT}/mise-config,dst={runtime.HOST_HOME}/.config/mise"])
+            self.assertEqual(seen[0], seen[1])
 
 class ImageExistenceTests(unittest.TestCase):
     def test_missing_image_is_distinct_from_podman_storage_failure(self):

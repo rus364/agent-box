@@ -256,7 +256,7 @@ def codex_command(
 def ensure_state_dirs() -> None:
     for path in (
         BUILD_STATE, STATE_ROOT / "cache", STATE_ROOT / "uv", STATE_ROOT / "mise",
-        STATE_ROOT / "cargo", STATE_ROOT / "rustup", NOTIFY_STATE_ROOT,
+        STATE_ROOT / "mise-config", STATE_ROOT / "cargo", STATE_ROOT / "rustup", NOTIFY_STATE_ROOT,
         STATE_ROOT / "runtime/workspaces", CODEX_HOME, CLAUDE_HOME,
         XDG_CACHE_HOME / "claude-code", XDG_CACHE_HOME / "claude-cli-nodejs",
     ):
@@ -1247,6 +1247,11 @@ def build_mounts(
         # persistent storage rather than the host's real ~/.cargo/~/.rustup.
         (STATE_ROOT / "uv", HOST_HOME / ".local/share/uv", False),
         (STATE_ROOT / "mise", HOST_HOME / ".local/share/mise", False),
+        # `mise use -g` records its choice in the global config, not the data
+        # directory; an installed tool without that choice is a dead shim. It
+        # is the box's own, never the host's: the host's mise may name tools
+        # and backends the image does not have.
+        (STATE_ROOT / "mise-config", HOST_HOME / ".config/mise", False),
         (STATE_ROOT / "cargo", HOST_HOME / ".cargo", False),
         (STATE_ROOT / "rustup", HOST_HOME / ".rustup", False),
         # Notification hook delivery state is intentionally host-global so

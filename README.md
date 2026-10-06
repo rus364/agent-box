@@ -517,7 +517,10 @@ A base set everyone gets, plus optional groups you choose under **Workspace box 
 | `browser` | off | Playwright MCP + headless Chromium, wired into every box session (see [agent browser](docs/integrations/browser.md)) |
 
 Anything else your projects need belongs in the project, through `mise` — a
-per-project toolchain is not an image everyone shares.
+per-project toolchain is not an image everyone shares. A tool you add for
+yourself with `mise use -g` survives box recreation: mise's installs and its
+global config live in agent-box state shared by every box, apart from the
+host's own mise.
 
 **Workspace box → k3s cluster** is not an image group. It runs a per-project
 [k3s cluster](docs/integrations/k3s.md) in a sidecar container beside the box
