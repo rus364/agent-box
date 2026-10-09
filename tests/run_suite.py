@@ -34,10 +34,11 @@ def run_child(arguments):
     import unittest
 
     sys.path.insert(0, str(ROOT))
-    from agent_box import pathsetup
+    from agent_box import links, pathsetup
 
     # These defaults deliberately use passwd home in production, not env paths.
     directory = Path(os.environ["AGENT_BOX_STATE_DIR"]).parent
+    links.LINKS_RUNTIME_DIR = directory / "links"
     pathsetup.HOST_HOME = directory
     pathsetup.DEFAULT_BIN_DIR = directory / "bin"
     pathsetup.RC_FILES = {shell: directory / f".{shell}rc" for shell in ("bash", "zsh")}

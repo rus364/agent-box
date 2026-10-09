@@ -1108,6 +1108,36 @@ class AgentsConfig:
 
 
 @dataclass
+class LinksConfig:
+    """Host access is opt-in; displaying links needs no host capability.
+
+    The socket is part of the shared box, so toggling enabled recreates it.
+    Browser opening is separately opt-in and never used on a remote host.
+    """
+    enabled: bool = False
+    open_browser: bool = False
+    ssh_destination: str = ""
+    coder_workspace: str = ""
+
+    def to_dict(self):
+        return {"enabled": self.enabled, "open_browser": self.open_browser,
+                "ssh_destination": self.ssh_destination, "coder_workspace": self.coder_workspace}
+
+    @classmethod
+    def from_dict(cls, data):
+        return cls(_bool(data, "enabled", False), _bool(data, "open_browser", False),
+                   _str(data, "ssh_destination"), _str(data, "coder_workspace"))
+
+    def validate(self):
+        errors = []
+        for name in ("ssh_destination", "coder_workspace"):
+            value = getattr(self, name)
+            if value and (value.startswith("-") or any(ord(c) < 33 or ord(c) == 127 for c in value)):
+                errors.append(f"box.links.{name} must be one destination without options or whitespace")
+        return errors
+
+
+@dataclass
 class BoxConfig:
     """What the workspace box is built with and runs beside it."""
 
@@ -1127,20 +1157,22 @@ class BoxConfig:
     #: works with either server. Structural, because a bind mount is part of
     #: the box.
     audio: bool = False
+    links: LinksConfig = field(default_factory=LinksConfig)
     env: EnvConfig = field(default_factory=EnvConfig)
 
     def to_dict(self) -> dict[str, Any]:
         return {"tools": self.tools.to_dict(), "k3s": self.k3s.to_dict(),
-                "audio": self.audio, "env": self.env.to_dict()}
+                "audio": self.audio, "links": self.links.to_dict(), "env": self.env.to_dict()}
 
     @classmethod
     def from_dict(cls, data: Any) -> "BoxConfig":
         data = _mapping(data)
         return cls(tools=ToolsConfig.from_dict(data.get("tools")), k3s=K3sConfig.from_dict(data.get("k3s")),
-                   audio=_bool(data, "audio", False), env=EnvConfig.from_dict(data.get("env")))
+                   audio=_bool(data, "audio", False), links=LinksConfig.from_dict(data.get("links")),
+                   env=EnvConfig.from_dict(data.get("env")))
 
     def validate(self) -> list[str]:
-        return self.k3s.validate()
+        return self.k3s.validate() + self.links.validate()
 
 
 @dataclass

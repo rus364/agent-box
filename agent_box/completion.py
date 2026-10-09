@@ -89,6 +89,7 @@ COMMANDS = {
     "config": config_words,
     "usage": fixed("codex", "claude", "all", "--no-cache", "--json"),
     "notify": fixed("test"),
+    "links": fixed("open"),
     "build": fixed(), "update": fixed(), "rebuild": fixed(),
     "upgrade": fixed("--check"), "uninstall": fixed("--purge", "--yes"),
     "tracker": argparse_command(tracker_parser), "workflow": argparse_command(workflow_parser),

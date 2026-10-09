@@ -11,6 +11,7 @@ describes one thing you can turn on, what it exposes, and what it costs.
 | [Workflow](workflow.md) | off | Sequential tasks, model routing, fresh review and parent PRs |
 | [External API providers](external-providers.md) | off | Named API keys, separate CLI endpoints, explicit launches and workflow candidates |
 | [Agent browser](browser.md) | off | A headless browser inside the workspace box for agents to drive |
+| [Web links and CLI callbacks](links.md) | host access off | Display CLI links; optionally route localhost callbacks through the host and SSH/Coder |
 | [k3s cluster](k3s.md) | off | A per-project Kubernetes cluster in a rootless sidecar next to the box |
 | [Host audio](audio.md) | off | The host microphone and speakers in the box, e.g. for Claude Code `/voice` |
 | [Telegram](telegram.md) | off | Anthropic's official channel for control, plus one-way notifications |

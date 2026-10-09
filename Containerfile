@@ -728,6 +728,12 @@ RUN set -eux; \
 # Runtime
 # ---------------------------------------------------------------------------
 
+# Cached CLI auth discovers an opener before reading credentials. The owned
+# handler needs no desktop and keeps host access behind the links switch.
+RUN printf '%s\n' '#!/bin/sh' 'exec agent-box links open "$@"' > /usr/local/bin/xdg-open \
+    && chmod 0755 /usr/local/bin/xdg-open
+ENV BROWSER=xdg-open
+
 # What this image actually contains, so agent-box can tell a running image
 # that matches the configuration from one built before a group was turned on.
 LABEL io.agent-box.tools="${AGENT_BOX_TOOLS}"

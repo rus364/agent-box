@@ -65,10 +65,18 @@ box.
 
 ### Federated profiles
 
-A browser sign-in happens only on the host, with `yc` as usual. The box picks
-up the renewed sign-in at its next launch. Once the refresh token expires
-(31 days), `yc` in the box cannot sign in again: sign in on the host and launch
-again.
+Sign in on the host with `yc` as usual, then launch again to copy the renewed
+credentials. Alternatively, enable [web links and CLI callbacks](links.md)
+to complete a login started inside the box in your workstation browser;
+remote launches also need the displayed SSH/Coder tunnel. That login updates
+only the box's copy, which the next launch replaces from the host.
+
+The image's `xdg-open` lets cached federated credentials work even without
+host link access. A missing/expired IAM token with no usable refresh token
+still needs interactive login. Refresh tokens may be absent; automatic
+renewal is available only when the provider issued one and its supporting
+authentication material is available. The link integration does not add
+missing refresh-token or DPoP material to forwarded profiles.
 
 Yandex Cloud reissues a refresh token used in its last seven days. Whether the
 old one stays valid is not documented: if it does not, a box that renewed

@@ -42,6 +42,7 @@ def usage_text() -> None:
   agent-box config ai [claude|codex]
   agent-box usage [codex|claude|all] [--no-cache] [--json]
   agent-box notify test
+  agent-box links open URL
   agent-box build | update | rebuild
   agent-box upgrade [--check]
   agent-box uninstall [--purge] [--yes]
@@ -939,7 +940,7 @@ def selftest() -> None:
 NON_RUNTIME = {
     "usage", "statusline", "notify", "config", "selftest", "help", "-h", "--help",
     "build", "update", "rebuild", "tracker", "workflow", "attach", "stop", "upgrade", "uninstall",
-    "completion",
+    "completion", "links",
 }
 #: --host only makes sense for a real agent launch, never for these.
 HOST_ONLY_AGENTS = {"claude", "codex"}
@@ -996,6 +997,9 @@ def main() -> None:
             statusline_command(args[1:]); return
         if args and args[0] == "notify":
             notify_command(args[1:]); return
+        if args and args[0] == "links":
+            from . import links
+            raise SystemExit(links.main(args[1:]))
         if args and args[0] == "config":
             config_command(args[1:]); return
         if args and args[0] == "completion":

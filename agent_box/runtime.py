@@ -35,7 +35,7 @@ from . import claude_settings
 from . import notify as notify_module
 from . import k3s
 from . import nested_podman
-from . import cloud, kubeconfigs, registries
+from . import cloud, kubeconfigs, registries, links
 from .atomicio import atomic_write_json, atomic_write_text, read_json
 from .config import ENV_PREFIX, WORKFLOW_SKILLS, Config, load_config, effective_config, session_account
 from .errors import AgentBoxError
@@ -709,6 +709,8 @@ def prepare_container_lifetime_state(
                          *kubeconfigs.mounts(config, runtime_state.root.name),
                          *cloud.mounts(config, runtime_state.root.name)]:
         source.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if config.box.links.enabled:
+        links.prepare(runtime_state.root.name)
     if config.tracker.enabled or config.workflow.enabled:
         WORKFLOW_STATE.mkdir(parents=True, exist_ok=True)
         for problem in tracker_warnings(config):
@@ -900,7 +902,8 @@ def sync_tracker_runtime(config: Config, directory: Path | None = None, *, polic
                         "kubernetes": config.credentials.kubernetes.to_dict(),
                         "cloud": config.credentials.cloud.to_dict()},
         # A nested box inherits the outer box's sound socket at the same path.
-        "box": {"tools": config.box.tools.to_dict(), "k3s": config.box.k3s.to_dict(), "audio": config.box.audio},
+        "box": {"tools": config.box.tools.to_dict(), "k3s": config.box.k3s.to_dict(),
+                "audio": config.box.audio, "links": config.box.links.to_dict()},
         "container": container,
         # Re-applied over the project configuration inside the session.
         "launch": launch,
@@ -1304,6 +1307,9 @@ def build_mounts(
     pairs += registries.mounts(config, runtime_state.root.name)
     pairs += kubeconfigs.mounts(config, runtime_state.root.name)
     pairs += cloud.mounts(config, runtime_state.root.name)
+    if config.box.links.enabled:
+        root = links.directory(runtime_state.root.name)
+        pairs.append((root, root, True))
 
     out = []
     seen_paths: set[Path] = set()
@@ -1597,6 +1603,7 @@ def container_lifetime_args(
     """
     config = effective_config(runtime_config_base()) if config is None else config
     home = HOST_HOME
+    runtime_state = runtime_state or workspace_runtime_state(workspace)
     args = [
         "--userns=keep-id", *kvm_args(config, kvm), *audio_args(config),
         "--cap-drop=all", "--security-opt=no-new-privileges", "--hostname=agent-box", "--tz=local",
@@ -1635,6 +1642,10 @@ def container_lifetime_args(
         *tracker_host_args(config),
         *k3s_box_args(config, workspace, runtime_state),
     ]
+    if config.box.links.enabled:
+        policy = hashlib.sha256(json.dumps(config.box.links.to_dict(), sort_keys=True).encode()).hexdigest()[:16]
+        args += [f"--env={links.SOCKET_ENV}={links.endpoint(runtime_state.root.name)}",
+                 f"--env=AGENT_BOX_LINKS_POLICY={policy}"]
     # A host that relocates Claude Code's config directory must have the
     # container agree: CLAUDE_HOME is already bind-mounted at its host path,
     # but `claude` inside the container would still look in $HOME/.claude
@@ -2209,6 +2220,11 @@ def launch_in_workspace_container(
     with workspace_transition_lock(workspace):
         confirm_k3s(spec)
         ensure_workspace_container(spec)
+        if spec.creation_config.box.links.enabled:
+            try:
+                links.ensure(spec.runtime_state.root.name, spec.name, spec.creation_config.box.links)
+            except (OSError, ValueError, subprocess.SubprocessError) as exc:
+                raise AgentBoxError(str(exc)) from exc
         # Only now does the box match this launch: a launch refused for
         # mounting differently must not rewrite a running box's logins.
         for problem in [*registries.sync(spec.creation_config, spec.runtime_state.root.name),
@@ -2804,6 +2820,7 @@ def stop_main(args: list[str], workspace_root: str = "") -> int:
             # be running; its snapshots and screenshots go with it.
             remove_browser_sessions(runtime_state)
             print(f"agent-box: removed workspace container {name}", file=sys.stderr)
+        links.stop(runtime_state.root.name)
         workspace_id = workspace_identity(workspace)
         sidecar = k3s.name(workspace_id)
         if cluster_data:

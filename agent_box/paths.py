@@ -77,6 +77,8 @@ XDG_STATE_HOME = env_path("XDG_STATE_HOME", HOST_HOME / ".local/state")
 # The login runtime directory comes from the real uid, not $XDG_RUNTIME_DIR,
 # for the same reason HOST_HOME ignores $HOME: its sockets become bind mounts.
 HOST_RUNTIME_DIR = Path("/run/user") / str(os.getuid())
+# Callback brokers need short Unix socket paths and die with workspace boxes.
+LINKS_RUNTIME_DIR = HOST_RUNTIME_DIR / "agent-box-links"
 
 def launcher_state_root(shared: Path) -> Path:
     """Keep nested builds and workspace records outside their parent's mounts.
