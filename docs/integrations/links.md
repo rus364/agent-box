@@ -38,6 +38,8 @@ when another session launches or uses `agent-box attach`. Once any session is
 remote/headless, automatic opening stays suppressed until stop/recreation; later local
 sessions also receive manual instructions. The host policy file is outside
 the mounted socket directory and cannot be changed by the box.
+Broker recovery retains this private policy; only workspace stop/recreation
+removes it. Broker exit still closes every callback listener and its socket.
 New SSH/Coder connection details replace the preceding transport; a headless
 attachment without either retains the last hint. A new callback request also
 updates its server listener to match that transport.

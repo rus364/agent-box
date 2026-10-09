@@ -455,7 +455,8 @@ def serve(path: Path, container: str, context_path: Path, open_browser: bool) ->
                         connection.sendall(json.dumps(result).encode() + b"\n")
         finally:
             broker.close()
-            context_path.unlink(missing_ok=True)
+            # A broker-only exit cannot reset the shared box's opening policy.
+            # Workspace stop/creation owns context removal, under its lock.
             path.unlink(missing_ok=True)
 
 

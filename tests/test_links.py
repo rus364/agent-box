@@ -261,6 +261,45 @@ class BrokerTests(unittest.TestCase):
 
 
 class LinkPolicyTests(unittest.TestCase):
+    def test_broker_only_exit_preserves_suppression_until_workspace_stop(self):
+        """A failed liveness probe or socket stop must not reopen a remote session's browser."""
+        for mode in ("socket-stop", "inspect-failure"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                failure = root / "inspect-failure"
+                binary = root / "podman"
+                binary.write_text(f'#!{sys.executable}\nfrom pathlib import Path\nimport sys\n'
+                                  f'if Path({str(failure)!r}).exists(): sys.exit(1)\nprint("true")\n')
+                binary.chmod(0o700)
+                with mock.patch.object(links, "LINKS_RUNTIME_DIR", root / "runtime"), \
+                        mock.patch.dict(os.environ, {"PATH": f"{root}:{os.environ['PATH']}"}):
+                    links.prepare("ws")
+                    local = {"desktop": True, "ssh": "", "ssh_port": 22, "coder": ""}
+                    remote = {"desktop": False, "ssh": "server", "ssh_port": 2222, "coder": ""}
+                    config = LinksConfig(enabled=True, open_browser=True)
+                    try:
+                        with mock.patch.object(links, "remote_context", return_value=remote):
+                            links.ensure("ws", "box", config)
+                        old = links._children["ws"]
+                        if mode == "socket-stop":
+                            with socket.socket(socket.AF_UNIX) as connection:
+                                connection.connect(str(links.endpoint("ws")))
+                                connection.sendall(b'{"stop":true}\n')
+                                self.assertTrue(links._receive(connection)["ok"])
+                        else:
+                            failure.touch()
+                        self.assertEqual(old.wait(timeout=5), 0)
+                        self.assertFalse(links.endpoint("ws").exists())
+                        self.assertFalse(json.loads(links.context_file("ws").read_text())["desktop"])
+                        failure.unlink(missing_ok=True)
+                        with mock.patch.object(links, "remote_context", return_value=local):
+                            links.ensure("ws", "box", config)
+                        self.assertIsNot(links._children["ws"], old)
+                        self.assertFalse(json.loads(links.context_file("ws").read_text())["desktop"])
+                    finally:
+                        links.stop("ws")
+                    self.assertFalse(links.context_file("ws").exists())
+
     def test_current_remote_transport_replaces_previous_hint_before_headless_join(self):
         """An obsolete Coder hint must not override a freshly detected SSH attachment."""
         with tempfile.TemporaryDirectory() as tmp, \
