@@ -65,7 +65,9 @@ class LinkRequestTests(unittest.TestCase):
         self.assertIn("dev-alias", text)
         self.assertIn("ExitOnForwardFailure=yes", text)
         text = "\n".join(links.instructions({"coder": "alice/workspace.agent"}, ("::1", 42121)))
-        self.assertIn("coder port-forward alice/workspace.agent --tcp 42121:42121", text)
+        self.assertIn("coder port-forward alice/workspace.agent --tcp '[::1]:42121:42121'", text)
+        text = "\n".join(links.instructions({"ssh": "dev-alias"}, ("127.0.0.2", 42121)))
+        self.assertIn("127.0.0.2:42121:127.0.0.2:42121", text)
 
     def test_remote_context_never_opens_a_graphical_server_browser(self):
         """SSH and Coder are remote even if the server happens to have DISPLAY set."""

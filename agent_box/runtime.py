@@ -1603,7 +1603,6 @@ def container_lifetime_args(
     """
     config = effective_config(runtime_config_base()) if config is None else config
     home = HOST_HOME
-    runtime_state = runtime_state or workspace_runtime_state(workspace)
     args = [
         "--userns=keep-id", *kvm_args(config, kvm), *audio_args(config),
         "--cap-drop=all", "--security-opt=no-new-privileges", "--hostname=agent-box", "--tz=local",
@@ -1643,8 +1642,9 @@ def container_lifetime_args(
         *k3s_box_args(config, workspace, runtime_state),
     ]
     if config.box.links.enabled:
+        link_state = runtime_state or legacy_runtime_state(workspace)
         policy = hashlib.sha256(json.dumps(config.box.links.to_dict(), sort_keys=True).encode()).hexdigest()[:16]
-        args += [f"--env={links.SOCKET_ENV}={links.endpoint(runtime_state.root.name)}",
+        args += [f"--env={links.SOCKET_ENV}={links.endpoint(link_state.root.name)}",
                  f"--env=AGENT_BOX_LINKS_POLICY={policy}"]
     # A host that relocates Claude Code's config directory must have the
     # container agree: CLAUDE_HOME is already bind-mounted at its host path,

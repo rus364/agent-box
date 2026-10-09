@@ -119,22 +119,22 @@ def instructions(context: dict, target: tuple[str, int] | None) -> list[str]:
     destination = f"[{host}]" if ":" in host else ("127.0.0.1" if host == "localhost" else host)
     lines = [f"Server loopback port {port} forwards to the box for {CALLBACK_TTL} seconds."]
     if context.get("coder"):
-        # With no explicit local address Coder binds both loopback families.
-        # Its server target is always IPv4; Relay bridges that to the CLI's
-        # actual callback family inside the box.
-        command = ["coder", "port-forward", context["coder"], "--tcp", f"{port}:{port}"]
+        # Coder's implicit IPv6 bind is best-effort. An explicit callback
+        # address must fail on collision instead of reporting IPv4 readiness.
+        spec = f"{port}:{port}" if host in {"localhost", "127.0.0.1"} else f"{destination}:{port}:{port}"
+        command = ["coder", "port-forward", context["coder"], "--tcp", spec]
         lines += ["On your workstation, run before opening the link:", shlex.join(command)]
     elif context.get("ssh"):
         command = ["ssh", "-N", "-o", "ExitOnForwardFailure=yes"]
         if context.get("ssh_port", 22) != 22:
             command += ["-p", str(context["ssh_port"])]
-        bind = f"[::1]:{port}" if host == "::1" else f"127.0.0.1:{port}"
+        bind = f"{destination}:{port}"
         command += ["-L", f"{bind}:{destination}:{port}", context["ssh"]]
         lines += ["On your workstation, run before opening the link:", shlex.join(command)]
     elif not context.get("desktop"):
         lines += ["If this launcher is remote, on your workstation run:",
                   shlex.join(["ssh", "-N", "-o", "ExitOnForwardFailure=yes", "-L",
-                              f"{'[::1]' if host == '::1' else '127.0.0.1'}:{port}:{destination}:{port}",
+                              f"{destination}:{port}:{destination}:{port}",
                               "USER@SERVER"]),
                   "Set box.links.ssh_destination to your SSH alias for an exact command."]
     return lines

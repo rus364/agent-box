@@ -81,9 +81,10 @@ coder port-forward alice/myworkspace.main --tcp 42121:42121
 ```
 
 Run this on the workstation and wait for Coder's `Ready!` before opening the
-URL. Coder binds local IPv4 and IPv6 loopback by default and targets IPv4
-loopback in the workspace; agent-box bridges that to the CLI's actual callback
-address inside the nested box. See [Coder port-forward](https://coder.com/docs/reference/cli/port-forward).
+URL. Coder targets IPv4 loopback in the workspace; agent-box bridges that to
+the CLI's actual callback address inside the nested box. An IPv6 callback uses
+an explicit local address (`--tcp '[::1]:42121:42121'`) so a failed IPv6 bind
+cannot be mistaken for a ready route. See [Coder port-forward](https://coder.com/docs/reference/cli/port-forward).
 
 ## Limits and diagnosis
 
