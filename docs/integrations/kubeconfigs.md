@@ -96,10 +96,10 @@ reaches an already running box at the next `agent-box` launch for that
 project, without recreating the box. A launch nested inside a box finds the
 copies that box was given in its `~/.kube`.
 
-The mount and `KUBECACHEDIR` are part of the box's identity. Turning forwarding
-on or off, or emptying or filling the list, recreates the box; a box that is
-still running refuses the change until `agent-box stop`. Changing which files
-are chosen only changes the copies.
+The running box retains the forwarding switch, selected files, mount and
+`KUBECACHEDIR` from creation. Later launches refresh only those files, even if
+the saved selection changed. New choices take effect after `agent-box stop`
+and the next launch; an explicit conflicting switch requires that restart.
 
 ## One-off overrides
 

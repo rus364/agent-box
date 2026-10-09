@@ -257,6 +257,7 @@ class LaunchAppliesNothingTests(unittest.TestCase):
              mock.patch.object(runtime, "load_config", return_value=config), \
              mock.patch.object(runtime, "image_exists", return_value=True), \
              mock.patch.object(runtime, "claude_channel_args", return_value=([], [])), \
+             mock.patch.object(runtime, "existing_workspace_spec", return_value=None), \
              mock.patch.object(runtime, "launch_in_workspace_container", return_value=0), \
              self.assertRaises(SystemExit):
             runtime.runtime_main(["claude"], tmp)

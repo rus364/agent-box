@@ -152,22 +152,6 @@ class SessionPrecedenceTests(IsolatedLaunchTest):
         self.assertFalse(result.box.tools.browser())
         self.assertIn("browser", result.box.tools.enabled_groups())
 
-    def test_copies_seeded_at_box_creation_are_refused_for_a_running_box(self):
-        """A running box keeps the gh/Git copies it was created with; the flag must not look applied."""
-        with patch.object(runtime.shutil, "which", return_value="/usr/bin/podman"), \
-             patch.object(runtime, "resolve_workspace", return_value=Workspace(self.root, self.root)), \
-             patch.object(runtime, "ensure_state_dirs"), patch.object(runtime, "ensure_refresh_token"), \
-             patch.object(runtime, "load_config", return_value=Config()), \
-             patch.object(runtime, "image_exists", return_value=True), \
-             patch.object(runtime, "tmux_enabled", return_value=False), \
-             patch.object(runtime, "claude_channel_args", return_value=([], [])), \
-             patch.object(runtime, "inspect_workspace_container", return_value={"State": {"Status": "running"}}), \
-             patch.object(runtime, "launch_in_workspace_container", return_value=0) as launch, \
-             self.assertRaisesRegex(AgentBoxError, "already running"):
-            runtime.runtime_main(["claude"], Path(__file__).resolve().parents[1],
-                                 LaunchOptions(overrides={"git-config": True}))
-        launch.assert_not_called()
-
     def test_describe_spells_overrides_as_the_flags_that_set_them(self):
         self.assertEqual(launch_options.describe({"worker": "codex:gpt-5.5:high", "push": False, "gh-token": True,
                                                   "rounds": 4, "notify": False, "tiers": True}),

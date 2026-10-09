@@ -294,7 +294,9 @@ class BrowserDoesNotChangeBoxIdentityTests(IsolatedRuntimeTest):
             on = runtime.workspace_container_spec(workspace, [], Path.cwd(), browser_config(True))
         self.assertEqual(off.base_config_hash, on.base_config_hash)
         self.assertEqual(off.name, on.name)
-        self.assertEqual(off.create_argv, on.create_argv)
+        policy_label = f"--label={runtime.WORKSPACE_CONTAINER_POLICY_LABEL}="
+        self.assertEqual([arg for arg in off.create_argv if not arg.startswith(policy_label)],
+                         [arg for arg in on.create_argv if not arg.startswith(policy_label)])
 
     def test_no_browser_specific_mount_or_env_is_added(self):
         with tempfile.TemporaryDirectory() as tmp:

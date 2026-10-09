@@ -1320,11 +1320,31 @@ def session_account(config):
     return getattr(config, "_project_base", config).tracker
 
 
+def apply_box_policy(config, policy):
+    """A session's shared capabilities belong to its box, even after a project edit."""
+    import copy
+    shared = Config.from_dict(policy)
+    config.box.tools.groups = copy.deepcopy(shared.box.tools.groups)
+    config.box.k3s = shared.box.k3s
+    config.box.audio = shared.box.audio
+    config.box.links = shared.box.links
+    config.credentials.git = shared.credentials.git
+    config.credentials.github.config = shared.credentials.github.config
+    config.credentials.registries = shared.credentials.registries
+    config.credentials.kubernetes = shared.credentials.kubernetes
+    config.credentials.cloud = shared.credentials.cloud
+    if not policy["workflow_mount"]:
+        config.workflow.enabled = config.tracker.enabled = False
+    config._box_policy = copy.deepcopy(policy)
+    return config
+
+
 def effective_config(base=None, *, include_project=True) -> Config:
     """Global (or snapshot) < project < this session's launch flags."""
     from . import launch_options, project_config
     runtime_file = os.environ.get("AGENT_BOX_RUNTIME_CONFIG")
     launch = {}
+    box_policy = getattr(base, "_box_policy", None)
     if base is None:
         if not runtime_file:
             base = load_config()
@@ -1352,6 +1372,9 @@ def effective_config(base=None, *, include_project=True) -> Config:
             if "global_tracker_urls" in rendered:
                 base._global_tracker_urls = rendered["global_tracker_urls"]
             launch = rendered.get("launch") if isinstance(rendered.get("launch"), dict) else {}
+            box_policy = rendered.get("box_policy")
+            if box_policy is not None:
+                apply_box_policy(base, box_policy)
     import copy
     base = copy.deepcopy(base)
     # The editor needs the original URLs, but a session must not retain an
@@ -1364,6 +1387,8 @@ def effective_config(base=None, *, include_project=True) -> Config:
         base._launch = launch
         return base
     result = project_config.apply(base, project_config.load())
+    if box_policy is not None:
+        apply_box_policy(result, box_policy)
     return launch_options.apply(result, launch) if launch else result
 
 

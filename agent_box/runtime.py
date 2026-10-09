@@ -37,7 +37,7 @@ from . import k3s
 from . import nested_podman
 from . import cloud, kubeconfigs, registries, links
 from .atomicio import atomic_write_json, atomic_write_text, read_json
-from .config import ENV_PREFIX, WORKFLOW_SKILLS, Config, load_config, effective_config, session_account
+from .config import ENV_PREFIX, WORKFLOW_SKILLS, Config, apply_box_policy, load_config, effective_config, session_account
 from .errors import AgentBoxError
 from .external_config import has_toml_spelling, toml_string
 from .identity import HostIdentity, detect_host_identity
@@ -77,7 +77,8 @@ from .workspace import Workspace, resolve_workspace
 
 IMAGE = os.environ.get("AGENT_BOX_IMAGE", "localhost/agent-box:latest")
 CHATGPT_DESKTOP_RESOURCES = "/usr/lib/chatgpt/resources/"
-WORKSPACE_CONTAINER_SCHEMA = "2"
+WORKSPACE_CONTAINER_SCHEMA = "3"
+WORKSPACE_CONTAINER_POLICY_LABEL = "io.agent-box.policy"
 WORKSPACE_CONTAINER_LABEL = "io.agent-box.managed"
 WORKSPACE_CONTAINER_WORKSPACE_LABEL = "io.agent-box.workspace"
 WORKSPACE_CONTAINER_BASE_CONFIG_LABEL = "io.agent-box.base-config-hash"
@@ -365,14 +366,14 @@ def nested_podman_args(config: Config, workspace: Workspace) -> list[str]:
         raise AgentBoxError(f"Cannot configure nested Podman: {exc}") from exc
 
 
-def image_tool_groups() -> list[str] | None:
+def image_tool_groups(image: str | None = None) -> list[str] | None:
     """The groups the built image carries, or ``None`` when it cannot be read.
 
     ``None`` is not "no groups": an image that predates the label, or a
     Podman that cannot be asked, must not be reported as missing everything.
     """
     command = ["podman", "image", "inspect", "--format",
-               f"{{{{index .Labels \"{IMAGE_TOOLS_LABEL}\"}}}}", IMAGE]
+               f"{{{{index .Labels \"{IMAGE_TOOLS_LABEL}\"}}}}", image or IMAGE]
     try:
         result = subprocess.run(command, text=True, capture_output=True)
     except OSError:
@@ -865,6 +866,7 @@ def container_tracker_url(raw: str) -> str:
 def sync_tracker_runtime(config: Config, directory: Path | None = None, *, policy=False, container=True) -> None:
     """Render only explicitly enabled capabilities; directory mounts see atomic updates."""
     launch = getattr(config, "_launch", {})
+    browser_enabled = config.box.tools.browser()
     config = getattr(config, "_project_base", config)
     directory = TRACKER_RUNTIME_DIR if directory is None else directory
     if not policy and not (config.tracker.enabled or config.workflow.enabled):
@@ -911,6 +913,13 @@ def sync_tracker_runtime(config: Config, directory: Path | None = None, *, polic
         # Re-applied over the project configuration inside the session.
         "launch": launch,
     }
+    if hasattr(config, "_box_policy"):
+        import copy
+        rendered["box_policy"] = copy.deepcopy(config._box_policy)
+        # Installed Chromium is a box capability; wiring its MCP server is
+        # the new process's choice, including a saved browser-off setting.
+        rendered["box_policy"]["box"]["tools"]["browser"] = browser_enabled
+        rendered["box"]["tools"]["browser"] = browser_enabled
     atomic_write_json(directory / "config.json", rendered, 0o600)
 
 
@@ -929,7 +938,7 @@ def session_runtime(config, *, container=True, runtime_state=None):
     return path
 
 
-def launch_config(options=None):
+def launch_config(options=None, *, box_policy=None):
     """Saved settings, then the project, then this launch's flags."""
     from . import launch_options
     options = options or launch_options.LaunchOptions()
@@ -937,6 +946,17 @@ def launch_config(options=None):
     overrides = {**getattr(base, "_launch", {}), **options.overrides}
     policy = base.box.env.overlay(options.env)
     config = effective_config(base)
+    if box_policy is not None:
+        browser_enabled = config.box.tools.browser()
+        if not box_policy["workflow_mount"]:
+            from .launch_options import WORKFLOW_KEYS
+            required = next((key for key in overrides if key in WORKFLOW_KEYS | {"tracker", "project"}), None)
+            if required:
+                raise AgentBoxError(f"--{required} needs a workflow mount absent from the running workspace box; "
+                                    "end it with agent-box stop and rerun")
+        apply_box_policy(config, box_policy)
+        apply_box_policy(config._project_base, box_policy)
+        config.box.tools.browser_off = not browser_enabled
     launch_options.apply(config, overrides)
     # The snapshot renders from the layer beneath the project overlay. Only
     # --no-workflow's withdrawal of the tracker and the --tracker account belong
@@ -966,6 +986,13 @@ def tracker_mounts(config: Config, runtime_state: WorkspaceRuntimeState) -> list
     # The workspace root is mounted even with integrations disabled. Keep
     # credentials outside it, and never mount host or other workspace sessions.
     workspace = runtime_state.root.name
+    policy = getattr(config, "_box_policy", None)
+    if policy is not None:
+        source, destination, read_only = policy["session_mount"]
+        mounts = [(Path(source), Path(destination), read_only)]
+        if policy["workflow_mount"]:
+            mounts.append((WORKFLOW_STATE, CONTAINER_WORKFLOW_STATE, False))
+        return mounts
     if not (config.tracker.enabled or config.workflow.enabled):
         return [(POLICY_RUNTIME_DIR / "workspaces" / workspace, CONTAINER_POLICY_RUNTIME_DIR, True)]
     return [(TRACKER_RUNTIME_DIR / "workspaces" / workspace, CONTAINER_TRACKER_RUNTIME_DIR, True),
@@ -1720,6 +1747,9 @@ class WorkspaceContainerSpec:
     create_argv: list[str]
     creation_config: Config = field(repr=False, compare=False)
     runtime_state: WorkspaceRuntimeState
+    policy_id: str = field(default_factory=lambda: uuid.uuid4().hex)
+    admitted_id: str = ""
+    image: str = ""
 
 
 def workspace_container_spec(
@@ -1751,12 +1781,14 @@ def workspace_container_spec(
     }, separators=(",", ":"), sort_keys=True).encode()
     base_config_hash = hashlib.sha256(base_structural).hexdigest()[:16]
     name = workspace_container_name(workspace)
+    policy_id = uuid.uuid4().hex
     labels = [
         f"--label={WORKSPACE_CONTAINER_LABEL}=true",
         f"--label={WORKSPACE_CONTAINER_WORKSPACE_LABEL}={workspace_identity(workspace)}",
         f"--label={WORKSPACE_CONTAINER_SCHEMA_LABEL}={WORKSPACE_CONTAINER_SCHEMA}",
         f"--label={WORKSPACE_CONTAINER_BASE_CONFIG_LABEL}={base_config_hash}",
         f"--label={WORKSPACE_CONTAINER_EXTRA_MOUNTS_LABEL}={extra_mounts_hash}",
+        f"--label={WORKSPACE_CONTAINER_POLICY_LABEL}={policy_id}",
     ]
     return WorkspaceContainerSpec(
         name=name,
@@ -1770,6 +1802,7 @@ def workspace_container_spec(
         ],
         creation_config=config,
         runtime_state=runtime_state,
+        policy_id=policy_id,
     )
 
 
@@ -1796,6 +1829,105 @@ def workspace_transition_lock(workspace: Workspace):
 
 def workspace_lock_path(workspace: Workspace) -> Path:
     return workspace_runtime_state(workspace).root / "lifecycle.lock"
+
+
+def workspace_box_policy(spec: WorkspaceContainerSpec) -> dict:
+    """Persist only shared choices, never an agent's workflow or credential values."""
+    config = spec.creation_config
+    groups = image_tool_groups()
+    tools = config.box.tools.to_dict() if groups is None else {
+        name: name in groups for name in config.box.tools.groups
+    }
+    tools["podman"] = tools["podman"] and "--device=/dev/net/tun" in spec.create_argv
+    source, destination, read_only = tracker_mounts(config, spec.runtime_state)[0]
+    return {
+        "box": {"tools": tools, "k3s": config.box.k3s.to_dict(),
+                "audio": any(arg.startswith("--env=PULSE_SERVER=") for arg in spec.create_argv),
+                "links": config.box.links.to_dict()},
+        "credentials": {"git": config.credentials.git.to_dict(),
+                        "github": {"config": config.credentials.github.config},
+                        "registries": config.credentials.registries.to_dict(),
+                        "kubernetes": config.credentials.kubernetes.to_dict(),
+                        "cloud": config.credentials.cloud.to_dict()},
+        "workflow_mount": config.tracker.enabled or config.workflow.enabled,
+        "session_mount": [str(source), str(destination), read_only],
+    }
+
+
+def existing_workspace_spec(workspace: Workspace, options: LaunchOptions) -> WorkspaceContainerSpec | None:
+    """Read a live box under the keeper lock; recheck its ID when admitting exec."""
+    name = workspace_container_name(workspace)
+    state = workspace_runtime_state(workspace)
+    with workspace_transition_lock(workspace):
+        current = inspect_workspace_container(name)
+        if current is None:
+            return None
+        labels = current.get("Config", {}).get("Labels", {}) or {}
+        owned = (labels.get(WORKSPACE_CONTAINER_LABEL) == "true"
+                 and labels.get(WORKSPACE_CONTAINER_WORKSPACE_LABEL) == workspace_identity(workspace))
+        if not owned:
+            raise AgentBoxError("workspace container name is occupied by a foreign container; resolve the name collision first")
+        current = _wait_for_exiting_keeper(name, current)
+        if current is None or current.get("State", {}).get("Status") != "running":
+            return None
+        policy_id = labels.get(WORKSPACE_CONTAINER_POLICY_LABEL, "")
+        if labels.get(WORKSPACE_CONTAINER_SCHEMA_LABEL) != WORKSPACE_CONTAINER_SCHEMA or not re.fullmatch(r"[0-9a-f]{32}", policy_id):
+            raise AgentBoxError("running workspace box has no current creation policy; end it with agent-box stop and rerun")
+        try:
+            policy = read_json(state.root / f"box-{policy_id}.json")
+            shared = apply_box_policy(Config(), policy)
+            source, destination, read_only = policy["session_mount"]
+            if not isinstance(source, str) or not isinstance(destination, str) or not isinstance(read_only, bool):
+                raise ValueError()
+        except (OSError, ValueError, TypeError, KeyError, AttributeError):
+            raise AgentBoxError("cannot read the running workspace box's creation policy; end it with agent-box stop and rerun") from None
+        groups = image_tool_groups(current["Image"])
+        if groups is not None:
+            policy["box"]["tools"] = {name: name in groups for name in shared.box.tools.groups}
+            policy["box"]["tools"]["podman"] = "podman" in groups and any(
+                device.get("PathOnHost") == "/dev/net/tun"
+                for device in current.get("HostConfig", {}).get("Devices", []) or []
+            )
+            apply_box_policy(shared, policy)
+        if not any(item.get("Source") == source and item.get("Destination") == destination
+                   for item in current.get("Mounts", [])):
+            raise AgentBoxError("running workspace box lacks its session snapshot mount; end it with agent-box stop and rerun")
+        if shared.box.k3s.enabled:
+            sidecar = k3s.inspect(workspace_identity(workspace))
+            if (sidecar or {}).get("State", {}).get("Status") != "running":
+                raise AgentBoxError("running workspace box's k3s sidecar is unavailable; end it with agent-box stop and rerun")
+        shared_flags = {"registries": shared.credentials.registries.enabled,
+                        "kubeconfigs": shared.credentials.kubernetes.enabled,
+                        "cloud-profiles": shared.credentials.cloud.enabled,
+                        "links": shared.box.links.enabled,
+                        "git-config": shared.credentials.git.full_config,
+                        "gh-config": shared.credentials.github.config}
+        for key, actual in shared_flags.items():
+            if key in options.overrides and options.overrides[key] != actual:
+                flag = f"--{key}" if options.overrides[key] else f"--no-{key}"
+                raise AgentBoxError(f"{flag} conflicts with the running workspace box's shared {key} access; "
+                                    "end it with agent-box stop and rerun with that option")
+        if not options.kvm and any(device.get("PathOnHost") == "/dev/kvm"
+                                   for device in current.get("HostConfig", {}).get("Devices", []) or []):
+            raise AgentBoxError("--no-kvm conflicts with the running workspace box's /dev/kvm device; "
+                                "end it with agent-box stop and rerun with --no-kvm")
+        if options.mounts:
+            from .mounts import parse_mount_arg
+            requested = plan_mounts([parse_mount_arg(mount) for mount in options.mounts])
+            for mount in requested:
+                covering = [item for item in current.get("Mounts", [])
+                            if mount.path.is_relative_to(Path(item["Destination"]))]
+                actual = max(covering, key=lambda item: len(Path(item["Destination"]).parts), default=None)
+                if (actual is None or bool(actual.get("RW")) == mount.read_only
+                        or Path(actual["Source"]) / mount.path.relative_to(actual["Destination"]) != mount.path):
+                    raise AgentBoxError(f"--mount {mount.path} conflicts with the running workspace box's mounts; "
+                                        "end it with agent-box stop and rerun with the requested mount")
+        spec = WorkspaceContainerSpec(
+            name, workspace_identity(workspace), labels.get(WORKSPACE_CONTAINER_BASE_CONFIG_LABEL, ""),
+            labels.get(WORKSPACE_CONTAINER_EXTRA_MOUNTS_LABEL, ""), bool(options.mounts), [], shared, state,
+            policy_id, current["Id"], current["Image"],
+        )
+        return spec
 
 
 def workspace_container_exists(name: str) -> bool:
@@ -1913,6 +2045,12 @@ def ensure_workspace_container(spec: WorkspaceContainerSpec) -> None:
     current = inspect_workspace_container(spec.name)
     if current is not None:
         current = _wait_for_exiting_keeper(spec.name, current)
+    if spec.admitted_id:
+        if (current is None or current.get("Id") != spec.admitted_id
+                or current.get("State", {}).get("Status") != "running"
+                or not _container_belongs_to_workspace(current, spec)):
+            raise AgentBoxError("the workspace box ended or changed while this launch was starting; run the command again")
+        return
     if current is not None:
         if not _container_belongs_to_workspace(current, spec):
             if (
@@ -1957,6 +2095,11 @@ def ensure_workspace_container(spec: WorkspaceContainerSpec) -> None:
         prepare_container_lifetime_state(
             spec.creation_config, mount_notifications=False, runtime_state=spec.runtime_state,
         )
+        spec.runtime_state.root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        spec.runtime_state.root.chmod(0o700)
+        for old in spec.runtime_state.root.glob("box-*.json"):
+            old.unlink()
+        atomic_write_json(spec.runtime_state.root / f"box-{spec.policy_id}.json", workspace_box_policy(spec), 0o600)
         created = subprocess.run(spec.create_argv, text=True, capture_output=True)
         if created.returncode:
             # Podman's name uniqueness is the final arbiter when two first
@@ -2221,9 +2364,15 @@ def launch_in_workspace_container(
 ) -> int:
     """Start one exec under the transition lock, then clean up after it exits."""
     with workspace_transition_lock(workspace):
-        confirm_k3s(spec)
+        if not spec.admitted_id:
+            confirm_k3s(spec)
         ensure_workspace_container(spec)
-        if spec.creation_config.box.links.enabled:
+        if spec.admitted_id and spec.creation_config.box.links.enabled:
+            try:
+                links.reattach(spec.runtime_state.root.name, spec.name)
+            except (OSError, ValueError, subprocess.SubprocessError) as exc:
+                raise AgentBoxError(str(exc)) from exc
+        elif not spec.admitted_id and spec.creation_config.box.links.enabled:
             try:
                 links.ensure(spec.runtime_state.root.name, spec.name, spec.creation_config.box.links)
             except (OSError, ValueError, subprocess.SubprocessError) as exc:
@@ -2298,6 +2447,7 @@ def invocation_env(config: Config, agent: str) -> tuple[list[str], dict[str, str
 
 DOCTOR_SCRIPT = r'''
 set -u
+printf "%-20s %s\n" "image:" "${AGENT_BOX_IMAGE:-unknown}"
 printf "%-20s %s\n" "architecture:" "$(uname -m)"
 printf "%-20s %s\n" "user:" "$(id)"
 printf "%-20s %s\n" "workdir:" "$PWD"
@@ -2607,7 +2757,8 @@ def runtime_main(
 
     ensure_state_dirs()
     ensure_refresh_token()
-    config = launch_config(options)
+    existing = existing_workspace_spec(workspace, options)
+    config = launch_config(options, box_policy=existing.creation_config._box_policy if existing else None)
     agent, rest = config.agents.default, args
     if args and args[0] in {"claude", "codex", "shell", "doctor"}:
         agent, rest = args[0], args[1:]
@@ -2619,7 +2770,9 @@ def runtime_main(
         from .external_launch import selected_model
         selected_model(config, api_provider, agent, rest)
 
-    if not image_exists():
+    if existing is not None:
+        pass  # The live box keeps its image even if its tag was rebuilt or removed.
+    elif not image_exists():
         print("agent-box: image not found; building it...", file=sys.stderr)
         rc = build_image(script_dir, False, False, config=config)
         if rc:
@@ -2674,7 +2827,7 @@ def runtime_main(
                 f"AGENT_BOX_K3S={'1' if config.box.k3s.enabled else '0'}",
                 f"{CLAUDE_SKILL_LINKS_ENV}={'1' if config.host.claude_skill_links else '0'}",
                 f"{IMAGE_TOOLS_ENV}={','.join(config.box.tools.enabled_groups())}",
-                f"AGENT_BOX_IMAGE={IMAGE}",
+                f"AGENT_BOX_IMAGE={existing.image if existing else IMAGE}",
             ]
             command = ["bash", "-c", DOCTOR_SCRIPT]
         elif agent == "claude":
@@ -2691,14 +2844,11 @@ def runtime_main(
             command = external_command(command, agent, api_provider, container=True)
         elif remote_control_invocation(agent, rest):
             command = remote_control_command(command, agent, config, container=True)
-        prepare_k3s(config, workspace, runtime_state)
-        spec = workspace_container_spec(workspace, extra_mounts, script_dir, config, options.kvm)
-        # These copies are seeded only when a box is created, so a running box
-        # would silently keep its old ones.
-        seeded = [name for name in ("gh-config", "git-config") if name in options.overrides]
-        if seeded and (inspect_workspace_container(spec.name) or {}).get("State", {}).get("Status") == "running":
-            raise AgentBoxError(f"--[no-]{seeded[0]} is copied when the box is created, and this workspace's box "
-                                "is already running; end it with agent-box stop first")
+        if existing is None:
+            prepare_k3s(config, workspace, runtime_state)
+            spec = workspace_container_spec(workspace, extra_mounts, script_dir, config, options.kvm)
+        else:
+            spec = existing
         invocation, process_env = invocation_env(config, agent)
         # Channel/workflow values are invocation policy, not box identity.
         invocation += extra_env

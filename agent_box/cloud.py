@@ -9,8 +9,8 @@ History, logs and every other profile stay on the host.
 
 The rendered directory is the box's writable ``~/.config/yandex-cloud``:
 yc writes its token cache, history and logs there. It is re-rendered from
-the host at every launch, so the host stays the source and a profile
-unticked on the host leaves the box at its next launch.
+the host at every launch using the box's creation-time selection. Saved
+selection changes take effect only when a new box is created.
 
 The host's ``config.yaml`` is read with a line scanner rather than a YAML
 parser the standard library does not have. yc writes it in one plain

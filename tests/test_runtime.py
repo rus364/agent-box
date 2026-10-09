@@ -28,6 +28,7 @@ class IsolatedRuntimeTest(unittest.TestCase):
             mock.patch.object(runtime, "POLICY_RUNTIME_DIR", state / "runtime/policy"),
             mock.patch.object(runtime, "WORKFLOW_STATE", state / "workflow"),
             mock.patch.object(runtime, "load_config", return_value=Config()),
+            mock.patch.object(runtime, "existing_workspace_spec", return_value=None),
             mock.patch.object(runtime, "CLAUDE_HOME", state / "claude"),
             mock.patch.object(runtime, "CODEX_HOME", state / "codex"),
             mock.patch.object(runtime, "XDG_CACHE_HOME", state / "cache"),

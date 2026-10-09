@@ -62,6 +62,8 @@ SPEC is {SPEC}, for example claude:opus:high.
 Sessions:
   claude, codex           Start the agent in this workspace's box, or on the host with --host
   shell, doctor           A shell in the box; check the box and its integrations
+                          Create from current settings, or enter the running box;
+                          explicit shared-access conflicts require agent-box stop
   ext API                 Start claude/codex against an enabled external API provider
   attach [SESSION]        Reattach to a detached session; detach with C-\\ d
   stop [--cluster-data]   Remove the box and its sessions and stop its k3s cluster; --cluster-data also

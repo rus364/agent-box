@@ -60,10 +60,11 @@ the next `agent-box` launch for that project, without recreating it. The box
 keeps its own Helm index cache; refresh it with `helm repo update`. Logging in
 inside the box fails, because the copies are read-only.
 
-The mount and the variables are part of the box's identity. Turning forwarding
-on or off, or emptying or filling one of the two lists, recreates the box; a
-box that is still running refuses the change until `agent-box stop`. Changing
-which hosts or repositories are chosen only changes the copies.
+The running box retains the forwarding switch, chosen hosts and repositories,
+mounts and variables from creation. Later launches refresh only those choices,
+even if the saved selection changed. New choices take effect after
+`agent-box stop` and the next launch; an explicit conflicting switch requires
+that restart.
 
 ## One-off overrides
 

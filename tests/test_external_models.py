@@ -43,6 +43,7 @@ class ExternalModelTests(unittest.TestCase):
                         patch.object(runtime, 'ensure_state_dirs'), patch.object(runtime, 'ensure_refresh_token'), \
                         patch.object(runtime, 'image_exists', side_effect=AssertionError('Image preparation reached')) as image, \
                         patch.object(runtime, 'session_runtime', side_effect=AssertionError('Snapshot rendering reached')) as snapshot, \
+                        patch.object(runtime, 'existing_workspace_spec', return_value=None), \
                         patch.object(runtime, 'launch_in_workspace_container') as container, \
                         patch.object(runtime.subprocess, 'call') as call:
                     with self.assertRaisesRegex(AgentBoxError, 'not supported'):

@@ -138,6 +138,19 @@ Choose the default under **Agents → Default agent** in `agent-box config`
 (`agents.default`: `claude` or `codex`). It is a global setting, not a
 project one; an explicit `claude` or `codex` always wins.
 
+With no running workspace box, a launch creates one from the current settings
+and flags. Otherwise `shell` (including `shell -c ...`), `doctor`, and new
+agent sessions enter that same box without repeating its creation flags.
+The box keeps its image, mounts, devices, k3s and shared access choices;
+the new process uses its own workflow and session settings. `doctor` reports
+the running box. `attach` returns to an existing tmux session; `--host` runs
+outside the box.
+
+An explicit option that conflicts with the live box names the conflict and
+asks you to end it with `agent-box stop`, then rerun. Matching shared-access
+flags and already mounted paths are accepted. Changing saved settings alone
+does not replace or reconfigure a running box.
+
 ### Session options
 
 Options before the agent change one launch and are never saved; `agent-box

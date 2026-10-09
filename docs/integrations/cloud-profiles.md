@@ -59,9 +59,11 @@ runs no `yc` command on the host and never writes to the host's
 Inside the box `yc` works as usual, and renews a federated profile's IAM
 token from its refresh token without a browser. It writes that token, its
 history and its logs into the box's copy. At the next launch the copy is
-rendered from the host again: the host is the source, so `yc config set` in
-the box does not last, and a profile unticked or removed on the host leaves the
-box.
+rendered from the host again, using the box's creation-time profile selection.
+The host is the source, so `yc config set` in the box does not last. Changing
+the saved switch or selection takes effect after `agent-box stop` and the next
+launch; an explicit conflicting switch requires that restart. A selected
+profile removed from the host cannot be refreshed.
 
 ### Federated profiles
 

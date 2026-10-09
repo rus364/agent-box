@@ -2,9 +2,12 @@ import tempfile
 import unittest
 from contextlib import nullcontext
 from pathlib import Path
+import os
 from unittest import mock
 
-from agent_box import runtime
+from agent_box import runtime, project_config
+from agent_box.config import effective_config
+from agent_box.launch_options import LaunchOptions
 from agent_box.errors import AgentBoxError
 from agent_box.mounts import MountSpec
 from agent_box.workspace import Workspace
@@ -79,6 +82,7 @@ class WorkspaceContainerLifecycleTests(unittest.TestCase):
             mock.patch.object(runtime, "XDG_CACHE_HOME", state / "cache"),
             mock.patch.object(runtime, "NOTIFY_CREDENTIALS", state / "runtime/notify.json"),
             mock.patch.object(runtime, "container_has_keeper", return_value=True),
+            mock.patch.object(runtime, "image_tool_groups", return_value=None),
         ):
             patch.start()
             self.addCleanup(patch.stop)
@@ -97,6 +101,218 @@ class WorkspaceContainerLifecycleTests(unittest.TestCase):
             runtime.WORKSPACE_CONTAINER_BASE_CONFIG_LABEL: base_hash or self.spec.base_config_hash,
             runtime.WORKSPACE_CONTAINER_EXTRA_MOUNTS_LABEL: extra_mounts_hash or self.spec.extra_mounts_hash,
         }}}
+
+    def _live_box(self, config=None, extra_mounts=()):
+        config = config or self.config
+        spec = runtime.workspace_container_spec(self.workspace, list(extra_mounts), self.script_dir, config)
+        policy = runtime.workspace_box_policy(spec)
+        spec.runtime_state.root.mkdir(parents=True, exist_ok=True)
+        runtime.atomic_write_json(spec.runtime_state.root / f"box-{spec.policy_id}.json", policy, 0o600)
+        container = self._container(base_hash=spec.base_config_hash, extra_mounts_hash=spec.extra_mounts_hash)
+        container["Config"]["Labels"][runtime.WORKSPACE_CONTAINER_POLICY_LABEL] = spec.policy_id
+        container.update(Id="live-container-id", Image="sha256:creation-image", HostConfig={"Devices": []})
+        source, destination, _ = policy["session_mount"]
+        container["Mounts"] = [{"Source": source, "Destination": destination, "RW": False},
+                               *[{"Source": str(m.path), "Destination": str(m.path), "RW": not m.read_only}
+                                 for m in extra_mounts]]
+        return container, policy
+
+    def test_join_commands_use_box_access_and_new_process_policy_after_saved_config_changes(self):
+        """A shell or new agent must not remove a neighbour's selected logins."""
+        original = runtime.Config()
+        original.workflow.enabled = original.tracker.enabled = True
+        original.credentials.registries.enabled = True
+        original.credentials.registries.hosts = ["original.example"]
+        original.credentials.kubernetes.enabled = True
+        original.credentials.kubernetes.files = ["original.yaml"]
+        original.credentials.cloud.enabled = True
+        original.credentials.cloud.yc = ["original"]
+        original.credentials.git.full_config = original.credentials.github.config = True
+        original.box.links.enabled = True
+        original.box.tools.groups["yc"] = True
+        original.box.k3s.enabled = True
+        original.box.k3s.lifetime = "box"
+        with mock.patch.object(runtime.k3s, "api_port", return_value=12345):
+            container, policy = self._live_box(original)
+        changed = runtime.Config()
+        changed.agents.default = "codex"
+        changed.workflow.enabled = True
+        changed.workflow.review.policy = "off"
+        changed.box.k3s.lifetime = "persistent"
+        changed.credentials.kubernetes.files = ["different.yaml"]
+        changed.credentials.cloud.yc = ["different"]
+        commands = ((["shell", "-c", "true"], ""), (["doctor"], ""), (["claude", "--version"], ""),
+                    (["codex", "--version"], ""), ([], ""), (["claude", "--version"], "synthetic"),
+                    (["codex", "--version"], "synthetic"))
+        for args, api in commands:
+            with self.subTest(args=args), \
+                 mock.patch.object(runtime.shutil, "which", return_value="/usr/bin/podman"), \
+                 mock.patch.object(runtime, "resolve_workspace", return_value=self.workspace), \
+                 mock.patch.object(runtime, "load_config", return_value=changed), \
+                 mock.patch.object(project_config, "load", return_value={}), \
+                 mock.patch.object(runtime, "inspect_workspace_container", return_value=container), \
+                 mock.patch.object(runtime.k3s, "inspect", return_value={"State": {"Status": "running"}}), \
+                 mock.patch("agent_box.external_launch.selected_model"), \
+                 mock.patch.object(runtime, "external_command", side_effect=lambda command, *args, **kwargs: command), \
+                 mock.patch.object(runtime, "prepare_k3s") as prepare, \
+                 mock.patch.object(runtime, "image_exists", side_effect=AssertionError("join queried image tag")), \
+                 mock.patch.object(runtime, "claude_channel_args", return_value=([], [])), \
+                 mock.patch.object(runtime, "browser_session", return_value=None), \
+                 mock.patch.object(runtime, "tmux_enabled", return_value=False), \
+                 mock.patch.object(runtime, "invocation_env", return_value=([], {})), \
+                 mock.patch.object(runtime, "launch_in_workspace_container", return_value=0) as launch, \
+                 self.assertRaises(SystemExit) as exited:
+                runtime.runtime_main(args, self.script_dir, api_provider=api)
+            self.assertEqual(exited.exception.code, 0)
+            prepare.assert_not_called()
+            spec, _, command, env, _ = launch.call_args.args
+            self.assertEqual(spec.admitted_id, "live-container-id")
+            self.assertEqual(command[0], "bash" if args and args[0] in {"shell", "doctor"} else "claude" if args and args[0] == "claude" else "codex")
+            path = Path(next(item.split("=", 1)[1] for item in env if item.startswith("AGENT_BOX_RUNTIME_CONFIG=")))
+            source, destination, _ = policy["session_mount"]
+            path = Path(source) / path.relative_to(destination)
+            with mock.patch.dict(os.environ, {"AGENT_BOX_RUNTIME_CONFIG": str(path)}), \
+                 mock.patch.object(project_config, "load", return_value={"box": {"k3s": {"enabled": False}}}):
+                snapshot = effective_config()
+            self.assertEqual(snapshot.credentials.registries.hosts, ["original.example"])
+            self.assertEqual(snapshot.credentials.kubernetes.files, ["original.yaml"])
+            self.assertEqual(snapshot.credentials.cloud.yc, ["original"])
+            self.assertTrue(snapshot.credentials.git.full_config)
+            self.assertTrue(snapshot.credentials.github.config)
+            self.assertTrue(snapshot.box.links.enabled)
+            self.assertEqual(snapshot.box.k3s.lifetime, "box")
+            self.assertTrue(snapshot.box.k3s.enabled)
+            self.assertEqual(snapshot.workflow.review.policy, "off")
+            if args == ["doctor"]:
+                self.assertIn("AGENT_BOX_IMAGE=sha256:creation-image", env)
+                self.assertIn("AGENT_BOX_K3S=1", env)
+
+    def test_join_refreshes_only_creation_selections_and_retains_broker_and_k3s_policy(self):
+        """Refreshing an old selection is allowed; switching a neighbour's access is not."""
+        original = runtime.Config()
+        original.credentials.kubernetes.enabled = True
+        original.credentials.kubernetes.files = ["kept.yaml"]
+        original.box.links.enabled = True
+        container, _ = self._live_box(original)
+        with mock.patch.object(runtime, "inspect_workspace_container", return_value=container):
+            spec = runtime.existing_workspace_spec(self.workspace, LaunchOptions())
+        process = mock.Mock()
+        process.poll.return_value = None
+        process.wait.return_value = 0
+        with mock.patch.object(runtime, "inspect_workspace_container", return_value=container), \
+             mock.patch.object(runtime, "prepare_container_lifetime_state") as seed, \
+             mock.patch.object(runtime, "confirm_k3s") as confirm, \
+             mock.patch.object(runtime.links, "reattach") as reattach, \
+             mock.patch.object(runtime.links, "ensure") as ensure, \
+             mock.patch.object(runtime.registries, "sync", return_value=[]) as registry, \
+             mock.patch.object(runtime.kubeconfigs, "sync", return_value=[]) as kube, \
+             mock.patch.object(runtime.cloud, "sync", return_value=[]) as cloud, \
+             mock.patch.object(runtime.subprocess, "Popen", return_value=process), \
+             mock.patch.object(runtime, "container_has_workloads", return_value=True), \
+             mock.patch.object(runtime, "cleanup_workspace_container_if_idle"), \
+             mock.patch.object(runtime, "release_k3s") as release:
+            self.assertEqual(runtime.launch_in_workspace_container(spec, self.workspace, ["bash"], []), 0)
+        seed.assert_not_called()
+        confirm.assert_not_called()
+        ensure.assert_not_called()
+        reattach.assert_called_once_with(spec.workspace_id, spec.name)
+        self.assertEqual(kube.call_args.args[0].credentials.kubernetes.files, ["kept.yaml"])
+        self.assertIs(registry.call_args.args[0], spec.creation_config)
+        self.assertIs(cloud.call_args.args[0], spec.creation_config)
+        self.assertIs(release.call_args.args[1], spec.creation_config)
+
+    def test_explicit_shared_flags_match_existing_box_or_name_the_conflict(self):
+        """Matching flags are useful for scripts; opposite shared switches require a new box."""
+        enabled = runtime.Config()
+        enabled.credentials.registries.enabled = enabled.credentials.kubernetes.enabled = enabled.credentials.cloud.enabled = True
+        enabled.credentials.registries.hosts = ["one"]
+        enabled.credentials.kubernetes.files = ["one"]
+        enabled.credentials.cloud.yc = ["one"]
+        enabled.credentials.git.full_config = enabled.credentials.github.config = enabled.box.links.enabled = True
+        for config, value in ((enabled, True), (runtime.Config(), False)):
+            container, _ = self._live_box(config)
+            for name in ("registries", "kubeconfigs", "cloud-profiles", "links", "git-config", "gh-config"):
+                with self.subTest(name=name, value=value), \
+                     mock.patch.object(runtime, "inspect_workspace_container", return_value=container):
+                    self.assertIsNotNone(runtime.existing_workspace_spec(self.workspace, LaunchOptions(overrides={name: value})))
+                    with self.assertRaisesRegex(AgentBoxError, f"{name}.*agent-box stop"):
+                        runtime.existing_workspace_spec(self.workspace, LaunchOptions(overrides={name: not value}))
+
+    def test_explicit_mount_and_kvm_requests_are_checked_against_live_capabilities(self):
+        """A matching subset of existing mounts can be requested without repeating all of them."""
+        extra = Path(self.tmp.name) / "extra"
+        extra.mkdir()
+        other = Path(self.tmp.name) / "other"
+        other.mkdir()
+        child = other / "nested"
+        child.mkdir()
+        container, _ = self._live_box(extra_mounts=[MountSpec(extra, True), MountSpec(other, False)])
+        with mock.patch.object(runtime, "inspect_workspace_container", return_value=container):
+            self.assertIsNotNone(runtime.existing_workspace_spec(self.workspace, LaunchOptions(mounts=[f"{extra}:ro"])))
+            self.assertIsNotNone(runtime.existing_workspace_spec(self.workspace, LaunchOptions(mounts=[str(child)])))
+            with self.assertRaisesRegex(AgentBoxError, "--mount.*agent-box stop"):
+                runtime.existing_workspace_spec(self.workspace, LaunchOptions(mounts=[str(extra)]))
+            container["HostConfig"]["Devices"] = [{"PathOnHost": "/dev/kvm"}]
+            with self.assertRaisesRegex(AgentBoxError, "--no-kvm.*agent-box stop"):
+                runtime.existing_workspace_spec(self.workspace, LaunchOptions(kvm=False))
+
+    def test_join_rechecks_box_id_before_any_shared_refresh_or_exec(self):
+        """A keeper exit between policy selection and admission must never execute in a replacement."""
+        container, _ = self._live_box()
+        with mock.patch.object(runtime, "inspect_workspace_container", return_value=container):
+            spec = runtime.existing_workspace_spec(self.workspace, LaunchOptions())
+        for replacement in (None, {**container, "Id": "replacement"}):
+            with self.subTest(replacement=replacement), \
+                 mock.patch.object(runtime, "inspect_workspace_container", return_value=replacement), \
+                 mock.patch.object(runtime.registries, "sync") as sync, \
+                 mock.patch.object(runtime.subprocess, "Popen") as process, \
+                 self.assertRaisesRegex(AgentBoxError, "ended or changed.*again"):
+                runtime.launch_in_workspace_container(spec, self.workspace, ["bash"], [])
+            sync.assert_not_called()
+            process.assert_not_called()
+
+    def test_selection_refuses_foreign_container_without_touching_it(self):
+        container, _ = self._live_box()
+        container["Config"]["Labels"][runtime.WORKSPACE_CONTAINER_WORKSPACE_LABEL] = "other-workspace"
+        with mock.patch.object(runtime, "inspect_workspace_container", return_value=container), \
+             mock.patch.object(runtime, "remove_workspace_container_then_confirm_absent") as remove, \
+             self.assertRaisesRegex(AgentBoxError, "foreign container"):
+            runtime.existing_workspace_spec(self.workspace, LaunchOptions())
+        remove.assert_not_called()
+
+    def test_join_without_workflow_mount_keeps_entry_available_and_refuses_explicit_workflow(self):
+        container, policy = self._live_box()
+        changed = runtime.Config()
+        changed.workflow.enabled = True
+        with mock.patch.object(runtime, "load_config", return_value=changed), \
+             mock.patch.object(project_config, "load", return_value={}):
+            implicit = runtime.launch_config(LaunchOptions(), box_policy=policy)
+            self.assertFalse(implicit.workflow.enabled)
+            with self.assertRaisesRegex(AgentBoxError, "--review.*mount.*agent-box stop"):
+                runtime.launch_config(LaunchOptions(overrides={"review": "always"}), box_policy=policy)
+
+    def test_join_snapshot_uses_live_image_tools_and_the_new_process_browser_choice(self):
+        """An installed browser need not start MCP; a missing tool must not be advertised."""
+        container, _ = self._live_box()
+        changed = runtime.Config()
+        changed.box.tools.groups["browser"] = False
+        changed.box.tools.groups["yc"] = True
+        with mock.patch.object(runtime, "inspect_workspace_container", return_value=container), \
+             mock.patch.object(runtime, "image_tool_groups", return_value=["browser", "kubernetes", "podman"]) as image:
+            spec = runtime.existing_workspace_spec(self.workspace, LaunchOptions())
+        image.assert_called_once_with("sha256:creation-image")
+        with mock.patch.object(runtime, "load_config", return_value=changed), \
+             mock.patch.object(project_config, "load", return_value={}):
+            config = runtime.launch_config(LaunchOptions(), box_policy=spec.creation_config._box_policy)
+            self.assertFalse(config.box.tools.browser())
+            self.assertFalse(config.box.tools.groups["yc"])
+            self.assertFalse(config.box.tools.groups["podman"])
+            self.assertTrue(config.box.tools.groups["kubernetes"])
+            path = runtime.session_runtime(config, runtime_state=spec.runtime_state)
+            with mock.patch.dict(os.environ, {"AGENT_BOX_RUNTIME_CONFIG": str(path)}):
+                snapshot = effective_config()
+            self.assertFalse(snapshot.box.tools.browser())
+            self.assertTrue(snapshot.box.tools.groups["kubernetes"])
 
     def test_first_launch_creates_then_starts_one_workspace_container(self):
         with mock.patch.object(runtime, "inspect_workspace_container", return_value=None), \
