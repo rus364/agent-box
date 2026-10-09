@@ -68,6 +68,12 @@ class LinkRequestTests(unittest.TestCase):
         self.assertIn("coder port-forward alice/workspace.agent --tcp '[::1]:42121:42121'", text)
         text = "\n".join(links.instructions({"ssh": "dev-alias"}, ("127.0.0.2", 42121)))
         self.assertIn("127.0.0.2:42121:127.0.0.2:42121", text)
+        text = "\n".join(links.instructions({"ssh": "dev-alias"}, ("localhost", 42121)))
+        self.assertIn("-L 127.0.0.1:42121:127.0.0.1:42121", text)
+        self.assertIn("-L '[::1]:42121:[::1]:42121'", text)
+        text = "\n".join(links.instructions({"coder": "remote"}, ("localhost", 42121)))
+        self.assertIn("--tcp 127.0.0.1:42121:42121", text)
+        self.assertIn("--tcp '[::1]:42121:42121'", text)
 
     def test_remote_context_never_opens_a_graphical_server_browser(self):
         """SSH and Coder are remote even if the server happens to have DISPLAY set."""
@@ -79,6 +85,39 @@ class LinkRequestTests(unittest.TestCase):
 
 
 class BrokerTests(unittest.TestCase):
+    def test_localhost_ipv6_conflict_refuses_opening_and_rolls_back_ipv4(self):
+        """A browser choosing ::1 must not deliver its login to a different host service."""
+        with socket.socket(socket.AF_INET6) as occupied:
+            occupied.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+            occupied.bind(("::1", 0))
+            occupied.listen(1)
+            port = occupied.getsockname()[1]
+            broker = links.Broker("box", {"desktop": True}, True)
+            try:
+                with mock.patch.object(links.subprocess, "Popen") as opened, \
+                        self.assertRaisesRegex(ValueError, "unavailable"):
+                    broker.handle({"url": oauth("localhost", port)})
+                opened.assert_not_called()
+                with socket.socket() as replacement:
+                    replacement.bind(("127.0.0.1", port))
+            finally:
+                broker.close()
+
+    def test_expanded_ipv6_and_canonical_callbacks_use_the_same_ipv6_route(self):
+        """Equivalent IPv6 spellings must work and cannot create competing listeners."""
+        with socket.socket(socket.AF_INET6) as probe:
+            probe.bind(("::1", 0))
+            port = probe.getsockname()[1]
+        broker = links.Broker("box", {"desktop": False}, False)
+        try:
+            broker.handle({"url": oauth("0:0:0:0:0:0:0:1", port)})
+            broker.handle({"url": oauth("::1", port)})
+            self.assertEqual(len(broker.relays), 1)
+            with socket.socket(socket.AF_INET6) as collision, self.assertRaises(OSError):
+                collision.bind(("::1", port))
+        finally:
+            broker.close()
+
     def test_host_opening_is_separate_and_happens_after_the_callback_listener(self):
         """No browser may receive a localhost callback URL before its route is prepared."""
         events = []
@@ -117,13 +156,14 @@ class BrokerTests(unittest.TestCase):
             upstream.settimeout(3)
             port = upstream.getsockname()[1]
             def response():
-                client, _ = upstream.accept()
-                with client:
-                    client.settimeout(3)
-                    request = bytearray()
-                    while chunk := client.recv(4096):
-                        request.extend(chunk)
-                    client.sendall(b"HTTP/1.0 200 OK\r\n\r\n" + request)
+                for _ in range(2):
+                    client, _ = upstream.accept()
+                    with client:
+                        client.settimeout(3)
+                        request = bytearray()
+                        while chunk := client.recv(4096):
+                            request.extend(chunk)
+                        client.sendall(b"HTTP/1.0 200 OK\r\n\r\n" + request)
             thread = threading.Thread(target=response)
             thread.start()
             real_popen = subprocess.Popen
@@ -131,16 +171,17 @@ class BrokerTests(unittest.TestCase):
                 self.assertEqual(argv[:5], ["podman", "exec", "-i", "box", "agent-box"])
                 return real_popen([sys.executable, "-m", "agent_box.links", *argv[6:]], **kwargs)
             with mock.patch.object(links.subprocess, "Popen", side_effect=connector):
-                relay = links.Relay("box", ("127.0.0.2", port), "127.0.0.1")
+                relay = links.Relay("box", ("127.0.0.2", port), "localhost")
                 try:
-                    with socket.create_connection(("127.0.0.1", port), timeout=3) as client:
-                        client.sendall(b"GET /callback?code=fake HTTP/1.0\r\n\r\n")
-                        client.shutdown(socket.SHUT_WR)
-                        received = bytearray()
-                        while chunk := client.recv(4096):
-                            received.extend(chunk)
-                    self.assertIn(b"200 OK", received)
-                    self.assertIn(b"code=fake", received)
+                    for host in ("127.0.0.1", "::1"):
+                        with socket.create_connection((host, port), timeout=3) as client:
+                            client.sendall(b"GET /callback?code=fake HTTP/1.0\r\n\r\n")
+                            client.shutdown(socket.SHUT_WR)
+                            received = bytearray()
+                            while chunk := client.recv(4096):
+                                received.extend(chunk)
+                        self.assertIn(b"200 OK", received)
+                        self.assertIn(b"code=fake", received)
                 finally:
                     relay.close()
             thread.join(timeout=3)

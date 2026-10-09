@@ -36,8 +36,9 @@ are not exposed to the box.
 The handler recognises a standard OAuth `redirect_uri` pointing to loopback,
 or a direct loopback web URL. Before displaying/opening the link, it binds the
 same host loopback port and routes connections to the CLI's loopback **inside
-the container** using `podman exec`. This works without publishing container
-ports or depending on pasta/slirp networking.
+the container** using `podman exec`. `localhost` prepares both IPv4 and IPv6
+atomically, refusing the request if either loopback port is unavailable. This
+works without publishing container ports or depending on pasta/slirp networking.
 
 With `open_browser=false`, open the displayed URL yourself. With it enabled,
 agent-box requests the host's `xdg-open` only on a local graphical desktop.
@@ -67,6 +68,8 @@ Run it in another terminal **on the workstation**, then open the original
 URL there. Keep the tunnel running until login finishes. For IPv6 callbacks
 the command binds `[::1]` locally and targets `[::1]` on the server. The URL is
 preserved; changing its redirect port/address could break provider checks.
+`localhost` commands include both `-L` forwards so browser address selection
+cannot send the callback to an unrelated workstation listener.
 
 SSH, Coder, explicitly configured remote destinations and headless launches
 never open the server's browser, even if `open_browser=true`.
@@ -77,7 +80,7 @@ Set `coder_workspace`, or use the workspace's `CODER_WORKSPACE_NAME` variable.
 The handler displays, for example:
 
 ```bash
-coder port-forward alice/myworkspace.main --tcp 42121:42121
+coder port-forward alice/myworkspace.main --tcp 127.0.0.1:42121:42121
 ```
 
 Run this on the workstation and wait for Coder's `Ready!` before opening the
@@ -85,6 +88,9 @@ URL. Coder targets IPv4 loopback in the workspace; agent-box bridges that to
 the CLI's actual callback address inside the nested box. An IPv6 callback uses
 an explicit local address (`--tcp '[::1]:42121:42121'`) so a failed IPv6 bind
 cannot be mistaken for a ready route. See [Coder port-forward](https://coder.com/docs/reference/cli/port-forward).
+For `localhost`, the command includes both explicit `--tcp` forwards. Both
+loopback families must be available; an IPv4-only host needs the CLI to use an
+explicit `127.0.0.1` callback.
 
 ## Limits and diagnosis
 

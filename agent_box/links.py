@@ -58,14 +58,24 @@ def web_url(url: str):
 def loopback_target(url: str) -> tuple[str, int] | None:
     parts = web_url(url)
     host = parts.hostname.lower()
+    if host == "localhost":
+        return host, parts.port or (443 if parts.scheme == "https" else 80)
     try:
-        local = host == "localhost" or ipaddress.ip_address(host).is_loopback
+        address = ipaddress.ip_address(host)
     except ValueError:
-        local = False
-    if not local:
+        return None
+    if not address.is_loopback:
         return None
     # Use the literal origin: an IPv6 callback must reach the CLI's IPv6 socket.
-    return host, parts.port or (443 if parts.scheme == "https" else 80)
+    return str(address), parts.port or (443 if parts.scheme == "https" else 80)
+
+
+def loopback_hosts(host: str) -> tuple[str, ...]:
+    return ("127.0.0.1", "::1") if host == "localhost" else (str(ipaddress.ip_address(host)),)
+
+
+def origin(host: str) -> str:
+    return f"[{host}]" if ":" in host else host
 
 
 def callback_target(url: str) -> tuple[str, int] | None:
@@ -116,26 +126,29 @@ def instructions(context: dict, target: tuple[str, int] | None) -> list[str]:
     if not target:
         return []
     host, port = target
-    destination = f"[{host}]" if ":" in host else ("127.0.0.1" if host == "localhost" else host)
+    addresses = [origin(address) for address in loopback_hosts(host)]
     lines = [f"Server loopback port {port} forwards to the box for {CALLBACK_TTL} seconds."]
     if context.get("coder"):
         # Coder's implicit IPv6 bind is best-effort. An explicit callback
         # address must fail on collision instead of reporting IPv4 readiness.
-        spec = f"{port}:{port}" if host in {"localhost", "127.0.0.1"} else f"{destination}:{port}:{port}"
-        command = ["coder", "port-forward", context["coder"], "--tcp", spec]
+        command = ["coder", "port-forward", context["coder"]]
+        for address in addresses:
+            command += ["--tcp", f"{address}:{port}:{port}"]
         lines += ["On your workstation, run before opening the link:", shlex.join(command)]
     elif context.get("ssh"):
         command = ["ssh", "-N", "-o", "ExitOnForwardFailure=yes"]
         if context.get("ssh_port", 22) != 22:
             command += ["-p", str(context["ssh_port"])]
-        bind = f"{destination}:{port}"
-        command += ["-L", f"{bind}:{destination}:{port}", context["ssh"]]
+        for address in addresses:
+            command += ["-L", f"{address}:{port}:{address}:{port}"]
+        command.append(context["ssh"])
         lines += ["On your workstation, run before opening the link:", shlex.join(command)]
     elif not context.get("desktop"):
+        command = ["ssh", "-N", "-o", "ExitOnForwardFailure=yes"]
+        for address in addresses:
+            command += ["-L", f"{address}:{port}:{address}:{port}"]
         lines += ["If this launcher is remote, on your workstation run:",
-                  shlex.join(["ssh", "-N", "-o", "ExitOnForwardFailure=yes", "-L",
-                              f"{destination}:{port}:{destination}:{port}",
-                              "USER@SERVER"]),
+                  shlex.join([*command, "USER@SERVER"]),
                   "Set box.links.ssh_destination to your SSH alias for an exact command."]
     return lines
 
@@ -169,7 +182,7 @@ def open_link(url: str) -> int:
 
 def connect_stream(host: str, port: int) -> int:
     """Container-side pipe endpoint; no shell or general host command protocol."""
-    if loopback_target(f"http://{'[' + host + ']' if ':' in host else host}:{port}") != (host, port):
+    if loopback_target(f"http://{origin(host)}:{port}") is None:
         raise ValueError("relay destination must be loopback")
     with socket.create_connection((host, port), timeout=10) as connection:
         connection.settimeout(CALLBACK_TTL)
@@ -207,19 +220,23 @@ class Relay:
         self.slots = threading.BoundedSemaphore(MAX_CONNECTIONS)
         self.workers = set()
         self.worker_lock = threading.Lock()
-        listen_host = listen_host or ("127.0.0.1" if target[0] == "localhost" else target[0])
-        self.listener = socket.socket(socket.AF_INET6 if listen_host == "::1" else socket.AF_INET)
+        self.listeners = []
         try:
-            # A completed callback's TIME_WAIT must not block a fresh login;
-            # an active listener still refuses the bind.
-            self.listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            if listen_host == "::1":
-                self.listener.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
-            self.listener.bind((listen_host, target[1]))
-            self.listener.listen(MAX_CONNECTIONS)
-            self.listener.settimeout(0.2)
+            for address in (loopback_hosts(listen_host) if listen_host else loopback_hosts(target[0])):
+                family = socket.AF_INET6 if ipaddress.ip_address(address).version == 6 else socket.AF_INET
+                listener = socket.socket(family)
+                self.listeners.append(listener)
+                # TIME_WAIT must not block a fresh login; active listeners
+                # still refuse the bind. Both localhost families are atomic.
+                listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                if family == socket.AF_INET6:
+                    listener.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+                listener.bind((address, target[1]))
+                listener.listen(MAX_CONNECTIONS)
+                listener.setblocking(False)
         except BaseException:
-            self.listener.close()
+            for listener in self.listeners:
+                listener.close()
             raise
         self.thread = threading.Thread(target=self.run, daemon=True)
         self.thread.start()
@@ -228,20 +245,24 @@ class Relay:
         try:
             while not self.stop.is_set() and time.monotonic() < self.deadline:
                 try:
-                    client, _ = self.listener.accept()
-                except socket.timeout:
-                    continue
-                except OSError:
+                    ready, _, _ = select.select(self.listeners, [], [], 0.2)
+                except (OSError, ValueError):
                     break
-                if self.slots.acquire(blocking=False):
-                    worker = threading.Thread(target=self.exchange, args=(client,), daemon=True)
-                    with self.worker_lock:
-                        self.workers.add(worker)
-                    worker.start()
-                else:
-                    client.close()
+                for listener in ready:
+                    try:
+                        client, _ = listener.accept()
+                    except OSError:
+                        continue
+                    if self.slots.acquire(blocking=False):
+                        worker = threading.Thread(target=self.exchange, args=(client,), daemon=True)
+                        with self.worker_lock:
+                            self.workers.add(worker)
+                        worker.start()
+                    else:
+                        client.close()
         finally:
-            self.listener.close()
+            for listener in self.listeners:
+                listener.close()
 
     def exchange(self, client):
         process = None
@@ -307,7 +328,8 @@ class Relay:
 
     def close(self):
         self.stop.set()
-        self.listener.close()
+        for listener in self.listeners:
+            listener.close()
         self.thread.join(timeout=1)
         deadline = time.monotonic() + 3
         with self.worker_lock:
@@ -336,8 +358,8 @@ class Broker:
             if len(self.relays) >= MAX_RELAYS:
                 raise ValueError("too many pending callback ports; wait for their expiry")
             try:
-                self.relays[target] = Relay(self.container, target,
-                                            "127.0.0.1" if self.context.get("coder") else None)
+                listen_host = "127.0.0.1" if self.context.get("coder") and target[0] != "localhost" else None
+                self.relays[target] = Relay(self.container, target, listen_host)
             except OSError:
                 raise ValueError(f"host loopback port {target[1]} is unavailable; "
                                  "close its listener or retry the CLI with another callback port") from None
