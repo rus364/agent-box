@@ -2,7 +2,8 @@
 
 The image provides `xdg-open`, also selected by `BROWSER`. It displays HTTP(S)
 links on stderr, including when there is no terminal. CLI JSON on stdout stays
-clean. This alone lets tools such as `yc` pass opener discovery before reading
+clean. If a CLI discards the opener's stderr through `/dev/null`, the handler
+uses its controlling terminal when available. This alone lets tools such as `yc` pass opener discovery before reading
 their saved credentials; kubeconfigs need no changes.
 
 The host link integration is separate from the [agent browser](browser.md) and
@@ -37,6 +38,9 @@ when another session launches or uses `agent-box attach`. Once any session is
 remote/headless, automatic opening stays suppressed until stop/recreation; later local
 sessions also receive manual instructions. The host policy file is outside
 the mounted socket directory and cannot be changed by the box.
+New SSH/Coder connection details replace the preceding transport; a headless
+attachment without either retains the last hint. A new callback request also
+updates its server listener to match that transport.
 
 ## Local workstation
 
@@ -117,6 +121,10 @@ explicit `127.0.0.1` callback.
 - Without `--links`, displaying the URL starts no route. A fresh cached token
   can still work; an interactive remote login needs both the host route and
   the workstation tunnel.
+- A CLI that discards child stderr and has no controlling terminal cannot
+  display the handler's manual instructions. Run its interactive login from
+  `agent-box shell` with a terminal; cached-credential opener discovery still
+  works without one.
 
 After upgrading the image, check the opener locally without cloud access:
 

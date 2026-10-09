@@ -17,6 +17,7 @@ import shlex
 import shutil
 import signal
 import socket
+import stat
 import subprocess
 import sys
 import threading
@@ -160,6 +161,20 @@ def instructions(context: dict, target: tuple[str, int] | None) -> list[str]:
     return lines
 
 
+def report(message: str) -> None:
+    # Some browser launchers (including yc) discard child stdio. Recover
+    # their controlling terminal without duplicating normally captured output.
+    try:
+        destination = os.fstat(sys.stderr.fileno())
+        if stat.S_ISCHR(destination.st_mode) and destination.st_rdev == os.stat("/dev/null").st_rdev:
+            with open("/dev/tty", "w") as terminal:
+                print(message, file=terminal)
+            return
+    except (OSError, ValueError):
+        pass
+    print(message, file=sys.stderr)
+
+
 def open_link(url: str) -> int:
     target = callback_target(url)
     path = os.environ.get(SOCKET_ENV, "")
@@ -175,7 +190,7 @@ def open_link(url: str) -> int:
                 raise ValueError(result.get("error", "host link broker refused the request"))
             lines = result.get("lines", [])
         except (OSError, ValueError) as exc:
-            print(f"xdg-open: host link connection failed ({exc}); no callback route prepared", file=sys.stderr)
+            report(f"xdg-open: host link connection failed ({exc}); no callback route prepared")
             return 1
     else:
         if target:
@@ -183,7 +198,7 @@ def open_link(url: str) -> int:
                       "Start agent-box --links to prepare the host route; for a remote host, "
                       "also use the displayed SSH/Coder tunnel."]
         lines.append("Host link integration is off; no browser or forwarding was started.")
-    print("\n".join([*lines, "Open in your browser:", url]), file=sys.stderr)
+    report("\n".join([*lines, "Open in your browser:", url]))
     return 0
 
 
@@ -228,8 +243,9 @@ class Relay:
         self.workers = set()
         self.worker_lock = threading.Lock()
         self.listeners = []
+        self.listen_hosts = loopback_hosts(listen_host or target[0])
         try:
-            for address in (loopback_hosts(listen_host) if listen_host else loopback_hosts(target[0])):
+            for address in self.listen_hosts:
                 family = socket.AF_INET6 if ipaddress.ip_address(address).version == 6 else socket.AF_INET
                 listener = socket.socket(family)
                 self.listeners.append(listener)
@@ -364,11 +380,15 @@ class Broker:
             if time.monotonic() >= relay.deadline:
                 relay.close()
                 del self.relays[key]
+        listen_host = "127.0.0.1" if target and self.context.get("coder") and target[0] != "localhost" else None
+        if target in self.relays and self.relays[target].listen_hosts != loopback_hosts(listen_host or target[0]):
+            # Coder always targets server IPv4; switching transport must
+            # prepare that listener before returning the new tunnel command.
+            self.relays.pop(target).close()
         if target and target not in self.relays:
             if len(self.relays) >= MAX_RELAYS:
                 raise ValueError("too many pending callback ports; wait for their expiry")
             try:
-                listen_host = "127.0.0.1" if self.context.get("coder") and target[0] != "localhost" else None
                 self.relays[target] = Relay(self.container, target, listen_host)
             except OSError:
                 raise ValueError(f"host loopback port {target[1]} is unavailable; "
@@ -509,10 +529,9 @@ def ensure(workspace_id: str, container: str, config) -> None:
     if previous and not previous["desktop"]:
         if current["desktop"]:
             current = previous
-        else:
-            if not current["ssh"]:
-                current["ssh"], current["ssh_port"] = previous["ssh"], previous["ssh_port"]
-            current["coder"] = current["coder"] or previous["coder"]
+        elif not current["ssh"] and not current["coder"]:
+            current["ssh"], current["ssh_port"] = previous["ssh"], previous["ssh_port"]
+            current["coder"] = previous["coder"]
     current["policy"] = config.to_dict()
     atomic_write_json(context_path, current, 0o600)
     if ping(path, container):
@@ -584,7 +603,7 @@ def main(args: list[str] | None = None) -> int:
         serve(options.path, options.container, options.context, options.open_browser == "1")
         return 0
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
-        print(f"agent-box links: {exc}", file=sys.stderr)
+        report(f"agent-box links: {exc}")
         return 1
 
 

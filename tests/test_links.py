@@ -3,6 +3,8 @@ import contextlib
 import io
 import json
 import os
+import pty
+import select
 import socket
 import subprocess
 import sys
@@ -25,6 +27,35 @@ def oauth(host="127.0.0.1", port=42121):
 
 
 class LinkRequestTests(unittest.TestCase):
+    def test_cli_discarding_opener_stderr_still_shows_the_url_in_its_terminal(self):
+        """yc's browser child has null stdio; a controlling terminal must retain its instructions."""
+        master, slave = pty.openpty()
+        try:
+            code = ('import fcntl, termios; fcntl.ioctl(0, termios.TIOCSCTTY, 0); '
+                    'from agent_box.links import open_link; open_link("https://example.invalid/docs")')
+            with mock.patch.dict(os.environ, {links.SOCKET_ENV: ""}):
+                result = subprocess.run([sys.executable, "-c", code], stdin=slave,
+                                        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                        start_new_session=True, timeout=5)
+            os.close(slave)
+            slave = None
+            output = bytearray()
+            while select.select([master], [], [], 1)[0]:
+                try:
+                    chunk = os.read(master, 4096)
+                except OSError:
+                    break
+                if not chunk:
+                    break
+                output.extend(chunk)
+            self.assertEqual(result.returncode, 0)
+            self.assertEqual(result.stdout, b"")
+            self.assertIn(b"https://example.invalid/docs", output)
+        finally:
+            os.close(master)
+            if slave is not None:
+                os.close(slave)
+
     def test_no_host_capability_is_needed_to_surface_a_url_without_a_terminal(self):
         """CLI JSON must remain on stdout; an absent /dev/tty must not lose the link."""
         url = oauth()
@@ -85,6 +116,35 @@ class LinkRequestTests(unittest.TestCase):
 
 
 class BrokerTests(unittest.TestCase):
+    def test_ssh_coder_transition_rebinds_the_existing_ipv6_callback_route(self):
+        """Coder reaches server IPv4 even when the callback URL uses IPv6."""
+        with socket.socket(socket.AF_INET6) as probe:
+            probe.bind(("::1", 0))
+            port = probe.getsockname()[1]
+        broker = links.Broker("box", {"ssh": "server"}, False)
+        try:
+            broker.handle({"url": oauth("::1", port)})
+            broker.context = {"coder": "workspace"}
+            broker.handle({"url": oauth("::1", port)})
+            with socket.socket() as collision, self.assertRaises(OSError):
+                collision.bind(("127.0.0.1", port))
+            with socket.socket(socket.AF_INET6) as released:
+                released.bind(("::1", port))
+            broker.context = {"ssh": "server"}
+            broker.handle({"url": oauth("::1", port)})
+            with socket.socket(socket.AF_INET6) as collision, self.assertRaises(OSError):
+                collision.bind(("::1", port))
+            with socket.socket() as released:
+                released.bind(("127.0.0.1", port))
+            broker.context = {"coder": "workspace"}
+            with socket.socket() as occupied:
+                occupied.bind(("127.0.0.1", port))
+                occupied.listen(1)
+                with self.assertRaisesRegex(ValueError, "unavailable"):
+                    broker.handle({"url": oauth("::1", port)})
+        finally:
+            broker.close()
+
     def test_localhost_ipv6_conflict_refuses_opening_and_rolls_back_ipv4(self):
         """A browser choosing ::1 must not deliver its login to a different host service."""
         with socket.socket(socket.AF_INET6) as occupied:
@@ -121,7 +181,7 @@ class BrokerTests(unittest.TestCase):
     def test_host_opening_is_separate_and_happens_after_the_callback_listener(self):
         """No browser may receive a localhost callback URL before its route is prepared."""
         events = []
-        relay = mock.Mock(deadline=time.monotonic() + 300)
+        relay = mock.Mock(deadline=time.monotonic() + 300, listen_hosts=("127.0.0.1",))
         with mock.patch.object(links, "Relay", side_effect=lambda *a: (events.append("relay"), relay)[1]), \
                 mock.patch.object(links.shutil, "which", return_value="/usr/bin/xdg-open"), \
                 mock.patch.object(links.subprocess, "Popen", side_effect=lambda *a, **k: events.append("open")):
@@ -140,7 +200,7 @@ class BrokerTests(unittest.TestCase):
                     self.assertRaisesRegex(ValueError, "unavailable"):
                 broker.handle({"url": oauth(port=port)})
             opened.assert_not_called()
-        relay = mock.Mock(deadline=time.monotonic() + 300)
+        relay = mock.Mock(deadline=time.monotonic() + 300, listen_hosts=("127.0.0.1",))
         with mock.patch.object(links, "Relay", return_value=relay) as create:
             broker = links.Broker("box", {"desktop": False}, False)
             broker.handle({"url": oauth()})
@@ -201,6 +261,23 @@ class BrokerTests(unittest.TestCase):
 
 
 class LinkPolicyTests(unittest.TestCase):
+    def test_current_remote_transport_replaces_previous_hint_before_headless_join(self):
+        """An obsolete Coder hint must not override a freshly detected SSH attachment."""
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(links, "LINKS_RUNTIME_DIR", Path(tmp)), \
+                mock.patch.object(links, "ping", return_value=True):
+            links.prepare("ws")
+            for context in (
+                    {"desktop": False, "ssh": "", "ssh_port": 22, "coder": "workspace"},
+                    {"desktop": False, "ssh": "server", "ssh_port": 2222, "coder": ""},
+                    {"desktop": False, "ssh": "", "ssh_port": 22, "coder": ""}):
+                with mock.patch.object(links, "remote_context", return_value=context):
+                    links.ensure("ws", "box", LinksConfig(enabled=True))
+            command = "\n".join(links.instructions(json.loads(links.context_file("ws").read_text()), ("::1", 42121)))
+            self.assertIn("ssh -N", command)
+            self.assertIn("-p 2222", command)
+            self.assertNotIn("coder", command)
+
     def test_headless_join_keeps_detected_ssh_destination_and_port_together(self):
         """A later launch without SSH_CONNECTION must retain the usable nondefault tunnel port."""
         with tempfile.TemporaryDirectory() as tmp, \
