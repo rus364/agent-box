@@ -305,8 +305,8 @@ class LinkPolicyTests(unittest.TestCase):
             spawn.assert_not_called()
             self.assertTrue(links.endpoint("ws").exists())
 
-    def test_detached_broker_is_reused_and_stop_releases_its_socket(self):
-        """A launcher exiting must not strand tmux login requests or duplicate the broker."""
+    def test_detached_broker_is_reused_and_disabled_recreation_releases_its_socket(self):
+        """A reused container name must not retain callback access when links is disabled."""
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             binary = root / "podman"
@@ -318,6 +318,7 @@ class LinkPolicyTests(unittest.TestCase):
                 links.prepare("ws")
                 try:
                     links.ensure("ws", "box", config)
+                    broker = links._children["ws"]
                     self.assertTrue(links.ping(links.endpoint("ws"), "box"))
                     with mock.patch.object(links.subprocess, "Popen") as spawn:
                         links.ensure("ws", "box", config)
@@ -326,6 +327,19 @@ class LinkPolicyTests(unittest.TestCase):
                         connection.connect(str(links.endpoint("ws")))
                         connection.sendall(json.dumps({"url": "https://example.invalid/docs"}).encode() + b"\n")
                         self.assertTrue(links._receive(connection)["ok"])
+                    state = runtime.WorkspaceRuntimeState(root=root / "ws", git=root / "git", gh=root / "gh")
+                    with mock.patch.object(runtime, "ensure_state_dirs"), \
+                            mock.patch.object(runtime, "seed_git_config"), \
+                            mock.patch.object(runtime, "seed_state_dir"), \
+                            mock.patch.object(runtime, "tracker_mounts", return_value=[(root / "tracker", root / "tracker", False)]), \
+                            mock.patch.object(runtime, "WORKFLOW_STATE", root / "workflow"), \
+                            mock.patch.object(runtime, "tracker_warnings", return_value=[]), \
+                            mock.patch.object(runtime.registries, "mounts", return_value=[]), \
+                            mock.patch.object(runtime.kubeconfigs, "mounts", return_value=[]), \
+                            mock.patch.object(runtime.cloud, "mounts", return_value=[]):
+                        runtime.prepare_container_lifetime_state(Config(), mount_notifications=False, runtime_state=state)
+                    self.assertEqual(broker.poll(), 0)
+                    self.assertFalse(links.context_file("ws").exists())
                 finally:
                     links.stop("ws")
                 self.assertFalse(links.endpoint("ws").exists())

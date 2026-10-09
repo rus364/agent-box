@@ -711,6 +711,9 @@ def prepare_container_lifetime_state(
         source.mkdir(mode=0o700, parents=True, exist_ok=True)
     if config.box.links.enabled:
         links.prepare(runtime_state.root.name)
+    else:
+        # The name can be reused before the old broker's liveness check.
+        links.stop(runtime_state.root.name)
     if config.tracker.enabled or config.workflow.enabled:
         WORKFLOW_STATE.mkdir(parents=True, exist_ok=True)
         for problem in tracker_warnings(config):
