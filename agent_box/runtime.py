@@ -1538,11 +1538,10 @@ def prepare_k3s(config: Config, workspace: Workspace, runtime_state: WorkspaceRu
             workspace_id, state_dir = workspace_identity(workspace), k3s_state_dir(runtime_state)
             box = inspect_workspace_container(workspace_container_name(workspace))
             box_running = (box or {}).get("State", {}).get("Status") == "running"
-            # Recreating the sidecar under a running box would pull the
-            # cluster out from under its sessions, as a recreated box would.
-            if box_running and k3s.is_outdated(workspace_id, config.box.k3s, state_dir, workspace.host_root):
-                raise AgentBoxError("the k3s settings changed while this project's box is running; "
-                                    "end it with agent-box stop first")
+            # Only the creation path calls this: a box found now won the
+            # race and owns its cluster policy, even when its hash matches.
+            if box_running:
+                raise AgentBoxError("a workspace box appeared while this launch was starting; run the command again")
             if not box_running:
                 # A box-bound cluster whose box ended on its own is noticed
                 # only now, and the new box must not inherit it.
@@ -2040,6 +2039,12 @@ def _container_mounts_match(container: dict, spec: WorkspaceContainerSpec) -> bo
     return isinstance(labels, dict) and labels.get(WORKSPACE_CONTAINER_EXTRA_MOUNTS_LABEL) == spec.extra_mounts_hash
 
 
+def _confirm_creation_policy(container: dict, spec: WorkspaceContainerSpec) -> None:
+    """Equal mounts cannot authorize refreshing another launch's credential selection."""
+    if container.get("Config", {}).get("Labels", {}).get(WORKSPACE_CONTAINER_POLICY_LABEL) != spec.policy_id:
+        raise AgentBoxError("a workspace box appeared while this launch was starting; run the command again")
+
+
 def ensure_workspace_container(spec: WorkspaceContainerSpec) -> None:
     """Create/start a compatible workspace box, recovering stopped stale boxes."""
     current = inspect_workspace_container(spec.name)
@@ -2078,10 +2083,12 @@ def ensure_workspace_container(spec: WorkspaceContainerSpec) -> None:
             if state == "running" and spec.mounts_explicit:
                 raise AgentBoxError("workspace container is already running with different mount configuration")
             if state == "running":
+                _confirm_creation_policy(current, spec)
                 return
             remove_workspace_container_then_confirm_absent(spec.name)
             current = None
         elif current.get("State", {}).get("Status") == "running":
+            _confirm_creation_policy(current, spec)
             return
         else:
             # A stopped container can hold stale state from a crash or an old
@@ -2108,6 +2115,7 @@ def ensure_workspace_container(spec: WorkspaceContainerSpec) -> None:
             if winner is None or not _container_matches(winner, spec):
                 detail = created.stderr.strip() or "podman could not create workspace container"
                 raise AgentBoxError(detail)
+            _confirm_creation_policy(winner, spec)
             if winner.get("State", {}).get("Status") == "running":
                 return
     started = subprocess.run(["podman", "start", spec.name], text=True, capture_output=True)

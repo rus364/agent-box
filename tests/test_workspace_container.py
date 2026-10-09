@@ -98,6 +98,7 @@ class WorkspaceContainerLifecycleTests(unittest.TestCase):
             runtime.WORKSPACE_CONTAINER_LABEL: "true",
             runtime.WORKSPACE_CONTAINER_WORKSPACE_LABEL: self.spec.workspace_id,
             runtime.WORKSPACE_CONTAINER_SCHEMA_LABEL: runtime.WORKSPACE_CONTAINER_SCHEMA,
+            runtime.WORKSPACE_CONTAINER_POLICY_LABEL: self.spec.policy_id,
             runtime.WORKSPACE_CONTAINER_BASE_CONFIG_LABEL: base_hash or self.spec.base_config_hash,
             runtime.WORKSPACE_CONTAINER_EXTRA_MOUNTS_LABEL: extra_mounts_hash or self.spec.extra_mounts_hash,
         }}}
@@ -270,6 +271,34 @@ class WorkspaceContainerLifecycleTests(unittest.TestCase):
                 runtime.launch_in_workspace_container(spec, self.workspace, ["bash"], [])
             sync.assert_not_called()
             process.assert_not_called()
+
+    def test_box_created_after_lookup_refuses_before_replacing_the_winners_credentials(self):
+        """Equal mounts do not make two different kubeconfig selections interchangeable."""
+        first = runtime.Config()
+        first.credentials.kubernetes.enabled = True
+        first.credentials.kubernetes.files = ["first.yaml"]
+        spec = runtime.workspace_container_spec(self.workspace, [], self.script_dir, first)
+        winner = runtime.Config.from_dict(first.to_dict())
+        winner.credentials.kubernetes.files = ["winner.yaml"]
+        container, _ = self._live_box(winner)
+        self.assertEqual(container["Config"]["Labels"][runtime.WORKSPACE_CONTAINER_BASE_CONFIG_LABEL], spec.base_config_hash)
+        process = mock.Mock()
+        process.poll.return_value = None
+        process.wait.return_value = 0
+        with mock.patch.object(runtime, "inspect_workspace_container", return_value=container), \
+             mock.patch.object(runtime.registries, "sync", return_value=[]) as registry, \
+             mock.patch.object(runtime.kubeconfigs, "sync", return_value=[]) as kube, \
+             mock.patch.object(runtime.cloud, "sync", return_value=[]) as cloud, \
+             mock.patch.object(runtime.subprocess, "Popen", return_value=process) as start, \
+             mock.patch.object(runtime, "container_has_workloads", return_value=True), \
+             mock.patch.object(runtime, "cleanup_workspace_container_if_idle"), \
+             mock.patch.object(runtime, "release_k3s"), \
+             self.assertRaisesRegex(AgentBoxError, "appeared.*again"):
+            runtime.launch_in_workspace_container(spec, self.workspace, ["bash"], [])
+        registry.assert_not_called()
+        kube.assert_not_called()
+        cloud.assert_not_called()
+        start.assert_not_called()
 
     def test_selection_refuses_foreign_container_without_touching_it(self):
         container, _ = self._live_box()
@@ -546,6 +575,7 @@ class WorkspaceContainerLifecycleTests(unittest.TestCase):
             runtime.WORKSPACE_CONTAINER_SCHEMA_LABEL: runtime.WORKSPACE_CONTAINER_SCHEMA,
             runtime.WORKSPACE_CONTAINER_BASE_CONFIG_LABEL: mounted.base_config_hash,
             runtime.WORKSPACE_CONTAINER_EXTRA_MOUNTS_LABEL: mounted.extra_mounts_hash,
+            runtime.WORKSPACE_CONTAINER_POLICY_LABEL: omitted.policy_id,
         }}}
         with mock.patch.object(runtime, "inspect_workspace_container", return_value=running), \
              mock.patch.object(runtime.subprocess, "run") as run:

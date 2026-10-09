@@ -68,18 +68,22 @@ class BoxIdentityTests(K3sRuntimeTest):
 
 
 class PrepareTests(K3sRuntimeTest):
-    def prepare(self, *, box_running, outdated):
+    def prepare(self, *, box_running):
         box = {"State": {"Status": "running"}} if box_running else None
         with mock.patch.object(runtime, "workspace_transition_lock", return_value=nullcontext()), \
                 mock.patch.object(runtime, "inspect_workspace_container", return_value=box), \
-                mock.patch.multiple(runtime.k3s, is_outdated=mock.Mock(return_value=outdated),
-                                    ensure=mock.DEFAULT) as sidecar:
+                mock.patch.object(runtime.k3s, "ensure") as ensure:
             runtime.prepare_k3s(k3s_config(), self.workspace, runtime.workspace_runtime_state(self.workspace))
-        return sidecar["ensure"]
+        return ensure
 
-    def test_changed_settings_never_pull_the_cluster_from_under_a_running_box(self):
-        with self.assertRaisesRegex(AgentBoxError, "agent-box stop"):
-            self.prepare(box_running=True, outdated=True)
+    def test_creation_race_never_reconfigures_the_cluster_of_the_winning_box(self):
+        """Matching settings still belong to another box's creation policy."""
+        with mock.patch.object(runtime, "workspace_transition_lock", return_value=nullcontext()), \
+             mock.patch.object(runtime, "inspect_workspace_container", return_value={"State": {"Status": "running"}}), \
+             mock.patch.object(runtime.k3s, "ensure") as ensure, \
+             self.assertRaisesRegex(AgentBoxError, "appeared.*again"):
+            runtime.prepare_k3s(k3s_config(), self.workspace, runtime.workspace_runtime_state(self.workspace))
+        ensure.assert_not_called()
 
     def test_a_box_bound_cluster_left_by_a_box_that_ended_on_its_own_restarts_clean(self):
         """With persistent_data off the new box would otherwise inherit the old cluster."""
@@ -96,10 +100,8 @@ class PrepareTests(K3sRuntimeTest):
             self.assertEqual(sidecar["stop"].call_count, stops)
             sidecar["ensure"].assert_called_once()
 
-    def test_changed_settings_apply_when_no_box_runs_and_unchanged_ones_always(self):
-        for box_running, outdated in ((False, True), (True, False)):
-            with self.subTest(box_running=box_running, outdated=outdated):
-                self.prepare(box_running=box_running, outdated=outdated).assert_called_once()
+    def test_cluster_settings_apply_when_no_box_runs(self):
+        self.prepare(box_running=False).assert_called_once()
 
 
 class CreationCheckTests(K3sRuntimeTest):
