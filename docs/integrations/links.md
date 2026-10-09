@@ -33,8 +33,8 @@ are not exposed to the box.
 
 The socket uses an owner-checked private directory under `/tmp`, including on
 Coder/headless hosts without `/run/user/<uid>`. Connection hints are refreshed
-when another session joins. Once any session is remote/headless, automatic
-opening stays suppressed for the shared box until stop/recreation; later local
+when another session launches or uses `agent-box attach`. Once any session is
+remote/headless, automatic opening stays suppressed until stop/recreation; later local
 sessions also receive manual instructions. The host policy file is outside
 the mounted socket directory and cannot be changed by the box.
 

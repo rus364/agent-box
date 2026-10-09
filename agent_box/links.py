@@ -510,8 +510,10 @@ def ensure(workspace_id: str, container: str, config) -> None:
         if current["desktop"]:
             current = previous
         else:
-            for name in ("ssh", "coder"):
-                current[name] = current[name] or previous[name]
+            if not current["ssh"]:
+                current["ssh"], current["ssh_port"] = previous["ssh"], previous["ssh_port"]
+            current["coder"] = current["coder"] or previous["coder"]
+    current["policy"] = config.to_dict()
     atomic_write_json(context_path, current, 0o600)
     if ping(path, container):
         return
@@ -544,6 +546,20 @@ def ensure(workspace_id: str, container: str, config) -> None:
     process.terminate()
     process.wait(timeout=3)
     raise ValueError("host link broker could not start; launch without --links to display URLs only")
+
+
+def reattach(workspace_id: str, container: str) -> None:
+    """An attachment retains box policy while refreshing its host connection."""
+    try:
+        context = read_json(context_file(workspace_id))
+    except FileNotFoundError:
+        if endpoint(workspace_id).exists():
+            raise ValueError("host link policy is missing; restart the workspace box") from None
+        return
+    if "policy" not in context:
+        raise ValueError("host link policy is missing; restart the workspace box")
+    from .config import LinksConfig
+    ensure(workspace_id, container, LinksConfig.from_dict(context["policy"]))
 
 
 def main(args: list[str] | None = None) -> int:

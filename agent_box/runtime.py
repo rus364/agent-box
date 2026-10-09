@@ -2769,6 +2769,10 @@ def attach_main(args: list[str], workspace_root: str = "") -> int:
     # reads EOF and would otherwise keep the session to itself forever.
     command = tmux_argv("attach-session", "-d", "-t", session)
     with workspace_transition_lock(workspace):
+        try:
+            links.reattach(workspace_runtime_state(workspace).root.name, name)
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            raise AgentBoxError(str(exc)) from exc
         # The box is holding a live tmux server, so unlike a first launch
         # there is no idle window here for the keeper to shut down.
         process = subprocess.Popen(exec_argv(name, workspace, command, []))
