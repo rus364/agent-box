@@ -201,6 +201,50 @@ class BrokerTests(unittest.TestCase):
 
 
 class LinkPolicyTests(unittest.TestCase):
+    def test_runtime_root_is_private_and_cannot_be_redirected_by_symlinks(self):
+        """A shared tmp parent must not let another user substitute the mounted socket directory."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with mock.patch.object(links, "LINKS_RUNTIME_DIR", root / "runtime"):
+                links.prepare("ws")
+                self.assertEqual(links.LINKS_RUNTIME_DIR.stat().st_mode & 0o777, 0o700)
+                self.assertEqual(links.directory("ws").stat().st_mode & 0o777, 0o700)
+            (root / "redirect").symlink_to(root / "runtime", target_is_directory=True)
+            with mock.patch.object(links, "LINKS_RUNTIME_DIR", root / "redirect"), self.assertRaises(OSError):
+                links.prepare("ws")
+            with mock.patch.object(links, "LINKS_RUNTIME_DIR", root / "runtime"), \
+                    mock.patch.object(links.os, "getuid", return_value=os.getuid() + 1), \
+                    self.assertRaisesRegex(ValueError, "another user"):
+                links.prepare("ws")
+
+    def test_reused_broker_refreshes_remote_hints_without_reenabling_the_server_browser(self):
+        """A local/SSH shared box must protect remote sessions even after another local join."""
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(links, "LINKS_RUNTIME_DIR", Path(tmp)), \
+                mock.patch.object(links, "ping", return_value=True):
+            links.prepare("ws")
+            config = LinksConfig(enabled=True, open_browser=True)
+            local = {"desktop": True, "ssh": "", "ssh_port": 22, "coder": ""}
+            remote = {"desktop": False, "ssh": "server-alias", "ssh_port": 2222, "coder": ""}
+            with mock.patch.object(links, "remote_context", return_value=local):
+                links.ensure("ws", "box", config)
+            broker = links.Broker("box", local, True, links.context_file("ws"))
+            self.assertNotEqual(links.context_file("ws").parent, links.directory("ws"))
+            with mock.patch.object(links, "remote_context", return_value=remote):
+                links.ensure("ws", "box", config)
+            with mock.patch.object(links.subprocess, "Popen") as opened, \
+                    mock.patch.object(links.shutil, "which", return_value="/usr/bin/xdg-open"), \
+                    mock.patch.object(links, "Relay", return_value=mock.Mock(deadline=time.monotonic() + 300)):
+                result = broker.handle({"url": oauth()})
+                self.assertIn("server-alias", "\n".join(result["lines"]))
+                self.assertFalse(broker.context["desktop"])
+                with mock.patch.object(links, "remote_context", return_value=local):
+                    links.ensure("ws", "box", config)
+                broker.handle({"url": "https://example.invalid/docs"})
+                opened.assert_not_called()
+            links.stop("ws")
+            self.assertFalse(links.context_file("ws").exists())
+
     def test_host_access_is_off_and_structural_while_flags_and_snapshots_agree(self):
         """A per-exec switch cannot hide a socket already shared with the whole box."""
         config = Config()

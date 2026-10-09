@@ -31,6 +31,13 @@ tmux sessions retain the broker. Stop or the box's own exit ends the broker
 and its routes. Browser profiles, desktop sockets and host command execution
 are not exposed to the box.
 
+The socket uses an owner-checked private directory under `/tmp`, including on
+Coder/headless hosts without `/run/user/<uid>`. Connection hints are refreshed
+when another session joins. Once any session is remote/headless, automatic
+opening stays suppressed for the shared box until stop/recreation; later local
+sessions also receive manual instructions. The host policy file is outside
+the mounted socket directory and cannot be changed by the box.
+
 ## Local workstation
 
 The handler recognises a standard OAuth `redirect_uri` pointing to loopback,

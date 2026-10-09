@@ -25,6 +25,7 @@ from contextlib import suppress
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
+from .atomicio import atomic_write_json, read_json
 from .paths import LINKS_RUNTIME_DIR
 
 SOCKET_ENV = "AGENT_BOX_LINKS_SOCKET"
@@ -41,6 +42,12 @@ def directory(workspace_id: str) -> Path:
 
 def endpoint(workspace_id: str) -> Path:
     return directory(workspace_id) / "open.sock"
+
+
+def context_file(workspace_id: str) -> Path:
+    # Only the socket subdirectory is mounted; the box cannot change the
+    # host-authored opening policy stored beside it.
+    return LINKS_RUNTIME_DIR / f"{workspace_id}.json"
 
 
 def web_url(url: str):
@@ -339,8 +346,9 @@ class Relay:
 
 
 class Broker:
-    def __init__(self, container: str, context: dict, open_browser: bool):
+    def __init__(self, container: str, context: dict, open_browser: bool, context_path: Path | None = None):
         self.container, self.context, self.open_browser = container, context, open_browser
+        self.context_path = context_path
         self.relays = {}
 
     def handle(self, request: dict) -> dict:
@@ -348,6 +356,8 @@ class Broker:
             return {"ok": True, "container": self.container}
         if set(request) != {"url"}:
             raise ValueError("expected only a URL")
+        if self.context_path is not None:
+            self.context = read_json(self.context_path)
         url = request["url"]
         target = callback_target(url)
         for key, relay in list(self.relays.items()):
@@ -389,8 +399,8 @@ def _alive(container: str) -> bool:
     return result.returncode == 0 and result.stdout.strip() == "true"
 
 
-def serve(path: Path, container: str, context: dict, open_browser: bool) -> None:
-    broker = Broker(container, context, open_browser)
+def serve(path: Path, container: str, context_path: Path, open_browser: bool) -> None:
+    broker = Broker(container, read_json(context_path), open_browser, context_path)
     stopped = threading.Event()
     for sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, lambda *_: stopped.set())
@@ -425,6 +435,7 @@ def serve(path: Path, container: str, context: dict, open_browser: bool) -> None
                         connection.sendall(json.dumps(result).encode() + b"\n")
         finally:
             broker.close()
+            context_path.unlink(missing_ok=True)
             path.unlink(missing_ok=True)
 
 
@@ -440,12 +451,20 @@ def ping(path: Path, container: str) -> bool:
         return False
 
 
+def private_directory(path: Path) -> None:
+    path.mkdir(mode=0o700, exist_ok=True)
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        if os.fstat(descriptor).st_uid != os.getuid():
+            raise ValueError(f"host link directory belongs to another user: {path}")
+        os.fchmod(descriptor, 0o700)
+    finally:
+        os.close(descriptor)
+
+
 def prepare(workspace_id: str) -> None:
-    root = directory(workspace_id)
-    root.mkdir(parents=True, mode=0o700, exist_ok=True)
-    if root.is_symlink():
-        raise ValueError("host link directory must not be a symlink")
-    os.chmod(root, 0o700)
+    private_directory(LINKS_RUNTIME_DIR)
+    private_directory(directory(workspace_id))
     # A recreated box must not inherit an old broker's host-opening policy.
     stop(workspace_id)
 
@@ -467,6 +486,7 @@ def stop(workspace_id: str) -> None:
         time.sleep(0.05)
     if path.exists():
         raise ValueError("host link broker did not stop; retry after its pending requests finish")
+    context_file(workspace_id).unlink(missing_ok=True)
     process = _children.pop(workspace_id, None)
     if process is not None:
         with suppress(subprocess.TimeoutExpired):
@@ -474,7 +494,25 @@ def stop(workspace_id: str) -> None:
 
 
 def ensure(workspace_id: str, container: str, config) -> None:
+    private_directory(LINKS_RUNTIME_DIR)
     path = endpoint(workspace_id)
+    current = remote_context(config)
+    context_path = context_file(workspace_id)
+    try:
+        previous = read_json(context_path)
+    except FileNotFoundError:
+        previous = None
+    # The socket is shared by all sessions. Once a remote/headless session
+    # joins, no later local launch may reopen the server's browser for it.
+    # The caller holds the workspace lock, so concurrent launches retain this
+    # conservative policy until the box is stopped/recreated.
+    if previous and not previous["desktop"]:
+        if current["desktop"]:
+            current = previous
+        else:
+            for name in ("ssh", "coder"):
+                current[name] = current[name] or previous[name]
+    atomic_write_json(context_path, current, 0o600)
     if ping(path, container):
         return
     # A busy broker may not answer a ping immediately. Replacing its socket
@@ -491,7 +529,7 @@ def ensure(workspace_id: str, container: str, config) -> None:
     path.unlink(missing_ok=True)
     process = subprocess.Popen(
         [sys.executable, "-m", "agent_box.links", "serve", str(path), container,
-         json.dumps(remote_context(config)), "1" if config.open_browser else "0"],
+         str(context_path), "1" if config.open_browser else "0"],
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         start_new_session=True, cwd=str(Path(__file__).resolve().parent.parent),
     )
@@ -519,7 +557,7 @@ def main(args: list[str] | None = None) -> int:
     server = sub.add_parser("serve", help=argparse.SUPPRESS)
     server.add_argument("path", type=Path)
     server.add_argument("container")
-    server.add_argument("context")
+    server.add_argument("context", type=Path)
     server.add_argument("open_browser", choices=("0", "1"))
     options = parser.parse_args(args)
     try:
@@ -527,7 +565,7 @@ def main(args: list[str] | None = None) -> int:
             return open_link(options.url)
         if options.action == "connect":
             return connect_stream(options.host, options.port)
-        serve(options.path, options.container, json.loads(options.context), options.open_browser == "1")
+        serve(options.path, options.container, options.context, options.open_browser == "1")
         return 0
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         print(f"agent-box links: {exc}", file=sys.stderr)
