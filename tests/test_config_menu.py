@@ -77,7 +77,7 @@ class ConfigMenuTests(unittest.TestCase):
             ('workflow', 'scout'): ['limit', 'models'],
             ('workflow', 'sync'): ['policy', 'events', 'paths', 'scope', 'references', 'models', 'tiers'],
             ('workflow', 'review'): ['policy', 'max_files', 'max_lines', 'sensitive_paths',
-                                    'ignored_paths', 'label', 'incremental', 'models', 'tiers', 'max_rounds',
+                                    'ignored_paths', 'label', 'incremental', 'models', 'tiers', 'other_vendor_first', 'max_rounds',
                                     'github_provider', 'github_model', 'github_effort', 'wait_seconds'],
         }
         for path, keys in expected.items():

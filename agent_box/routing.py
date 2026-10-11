@@ -12,7 +12,7 @@ def applicable_windows(snapshot, model):
             if not window.get("models") or any(name in model for name in window["models"])]
 
 
-def select(config, role, tier, usage=None, *, now=None, available=None):
+def select(config, role, tier, usage=None, *, now=None, available=None, authors=()):
     """The first available candidate of the role's list, with the rest as ordered fallbacks.
 
     ``tier`` is the effective task tier, and scouts have none. Weighted and
@@ -21,13 +21,14 @@ def select(config, role, tier, usage=None, *, now=None, available=None):
     states the preference directly. Reviewers once ran the other provider than
     the writer first; the list now states that preference too. A candidate
     whose subscription window is exhausted is skipped, not reordered.
+    ``authors`` reorders a reviewer list as ``models_for`` describes.
     """
     errors = config.validate()
     if errors:
         raise AgentBoxError("; ".join(errors))
     if tier is not None and (role not in TIERED_ROLES or tier not in TIERS):
         raise AgentBoxError(f"A {role} has no tier {tier}; task tiers 1-3 select worker and reviewer lists")
-    path, models = config.models_for(role, tier)
+    path, models = config.models_for(role, tier, authors)
     pinned = role in config.pins
     now = time.time() if now is None else now
     usage = usage or {}
@@ -46,6 +47,8 @@ def select(config, role, tier, usage=None, *, now=None, available=None):
     if not allowed:
         raise AgentBoxError(f"No {role} candidate configured in {path}")
     reason = f"Pinned for this session by --{role}" if pinned else "First available candidate"
+    if not pinned and role == "reviewer" and authors and config.review.other_vendor_first:
+        reason += f" from vendors other than {', '.join(authors)}, then theirs"
 
     def entry(spec):
         return {"provider": spec["provider"], "model": spec["model"], "effort": spec["effort"],

@@ -125,6 +125,7 @@ HELP = {
     "workflow.review": "Review thresholds, attempts, reviewer candidates and GitHub review.",
     "workflow.review.models": "Reviewer candidates in preference order; the first available one runs, skipping a missing CLI or an exhausted usage limit, and the rest are fallbacks. Used unless Use tiers is on and the task's tier has its own list; with no candidates a review inherits the active session.",
     "workflow.review.tiers": "Optional reviewer candidates per task tier 1-3, used only when Use tiers is on. A nonempty tier list replaces Models for that tier; an empty one uses Models.",
+    "workflow.review.other_vendor_first": "Run a reviewer from another vendor than the code's authors first, keeping list order within each group; the authors' own candidates stay as last fallbacks. A vendor is a candidate's external API name, else its CLI (codex, claude). The coordinator names the authors with --author on workflow inspect and review. A --reviewer pin and a GitHub cloud provider are unaffected.",
     "workflow.review.policy": "Off skips workflow review. Auto triggers on file/line thresholds, sensitive paths, or the review label. Always requires review for every task and the complete parent diff. GitHub merge may still require independent approval.",
     "workflow.review.max_files": "Automatic-review threshold for changed file count. The Review preset action can set this together with max lines.",
     "workflow.review.max_lines": "Automatic-review threshold for changed line count. The Review preset action can set this together with max files.",
@@ -157,7 +158,7 @@ LABELS = {
     "github_model": "GitHub review model", "github_effort": "GitHub review effort",
     "telegram_chat_id": "Telegram chat ID",
     "worker": "Workers", "scout": "Scouts", "sync": "Plan sync", "use_tiers": "Use tiers",
-    "github_provider": "GitHub review provider",
+    "github_provider": "GitHub review provider", "other_vendor_first": "Other vendor first",
     "external_apis": "External APIs", "api_provider": "API provider", "api_key": "API key",
 }
 #: Labels a bare key cannot carry because the same key means something else elsewhere.
@@ -298,7 +299,7 @@ MENU_GROUPS = {
     ),
     ("workflow", "review"): (
         ("Review triggers", ("policy", "max_files", "max_lines", "sensitive_paths", "ignored_paths", "label", "incremental")),
-        ("Models", ("models", "tiers")),
+        ("Models", ("models", "tiers", "other_vendor_first")),
         ("Review attempts", ("max_rounds",)),
         ("GitHub review", ("github_provider", "github_model", "github_effort", "wait_seconds")),
     ),

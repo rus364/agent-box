@@ -142,3 +142,54 @@ class ReviewRoutingTests(unittest.TestCase):
                     workflow.managed_review_route(route)
             for fact in ('"provider": "codex"', '"unavailable"', '"provider": "claude"', '"unsupported"'):
                 self.assertIn(fact, str(caught.exception))
+
+
+def vendor_list():
+    """One candidate per vendor shape: both subscriptions and DeepSeek through either CLI."""
+    return [model_entry({"provider": "codex", "model": "a"}), model_entry({"provider": "claude", "model": "b"}),
+            model_entry({"provider": "claude", "model": "d", "api_provider": "deepseek"}),
+            model_entry({"provider": "codex", "model": "e", "api_provider": "deepseek"})]
+
+
+def chain(route):
+    return [r["model"] for r in (route, *route["fallbacks"])]
+
+
+class OtherVendorFirstTests(unittest.TestCase):
+    def config(self, enabled=True):
+        config = WorkflowConfig()
+        config.review.models = vendor_list()
+        config.review.other_vendor_first = enabled
+        return config
+
+    def test_other_vendors_lead_the_whole_chain_and_the_authors_stay_last(self):
+        """A second view comes first, yet the authors' own models remain fallbacks rather than vanishing."""
+        for authors, expected in ((("codex",), ["b", "d", "e", "a"]),
+                                  (("deepseek",), ["a", "b", "d", "e"]),
+                                  (("codex", "claude"), ["d", "e", "a", "b"])):
+            with self.subTest(authors=authors):
+                self.assertEqual(chain(select(self.config(), "reviewer", None, authors=authors)), expected)
+
+    def test_list_order_stands_when_off_unknown_or_pinned(self):
+        """Without the switch, without known authors, or under a session pin, nothing is reordered."""
+        self.assertEqual(chain(select(self.config(enabled=False), "reviewer", None, authors=("codex",))),
+                         ["a", "b", "d", "e"])
+        self.assertEqual(chain(select(self.config(), "reviewer", None, authors=())), ["a", "b", "d", "e"])
+        config = self.config()
+        config.pins["reviewer"] = [model_entry({"provider": "codex", "model": "a"})]
+        self.assertEqual(chain(select(config, "reviewer", None, authors=("codex",))), ["a"])
+
+    def test_an_unavailable_other_vendor_falls_back_to_the_authors_vendor(self):
+        """Neither a missing CLI nor a failed launch of the other vendor fails the review."""
+        config = self.config()
+        config.review.models = vendor_list()[:2]
+        route = select(config, "reviewer", None, available=["codex"], authors=("codex",))
+        self.assertEqual(chain(route), ["a"])
+        exhausted = {"claude": {"windows": [{"remaining": 0, "reset_at": 2e9, "models": []}]}}
+        self.assertEqual(chain(select(config, "reviewer", None, exhausted, now=1e9, authors=("codex",))), ["a"])
+        route = select(config, "reviewer", None, authors=("codex",))
+        with patch.object(workflow, "run", side_effect=[ProviderFailure("Failure", "unavailable"),
+                                                        {"verdict": "PASS", "summary": "Checked", "findings": []}]):
+            result = workflow.execute(config, route, "reviewer", Path("/unused"), "test")
+        self.assertEqual((result["route"]["model"], result["failures"]),
+                         ("a", [{"provider": "claude", "category": "unavailable"}]))

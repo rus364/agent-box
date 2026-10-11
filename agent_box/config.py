@@ -803,6 +803,16 @@ def model_entry(data):
             "api_provider": data.get("api_provider", "")}
 
 
+def vendor(spec):
+    """Whose model a candidate runs: its external API by name, else its CLI's own subscription.
+
+    An aggregator is one vendor whatever its model prefixes say: a name
+    convention would have to be guessed per provider, and the configured API
+    name is what the user chose.
+    """
+    return spec.get("api_provider") or spec.get("provider")
+
+
 def candidate_label(spec):
     """Candidate identity and explicit speed; CLI pins accept the identity alone."""
     api = f"@{spec['api_provider']}" if spec.get("api_provider") else ""
@@ -857,6 +867,9 @@ class ScoutConfig:
 @dataclass
 class ReviewConfig:
     policy: str = "auto"
+    #: Off by default: the list order already states the preference, and on it
+    #: every reviewer selection needs the coordinator to name the code's authors.
+    other_vendor_first: bool = False
     models: list[dict] = field(default_factory=list)
     tiers: dict[str, list] = field(default_factory=model_tiers)
     max_files: int = 5
@@ -883,6 +896,7 @@ class ReviewConfig:
         result = cls()
         result.models = model_list(data.get("models"))
         result.tiers = model_tiers(data.get("tiers"))
+        result.other_vendor_first = _bool(data, "other_vendor_first", False)
         for key in ("policy", "incremental", "label", "github_provider", "github_model", "github_effort"):
             if key in data and isinstance(data[key], str):
                 setattr(result, key, data[key].strip())
@@ -961,10 +975,15 @@ class WorkflowConfig:
         """The task tier that selects models, or None while tiers are switched off."""
         return tier if self.use_tiers else None
 
-    def models_for(self, role, tier):
+    def models_for(self, role, tier, authors=()):
         """``(path, candidates)``: a session pin, else a nonempty tier list, else the role's own list.
 
-        ``tier`` is already effective; scouts have no tier lists.
+        ``tier`` is already effective; scouts have no tier lists. ``authors``
+        are the vendors that wrote the reviewed code: with ``other_vendor_first``
+        a reviewer list puts every other vendor ahead of them, keeping the list
+        order within both groups, so the authors' own models stay the last
+        fallbacks rather than being dropped. A pin names its model outright and
+        is never reordered.
 
         The candidate's provider decides only how it runs, never whether the
         coordinator may use it: a Claude session runs a Codex scout as a
@@ -978,8 +997,12 @@ class WorkflowConfig:
         settings = self.role(role)
         # Wrong containers are validate()'s errors; unvalidated readers such as profile sync must not crash.
         if role in TIERED_ROLES and tier is not None and isinstance(settings.tiers, dict) and settings.tiers.get(str(tier)):
-            return f"workflow.{section}.tiers.{tier}", settings.tiers[str(tier)]
-        return f"workflow.{section}.models", settings.models
+            path, models = f"workflow.{section}.tiers.{tier}", settings.tiers[str(tier)]
+        else:
+            path, models = f"workflow.{section}.models", settings.models
+        if role == "reviewer" and authors and self.review.other_vendor_first and isinstance(models, list):
+            models = sorted(models, key=lambda spec: vendor(spec) in authors)
+        return path, models
 
     def validate(self):
         import math

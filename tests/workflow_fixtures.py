@@ -84,13 +84,13 @@ def candidate(provider, model, effort):
     return {"provider": provider, "model": model, "effort": effort, "speed": "inherit", "api_provider": ""}
 
 
-def selected_route(_config, role, tier):
+def selected_route(_config, role, tier, authors=()):
     """What `workflow.candidates` would return: the delegation it was asked for."""
     return {"speed": "inherit", "provider": "claude", "model": "m", "effort": "high", "tier": tier, "role": role,
             "fallbacks": []}
 
 
-def reviewer_route(config, role, tier, candidates=workflow.candidates):
+def reviewer_route(config, role, tier, authors=(), candidates=workflow.candidates):
     """A fixed reviewer route; delegates still select from their configured lists."""
     return selected_route(config, role, tier) if role == "reviewer" else candidates(config, role, tier)
 

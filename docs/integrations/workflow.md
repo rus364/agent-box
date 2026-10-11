@@ -343,6 +343,25 @@ before timeout and review verdicts never justify switching provider. Missing CLI
 and explicitly empty models may exclude candidates before the round starts. An
 unsupported model is an error, not permission to guess a cheaper one.
 
+### Reviewer of another vendor
+
+`workflow.review.other_vendor_first` (off by default) puts reviewer candidates
+of every vendor other than the reviewed code's authors ahead of the authors'
+own, keeping the list order within both groups. A candidate's vendor is its
+external API name (`claude@deepseek` is `deepseek`, an aggregator is one
+vendor), else its CLI (`codex`, `claude`). The authors' candidates stay at the
+end of the chain, so an unavailable other vendor falls back to them under the
+rules above instead of failing the review.
+
+Workflow does not track who wrote a commit, so the coordinator names the
+authors on `workflow inspect TASK --author VENDOR...` and the managed
+`workflow review TASK --author VENDOR...`; a parent names every vendor of its
+subtasks. `--author unknown` keeps the list order when the coordinator cannot
+tell. With the switch on, inspect without `--author` reports
+`authors-required` instead of a reviewer route, and a managed review without
+it refuses before a round opens. A `--reviewer` pin and a GitHub cloud provider
+are not reordered.
+
 A project can replace any role list in `.agent-box.json` without
 changing the global configuration; a project list replaces the global list whole.
 

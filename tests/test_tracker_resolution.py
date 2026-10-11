@@ -76,7 +76,7 @@ class ResolutionTests(unittest.TestCase):
              patch.object(workflow, 'repository_root'), \
              patch.object(Binding, 'session', return_value=self.binding), \
              patch.object(workflow, 'make_adapter', return_value=self.adapter), \
-             patch.object(workflow, 'inspect', side_effect=lambda root, binding, adapter, task, config: task.id):
+             patch.object(workflow, 'inspect', side_effect=lambda root, binding, adapter, task, config, authors: task.id):
             return workflow.dispatch(workflow.parser().parse_args(['inspect', reference]))
 
     def test_workflow_inspect_accepts_the_same_references_as_get(self):

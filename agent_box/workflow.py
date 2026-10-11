@@ -783,7 +783,7 @@ def recorded_step(task, parent, config, saved, blockers, *, no_work):
     return landing_step(config, task, cloud_review(config, task, parent))
 
 
-def inspect(root, binding, adapter, task, config):
+def inspect(root, binding, adapter, task, config, authors=None):
     """Diagnostics can precede begin; acceptance still belongs to a clean task branch."""
     parent, info, current, base = resolve(root, adapter, task, allow_missing=True)
     tasks = tree(adapter, task)
@@ -828,7 +828,8 @@ def inspect(root, binding, adapter, task, config):
                             "scout": execution(config, "scout", None, task.id),
                             "reviewer": ({"mode": "cloud", "command": f"agent-box workflow review {task.id}"}
                                          if cloud_review(config, task, parent) else
-                                         execution(config, "reviewer", config.workflow.effective_tier(task.tier), task.id))}}
+                                         execution(config, "reviewer", config.workflow.effective_tier(task.tier),
+                                                   task.id, authors))}}
     from .plan_sync import describe
     result["plan_sync"] = describe(root, task, config)
     if unavailable:
@@ -897,14 +898,45 @@ def review_descriptor(identity, task, fingerprint, round_id):
     return {**identity, "task": task.id, "scope": fingerprint, "delegation": round_id}
 
 
-def candidates(config, role, tier):
+AUTHOR_FORM = ("--author VENDOR... naming every vendor that wrote the reviewed code (codex, claude or an "
+               "agents.external_apis name), or --author unknown")
+
+
+def author_vendors(config, values):
+    """The vendors the coordinator names as the code's authors; None when it named none, () for unknown.
+
+    Only the coordinator knows who wrote a head: workers are launched, never
+    tracked, and it often fixes findings itself. Recording authors per commit
+    was the rejected alternative; a parent spanning sessions is why the
+    coordinator says ``unknown`` explicitly rather than guessing.
+    """
+    if values is None:
+        return None
+    if "unknown" in values:
+        if len(values) > 1:
+            raise AgentBoxError("--author unknown cannot be combined with vendors")
+        return ()
+    known = ("codex", "claude", *config.agents.external_apis)
+    unknown = [value for value in values if value not in known]
+    if unknown:
+        raise AgentBoxError(f"Unknown --author vendor {', '.join(unknown)}; expected {', '.join(known)} or unknown")
+    return tuple(dict.fromkeys(values))
+
+
+def authors_missing(config, authors):
+    """A reviewer order that depends on authors nobody named; a session pin depends on none."""
+    return (authors is None and config.workflow.review.other_vendor_first
+            and "reviewer" not in config.workflow.pins)
+
+
+def candidates(config, role, tier, authors=()):
     """The role's first available candidate with ordered fallbacks, bound to their APIs."""
-    _, models = config.workflow.models_for(role, tier)
+    _, models = config.workflow.models_for(role, tier, authors)
     # Every role skips a subscription candidate whose known window is exhausted;
     # external API candidates have no subscription usage to read.
     subscribed = {spec["provider"] for spec in models if not spec.get("api_provider")}
     usage = {p: usage_snapshot(p, no_cache=True) for p in sorted(subscribed)}
-    result = select(config.workflow, role, tier, usage,
+    result = select(config.workflow, role, tier, usage, authors=authors,
                     available=[p for p in ("codex", "claude") if shutil.which(p)])
     for candidate in [result, *result["fallbacks"]]:
         bind_api_route(candidate, config)
@@ -1304,6 +1336,10 @@ def parser():
                 "UTF-8 English assignment: goal, scope, relevant paths, decisions and limitations. Keep briefs outside the working tree"
                 if name == "delegate" else
                 "Optional UTF-8 English note on what the tracker lacks: risks and validation limits. Keep it outside the working tree"))
+        if name in ("inspect", "review"):
+            cmd.add_argument("--author", nargs="+", metavar="VENDOR", help=(
+                "Vendors that wrote the reviewed code: codex, claude, an agents.external_apis name, or unknown. "
+                "Required with workflow.review.other_vendor_first to order reviewer candidates"))
         if name == "review":
             mode = cmd.add_mutually_exclusive_group()
             mode.add_argument("--native", action="store_true",
@@ -1446,7 +1482,7 @@ def release_branch(root, config, task, branch, base, *, expected_head=None):
     return _cleanup_branch(root, config, task, branch=branch, base=base, expected_head=expected_head)
 
 
-def execution(config, role, tier, task_id):
+def execution(config, role, tier, task_id, authors=None):
     """How the coordinator launches a configured role.
 
     An empty reviewer list requires an independent native reviewer; other
@@ -1459,12 +1495,20 @@ def execution(config, role, tier, task_id):
     counts. Profiles are written by config apply from saved lists, so a
     session pin has none. The session's provider is the coordinator's to
     know, so the route is named per provider. Sync always requires its own list.
+    A reviewer order that needs the code's authors is not guessed: without
+    them inspect names the rerun instead of a route.
     """
     from .agent_profiles import profile_name
     from .speed import configuration_error, native_limitation
-    path, models = config.workflow.models_for(role, tier)
+    path, models = config.workflow.models_for(role, tier, authors or ())
     if not models:
         return {"mode": "unconfigured" if role == "sync" else "native" if role == "reviewer" else "self", "models": path}
+    named = ""
+    if role == "reviewer" and config.workflow.review.other_vendor_first and not path.startswith("--"):
+        if authors is None:
+            return {"mode": "authors-required", "models": path,
+                    "next": f"Rerun agent-box workflow inspect {task_id} {AUTHOR_FORM}"}
+        named = " --author " + (" ".join(authors) or "unknown")
     first, native = models[0], {}
     limitation = native_limitation(first["provider"], first.get("speed", "inherit"))
     if (not path.startswith("--") and config.workflow.enabled and not first.get("api_provider")
@@ -1474,7 +1518,7 @@ def execution(config, role, tier, task_id):
         native[first["provider"]] = profile_name(role, tier if ".tiers." in path else None)
     return {"mode": "delegate", "models": path, "native": native,
             **({"native_limitation": limitation} if limitation else {}),
-            "managed": (f"agent-box workflow review {task_id}" if role == "reviewer" else
+            "managed": (f"agent-box workflow review {task_id}{named}" if role == "reviewer" else
                         f"agent-box workflow sync {task_id}" if role == "sync" else
                         f"agent-box workflow delegate {task_id} --role {role} --brief FILE")}
 
@@ -1575,7 +1619,11 @@ def review(args, root, binding, adapter, config, task, parent, tasks, base, fing
     if not models:
         raise AgentBoxError(f"No reviewer candidates in {path}; configure them, or review natively with "
                             f"workflow review {task.id} --native")
-    selected, preflight_failures = managed_review_route(candidates(config, "reviewer", tier))
+    authors = author_vendors(config, getattr(args, "author", None))
+    if authors_missing(config, authors):
+        raise AgentBoxError(f"workflow.review.other_vendor_first orders reviewers by the code's authors; "
+                            f"rerun workflow review {task.id} {AUTHOR_FORM}")
+    selected, preflight_failures = managed_review_route(candidates(config, "reviewer", tier, authors=authors or ()))
     output = None
     started = False
     repository = repository_key(root)
@@ -1703,7 +1751,7 @@ def dispatch(args):
         return result
     if args.command == "inspect":
         task = adapter.resolve(args.task, binding.project, binding.recursive, canonical=True)
-        return inspect(root, binding, adapter, task, config)
+        return inspect(root, binding, adapter, task, config, author_vendors(config, args.author))
     task = adapter.get(args.task)
     if args.command == "review-budget":
         if (args.limit is not None and args.limit < 0) or not args.reason.strip():

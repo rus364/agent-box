@@ -724,3 +724,48 @@ class ReviewerInputTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReviewAuthorTests(WorkflowCase):
+    """With other_vendor_first the coordinator must name the code's authors; nothing guesses them."""
+
+    def setUp(self):
+        super().setUp()
+        self.config.workflow.review.policy = "always"
+        self.config.workflow.review.other_vendor_first = True
+
+    def reviewer(self, *flags):
+        return self.run_workflow("inspect", "1", *flags)["execution"]["reviewer"]
+
+    def test_inspect_names_the_rerun_until_authors_are_named(self):
+        """A route computed without the authors could be the authors' own vendor."""
+        self.assertEqual(self.reviewer()["mode"], "authors-required")
+        self.assertIn("--author VENDOR", self.reviewer()["next"])
+        self.assertTrue(self.reviewer("--author", "codex")["managed"].endswith("review 1 --author codex"))
+        self.assertTrue(self.reviewer("--author", "unknown")["managed"].endswith("review 1 --author unknown"))
+        self.config.workflow.review.models = [candidate("codex", "a", "high"), candidate("claude", "m", "high")]
+        self.assertEqual(self.reviewer("--author", "codex")["native"], {"claude": "ab-reviewer"})
+        self.config.workflow.pins["reviewer"] = [candidate("codex", "a", "high")]
+        self.assertEqual(self.reviewer()["managed"], "agent-box workflow review 1")
+        del self.config.workflow.pins["reviewer"]
+        self.config.workflow.review.other_vendor_first = False
+        self.assertEqual(self.reviewer()["managed"], "agent-box workflow review 1")
+
+    def test_managed_review_refuses_before_a_round_without_authors(self):
+        """Forgetting the authors spends nothing; naming them reaches candidate selection."""
+        with patch.object(workflow, "run") as provider, self.assertRaisesRegex(AgentBoxError, "--author VENDOR"):
+            self.run_workflow("review", "1")
+        provider.assert_not_called()
+        self.assertFalse(workflow.review_budget_path(self.root, BINDING, self.task).exists())
+        with patch.object(workflow, "candidates", side_effect=workflow.candidates) as select, \
+             patch.object(workflow, "usage_snapshot", return_value={}), \
+             patch.object(workflow, "run", return_value=answer()):
+            self.run_workflow("review", "1", "--author", "codex", "claude")
+        self.assertEqual(select.call_args.kwargs["authors"], ("codex", "claude"))
+
+    def test_author_names_are_checked(self):
+        """A typo would silently keep the authors' vendor first."""
+        for flags, message in ((("--author", "unknown", "codex"), "cannot be combined"),
+                               (("--author", "cladue"), "Unknown --author vendor cladue")):
+            with self.subTest(flags=flags), self.assertRaisesRegex(AgentBoxError, message):
+                self.run_workflow("inspect", "1", *flags)
