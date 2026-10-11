@@ -360,7 +360,8 @@ subtasks. `--author unknown` keeps the list order when the coordinator cannot
 tell. With the switch on, inspect without `--author` reports
 `authors-required` instead of a reviewer route, and a managed review without
 it refuses before a round opens. A `--reviewer` pin and a GitHub cloud provider
-are not reordered.
+are not reordered, and an empty reviewer list has nothing to order: its
+reviewer is the session's own fresh native agent, so no `--author` is needed.
 
 A project can replace any role list in `.agent-box.json` without
 changing the global configuration; a project list replaces the global list whole.

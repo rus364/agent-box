@@ -751,6 +751,11 @@ class ReviewAuthorTests(WorkflowCase):
         self.config.workflow.review.other_vendor_first = False
         self.assertEqual(self.reviewer()["managed"], "agent-box workflow review 1")
 
+    def test_an_empty_reviewer_list_needs_no_authors(self):
+        """With nothing to order, the session's own native reviewer runs whoever wrote the code."""
+        self.config.workflow.review.models = []
+        self.assertEqual(self.reviewer()["mode"], "native")
+
     def test_managed_review_refuses_before_a_round_without_authors(self):
         """Forgetting the authors spends nothing; naming them reaches candidate selection."""
         with patch.object(workflow, "run") as provider, self.assertRaisesRegex(AgentBoxError, "--author VENDOR"):
