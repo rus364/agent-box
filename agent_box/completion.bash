@@ -1,5 +1,6 @@
 # agent-box bash completion; load with: source <(agent-box completion bash)
 # Candidates come from `agent-box _complete`, so this script never lists commands itself.
+# The agent-box that printed this script answers, so an alias spelling its path in any way completes alike.
 
 # Bash picks a completion by the typed word and never expands an alias for it, so the
 # caller's `words` has an alias in words[0] replaced by its expansion, nested ones included;
@@ -28,14 +29,13 @@ _agent_box() {
     local -a words typed reply
     read -ra words <<< "$line"
     [[ -z $line || $line == *[[:space:]] ]] && words+=("")
-    # A wrapper function or symlink registered by hand passes its arguments unchanged to agent-box.
+    # A wrapper function or symlink registered by hand passes its arguments unchanged.
     typed=("${words[@]}")
-    _agent_box_unalias || words=(agent-box "${typed[@]:1}")
-    [[ ${words[0]} == "~/"* ]] && words[0]=$HOME/${words[0]#"~/"}
+    _agent_box_unalias || words=("${typed[@]}")
     # Readline replaces only the text between the last word break (= or :) and the cursor;
     # COMP_WORDS[COMP_CWORD] is not that text when the cursor is mid-word or right after a break.
     cur=${words[-1]##*[$COMP_WORDBREAKS]}
-    { IFS= read -r mode; mapfile -t reply; } < <(command "${words[0]}" _complete "${words[@]:1}" 2>/dev/null)
+    { IFS= read -r mode; mapfile -t reply; } < <(command @AGENT_BOX@ _complete "${words[@]:1}" 2>/dev/null)
     COMPREPLY=()
     case $mode in
         files) compopt -o filenames 2>/dev/null; mapfile -t COMPREPLY < <(compgen -f -- "$cur") ;;

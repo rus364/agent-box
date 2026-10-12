@@ -1,6 +1,7 @@
 #compdef agent-box
 # agent-box zsh completion; load after compinit with: source <(agent-box completion zsh)
 # Candidates come from `agent-box _complete`, so this script never lists commands itself.
+# The agent-box that printed this script answers, so an alias spelling its path in any way completes alike.
 
 # zsh expands an alias before completing unless complete_aliases is set; then the caller's
 # `typed` has an alias in typed[1] replaced by its expansion, nested ones included;
@@ -20,10 +21,9 @@ _agent_box() {
     local line word description
     # words keeps the quotes as typed, or as an alias zsh expanded itself spelled them.
     typed=("${(@Q)words[1,CURRENT]}")
-    # A wrapper function or symlink registered by hand passes its arguments unchanged to agent-box.
-    _agent_box_unalias || typed=(agent-box "${(@Q)words[2,CURRENT]}")
-    [[ ${typed[1]} == '~/'* ]] && typed[1]=$HOME/${typed[1]#'~/'}
-    lines=("${(@f)$(command ${typed[1]} _complete "${(@)typed[2,-1]}" 2>/dev/null)}")
+    # A wrapper function or symlink registered by hand passes its arguments unchanged.
+    _agent_box_unalias || typed=("${(@Q)words[1,CURRENT]}")
+    lines=("${(@f)$(command @AGENT_BOX@ _complete "${(@)typed[2,-1]}" 2>/dev/null)}")
     case ${lines[1]} in
         files|dirs)
             [[ $PREFIX == --*=* ]] && compset -P '--[^=]#='

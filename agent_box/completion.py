@@ -14,10 +14,12 @@ from __future__ import annotations
 
 import argparse
 import os
+import shlex
 import sys
 from pathlib import Path
 
 from .launch_options import FLAGS
+from .paths import LOCAL_LAUNCHER
 
 SHELLS = ("bash", "zsh")
 
@@ -43,7 +45,13 @@ later alias, a wrapper function or a symlink NAME, add after the line:
 
 
 def script(shell: str) -> str:
-    return Path(__file__).with_name(f"completion.{shell}").read_text(encoding="utf-8")
+    """The shell's script, calling this checkout's launcher by its path.
+
+    ``command agent-box`` was the rejected call: an alias may name agent-box by a
+    path, through ``~`` or ``$HOME``, that is not on PATH or is not expanded yet.
+    """
+    text = Path(__file__).with_name(f"completion.{shell}").read_text(encoding="utf-8")
+    return text.replace("@AGENT_BOX@", shlex.quote(str(LOCAL_LAUNCHER)))
 
 
 def fixed(*choices):

@@ -213,20 +213,21 @@ ask 'agent-box tracker st'
                                "status,state,"]))
 
     def alias_env(self):
-        """The environment plus an alias target by absolute path and a PATH that has python3 but no agent-box."""
+        """The environment plus agent-box's directory and a PATH that has python3 but no agent-box."""
         directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
         (directory / "python3").symlink_to(shutil.which("python3"))
-        return {**self.env, "AB_PATH": str(SHIM), "NO_AB_PATH": str(directory)}
+        return {**self.env, "AB_DIR": str(SHIM.parent), "NO_AB_PATH": str(directory)}
 
     @unittest.skipUnless(shutil.which("bash"), "bash is not installed")
     def test_bash_completes_aliases_defined_before_the_script(self):
         """Bash looks a completion up by the typed word and never expands an alias, so the script
         registers aliases of agent-box itself and completes after their prefix arguments, quoted
-        ones parsed as the shell would; an alias to a path runs that path, a wrapper registered by
-        hand passes its arguments unchanged, and an unrelated alias is left alone."""
+        ones parsed as the shell would; an alias naming agent-box by a path it has not expanded yet
+        completes without agent-box on PATH, a wrapper registered by hand passes its arguments
+        unchanged, and an unrelated alias is left alone."""
         script = r"""
 alias ab=agent-box abw='agent-box workflow' abn=abw abq='agent-box "workflow"' ll='ls -l'
-alias abs='agent-box --workspace "/tmp/my project"' abp=$AB_PATH
+alias abs='agent-box --workspace "/tmp/my project"' abp='$AB_DIR/agent-box'
 abf() { agent-box "$@"; }
 source <(agent-box completion bash)
 complete -F _agent_box abf
@@ -253,7 +254,8 @@ ask 'abp tracker st'
     def test_zsh_completes_aliases_with_and_without_complete_aliases(self):
         """zsh expands an alias before completing by default, but with complete_aliases it looks the
         alias name up, so the script registers aliases of agent-box and expands their prefix
-        arguments; an alias to a path runs that path in both modes.
+        arguments; an alias naming agent-box by a path it has not expanded yet completes in both
+        modes without agent-box on PATH.
 
         A real interactive zsh under zpty presses Tab; a stub _describe records what reached it.
         """
@@ -271,7 +273,7 @@ tab() {
 }
 : > $OUT
 run 'autoload -Uz compinit && compinit -u -D' 1
-run 'alias ab=agent-box abw="agent-box workflow" abn=abw abq="agent-box \"workflow\"" abp=$AB_PATH' 2
+run 'alias ab=agent-box abw="agent-box workflow" abn=abw abq="agent-box \"workflow\"" abp=\$AB_DIR/agent-box' 2
 run 'alias abs="agent-box --workspace \"/tmp/my project\""; abf() { agent-box "$@" }' 3
 run 'source <(agent-box completion zsh); compdef _agent_box abf' 4
 run '_describe() { local -a c=("${(@P)${@[-1]}}"); print -r -- "$BUFFER: ${(j:,:)${(@)c%%:*}}" >> $OUT }' 5
