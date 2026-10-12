@@ -119,12 +119,12 @@ class ExternalProcessTests(unittest.TestCase):
     def test_native_effort_default_still_obeys_declared_model_support(self):
         """A native config default must not bypass the model's supported effort list."""
         raw = external_config().to_dict()
-        endpoint = raw['agents']['external_apis']['deepseek']['codex']
-        endpoint['config'] = {'model_reasoning_effort': 'high'}
-        endpoint['models']['external-small']['supported_efforts'] = ['low']
+        provider = raw['agents']['external_apis']['deepseek']
+        provider['codex']['config'] = {'model_reasoning_effort': 'high'}
+        provider['models']['external-small']['supported_efforts'] = ['low']
         with self.assertRaisesRegex(AgentBoxError, 'default effort is not supported'):
             Config.from_dict(raw)
-        endpoint['models']['external-small']['effort'] = 'low'
+        provider['models']['external-small']['effort'] = 'low'
         config = Config.from_dict(raw)
         with tempfile.TemporaryDirectory() as temp:
             command, _ = ext.prepare(['codex'], 'deepseek', 'codex', config, temp, {})

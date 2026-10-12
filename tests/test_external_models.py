@@ -18,15 +18,15 @@ from test_external_config import external_config
 
 def rich_config():
     data = external_config().to_dict()
+    provider = data['agents']['external_apis']['deepseek']
     for cli in ('codex', 'claude'):
-        endpoint = data['agents']['external_apis']['deepseek'][cli]
-        endpoint.update(default_model='v4-pro', env={'MODEL_OPTION': 'endpoint', 'ENDPOINT_ONLY': 'private-value'})
-        model = dict(display_name='V4 Pro', effort='high', supported_efforts=['low', 'high', 'max'],
-                     context_window=1048576, auto_compact_token_limit=786432, env={'MODEL_OPTION': 'model'})
-        if cli == 'codex':
-            model.update(input_modalities=['text', 'image'], supports_parallel_tool_calls=True,
-                         supports_reasoning_summaries=True, metadata={'support_verbosity': True, 'default_verbosity': 'low'})
-        endpoint['models'] = {'v4-flash': {}, 'v4-pro': model}
+        provider[cli].update(default_model='v4-pro', env={'MODEL_OPTION': 'endpoint', 'ENDPOINT_ONLY': 'private-value'})
+    provider['models'] = {'v4-flash': {}, 'v4-pro': dict(
+        display_name='V4 Pro', effort='high', supported_efforts=['low', 'high', 'max'], context_window=1048576,
+        input_modalities=['text', 'image'],
+        codex=dict(auto_compact_token_limit=786432, env={'MODEL_OPTION': 'model'}, supports_parallel_tool_calls=True,
+                   supports_reasoning_summaries=True, metadata={'support_verbosity': True, 'default_verbosity': 'low'}),
+        claude=dict(auto_compact_token_limit=786432, env={'MODEL_OPTION': 'model'}))}
     return Config.from_dict(data)
 
 
@@ -161,20 +161,33 @@ class ExternalModelTests(unittest.TestCase):
         """Bad tuning must be rejected at load time without echoing supplied values."""
         bad = [{'effort': 'private-value'}, {'supported_efforts': [['private-value']]},
                {'supported_efforts': ['low'], 'effort': 'high'}, {'context_window': True},
-               {'context_window': -1}, {'context_window': 100, 'auto_compact_token_limit': 100},
-               {'input_modalities': ['audio']}, {'supports_parallel_tool_calls': 1},
-               {'metadata': {'slug': 'private-value'}}, {'metadata': {'x': float('nan')}},
-               {'env': {'ANTHROPIC_BASE_URL': 'private-value'}}, {'env': {'AGENT_BOX_API_PROVIDER': 'private-value'}},
-               {'env': {'BAD=NAME': 'private-value'}}, {'env': {'OPTION': 1}}]
+               {'context_window': -1}, {'context_window': 100, 'codex': {'auto_compact_token_limit': 100}},
+               {'context_window': 400000, 'claude': {'auto_compact_token_limit': 300000}},
+               {'input_modalities': ['audio']}, {'input_modalities': []}, {'codex': 'private-value'},
+               {'codex': {'supports_parallel_tool_calls': 1}}, {'claude': {'metadata': {}}},
+               {'codex': {'metadata': {'slug': 'private-value'}}}, {'codex': {'metadata': {'x': float('nan')}}},
+               {'claude': {'env': {'ANTHROPIC_BASE_URL': 'private-value'}}},
+               {'codex': {'env': {'AGENT_BOX_API_PROVIDER': 'private-value'}}},
+               {'codex': {'env': {'BAD=NAME': 'private-value'}}}, {'claude': {'env': {'OPTION': 1}}}]
         for spec in bad:
-            with self.subTest(fields=list(spec)), self.assertRaises(AgentBoxError) as error:
-                Config.from_dict({'agents': {'external_apis': {'test': {'codex': {'models': {'model': spec}}}}}})
+            with self.subTest(fields=spec), self.assertRaises(AgentBoxError) as error:
+                Config.from_dict({'agents': {'external_apis': {'test': {'models': {'model': spec}}}}})
             self.assertNotIn('private-value', str(error.exception))
-        for cli, model in (('codex', 'v4[1m]'), ('claude', 'v4[garbage]')):
-            with self.subTest(cli=cli), self.assertRaises(AgentBoxError):
-                Config.from_dict({'agents': {'external_apis': {'test': {cli: {'models': {model: {}}}}}}})
+        for model in ('v4[1m]', 'v4[garbage]'):
+            with self.subTest(model=model), self.assertRaises(AgentBoxError):
+                Config.from_dict({'agents': {'external_apis': {'test': {'models': {model: {}}}}}})
         with self.assertRaises(AgentBoxError):
-            Config.from_dict({'agents': {'external_apis': {'test': {'codex': {'models': ['model']}}}}})
+            Config.from_dict({'agents': {'external_apis': {'test': {'models': ['model']}}}})
+
+    def test_models_are_listed_once_for_both_clis(self):
+        """A per-CLI model list is the form this schema replaced; it must not load beside the shared one."""
+        for cli in ('codex', 'claude'):
+            with self.subTest(cli=cli), self.assertRaises(AgentBoxError):
+                Config.from_dict({'agents': {'external_apis': {'test': {cli: {'models': {'v4': {}}}}}}})
+        saved = rich_config().to_dict()['agents']['external_apis']['deepseek']
+        self.assertEqual(set(saved['models']), {'v4-flash', 'v4-pro'})
+        self.assertNotIn('models', saved['codex'])
+        self.assertNotIn('models', saved['claude'])
 
     def test_custom_headers_cannot_replace_the_configured_api_credentials(self):
         """Claude custom headers can carry auth, so neither env level may set them."""
@@ -182,50 +195,57 @@ class ExternalModelTests(unittest.TestCase):
             for source in ('endpoint', 'model'):
                 for header in ('Authorization: Bearer private-value', 'x-api-key: private-value'):
                     data = rich_config().to_dict()
-                    endpoint = data['agents']['external_apis']['deepseek'][cli]
-                    target = endpoint if source == 'endpoint' else next(iter(endpoint['models'].values()))
+                    provider = data['agents']['external_apis']['deepseek']
+                    target = provider[cli] if source == 'endpoint' else provider['models']['v4-pro'][cli]
                     target['env']['ANTHROPIC_CUSTOM_HEADERS'] = header
                     with self.subTest(cli=cli, source=source, header=header.split(':')[0]):
                         with self.assertRaises(AgentBoxError) as raised:
                             Config.from_dict(data)
                         self.assertNotIn('private-value', str(raised.exception))
 
-    def test_claude_model_alias_collisions_fail_independently_of_order(self):
-        """Two definitions of one launched model must not silently compete in the picker."""
-        entries = [('v4', {'context_window': 1048576, 'effort': 'high'}),
-                   ('v4[1m]', {'effort': 'low', 'env': {'OPTION': 'private-value'}})]
-        for ordered in (entries, entries[::-1]):
-            with self.subTest(order=[model for model, _ in ordered]):
-                with self.assertRaisesRegex(AgentBoxError, 'duplicate launched Claude model') as raised:
-                    Config.from_dict({'agents': {'external_apis': {'test': {'claude': {'models': dict(ordered)}}}}})
-                self.assertNotIn('private-value', str(raised.exception))
-        for context in (0, 200000):
-            models = {'v4': {'context_window': context}, 'v4[1m]': {}}
-            loaded = Config.from_dict({'agents': {'external_apis': {'test': {'claude': {'models': models}}}}})
-            self.assertEqual(set(loaded.agents.external_apis['test'].claude.models), set(models))
+    def test_claude_window_and_effort_are_derived_from_the_shared_model(self):
+        """Claude knows only 200K and 1M windows and its own efforts; Codex keeps the exact values."""
+        models = {'wide': {'context_window': 1000000, 'supported_efforts': ['minimal', 'high'], 'effort': 'minimal'},
+                  'mid': {'context_window': 400000, 'claude': {'auto_compact_token_limit': 150000}},
+                  'small': {'context_window': 32000}}
+        config = Config.from_dict({'agents': {'external_apis': {'test': {
+            'enabled': True, 'api_key': 'k', 'models': models,
+            'codex': {'url': 'https://api.example/v1'}, 'claude': {'url': 'https://api.example/anthropic'}}}}})
+        provider = config.agents.external_apis['test']
+        self.assertEqual({m: s['context_window'] for m, s in provider.codex.models.items()},
+                         {'wide': 1000000, 'mid': 400000, 'small': 32000})
+        self.assertEqual({m: s['context_window'] for m, s in provider.claude.models.items()},
+                         {'wide': 1048576, 'mid': 200000, 'small': 0})
+        self.assertEqual(provider.claude.models['wide']['supported_efforts'], ['high'])
+        with tempfile.TemporaryDirectory() as temp:
+            command, env = ext.prepare(['claude', '--model', 'wide'], 'test', 'claude', config, temp, {})
+            self.assertEqual(command[command.index('--model') + 1], 'wide[1m]')
+            self.assertFalse(env['CLAUDE_CODE_EFFORT_LEVEL'])
+            command, _ = ext.prepare(['codex', '--model', 'wide'], 'test', 'codex', config, temp, {})
+            self.assertIn('model_reasoning_effort="minimal"', command)
 
     def test_claude_environment_effort_is_validated_at_load_with_typed_priority(self):
         """A configured default must work without requiring an explicit effort to repair it."""
         for source in ('endpoint', 'model'):
             for effort in ('medium', 'ultra', 'private-value'):
                 data = rich_config().to_dict()
-                endpoint = data['agents']['external_apis']['deepseek']['claude']
-                model = endpoint['models']['v4-pro']
+                provider = data['agents']['external_apis']['deepseek']
+                model = provider['models']['v4-pro']
                 model['effort'] = 'default'
-                target = endpoint if source == 'endpoint' else model
+                target = provider['claude'] if source == 'endpoint' else model['claude']
                 target['env']['CLAUDE_CODE_EFFORT_LEVEL'] = effort
                 with self.subTest(source=source, effort=effort), self.assertRaises(AgentBoxError) as raised:
                     Config.from_dict(data)
                 self.assertNotIn('private-value', str(raised.exception))
         data = rich_config().to_dict()
-        endpoint = data['agents']['external_apis']['deepseek']['claude']
-        endpoint['env']['CLAUDE_CODE_EFFORT_LEVEL'] = 'medium'
+        provider = data['agents']['external_apis']['deepseek']
+        provider['claude']['env']['CLAUDE_CODE_EFFORT_LEVEL'] = 'medium'
         # v4-pro's typed high wins; v4-flash has unknown supported levels.
         loaded = Config.from_dict(data)
         with tempfile.TemporaryDirectory() as temp:
             _, env = ext.prepare(['claude'], 'deepseek', 'claude', loaded, temp, {})
             self.assertEqual(env['CLAUDE_CODE_EFFORT_LEVEL'], 'high')
-        endpoint['models']['v4-pro']['effort'] = 'ultra'
+        provider['models']['v4-pro']['effort'] = 'ultra'
         with self.assertRaises(AgentBoxError):
             Config.from_dict(data)
 
@@ -254,11 +274,11 @@ class ExternalModelTests(unittest.TestCase):
         rotated = copy.deepcopy(config)
         rotated.agents.external_apis['deepseek'].api_key = 'rotated'
         ext.check_route(rotated, route)
-        for field, value in (('context_window', 200000), ('effort', 'max'), ('env', {'OPTION': 'changed'})):
-            changed = copy.deepcopy(config)
-            changed.agents.external_apis['deepseek'].codex.models['v4-pro'][field] = value
+        for field, value in (('context_window', 2000000), ('effort', 'max'), ('codex', {'env': {'OPTION': 'changed'}})):
+            data = config.to_dict()
+            data['agents']['external_apis']['deepseek']['models']['v4-pro'][field] = value
             with self.subTest(field=field), self.assertRaisesRegex(AgentBoxError, 'changed after prepare'):
-                ext.check_route(changed, route)
+                ext.check_route(Config.from_dict(data), route)
 
     def test_managed_process_receives_model_settings_and_workflow_effort(self):
         """Managed execution uses the same metadata as an interactive ext launch."""
@@ -283,7 +303,7 @@ class ExternalModelTests(unittest.TestCase):
         """The structured editor must work with dynamic IDs, including names matching UI keys."""
         config = external_config()
         data = config.to_dict()
-        path = ('agents', 'external_apis', 'deepseek', 'codex', 'models')
+        path = ('agents', 'external_apis', 'deepseek', 'models')
         keys = []
         for index, part in enumerate(path):
             rows = config_menu.menu_keys(data, path[:index])
@@ -291,31 +311,33 @@ class ExternalModelTests(unittest.TestCase):
             data = data[part]
         add = [*keys, curses.KEY_END, '\n', *'metadata', '\n', '\n', *'Nice model', '\n',
                curses.KEY_END, curses.KEY_UP, '\n']
-        save = ['\x1b'] * 6 + [curses.KEY_END, curses.KEY_UP, '\n']
+        save = ['\x1b'] * 5 + [curses.KEY_END, curses.KEY_UP, '\n']
         edited, screen = menu_tests.ConfigMenuTests().edit(config, [*add, *save])
-        endpoint = edited.config.agents.external_apis['deepseek'].codex
-        self.assertEqual(endpoint.default_model, 'metadata')
-        self.assertEqual(endpoint.models['metadata']['display_name'], 'Nice model')
-        self.assertNotIn('metadata', config.agents.external_apis['deepseek'].codex.models)
+        provider = edited.config.agents.external_apis['deepseek']
+        self.assertEqual((provider.codex.default_model, provider.claude.default_model), ('metadata', 'metadata'))
+        self.assertEqual(provider.models['metadata']['display_name'], 'Nice model')
+        self.assertEqual(provider.claude.models['metadata']['display_name'], 'Nice model')
+        self.assertNotIn('metadata', config.agents.external_apis['deepseek'].models)
         self.assertNotIn('Deepseek', '\n'.join(screen.drawn))
         self.assertEqual(config_menu.label_for('api'), 'API')
-        cancelled, _ = menu_tests.ConfigMenuTests().edit(config, [*add, *['\x1b'] * 7])
+        cancelled, _ = menu_tests.ConfigMenuTests().edit(config, [*add, *['\x1b'] * 6])
         self.assertIsNone(cancelled)
         # The dynamic model has no entry in Config() defaults; reset still knows its schema.
         reset = [*add, curses.KEY_HOME, 'R', *save]
         edited, _ = menu_tests.ConfigMenuTests().edit(config, reset)
-        self.assertEqual(edited.config.agents.external_apis['deepseek'].codex.models['metadata'], model_defaults('codex'))
+        self.assertEqual(edited.config.agents.external_apis['deepseek'].models['metadata'], model_defaults())
         delete = [*add, curses.KEY_END, '\n', curses.KEY_DOWN, '\n',
-                  *['\x1b'] * 5, curses.KEY_END, curses.KEY_UP, '\n']
+                  *['\x1b'] * 4, curses.KEY_END, curses.KEY_UP, '\n']
         edited, _ = menu_tests.ConfigMenuTests().edit(config, delete)
-        self.assertNotIn('metadata', edited.config.agents.external_apis['deepseek'].codex.models)
-        self.assertEqual(edited.config.agents.external_apis['deepseek'].codex.default_model, '')
+        provider = edited.config.agents.external_apis['deepseek']
+        self.assertNotIn('metadata', provider.models)
+        self.assertEqual((provider.codex.default_model, provider.claude.default_model), ('', ''))
 
     def test_fixed_vocabulary_model_lists_are_toggled_as_checkboxes(self):
-        """Supported efforts and Codex input types hold known names, so they are ticked rather than typed as JSON."""
+        """Supported efforts and input types hold known names, so they are ticked rather than typed as JSON."""
         config = rich_config()
         data = config.to_dict()
-        path = ('agents', 'external_apis', 'deepseek', 'codex', 'models', 'v4-pro')
+        path = ('agents', 'external_apis', 'deepseek', 'models', 'v4-pro')
         keys = []
         for index, part in enumerate(path):
             rows = config_menu.menu_keys(data, path[:index])
@@ -329,18 +351,17 @@ class ExternalModelTests(unittest.TestCase):
                  curses.KEY_END, ' ', '\n',
                  *['\x1b'] * len(path), curses.KEY_END, curses.KEY_UP, '\n']
         edited, screen = menu_tests.ConfigMenuTests().edit(config, keys)
-        model = edited.config.agents.external_apis['deepseek'].codex.models['v4-pro']
+        model = edited.config.agents.external_apis['deepseek'].models['v4-pro']
         self.assertEqual(model['supported_efforts'], ['low', 'medium', 'high', 'max'])
         self.assertEqual(model['input_modalities'], ['text'])
         self.assertTrue(any('[x] medium' in frame and '[ ] none' in frame for frame in screen.frames))
-        self.assertIsNone(config_menu.list_vocabulary(('agents', 'external_apis', 'deepseek', 'claude', 'models', 'v4-pro', 'input_modalities')))
 
     def test_advanced_metadata_editor_is_readable_while_environment_stays_masked(self):
         """Non-secret metadata needs visible JSON editing; env values must stay private."""
         config = rich_config()
-        config.agents.external_apis['deepseek'].codex.models['v4-pro']['env']['MODEL_OPTION'] = 'env-secret-value'
+        config.agents.external_apis['deepseek'].models['v4-pro']['codex']['env']['MODEL_OPTION'] = 'env-secret-value'
         data = config.to_dict()
-        path = ('agents', 'external_apis', 'deepseek', 'codex', 'models', 'v4-pro')
+        path = ('agents', 'external_apis', 'deepseek', 'models', 'v4-pro', 'codex')
         keys = []
         for index, part in enumerate(path):
             rows = config_menu.menu_keys(data, path[:index])
@@ -361,6 +382,7 @@ class ExternalModelTests(unittest.TestCase):
         self.assertIn('786432', drawn)
         self.assertIn('524288', drawn)
         self.assertNotIn('env-secret-value', drawn)
-        self.assertEqual(edited.config.agents.external_apis['deepseek'].codex.models['v4-pro']['metadata'], updated)
-        self.assertEqual(edited.config.agents.external_apis['deepseek'].codex.models['v4-pro']['auto_compact_token_limit'], 524288)
-        self.assertNotEqual(config.agents.external_apis['deepseek'].codex.models['v4-pro']['metadata'], updated)
+        saved = edited.config.agents.external_apis['deepseek'].models['v4-pro']['codex']
+        self.assertEqual(saved['metadata'], updated)
+        self.assertEqual(saved['auto_compact_token_limit'], 524288)
+        self.assertNotEqual(config.agents.external_apis['deepseek'].models['v4-pro']['codex']['metadata'], updated)

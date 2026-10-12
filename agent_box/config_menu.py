@@ -11,7 +11,7 @@ from pathlib import Path
 
 from .config import AGENT_EFFORTS, AGENT_PROVIDERS, K3S_LIFETIMES, TOOL_GROUP_HELP, LAUNCH_AGENTS, Config, CredentialsConfig, EnvConfig, REVIEW_INCREMENTAL, REVIEW_PRESETS, TRACKER_PROVIDERS, TrackerConnection, candidate_label, model_entry
 from .errors import AgentBoxError
-from .external_config import API_EFFORTS, ExternalProvider, model_defaults, model_settings, valid_model, valid_name, validate_connections
+from .external_config import API_EFFORTS, EFFORTS, ExternalProvider, cli_models, model_defaults, model_settings, valid_model, valid_name, validate_connections
 from .model_catalog import load_model_catalogs
 
 CHOICES = {
@@ -362,8 +362,8 @@ def label_for(key, path=()):
 def json_field(path):
     rel = external(path)
     return (path in (('box', 'env', 'set'), ('box', 'k3s', 'registry_mirrors')) or rel is not None
-            and (len(rel) == 3 and rel[-1] in ('env', 'provider_options', 'config')
-                 or len(rel) == 5 and rel[2] == 'models' and rel[-1] in ('env', 'metadata')))
+            and (len(rel) == 3 and rel[1] in LAUNCH_AGENTS and rel[-1] in ('env', 'provider_options', 'config')
+                 or len(rel) == 5 and rel[1] == 'models' and rel[-1] in ('env', 'metadata')))
 
 
 def help_for(path):
@@ -380,20 +380,27 @@ def help_for(path):
         if len(rel) == 1:
             return HELP["agents.external_apis"]
         if len(rel) == 2 and path[-1] in LAUNCH_AGENTS:
-            return f"{path[-1].title()} endpoint of this API: its own URL, models and environment, used only when {path[-1]} runs against it."
-        if len(rel) == 4 and rel[2] == "models":
-            return "Settings for this model ID. Workflow candidates select it through the model picker; the ID sent to the API is the key itself."
+            return f"{path[-1].title()} endpoint of this API: its own URL, default model and environment, used only when {path[-1]} runs against it."
+        if len(rel) == 3 and rel[1] == "models":
+            return ("Settings for this model ID, shared by every CLI with a URL here. Workflow candidates select it through the "
+                    "model picker; the ID sent to the API is the key itself.")
+        if len(rel) == 4 and rel[1] == "models" and path[-1] in LAUNCH_AGENTS:
+            return f"Settings only {path[-1]} uses for this model."
         text = {"enabled": "Expose this API connection to agent-box sessions. Off by default.",
                 "api_key": "Stored in the protected global config; masked in displays and excluded from command arguments.",
-                "url": "HTTP(S) API base URL for this CLI, without credentials, query or fragment. Codex requires Responses API; Claude requires Anthropic Messages API.",
-                "models": "Model settings keyed by ID. Add a model, edit its fields, or select a default. Manual workflow IDs remain available.",
+                "url": ("HTTP(S) API base URL for this CLI, without credentials, query or fragment. Codex requires the Responses API, "
+                        "for example https://api.deepseek.com or https://openrouter.ai/api/v1; Claude requires the Anthropic "
+                        "Messages API, for example https://api.deepseek.com/anthropic or https://openrouter.ai/api."),
+                "models": ("Models of this API for both CLIs, keyed by ID. Opening this list loads the provider's model list "
+                           "(GET {Codex URL}/models, else {Claude URL}/v1/models): add a model from it with its settings filled in, "
+                           "or enter an ID by hand. A listed model is a suggestion, not proof of account access."),
                 "default_model": "Configured model used without --model; empty uses the first entry. Explicit selection is stable across file ordering.",
                 "display_name": "Optional model picker label; the model ID sent to the API stays unchanged.",
-                "effort": "Model reasoning default; default leaves the CLI/provider choice. Explicit CLI/workflow effort takes priority.",
-                "supported_efforts": "Effort names the model supports. None checked means unknown; declared levels constrain explicit requests.",
-                "context_window": "Tokens; 0 leaves the CLI default. Claude accepts 200000 or 1048576; 1048576 adds [1m] to its launch model.",
+                "effort": "Model reasoning default; default leaves the CLI/provider choice. Explicit CLI/workflow effort takes priority. Claude launches a level it lacks with its own default.",
+                "supported_efforts": "Effort names the model supports. None checked means unknown; declared levels constrain explicit requests. Claude uses the ones among its own levels.",
+                "context_window": "Tokens; 0 leaves the CLI default. Claude knows 200K and 1M windows: from 1000000 tokens it launches the model with [1m], from 200000 with the 200K window.",
                 "auto_compact_token_limit": "Compaction threshold in tokens; 0 leaves the CLI default. Must be below a configured context window.",
-                "input_modalities": "Codex input types: text, image or both; at least one.",
+                "input_modalities": "Input types for the Codex model catalog: text, image or both; at least one.",
                 "supports_parallel_tool_calls": "Advertise parallel tool calls in the Codex model catalog.",
                 "supports_reasoning_summaries": "Advertise reasoning summaries in the Codex model catalog.",
                 "metadata": "Additional native Codex model metadata as JSON. Typed model fields cannot be overridden here; fields must be supported by your CLI.",
@@ -489,9 +496,9 @@ def candidate_efforts(spec, tree):
     provider, api, value = spec["provider"], spec.get("api_provider"), spec["effort"]
     if not api:
         return tuple(dict.fromkeys([*AGENT_EFFORTS.get(provider, ()), value]))
-    models = tree["agents"]["external_apis"].get(api, {}).get(provider, {}).get("models", {})
+    models = cli_models(tree["agents"]["external_apis"].get(api, {}).get("models", {}), provider)
     model = model_settings(models, spec["model"], provider)
-    return tuple(dict.fromkeys(["default", *(model.get("supported_efforts") or API_EFFORTS[provider][1:]), value]))
+    return tuple(dict.fromkeys(["default", *(model["supported_efforts"] or API_EFFORTS[provider][1:]), value]))
 
 
 def value_choices(path, section, tree):
@@ -500,17 +507,17 @@ def value_choices(path, section, tree):
     options = CHOICES.get(".".join(path))
     rel = external(path)
     if rel is not None:
-        if len(rel) == 5 and name == 'effort':
-            options = tuple(dict.fromkeys(['default', *(section['supported_efforts'] or API_EFFORTS[rel[1]][1:]), value]))
-        elif len(rel) == 3 and name == 'default_model':
-            options = ['', *section['models']]
+        if len(rel) == 4 and rel[1] == 'models' and name == 'effort':
+            options = tuple(dict.fromkeys(['default', *(section['supported_efforts'] or EFFORTS[1:]), value]))
+        elif len(rel) == 3 and rel[1] in LAUNCH_AGENTS and name == 'default_model':
+            options = ['', *tree['agents']['external_apis'][rel[0]]['models']]
     return options
 
 
 def option_help(path, options):
     """What each offered value means, or None when only the field's own help describes them."""
     rel = external(path)
-    if rel is not None and len(rel) == 3 and path[-1] == 'default_model':
+    if rel is not None and len(rel) == 3 and rel[1] in LAUNCH_AGENTS and path[-1] == 'default_model':
         return ["Launches without --model use the first configured model." if not option
                 else f"Launches without --model use {option}." for option in options]
     if rel is not None and path[-1] in ('effort', 'supported_efforts'):
@@ -527,10 +534,10 @@ def option_help(path, options):
 def list_vocabulary(path):
     """The fixed values a list field may hold, edited as checkboxes, or None for a free list."""
     rel = external(path)
-    if rel is not None and len(rel) == 5 and rel[2] == 'models':
+    if rel is not None and len(rel) == 4 and rel[1] == 'models':
         if path[-1] == 'supported_efforts':
-            return API_EFFORTS[rel[1]][1:]
-        if path[-1] == 'input_modalities' and rel[1] == 'codex':
+            return EFFORTS[1:]
+        if path[-1] == 'input_modalities':
             return tuple(MODALITY_HELP)
     return MULTI_CHOICES.get(".".join(path))
 
@@ -621,9 +628,9 @@ def edit(config, *, project=None):
                 # must not create accounts that the global map does not hold.
                 rel = external(path)
                 if rel:
-                    model_path = len(rel) >= 4 and rel[2] == 'models'
-                    value = model_defaults(rel[1]) if model_path else ExternalProvider().to_dict()
-                    for part in rel[4:] if model_path else rel[1:]:
+                    model_path = len(rel) >= 3 and rel[1] == 'models'
+                    value = model_defaults() if model_path else ExternalProvider().to_dict()
+                    for part in rel[3:] if model_path else rel[1:]:
                         value = value[part]
                     break
                 if path[:2] == ('tracker', 'connections') and len(path) >= 3:
@@ -936,7 +943,7 @@ def edit(config, *, project=None):
                        for provider in AGENT_PROVIDERS for model in model_suggestions[provider]]
         suggestions += [(provider, api, model, (settings['display_name'] or model) + f' [{provider}@{api}: {model}]')
                         for provider, api in apis if api and api in draft['agents']['external_apis']
-                        for model, settings in draft['agents']['external_apis'][api][provider]['models'].items()]
+                        for model, settings in draft['agents']['external_apis'][api]['models'].items()]
         unlisted = current and current not in [row[:3] for row in suggestions]
         if unlisted:
             suggestions.insert(0, (*current, f'{current[2]} [{current[0]}{"@" + current[1] if current[1] else ""}]'))
@@ -1067,11 +1074,12 @@ def edit(config, *, project=None):
             elif rel is not None and len(rel) == 1 and not project_mode:
                 extras = [("Delete provider", "delete_provider", "Remove this definition from the draft. Existing workflow references remain visible and must be changed before use.")]
             elif rel is not None and not project_mode:
-                if len(rel) == 3 and path[-1] == 'models':
-                    extras = [('Add model', 'add_model', 'Create a model with editable settings for this CLI.')]
-                elif len(rel) == 4 and rel[2] == 'models':
-                    extras = [('Use as default', 'default_model', 'Select this model for launches without --model.'),
-                              ('Delete model', 'delete_model', 'Remove this model and clear its default selection if needed.')]
+                if len(rel) == 2 and path[-1] == 'models':
+                    extras = [('Add model', 'add_model', 'Create a model with editable settings, shared by Codex and Claude.')]
+                elif len(rel) == 3 and rel[1] == 'models':
+                    extras = [('Use as default', 'default_model', 'Select this model for Codex and Claude launches without --model; '
+                               'each CLI endpoint keeps its own Default model field.'),
+                              ('Delete model', 'delete_model', 'Remove this model and clear any default selection naming it.')]
             if not path:
                 extras = [("Save and apply", "save", ACTION_HELP["save"]), ("Cancel", "cancel", ACTION_HELP["cancel"])]
                 if project_mode:
@@ -1168,25 +1176,27 @@ def edit(config, *, project=None):
                 if selected >= len(keys):
                     _, action, _ = extras[selected - len(keys)]
                     if action == 'add_model':
-                        model = input_value(screen, 'Model ID ([1m] suffix allowed for Claude)', '', False)
+                        model = input_value(screen, 'Model ID (Claude derives [1m] from the context window)', '', False)
                         if model is not None:
-                            if not valid_model(model, path[3]):
-                                notice = 'Invalid model ID for this CLI'
+                            if not valid_model(model):
+                                notice = 'Invalid model ID'
                             elif model in data:
                                 notice = 'Model already exists'
                             else:
-                                data[model] = model_defaults(path[3])
+                                data[model] = model_defaults()
                                 menu(screen, data[model], (*path, model))
                         continue
                     if action in ('default_model', 'delete_model'):
-                        endpoint = draft['agents']['external_apis'][path[2]][path[3]]
+                        provider = draft['agents']['external_apis'][path[2]]
                         if action == 'default_model':
-                            endpoint['default_model'] = path[5]
-                            notice = 'Default model updated in draft'
-                        elif choose(screen, ['Keep model', 'Delete model'], 'Delete ' + path[5], 0) == 1:
-                            del endpoint['models'][path[5]]
-                            if endpoint['default_model'] == path[5]:
-                                endpoint['default_model'] = ''
+                            for cli in LAUNCH_AGENTS:
+                                provider[cli]['default_model'] = path[4]
+                            notice = 'Default model updated in draft for Codex and Claude'
+                        elif choose(screen, ['Keep model', 'Delete model'], 'Delete ' + path[4], 0) == 1:
+                            del provider['models'][path[4]]
+                            for cli in LAUNCH_AGENTS:
+                                if provider[cli]['default_model'] == path[4]:
+                                    provider[cli]['default_model'] = ''
                             return None
                         continue
                     if action == "add_provider":

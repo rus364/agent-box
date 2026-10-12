@@ -117,8 +117,8 @@ class ConfigProposalTests(unittest.TestCase):
         self.proposal.unlink()
         self.command("set", "--global", 'workflow.worker.models=[{"provider": "claude", "api_provider": "deepseek", "model": "v4", "effort": "high"}]')
         config = load_config()
-        config.agents.external_apis = config_module.Config.from_dict({"agents": {"external_apis": {"deepseek": {"claude": {
-            "url": "https://api.example/anthropic", "models": {"v4": {"supported_efforts": ["low"]}}}}}}}).agents.external_apis
+        config.agents.external_apis = config_module.Config.from_dict({"agents": {"external_apis": {"deepseek": {
+            "models": {"v4": {"supported_efforts": ["low"]}}, "claude": {"url": "https://api.example/anthropic"}}}}}).agents.external_apis
         save_config(config)
         before = self.global_file.read_text()
         with self.assertRaisesRegex(AgentBoxError, "nothing changed"):

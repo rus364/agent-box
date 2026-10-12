@@ -16,9 +16,8 @@ import test_config_menu as menu_tests
 
 def external_config():
     return Config.from_dict({'agents': {'external_apis': {'deepseek': {
-        'enabled': True, 'api_key': 'private-api-key',
-        'codex': {'url': 'https://api.example/v1', 'models': {'external-small': {}, 'external-large': {}}},
-        'claude': {'url': 'https://api.example/anthropic', 'models': {'external-small': {}}}}}}})
+        'enabled': True, 'api_key': 'private-api-key', 'models': {'external-small': {}, 'external-large': {}},
+        'codex': {'url': 'https://api.example/v1'}, 'claude': {'url': 'https://api.example/anthropic'}}}}})
 
 
 class ExternalTomlRenderingTests(unittest.TestCase):
@@ -72,7 +71,8 @@ class ExternalConfigTests(unittest.TestCase):
         import curses
         config = external_config()
         model = menu_tests.BUNDLED_MODELS['codex'][0]
-        config.agents.external_apis['deepseek'].codex.models = {model: config.agents.external_apis['deepseek'].codex.models['external-small']}
+        provider = config.agents.external_apis['deepseek']
+        provider.models = {model: provider.models['external-small']}
         path = ('workflow', 'scout', 'models')
         prefix = []
         for index, part in enumerate(path):
@@ -195,7 +195,7 @@ class ExternalConfigTests(unittest.TestCase):
                 value = edited.config.to_dict()
                 for part in path:
                     value = value[part]
-                self.assertEqual(value, [{'provider': 'claude', 'model': 'external-small', 'effort': 'medium',
+                self.assertEqual(value, [{'provider': 'claude', 'model': 'external-large', 'effort': 'medium',
                                           'speed': 'inherit', 'api_provider': 'deepseek'}])
                 self.assertEqual(len(edited.config.workflow.candidates()), 1)
                 self.assertNotIn('private-api-key', '\n'.join(screen.drawn))

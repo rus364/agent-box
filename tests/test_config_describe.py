@@ -61,12 +61,12 @@ class ConfigDescribeTests(unittest.TestCase):
             data.pop("version")
             check(data)
             self.assertTrue(all(field["help"] for field in fields.values()))
-        self.assertIn("agents.external_apis.deepseek.codex.models.v4-pro.metadata", fields)
+        self.assertIn("agents.external_apis.deepseek.models.v4-pro.codex.metadata", fields)
         self.assertIn("host.bin_dir", fields)
         self.assertEqual(fields["tracker.project"]["help"], config_menu.help_for(("tracker", "project")))
         # Only names the user chooses share generic help; a new fixed field needs its own.
         with self.assertRaises(KeyError):
-            config_menu.help_for(("agents", "external_apis", "deepseek", "claude", "models", "v4-pro", "new_field"))
+            config_menu.help_for(("agents", "external_apis", "deepseek", "models", "v4-pro", "new_field"))
         with self.assertRaises(KeyError):
             config_menu.help_for(("agents", "external_apis", "deepseek", "new_field"))
 
@@ -97,7 +97,7 @@ class ConfigDescribeTests(unittest.TestCase):
         config = rich_config()
         save_config(config, self.global_file)
         output, fields = self.describe()
-        self.assertEqual(fields["agents.external_apis.deepseek.claude.models.v4-pro.effort"]["choices"],
+        self.assertEqual(fields["agents.external_apis.deepseek.models.v4-pro.effort"]["choices"],
                          ["default", "low", "high", "max"])
         self.assertEqual(fields["agents.external_apis.deepseek.claude.default_model"]["choices"], ["", "v4-flash", "v4-pro"])
         self.assertNotIn(config.agents.external_apis["deepseek"].api_key, output)

@@ -1,4 +1,5 @@
 """Named API connections; CLI identity and credentials have different owners."""
+import copy
 from dataclasses import asdict, dataclass, field
 import json
 import re
@@ -107,18 +108,54 @@ def codex_options(raw, path, *, provider=False):
     return dict(raw)
 
 
-def valid_model(model, cli):
+def valid_model(model, cli=None):
+    """A configured ID never carries ``[1m]``; Claude accepts it on an explicit launch ID."""
     suffix = r'(?:\[1m\])?' if cli == 'claude' else ''
     return isinstance(model, str) and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:/-]*' + suffix, model) is not None
 
 
-def model_defaults(cli):
-    values = dict(display_name='', effort='default', supported_efforts=[], context_window=0,
-                  auto_compact_token_limit=0, env={})
+CLI_MODEL_DEFAULTS = {
+    'codex': dict(auto_compact_token_limit=0, env={}, supports_parallel_tool_calls=False,
+                  supports_reasoning_summaries=False, metadata={}),
+    'claude': dict(auto_compact_token_limit=0, env={}),
+}
+
+
+def model_defaults():
+    """One model for both CLIs: what the API describes is shared, CLI tuning has its own block."""
+    return copy.deepcopy(dict(display_name='', effort='default', supported_efforts=[], context_window=0,
+                              input_modalities=['text'], **CLI_MODEL_DEFAULTS))
+
+
+def claude_context(tokens):
+    """Claude Code knows a 200K and a 1M window only; a 1000000-token model is a 1M model."""
+    return 1048576 if tokens >= 1000000 else 200000 if tokens >= 200000 else 0
+
+
+def cli_settings(spec, cli):
+    """The flat settings one CLI launches with, derived from a shared model entry.
+
+    Claude cannot request an effort outside its own levels, so a shared
+    default it lacks becomes the CLI default instead of a launch error.
+    """
+    flat = {key: spec[key] for key in ('display_name', 'effort', 'supported_efforts', 'context_window')}
+    flat.update(spec[cli])
     if cli == 'codex':
-        values.update(input_modalities=['text'], supports_parallel_tool_calls=False,
-                      supports_reasoning_summaries=False, metadata={})
-    return values
+        flat['input_modalities'] = spec['input_modalities']
+    else:
+        allowed = API_EFFORTS['claude']
+        flat['supported_efforts'] = [e for e in spec['supported_efforts'] if e in allowed]
+        flat['effort'] = spec['effort'] if spec['effort'] in allowed else 'default'
+        flat['context_window'] = claude_context(spec['context_window'])
+    return flat
+
+
+def cli_models(models, cli):
+    return {model: cli_settings(spec, cli) for model, spec in models.items()}
+
+
+def flat_defaults(cli):
+    return cli_settings(model_defaults(), cli)
 
 
 def parse_env(value, path, cli):
@@ -143,7 +180,8 @@ def parse_env(value, path, cli):
 
 
 def model_settings(models, model, cli):
-    return models.get(model, models.get(model.removesuffix('[1m]'), model_defaults(cli)))
+    """``models`` is one CLI's flat view; an unknown ID inherits no other model's settings."""
+    return models.get(model, models.get(model.removesuffix('[1m]'), flat_defaults(cli)))
 
 
 def claude_model(model, spec):
@@ -163,52 +201,51 @@ def model_effort_error(endpoint, model, cli, effort):
     return None
 
 
-def parse_models(raw, cli, path):
+def parse_models(raw, path):
     if not isinstance(raw, dict):
         raise AgentBoxError(f'Invalid external provider configuration: {path} must map model IDs to settings')
     result = {}
-    launched_models = set()
     for model, values in raw.items():
-        defaults = model_defaults(cli)
         def invalid():
             raise AgentBoxError(f'Invalid external provider configuration: {path}; invalid model settings')
-        if not valid_model(model, cli) or not isinstance(values, dict) or set(values) - set(defaults):
+        defaults = model_defaults()
+        if not valid_model(model) or not isinstance(values, dict) or set(values) - set(defaults):
             invalid()
         spec = {**defaults, **values}
         for key, default in defaults.items():
             if type(spec[key]) is not type(default):
                 invalid()
+        for cli, block in CLI_MODEL_DEFAULTS.items():
+            if set(spec[cli]) - set(block):
+                invalid()
+            spec[cli] = {**defaults[cli], **spec[cli]}
+            if any(type(spec[cli][key]) is not type(default) for key, default in block.items()):
+                invalid()
         efforts = spec['supported_efforts']
-        allowed = API_EFFORTS[cli]
-        if (spec['effort'] not in allowed or any(not isinstance(e, str) or e not in allowed[1:] for e in efforts)
+        if (spec['effort'] not in EFFORTS or any(not isinstance(e, str) or e not in EFFORTS[1:] for e in efforts)
                 or len(set(efforts)) != len(efforts)
                 or efforts and spec['effort'] != 'default' and spec['effort'] not in efforts):
             invalid()
-        context, compact = spec['context_window'], spec['auto_compact_token_limit']
-        if context < 0 or compact < 0 or context and compact >= context:
+        modalities = spec['input_modalities']
+        if not modalities or any(m not in ('text', 'image') for m in modalities) or len(set(modalities)) != len(modalities):
             invalid()
-        if cli == 'claude' and (context not in (0, 200000, 1048576) or model.endswith('[1m]') and context == 200000):
+        if spec['context_window'] < 0:
             invalid()
-        if cli == 'claude':
-            launched = claude_model(model, spec)
-            if launched in launched_models:
-                raise AgentBoxError(f'Invalid external provider configuration: {path}; duplicate launched Claude model')
-            launched_models.add(launched)
-        spec['env'] = parse_env(spec['env'], path + '.env', cli)
-        if cli == 'codex':
-            modalities = spec['input_modalities']
-            if not modalities or any(m not in ('text', 'image') for m in modalities) or len(set(modalities)) != len(modalities):
+        for cli in CLI_MODEL_DEFAULTS:
+            context, compact = cli_settings(spec, cli)['context_window'], spec[cli]['auto_compact_token_limit']
+            if compact < 0 or context and compact >= context:
                 invalid()
-            # Typed fields have one owner; advanced native metadata fills other slots.
-            owned = {'slug', 'display_name', 'default_reasoning_level', 'supported_reasoning_levels',
-                     'context_window', 'auto_compact_token_limit', 'input_modalities',
-                     'supports_parallel_tool_calls', 'supports_reasoning_summaries'}
-            if any(not isinstance(k, str) or k in owned for k in spec['metadata']):
-                invalid()
-            try:
-                json.dumps(spec['metadata'], allow_nan=False)
-            except (TypeError, ValueError):
-                invalid()
+            spec[cli]['env'] = parse_env(spec[cli]['env'], f'{path}.{model}.{cli}.env', cli)
+        # Typed fields have one owner; advanced native metadata fills other slots.
+        owned = {'slug', 'display_name', 'default_reasoning_level', 'supported_reasoning_levels',
+                 'context_window', 'auto_compact_token_limit', 'input_modalities',
+                 'supports_parallel_tool_calls', 'supports_reasoning_summaries'}
+        if any(not isinstance(k, str) or k in owned for k in spec['codex']['metadata']):
+            invalid()
+        try:
+            json.dumps(spec['codex']['metadata'], allow_nan=False)
+        except (TypeError, ValueError):
+            invalid()
         result[model] = spec
     return result
 
@@ -219,6 +256,11 @@ def valid_name(name):
 
 @dataclass
 class Endpoint:
+    """``models`` is this CLI's flat view of the provider's list, derived on parse and never saved.
+
+    Launch code reads one CLI's settings, and a route fingerprint covers what
+    that CLI would run; the shared list stays the single stored copy.
+    """
     url: str = ""
     models: dict[str, dict] = field(default_factory=dict)
     default_model: str = ""
@@ -235,11 +277,15 @@ class CodexEndpoint(Endpoint):
 class ExternalProvider:
     enabled: bool = False
     api_key: str = ""
+    models: dict[str, dict] = field(default_factory=dict)
     codex: CodexEndpoint = field(default_factory=CodexEndpoint)
     claude: Endpoint = field(default_factory=Endpoint)
 
     def to_dict(self):
-        return asdict(self)
+        data = asdict(self)
+        for cli in CLI_MODEL_DEFAULTS:
+            del data[cli]['models']
+        return data
 
 
 def parse_connections(data):
@@ -254,7 +300,7 @@ def parse_connections(data):
         if not valid_name(name):
             invalid("provider name must match [a-z][a-z0-9_-]{0,47}")
         path = f"agents.external_apis.{name}"
-        if not isinstance(raw, dict) or set(raw) - {"enabled", "api_key", "codex", "claude"}:
+        if not isinstance(raw, dict) or set(raw) - {"enabled", "api_key", "models", "codex", "claude"}:
             invalid(path)
         unspelled = unspelled_path(raw, path)
         if unspelled:
@@ -265,9 +311,10 @@ def parse_connections(data):
             if type(value) is not kind:
                 invalid(f"{path}.{key}")
             setattr(spec, key, value)
+        spec.models = parse_models(raw.get('models', {}), f'{path}.models')
         for cli in ("codex", "claude"):
             endpoint = raw.get(cli, {})
-            allowed = {'url', 'models', 'default_model', 'env'} | ({'provider_options', 'config'} if cli == 'codex' else set())
+            allowed = {'url', 'default_model', 'env'} | ({'provider_options', 'config'} if cli == 'codex' else set())
             if not isinstance(endpoint, dict) or set(endpoint) - allowed:
                 invalid(f"{path}.{cli}")
             url = endpoint.get("url", "")
@@ -289,7 +336,7 @@ def parse_connections(data):
                     valid = False
                 if not valid:
                     invalid(f"{path}.{cli}.url must be HTTP(S), without credentials, query or fragment")
-            models = parse_models(endpoint.get('models', {}), cli, f'{path}.{cli}.models')
+            models = cli_models(spec.models, cli)
             default = endpoint.get('default_model', '')
             if not isinstance(default, str) or default and default not in models:
                 invalid(f'{path}.{cli}.default_model must name a configured model')

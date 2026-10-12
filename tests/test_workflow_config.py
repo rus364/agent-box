@@ -73,9 +73,9 @@ class ConfigShowTests(unittest.TestCase):
             "agents": {"claude": {"statusline": {"command": "curl -H 'Authorization: Bearer SECRET-usage'"}},
                        "external_apis": {"api": {
                 "enabled": True, "api_key": "SECRET-key",
+                "models": {"small": {"codex": {"env": {"MODEL_ENV": "SECRET-model-env"}}}},
                 "codex": {"url": "https://api.example/v1", "env": {"ENDPOINT_ENV": "SECRET-endpoint-env"},
-                          "provider_options": {"http_headers": {"X-Key": "SECRET-header"}},
-                          "models": {"small": {"env": {"MODEL_ENV": "SECRET-model-env"}}}}}}}})
+                          "provider_options": {"http_headers": {"X-Key": "SECRET-header"}}}}}}})
         output = io.StringIO()
         with contextlib.redirect_stdout(output), patch.object(cli, 'effective_config', return_value=config), \
              patch.object(cli, '_statusline_note', return_value=''), \
