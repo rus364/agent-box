@@ -52,7 +52,8 @@ def usage_text() -> None:
 
 Options go before the agent; everything after it reaches the agent unchanged,
 and '--' ends them early. Without claude/codex the default agent starts
-(agents.default). Launch options shape only this launch. Options in the
+(agents.default) and receives only options: a prompt needs the agent named,
+so an unknown word is refused as a command instead of becoming a prompt. Launch options shape only this launch. Options in the
 "for this session" groups travel with the session, are never saved, and
 'agent-box config show' inside the session lists them.
 SPEC is {SPEC}, for example claude:opus:high.
@@ -948,6 +949,22 @@ NON_RUNTIME = {
 HOST_ONLY_AGENTS = {"claude", "codex"}
 
 
+def unknown_command(args: list[str], known, launch: str) -> str:
+    """Why ``args`` cannot start: an empty string when its first word is known or an option.
+
+    A word that names no command used to reach the default agent as its prompt,
+    so a typo started a paid session with the typo as the request. Prompts now
+    need the agent named, and only options still reach the default agent.
+    """
+    if not args or args[0].startswith("-") or args[0] in known:
+        return ""
+    import difflib
+    close = difflib.get_close_matches(args[0], sorted(known), n=1)
+    hint = f"; did you mean '{close[0]}'?" if close else ""
+    return (f"unknown command '{args[0]}'{hint}\n"
+            f"A prompt needs the agent named: {launch} claude|codex PROMPT; see agent-box help")
+
+
 def _agent_and_rest(args: list[str]) -> tuple[str | None, list[str]]:
     """An explicit claude/codex, or None so the launch resolves the default agent."""
     return (args[0], args[1:]) if args and args[0] in HOST_ONLY_AGENTS else (None, args)
@@ -982,6 +999,10 @@ def main() -> None:
         die(str(exc))
     script_dir = Path(__file__).resolve().parent.parent
     try:
+        from .completion import COMMANDS, HIDDEN
+        refused = unknown_command(args, COMMANDS.keys() | HIDDEN, "agent-box")
+        if refused:
+            die(refused)
         given = options.given()
         if args and args[0] in NON_RUNTIME:
             allowed = {"host", "workspace"} if args[0] in {"attach", "stop"} else set()
@@ -1044,6 +1065,9 @@ def main() -> None:
             name, rest = args[1], args[2:]
             if rest and rest[0] in {"shell", "doctor"}:
                 die(f"ext runs claude or codex; {rest[0]} does not use an API provider")
+            refused = unknown_command(rest, HOST_ONLY_AGENTS, f"agent-box ext {name}")
+            if refused:
+                die(refused)
             if options.host:
                 raise SystemExit(runtime.host_main(*_agent_and_rest(rest), options, api_provider=name))
             runtime.runtime_main(rest, script_dir, options, api_provider=name)

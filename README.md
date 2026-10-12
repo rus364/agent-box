@@ -136,7 +136,9 @@ agent-box codex exec "inspect this repository"
 
 Choose the default under **Agents → Default agent** in `agent-box config`
 (`agents.default`: `claude` or `codex`). It is a global setting, not a
-project one; an explicit `claude` or `codex` always wins.
+project one; an explicit `claude` or `codex` always wins. The default agent
+receives only options: a prompt needs the agent named, and a word that is
+not a command is refused rather than sent as a prompt.
 
 With no running workspace box, a launch creates one from the current settings
 and flags. Otherwise `shell` (including `shell -c ...`), `doctor`, and new

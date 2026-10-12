@@ -103,6 +103,26 @@ class LaunchOptionDispatchTests(unittest.TestCase):
                 for call in calls:
                     call.assert_not_called()
 
+    def test_an_unknown_command_is_refused_instead_of_becoming_a_prompt(self):
+        """A typo used to start the default agent with the typo as its request."""
+        for argv, message in ((["confg"], "unknown command 'confg'; did you mean 'config'?"),
+                              (["--host", "fix", "it"], "unknown command 'fix'"),
+                              (["--no-push", "hello"], "unknown command 'hello'"),
+                              (["ext", "openrouter", "hello"], "agent-box ext openrouter claude|codex PROMPT")):
+            with self.subTest(argv=argv):
+                die, calls = self.run_main(argv)
+                self.assertIn(message, die.call_args.args[0])
+                for call in calls:
+                    call.assert_not_called()
+
+    def test_options_and_named_agents_still_launch(self):
+        """Only a bare word is refused: options reach the default agent, a prompt reaches a named one."""
+        for argv in ([], ["--continue"], ["claude", "fix it"], ["ext", "openrouter", "--model", "x"]):
+            with self.subTest(argv=argv):
+                die, (_, box, _, _) = self.run_main(argv)
+                die.assert_not_called()
+                box.assert_called_once()
+
     def test_workspace_reaches_attach(self):
         die, (_, _, attach, _) = self.run_main(["--workspace", "/w", "attach"])
         die.assert_not_called()

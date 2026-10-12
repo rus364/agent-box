@@ -70,6 +70,10 @@ class CandidateTests(unittest.TestCase):
             with self.subTest(line=line):
                 self.assertEqual(words(line), ("files", []))
 
+    def test_an_unknown_command_offers_nothing(self):
+        """agent-box refuses a word that names no command, so Tab must not suggest files after it."""
+        self.assertEqual(words("fix-the-bug ")[1], [])
+
     def test_tracker_and_workflow_offer_every_subcommand_of_their_parsers(self):
         """Subcommands added without help= are still commands a person types."""
         for command, load in (("tracker", completion.tracker_parser), ("workflow", completion.workflow_parser)):

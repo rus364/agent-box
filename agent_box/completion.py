@@ -154,8 +154,10 @@ def after_options(args):
     if len(args) == 1:
         return "words", [(name, "") for name in COMMANDS]
     handler = COMMANDS.get(args[0])
-    # Anything else starts the default agent, whose arguments are its own.
-    return handler(args[1:]) if handler else files(args)
+    if handler:
+        return handler(args[1:])
+    # An option starts the default agent, whose arguments are its own; any other word is refused.
+    return files(args) if args[0].startswith("-") else ("words", [])
 
 
 def action_values(action, otherwise):
