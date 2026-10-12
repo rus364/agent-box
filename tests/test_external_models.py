@@ -7,13 +7,14 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from agent_box import config_menu, external_launch as ext, provider_runner, runtime, workflow
+from agent_box import api_models, config_menu, external_launch as ext, provider_runner, runtime, workflow
 from agent_box.config import Config, load_config, save_config
 from agent_box.errors import AgentBoxError
 from agent_box.external_config import model_defaults, validate_connections
 from agent_box.workspace import Workspace
 import test_config_menu as menu_tests
 from test_external_config import external_config
+from test_api_models import sample
 
 
 def rich_config():
@@ -386,3 +387,62 @@ class ExternalModelTests(unittest.TestCase):
         self.assertEqual(saved['metadata'], updated)
         self.assertEqual(saved['auto_compact_token_limit'], 524288)
         self.assertNotEqual(config.agents.external_apis['deepseek'].models['v4-pro']['codex']['metadata'], updated)
+
+    def walk(self, config, path):
+        """Keys that open ``path`` from the menu root."""
+        data, keys = config.to_dict(), []
+        for index, part in enumerate(path):
+            keys += [curses.KEY_HOME, *[curses.KEY_DOWN] * config_menu.menu_keys(data, path[:index]).index(part), '\n']
+            data = data[part]
+        return keys
+
+    def test_provider_list_adds_a_searched_model_with_the_settings_it_states(self):
+        """Typing narrows a long catalog; the chosen model arrives filled in, configured ones are not offered again."""
+        listed = {item['id']: api_models.model_fields(item) for item in sample('deepseek.json')['data']}
+        listed['external-small'] = {'display_name': 'Small'}
+        config = external_config()
+        keys = [*self.walk(config, ('agents', 'external_apis', 'deepseek', 'models')),
+                curses.KEY_END, curses.KEY_UP, '\n', *'v4-p', '\n',
+                *['\x1b'] * 5, curses.KEY_END, curses.KEY_UP, '\n']
+        edited, screen = menu_tests.ConfigMenuTests().edit(config, keys, published=(listed, None))
+        provider = edited.config.agents.external_apis['deepseek']
+        self.assertEqual(provider.models['deepseek-v4-pro'], {**model_defaults(), **listed['deepseek-v4-pro']})
+        self.assertEqual(provider.claude.models['deepseek-v4-pro']['context_window'], 1048576)
+        self.assertNotIn('deepseek-flash', provider.models)
+        lines = [line for frame in screen.frames for line in frame.splitlines()]
+        self.assertTrue(any('external-large' in line and 'not listed' in line for line in lines))
+        self.assertFalse(any('external-small' in line and 'not listed' in line for line in lines))
+        filtered = [frame for frame in screen.frames if '[filter: v4-p]' in frame]
+        self.assertTrue(filtered)
+        self.assertFalse(any('DeepSeek-V4.1-Flash' in frame or 'Small [' in frame for frame in filtered))
+
+    def test_update_from_api_replaces_only_the_fields_the_list_states(self):
+        """Hand-tuned CLI settings must survive refreshing what the provider describes."""
+        config = rich_config()
+        listed = {'v4-pro': {'display_name': 'V4 Pro (renamed)', 'context_window': 2000000}}
+        keys = [*self.walk(config, ('agents', 'external_apis', 'deepseek', 'models', 'v4-pro')),
+                curses.KEY_END, curses.KEY_UP, curses.KEY_UP, '\n',
+                *['\x1b'] * 5, curses.KEY_END, curses.KEY_UP, '\n']
+        edited, screen = menu_tests.ConfigMenuTests().edit(config, keys, published=(listed, None))
+        before = config.agents.external_apis['deepseek'].models['v4-pro']
+        after = edited.config.agents.external_apis['deepseek'].models['v4-pro']
+        self.assertEqual(after, {**before, **listed['v4-pro']})
+        self.assertEqual(after['codex']['auto_compact_token_limit'], 786432)
+        self.assertIn('Updated from the provider list', '\n'.join(screen.frames))
+
+    def test_an_unreachable_provider_leaves_manual_entry_and_says_why(self):
+        """A network failure is a diagnostic in the menu, never a crash or a lost edit."""
+        with patch.object(api_models, 'http_json', side_effect=OSError('unreachable')):
+            published = api_models.load(external_config().to_dict()['agents']['external_apis']['deepseek'])
+        config = external_config()
+        keys = [*self.walk(config, ('agents', 'external_apis', 'deepseek', 'models')),
+                curses.KEY_END, '\n', *'by-hand', '\n',
+                *['\x1b'] * 5, curses.KEY_END, curses.KEY_UP, '\n']
+        edited, screen = menu_tests.ConfigMenuTests().edit(config, keys, published=published)
+        self.assertIn('by-hand', edited.config.agents.external_apis['deepseek'].models)
+        drawn = '\n'.join(screen.frames)
+        self.assertIn('network error or timeout', drawn)
+        self.assertIn('Manual model entry still works', drawn)
+        self.assertNotIn('Add from provider list', drawn)
+        self.assertNotIn('not listed', drawn)
+        self.assertNotIn('private-api-key', drawn)

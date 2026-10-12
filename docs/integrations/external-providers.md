@@ -1,11 +1,32 @@
 # External API providers
 
 Open `agent-box config` → **Agents** → **External APIs** → **Add provider**.
-Choose a name such as `deepseek`, enter the API key, and configure the URL and
-models under Codex, Claude, or both. Under **Models**, use **Add model**, edit
-its fields, then **Use as default**. Each CLI has its own endpoint and model
-settings; there is one key per named connection. Enable the
-connection and save. New connections start disabled.
+Choose a name such as `deepseek`, enter the API key, and set the URL under
+Codex, Claude, or both. Under **Models**, use **Add from provider list** or
+**Add model**, edit its fields, then **Use as default**. One model list serves
+both CLIs; each CLI has its own endpoint, and there is one key per named
+connection. Enable the connection and save. New connections start disabled.
+
+## Provider model lists
+
+Opening a provider, its **Models** or one of its models asks the provider for
+the models it publishes: `GET {Codex URL}/models` (OpenAI shape, Bearer key)
+first, then `GET {Claude URL}/v1/models` (Anthropic shape, `x-api-key`).
+Either list serves both CLIs: DeepSeek's Anthropic URL has none, while its
+OpenAI-compatible one does. Pages are followed only on the configured host.
+The list is read once per key and URL combination in a menu session, with a
+five-second timeout per URL, and is never stored. The key travels only in the
+request header; a failure shows a short diagnostic and leaves manual entry.
+
+**Add from provider list** offers the models not configured yet; typing
+filters them by ID or name. A chosen model gets the settings the list states:
+`display_name`, `supported_efforts` and the provider's default `effort`,
+`context_window` and `input_modalities`. DeepSeek, OpenRouter and Anthropic
+state most of these; a plain OpenAI-compatible list gives only IDs. Compaction
+thresholds, Codex tool flags, `metadata` and `env` stay manual. A configured
+model the list lacks is marked `not listed` and kept; **Update from API**
+replaces only the fields the list states for that model. A listed model is a
+suggestion, not proof that the account may use it.
 
 Keys live in the global protected `config.json` (mode `0600`), are masked in the
 menu and `config show`, and reach processes through their environment or private
@@ -31,9 +52,10 @@ another ID. An empty default uses the first entry; choose a default explicitly
 to make selection independent of JSON object ordering. Empty models require an
 explicit ID. Configured models supply workflow suggestions; manual IDs remain available. Codex
 gets a separate model catalog and Claude gets a replacement model picker whose
-Default points at the selected external model. These catalogs are configured
-definitions, not live model discovery. A manual, unconfigured model has unknown
-context and conservative text-only Codex capabilities.
+Default points at the selected external model. Launches use these configured
+definitions; the provider's list is read only by the configuration menu. A
+manual, unconfigured model has unknown context and conservative text-only Codex
+capabilities.
 
 ## Native Codex options
 
@@ -96,15 +118,18 @@ are specific to Codex.
 
 ## Model settings
 
-`models` is an object keyed by the model ID. Each entry accepts `display_name`,
-`effort` (default: `default`), `supported_efforts` (default: empty/unknown),
-`context_window`, `auto_compact_token_limit` (both default: `0`, CLI default),
-and `env` (a JSON object of strings). A declared effort list constrains launch
-requests. Explicit CLI/workflow effort wins over the model default. Set
-workflow effort to `default` to use the model's settings.
+A provider's `models` is an object keyed by the model ID and shared by both
+CLIs. Each entry accepts `display_name`, `effort` (default: `default`),
+`supported_efforts` (default: empty/unknown), `context_window` (default: `0`,
+CLI default) and `input_modalities` (`text`, `image`; default: `text`). A
+declared effort list constrains launch requests. Explicit CLI/workflow effort
+wins over the model default. Set workflow effort to `default` to use the
+model's settings.
 
-Codex entries also accept `input_modalities` (`text`, `image`),
-`supports_parallel_tool_calls`, `supports_reasoning_summaries`, and `metadata`.
+Settings one CLI alone uses live in the entry's `codex` and `claude` objects.
+Both accept `auto_compact_token_limit` (default: `0`, CLI default) and `env` (a
+JSON object of strings). `codex` also accepts `supports_parallel_tool_calls`,
+`supports_reasoning_summaries`, and `metadata`.
 The latter supplies additional native catalog fields, such as `base_instructions`,
 `support_verbosity`, `default_verbosity`, or `truncation_policy`. It cannot
 override fields owned by the typed editor. Use fields supported by your installed
@@ -112,17 +137,20 @@ Codex; unknown native metadata is passed through, not interpreted by agent-box.
 Additional session config can use ordinary permitted Codex `-c` arguments;
 API/profile/catalog and Remote Control ownership remain with agent-box.
 
-Claude accepts model IDs with `[1m]`. Setting `context_window` to `1048576`
-adds that suffix automatically; `200000` uses the ordinary context and `0`
-leaves it unspecified. Two entries that resolve to the same suffixed ID are
-rejected; separate ordinary-context and `[1m]` entries remain valid.
-Arbitrary context sizes cannot be expressed through this Claude CLI syntax. The compact threshold becomes
+Claude Code knows a 200K and a 1M context window only, so Claude derives its
+window from `context_window`: from 1,000,000 tokens it launches the ID with
+`[1m]`, from 200,000 with the ordinary window, and below that leaves it
+unspecified. Configured IDs never carry `[1m]`; an explicit `--model ID[1m]`
+still selects that model. Claude uses only the efforts among its own levels: a
+shared default it lacks, such as `minimal`, launches with Claude's default. The
+compact threshold must stay below the window that CLI uses. It becomes
 `CLAUDE_CODE_AUTO_COMPACT_WINDOW`, and default effort becomes
 `CLAUDE_CODE_EFFORT_LEVEL`. Claude's picker receives IDs and display labels;
 its native effort UI is controlled by Claude Code. Agent-box uses
 `supported_efforts` for its workflow picker and launch validation.
 
-Endpoint `env` applies to that CLI only; model `env` overrides matching names.
+Endpoint `env` applies to that CLI only; the model's `env` for that CLI
+overrides matching names.
 `ANTHROPIC_CUSTOM_HEADERS` is reserved because custom headers can override authentication.
 Typed effort/compact values and explicit effort then take priority. These are
 per-process values, stored in protected config/snapshots, masked in the menu,
@@ -139,9 +167,9 @@ models on the same API; the main model's capabilities/defaults are not applied
 to those models. They are restored at the same process boundary as other env
 values. Managed workflow routes describe the main CLI model.
 
-For example, this global definition illustrates DeepSeek V4 Pro settings.
-Confirm IDs and capabilities against the provider's current documentation;
-agent-box does not ship a fixed DeepSeek registry. The empty key and disabled
+For example, this global definition shows DeepSeek V4 Pro as its model list
+described it on 2026-10-12; **Add from provider list** fills the shared fields.
+Agent-box does not ship a fixed DeepSeek registry. The empty key and disabled
 connection must be configured before use.
 
 ```json
@@ -151,42 +179,36 @@ connection must be configured before use.
       "deepseek": {
         "enabled": false,
         "api_key": "",
-        "codex": {
-          "url": "https://api.deepseek.com",
-          "default_model": "deepseek-v4-pro",
-          "models": {
-            "deepseek-v4-pro": {
-              "display_name": "DeepSeek V4 Pro",
-              "effort": "high",
-              "supported_efforts": ["low", "high", "max"],
-              "context_window": 1048576,
-              "auto_compact_token_limit": 786432,
-              "input_modalities": ["text"],
+        "models": {
+          "deepseek-v4-pro": {
+            "display_name": "DeepSeek-V4-Pro",
+            "effort": "high",
+            "supported_efforts": ["low", "high", "max"],
+            "context_window": 1048576,
+            "input_modalities": ["text"],
+            "codex": {
               "supports_parallel_tool_calls": true,
               "supports_reasoning_summaries": true,
               "metadata": {"support_verbosity": true, "default_verbosity": "low"}
-            }
+            },
+            "claude": {"auto_compact_token_limit": 786432}
           }
         },
+        "codex": {"url": "https://api.deepseek.com", "default_model": "deepseek-v4-pro"},
         "claude": {
           "url": "https://api.deepseek.com/anthropic",
           "default_model": "deepseek-v4-pro",
-          "env": {"API_TIMEOUT_MS": "600000"},
-          "models": {
-            "deepseek-v4-pro": {
-              "display_name": "DeepSeek V4 Pro",
-              "effort": "max",
-              "supported_efforts": ["low", "high", "max"],
-              "context_window": 1048576,
-              "auto_compact_token_limit": 786432
-            }
-          }
+          "env": {"API_TIMEOUT_MS": "600000"}
         }
       }
     }
   }
 }
 ```
+
+OpenRouter serves both CLIs from one key: `https://openrouter.ai/api/v1` for
+Codex and `https://openrouter.ai/api` for Claude, with model IDs such as
+`deepseek/deepseek-v4.1-flash` or `anthropic/claude-opus-5`.
 
 See the provider's [Codex catalog example](https://api-docs.deepseek.com/quick_start/agent_integrations/codex/),
 [Claude Code integration](https://api-docs.deepseek.com/quick_start/agent_integrations/claude_code/),

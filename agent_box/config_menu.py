@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .config import AGENT_EFFORTS, AGENT_PROVIDERS, K3S_LIFETIMES, TOOL_GROUP_HELP, LAUNCH_AGENTS, Config, CredentialsConfig, EnvConfig, REVIEW_INCREMENTAL, REVIEW_PRESETS, TRACKER_PROVIDERS, TrackerConnection, candidate_label, model_entry
+from . import api_models
 from .errors import AgentBoxError
 from .external_config import API_EFFORTS, EFFORTS, ExternalProvider, cli_models, model_defaults, model_settings, valid_model, valid_name, validate_connections
 from .model_catalog import load_model_catalogs
@@ -64,7 +65,7 @@ HELP = {
     "credentials.git": "Configure how much host Git configuration is copied into workspace boxes.",
     "credentials.git.identity": "Copy only user.name and user.email for commit attribution. This exposes no Git credential settings.",
     "credentials.git.full_config": "Copy the complete host Git configuration, which may include credential helpers, headers, URL rewrites, and included files.",
-    "agents.external_apis": "Named external APIs. Enable explicitly to expose their keys to agent-box sessions. Each CLI has its own URL and model list; `ext NAME` without claude/codex uses the default agent.",
+    "agents.external_apis": "Named external APIs, such as DeepSeek or OpenRouter. Enable explicitly to expose their keys to agent-box sessions. One model list serves both CLIs, each with its own URL; opening a provider loads the models it publishes. `ext NAME` without claude/codex uses the default agent.",
     "agents.host_env": "Control which provider-related environment variables are forwarded from the host.",
     "agents.host_env.api_keys": "Forward known Claude and Codex API-key variables by name. Disabled by default because these values are credentials.",
     "agents.host_env.transport": "Forward provider endpoint, proxy, CA, Bedrock, and Vertex transport variables. Proxy URLs may themselves contain credentials.",
@@ -881,24 +882,42 @@ def edit(config, *, project=None):
             return detail or explanation
         return detail + "\n\n" + explanation
 
-    def choose(screen, rows, title, index=0, explanation="", details=None):
-        """Pick one row; ``details`` describe each row under the cursor, ``explanation`` is the field's help behind ?."""
+    def choose(screen, rows, title, index=0, explanation="", details=None, searchable=False):
+        """Pick one row; ``details`` describe each row under the cursor, ``explanation`` is the field's help behind ?.
+
+        ``searchable`` lets typed text, spaces included, narrow the rows to those
+        containing it regardless of case, for lists as long as a provider's
+        catalog; Enter then chooses and Esc clears the filter before leaving.
+        The result is always an index into ``rows``."""
+        query = ""
         while True:
-            help_text = details[index] if details else explanation
-            usable = paint(screen, rows, index, title, help_text,
-                           controls="Enter choose  ? help  Esc back")
+            shown = [i for i, row in enumerate(rows) if query.casefold() in row.casefold()]
+            if index not in shown:
+                index = shown[0] if shown else index
+            help_text = details[index] if details and shown else explanation
+            usable = paint(screen, [rows[i] for i in shown] or [f"No row contains {query!r}"],
+                           shown.index(index) if shown else 0, title + (f"  [filter: {query}]" if query else ""),
+                           help_text, controls=("Type to filter  Enter choose" if searchable else "Enter choose")
+                           + "  ? help  Esc back")
             key = screen.get_wch()
             if key in ("\x1b", curses.KEY_LEFT):
+                if query:
+                    query = ""
+                    continue
                 return None
             if not usable:
                 continue
-            destination = moved(key, index, len(rows), screen)
+            if searchable and key in (curses.KEY_BACKSPACE, "\x7f", "\b"):
+                query = query[:-1]
+                continue
+            if searchable and isinstance(key, str) and key.isprintable() and key != "?":
+                query += key
+                continue
+            destination = moved(key, shown.index(index), len(shown), screen) if shown else None
             if destination is not None:
-                index = destination
-            elif key in (" ", "\n", "\r"):
+                index = shown[destination]
+            elif key in (" ", "\n", "\r") and shown:
                 return index
-            elif key in ("\x1b", curses.KEY_LEFT):
-                return None
             elif key in ("?", curses.KEY_F1):
                 full_help(screen, title, described(help_text, explanation))
 
@@ -960,7 +979,7 @@ def edit(config, *, project=None):
         index = next((i + offset for i, row in enumerate(suggestions) if row[:3] == current), offset)
         about = ('Select the CLI, API and model together. A candidate of the other CLI than the coordinator\'s runs as a '
                  'managed CLI process. Configured external models are not live discovery; availability depends on the provider account.')
-        picked = choose(screen, rows, 'Model', index, explanation=about, details=details)
+        picked = choose(screen, rows, 'Model', index, explanation=about, details=details, searchable=True)
         if picked is None:
             return None
         if picked < offset:
@@ -1058,6 +1077,30 @@ def edit(config, *, project=None):
         return (f"Image tools: {', '.join(kept)} on for {', '.join(needed[group] for group in kept)}; "
                 "built by the next agent-box build and kept on while they are forwarded")
 
+    published = {}
+
+    def provider_list(screen, api):
+        """``(models, error)`` the provider publishes for its current key and URLs.
+
+        Asked once per combination in a menu session: entering the provider again
+        after editing its key or a URL asks again, browsing does not."""
+        spec = draft["agents"]["external_apis"][api]
+        identity = (spec["api_key"], spec["codex"]["url"], spec["claude"]["url"])
+        if published.get(api, (None,))[0] != identity:
+            paint(screen, [f"Loading the {api} model list..."], 0, "agent-box config / External APIs / " + api,
+                  f"Asking the provider for its models; at most {api_models.TIMEOUT} seconds per URL.", controls="Please wait")
+            published[api] = (identity, *api_models.load(spec))
+        return published[api][1:]
+
+    def listed_summary(model, fields):
+        """What the provider states about one model, for the row under the cursor."""
+        facts = [f"{fields['context_window']} tokens of context" if "context_window" in fields else "",
+                 "input " + ", ".join(fields["input_modalities"]) if "input_modalities" in fields else "",
+                 "efforts " + ", ".join(fields["supported_efforts"]) + (f" (default {fields['effort']})" if fields.get("effort", "default") != "default" else "")
+                 if "supported_efforts" in fields else ""]
+        stated = "; ".join(fact for fact in facts if fact)
+        return f"{model}: " + (stated + "." if stated else "the provider states only its ID; fill the settings by hand.")
+
     def menu(screen, data, path=()):
         selected, notice = 0, ""
         if path_pending() and path in ((), ("host",)):
@@ -1069,17 +1112,35 @@ def edit(config, *, project=None):
             keys = menu_keys(data, path)
             extras = [("Review preset", "preset", ACTION_HELP["preset"])] if path == ("workflow", "review") else []
             rel = external(path)
+            listed = None
+            if rel and not project_mode and rel[0] in draft["agents"]["external_apis"] and (
+                    len(rel) == 1 or rel[1] == "models" and len(rel) in (2, 3)):
+                listed, list_error = provider_list(screen, rel[0])
+                if list_error:
+                    listed = None
+                    notice = notice or "Model list: " + list_error + ". Manual model entry still works."
+                elif len(rel) == 2:
+                    notice = notice or (f"Model list: {len(listed)} models published by {rel[0]}; "
+                                        "rows marked 'not listed' are absent from it.")
             if path == EXTERNAL and not project_mode:
                 extras = [("Add provider", "add_provider", "Create a disabled provider with separate Codex/Claude endpoints.")]
             elif rel is not None and len(rel) == 1 and not project_mode:
                 extras = [("Delete provider", "delete_provider", "Remove this definition from the draft. Existing workflow references remain visible and must be changed before use.")]
             elif rel is not None and not project_mode:
                 if len(rel) == 2 and path[-1] == 'models':
-                    extras = [('Add model', 'add_model', 'Create a model with editable settings, shared by Codex and Claude.')]
+                    extras = [('Add model', 'add_model', 'Enter a model ID by hand and fill its settings yourself.')]
+                    if listed:
+                        extras.insert(0, ('Add from provider list', 'add_listed',
+                                          'Pick one of the models the provider publishes, filtered by typing; the settings '
+                                          'its list states are filled in and stay editable.'))
                 elif len(rel) == 3 and rel[1] == 'models':
                     extras = [('Use as default', 'default_model', 'Select this model for Codex and Claude launches without --model; '
                                'each CLI endpoint keeps its own Default model field.'),
                               ('Delete model', 'delete_model', 'Remove this model and clear any default selection naming it.')]
+                    if listed and rel[2] in listed:
+                        extras.insert(0, ('Update from API', 'update_listed',
+                                          'Replace the settings the provider list states (' + (", ".join(listed[rel[2]]) or "none")
+                                          + ') with its current values; every other setting stays.'))
             if not path:
                 extras = [("Save and apply", "save", ACTION_HELP["save"]), ("Cancel", "cancel", ACTION_HELP["cancel"])]
                 if project_mode:
@@ -1104,6 +1165,8 @@ def edit(config, *, project=None):
                     shown = value or "(not set)"
                 else:
                     shown = json.dumps(value, ensure_ascii=False)
+                if listed is not None and rel is not None and len(rel) == 2 and key not in listed:
+                    shown += "  not listed"
                 if project_mode:
                     status = "Global only" if project_field(full) is None else "Overridden" if explicit(full) else "Inherited"
                     if project_field(full) is None:
@@ -1176,7 +1239,8 @@ def edit(config, *, project=None):
                 if selected >= len(keys):
                     _, action, _ = extras[selected - len(keys)]
                     if action == 'add_model':
-                        model = input_value(screen, 'Model ID (Claude derives [1m] from the context window)', '', False)
+                        model = input_value(screen, 'Model ID, for example deepseek-v4-pro or openai/gpt-5.6-luna; '
+                                            'Claude derives [1m] from the context window', '', False)
                         if model is not None:
                             if not valid_model(model):
                                 notice = 'Invalid model ID'
@@ -1185,6 +1249,25 @@ def edit(config, *, project=None):
                             else:
                                 data[model] = model_defaults()
                                 menu(screen, data[model], (*path, model))
+                        continue
+                    if action == 'add_listed':
+                        candidates = [model for model in listed if model not in data and valid_model(model)]
+                        if not candidates:
+                            notice = 'Every model the provider lists is already configured'
+                            continue
+                        labels = [(f"{listed[m]['display_name']} [{m}]" if 'display_name' in listed[m] else m) for m in candidates]
+                        picked = choose(screen, labels, 'Add from the ' + path[2] + ' model list', 0,
+                                        explanation='Models the provider publishes and this list does not hold yet. '
+                                        'A listed model is a suggestion, not proof that the account may use it.',
+                                        details=[listed_summary(m, listed[m]) for m in candidates], searchable=True)
+                        if picked is not None:
+                            model = candidates[picked]
+                            data[model] = {**model_defaults(), **copy.deepcopy(listed[model])}
+                            menu(screen, data[model], (*path, model))
+                        continue
+                    if action == 'update_listed':
+                        data.update(copy.deepcopy(listed[path[4]]))
+                        notice = 'Updated from the provider list: ' + (', '.join(listed[path[4]]) or 'nothing it states')
                         continue
                     if action in ('default_model', 'delete_model'):
                         provider = draft['agents']['external_apis'][path[2]]
