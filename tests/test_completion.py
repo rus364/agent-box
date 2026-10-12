@@ -293,6 +293,18 @@ zpty -d z
                               *expected, "abp tracker st: status,state", "abp tracker st: status,state"]),
                          result.stderr)
 
+    def test_loading_succeeds_when_the_last_alias_is_not_agent_box(self):
+        """A leaked alias check fails the rc file's source line, and under set -e bash exits on it."""
+        for shell, script in (("bash", "set -e; alias ll='ls -l'; source <(agent-box completion bash); echo loaded $?"),
+                              ("zsh", "set -e; autoload -Uz compinit; compinit -u -D; alias ll='ls -l'; "
+                                      "source <(agent-box completion zsh); echo loaded $?")):
+            if not shutil.which(shell):
+                continue
+            with self.subTest(shell=shell):
+                result = subprocess.run([shell, "-f" if shell == "zsh" else "--norc", "-c", script],
+                                        capture_output=True, text=True, env=self.env, timeout=60)
+                self.assertEqual((result.returncode, result.stdout), (0, "loaded 0\n"), result.stderr)
+
     @unittest.skipUnless(shutil.which("zsh"), "zsh is not installed")
     def test_zsh_script_parses(self):
         script = subprocess.run([str(SHIM), "completion", "zsh"], capture_output=True, text=True, env=self.env, timeout=60)

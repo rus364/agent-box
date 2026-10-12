@@ -49,6 +49,6 @@ compdef _agent_box agent-box
     local -a typed
     for name in ${(k)aliases}; do
         typed=($name)
-        _agent_box_unalias && compdef _agent_box $name
+        if _agent_box_unalias; then compdef _agent_box $name; fi
     done
 }

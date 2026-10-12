@@ -58,7 +58,7 @@ _agent_box_register() {
     local -a words
     for name in "${!BASH_ALIASES[@]}"; do
         words=("$name")
-        _agent_box_unalias && complete -F _agent_box "$name"
+        if _agent_box_unalias; then complete -F _agent_box "$name"; fi
     done
 }
 _agent_box_register
