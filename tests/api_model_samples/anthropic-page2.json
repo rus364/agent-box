@@ -1,0 +1,56 @@
+{
+ "data": [
+  {
+   "type": "model",
+   "id": "claude-haiku-4-5",
+   "display_name": "Claude Haiku 4.5",
+   "created_at": "2026-07-24T00:00:00Z",
+   "lifecycle": "active",
+   "max_input_tokens": 200000,
+   "max_tokens": 128000,
+   "capabilities": {
+    "effort": {
+     "supported": false,
+     "low": {
+      "supported": false
+     },
+     "medium": {
+      "supported": false
+     },
+     "high": {
+      "supported": false
+     },
+     "max": {
+      "supported": false
+     },
+     "xhigh": {
+      "supported": false
+     }
+    },
+    "image_input": {
+     "supported": true
+    },
+    "pdf_input": {
+     "supported": true
+    },
+    "thinking": {
+     "supported": true,
+     "types": {
+      "adaptive": {
+       "supported": true
+      },
+      "disabled": {
+       "supported": true
+      },
+      "enabled": {
+       "supported": true
+      }
+     }
+    }
+   }
+  }
+ ],
+ "first_id": "claude-haiku-4-5",
+ "last_id": "claude-haiku-4-5",
+ "has_more": false
+}
