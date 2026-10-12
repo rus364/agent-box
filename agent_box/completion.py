@@ -31,7 +31,15 @@ every Tab, so new options and commands complete without regenerating it.
   zsh, this shell:    source <(agent-box completion zsh)
   zsh, every shell:   echo 'source <(agent-box completion zsh)' >> ~/.zshrc
 
-zsh needs compinit loaded before the line; bash needs no bash-completion package."""
+zsh needs compinit loaded before the line; bash needs no bash-completion package.
+
+An alias of agent-box completes with its arguments (alias abw='agent-box workflow').
+zsh expands aliases itself; bash, and zsh with complete_aliases, find only the
+aliases defined before the line, so keep it at the end of the rc file. For a
+later alias, a wrapper function or a symlink NAME, add after the line:
+
+  bash:  complete -F _agent_box NAME
+  zsh:   compdef _agent_box NAME"""
 
 
 def script(shell: str) -> str:

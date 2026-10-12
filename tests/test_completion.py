@@ -174,6 +174,8 @@ class CompletionCommandTests(unittest.TestCase):
                 die.assert_not_called()
                 self.assertIn("source <(agent-box completion bash)", output)
                 self.assertIn("source <(agent-box completion zsh)", output)
+                self.assertIn("complete -F _agent_box NAME", output)
+                self.assertIn("compdef _agent_box NAME", output)
 
     def test_unknown_shells_extra_arguments_and_launch_options_are_refused(self):
         for argv, message in ((["completion", "fish"], "expected: agent-box completion bash|zsh"),
@@ -209,6 +211,67 @@ ask 'agent-box tracker st'
         self.assertEqual((result.stderr, result.stdout.splitlines()),
                          ("", ["--reviewer,--review,", "always,", "off,auto,always,", "--reviewer,--review,",
                                "status,state,"]))
+
+    @unittest.skipUnless(shutil.which("bash"), "bash is not installed")
+    def test_bash_completes_aliases_defined_before_the_script(self):
+        """Bash looks a completion up by the typed word and never expands an alias, so the script
+        registers aliases of agent-box itself and completes after their prefix arguments; a wrapper
+        registered by hand passes its arguments unchanged, and an unrelated alias is left alone."""
+        script = r"""
+alias ab=agent-box abw='agent-box workflow' abn=abw ll='ls -l'
+abf() { agent-box "$@"; }
+source <(agent-box completion bash)
+complete -F _agent_box abf
+complete -p ab abw abn
+complete -p ll 2>/dev/null
+ask() { COMP_LINE=$1; COMP_POINT=${#1}; _agent_box; printf '%s,' "${COMPREPLY[@]}"; echo; }
+ask 'ab tracker st'
+ask 'abw ins'
+ask 'abn ins'
+ask 'abf tracker st'
+ask 'ab --review=al'
+"""
+        result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=self.env, timeout=60)
+        self.assertEqual((result.stderr, result.stdout.splitlines()),
+                         ("", ["complete -F _agent_box ab", "complete -F _agent_box abw", "complete -F _agent_box abn",
+                               "status,state,", "inspect,", "inspect,", "status,state,", "always,"]))
+
+    @unittest.skipUnless(shutil.which("zsh"), "zsh is not installed")
+    def test_zsh_completes_aliases_with_and_without_complete_aliases(self):
+        """zsh expands an alias before completing by default, but with complete_aliases it looks the
+        alias name up, so the script registers aliases of agent-box and expands their prefix arguments.
+
+        A real interactive zsh under zpty presses Tab; a stub _describe records what reached it.
+        """
+        output = Path(self.enterContext(tempfile.TemporaryDirectory())) / "candidates"
+        driver = r"""
+zmodload zsh/zpty
+zpty z 'zsh -f -i'
+run() { zpty -w z "$1; print RE''ADY$2"; zpty -r z _ "*READY$2*" }
+count() { local -a seen=(${(f)"$(<$OUT)"}); print ${#seen} }
+tab() {
+    local n=$(( $(count) + 1 ))
+    zpty -w -n z "$1"$'\t'
+    repeat 200 { (( $(count) >= n )) && break; sleep 0.05 }
+    zpty -w -n z $'\C-u'
+}
+: > $OUT
+run 'autoload -Uz compinit && compinit -u -D' 1
+run 'alias ab=agent-box abw="agent-box workflow" abn=abw; abf() { agent-box "$@" }' 2
+run 'source <(agent-box completion zsh); compdef _agent_box abf' 3
+run '_describe() { local -a c=("${(@P)${@[-1]}}"); print -r -- "$BUFFER: ${(j:,:)${(@)c%%:*}}" >> $OUT }' 4
+for line in 'agent-box tracker st' 'ab tracker st' 'abw ins' 'abn ins' 'abf tracker st'; tab $line
+run 'setopt complete_aliases' 5
+for line in 'ab tracker st' 'abw ins' 'abn ins'; tab $line
+zpty -d z
+"""
+        result = subprocess.run(["zsh", "-f", "-c", driver], capture_output=True, text=True,
+                                env={**self.env, "OUT": str(output)}, timeout=120)
+        self.assertEqual((result.returncode, output.read_text().splitlines()),
+                         (0, ["agent-box tracker st: status,state", "ab tracker st: status,state",
+                              "abw ins: inspect", "abn ins: inspect", "abf tracker st: status,state",
+                              "ab tracker st: status,state", "abw ins: inspect", "abn ins: inspect"]),
+                         result.stderr)
 
     @unittest.skipUnless(shutil.which("zsh"), "zsh is not installed")
     def test_zsh_script_parses(self):
