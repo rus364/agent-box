@@ -499,7 +499,8 @@ def candidate_efforts(spec, tree):
         return tuple(dict.fromkeys([*AGENT_EFFORTS.get(provider, ()), value]))
     models = cli_models(tree["agents"]["external_apis"].get(api, {}).get("models", {}), provider)
     model = model_settings(models, spec["model"], provider)
-    return tuple(dict.fromkeys(["default", *(model["supported_efforts"] or API_EFFORTS[provider][1:]), value]))
+    declared = [e for e in model["supported_efforts"] if e in API_EFFORTS[provider]]
+    return tuple(dict.fromkeys(["default", *(declared if model["supported_efforts"] else API_EFFORTS[provider][1:]), value]))
 
 
 def value_choices(path, section, tree):

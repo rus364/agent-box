@@ -136,16 +136,16 @@ def cli_settings(spec, cli):
     """The flat settings one CLI launches with, derived from a shared model entry.
 
     Claude cannot request an effort outside its own levels, so a shared
-    default it lacks becomes the CLI default instead of a launch error.
+    default it lacks becomes the CLI default instead of a launch error. The
+    declared list stays whole: narrowed to Claude's levels it could become
+    empty, which means "unknown" and would lift the model's restriction.
     """
     flat = {key: spec[key] for key in ('display_name', 'effort', 'supported_efforts', 'context_window')}
     flat.update(spec[cli])
     if cli == 'codex':
         flat['input_modalities'] = spec['input_modalities']
     else:
-        allowed = API_EFFORTS['claude']
-        flat['supported_efforts'] = [e for e in spec['supported_efforts'] if e in allowed]
-        flat['effort'] = spec['effort'] if spec['effort'] in allowed else 'default'
+        flat['effort'] = spec['effort'] if spec['effort'] in API_EFFORTS['claude'] else 'default'
         flat['context_window'] = claude_context(spec['context_window'])
     return flat
 

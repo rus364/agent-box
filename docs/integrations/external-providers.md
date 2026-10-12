@@ -142,7 +142,8 @@ window from `context_window`: from 1,000,000 tokens it launches the ID with
 `[1m]`, from 200,000 with the ordinary window, and below that leaves it
 unspecified. Configured IDs never carry `[1m]`; an explicit `--model ID[1m]`
 still selects that model. Claude uses only the efforts among its own levels: a
-shared default it lacks, such as `minimal`, launches with Claude's default. The
+shared default it lacks, such as `minimal`, launches with Claude's default, and
+a model declaring no level Claude has accepts only that default. The
 compact threshold must stay below the window that CLI uses. It becomes
 `CLAUDE_CODE_AUTO_COMPACT_WINDOW`, and default effort becomes
 `CLAUDE_CODE_EFFORT_LEVEL`. Claude's picker receives IDs and display labels;

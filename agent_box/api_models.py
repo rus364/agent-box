@@ -7,9 +7,11 @@ from .external_config import EFFORTS
 from .usage import http_json
 
 TIMEOUT = 5
-# OpenRouter returns its whole catalog in one 500-model page today; the bound
-# only keeps a misbehaving cursor from holding the menu.
+# OpenRouter returns its whole catalog in one page today; the bound keeps a
+# misbehaving cursor from holding the menu, and is reported, never hidden.
 PAGES = 20
+OPENAI = ('/models', lambda key: {'Authorization': 'Bearer ' + key})
+ANTHROPIC = ('/v1/models', lambda key: {'x-api-key': key, 'anthropic-version': '2023-06-01'})
 
 
 class ListError(Exception):
@@ -20,6 +22,7 @@ def _fetch(url, headers):
     try:
         return http_json(url, headers=headers, timeout=TIMEOUT)
     except urllib.error.HTTPError as exc:
+        exc.close()
         raise ListError(f'HTTP {exc.code}') from None
     except (OSError, http.client.HTTPException):
         raise ListError('network error or timeout') from None
@@ -27,37 +30,40 @@ def _fetch(url, headers):
         raise ListError('response is not JSON') from None
 
 
-def _openai(url, key):
-    """``GET {url}/models``: OpenAI's shape, with OpenRouter's ``links.next`` pages."""
-    items, page = [], url.rstrip('/') + '/models'
-    host = urlsplit(page).netloc
-    for _ in range(PAGES):
-        data = _fetch(page, {'Authorization': 'Bearer ' + key})
-        if not isinstance(data, dict) or not isinstance(data.get('data'), list):
-            raise ListError('not an OpenAI-compatible model list')
-        items += data['data']
-        following = (data.get('links') or {}).get('next') if isinstance(data.get('links'), dict) else None
-        # The key goes only to the configured host, as with a redirect.
-        if not isinstance(following, str) or urlsplit(following).netloc != host:
-            return items
-        page = following
-    return items
+def _items(base, protocol, key):
+    """Every entry of the list at ``base``, paged by whichever cursor the response carries.
 
-
-def _anthropic(url, key):
-    """``GET {url}/v1/models``: Anthropic's shape, paged by ``after_id``."""
-    items, after = [], None
+    OpenAI and OpenRouter page with a ``links.next`` URL, Anthropic with
+    ``has_more``/``last_id``; the CLI a URL belongs to does not decide which
+    one a provider answers with. A next URL on another host is not followed,
+    as with a redirect, so the key goes only to the configured host; a list cut
+    short there or by the page bound is reported rather than shown as whole.
+    """
+    path, headers = protocol
+    first = base.rstrip('/') + path
+    host = urlsplit(first).netloc
+    query = {'limit': 1000} if protocol is ANTHROPIC else {}
+    page, items = first + ('?' + urlencode(query) if query else ''), []
     for _ in range(PAGES):
-        query = {'limit': 1000, **({'after_id': after} if after else {})}
-        data = _fetch(url.rstrip('/') + '/v1/models?' + urlencode(query),
-                      {'x-api-key': key, 'anthropic-version': '2023-06-01'})
+        data = _fetch(page, headers(key))
         if not isinstance(data, dict) or not isinstance(data.get('data'), list):
-            raise ListError('not an Anthropic-compatible model list')
+            raise ListError('not a model list')
         items += data['data']
-        after = data.get('last_id')
-        if not data.get('has_more') or not isinstance(after, str):
+        links = data.get('links') if isinstance(data.get('links'), dict) else {}
+        following = links.get('next')
+        if isinstance(following, str) and following:
+            try:
+                foreign = urlsplit(following).netloc != host
+            except ValueError:
+                foreign = True
+            if foreign:
+                raise ListError('the next page is on another host; the key is not sent there')
+            page = following
+        elif data.get('has_more') is True and isinstance(data.get('last_id'), str):
+            page = first + '?' + urlencode({**query, 'after_id': data['last_id']})
+        else:
             return items
-    return items
+    raise ListError(f'more than {PAGES} pages; showing none rather than a partial list')
 
 
 def _number(*values):
@@ -116,14 +122,18 @@ def load(provider):
     key = provider.get('api_key', '')
     if not key.strip():
         return {}, 'set the API key to load the model list'
-    attempts = [(fetch, provider[cli]['url']) for fetch, cli in ((_openai, 'codex'), (_anthropic, 'claude'))
+    attempts = [(protocol, provider[cli]['url']) for protocol, cli in ((OPENAI, 'codex'), (ANTHROPIC, 'claude'))
                 if provider.get(cli, {}).get('url')]
     if not attempts:
         return {}, 'set a Codex or Claude URL to load the model list'
     errors = []
-    for fetch, url in attempts:
+    for protocol, url in attempts:
         try:
-            items = fetch(url, key)
+            # A draft URL is validated only on save, so a malformed one reaches here.
+            items = _items(url, protocol, key)
+        except ValueError:
+            errors.append(f'{url}: malformed URL')
+            continue
         except ListError as exc:
             errors.append(f'{url}: {exc}')
             continue

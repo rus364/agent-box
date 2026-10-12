@@ -208,16 +208,24 @@ class ExternalModelTests(unittest.TestCase):
         """Claude knows only 200K and 1M windows and its own efforts; Codex keeps the exact values."""
         models = {'wide': {'context_window': 1000000, 'supported_efforts': ['minimal', 'high'], 'effort': 'minimal'},
                   'mid': {'context_window': 400000, 'claude': {'auto_compact_token_limit': 150000}},
-                  'small': {'context_window': 32000}}
+                  'small': {'context_window': 32000}, 'narrow': {'supported_efforts': ['minimal']}}
         config = Config.from_dict({'agents': {'external_apis': {'test': {
             'enabled': True, 'api_key': 'k', 'models': models,
             'codex': {'url': 'https://api.example/v1'}, 'claude': {'url': 'https://api.example/anthropic'}}}}})
         provider = config.agents.external_apis['test']
         self.assertEqual({m: s['context_window'] for m, s in provider.codex.models.items()},
-                         {'wide': 1000000, 'mid': 400000, 'small': 32000})
+                         {'wide': 1000000, 'mid': 400000, 'small': 32000, 'narrow': 0})
         self.assertEqual({m: s['context_window'] for m, s in provider.claude.models.items()},
-                         {'wide': 1048576, 'mid': 200000, 'small': 0})
-        self.assertEqual(provider.claude.models['wide']['supported_efforts'], ['high'])
+                         {'wide': 1048576, 'mid': 200000, 'small': 0, 'narrow': 0})
+        # A declaration Claude shares no level with still restricts it, to Claude's default.
+        tree = config.to_dict()
+        for model, offered in (('wide', ('default', 'high')), ('narrow', ('default',)), ('small', ('default', 'low', 'medium', 'high', 'xhigh', 'max'))):
+            spec = {'provider': 'claude', 'api_provider': 'test', 'model': model, 'effort': 'default'}
+            self.assertEqual(config_menu.candidate_efforts(spec, tree), offered)
+        for model, effort in (('narrow', 'high'), ('wide', 'medium')):
+            with self.subTest(model=model), tempfile.TemporaryDirectory() as temp, \
+                    self.assertRaisesRegex(AgentBoxError, 'not supported'):
+                ext.prepare(['claude', '--model', model, '--effort', effort], 'test', 'claude', config, temp, {})
         with tempfile.TemporaryDirectory() as temp:
             command, env = ext.prepare(['claude', '--model', 'wide'], 'test', 'claude', config, temp, {})
             self.assertEqual(command[command.index('--model') + 1], 'wide[1m]')
