@@ -3,14 +3,14 @@
 # The agent-box that printed this script answers, so an alias spelling its path in any way completes alike.
 
 # Bash picks a completion by the typed word and never expands an alias for it, so the
-# caller's `words` has an alias in words[0] replaced by its expansion, nested ones included;
-# success means the words now start with agent-box or a path to it, whose arguments follow.
+# caller's `words` has an alias in words[0] replaced by its expansion as bash would: nested
+# ones too, but none twice, so `alias agent-box='agent-box --review off'` ends its chain.
+# Success means the words now start with agent-box or a path to it, whose arguments follow.
 _agent_box_unalias() {
-    local depth text
+    local text seen=" "
     local -a expansion
-    for depth in 1 2 3 4 5 6 7 8; do
-        [[ ${words[0]} == agent-box || ${words[0]} == */agent-box ]] && return 0
-        [[ -n ${words[0]} && -n ${BASH_ALIASES[${words[0]}]+set} ]] || return 1
+    while [[ -n ${words[0]} && -n ${BASH_ALIASES[${words[0]}]+set} && $seen != *" ${words[0]} "* ]]; do
+        seen+="${words[0]} "
         text=${BASH_ALIASES[${words[0]}]}
         if [[ $text == *[\"\'\\]* ]]; then
             # xargs honours quotes without expanding anything; eval would run the alias's substitutions on Tab.
@@ -21,7 +21,7 @@ _agent_box_unalias() {
         ((${#expansion[@]})) || return 1
         words=("${expansion[@]}" "${words[@]:1}")
     done
-    return 1
+    [[ ${words[0]} == agent-box || ${words[0]} == */agent-box ]]
 }
 
 _agent_box() {

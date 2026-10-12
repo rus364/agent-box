@@ -224,7 +224,7 @@ ask 'agent-box tracker st'
         registers aliases of agent-box itself and completes after their prefix arguments, quoted
         ones parsed as the shell would; an alias naming agent-box by a path it has not expanded yet
         completes without agent-box on PATH, a wrapper registered by hand passes its arguments
-        unchanged, and an unrelated alias is left alone."""
+        unchanged, an alias of agent-box itself is expanded once, and an unrelated alias is left alone."""
         script = r"""
 alias ab=agent-box abw='agent-box workflow' abn=abw abq='agent-box "workflow"' ll='ls -l'
 alias abs='agent-box --workspace "/tmp/my project"' abp='$AB_DIR/agent-box'
@@ -243,19 +243,22 @@ ask 'abf tracker st'
 ask 'ab --review=al'
 PATH=$NO_AB_PATH
 ask 'abp tracker st'
+alias agent-box="agent-box workflow" abx=agent-box
+ask 'abx ins'
 """
         result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=self.alias_env(), timeout=60)
         self.assertEqual((result.stderr, result.stdout.splitlines()),
                          ("", ["complete -F _agent_box ab", "complete -F _agent_box abw", "complete -F _agent_box abn",
                                "complete -F _agent_box abp", "status,state,", "inspect,", "inspect,", "inspect,",
-                               "codex,config,completion,", "status,state,", "always,", "status,state,"]))
+                               "codex,config,completion,", "status,state,", "always,", "status,state,",
+                               "inspect,"]))
 
     @unittest.skipUnless(shutil.which("zsh"), "zsh is not installed")
     def test_zsh_completes_aliases_with_and_without_complete_aliases(self):
         """zsh expands an alias before completing by default, but with complete_aliases it looks the
         alias name up, so the script registers aliases of agent-box and expands their prefix
         arguments; an alias naming agent-box by a path it has not expanded yet completes in both
-        modes without agent-box on PATH.
+        modes without agent-box on PATH, and an alias of agent-box itself is expanded exactly once.
 
         A real interactive zsh under zpty presses Tab; a stub _describe records what reached it.
         """
@@ -284,6 +287,10 @@ run 'PATH=$NO_AB_PATH' 7
 tab 'abp tracker st'
 run 'unsetopt complete_aliases' 8
 tab 'abp tracker st'
+run 'alias agent-box="agent-box workflow" abx=agent-box; compdef _agent_box abx' 9
+tab 'abx ins'
+run 'setopt complete_aliases' 10
+tab 'abx ins'
 zpty -d z
 """
         result = subprocess.run(["zsh", "-f", "-c", driver], capture_output=True, text=True,
@@ -292,7 +299,8 @@ zpty -d z
                     "abs co: codex,config,completion"]
         self.assertEqual((result.returncode, output.read_text().splitlines()),
                          (0, ["agent-box tracker st: status,state", *expected, "abf tracker st: status,state",
-                              *expected, "abp tracker st: status,state", "abp tracker st: status,state"]),
+                              *expected, "abp tracker st: status,state", "abp tracker st: status,state",
+                              "abx ins: inspect", "abx ins: inspect"]),
                          result.stderr)
 
     def test_loading_succeeds_when_the_last_alias_is_not_agent_box(self):

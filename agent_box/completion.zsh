@@ -4,16 +4,16 @@
 # The agent-box that printed this script answers, so an alias spelling its path in any way completes alike.
 
 # zsh expands an alias before completing unless complete_aliases is set; then the caller's
-# `typed` has an alias in typed[1] replaced by its expansion, nested ones included;
-# success means the words now start with agent-box or a path to it, whose arguments follow.
+# `typed` has an alias in typed[1] replaced by its expansion as zsh would: nested ones too,
+# but none twice, so `alias agent-box='agent-box --review off'` ends its chain.
+# Success means the words now start with agent-box or a path to it, whose arguments follow.
 _agent_box_unalias() {
-    local depth
-    for depth in {1..8}; do
-        [[ ${typed[1]} == agent-box || ${typed[1]} == */agent-box ]] && return 0
-        [[ -n ${typed[1]} && -n ${aliases[${typed[1]}]+set} ]] || return 1
+    local -A seen
+    while [[ -n ${typed[1]} && -n ${aliases[${typed[1]}]+set} && -z ${seen[${typed[1]}]} ]]; do
+        seen[${typed[1]}]=1
         typed=(${(Q)${(z)aliases[${typed[1]}]}} "${(@)typed[2,-1]}")
     done
-    return 1
+    [[ ${typed[1]} == agent-box || ${typed[1]} == */agent-box ]]
 }
 
 _agent_box() {
@@ -21,8 +21,9 @@ _agent_box() {
     local line word description
     # words keeps the quotes as typed, or as an alias zsh expanded itself spelled them.
     typed=("${(@Q)words[1,CURRENT]}")
+    # Without complete_aliases zsh has expanded the alias already; expanding again would repeat it.
     # A wrapper function or symlink registered by hand passes its arguments unchanged.
-    _agent_box_unalias || typed=("${(@Q)words[1,CURRENT]}")
+    [[ -o complete_aliases ]] && { _agent_box_unalias || typed=("${(@Q)words[1,CURRENT]}") }
     lines=("${(@f)$(command @AGENT_BOX@ _complete "${(@)typed[2,-1]}" 2>/dev/null)}")
     case ${lines[1]} in
         files|dirs)
