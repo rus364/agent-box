@@ -35,13 +35,14 @@ def _items(base, protocol, key):
 
     OpenAI and OpenRouter page with a ``links.next`` URL, Anthropic with
     ``has_more``/``last_id``; the CLI a URL belongs to does not decide which
-    one a provider answers with. A next URL on another host is not followed,
-    as with a redirect, so the key goes only to the configured host; a list cut
-    short there or by the page bound is reported rather than shown as whole.
+    one a provider answers with. A next URL on another scheme or host is not
+    followed, as with a redirect, so the key goes only where it was configured
+    to; a list cut short there, by a missing cursor or by the page bound is
+    reported rather than shown as whole.
     """
     path, headers = protocol
     first = base.rstrip('/') + path
-    host = urlsplit(first).netloc
+    origin = urlsplit(first)[:2]
     query = {'limit': 1000} if protocol is ANTHROPIC else {}
     page, items = first + ('?' + urlencode(query) if query else ''), []
     for _ in range(PAGES):
@@ -53,13 +54,15 @@ def _items(base, protocol, key):
         following = links.get('next')
         if isinstance(following, str) and following:
             try:
-                foreign = urlsplit(following).netloc != host
+                foreign = urlsplit(following)[:2] != origin
             except ValueError:
                 foreign = True
             if foreign:
-                raise ListError('the next page is on another host; the key is not sent there')
+                raise ListError('the next page is on another scheme or host; the key is not sent there')
             page = following
-        elif data.get('has_more') is True and isinstance(data.get('last_id'), str):
+        elif data.get('has_more') is True:
+            if not isinstance(data.get('last_id'), str) or not data['last_id']:
+                raise ListError('more pages announced without a cursor to reach them')
             page = first + '?' + urlencode({**query, 'after_id': data['last_id']})
         else:
             return items
@@ -75,7 +78,8 @@ def model_fields(item):
 
     Covers OpenAI (ID only), DeepSeek (``effort``), OpenRouter (``reasoning``,
     ``architecture``) and Anthropic (``capabilities``). Values outside agent-box's
-    vocabulary are dropped rather than refused: the list is advice.
+    vocabulary are dropped rather than refused: the list is advice. Silence
+    about efforts leaves them alone; a stated empty set clears them.
     """
     fields = {}
     name = item.get('display_name') or item.get('name')
@@ -102,13 +106,15 @@ def model_fields(item):
         if isinstance(source, dict) and isinstance(source.get(key), list):
             levels, default = source[key], source.get(preferred)
     effort = capabilities.get('effort')
-    if isinstance(effort, dict) and effort.get('supported') is True:
-        levels = [name for name, support in effort.items() if isinstance(support, dict) and support.get('supported') is True]
+    if isinstance(effort, dict) and isinstance(effort.get('supported'), bool):
+        levels = [name for name, support in effort.items() if effort['supported']
+                  and isinstance(support, dict) and support.get('supported') is True]
     if levels is not None:
+        # A stated list sharing no level with agent-box's still replaces a stale
+        # one: empty means unknown here, and the default goes back to the CLI's.
         supported = [e for e in EFFORTS[1:] if e in levels]
-        if supported:
-            fields['supported_efforts'] = supported
-            fields['effort'] = default if default in supported else 'default'
+        fields['supported_efforts'] = supported
+        fields['effort'] = default if default in supported else 'default'
     return fields
 
 

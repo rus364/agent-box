@@ -78,7 +78,10 @@ class ModelFieldTests(unittest.TestCase):
         self.assertEqual(anthropic[0], {
             'display_name': 'Claude Opus 5', 'context_window': 1000000, 'input_modalities': ['text', 'image'],
             'supported_efforts': ['low', 'medium', 'high', 'xhigh', 'max'], 'effort': 'default'})
-        self.assertNotIn('supported_efforts', anthropic[1])
+        # Haiku states it takes no effort: a stale declaration must not survive an update.
+        self.assertEqual((anthropic[1]['supported_efforts'], anthropic[1]['effort']), ([], 'default'))
+        self.assertEqual(api_models.model_fields({'id': 'm', 'effort': {'supported_levels': ['turbo']}}),
+                         {'supported_efforts': [], 'effort': 'default'})
         self.assertEqual([api_models.model_fields(item) for item in sample('openai.json')['data']], [{}, {}])
 
 
@@ -119,15 +122,24 @@ class LoadTests(unittest.TestCase):
         self.assertEqual(list(models), [item['id'] for item in full['data']])
 
     def test_a_list_cut_short_is_reported_not_shown_as_whole(self):
-        """Models past a foreign next link or the page bound would be falsely marked not listed."""
+        """Models past a foreign next link, a missing cursor or the page bound would be falsely marked not listed."""
         first = dict(sample('openrouter.json'), data=sample('openrouter.json')['data'][:2])
         routes = {}
         server = self.serve(routes)
         routes['/api/v1/models'] = (200, dict(first, links={'next': 'http://localhost:1/api/v1/models?offset=2'}))
         models, error = api_models.load(provider(server.url + '/api/v1'))
         self.assertEqual(models, {})
-        self.assertIn('another host', error)
+        self.assertIn('another scheme or host', error)
         self.assertEqual(len(server.requests), 1)
+        # Same host, other scheme: following it could send the key in plaintext.
+        routes['/api/v1/models'] = (200, dict(first, links={'next': server.url.replace('http:', 'https:') + '/api/v1/models'}))
+        models, error = api_models.load(provider(server.url + '/api/v1'))
+        self.assertEqual(models, {})
+        self.assertIn('another scheme or host', error)
+        routes['/anthropic/v1/models?limit=1000'] = (200, dict(sample('anthropic-page1.json'), last_id=None))
+        models, error = api_models.load(provider(claude=server.url + '/anthropic'))
+        self.assertEqual(models, {})
+        self.assertIn('without a cursor', error)
         routes['/api/v1/models'] = (200, dict(first, links={'next': server.url + '/api/v1/models'}))
         with patch.object(api_models, 'PAGES', 3):
             models, error = api_models.load(provider(server.url + '/api/v1'))
