@@ -10,7 +10,8 @@ _agent_box_unalias() {
     for depth in 1 2 3 4 5 6 7 8; do
         [[ ${words[0]} == agent-box || ${words[0]} == */agent-box ]] && return 0
         [[ -n ${words[0]} && -n ${BASH_ALIASES[${words[0]}]+set} ]] || return 1
-        read -ra expansion <<< "${BASH_ALIASES[${words[0]}]}"
+        # Quotes are dropped, not parsed: honouring them needs eval, which would run the alias's substitutions on Tab.
+        read -ra expansion <<< "${BASH_ALIASES[${words[0]}]//[\"\']/}"
         ((${#expansion[@]})) || return 1
         words=("${expansion[@]}" "${words[@]:1}")
     done

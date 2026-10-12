@@ -218,7 +218,7 @@ ask 'agent-box tracker st'
         registers aliases of agent-box itself and completes after their prefix arguments; a wrapper
         registered by hand passes its arguments unchanged, and an unrelated alias is left alone."""
         script = r"""
-alias ab=agent-box abw='agent-box workflow' abn=abw ll='ls -l'
+alias ab=agent-box abw='agent-box workflow' abn=abw abq='agent-box "workflow"' ll='ls -l'
 abf() { agent-box "$@"; }
 source <(agent-box completion bash)
 complete -F _agent_box abf
@@ -228,13 +228,14 @@ ask() { COMP_LINE=$1; COMP_POINT=${#1}; _agent_box; printf '%s,' "${COMPREPLY[@]
 ask 'ab tracker st'
 ask 'abw ins'
 ask 'abn ins'
+ask 'abq ins'
 ask 'abf tracker st'
 ask 'ab --review=al'
 """
         result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=self.env, timeout=60)
         self.assertEqual((result.stderr, result.stdout.splitlines()),
                          ("", ["complete -F _agent_box ab", "complete -F _agent_box abw", "complete -F _agent_box abn",
-                               "status,state,", "inspect,", "inspect,", "status,state,", "always,"]))
+                               "status,state,", "inspect,", "inspect,", "inspect,", "status,state,", "always,"]))
 
     @unittest.skipUnless(shutil.which("zsh"), "zsh is not installed")
     def test_zsh_completes_aliases_with_and_without_complete_aliases(self):
@@ -257,12 +258,12 @@ tab() {
 }
 : > $OUT
 run 'autoload -Uz compinit && compinit -u -D' 1
-run 'alias ab=agent-box abw="agent-box workflow" abn=abw; abf() { agent-box "$@" }' 2
+run 'alias ab=agent-box abw="agent-box workflow" abn=abw abq="agent-box \"workflow\""; abf() { agent-box "$@" }' 2
 run 'source <(agent-box completion zsh); compdef _agent_box abf' 3
 run '_describe() { local -a c=("${(@P)${@[-1]}}"); print -r -- "$BUFFER: ${(j:,:)${(@)c%%:*}}" >> $OUT }' 4
 for line in 'agent-box tracker st' 'ab tracker st' 'abw ins' 'abn ins' 'abf tracker st'; tab $line
 run 'setopt complete_aliases' 5
-for line in 'ab tracker st' 'abw ins' 'abn ins'; tab $line
+for line in 'ab tracker st' 'abw ins' 'abn ins' 'abq ins'; tab $line
 zpty -d z
 """
         result = subprocess.run(["zsh", "-f", "-c", driver], capture_output=True, text=True,
@@ -270,7 +271,8 @@ zpty -d z
         self.assertEqual((result.returncode, output.read_text().splitlines()),
                          (0, ["agent-box tracker st: status,state", "ab tracker st: status,state",
                               "abw ins: inspect", "abn ins: inspect", "abf tracker st: status,state",
-                              "ab tracker st: status,state", "abw ins: inspect", "abn ins: inspect"]),
+                              "ab tracker st: status,state", "abw ins: inspect", "abn ins: inspect",
+                              "abq ins: inspect"]),
                          result.stderr)
 
     @unittest.skipUnless(shutil.which("zsh"), "zsh is not installed")

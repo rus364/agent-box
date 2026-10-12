@@ -10,7 +10,7 @@ _agent_box_unalias() {
     for depth in {1..8}; do
         [[ ${typed[1]} == agent-box || ${typed[1]} == */agent-box ]] && return 0
         [[ -n ${typed[1]} && -n ${aliases[${typed[1]}]+set} ]] || return 1
-        typed=(${(z)aliases[${typed[1]}]} "${(@)typed[2,-1]}")
+        typed=(${(Q)${(z)aliases[${typed[1]}]}} "${(@)typed[2,-1]}")
     done
     return 1
 }
