@@ -4,7 +4,7 @@
 
 # zsh expands an alias before completing unless complete_aliases is set; then the caller's
 # `typed` has an alias in typed[1] replaced by its expansion, nested ones included;
-# success means the words now start with agent-box, whose arguments follow.
+# success means the words now start with agent-box or a path to it, whose arguments follow.
 _agent_box_unalias() {
     local depth
     for depth in {1..8}; do
@@ -18,10 +18,12 @@ _agent_box_unalias() {
 _agent_box() {
     local -a lines candidates typed
     local line word description
-    # A wrapper function or symlink registered by hand passes its arguments unchanged.
-    typed=("${(@)words[1,CURRENT]}")
-    _agent_box_unalias || typed=("${(@)words[1,CURRENT]}")
-    lines=("${(@f)$(command agent-box _complete "${(@)typed[2,-1]}" 2>/dev/null)}")
+    # words keeps the quotes as typed, or as an alias zsh expanded itself spelled them.
+    typed=("${(@Q)words[1,CURRENT]}")
+    # A wrapper function or symlink registered by hand passes its arguments unchanged to agent-box.
+    _agent_box_unalias || typed=(agent-box "${(@Q)words[2,CURRENT]}")
+    [[ ${typed[1]} == '~/'* ]] && typed[1]=$HOME/${typed[1]#'~/'}
+    lines=("${(@f)$(command ${typed[1]} _complete "${(@)typed[2,-1]}" 2>/dev/null)}")
     case ${lines[1]} in
         files|dirs)
             [[ $PREFIX == --*=* ]] && compset -P '--[^=]#='

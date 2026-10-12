@@ -3,15 +3,20 @@
 
 # Bash picks a completion by the typed word and never expands an alias for it, so the
 # caller's `words` has an alias in words[0] replaced by its expansion, nested ones included;
-# success means the words now start with agent-box, whose arguments follow.
+# success means the words now start with agent-box or a path to it, whose arguments follow.
 _agent_box_unalias() {
-    local depth
+    local depth text
     local -a expansion
     for depth in 1 2 3 4 5 6 7 8; do
         [[ ${words[0]} == agent-box || ${words[0]} == */agent-box ]] && return 0
         [[ -n ${words[0]} && -n ${BASH_ALIASES[${words[0]}]+set} ]] || return 1
-        # Quotes are dropped, not parsed: honouring them needs eval, which would run the alias's substitutions on Tab.
-        read -ra expansion <<< "${BASH_ALIASES[${words[0]}]//[\"\']/}"
+        text=${BASH_ALIASES[${words[0]}]}
+        if [[ $text == *[\"\'\\]* ]]; then
+            # xargs honours quotes without expanding anything; eval would run the alias's substitutions on Tab.
+            mapfile -td '' expansion < <(xargs printf '%s\0' <<< "$text" 2>/dev/null)
+        else
+            read -ra expansion <<< "$text"
+        fi
         ((${#expansion[@]})) || return 1
         words=("${expansion[@]}" "${words[@]:1}")
     done
@@ -23,13 +28,14 @@ _agent_box() {
     local -a words typed reply
     read -ra words <<< "$line"
     [[ -z $line || $line == *[[:space:]] ]] && words+=("")
-    # A wrapper function or symlink registered by hand passes its arguments unchanged.
+    # A wrapper function or symlink registered by hand passes its arguments unchanged to agent-box.
     typed=("${words[@]}")
-    _agent_box_unalias || words=("${typed[@]}")
+    _agent_box_unalias || words=(agent-box "${typed[@]:1}")
+    [[ ${words[0]} == "~/"* ]] && words[0]=$HOME/${words[0]#"~/"}
     # Readline replaces only the text between the last word break (= or :) and the cursor;
     # COMP_WORDS[COMP_CWORD] is not that text when the cursor is mid-word or right after a break.
     cur=${words[-1]##*[$COMP_WORDBREAKS]}
-    { IFS= read -r mode; mapfile -t reply; } < <(command agent-box _complete "${words[@]:1}" 2>/dev/null)
+    { IFS= read -r mode; mapfile -t reply; } < <(command "${words[0]}" _complete "${words[@]:1}" 2>/dev/null)
     COMPREPLY=()
     case $mode in
         files) compopt -o filenames 2>/dev/null; mapfile -t COMPREPLY < <(compgen -f -- "$cur") ;;
