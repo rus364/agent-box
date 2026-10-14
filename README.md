@@ -561,10 +561,12 @@ agent-box rebuild    # rebuild without cache
 
 The image uses Ubuntu 26.04 LTS. `build` and `update` reuse the local base;
 `rebuild` pulls the base and disables layer reuse. `update` refreshes Codex,
-Claude, Node.js 22, mise, uv,
+Claude, Node.js 22 and npm, mise, uv,
 Bun and enabled Kubernetes tools. Pinned Playwright/Chromium and jscpd stay
 above the refresh boundary and are reused when their inputs are unchanged.
 Changing the base, earlier instructions or build arguments can rebuild them.
+Ubuntu packages, including their security fixes, are refreshed only by
+`rebuild`.
 
 APT package archives and npm downloads use persistent, builder-owned cache
 mounts (`agent-box-apt` and `agent-box-npm`), outside the resulting image and

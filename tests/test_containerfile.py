@@ -295,6 +295,30 @@ class BrowserToolingTests(unittest.TestCase):
         self.assertIn("agent-box-browser-smoke", runtime.DOCTOR_SCRIPT)
 
 
+class ImageSurfaceTests(unittest.TestCase):
+    def test_update_installs_current_npm_over_the_bundled_one(self):
+        """Node.js 22 bundles an npm whose own dependencies lag behind their
+        fixes; upgrading npm before the Node.js refresh would be undone by it,
+        and upgrading it after the agents would leave them installed by the
+        old one."""
+        text = containerfile_text()
+        upgrade = text.index("npm install --global npm@latest")
+        self.assertLess(text.index("ARG TOOLS_REFRESH="), upgrade)
+        self.assertLess(text.rindex("apt-get install -y --no-install-recommends nodejs"), upgrade)
+        self.assertLess(upgrade, text.index("@openai/codex@latest"))
+
+    def test_pebble_is_removed_without_invalidating_stable_layers(self):
+        """The base's unpackaged Pebble is never run and carries its own Go
+        advisories; removing it above the browser or jscpd layers would
+        rebuild them, and the sanity check catches a base that moves it."""
+        text = containerfile_text()
+        removal = text.index("rm -rf /usr/bin/pebble /var/lib/pebble")
+        for stable in ("install --with-deps chromium", "jscpd@5.0.16"):
+            self.assertLess(text.index(stable), removal)
+        self.assertLess(removal, text.index("ARG TOOLS_REFRESH="))
+        self.assertIn("test ! -e /usr/bin/pebble", text)
+
+
 class IdentityValidationShellTests(unittest.TestCase):
     """Run the Containerfile's own validation snippet through /bin/sh.
 

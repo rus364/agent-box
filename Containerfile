@@ -437,6 +437,19 @@ RUN --mount=type=cache,id=agent-box-apt,target=/var/cache/apt,sharing=locked \
     ls /usr/lib/*/alsa-lib/libasound_module_pcm_pulse.so
 
 #
+# Pebble
+#
+# Ubuntu's rock-built base ships Canonical's Pebble service manager outside
+# any package. Nothing in a box runs it -- the base has no ENTRYPOINT -- and
+# its statically linked Go runtime is what scanners flag in the base layer,
+# with fixes arriving only when Ubuntu republishes the base. Placed after the
+# large stable layers so removing it does not invalidate them.
+#
+
+RUN set -eux; \
+    rm -rf /usr/bin/pebble /var/lib/pebble
+
+#
 # ---------------------------------------------------------------------------
 # Frequently updated tools
 # ---------------------------------------------------------------------------
@@ -521,9 +534,14 @@ RUN set -eux; \
 #
 # Coding agents and agent-facing analysis tools
 #
+# npm goes first: the npm bundled with Node.js 22 lags behind fixes to its own
+# dependencies, and the Node.js refresh above restores that bundled copy
+# whenever it upgrades the package.
+#
 
 RUN --mount=type=cache,id=agent-box-npm,target=/root/.npm \
     set -eux; \
+    npm install --global npm@latest; \
     npm install --global \
         @openai/codex@latest \
         @anthropic-ai/claude-code@latest
@@ -675,6 +693,7 @@ RUN set -eux; \
     rg --version; \
     fd --version; \
     just --version; \
+    test ! -e /usr/bin/pebble; \
     tmux -V
 
 # Each group verifies only what it actually installed. A check that ran
