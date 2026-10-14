@@ -12,6 +12,7 @@ import os
 import pwd
 import re
 import shutil
+import stat
 import subprocess
 from pathlib import Path
 
@@ -28,6 +29,7 @@ SUBID_FILES = (Path("/etc/subuid"), Path("/etc/subgid"))
 #: The first ID of the subordinate ranges ``useradd`` hands out.
 SUBID_START = 100000
 SUBID_COUNT = 65536
+ID_MAP_HELPERS = ("newuidmap", "newgidmap")
 #: Policies that switch unprivileged user namespaces off; Podman's error
 #: names neither. 15000 is the limit Podman's rootless guide suggests.
 NAMESPACE_SYSCTLS = (
@@ -112,6 +114,30 @@ def namespace_policy() -> str | None:
     return None
 
 
+def unprivileged_helpers() -> list[str]:
+    """ID-map helpers with neither setuid nor file capabilities (Fedora uses the latter)."""
+    found = []
+    for name in ID_MAP_HELPERS:
+        path = shutil.which(name)
+        if not path:
+            continue
+        try:
+            if os.stat(path).st_mode & stat.S_ISUID:
+                continue
+            os.getxattr(path, "security.capability")
+        except OSError:
+            found.append(name)
+    return found
+
+
+def helper_privileges() -> str | None:
+    names = unprivileged_helpers()
+    if not names:
+        return None
+    return (f"{' and '.join(names)} can map no IDs without setuid or file capabilities; "
+            "reinstall the package that provides them.\n" + install_hint(os_release(), "it again", 2))
+
+
 def _run(*args: str) -> subprocess.CompletedProcess:
     try:
         return subprocess.run(["podman", *args], capture_output=True, text=True, timeout=30)
@@ -141,7 +167,7 @@ def problem() -> str | None:
         return (f"Podman {'.'.join(map(str, MIN_VERSION))} or newer is required; found "
                 f"{result.stdout.strip()}.\nYour distribution's package may be older; newer "
                 f"builds: {INSTALL_GUIDE}")
-    missing = [name for name in ("newuidmap", "newgidmap") if not shutil.which(name)]
+    missing = [name for name in ID_MAP_HELPERS if not shutil.which(name)]
     if missing:
         return (f"rootless Podman needs {' and '.join(missing)}, which are not installed.\n"
                 + install_hint(os_release(), "them", 2))
@@ -149,8 +175,8 @@ def problem() -> str | None:
     if result.returncode:
         return (f"rootless Podman cannot enter its user namespace: "
                 f"{result.stderr.strip() or f'exit {result.returncode}'}\n"
-                + (namespace_policy() or "If Podman's configuration changed since its last run, "
-                   "reset its namespace: podman system migrate"))
+                + (namespace_policy() or helper_privileges() or "If Podman's configuration changed "
+                   "since its last run, reset its namespace: podman system migrate"))
     # Each map always holds the user as root; only a subordinate range maps
     # more than that one ID. Without one, images whose files belong to
     # several owners cannot be unpacked. Maps are judged separately: several

@@ -70,14 +70,15 @@ class HostPodmanTests(unittest.TestCase):
         self.assertIn("sudo apt install uidmap", message)
         self.assertEqual(run.call_count, 1)
 
-    def namespace_failure(self, policy=None):
+    def namespace_failure(self, policy=None, helpers=()):
         with tempfile.TemporaryDirectory() as tmp:
             sysctls = []
             for name, value in (policy or {}).items():
                 path = Path(tmp, name)
                 path.write_text(f"{value}\n")
                 sysctls.append((path, name, "1"))
-            with mock.patch.object(host_podman, "NAMESPACE_SYSCTLS", tuple(sysctls)):
+            with mock.patch.object(host_podman, "NAMESPACE_SYSCTLS", tuple(sysctls)), \
+                 mock.patch.object(host_podman, "unprivileged_helpers", return_value=list(helpers)):
                 message, _ = self.problem(responses=[result(output="podman version 5.4.2"),
                                                      result(1, error="newuidmap: write to uid_map failed")])
         return message
@@ -104,6 +105,26 @@ class HostPodmanTests(unittest.TestCase):
                                                      result(output=f"{UID_MAP}0 1000 1\n{GID_MAP}0 1000 1\n")])
         self.assertIn("--add-subuids 170000-235535 --add-subgids 170000-235535", message)
         self.assertIn("podman system migrate", message)
+
+    def test_helpers_without_privileges_get_reinstalled_not_migrated(self):
+        """Without setuid or file capabilities newuidmap cannot write a map; migrate changes nothing."""
+        message = self.namespace_failure(helpers=("newuidmap",))
+        self.assertIn("newuidmap can map no IDs", message)
+        self.assertIn("sudo pacman -S shadow", message)
+        self.assertNotIn("podman system migrate", message)
+
+    def test_a_helper_privileged_by_setuid_or_capability_is_not_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            setuid, plain = Path(tmp, "newuidmap"), Path(tmp, "newgidmap")
+            for path in (setuid, plain):
+                path.write_text("")
+            setuid.chmod(0o4755)
+            plain.chmod(0o755)
+            with mock.patch.object(host_podman.shutil, "which", side_effect=lambda name: str(Path(tmp, name))):
+                self.assertEqual(host_podman.unprivileged_helpers(), ["newgidmap"])
+            with mock.patch.object(host_podman.shutil, "which", side_effect=lambda name: str(Path(tmp, name))), \
+                 mock.patch.object(host_podman.os, "getxattr", return_value=b"caps"):
+                self.assertEqual(host_podman.unprivileged_helpers(), [])
 
     def test_unreadable_allocations_get_no_guessed_range(self):
         """A start guessed past unread ranges could hand out another user's IDs under sudo."""
