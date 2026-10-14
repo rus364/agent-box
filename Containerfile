@@ -536,13 +536,15 @@ RUN set -eux; \
 #
 # npm goes first: the npm bundled with Node.js 22 lags behind fixes to its own
 # dependencies, and the Node.js refresh above restores that bundled copy
-# whenever it upgrades the package.
+# whenever it upgrades the package. Current npm blocks install scripts unless
+# allowed by name; Claude Code's postinstall places its native binary, so it is
+# the one allowed.
 #
 
 RUN --mount=type=cache,id=agent-box-npm,target=/root/.npm \
     set -eux; \
     npm install --global npm@latest; \
-    npm install --global \
+    npm install --global --allow-scripts=@anthropic-ai/claude-code \
         @openai/codex@latest \
         @anthropic-ai/claude-code@latest
 

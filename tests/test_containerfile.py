@@ -307,6 +307,14 @@ class ImageSurfaceTests(unittest.TestCase):
         self.assertLess(text.rindex("apt-get install -y --no-install-recommends nodejs"), upgrade)
         self.assertLess(upgrade, text.index("@openai/codex@latest"))
 
+    def test_current_npm_still_runs_claude_codes_postinstall(self):
+        """Current npm blocks install scripts that are not allowed by name;
+        Claude Code's postinstall places its native binary, and without it
+        `claude --version` fails the build."""
+        install = next(i for i in re.split(r"\n(?=[A-Z]+ )", containerfile_text())
+                       if "@anthropic-ai/claude-code@latest" in i)
+        self.assertIn("--allow-scripts=@anthropic-ai/claude-code", install)
+
     def test_pebble_is_removed_without_invalidating_stable_layers(self):
         """The base's unpackaged Pebble is never run and carries its own Go
         advisories; removing it above the browser or jscpd layers would
