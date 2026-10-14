@@ -7,6 +7,7 @@ cluster must leave the box exactly as it was and cost no Podman calls, and
 the lifetime setting decides whether a cluster outlives its box.
 """
 import io
+import json
 import os
 import tempfile
 import unittest
@@ -228,8 +229,10 @@ class StopCommandTests(K3sRuntimeTest):
 
 class BuildAndWarningTests(K3sRuntimeTest):
     def test_build_fetches_the_sidecar_image_only_when_the_cluster_is_on(self):
-        for config, pulls in ((Config(), 0), (k3s_config(), 1)):
-            with self.subTest(pulls=pulls), \
+        """Inside a box the cluster belongs to the outer box, so the image would be dead weight."""
+        for config, inside, pulls in ((Config(), False, 0), (k3s_config(), False, 1), (k3s_config(), True, 0)):
+            with self.subTest(pulls=pulls, inside=inside), \
+                    mock.patch.object(runtime, "inside_box", return_value=inside), \
                     mock.patch.object(runtime.subprocess, "call", return_value=0), \
                     mock.patch.object(runtime, "detect_host_identity"), \
                     mock.patch.object(runtime, "nested_podman_build_args", return_value=[]), \
@@ -251,6 +254,59 @@ class BuildAndWarningTests(K3sRuntimeTest):
                 redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as err:
             cli.config_show()
         self.assertIn("no kubectl or helm", err.getvalue())
+
+
+class NestedLaunchTests(K3sRuntimeTest):
+    """A launch inside a workspace box inherits the outer box's ``box.k3s``
+    through its session snapshot, but a sidecar cannot start in nested Podman:
+    every nested launch pulled the k3s image and then failed on sysfs."""
+
+    def launch(self, inside: bool):
+        captured = {}
+
+        def fake_launch(spec, workspace, command, extra_env, process_env=None):
+            captured.update(argv=spec.create_argv, env=extra_env)
+            return 0
+
+        with mock.patch.object(runtime, "inside_box", return_value=inside), \
+                mock.patch.object(runtime.host_podman, "require"), \
+                mock.patch.object(runtime, "resolve_workspace", return_value=self.workspace), \
+                mock.patch.object(runtime, "load_config", return_value=k3s_config()), \
+                mock.patch.object(runtime, "image_exists", return_value=True), \
+                mock.patch.object(runtime, "image_tool_drift", return_value=([], [])), \
+                mock.patch.object(runtime, "inspect_workspace_container", return_value=None), \
+                mock.patch.multiple(runtime.k3s, ensure=mock.DEFAULT, api_port=mock.DEFAULT) as sidecar, \
+                mock.patch.object(runtime, "launch_in_workspace_container", side_effect=fake_launch), \
+                mock.patch.object(runtime, "warn") as warn, \
+                self.assertRaises(SystemExit):
+            sidecar["api_port"].return_value = 41234
+            runtime.runtime_main(["doctor"], Path.cwd())
+        target = Path(next(item.split("=", 1)[1] for item in captured["env"]
+                           if item.startswith("AGENT_BOX_RUNTIME_CONFIG=")))
+        source, destination, _ = runtime.tracker_mounts(Config(), runtime.workspace_runtime_state(self.workspace))[0]
+        snapshot = json.loads((source / target.relative_to(destination)).read_text())
+        return captured, sidecar["ensure"], [call.args[0] for call in warn.call_args_list], snapshot
+
+    def test_a_nested_box_gets_no_cluster_of_its_own_and_says_so(self):
+        captured, ensure, warnings, snapshot = self.launch(inside=True)
+        ensure.assert_not_called()
+        self.assertFalse(any("pasta" in arg or "KUBECONFIG" in arg or str(self.state) in arg
+                             for arg in captured["argv"]))
+        self.assertIn("AGENT_BOX_K3S=nested", captured["env"])
+        self.assertTrue(any("gets no cluster of its own" in warning for warning in warnings))
+        # A launch nested one level deeper must not inherit the cluster either.
+        self.assertFalse(snapshot["box"]["k3s"]["enabled"])
+
+    def test_a_host_launch_still_starts_and_wires_the_cluster(self):
+        captured, ensure, warnings, snapshot = self.launch(inside=False)
+        ensure.assert_called_once()
+        self.assertIn("--network=pasta:-T,41234", captured["argv"])
+        self.assertIn("AGENT_BOX_K3S=1", captured["env"])
+        self.assertFalse(any("gets no cluster of its own" in warning for warning in warnings))
+        self.assertTrue(snapshot["box"]["k3s"]["enabled"])
+
+    def test_doctor_names_the_nested_case(self):
+        self.assertIn("none in a nested box", runtime.DOCTOR_SCRIPT)
 
 
 class HostModeTests(K3sRuntimeTest):

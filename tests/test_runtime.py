@@ -34,6 +34,8 @@ class IsolatedRuntimeTest(unittest.TestCase):
             mock.patch.object(runtime, "XDG_CACHE_HOME", state / "cache"),
             mock.patch.object(runtime, "AGENT_SKILLS_DIR", state / "agents/skills"),
             mock.patch.object(runtime, "MANAGED_SKILLS_SOURCE", state / "shipped-skills"),
+            # Host launches unless a test says otherwise; the suite itself may run in a box.
+            mock.patch.object(runtime, "inside_box", return_value=False),
         ]
         for patch in self._patches:
             patch.start()

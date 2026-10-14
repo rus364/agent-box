@@ -47,6 +47,11 @@ A project can switch it on for itself in `.agent-box.json`:
 environment with your own kube contexts, and agent-box does not redirect its
 `kubectl` to another cluster behind your back.
 
+A box started inside a workspace box, through the `podman` tool group, gets
+no cluster either: k3s cannot start in nested Podman. The launch says so,
+`agent-box doctor` there reports `none in a nested box`, and `agent-box build`
+there does not fetch the k3s image. The outer box keeps its own cluster.
+
 ## Settings
 
 Every field lives under **Workspace box → k3s cluster** (`box.k3s`); all of them may also be set per project.

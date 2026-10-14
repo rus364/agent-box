@@ -322,7 +322,7 @@ def build_image(script_dir: Path, refresh: bool, no_cache: bool,
         args.append("--no-cache")
     args.append(str(script_dir))
     rc = subprocess.call(args)
-    if rc == 0 and config.box.k3s.enabled:
+    if rc == 0 and config.box.k3s.enabled and not inside_box():
         # The sidecar's image is not part of this one; fetched here so the
         # first launch does not stall on it.
         k3s.pull(config.box.k3s)
@@ -1600,6 +1600,29 @@ def confirm_k3s(spec: WorkspaceContainerSpec) -> None:
                             "run the command again")
 
 
+def inside_box() -> bool:
+    """Podman marks every container it starts; agent-box runs in one only as a nested launch."""
+    return Path("/run/.containerenv").is_file()
+
+
+def withhold_nested_k3s(config: Config) -> list[str]:
+    """A box started inside a workspace box gets no cluster of its own.
+
+    The session snapshot carries the outer box's ``box.k3s``, but a sidecar
+    cannot start in nested Podman (crun may not mount sysfs there), and a
+    cluster inside the box was rejected when k3s was designed. Sharing the
+    outer cluster would need pasta, which the image lacks, and the outer
+    kubeconfig, which lives outside the nested launch's state root. Turned
+    off in the snapshot layer too, so the nested session records it off.
+    """
+    if not (config.box.k3s.enabled and inside_box()):
+        return []
+    for layer in (config, getattr(config, "_project_base", config)):
+        layer.box.k3s = replace(layer.box.k3s, enabled=False)
+    return ["box.k3s is on, but a box started inside a workspace box gets no cluster of its own; "
+            "the outer box has it"]
+
+
 def k3s_warnings(config: Config) -> list[str]:
     if config.box.k3s.enabled and not config.box.tools.groups["kubernetes"]:
         return ["box.k3s is on but the kubernetes tool group is off: the box has no kubectl or helm"]
@@ -2580,6 +2603,8 @@ if [[ "${AGENT_BOX_K3S:-0}" == "1" ]]; then
     echo "k3s cluster:         FAILED"
     printf "  %s\n" "${nodes}"
   fi
+elif [[ "${AGENT_BOX_K3S:-0}" == "nested" ]]; then
+  echo "k3s cluster:         none in a nested box (the outer box has the cluster)"
 else
   echo "k3s cluster:         disabled (turn on box.k3s in 'agent-box config')"
 fi
@@ -2766,6 +2791,7 @@ def runtime_main(
     ensure_refresh_token()
     existing = existing_workspace_spec(workspace, options)
     config = launch_config(options, box_policy=existing.creation_config._box_policy if existing else None)
+    nested_k3s = withhold_nested_k3s(config)
     agent, rest = config.agents.default, args
     if args and args[0] in {"claude", "codex", "shell", "doctor"}:
         agent, rest = args[0], args[1:]
@@ -2796,7 +2822,7 @@ def runtime_main(
                  f" -- run 'agent-box build' to drop them")
     # Every launch, not only box creation: joining a running box with the
     # switch on and no socket leaves box identity unchanged and would say nothing.
-    for problem in audio_warnings(config) + k3s_warnings(config) + tool_warnings(config):
+    for problem in audio_warnings(config) + nested_k3s + k3s_warnings(config) + tool_warnings(config):
         warn(problem)
 
 
@@ -2831,7 +2857,7 @@ def runtime_main(
             extra_env = [
                 *extra_env,
                 f"{BROWSER_ENABLED_ENV}={'1' if config.box.tools.browser() else '0'}",
-                f"AGENT_BOX_K3S={'1' if config.box.k3s.enabled else '0'}",
+                f"AGENT_BOX_K3S={'nested' if nested_k3s else '1' if config.box.k3s.enabled else '0'}",
                 f"{CLAUDE_SKILL_LINKS_ENV}={'1' if config.host.claude_skill_links else '0'}",
                 f"{IMAGE_TOOLS_ENV}={','.join(config.box.tools.enabled_groups())}",
                 f"AGENT_BOX_IMAGE={existing.image if existing else IMAGE}",

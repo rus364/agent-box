@@ -77,6 +77,7 @@ class WorkspaceContainerLifecycleTests(unittest.TestCase):
             mock.patch.object(runtime, "TRACKER_RUNTIME_DIR", state / "runtime/tracker"),
             mock.patch.object(runtime, "POLICY_RUNTIME_DIR", state / "runtime/policy"),
             mock.patch.object(runtime, "WORKFLOW_STATE", state / "workflow"),
+            mock.patch.object(runtime, "inside_box", return_value=False),
             mock.patch.object(runtime, "CLAUDE_HOME", state / "claude"),
             mock.patch.object(runtime, "CODEX_HOME", state / "codex"),
             mock.patch.object(runtime, "XDG_CACHE_HOME", state / "cache"),
