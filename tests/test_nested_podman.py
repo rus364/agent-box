@@ -204,6 +204,7 @@ class NestedLauncherBundleTests(IsolatedRuntimeTest):
         """A working checkout hid missing files in the separately mounted PATH package."""
         import shutil
         import subprocess
+        import sys
         source = Path(__file__).resolve().parent.parent
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp) / "home"
@@ -237,13 +238,13 @@ sys.path.insert(0, sys.argv[2])
 from agent_box import runtime
 class ReachedWorkspace(Exception): pass
 sys.argv = [sys.argv[1]]
-with patch('agent_box.project_config.load', return_value={}), patch.object(runtime.shutil, 'which', return_value='/bin/tool'), patch.object(runtime, 'resolve_workspace', side_effect=ReachedWorkspace):
+with patch('agent_box.project_config.load', return_value={}), patch.object(runtime.host_podman, 'require'), patch.object(runtime.shutil, 'which', return_value='/bin/tool'), patch.object(runtime, 'resolve_workspace', side_effect=ReachedWorkspace):
     try:
         runpy.run_path(sys.argv[0], run_name='__main__')
     except ReachedWorkspace:
         print('workspace resolution reached')
 '''
-            result = subprocess.run(["python3", "-c", code, str(home / ".local/bin/agent-box"),
+            result = subprocess.run([sys.executable, "-c", code, str(home / ".local/bin/agent-box"),
                                      str(library)], cwd=tmp, text=True, capture_output=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("workspace resolution reached", result.stdout)

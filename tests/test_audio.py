@@ -77,7 +77,8 @@ class AudioLaunchWarningTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "Containerfile").write_text("FROM scratch\n")
-            with mock.patch.object(runtime.shutil, "which", side_effect=lambda name: f"/usr/bin/{name}"), \
+            with mock.patch.object(runtime.host_podman, "require"), \
+                 mock.patch.object(runtime.shutil, "which", side_effect=lambda name: f"/usr/bin/{name}"), \
                  mock.patch.object(runtime, "PULSE_DIR", root / "pulse"), \
                  mock.patch.object(runtime, "resolve_workspace", return_value=runtime.Workspace(root, root)), \
                  mock.patch.object(runtime, "ensure_state_dirs"), \

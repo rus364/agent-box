@@ -113,7 +113,8 @@ class HostGitDependencyTests(unittest.TestCase):
             (root / "Containerfile").write_text("FROM scratch\n")
             def found(name):
                 return None if name == "git" else f"/usr/bin/{name}"
-            with mock.patch.object(runtime.shutil, "which", side_effect=found), \
+            with mock.patch.object(runtime.host_podman, "require"), \
+                 mock.patch.object(runtime.shutil, "which", side_effect=found), \
                  mock.patch.object(runtime, "resolve_workspace", return_value=Workspace(root, root)), \
                  mock.patch.object(runtime, "ensure_state_dirs"), \
                  mock.patch.object(runtime, "POLICY_RUNTIME_DIR", root / "runtime/policy"), \

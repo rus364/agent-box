@@ -23,8 +23,9 @@ def isolated_environment(directory):
         "CLAUDE_CREDENTIALS_PATH": "claude/.credentials.json",
     }.items():
         env[name] = str(directory / child)
-    # Uninstall must not discover the developer's launcher through PATH.
-    env["PATH"] = os.pathsep.join((str(directory / "bin"), os.defpath))
+    # Uninstall must not discover the developer's launcher through PATH; the
+    # guard directory main fills shadows the host's podman.
+    env["PATH"] = os.pathsep.join((str(directory / "guard-bin"), str(directory / "bin"), os.defpath))
     env["GIT_CONFIG_GLOBAL"] = os.devnull
     env["GIT_CONFIG_NOSYSTEM"] = "1"
     return env
@@ -47,6 +48,12 @@ def run_child(arguments):
 
 def main(arguments):
     with tempfile.TemporaryDirectory(prefix="agent-box-tests-") as tmp:
+        # A test that reaches the real podman passes only where Podman happens
+        # to work, as launch tests did until CI ran on a host without it.
+        podman = Path(tmp) / "guard-bin" / "podman"
+        podman.parent.mkdir()
+        podman.write_text("#!/bin/sh\necho 'a test reached the real podman; patch it out' >&2\nexit 127\n")
+        podman.chmod(0o755)
         command = [sys.executable, str(Path(__file__).resolve()), "--child",
                    *(arguments or ["discover", "-s", "tests"])]
         # Pipes keep the suite noninteractive even when this wrapper has a PTY;

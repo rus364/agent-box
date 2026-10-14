@@ -298,6 +298,7 @@ class ExternalRuntimeTests(IsolatedRuntimeTest):
         for cli in ('codex', 'claude'):
             for host in (True, False):
                 with self.subTest(cli=cli, host=host), \
+                     patch.object(runtime.host_podman, 'require'), \
                      patch.object(runtime.shutil, 'which', return_value='/usr/bin/' + cli), \
                      patch.object(runtime, 'resolve_workspace', return_value=Workspace(Path.cwd(), Path.cwd())), \
                      patch.object(runtime, 'launch_config', return_value=config), \

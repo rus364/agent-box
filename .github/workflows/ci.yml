@@ -58,4 +58,4 @@ jobs:
         run: python agent-box selftest
 
       - name: Run full test suite
-        run: python -m unittest discover -s tests
+        run: python tests/run_suite.py
