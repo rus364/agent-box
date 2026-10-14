@@ -393,7 +393,7 @@ class DoctorLaunchTests(IsolatedRuntimeTest):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "project"
             root.mkdir()
-            with mock.patch.object(runtime.shutil, "which", return_value="/usr/bin/podman"), \
+            with mock.patch.object(runtime.host_podman, "require"), \
                  mock.patch.object(runtime, "resolve_workspace", return_value=Workspace(root, root)), \
                  mock.patch.object(runtime, "load_config", return_value=config), \
                  mock.patch.object(runtime, "image_exists", return_value=True), \

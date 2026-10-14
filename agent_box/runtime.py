@@ -34,7 +34,7 @@ from . import channel as channel_module
 from . import claude_settings
 from . import notify as notify_module
 from . import k3s
-from . import nested_podman
+from . import host_podman, nested_podman
 from . import cloud, kubeconfigs, registries, links
 from .atomicio import atomic_write_json, atomic_write_text, read_json
 from .config import ENV_PREFIX, WORKFLOW_SKILLS, Config, apply_box_policy, load_config, effective_config, session_account
@@ -2747,8 +2747,7 @@ def runtime_main(
     from .mounts import MountError, parse_mount_arg, plan_mounts
 
     options = options or LaunchOptions()
-    if not shutil.which("podman"):
-        raise AgentBoxError("podman not found")
+    host_podman.require()
     if not (script_dir / "Containerfile").is_file():
         raise AgentBoxError(f"Containerfile not found: {script_dir / 'Containerfile'}")
     if not shutil.which("git"):
@@ -2912,8 +2911,7 @@ def attach_main(args: list[str], workspace_root: str = "") -> int:
     """``agent-box attach [session]``: take back a session from a dead terminal."""
     if len(args) > 1:
         raise AgentBoxError("usage: agent-box attach [session]")
-    if not shutil.which("podman"):
-        raise AgentBoxError("podman not found")
+    host_podman.require()
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
         raise AgentBoxError("agent-box attach needs a terminal")
     workspace = resolved_workspace(workspace_root)
@@ -2961,8 +2959,7 @@ def stop_main(args: list[str], workspace_root: str = "") -> int:
         if arg != "--cluster-data":
             raise AgentBoxError(f"unexpected argument '{arg}'; agent-box stop takes only --cluster-data")
         cluster_data = True
-    if not shutil.which("podman"):
-        raise AgentBoxError("podman not found")
+    host_podman.require()
     workspace = resolved_workspace(workspace_root)
     name = workspace_container_name(workspace)
     runtime_state = workspace_runtime_state(workspace)

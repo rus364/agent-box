@@ -249,7 +249,7 @@ class LaunchAppliesNothingTests(unittest.TestCase):
         # started from; a temporary one stands in so the launch gets far
         # enough to prove it applies nothing.
         (tmp / "Containerfile").write_text("FROM scratch\n")
-        with mock.patch.object(runtime.shutil, "which", return_value="/usr/bin/podman"), \
+        with mock.patch.object(runtime.host_podman, "require"), \
              mock.patch.object(runtime, "resolve_workspace", return_value=workspace), \
              mock.patch.object(runtime, "ensure_state_dirs"), \
              mock.patch.object(runtime, "POLICY_RUNTIME_DIR", tmp / "runtime/policy"), \

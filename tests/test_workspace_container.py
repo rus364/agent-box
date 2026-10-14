@@ -147,7 +147,7 @@ class WorkspaceContainerLifecycleTests(unittest.TestCase):
                     (["codex", "--version"], "synthetic"))
         for args, api in commands:
             with self.subTest(args=args), \
-                 mock.patch.object(runtime.shutil, "which", return_value="/usr/bin/podman"), \
+                 mock.patch.object(runtime.host_podman, "require"), \
                  mock.patch.object(runtime, "resolve_workspace", return_value=self.workspace), \
                  mock.patch.object(runtime, "load_config", return_value=changed), \
                  mock.patch.object(project_config, "load", return_value={}), \

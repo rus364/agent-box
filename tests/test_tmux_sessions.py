@@ -188,7 +188,7 @@ class AttachAndStopTests(unittest.TestCase):
         self.workspace = Workspace(root, root)
         self.name = runtime.workspace_container_name(self.workspace)
         for patch in (
-            mock.patch.object(runtime.shutil, "which", return_value="/usr/bin/podman"),
+            mock.patch.object(runtime.host_podman, "require"),
             mock.patch.object(runtime, "resolve_workspace", return_value=self.workspace),
             mock.patch.object(runtime, "workspace_transition_lock", return_value=nullcontext()),
             mock.patch.object(runtime, "STATE_ROOT", Path(self.tmp.name) / "state"),

@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import shutil
 import sys
 from pathlib import Path
 from typing import NoReturn
@@ -1034,8 +1033,8 @@ def main() -> None:
             usage_text(); return
         if args and args[0] in {"build", "update", "rebuild"}:
             if len(args) != 1: die(f"agent-box {args[0]} takes no arguments")
-            if not shutil.which("podman"): die("podman not found")
-            from . import runtime
+            from . import host_podman, runtime
+            host_podman.require()
             command = args[0]
             raise SystemExit(runtime.build_image(script_dir, command != "build", command == "rebuild"))
         if args and args[0] == "tracker":

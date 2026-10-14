@@ -406,7 +406,7 @@ class ClaudeManagementArgvTests(unittest.TestCase):
             extra_env.extend(env)
             return 0
 
-        with mock.patch.object(runtime.shutil, "which", return_value="/usr/bin/podman"), \
+        with mock.patch.object(runtime.host_podman, "require"), \
              mock.patch.object(runtime, "resolve_workspace", return_value=self.workspace), \
              mock.patch.object(runtime, "ensure_state_dirs"), \
              mock.patch.object(runtime, "ensure_refresh_token"), \
@@ -547,7 +547,7 @@ class RuntimeNotificationSelectionTests(unittest.TestCase):
             return 0
 
         with tempfile.TemporaryDirectory() as tmp, \
-             mock.patch.object(runtime.shutil, "which", return_value="/usr/bin/podman"), \
+             mock.patch.object(runtime.host_podman, "require"), \
              mock.patch.object(runtime, "resolve_workspace", return_value=workspace), \
              mock.patch.object(runtime, "ensure_state_dirs"), \
              mock.patch.object(runtime, "ensure_refresh_token"), \

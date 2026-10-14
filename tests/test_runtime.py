@@ -660,7 +660,7 @@ class CodexRuntimeOverridesTests(IsolatedRuntimeTest):
 
         for agent in ("claude", "shell", "doctor"):
             with self.subTest(agent=agent), \
-                 mock.patch.object(runtime.shutil, "which", return_value="/usr/bin/podman"), \
+                 mock.patch.object(runtime.host_podman, "require"), \
                  mock.patch.object(runtime, "resolve_workspace", return_value=workspace), \
                  mock.patch.object(runtime, "ensure_state_dirs"), \
                  mock.patch.object(runtime, "ensure_refresh_token"), \
@@ -682,7 +682,7 @@ class CodexRuntimeOverridesTests(IsolatedRuntimeTest):
         config.agents.default = "codex"
         for args, expected in (([], "codex"), (["claude"], "claude"), (["codex"], "codex")):
             with self.subTest(args=args), \
-                 mock.patch.object(runtime.shutil, "which", return_value="/usr/bin/podman"), \
+                 mock.patch.object(runtime.host_podman, "require"), \
                  mock.patch.object(runtime, "resolve_workspace", return_value=workspace), \
                  mock.patch.object(runtime, "ensure_state_dirs"), \
                  mock.patch.object(runtime, "ensure_refresh_token"), \
@@ -700,7 +700,7 @@ class CodexRuntimeOverridesTests(IsolatedRuntimeTest):
         """`ext NAME` without a CLI must pick the model of the agent that will actually start."""
         config = Config()
         config.agents.default = "codex"
-        with mock.patch.object(runtime.shutil, "which", return_value="/usr/bin/podman"), \
+        with mock.patch.object(runtime.host_podman, "require"), \
              mock.patch.object(runtime, "resolve_workspace", return_value=Workspace(Path.cwd(), Path.cwd())), \
              mock.patch.object(runtime, "ensure_state_dirs"), \
              mock.patch.object(runtime, "ensure_refresh_token"), \
@@ -817,7 +817,7 @@ class ClaudeNotifyHookLifecycleTests(IsolatedRuntimeTest):
             settings_path = self._configured_settings(root)
             before = settings_path.read_text()
             with (
-                mock.patch.object(runtime.shutil, "which", return_value="/usr/bin/podman"),
+                mock.patch.object(runtime.host_podman, "require"),
                 mock.patch.object(runtime, "resolve_workspace", return_value=Workspace(root, root)),
                 mock.patch.object(runtime, "ensure_state_dirs"),
                 mock.patch.object(runtime, "ensure_refresh_token"),

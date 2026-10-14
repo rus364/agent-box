@@ -189,7 +189,7 @@ class StopCommandTests(K3sRuntimeTest):
     def setUp(self):
         super().setUp()
         for patch in (
-            mock.patch.object(runtime.shutil, "which", return_value="/usr/bin/podman"),
+            mock.patch.object(runtime.host_podman, "require"),
             mock.patch.object(runtime, "resolve_workspace", return_value=self.workspace),
             mock.patch.object(runtime, "workspace_transition_lock", return_value=nullcontext()),
             mock.patch.object(runtime, "inspect_workspace_container", return_value=None),

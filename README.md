@@ -37,10 +37,21 @@ container while keeping the workflow close to local development:
 
 ## Installation
 
-Requirements: Linux, Python 3.11+, Podman and Git. `gh` is optional, and only
-for passing a GitHub token into the box. The launcher itself uses only the
-Python standard library — there is nothing to build and nothing to install into
-Python.
+Requirements: Linux, Python 3.11+, rootless Podman 5.0 or newer and Git. `gh`
+is optional, and only for passing a GitHub token into the box. The launcher
+itself uses only the Python standard library — there is nothing to build and
+nothing to install into Python.
+
+Podman specifically, run as your own user: `--userns=keep-id` keeps every file
+an agent writes owned by you on the host, and rootless Docker has no
+per-container equivalent, so agent-box does not fall back to Docker. Podman
+installs alongside Docker without conflict — separate storage, configuration
+and sockets — as long as you install the `podman` package and not
+`podman-docker`, which replaces the `docker` command. Rootless Podman also needs
+a subordinate UID/GID range for your user in `/etc/subuid` and `/etc/subgid`;
+most distributions add one when the user is created. Every command that starts
+a box checks all of this first and prints the exact command that fixes what is
+missing.
 
 Git is a real dependency, not just how you get the code: agent-box asks it for
 the repository root to decide what to mount, and reads it for the status line
@@ -714,9 +725,14 @@ safety checks, skill installation and container behaviour.
 ## Troubleshooting
 
 <details>
-<summary><strong>Podman is missing</strong></summary>
+<summary><strong>Podman is missing, too old or not rootless</strong></summary>
 
-Install Podman. agent-box intentionally does not fall back to Docker.
+agent-box names the problem and the fix: the install command for your
+distribution, the required version, or the `usermod` line that adds a free
+subordinate UID/GID range. Distributions that ship Podman 4.x (Ubuntu 24.04,
+Debian 12) need a newer build; see the
+[Podman installation guide](https://podman.io/docs/installation). agent-box
+intentionally does not fall back to Docker; see [Installation](#installation).
 
 </details>
 
@@ -762,7 +778,7 @@ yours.
 
 ## Known limitations
 
-- Linux + Podman only.
+- Linux + rootless Podman 5.0 or newer only.
 - Workspace containers are transient. Detached tmux sessions survive terminal loss, but not a host reboot or a forced container kill.
 - `~/.agents` is exposed as a whole tree, not only `skills/`; it is read-only except for the read-write `skills/` subtree and its external symlink targets.
 - The agent browser is amd64/arm64 only, because those are the architectures Playwright publishes Chromium builds for.
