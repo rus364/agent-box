@@ -32,6 +32,13 @@ tmux sessions retain the broker. Stop or the box's own exit ends the broker
 and its routes. Browser profiles, desktop sockets and host command execution
 are not exposed to the box.
 
+A box started inside a workspace box, through the `podman` tool group, gets no
+broker: there is no host desktop inside the outer box, and a callback listener
+there would sit on the outer box's loopback, not the workstation's. The launch
+says so once, and links in the nested box are only displayed. A nested
+launcher keeps its own broker directory, so it never reaches the outer box's
+broker.
+
 The socket uses an owner-checked private directory under `/tmp`, including on
 Coder/headless hosts without `/run/user/<uid>`. Connection hints are refreshed
 when another session launches or uses `agent-box attach`. Once any session is

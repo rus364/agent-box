@@ -1605,29 +1605,39 @@ def inside_box() -> bool:
     return Path("/run/.containerenv").is_file()
 
 
-def withhold_nested_k3s(config: Config) -> list[str]:
-    """A box started inside a workspace box gets no cluster of its own.
+#: Host-side capabilities a box started inside a workspace box does without.
+NESTED_WITHHELD = {
+    "k3s": "box.k3s is on, but a box started inside a workspace box gets no cluster of its own; "
+           "the outer box has it",
+    "links": "box.links is on, but a box started inside a workspace box gets no host link broker; "
+             "its links are only displayed",
+}
 
-    The session snapshot carries the outer box's ``box.k3s``, but a sidecar
-    cannot start in nested Podman (crun may not mount sysfs there), and a
-    cluster inside the box was rejected when k3s was designed. Sharing the
-    outer cluster would need pasta, which the image lacks, and the outer
-    kubeconfig, which lives outside the nested launch's state root. Turned
-    off in the snapshot layer and in the inherited box policy too, which the
-    snapshot carries and a nested session reapplies over both.
+
+def withhold_from_nested_box(config: Config) -> list[str]:
+    """A box started inside a workspace box gets no k3s cluster and no link broker.
+
+    The session snapshot carries the outer box's settings, but both live on
+    the host. A sidecar cannot start in nested Podman (crun may not mount
+    sysfs there), and a cluster inside the box was rejected when k3s was
+    designed; sharing the outer one would need pasta, which the image lacks.
+    A nested broker would run inside the outer box, with no host desktop, and
+    its callback listeners would sit on the outer box's loopback, not the
+    workstation's. Turned off in the snapshot layer and in the inherited box
+    policy too, which the snapshot carries and a nested session reapplies.
     """
     if not inside_box():
         return []
-    # Every layer, even where a project switched the cluster off: the snapshot
+    warnings = [message for name, message in NESTED_WITHHELD.items() if getattr(config.box, name).enabled]
+    # Every layer, even where a project switched one off: the snapshot
     # renders from the layer beneath the project.
-    enabled = config.box.k3s.enabled
     for layer in (config, getattr(config, "_project_base", config)):
-        layer.box.k3s = replace(layer.box.k3s, enabled=False)
         policy = getattr(layer, "_box_policy", None)
-        if policy is not None:
-            policy["box"]["k3s"]["enabled"] = False
-    return ["box.k3s is on, but a box started inside a workspace box gets no cluster of its own; "
-            "the outer box has it"] if enabled else []
+        for name in NESTED_WITHHELD:
+            setattr(layer.box, name, replace(getattr(layer.box, name), enabled=False))
+            if policy is not None:
+                policy["box"][name]["enabled"] = False
+    return warnings
 
 
 def k3s_warnings(config: Config) -> list[str]:
@@ -2798,7 +2808,7 @@ def runtime_main(
     ensure_refresh_token()
     existing = existing_workspace_spec(workspace, options)
     config = launch_config(options, box_policy=existing.creation_config._box_policy if existing else None)
-    nested_k3s = withhold_nested_k3s(config)
+    nested = withhold_from_nested_box(config)
     agent, rest = config.agents.default, args
     if args and args[0] in {"claude", "codex", "shell", "doctor"}:
         agent, rest = args[0], args[1:]
@@ -2829,7 +2839,7 @@ def runtime_main(
                  f" -- run 'agent-box build' to drop them")
     # Every launch, not only box creation: joining a running box with the
     # switch on and no socket leaves box identity unchanged and would say nothing.
-    for problem in audio_warnings(config) + nested_k3s + k3s_warnings(config) + tool_warnings(config):
+    for problem in audio_warnings(config) + nested + k3s_warnings(config) + tool_warnings(config):
         warn(problem)
 
 

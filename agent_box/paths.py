@@ -77,9 +77,22 @@ XDG_STATE_HOME = env_path("XDG_STATE_HOME", HOST_HOME / ".local/state")
 # The login runtime directory comes from the real uid, not $XDG_RUNTIME_DIR,
 # for the same reason HOST_HOME ignores $HOME: its sockets become bind mounts.
 HOST_RUNTIME_DIR = Path("/run/user") / str(os.getuid())
-# Coder/headless hosts may have no login-created /run/user directory. A fixed
-# uid-scoped tmp root keeps Unix socket paths short without trusting TMPDIR.
-LINKS_RUNTIME_DIR = Path("/tmp") / f"agent-box-links-{os.getuid()}"
+
+
+def links_runtime_root() -> Path:
+    """Coder/headless hosts may have no login-created /run/user directory; a
+    fixed uid-scoped tmp root keeps Unix socket paths short without trusting
+    TMPDIR. Inside a box Podman mounts the outer broker's socket directory at
+    that same path, and a nested launcher stopping or preparing a broker there
+    would reach the outer one, so it takes a namespace suffix as
+    launcher_state_root does."""
+    root = Path("/tmp") / f"agent-box-links-{os.getuid()}"
+    if not Path("/run/.containerenv").is_file():
+        return root
+    return root.with_name(f"{root.name}-{Path('/proc/self/ns/mnt').stat().st_ino}")
+
+
+LINKS_RUNTIME_DIR = links_runtime_root()
 
 def launcher_state_root(shared: Path) -> Path:
     """Keep nested builds and workspace records outside their parent's mounts.
