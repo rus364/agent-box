@@ -7,12 +7,16 @@ in particular the GitHub token, which an earlier agent-box forwarded to every
 container purely because ``gh`` happened to be authenticated on the host.
 """
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
+from agent_box import cli
 from agent_box import config as config_module
-from agent_box.config import Config, load_config, save_config
+from agent_box.config import Config, effective_config, load_config, save_config
+from agent_box.errors import AgentBoxError
 
 
 class DefaultsAreSafeTests(unittest.TestCase):
@@ -44,12 +48,6 @@ class DefaultsAreSafeTests(unittest.TestCase):
             config = load_config(Path(tmp) / "missing.json")
             self.assertFalse(config.credentials.github.token)
 
-    def test_unreadable_file_yields_defaults_rather_than_crashing(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "config.json"
-            path.write_text("{ not json")
-            self.assertFalse(load_config(path).credentials.github.token)
-
     def test_partial_file_does_not_silently_enable_anything(self):
         """A file written by a future/older agent-box must not turn a
         credential switch on just by omitting it."""
@@ -62,6 +60,61 @@ class DefaultsAreSafeTests(unittest.TestCase):
             self.assertFalse(config.host.notifications.enabled)
             self.assertFalse(config.agents.host_env.api_keys)
             self.assertFalse(config.credentials.git.full_config)
+
+
+class UnreadableFileTests(unittest.TestCase):
+    """A saved file that cannot be read is an error, never the defaults.
+
+    Read as defaults, it let the menu save them over the user's settings,
+    `upgrade` unapply every integration and `notify test` delete the rendered
+    Telegram credentials, all without saying the file had stopped loading.
+    """
+
+    BROKEN = ('{ "agents": ', '[]', '"text"', '\udcff')
+
+    def broken_file(self, tmp, text):
+        path = Path(tmp) / "config.json"
+        path.write_bytes(b"\xff\xfe" if text == '\udcff' else text.encode())
+        return path
+
+    def test_a_file_that_is_not_a_json_object_names_itself(self):
+        for text in self.BROKEN:
+            with self.subTest(text=text), tempfile.TemporaryDirectory() as tmp:
+                path = self.broken_file(tmp, text)
+                with self.assertRaises(AgentBoxError) as caught:
+                    load_config(path)
+                self.assertIn(str(path), str(caught.exception))
+                self.assertIn("delete it", str(caught.exception))
+
+    @unittest.skipIf(os.geteuid() == 0, "root reads a file whatever its mode")
+    def test_a_file_without_read_permission_is_not_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self.broken_file(tmp, '{"version": 1}')
+            path.chmod(0)
+            with self.assertRaisesRegex(AgentBoxError, "Permission denied"):
+                load_config(path)
+
+    def test_no_command_acts_on_defaults_in_place_of_a_broken_file(self):
+        """The menu, `notify test` and a launch stop before writing or applying anything."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self.broken_file(tmp, '{ "agents": ')
+            commands = {
+                "config": lambda: cli.config_interactive(),
+                "notify test": lambda: cli.notify_command(["test"]),
+                "launch": lambda: effective_config(),
+            }
+            for name, command in commands.items():
+                # A menu that reports no change keeps a regression away from save and apply.
+                with self.subTest(command=name), \
+                     mock.patch.object(config_module, "CONFIG_FILE", path), \
+                     mock.patch("agent_box.config_menu.edit", return_value=None) as menu, \
+                     mock.patch.object(cli.notify_module, "sync_credentials") as sync, \
+                     mock.patch("agent_box.project_config.load", return_value={}):
+                    with self.assertRaises(AgentBoxError):
+                        command()
+                    menu.assert_not_called()
+                    sync.assert_not_called()
+                    self.assertEqual(path.read_bytes(), b'{ "agents": ')
 
 
 class SectionedSchemaTests(unittest.TestCase):

@@ -124,6 +124,10 @@ def upgrade_main(args: list[str]) -> int:
         else:
             raise AgentBoxError(f"unexpected argument '{arg}'; expected --check")
 
+    # Read before anything moves: a configuration that cannot be read would
+    # otherwise stop the upgrade after the checkout, with the skills stale.
+    from .config import load_config
+    config = load_config()
     checkout = resolve_checkout()
     print(f"agent-box: checkout {checkout}")
 
@@ -186,12 +190,11 @@ def upgrade_main(args: list[str]) -> int:
     # `apply_config` exists for; an upgrade that left them stale would make
     # "agent-box config apply" a thing users had to know to run.
     from . import runtime
-    from .config import load_config
-    for line in runtime.apply_config(load_config()):
+    for line in runtime.apply_config(config):
         print(f"agent-box: {line}")
 
     try:
-        missing, extra = runtime.image_tool_drift(load_config())
+        missing, extra = runtime.image_tool_drift(config)
     except Exception:
         missing, extra = [], []
     if missing or extra:

@@ -1309,14 +1309,25 @@ class Config:
 
 
 def load_config(path: Path | None = None) -> Config:
-    """The effective configuration; a missing file means all defaults."""
+    """The saved configuration; only a missing file means all defaults.
+
+    A file that exists but cannot be read stops here: read as defaults, it
+    would let the menu save them over it and `upgrade` unapply integrations.
+    """
+    from .errors import AgentBoxError
     path = CONFIG_FILE if path is None else path
-    if not path.is_file():
-        return Config()
     try:
-        return Config.from_dict(read_json(path))
-    except (OSError, ValueError, TypeError):
+        data = read_json(path)
+    except FileNotFoundError:
         return Config()
+    except (OSError, ValueError) as exc:
+        reason = exc.strerror if isinstance(exc, OSError) and exc.strerror else str(exc)
+        raise AgentBoxError(f"Cannot read {path}: {reason}. Fix the file, or delete it "
+                            "to start from defaults") from None
+    if not isinstance(data, dict):
+        raise AgentBoxError(f"{path} is not a JSON object. Fix the file, or delete it "
+                            "to start from defaults")
+    return Config.from_dict(data)
 
 
 def save_config(config: Config, path: Path | None = None) -> None:

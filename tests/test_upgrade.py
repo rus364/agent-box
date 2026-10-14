@@ -17,7 +17,8 @@ from pathlib import Path
 from unittest import mock
 
 from agent_box import runtime, selfupdate
-from agent_box.config import Config
+from agent_box import config as config_module
+from agent_box.config import Config, load_config
 from agent_box.errors import AgentBoxError
 
 
@@ -99,6 +100,19 @@ class UpgradeTests(unittest.TestCase):
             selfupdate.upgrade_main([])
         self.assertIn("no remote has", str(caught.exception))
         self.assertEqual(self._head(), local)
+
+    def test_an_unreadable_configuration_stops_it_before_the_checkout_moves(self):
+        """Failing at apply time would leave new code with the old skills installed."""
+        self._commit(self.origin, "upstream")
+        before = self._head()
+        broken = self.root / "config.json"
+        broken.write_text("{ not json")
+        with mock.patch("agent_box.config.load_config", load_config), \
+             mock.patch.object(config_module, "CONFIG_FILE", broken), \
+             self.assertRaisesRegex(AgentBoxError, str(broken)):
+            selfupdate.upgrade_main([])
+        self.assertEqual(self._head(), before)
+        self.apply_config.assert_not_called()
 
     def test_it_refuses_a_directory_that_is_not_a_git_checkout(self):
         plain = self.root / "plain"
