@@ -29,19 +29,21 @@ SUBID_FILES = (Path("/etc/subuid"), Path("/etc/subgid"))
 SUBID_START = 100000
 SUBID_COUNT = 65536
 
+#: Distribution family -> (installer, Podman package, package with the
+#: setuid ``newuidmap``/``newgidmap`` rootless Podman maps its ranges with).
 #: Matched against ``ID`` first, then each ``ID_LIKE`` entry, so derivatives
 #: (CachyOS, Mint, Rocky) resolve through the family they declare.
-INSTALL_COMMANDS = {
-    "arch": "sudo pacman -S podman",
-    "debian": "sudo apt install podman",
-    "ubuntu": "sudo apt install podman",
-    "fedora": "sudo dnf install podman",
-    "rhel": "sudo dnf install podman",
-    "centos": "sudo dnf install podman",
-    "suse": "sudo zypper install podman",
-    "opensuse": "sudo zypper install podman",
-    "alpine": "sudo apk add podman",
-    "gentoo": "sudo emerge app-containers/podman",
+FAMILIES = {
+    "arch": ("sudo pacman -S", "podman", "shadow"),
+    "debian": ("sudo apt install", "podman", "uidmap"),
+    "ubuntu": ("sudo apt install", "podman", "uidmap"),
+    "fedora": ("sudo dnf install", "podman", "shadow-utils"),
+    "rhel": ("sudo dnf install", "podman", "shadow-utils"),
+    "centos": ("sudo dnf install", "podman", "shadow-utils"),
+    "suse": ("sudo zypper install", "podman", "shadow"),
+    "opensuse": ("sudo zypper install", "podman", "shadow"),
+    "alpine": ("sudo apk add", "podman", "shadow-uidmap"),
+    "gentoo": ("sudo emerge", "app-containers/podman", "sys-apps/shadow"),
 }
 
 
@@ -60,12 +62,13 @@ def os_release(paths: tuple[Path, ...] = OS_RELEASE) -> dict[str, str]:
     return {}
 
 
-def install_hint(release: dict[str, str]) -> str:
+def install_hint(release: dict[str, str], what: str, package: int) -> str:
+    """``package`` indexes a FAMILIES entry: 1 for Podman, 2 for the ID-map helpers."""
     for name in [release.get("ID", ""), *release.get("ID_LIKE", "").split()]:
-        command = INSTALL_COMMANDS.get(name.lower())
-        if command:
-            return f"Install it: {command}"
-    return f"Install it as your distribution describes: {INSTALL_GUIDE}"
+        family = FAMILIES.get(name.lower())
+        if family:
+            return f"Install {what}: {family[0]} {family[package]}"
+    return f"Install {what} as your distribution describes: {INSTALL_GUIDE}"
 
 
 def free_subid_start() -> int:
@@ -98,7 +101,7 @@ def problem() -> str | None:
         return "rootless Podman is required: run agent-box as your own user, not as root or under sudo"
     if not shutil.which("podman"):
         lines = ["rootless Podman is required, and podman is not installed.",
-                 install_hint(os_release())]
+                 install_hint(os_release(), "it", 1)]
         if shutil.which("docker"):
             lines.append("Docker can stay installed alongside it: install the podman package, "
                          "not podman-docker, which replaces the docker command.")
@@ -112,23 +115,36 @@ def problem() -> str | None:
         return (f"Podman {'.'.join(map(str, MIN_VERSION))} or newer is required; found "
                 f"{result.stdout.strip()}.\nYour distribution's package may be older; newer "
                 f"builds: {INSTALL_GUIDE}")
-    result = _run("unshare", "cat", "/proc/self/uid_map", "/proc/self/gid_map")
+    missing = [name for name in ("newuidmap", "newgidmap") if not shutil.which(name)]
+    if missing:
+        return (f"rootless Podman needs {' and '.join(missing)}, which are not installed.\n"
+                + install_hint(os_release(), "them", 2))
+    result = _run("unshare", "grep", "-H", ".", "/proc/self/uid_map", "/proc/self/gid_map")
     if result.returncode:
         return (f"rootless Podman cannot enter its user namespace: "
                 f"{result.stderr.strip() or f'exit {result.returncode}'}\n"
-                "newuidmap and newgidmap must be installed (package uidmap or shadow); "
-                "'podman system migrate' resets a stale namespace.")
-    # Each map's first line maps the user to root; a subordinate range adds a
-    # second line starting at ID 1. Without both, images whose files belong
-    # to several owners cannot be unpacked.
-    ranges = sum(1 for line in result.stdout.splitlines() if line.split()[:1] not in ([], ["0"]))
-    if ranges < 2:
+                "If Podman's configuration changed since its last run, reset its namespace: "
+                "podman system migrate")
+    # Each map always holds the user as root; only a subordinate range maps
+    # more than that one ID. Without one, images whose files belong to
+    # several owners cannot be unpacked. Maps are judged separately: several
+    # UID extents must not stand in for a missing GID range.
+    maps = {"UID": "/proc/self/uid_map", "GID": "/proc/self/gid_map"}
+    mapped = dict.fromkeys(maps.values(), 0)
+    for line in result.stdout.splitlines():
+        path, _, row = line.partition(":")
+        fields = row.split()
+        if path in mapped and len(fields) == 3 and fields[2].isdigit():
+            mapped[path] += int(fields[2])
+    lacking = [kind.lower() for kind, path in maps.items() if mapped[path] < 2]
+    if lacking:
         user = pwd.getpwuid(os.getuid()).pw_name
         start = free_subid_start()
         span = f"{start}-{start + SUBID_COUNT - 1}"
-        return ("rootless Podman has no subordinate UID/GID range for "
-                f"{user} in /etc/subuid and /etc/subgid. Add one and restart Podman's namespace:\n"
-                f"  sudo usermod --add-subuids {span} --add-subgids {span} {user}\n"
+        return (f"rootless Podman has no subordinate {'/'.join(k.upper() for k in lacking)} range for "
+                f"{user} in {' and '.join(f'/etc/sub{k}' for k in lacking)}. Add one and restart "
+                "Podman's namespace:\n"
+                f"  sudo usermod {' '.join(f'--add-sub{k}s {span}' for k in lacking)} {user}\n"
                 "  podman system migrate")
     return None
 

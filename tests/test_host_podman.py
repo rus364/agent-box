@@ -13,12 +13,14 @@ def result(code=0, output="", error=""):
     return subprocess.CompletedProcess([], code, output, error)
 
 
-MAPS = "0 1000 1\n1 100000 65536\n0 1000 1\n1 100000 65536\n"
+UID_MAP, GID_MAP = "/proc/self/uid_map:", "/proc/self/gid_map:"
+MAPS = (f"{UID_MAP}0 1000 1\n{UID_MAP}1 100000 65536\n"
+        f"{GID_MAP}0 1000 1\n{GID_MAP}1 100000 65536\n")
 CACHYOS = {"ID": "cachyos", "ID_LIKE": "arch"}
 
 
 class HostPodmanTests(unittest.TestCase):
-    def problem(self, found=("podman",), responses=(), release=CACHYOS, euid=1000):
+    def problem(self, found=("podman", "newuidmap", "newgidmap"), responses=(), release=CACHYOS, euid=1000):
         with mock.patch.object(host_podman.os, "geteuid", return_value=euid), \
              mock.patch.object(host_podman.shutil, "which",
                                side_effect=lambda name: f"/usr/bin/{name}" if name in found else None), \
@@ -60,11 +62,19 @@ class HostPodmanTests(unittest.TestCase):
         self.assertIn("4.9.3", message)
         self.assertEqual(run.call_count, 1)
 
-    def test_a_namespace_that_cannot_be_entered_names_newuidmap(self):
+    def test_missing_id_map_helpers_get_their_distribution_package(self):
+        """podman system migrate cannot install them; Debian splits them into uidmap."""
+        message, run = self.problem(found=("podman",), release={"ID": "debian"},
+                                    responses=[result(output="podman version 5.4.2")])
+        self.assertIn("newuidmap and newgidmap", message)
+        self.assertIn("sudo apt install uidmap", message)
+        self.assertEqual(run.call_count, 1)
+
+    def test_a_namespace_that_cannot_be_entered_reports_podmans_reason(self):
         message, _ = self.problem(responses=[result(output="podman version 5.4.2"),
                                              result(1, error="newuidmap: write to uid_map failed")])
         self.assertIn("write to uid_map failed", message)
-        self.assertIn("newuidmap", message)
+        self.assertIn("podman system migrate", message)
 
     def test_missing_subordinate_ranges_get_a_range_no_one_else_holds(self):
         """A range overlapping another user's would let their containers share IDs."""
@@ -74,9 +84,17 @@ class HostPodmanTests(unittest.TestCase):
             subgid.write_text("other:100000:70000\n")
             with mock.patch.object(host_podman, "SUBID_FILES", (subuid, subgid)):
                 message, _ = self.problem(responses=[result(output="podman version 5.4.2"),
-                                                     result(output="0 1000 1\n0 1000 1\n")])
+                                                     result(output=f"{UID_MAP}0 1000 1\n{GID_MAP}0 1000 1\n")])
         self.assertIn("--add-subuids 170000-235535 --add-subgids 170000-235535", message)
         self.assertIn("podman system migrate", message)
+
+    def test_several_uid_extents_do_not_stand_in_for_a_missing_gid_range(self):
+        """Counted together, two UID extents would pass a host that cannot map any GID."""
+        maps = f"{UID_MAP}0 1000 1\n{UID_MAP}1 100000 999\n{UID_MAP}1000 200000 64537\n{GID_MAP}0 1000 1\n"
+        message, _ = self.problem(responses=[result(output="podman version 5.4.2"), result(output=maps)])
+        self.assertIn("no subordinate GID range", message)
+        self.assertIn("--add-subgids", message)
+        self.assertNotIn("--add-subuids", message)
 
     def test_os_release_reads_quoted_values_and_ignores_comments(self):
         with tempfile.TemporaryDirectory() as tmp:
