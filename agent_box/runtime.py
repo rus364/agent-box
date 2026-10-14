@@ -1613,12 +1613,16 @@ def withhold_nested_k3s(config: Config) -> list[str]:
     cluster inside the box was rejected when k3s was designed. Sharing the
     outer cluster would need pasta, which the image lacks, and the outer
     kubeconfig, which lives outside the nested launch's state root. Turned
-    off in the snapshot layer too, so the nested session records it off.
+    off in the snapshot layer and in the inherited box policy too, which the
+    snapshot carries and a nested session reapplies over both.
     """
     if not (config.box.k3s.enabled and inside_box()):
         return []
     for layer in (config, getattr(config, "_project_base", config)):
         layer.box.k3s = replace(layer.box.k3s, enabled=False)
+        policy = getattr(layer, "_box_policy", None)
+        if policy is not None:
+            policy["box"]["k3s"]["enabled"] = False
     return ["box.k3s is on, but a box started inside a workspace box gets no cluster of its own; "
             "the outer box has it"]
 
@@ -2604,7 +2608,7 @@ if [[ "${AGENT_BOX_K3S:-0}" == "1" ]]; then
     printf "  %s\n" "${nodes}"
   fi
 elif [[ "${AGENT_BOX_K3S:-0}" == "nested" ]]; then
-  echo "k3s cluster:         none in a nested box (the outer box has the cluster)"
+  echo "k3s cluster:         none in a nested box (k3s runs beside a box started on the host)"
 else
   echo "k3s cluster:         disabled (turn on box.k3s in 'agent-box config')"
 fi
@@ -2857,7 +2861,8 @@ def runtime_main(
             extra_env = [
                 *extra_env,
                 f"{BROWSER_ENABLED_ENV}={'1' if config.box.tools.browser() else '0'}",
-                f"AGENT_BOX_K3S={'nested' if nested_k3s else '1' if config.box.k3s.enabled else '0'}",
+                # A joined nested box already carries k3s off in its policy.
+                f"AGENT_BOX_K3S={'nested' if inside_box() else '1' if config.box.k3s.enabled else '0'}",
                 f"{CLAUDE_SKILL_LINKS_ENV}={'1' if config.host.claude_skill_links else '0'}",
                 f"{IMAGE_TOOLS_ENV}={','.join(config.box.tools.enabled_groups())}",
                 f"AGENT_BOX_IMAGE={existing.image if existing else IMAGE}",
