@@ -28,6 +28,12 @@ SUBID_FILES = (Path("/etc/subuid"), Path("/etc/subgid"))
 #: The first ID of the subordinate ranges ``useradd`` hands out.
 SUBID_START = 100000
 SUBID_COUNT = 65536
+#: Policies that switch unprivileged user namespaces off; Podman's error
+#: names neither. 15000 is the limit Podman's rootless guide suggests.
+NAMESPACE_SYSCTLS = (
+    (Path("/proc/sys/user/max_user_namespaces"), "user.max_user_namespaces", "15000"),
+    (Path("/proc/sys/kernel/unprivileged_userns_clone"), "kernel.unprivileged_userns_clone", "1"),
+)
 
 #: Distribution family -> (installer, Podman package, package with the
 #: setuid ``newuidmap``/``newgidmap`` rootless Podman maps its ranges with).
@@ -71,19 +77,39 @@ def install_hint(release: dict[str, str], what: str, package: int) -> str:
     return f"Install {what} as your distribution describes: {INSTALL_GUIDE}"
 
 
-def free_subid_start() -> int:
-    """A start past every range already handed out, so a new range shares no IDs."""
+def free_subid_start() -> int | None:
+    """A start past every range already handed out, so a new range shares no IDs.
+
+    None when an existing allocation file cannot be read: a guessed start
+    could hand out another user's range in a command run under sudo.
+    """
     start = SUBID_START
     for path in SUBID_FILES:
         try:
             lines = path.read_text(encoding="utf-8").splitlines()
-        except OSError:
+        except FileNotFoundError:
             continue
+        except (OSError, UnicodeDecodeError):
+            return None
         for line in lines:
             fields = line.split(":")
             if len(fields) == 3 and fields[1].isdigit() and fields[2].isdigit():
                 start = max(start, int(fields[1]) + int(fields[2]))
     return start
+
+
+def namespace_policy() -> str | None:
+    """The sysctl that forbids unprivileged user namespaces, with the value that allows them."""
+    for path, name, allowed in NAMESPACE_SYSCTLS:
+        try:
+            value = path.read_text(encoding="ascii").strip()
+        except (OSError, UnicodeDecodeError):
+            continue
+        if value == "0":
+            return (f"The kernel forbids unprivileged user namespaces ({name} = 0). Allow them:\n"
+                    f"  sudo sysctl -w {name}={allowed}\n"
+                    "and keep the setting in a file under /etc/sysctl.d/.")
+    return None
 
 
 def _run(*args: str) -> subprocess.CompletedProcess:
@@ -123,8 +149,8 @@ def problem() -> str | None:
     if result.returncode:
         return (f"rootless Podman cannot enter its user namespace: "
                 f"{result.stderr.strip() or f'exit {result.returncode}'}\n"
-                "If Podman's configuration changed since its last run, reset its namespace: "
-                "podman system migrate")
+                + (namespace_policy() or "If Podman's configuration changed since its last run, "
+                   "reset its namespace: podman system migrate"))
     # Each map always holds the user as root; only a subordinate range maps
     # more than that one ID. Without one, images whose files belong to
     # several owners cannot be unpacked. Maps are judged separately: several
@@ -140,12 +166,16 @@ def problem() -> str | None:
     if lacking:
         user = pwd.getpwuid(os.getuid()).pw_name
         start = free_subid_start()
-        span = f"{start}-{start + SUBID_COUNT - 1}"
-        return (f"rootless Podman has no subordinate {'/'.join(k.upper() for k in lacking)} range for "
-                f"{user} in {' and '.join(f'/etc/sub{k}' for k in lacking)}. Add one and restart "
-                "Podman's namespace:\n"
-                f"  sudo usermod {' '.join(f'--add-sub{k}s {span}' for k in lacking)} {user}\n"
-                "  podman system migrate")
+        span = "FIRST-LAST" if start is None else f"{start}-{start + SUBID_COUNT - 1}"
+        files = " and ".join(f"/etc/sub{k}" for k in lacking)
+        message = (f"rootless Podman has no subordinate {'/'.join(k.upper() for k in lacking)} range for "
+                   f"{user} in {files}. Add one and restart Podman's namespace:\n"
+                   f"  sudo usermod {' '.join(f'--add-sub{k}s {span}' for k in lacking)} {user}\n"
+                   "  podman system migrate")
+        if start is None:
+            message += (f"\n/etc/subuid or /etc/subgid could not be read: choose FIRST-LAST as "
+                        f"{SUBID_COUNT} IDs that no range listed there overlaps.")
+        return message
     return None
 
 

@@ -70,11 +70,28 @@ class HostPodmanTests(unittest.TestCase):
         self.assertIn("sudo apt install uidmap", message)
         self.assertEqual(run.call_count, 1)
 
+    def namespace_failure(self, policy=None):
+        with tempfile.TemporaryDirectory() as tmp:
+            sysctls = []
+            for name, value in (policy or {}).items():
+                path = Path(tmp, name)
+                path.write_text(f"{value}\n")
+                sysctls.append((path, name, "1"))
+            with mock.patch.object(host_podman, "NAMESPACE_SYSCTLS", tuple(sysctls)):
+                message, _ = self.problem(responses=[result(output="podman version 5.4.2"),
+                                                     result(1, error="newuidmap: write to uid_map failed")])
+        return message
+
     def test_a_namespace_that_cannot_be_entered_reports_podmans_reason(self):
-        message, _ = self.problem(responses=[result(output="podman version 5.4.2"),
-                                             result(1, error="newuidmap: write to uid_map failed")])
+        message = self.namespace_failure({"user.max_user_namespaces": 28633})
         self.assertIn("write to uid_map failed", message)
         self.assertIn("podman system migrate", message)
+
+    def test_a_kernel_that_forbids_user_namespaces_gets_the_sysctl_not_migrate(self):
+        """podman system migrate cannot lift a kernel policy; the sysctl that set it can."""
+        message = self.namespace_failure({"user.max_user_namespaces": 28633, "kernel.unprivileged_userns_clone": 0})
+        self.assertIn("sudo sysctl -w kernel.unprivileged_userns_clone=1", message)
+        self.assertNotIn("podman system migrate", message)
 
     def test_missing_subordinate_ranges_get_a_range_no_one_else_holds(self):
         """A range overlapping another user's would let their containers share IDs."""
@@ -87,6 +104,17 @@ class HostPodmanTests(unittest.TestCase):
                                                      result(output=f"{UID_MAP}0 1000 1\n{GID_MAP}0 1000 1\n")])
         self.assertIn("--add-subuids 170000-235535 --add-subgids 170000-235535", message)
         self.assertIn("podman system migrate", message)
+
+    def test_unreadable_allocations_get_no_guessed_range(self):
+        """A start guessed past unread ranges could hand out another user's IDs under sudo."""
+        with tempfile.TemporaryDirectory() as tmp:
+            unreadable = Path(tmp, "subuid")
+            unreadable.mkdir()
+            with mock.patch.object(host_podman, "SUBID_FILES", (unreadable, Path(tmp, "subgid"))):
+                message, _ = self.problem(responses=[result(output="podman version 5.4.2"),
+                                                     result(output=f"{UID_MAP}0 1000 1\n{GID_MAP}0 1000 1\n")])
+        self.assertIn("--add-subuids FIRST-LAST", message)
+        self.assertNotIn(str(host_podman.SUBID_START), message)
 
     def test_several_uid_extents_do_not_stand_in_for_a_missing_gid_range(self):
         """Counted together, two UID extents would pass a host that cannot map any GID."""
