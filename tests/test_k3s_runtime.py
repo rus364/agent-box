@@ -261,7 +261,7 @@ class NestedLaunchTests(K3sRuntimeTest):
     through its session snapshot, but a sidecar cannot start in nested Podman:
     every nested launch pulled the k3s image and then failed on sysfs."""
 
-    def launch(self, inside: bool, config: Config | None = None):
+    def launch(self, inside: bool, config: Config | None = None, project: dict | None = None):
         captured = {}
 
         def fake_launch(spec, workspace, command, extra_env, process_env=None):
@@ -269,6 +269,7 @@ class NestedLaunchTests(K3sRuntimeTest):
             return 0
 
         with mock.patch.object(runtime, "inside_box", return_value=inside), \
+                mock.patch("agent_box.project_config.load", return_value=project or {}), \
                 mock.patch.object(runtime.host_podman, "require"), \
                 mock.patch.object(runtime, "resolve_workspace", return_value=self.workspace), \
                 mock.patch.object(runtime, "load_config", return_value=config or k3s_config()), \
@@ -309,6 +310,15 @@ class NestedLaunchTests(K3sRuntimeTest):
         with mock.patch.dict(os.environ, {"AGENT_BOX_RUNTIME_CONFIG": str(snapshot)}), \
                 mock.patch("agent_box.project_config.load", return_value={}):
             self.assertFalse(effective_config().box.k3s.enabled)
+
+    def test_a_project_that_switched_k3s_off_still_hands_on_a_k3s_free_snapshot(self):
+        """The snapshot renders from the layer beneath the project, where the
+        global setting still has the cluster on."""
+        _, ensure, warnings, snapshot = self.launch(inside=True, project={"box": {"k3s": {"enabled": False}}})
+        ensure.assert_not_called()
+        self.assertFalse(any("gets no cluster of its own" in warning for warning in warnings))
+        with mock.patch.dict(os.environ, {"AGENT_BOX_RUNTIME_CONFIG": str(snapshot)}):
+            self.assertFalse(effective_config(include_project=False).box.k3s.enabled)
 
     def test_doctor_in_a_joined_nested_box_still_names_the_nested_case(self):
         """A nested box created earlier recorded k3s off, so the launch sees it

@@ -1616,15 +1616,18 @@ def withhold_nested_k3s(config: Config) -> list[str]:
     off in the snapshot layer and in the inherited box policy too, which the
     snapshot carries and a nested session reapplies over both.
     """
-    if not (config.box.k3s.enabled and inside_box()):
+    if not inside_box():
         return []
+    # Every layer, even where a project switched the cluster off: the snapshot
+    # renders from the layer beneath the project.
+    enabled = config.box.k3s.enabled
     for layer in (config, getattr(config, "_project_base", config)):
         layer.box.k3s = replace(layer.box.k3s, enabled=False)
         policy = getattr(layer, "_box_policy", None)
         if policy is not None:
             policy["box"]["k3s"]["enabled"] = False
     return ["box.k3s is on, but a box started inside a workspace box gets no cluster of its own; "
-            "the outer box has it"]
+            "the outer box has it"] if enabled else []
 
 
 def k3s_warnings(config: Config) -> list[str]:
