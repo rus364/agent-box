@@ -136,6 +136,14 @@ class NestedLaunchTests(K3sRuntimeTest):
             self.assertFalse(effective_config().box.links.enabled)
 
 
+    def test_a_launch_reports_an_image_with_foreign_nested_podman_ranges(self):
+        """Creating the box would succeed and leave Podman in it failing on newuidmap."""
+        with mock.patch.object(runtime, "nested_podman_drift", return_value=["ranges differ"]) as drift:
+            _, _, warnings, _ = self.launch(inside=True, config=Config())
+        drift.assert_called_once()
+        self.assertIn("ranges differ", warnings)
+
+
 class NestedLinksDirectoryTests(unittest.TestCase):
     def test_a_nested_launcher_never_addresses_the_outer_broker(self):
         """Podman mounts the outer broker's socket directory at the host path,

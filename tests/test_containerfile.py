@@ -315,6 +315,13 @@ class ImageSurfaceTests(unittest.TestCase):
                        if "@anthropic-ai/claude-code@latest" in i)
         self.assertIn("--allow-scripts=@anthropic-ai/claude-code", install)
 
+    def test_the_image_records_its_nested_podman_ranges(self):
+        """A launch compares them with what its own Podman can delegate."""
+        from agent_box import runtime
+        text = containerfile_text()
+        for kind, label in runtime.IMAGE_ID_RANGE_LABELS.items():
+            self.assertIn(f'{label}="${{PODMAN_{kind.upper()}_RANGES}}"', text)
+
     def test_pebble_is_removed_without_invalidating_stable_layers(self):
         """The base's unpackaged Pebble is never run and carries its own Go
         advisories; removing it above the browser or jscpd layers would

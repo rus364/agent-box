@@ -271,6 +271,8 @@ def ensure_refresh_token() -> None:
 
 #: Label the image carries, naming the optional tool groups it was built with.
 IMAGE_TOOLS_LABEL = "io.agent-box.tools"
+#: Labels recording the subordinate ID ranges the image's nested Podman delegates.
+IMAGE_ID_RANGE_LABELS = {"uid": "io.agent-box.podman-uid-ranges", "gid": "io.agent-box.podman-gid-ranges"}
 
 
 def tool_build_args(config: Config) -> list[str]:
@@ -329,18 +331,50 @@ def build_image(script_dir: Path, refresh: bool, no_cache: bool,
     return rc
 
 
+def nested_podman_ranges(identity: HostIdentity) -> dict[str, list[tuple[int, int]]]:
+    """The subordinate UID and GID ranges this Podman can delegate to a box."""
+    try:
+        mappings = nested_podman.host_info()["idMappings"]
+        return {kind: nested_podman.subid_ranges(mappings[kind + "map"], getattr(identity, kind))
+                for kind in ("uid", "gid")}
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise AgentBoxError(f"Cannot configure nested Podman IDs: {exc}") from exc
+
+
 def nested_podman_build_args(config: Config, identity: HostIdentity) -> list[str]:
     if not config.box.tools.groups["podman"]:
         return []
+    return [arg for kind, ranges in nested_podman_ranges(identity).items()
+            for arg in ("--build-arg", f"PODMAN_{kind.upper()}_RANGES={json.dumps(ranges, separators=(',', ':'))}")]
+
+
+def nested_podman_drift(config: Config) -> list[str]:
+    """An image whose nested Podman delegates ranges this Podman no longer has.
+
+    The image writes its builder's ranges into /etc/subuid and /etc/subgid,
+    and Podman in the box can map only what the box itself was given: an
+    image built on another host, a level up, or before the host's subordinate
+    IDs changed creates a box whose Podman fails on newuidmap. Reported like
+    tool drift and never rebuilt here. An unlabelled image is unknown, and one
+    built without the group is tool drift's to report.
+    """
+    if not config.box.tools.groups["podman"]:
+        return []
     try:
-        mappings = nested_podman.host_info()["idMappings"]
-        args = []
-        for kind in ("uid", "gid"):
-            ranges = nested_podman.subid_ranges(mappings[kind + "map"], getattr(identity, kind))
-            args += ["--build-arg", f"PODMAN_{kind.upper()}_RANGES={json.dumps(ranges, separators=(',', ':'))}"]
-        return args
-    except (OSError, ValueError, KeyError, TypeError) as exc:
-        raise AgentBoxError(f"Cannot configure nested Podman IDs: {exc}") from exc
+        built = {kind: [tuple(item) for item in json.loads(image_label(label) or "null") or []]
+                 for kind, label in IMAGE_ID_RANGE_LABELS.items()}
+    except (ValueError, TypeError):
+        return []
+    if not all(built.values()):
+        return []
+    try:
+        current = nested_podman_ranges(detect_host_identity())
+    except AgentBoxError:
+        return []  # Creating the box reports this Podman's own problem.
+    if built == current:
+        return []
+    return ["the image's nested Podman was built for other subordinate ID ranges than this Podman "
+            "can delegate, so Podman in the box cannot start -- run 'agent-box build'"]
 
 
 def nested_podman_args(config: Config, workspace: Workspace) -> list[str]:
@@ -366,14 +400,10 @@ def nested_podman_args(config: Config, workspace: Workspace) -> list[str]:
         raise AgentBoxError(f"Cannot configure nested Podman: {exc}") from exc
 
 
-def image_tool_groups(image: str | None = None) -> list[str] | None:
-    """The groups the built image carries, or ``None`` when it cannot be read.
-
-    ``None`` is not "no groups": an image that predates the label, or a
-    Podman that cannot be asked, must not be reported as missing everything.
-    """
+def image_label(name: str, image: str | None = None) -> str | None:
+    """A label of the built image, or ``None`` when it is absent or cannot be read."""
     command = ["podman", "image", "inspect", "--format",
-               f"{{{{index .Labels \"{IMAGE_TOOLS_LABEL}\"}}}}", image or IMAGE]
+               f"{{{{index .Labels \"{name}\"}}}}", image or IMAGE]
     try:
         result = subprocess.run(command, text=True, capture_output=True)
     except OSError:
@@ -381,7 +411,17 @@ def image_tool_groups(image: str | None = None) -> list[str] | None:
     if result.returncode:
         return None
     value = result.stdout.strip()
-    if value in ("", "<no value>"):
+    return None if value in ("", "<no value>") else value
+
+
+def image_tool_groups(image: str | None = None) -> list[str] | None:
+    """The groups the built image carries, or ``None`` when it cannot be read.
+
+    ``None`` is not "no groups": an image that predates the label, or a
+    Podman that cannot be asked, must not be reported as missing everything.
+    """
+    value = image_label(IMAGE_TOOLS_LABEL, image)
+    if value is None:
         return None
     return sorted(part for part in value.split(",") if part)
 
@@ -2852,6 +2892,8 @@ def runtime_main(
         if extra:
             warn(f"image still carries tool group(s) you turned off: {', '.join(extra)}"
                  f" -- run 'agent-box build' to drop them")
+        for problem in nested_podman_drift(config):
+            warn(problem)
     # Every launch, not only box creation: joining a running box with the
     # switch on and no socket leaves box identity unchanged and would say nothing.
     for problem in audio_warnings(config) + nested + k3s_warnings(config) + tool_warnings(config):

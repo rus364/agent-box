@@ -756,8 +756,11 @@ RUN printf '%s\n' '#!/bin/sh' 'exec agent-box links open "$@"' > /usr/local/bin/
 ENV BROWSER=xdg-open
 
 # What this image actually contains, so agent-box can tell a running image
-# that matches the configuration from one built before a group was turned on.
-LABEL io.agent-box.tools="${AGENT_BOX_TOOLS}"
+# that matches the configuration from one built before a group was turned on,
+# or one whose nested Podman was given ranges this host's Podman lacks.
+LABEL io.agent-box.tools="${AGENT_BOX_TOOLS}" \
+      io.agent-box.podman-uid-ranges="${PODMAN_UID_RANGES}" \
+      io.agent-box.podman-gid-ranges="${PODMAN_GID_RANGES}"
 
 USER ${USER_NAME}
 

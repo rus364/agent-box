@@ -78,6 +78,44 @@ class NestedIdTests(unittest.TestCase):
             self.assertEqual(config["containers"]["netns"], config["network"]["default_rootless_network_cmd"])
 
 
+class NestedIdDriftTests(unittest.TestCase):
+    """An image writes its builder's ranges into /etc/subuid; a box can map only
+    what its own Podman was given, so a mismatched image fails on newuidmap
+    inside the box unless the launch says to rebuild."""
+
+    HOST = {"uidmap": [{"container_id": 0, "host_id": 1000, "size": 1},
+                       {"container_id": 1, "host_id": 100000, "size": 65536}]}
+    BOX = {"uidmap": [{"container_id": 0, "host_id": 1000, "size": 1},
+                      {"container_id": 1, "host_id": 1, "size": 999},
+                      {"container_id": 1000, "host_id": 1001, "size": 64536}]}
+
+    def drift(self, built_on, running_on, labelled=True, podman=True):
+        mappings = {kind + "map": rows for kind in ("uid", "gid") for rows in [running_on["uidmap"]]}
+        built = nested_podman.subid_ranges(built_on["uidmap"], 1000)
+        labels = {label: json.dumps(built) if labelled else None
+                  for label in runtime.IMAGE_ID_RANGE_LABELS.values()}
+        config = Config()
+        config.box.tools.groups["podman"] = podman
+        with mock.patch.object(runtime, "image_label", side_effect=lambda name, image=None: labels[name]), \
+                mock.patch.object(nested_podman, "host_info", return_value={"idMappings": mappings}), \
+                mock.patch.object(runtime, "detect_host_identity",
+                                  return_value=HostIdentity("user", 1000, 1000, Path("/home/user"))):
+            return runtime.nested_podman_drift(config)
+
+    def test_an_image_built_for_this_podman_is_quiet(self):
+        self.assertEqual(self.drift(self.BOX, self.BOX), [])
+
+    def test_an_image_built_a_level_up_says_to_rebuild(self):
+        """The host's last subordinate UID does not exist inside the box."""
+        warnings = self.drift(self.HOST, self.BOX)
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("agent-box build", warnings[0])
+
+    def test_an_unlabelled_image_or_a_box_without_podman_is_not_drift(self):
+        self.assertEqual(self.drift(self.HOST, self.BOX, labelled=False), [])
+        self.assertEqual(self.drift(self.HOST, self.BOX, podman=False), [])
+
+
 class NestedSeccompTests(unittest.TestCase):
     def test_only_required_syscalls_change_and_conflicting_denies_are_removed(self):
         """Appending allow rules alone leaves higher-precedence errno rules active."""
