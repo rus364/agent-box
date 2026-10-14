@@ -70,7 +70,7 @@ class HostPodmanTests(unittest.TestCase):
         self.assertIn("sudo apt install uidmap", message)
         self.assertEqual(run.call_count, 1)
 
-    def namespace_failure(self, policy=None, helpers=()):
+    def namespace_failure(self, policy=None, helpers=(), release=CACHYOS):
         with tempfile.TemporaryDirectory() as tmp:
             sysctls = []
             for name, value in (policy or {}).items():
@@ -79,7 +79,8 @@ class HostPodmanTests(unittest.TestCase):
                 sysctls.append((path, name, "1"))
             with mock.patch.object(host_podman, "NAMESPACE_SYSCTLS", tuple(sysctls)), \
                  mock.patch.object(host_podman, "unprivileged_helpers", return_value=list(helpers)):
-                message, _ = self.problem(responses=[result(output="podman version 5.4.2"),
+                message, _ = self.problem(release=release,
+                                          responses=[result(output="podman version 5.4.2"),
                                                      result(1, error="newuidmap: write to uid_map failed")])
         return message
 
@@ -108,10 +109,14 @@ class HostPodmanTests(unittest.TestCase):
 
     def test_helpers_without_privileges_get_reinstalled_not_migrated(self):
         """Without setuid or file capabilities newuidmap cannot write a map; migrate changes nothing."""
-        message = self.namespace_failure(helpers=("newuidmap",))
-        self.assertIn("newuidmap can map no IDs", message)
-        self.assertIn("sudo pacman -S shadow", message)
-        self.assertNotIn("podman system migrate", message)
+        for release, command in ((CACHYOS, "sudo pacman -S shadow"),
+                                 ({"ID": "ubuntu"}, "sudo apt install --reinstall uidmap"),
+                                 ({"ID": "rocky", "ID_LIKE": "rhel centos fedora"}, "sudo dnf reinstall shadow-utils")):
+            with self.subTest(release=release["ID"]):
+                message = self.namespace_failure(helpers=("newuidmap",), release=release)
+                self.assertIn("newuidmap can map no IDs", message)
+                self.assertIn(command, message)
+                self.assertNotIn("podman system migrate", message)
 
     def test_a_helper_privileged_by_setuid_or_capability_is_not_reported(self):
         with tempfile.TemporaryDirectory() as tmp:

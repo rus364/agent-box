@@ -15,6 +15,7 @@ import shutil
 import stat
 import subprocess
 from pathlib import Path
+from typing import Callable, NamedTuple
 
 from .errors import AgentBoxError
 
@@ -37,21 +38,33 @@ NAMESPACE_SYSCTLS = (
     (Path("/proc/sys/kernel/unprivileged_userns_clone"), "kernel.unprivileged_userns_clone", "1"),
 )
 
-#: Distribution family -> (installer, Podman package, package with the
-#: setuid ``newuidmap``/``newgidmap`` rootless Podman maps its ranges with).
+
+class Family(NamedTuple):
+    install: str
+    #: Installing an installed package is a no-op on most managers; restoring
+    #: a helper's lost privileges needs the explicit reinstall.
+    reinstall: str
+    podman: str
+    #: Provides the setuid ``newuidmap``/``newgidmap`` rootless Podman maps its ranges with.
+    id_map: str
+
+
 #: Matched against ``ID`` first, then each ``ID_LIKE`` entry, so derivatives
 #: (CachyOS, Mint, Rocky) resolve through the family they declare.
+_APT = ("sudo apt install", "sudo apt install --reinstall", "podman", "uidmap")
+_DNF = ("sudo dnf install", "sudo dnf reinstall", "podman", "shadow-utils")
+_ZYPPER = ("sudo zypper install", "sudo zypper install --force", "podman", "shadow")
 FAMILIES = {
-    "arch": ("sudo pacman -S", "podman", "shadow"),
-    "debian": ("sudo apt install", "podman", "uidmap"),
-    "ubuntu": ("sudo apt install", "podman", "uidmap"),
-    "fedora": ("sudo dnf install", "podman", "shadow-utils"),
-    "rhel": ("sudo dnf install", "podman", "shadow-utils"),
-    "centos": ("sudo dnf install", "podman", "shadow-utils"),
-    "suse": ("sudo zypper install", "podman", "shadow"),
-    "opensuse": ("sudo zypper install", "podman", "shadow"),
-    "alpine": ("sudo apk add", "podman", "shadow-uidmap"),
-    "gentoo": ("sudo emerge", "app-containers/podman", "sys-apps/shadow"),
+    "arch": Family("sudo pacman -S", "sudo pacman -S", "podman", "shadow"),
+    "debian": Family(*_APT),
+    "ubuntu": Family(*_APT),
+    "fedora": Family(*_DNF),
+    "rhel": Family(*_DNF),
+    "centos": Family(*_DNF),
+    "suse": Family(*_ZYPPER),
+    "opensuse": Family(*_ZYPPER),
+    "alpine": Family("sudo apk add", "sudo apk fix", "podman", "shadow-uidmap"),
+    "gentoo": Family("sudo emerge", "sudo emerge --oneshot", "app-containers/podman", "sys-apps/shadow"),
 }
 
 
@@ -70,13 +83,13 @@ def os_release(paths: tuple[Path, ...] = OS_RELEASE) -> dict[str, str]:
     return {}
 
 
-def install_hint(release: dict[str, str], what: str, package: int) -> str:
-    """``package`` indexes a FAMILIES entry: 1 for Podman, 2 for the ID-map helpers."""
+def install_hint(what: str, command: Callable[[Family], str]) -> str:
+    release = os_release()
     for name in [release.get("ID", ""), *release.get("ID_LIKE", "").split()]:
         family = FAMILIES.get(name.lower())
         if family:
-            return f"Install {what}: {family[0]} {family[package]}"
-    return f"Install {what} as your distribution describes: {INSTALL_GUIDE}"
+            return f"{what}: {command(family)}"
+    return f"{what} as your distribution describes: {INSTALL_GUIDE}"
 
 
 def free_subid_start() -> int | None:
@@ -135,7 +148,8 @@ def helper_privileges() -> str | None:
     if not names:
         return None
     return (f"{' and '.join(names)} can map no IDs without setuid or file capabilities; "
-            "reinstall the package that provides them.\n" + install_hint(os_release(), "it again", 2))
+            "reinstall the package that provides them.\n"
+            + install_hint("Reinstall it", lambda f: f"{f.reinstall} {f.id_map}"))
 
 
 def _run(*args: str) -> subprocess.CompletedProcess:
@@ -153,7 +167,7 @@ def problem() -> str | None:
         return "rootless Podman is required: run agent-box as your own user, not as root or under sudo"
     if not shutil.which("podman"):
         lines = ["rootless Podman is required, and podman is not installed.",
-                 install_hint(os_release(), "it", 1)]
+                 install_hint("Install it", lambda f: f"{f.install} {f.podman}")]
         if shutil.which("docker"):
             lines.append("Docker can stay installed alongside it: install the podman package, "
                          "not podman-docker, which replaces the docker command.")
@@ -170,7 +184,7 @@ def problem() -> str | None:
     missing = [name for name in ID_MAP_HELPERS if not shutil.which(name)]
     if missing:
         return (f"rootless Podman needs {' and '.join(missing)}, which are not installed.\n"
-                + install_hint(os_release(), "them", 2))
+                + install_hint("Install them", lambda f: f"{f.install} {f.id_map}"))
     result = _run("unshare", "grep", "-H", ".", "/proc/self/uid_map", "/proc/self/gid_map")
     if result.returncode:
         return (f"rootless Podman cannot enter its user namespace: "
