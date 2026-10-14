@@ -8,6 +8,7 @@ from unittest import mock
 
 from agent_box import paths, runtime
 from agent_box.config import Config, effective_config
+from agent_box.launch_options import LaunchOptions
 from test_k3s_runtime import K3sRuntimeTest, k3s_config
 
 
@@ -17,7 +18,8 @@ class NestedLaunchTests(K3sRuntimeTest):
     every nested launch pulled the k3s image and failed on sysfs, and with k3s
     off it failed on the outer broker's socket directory."""
 
-    def launch(self, inside: bool, config: Config | None = None, project: dict | None = None):
+    def launch(self, inside: bool, config: Config | None = None, project: dict | None = None,
+               options: LaunchOptions | None = None):
         captured = {}
 
         def fake_launch(spec, workspace, command, extra_env, process_env=None):
@@ -38,7 +40,7 @@ class NestedLaunchTests(K3sRuntimeTest):
                 mock.patch.object(runtime, "warn") as warn, \
                 self.assertRaises(SystemExit):
             sidecar["api_port"].return_value = 41234
-            runtime.runtime_main(["doctor"], Path.cwd())
+            runtime.runtime_main(["doctor"], Path.cwd(), options)
         target = Path(next(item.split("=", 1)[1] for item in captured["env"]
                            if item.startswith("AGENT_BOX_RUNTIME_CONFIG=")))
         source, destination, _ = runtime.tracker_mounts(Config(), runtime.workspace_runtime_state(self.workspace))[0]
@@ -112,6 +114,26 @@ class NestedLaunchTests(K3sRuntimeTest):
         self.assertTrue(captured["links"])
         self.assertTrue(any(runtime.links.SOCKET_ENV in arg for arg in captured["argv"]))
         self.assertFalse(any("gets no host link broker" in warning for warning in warnings))
+
+
+    def test_an_explicit_links_flag_does_not_conflict_with_a_running_nested_box(self):
+        """A running nested box records links off; comparing --links with that
+        policy would refuse every later nested launch that passes it."""
+        _, _, warnings, snapshot = self.launch(inside=True, config=Config(),
+                                               options=LaunchOptions(overrides={"links": True}))
+        admitted = runtime.existing_workspace_spec.call_args.args[1]
+        self.assertIs(admitted.overrides["links"], False)
+        self.assertTrue(any("gets no host link broker" in warning for warning in warnings))
+        self.assertFalse(json.loads(snapshot.read_text())["launch"]["links"])
+
+    def test_an_inherited_links_flag_is_not_replayed_in_the_nested_session(self):
+        """The snapshot replays the session's launch flags over the box policy."""
+        config = Config()
+        config._launch = {"links": True}
+        _, _, _, snapshot = self.launch(inside=True, config=config)
+        with mock.patch.dict(os.environ, {"AGENT_BOX_RUNTIME_CONFIG": str(snapshot)}), \
+                mock.patch("agent_box.project_config.load", return_value={}):
+            self.assertFalse(effective_config().box.links.enabled)
 
 
 class NestedLinksDirectoryTests(unittest.TestCase):

@@ -1630,14 +1630,28 @@ def withhold_from_nested_box(config: Config) -> list[str]:
         return []
     warnings = [message for name, message in NESTED_WITHHELD.items() if getattr(config.box, name).enabled]
     # Every layer, even where a project switched one off: the snapshot
-    # renders from the layer beneath the project.
+    # renders from the layer beneath the project, and replays the session's
+    # launch flags, an inherited --links among them, over the box policy.
     for layer in (config, getattr(config, "_project_base", config)):
         policy = getattr(layer, "_box_policy", None)
         for name in NESTED_WITHHELD:
             setattr(layer.box, name, replace(getattr(layer.box, name), enabled=False))
             if policy is not None:
                 policy["box"][name]["enabled"] = False
+        if getattr(layer, "_launch", {}).get("links"):
+            layer._launch["links"] = False
     return warnings
+
+
+def nested_launch_options(options):
+    """``--links`` inside a box asks for a broker a nested box never gets.
+
+    Turned off before a running nested box is admitted, whose policy already
+    records links off and would otherwise refuse the flag as a conflict.
+    """
+    if not (inside_box() and options.overrides.get("links")):
+        return options, []
+    return replace(options, overrides={**options.overrides, "links": False}), [NESTED_WITHHELD["links"]]
 
 
 def k3s_warnings(config: Config) -> list[str]:
@@ -2806,9 +2820,10 @@ def runtime_main(
 
     ensure_state_dirs()
     ensure_refresh_token()
+    options, requested = nested_launch_options(options)
     existing = existing_workspace_spec(workspace, options)
     config = launch_config(options, box_policy=existing.creation_config._box_policy if existing else None)
-    nested = withhold_from_nested_box(config)
+    nested = list(dict.fromkeys(requested + withhold_from_nested_box(config)))
     agent, rest = config.agents.default, args
     if args and args[0] in {"claude", "codex", "shell", "doctor"}:
         agent, rest = args[0], args[1:]
