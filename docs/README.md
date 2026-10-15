@@ -9,8 +9,8 @@ session.
 
 ## Integrations
 
-Optional capabilities, all off by default: the
-[integration index](integrations/README.md) lists each one with what it exposes.
+Optional capabilities: the [integration index](integrations/README.md) lists
+each one with its default and what it exposes.
 
 ## Design records
 

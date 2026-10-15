@@ -16,6 +16,7 @@ from urllib.parse import unquote
 
 ROOT = Path(__file__).resolve().parent.parent
 
+QUOTE = re.compile(r"^(?: {0,3}> ?)*")
 FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
 CODE_SPAN = re.compile(r"(`+)(?:(?!\1).)+?\1", re.DOTALL)
 TITLE = r"""(?:\s+(?:"[^"]*"|'[^']*'|\([^)]*\)))?"""
@@ -40,7 +41,7 @@ def prose(text: str) -> str:
     lines = text.split("\n")
     fence = None
     for index, line in enumerate(lines):
-        match = FENCE.match(line)
+        match = FENCE.match(QUOTE.sub("", line, count=1))
         if fence is None and match:
             fence = match.group(1)
             lines[index] = ""
@@ -69,16 +70,19 @@ def slug(heading: str) -> str:
 def anchors(path: Path) -> set[str]:
     text = path.read_text(encoding="utf-8")
     found = {double or single for double, single in EXPLICIT_ANCHOR.findall(prose(text))}
-    seen: dict[str, int] = {}
+    occurrences: dict[str, int] = {}
     for raw, visible in zip(text.split("\n"), prose(text).split("\n")):
         # The blanked line says whether this is a heading at all; the raw one keeps its code text.
         if not HEADING.match(visible):
             continue
         match = HEADING.match(raw)
-        base = slug(match.group(2))
-        count = seen.get(base, 0)
-        seen[base] = count + 1
-        found.add(base if count == 0 else f"{base}-{count}")
+        # github-slugger: a suffix already taken by another heading is skipped.
+        base = result = slug(match.group(2))
+        while result in occurrences:
+            occurrences[base] += 1
+            result = f"{base}-{occurrences[base]}"
+        occurrences[result] = 0
+        found.add(result)
     return found
 
 
@@ -152,6 +156,14 @@ class LinkCheckerTests(unittest.TestCase):
             "[a](#use-config-ai-guided) [b](#notes-1) [c](#notes-2)\n"
         )})
         self.assertEqual(problems, ["README.md:9: #notes-2 (no such anchor)"])
+
+    def test_duplicate_suffix_skips_an_existing_heading_id(self):
+        problems = self.check({"README.md": "# T\n\n## Notes\n\n## Notes-1\n\n## Notes\n\n[a](#notes-2)\n"})
+        self.assertEqual(problems, [])
+
+    def test_fenced_example_inside_a_blockquote_is_not_checked(self):
+        problems = self.check({"README.md": "# T\n\n> ~~~markdown\n> [example](missing.md)\n> ~~~\n"})
+        self.assertEqual(problems, [])
 
     def test_links_shown_inside_code_are_not_checked(self):
         problems = self.check({"README.md": (
