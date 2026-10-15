@@ -215,7 +215,8 @@ class WritableGitHub(FakeGitHub):
         return {"closeIssue": {"issue": {"id": issueId}}}
 
     def op_ReopenIssue(self, issueId):
-        self.node(issueId).update(state="OPEN", stateReason="REOPENED")
+        # GitHub drops the duplicate mark on reopen (checked live on the sandbox).
+        self.node(issueId).update(state="OPEN", stateReason="REOPENED", duplicateOf=None)
         return {"reopenIssue": {"issue": {"id": issueId}}}
 
     def op_ReplaceAssignees(self, assignableId, actorLogins):

@@ -153,6 +153,14 @@ class RelationWriteTests(unittest.TestCase):
         with self.assertRaisesRegex(TrackerError, "only an open issue"):
             self.tracker.relate("1", "duplicate", "3")
 
+    def test_marking_again_after_reopening_closes_the_issue_again(self):
+        """Reopening drops GitHub's duplicate mark, so a second mark is a fresh close."""
+        self.tracker.relate("1", "duplicate", "2")
+        self.tracker.set_state(self.tracker.get("1"), "Ready")
+        task = self.tracker.relate("1", "duplicate", "2")
+        self.assertEqual((task.state, raw(self.client, 1)["state"], raw(self.client, 1)["status"]),
+                         ("Done", "CLOSED", "Done"))
+
     def test_duplicate_on_a_broken_board_writes_nothing_and_a_rerun_finishes_the_card(self):
         board = self.client.projects[2]["fields"]["nodes"][1]
         done = board["options"].pop()
