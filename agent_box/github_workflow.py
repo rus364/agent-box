@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from pathlib import Path
 
@@ -180,6 +181,21 @@ def _current_head(root, pr):
         raise AgentBoxError("Local and remote parent heads differ; the current work is not merged")
 
 
+#: GitHub's closing keywords: in a PR into the default branch they link an issue, which
+#: moves its card back to In progress, and merging closes it before workflow finish has
+#: proved anything.
+CLOSING = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b\s*:?\s+"
+                     r"(?:[\w.-]+/[\w.-]+#\d+|#\d+|https?://\S+/issues/\d+)", re.IGNORECASE)
+
+
+def closing_references(adapter, body_file):
+    """Closing keywords a PR body may not carry; only a GitHub Projects tracker owns those issues."""
+    from .tracker.github import GitHubAdapter
+    if not isinstance(adapter, GitHubAdapter):
+        return []
+    return [match.group(0) for match in CLOSING.finditer(Path(body_file).read_text(encoding="utf-8"))]
+
+
 def _operate(args, root, config, adapter, task, parent, info, saved, tasks):
     from .workflow import delta_review, evidence, integrated_parent, review_route, save_evidence, scope
     if not (config.credentials.github.token or config.credentials.github.config):
@@ -192,6 +208,10 @@ def _operate(args, root, config, adapter, task, parent, info, saved, tasks):
     if args.command == "pr":
         if task.state != "In review" or not saved.get("validation"):
             raise AgentBoxError("Finish parent acceptance and validation before opening a PR")
+        refused = closing_references(adapter, args.body_file)
+        if refused:
+            raise AgentBoxError("The PR body would close issues on merge (" + ", ".join(refused) + "); with a GitHub "
+                                "Projects tracker workflow closes tasks itself. Refer to the task without a closing keyword")
         if any(child.state != "Done" for child in tasks if child.id != task.id):
             raise AgentBoxError("All subtasks must be integrated before opening the parent PR")
         gw.push_parent(root, info["branch"], info["base"])

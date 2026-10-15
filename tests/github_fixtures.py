@@ -161,8 +161,9 @@ class WritableGitHub(FakeGitHub):
     the write that triggered them.
     """
 
-    def __init__(self, *args, lag=0, labels=(), auto_close=False, fail=(), **kwargs):
+    def __init__(self, *args, lag=0, labels=(), auto_close=False, fail=(), draft_items=(), **kwargs):
         super().__init__(*args, **kwargs)
+        self.draft_items = [dict(draft) for draft in draft_items]
         self.lag, self.pending = lag, []
         self.auto_close, self.fail = auto_close, list(fail)
         self.labels = set(labels)
@@ -333,6 +334,19 @@ class WritableGitHub(FakeGitHub):
         board["fields"]["nodes"].append(field(f"F-{name.lower()}", name, [o["name"] for o in singleSelectOptions]))
         board["fields"]["totalCount"] += 1
         return {"createProjectV2Field": {"clientMutationId": None}}
+
+    def op_Drafts(self, project, after):
+        nodes = [{"id": draft["item"], "type": "DRAFT_ISSUE", "content": {"title": draft["title"], "body": ""}}
+                 for draft in self.draft_items]
+        nodes.append({"id": "I-2-1", "type": "ISSUE", "content": {}})
+        return {"node": {"items": {"pageInfo": {"hasNextPage": False}, "nodes": nodes}}}
+
+    def op_ConvertDraft(self, itemId, repositoryId):
+        draft = next(draft for draft in self.draft_items if draft["item"] == itemId)
+        self.draft_items.remove(draft)
+        number = max([n for (repo, n) in self.issues if repo == REPO] + [0]) + 1
+        self.issues[(REPO, number)] = issue(number, title=draft["title"], status=draft["status"])
+        return {"convertProjectV2DraftIssueItemToIssue": {"item": {"id": itemId, "content": {"number": number}}}}
 
 
 def writable(issues=(), **options):

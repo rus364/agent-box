@@ -673,3 +673,20 @@ class GitHubAdapter:
         """The marker records completed processing, independently of task readiness."""
         return self.set_labels(task_id, NORMALIZED_LABEL if normalized else None,
                                [] if normalized else [NORMALIZED_LABEL])
+
+    def drafts(self, project):
+        return api.drafts(self.client, self.project(project)["node"])
+
+    def convert_draft(self, item):
+        """Turn a draft card on the bound board into an issue of this repository, keeping its column.
+
+        Drafts have no number, comments or relations, so normalization makes them
+        tasks before anything else.
+        """
+        bound = self.bound_project()
+        if item not in {draft["item"] for draft in self.drafts(bound["id"])}:
+            raise TrackerError(f"{item} is not a draft item on project {bound['id']}", "not-found")
+        repository = api.repository(self.client, self.repository())
+        converted = api.mutate(self.client, "ConvertDraft", itemId=item, repositoryId=repository["id"])
+        number = converted["convertProjectV2DraftIssueItemToIssue"]["item"]["content"]["number"]
+        return self.confirm(str(number), lambda task, _: task.project == bound["id"], "Draft conversion was not confirmed")

@@ -99,7 +99,15 @@ QUERIES = {
            ("AddLabels", "AddLabelsToLabelable", "addLabelsToLabelable", "clientMutationId"),
            ("RemoveLabels", "RemoveLabelsFromLabelable", "removeLabelsFromLabelable", "clientMutationId"),
            ("UpdateField", "UpdateProjectV2Field", "updateProjectV2Field", "clientMutationId"),
-           ("CreateField", "CreateProjectV2Field", "createProjectV2Field", "clientMutationId"))},
+           ("CreateField", "CreateProjectV2Field", "createProjectV2Field", "clientMutationId"),
+           ("ConvertDraft", "ConvertProjectV2DraftIssueItemToIssue", "convertProjectV2DraftIssueItemToIssue",
+            "item { id content { ... on Issue { number } } }"))},
+    "Drafts": """query Drafts($project: ID!, $after: String) {
+  node(id: $project) { ... on ProjectV2 { items(first: 100, after: $after) {
+    pageInfo { hasNextPage endCursor }
+    nodes { id type content { ... on DraftIssue { title body } } }
+  } } }
+}""",
     "Comments": """query Comments($owner: String!, $name: String!, $number: Int!, $after: String) {
   repository(owner: $owner, name: $name) { issue(number: $number) { comments(first: 100, after: $after) {
     pageInfo { hasNextPage endCursor }
@@ -370,3 +378,11 @@ def repository(client, repository, label=""):
     if not found:
         raise APIError(404, f"repository {repository} not found", kind="NOT_FOUND")
     return found
+
+
+def drafts(client, project_node):
+    """A board's draft items: cards with a title and body but no issue behind them."""
+    nodes = pages(client, "Drafts", {"project": project_node}, ("node", "items"), "project items")
+    return [{"item": node["id"], "title": (node.get("content") or {}).get("title") or "",
+             "body": (node.get("content") or {}).get("body") or ""}
+            for node in nodes if node.get("type") == "DRAFT_ISSUE"]
