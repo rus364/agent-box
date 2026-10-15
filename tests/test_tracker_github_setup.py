@@ -57,6 +57,15 @@ class BoardInitTests(unittest.TestCase):
         self.assertEqual(client.writes, ["UpdateField"])
         self.assertEqual(tracker.get("1").priority, 1)
 
+    def test_options_sharing_a_name_block_the_field_instead_of_losing_one(self):
+        """GitHub replaces the whole option list; dropping one would clear every card that used it."""
+        tracker, client = writable(projects={2: project(status=("Backlog", "ready", "Ready", "In progress",
+                                                                 "In review", "Done"), priority=P_SCALE)})
+        plan = fields(tracker.initialize_boards(["octo/2"], apply=True)[0])
+        self.assertIn("share the name", plan["Status"]["blocked"])
+        self.assertEqual(client.writes, ["UpdateField"])
+        self.assertEqual(len(client.projects[2]["fields"]["nodes"][1]["options"]), 6)
+
     def test_missing_priority_field_is_created_and_a_clashing_one_is_left(self):
         tracker, client = writable(projects={2: project(priority=None)})
         tracker.initialize_boards(["octo/2"], apply=True)

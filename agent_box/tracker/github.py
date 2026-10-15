@@ -217,6 +217,11 @@ class GitHubAdapter:
                 renames.append({"from": option["name"], "to": target})
                 present.add(target.casefold())
                 option["name"] = target
+        repeated = sorted({option["name"] for option in existing
+                           if sum(other["name"].casefold() == option["name"].casefold() for other in existing) > 1})
+        if repeated:
+            return {"field": name, "blocked": f"several {name} options share the name {', '.join(repeated)}; "
+                                              "merge them on GitHub first"}
         missing = [wanted for wanted in names if wanted.casefold() not in present]
         # Agreed options take the agreed order, since views sort and group by it;
         # an unknown option stays right after the agreed one it followed.
@@ -260,6 +265,12 @@ class GitHubAdapter:
                 option.setdefault("color", "GRAY")
                 option.setdefault("description", "")
             if field["exists"]:
+                # GitHub replaces the whole list; an option left out takes every card's value with it.
+                kept = {option.get("id") for option in options}
+                current, _ = self.single_select(project, field["field"])
+                if any(option["id"] not in kept for option in current["options"]):
+                    raise TrackerError(f"Board init would drop a {field['field']} option; nothing was written",
+                                       "conflict")
                 api.mutate(self.client, "UpdateField", fieldId=field["id"], singleSelectOptions=options)
             else:
                 api.mutate(self.client, "CreateField", projectId=project["node"], dataType="SINGLE_SELECT",
