@@ -5,7 +5,13 @@ session.
 
 ## Using agent-box
 
+- [Installation, updating and removal](installation.md) — requirements, setup, shell completion, `upgrade`, `uninstall`.
+- [Using agent-box](usage.md) — sessions, the workspace box, options, mounts, environment, host mode, usage limits.
+- [Configuration](configuration.md) — layers, the menu, defaults, project configuration, `config ai`.
+- [The workspace image](image.md) — included tools, optional groups, `build`, `update`, `rebuild`.
+- [Workspace and security model](security.md) — what a box can reach and how it is hardened.
 - [Nested rootless Podman](nested-podman.md) — run Podman inside the workspace box.
+- [Troubleshooting](troubleshooting.md) — diagnostics, common problems, known limitations.
 
 ## Integrations
 

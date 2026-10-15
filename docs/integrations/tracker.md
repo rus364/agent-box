@@ -63,7 +63,7 @@ a board problem, a card outside every column, or a column that maps to no state.
 Global configuration holds accounts, credentials and integration permissions.
 `.agent-box.json` stores `tracker.provider`, `tracker.project`,
 `tracker.recursive` and `tracker.connections.<provider>.url`, alongside optional
-[project configuration overrides](../../README.md#project-configuration).
+[project configuration overrides](../configuration.md#project-configuration).
 A project ID identifies a project on that server; the selected connection URL
 must match it. Commit this portable configuration. A fresh clone on another
 device needs a matching global connection, or `--tracker URL` with

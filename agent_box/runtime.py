@@ -636,7 +636,7 @@ GH_CREDENTIAL_URL = "https://github.com"
 #: its own process environment -- which is exactly how the token already
 #: reaches the container (see `github_env`) -- so this line never embeds the
 #: token value itself; it only tells git which program to ask. The
-#: container's image always has `gh` on PATH (see README).
+#: container's image always has `gh` on PATH (see docs/image.md).
 GH_CREDENTIAL_HELPER = "!gh auth git-credential"
 
 
@@ -1147,8 +1147,8 @@ def browser_mcp_args(session_dir: Path) -> list[str]:
     ``--security-opt=no-new-privileges`` and rootless ``--userns=keep-id``
     deliberately do not grant. agent-box does not weaken any of those flags
     to get it, because Chromium's own sandbox is not the boundary that
-    matters here: the container is (see the trust-boundary note in the
-    README). Nothing in this argv adds a Linux capability.
+    matters here: the container is (see the trust boundary in
+    docs/security.md). Nothing in this argv adds a Linux capability.
 
     The one thing the environment does need is a writable ``$HOME/.config``
     for Chromium's crash-reports database, which the image provides -- see

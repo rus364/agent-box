@@ -28,4 +28,4 @@ agent-box config
 ```
 
 and applied by that command, or later by `agent-box config apply`. Starting an agent
-applies nothing — see [Configuration](../../README.md#configuration).
+applies nothing — see [Configuration](../configuration.md).

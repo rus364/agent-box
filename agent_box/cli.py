@@ -113,7 +113,7 @@ Examples:
   agent-box --mount /srv/specs:ro --env DATABASE_URL claude
   export VIKUNJA_TOKEN=...; agent-box --tracker https://tasks.example.org --project 12 codex
 
-Details: README.md and docs/integrations/.""")
+Details: README.md and docs/.""")
 
 
 # -- usage -----------------------------------------------------------------
