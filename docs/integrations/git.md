@@ -32,8 +32,11 @@ remote still uses SSH — on `github.com` too while the token is off; use HTTPS
 rather than mounting keys or disabling host-key checks.
 
 Git and `gh` configuration is copied into the box when it is created; changes
-made inside the box disappear with it. Changed settings or a renewed host `gh`
-login take effect for the next box (`agent-box stop`, then launch).
+made inside the box disappear with it, and changed settings take effect for the
+next box (`agent-box stop`, then launch). The forwarded token is read again at
+every launch: direct commands (`--no-tmux`, pipes, `claude -p`) get the current
+one, while interactive sessions share the box's tmux server, which keeps the
+environment it started with, so a renewed `gh` login reaches them in a new box.
 
 ## One-session overrides
 

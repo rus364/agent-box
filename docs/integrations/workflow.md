@@ -15,6 +15,11 @@ How the guarantees below are implemented is recorded in the
 1. Set up the [tracker](tracker.md) and bind the repository with `ab-setup`.
 2. Enable **Workflow** in `agent-box config`. Saving installs the skills and
    native agent profiles; `config apply` and `upgrade` refresh them.
+   The default GitHub merge mode also needs GitHub access for the session
+   (**Credentials → GitHub**, token or configuration, see
+   [Git and GitHub](git.md)) to push branches and open pull requests; the
+   tracker's own GitHub token does not cover it. Local merge mode needs only
+   working Git transport.
 3. Configure model lists for the roles you want to delegate (optional; see
    [models and routing](#models-and-routing)).
 

@@ -18,8 +18,10 @@ host stays the source of truth; changes made in the box disappear with it.
 - A box keeps its creation-time switches and selections. Registry logins,
   kubeconfigs and cloud profiles are re-rendered from those choices at every
   launch, which is how renewed host logins (for example a 12-hour Yandex IAM
-  token) reach a running box. Git and `gh` copies are seeded only when the box
-  is created, so a renewed `gh` login needs a new box.
+  token) reach a running box. Git and `gh` configuration copies are seeded only
+  when the box is created. The GitHub token is not a copy: it is forwarded per
+  exec, but tmux sessions inherit the environment of the launch that started
+  the box's tmux server.
 - **Git.** Identity is read key by key with `git config --get`. The GitHub
   token is forwarded by name (`--env=GH_TOKEN`, or the existing
   `GH_TOKEN`/`GITHUB_TOKEN`) so its value never lands in argv, which `/proc`
