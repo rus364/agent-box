@@ -145,15 +145,21 @@ holds tasks into the workflow without touching the original: it copies the tree
 with Vikunja's native duplication, normalizes the copy, audits it, and at
 cutover renames the original to `TITLE — backup ID` and binds the repository to
 the copy. Each step previews before `--apply`, and an interrupted step is
-resumed by rerunning it with the same receipt:
+resumed by rerunning it. The steps share a receipt that `clone` creates in
+agent-box's workflow state and reports; `boards` and `cutover` find it on their
+own, and ordinary tracker commands work on the staging copy with
+`--adoption RECEIPT`:
 
 ```bash
 agent-box tracker audit --project 12 --recursive
-agent-box tracker adopt clone --project 12 --receipt adoption.json --apply
-agent-box tracker adopt boards --receipt adoption.json --apply
-agent-box tracker --adoption adoption.json audit
-agent-box tracker adopt cutover --receipt adoption.json --apply
+agent-box tracker adopt clone --project 12 --apply     # reports the receipt path
+agent-box tracker adopt boards --apply
+agent-box tracker --adoption RECEIPT audit
+agent-box tracker adopt cutover --apply
 ```
+
+Inside a workspace box the receipt must stay in workflow state, which outlives
+the box; omit `--receipt` to keep the default.
 
 Pause other edits to the project while adopting; there is no incremental sync.
 Relations to tasks outside the tree are carried over where Vikunja allows it,

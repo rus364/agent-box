@@ -25,7 +25,7 @@ TITLE = r"""(?:\s+(?:"[^"]*"|'[^']*'|\([^)]*\)))?"""
 DESTINATION = r"(?:<([^<>\n]*)>|((?:[^<\s()]|\([^\s()]*\))(?:[^\s()]|\([^\s()]*\))*))"
 INLINE_LINK = re.compile(r"!?\[(?:[^\[\]]|\[[^\[\]]*\])*\]\(\s*" + DESTINATION + TITLE + r"\s*\)")
 REFERENCE_DEFINITION = re.compile(r"^ {0,3}\[[^\]]+\]:\s*" + DESTINATION + TITLE + r"\s*$", re.MULTILINE)
-HEADING_LINK = re.compile(r"!?\[((?:[^\[\]]|\[[^\[\]]*\])*)\](?:\([^)]*\)|\[[^\]]*\])")
+HEADING_LINK = re.compile(r"!?\[((?:[^\[\]]|\[[^\[\]]*\])*)\](?:\(\s*" + DESTINATION + TITLE + r"\s*\)|\[[^\]]*\])")
 HEADING = re.compile(r"^ {0,3}(#{1,6})\s+(.*?)(?:\s+#+)?\s*$")
 EXPLICIT_ANCHOR = re.compile(r"""<a\s[^>]*?(?<![\w-])(?:id|name)\s*=\s*(?:"([^"]+)"|'([^']+)')""", re.IGNORECASE)
 SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
@@ -207,6 +207,13 @@ class LinkCheckerTests(unittest.TestCase):
             "[a](#config-ai) [b](#config-aiconfigurationmd) [c](#show-xy)\n"
         )})
         self.assertEqual(problems, ["README.md:7: #config-aiconfigurationmd (no such anchor)"])
+
+    def test_heading_link_with_parentheses_in_its_destination(self):
+        problems = self.check({
+            "README.md": "# T\n\n## [Setup](docs/guide(v2).md)\n\n[a](#setup) [b](#setupmd)\n",
+            "docs/guide(v2).md": "# Guide\n",
+        })
+        self.assertEqual(problems, ["README.md:5: #setupmd (no such anchor)"])
 
     def test_reference_link_label_does_not_reach_the_slug(self):
         problems = self.check({"README.md": (
