@@ -379,7 +379,7 @@ effort value or a promise to disable thinking.
 `workflow delegate` and `workflow review` execute managed `codex exec` or
 `claude -p` inside the existing host/container. They cannot invoke the
 coordinator's native tool; a native reviewer uses `review --native`, a coordinator
-spawn, then `review --result`. See [native research and smoke evidence](../native-launch.md)
+spawn, then `review --result`. See [native research and smoke evidence](../design/native-launch.md)
 for observed interfaces. Provider errors, including Claude exit-zero error
 envelopes, are not review findings. A worker failure after possible side effects
 requires reconciliation.

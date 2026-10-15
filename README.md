@@ -805,4 +805,4 @@ Telegram bot platform, or Codex remote-control protocol.
 MIT — see [LICENSE](LICENSE).
 
 The owned skills are maintained with this repository. See
-[workflow design references](docs/workflow-references.md) for provenance and reuse decisions.
+[workflow design references](docs/design/workflow-references.md) for provenance and reuse decisions.

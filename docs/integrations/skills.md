@@ -23,4 +23,4 @@ fingerprints and the same refusal policy.
 Planning, debugging, proportionate regression testing and fresh review are
 integrated into the workflow skills. There is no separate upstream updater,
 patching pipeline or unused bundle of practice skills. Sources of the workflow
-ideas and library decisions are recorded in [design references](../workflow-references.md).
+ideas and library decisions are recorded in [design references](../design/workflow-references.md).
