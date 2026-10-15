@@ -3,7 +3,10 @@
 Run from the checkout against a purpose-created sandbox (its default branch receives
 one setup commit and one test commit per run):
 
-    PYTHONPATH=. python3 tests/live_github_tracker.py --run --project OWNER/NUMBER --repository OWNER/NAME [--gh-token]
+    PYTHONPATH=. python3 tests/live_github_tracker.py --run --project OWNER/NUMBER --repository OWNER/NAME \
+        [--merge-mode local|github] [--gh-token]
+
+github lands the parent through a pull request it opens and merges on the sandbox.
 
 The token is the configured GitHub tracker token, or `gh auth token` with --gh-token.
 The ordinary unittest discovery never executes this module's main function.
@@ -28,7 +31,7 @@ def git(root, *args):
     return subprocess.run(["git", *args], cwd=root, check=True, capture_output=True, text=True).stdout.strip()
 
 
-def run(project, repository, token):
+def run(project, repository, token, merge_mode="local"):
     binding = Binding("github", api.DEFAULT_API, project)
     tracker = GitHubAdapter(binding.server, token, binding, repository=repository)
     config = effective_config()
@@ -37,7 +40,9 @@ def run(project, repository, token):
     config.workflow.enabled = True
     config.workflow.sync.policy = "off"
     config.workflow.review.policy = "off"
-    config.workflow.merge_mode = "local"
+    config.workflow.merge_mode = merge_mode
+    if merge_mode == "github":
+        config.credentials.github.token = True
     tag = uuid.uuid4().hex[:8]
     with tempfile.TemporaryDirectory(prefix="agent-box-github-live-") as tmp:
         root = Path(tmp) / "clone"
@@ -71,6 +76,10 @@ def run(project, repository, token):
             step("finish", child.id)
             step("validate", parent.id, "--", "true")
             step("finish", parent.id)
+            if merge_mode == "github":
+                body = Path(tmp) / "body.md"
+                body.write_text(f"Live check {tag} for task #{parent.id}.\n", encoding="utf-8")
+                step("pr", parent.id, "--title", f"Live check {tag}", "--body-file", str(body))
             step("land", parent.id, "merge")
         finally:
             os.chdir(cwd)
@@ -86,11 +95,12 @@ def main():
     parser.add_argument("--run", action="store_true", required=True)
     parser.add_argument("--project", required=True)
     parser.add_argument("--repository", required=True)
+    parser.add_argument("--merge-mode", choices=("local", "github"), default="local")
     parser.add_argument("--gh-token", action="store_true", help="Use `gh auth token` instead of the configured token")
     args = parser.parse_args()
     token = (subprocess.run(["gh", "auth", "token"], check=True, capture_output=True, text=True).stdout.strip()
              if args.gh_token else effective_config().tracker.connection("github").token)
-    run(args.project, args.repository, token)
+    run(args.project, args.repository, token, args.merge_mode)
 
 
 if __name__ == "__main__":
