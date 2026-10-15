@@ -25,6 +25,7 @@ TITLE = r"""(?:\s+(?:"[^"]*"|'[^']*'|\([^)]*\)))?"""
 DESTINATION = r"(?:<([^<>\n]*)>|([^<\s)][^\s)]*))"
 INLINE_LINK = re.compile(r"!?\[(?:[^\[\]]|\[[^\[\]]*\])*\]\(\s*" + DESTINATION + TITLE + r"\s*\)")
 REFERENCE_DEFINITION = re.compile(r"^ {0,3}\[[^\]]+\]:\s*" + DESTINATION + TITLE + r"\s*$", re.MULTILINE)
+HEADING_LINK = re.compile(r"!?\[((?:[^\[\]]|\[[^\[\]]*\])*)\](?:\([^)]*\)|\[[^\]]*\])")
 HEADING = re.compile(r"^ {0,3}(#{1,6})\s+(.*?)(?:\s+#+)?\s*$")
 EXPLICIT_ANCHOR = re.compile(r"""<a\s[^>]*?(?<![\w-])(?:id|name)\s*=\s*(?:"([^"]+)"|'([^']+)')""", re.IGNORECASE)
 SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
@@ -61,12 +62,19 @@ def prose(text: str) -> str:
 def slug(heading: str) -> str:
     """GitHub's heading id: rendered text, lowercased, punctuation dropped, spaces to hyphens."""
     def rendered(part: str) -> str:
-        part = re.sub(r"!?\[([^\]]*)\](?:\([^)]*\)|\[[^\]]*\])", r"\1", part)
         part = re.sub(r"<[^>]+>", "", part)
         # Emphasis delimiters flank words; an underscore inside a word is literal text.
         return re.sub(r"(?<!\w)[*_]+|[*_]+(?!\w)", "", part)
 
-    # Inline code renders verbatim, so only the text around it loses link syntax and HTML tags.
+    # A link renders as its text, which may itself hold code; link syntax shown inside code stays.
+    code = [(m.start(), m.end()) for m in CODE_SPAN.finditer(heading)]
+    unlinked, end = [], 0
+    for link in HEADING_LINK.finditer(heading):
+        if not any(start <= link.start() < stop for start, stop in code):
+            unlinked += [heading[end:link.start()], link.group(1)]
+            end = link.end()
+    heading = "".join(unlinked) + heading[end:]
+    # Inline code renders verbatim, so only the text around it loses HTML tags and emphasis.
     parts, end = [], 0
     for code in CODE_SPAN.finditer(heading):
         parts += [rendered(heading[end:code.start()]), code.group(2)]
@@ -192,6 +200,13 @@ class LinkCheckerTests(unittest.TestCase):
     def test_heading_inside_a_blockquote_is_an_anchor(self):
         problems = self.check({"README.md": "# T\n\n> ## Setup\n\n[go](#setup)\n"})
         self.assertEqual(problems, [])
+
+    def test_linked_code_in_a_heading_keeps_only_the_code_text(self):
+        problems = self.check({"README.md": (
+            "# T\n\n## [`config ai`](README.md)\n\n## Show `[x](y)`\n\n"
+            "[a](#config-ai) [b](#config-aiconfigurationmd) [c](#show-xy)\n"
+        )})
+        self.assertEqual(problems, ["README.md:7: #config-aiconfigurationmd (no such anchor)"])
 
     def test_reference_link_label_does_not_reach_the_slug(self):
         problems = self.check({"README.md": (

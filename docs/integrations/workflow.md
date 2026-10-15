@@ -61,7 +61,7 @@ agent-box workflow delegate TASK --role worker --brief brief.md
 agent-box workflow validate TASK -- python3 tests/run_suite.py
 agent-box workflow review TASK           # apply review policy, run a reviewer
 agent-box workflow finish TASK           # subtask: integrate and mark Done; parent: In review
-agent-box workflow pr TASK               # GitHub mode: open the parent's pull request
+agent-box workflow pr TASK --title T --body-file pr.md   # GitHub mode: open the parent's pull request
 agent-box workflow land TASK merge       # land the parent and mark it Done
 ```
 
@@ -257,9 +257,13 @@ and `--no-push` override them for one session; see
 
 ## When something goes wrong
 
-Every workflow command is safe to rerun: it continues from what is recorded
-and refuses rather than guesses.
+Workflow commands continue from what is recorded and refuse rather than
+guess, so most can simply be rerun. The exception is a delegated worker,
+which records nothing.
 
+- **A delegated worker failed or was interrupted:** it may already have
+  changed files. Inspect the working tree, keep or revert its changes, and
+  only then delegate again with a brief that describes the current state.
 - **A command stopped halfway** (network, tracker, a killed process): run the
   same command again. `finish`, `land merge` and `land cleanup` continue from
   the failed step, and a pull request GitHub already merged is never merged
