@@ -18,8 +18,9 @@ ROOT = Path(__file__).resolve().parent.parent
 
 FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
 CODE_SPAN = re.compile(r"(`+)(?:(?!\1).)+?\1", re.DOTALL)
-INLINE_LINK = re.compile(r"!?\[(?:[^\[\]]|\[[^\[\]]*\])*\]\(\s*<?([^)\s>]*)>?(?:\s+\"[^\"]*\")?\s*\)")
-REFERENCE_DEFINITION = re.compile(r"^ {0,3}\[[^\]]+\]:\s*<?(\S+?)>?(?:\s+\"[^\"]*\")?\s*$", re.MULTILINE)
+TITLE = r"""(?:\s+(?:"[^"]*"|'[^']*'|\([^)]*\)))?"""
+INLINE_LINK = re.compile(r"!?\[(?:[^\[\]]|\[[^\[\]]*\])*\]\(\s*<?([^)\s>]*)>?" + TITLE + r"\s*\)")
+REFERENCE_DEFINITION = re.compile(r"^ {0,3}\[[^\]]+\]:\s*<?(\S+?)>?" + TITLE + r"\s*$", re.MULTILINE)
 HEADING = re.compile(r"^ {0,3}(#{1,6})\s+(.*?)(?:\s+#+)?\s*$")
 EXPLICIT_ANCHOR = re.compile(r"<a\s[^>]*\b(?:id|name)\s*=\s*\"([^\"]+)\"", re.IGNORECASE)
 SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
@@ -61,7 +62,7 @@ def slug(heading: str) -> str:
 
 def anchors(path: Path) -> set[str]:
     text = path.read_text(encoding="utf-8")
-    found = set(EXPLICIT_ANCHOR.findall(text))
+    found = set(EXPLICIT_ANCHOR.findall(prose(text)))
     seen: dict[str, int] = {}
     for raw, visible in zip(text.split("\n"), prose(text).split("\n")):
         # The blanked line says whether this is a heading at all; the raw one keeps its code text.
@@ -163,6 +164,19 @@ class LinkCheckerTests(unittest.TestCase):
             "docs/page.md": '# Page\n\n<a id="legacy-id"></a>\n',
         })
         self.assertEqual(problems, [])
+
+    def test_links_with_any_title_delimiter_are_checked(self):
+        problems = self.check({"README.md": "# T\n\n[a](x.md \"X\") [b](y.md 'Y') [c](z.md (Z))\n"})
+        self.assertEqual(problems, [
+            "README.md:3: x.md (no such file)",
+            "README.md:3: y.md (no such file)",
+            "README.md:3: z.md (no such file)",
+        ])
+
+    def test_anchor_shown_inside_code_does_not_count(self):
+        """An example anchor in a code block is not on the rendered page, so a link to it is broken."""
+        problems = self.check({"README.md": '# T\n\n```html\n<a id="example"></a>\n```\n\n[e](#example)\n'})
+        self.assertEqual(problems, ["README.md:7: #example (no such anchor)"])
 
     def test_external_urls_are_not_checked(self):
         problems = self.check({"README.md": "# T\n\n[gh](https://github.com/x/y#z) [m](mailto:a@b.c)\n"})
