@@ -161,7 +161,7 @@ def operate(args, root, config, adapter, task):
     return _operate(args, root, config, adapter, task, parent, info, saved, tasks)
 
 
-def _landing_tasks(root, adapter, task_id, info, *, states=("Review",)):
+def _landing_tasks(root, adapter, task_id, info, *, states=("In review",)):
     from .workflow import tree
 
     # Tracker responses are snapshots: traversing an old root misses changed
@@ -190,7 +190,7 @@ def _operate(args, root, config, adapter, task, parent, info, saved, tasks):
     if gw.current_branch(root) != info["branch"]:
         raise AgentBoxError(f"Switch to the parent branch {info['branch']} for PR operations")
     if args.command == "pr":
-        if task.state != "Review" or not saved.get("validation"):
+        if task.state != "In review" or not saved.get("validation"):
             raise AgentBoxError("Finish parent acceptance and validation before opening a PR")
         if any(child.state != "Done" for child in tasks if child.id != task.id):
             raise AgentBoxError("All subtasks must be integrated before opening the parent PR")
@@ -237,7 +237,7 @@ def _operate(args, root, config, adapter, task, parent, info, saved, tasks):
                 f"origin/{info['branch']} is at {remote_head[:12]}, not the merged "
                 f"{pr['headRefOid'][:12]}; another checkout advanced the branch, so reconcile them first")
         merged_identity(pr, info["branch"], info["base"])
-        task, tasks, reasons = _landing_tasks(root, adapter, task.id, info, states=("Review", "Done"))
+        task, tasks, reasons = _landing_tasks(root, adapter, task.id, info, states=("In review", "Done"))
         saved, delta = {}, None
         if task.state != "Done":
             # A merged PR proves integration, not acceptance of the merged head.

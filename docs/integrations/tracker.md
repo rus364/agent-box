@@ -34,11 +34,11 @@ agent-box tracker delete-project 42
 
 `setup` previews, for every project in scope, the kanban view it resolved and
 the lifecycle columns it recognized. It requires five distinct states:
-**Backlog, Ready, Doing, Review, Done**, and it does not add columns
+**Backlog, Ready, In progress, In review, Done**, and it does not add columns
 automatically. Each project needs exactly one kanban view with manually managed
 buckets; the view's own done bucket is taken as Done when it has one, and the
-remaining columns are matched by title (`Backlog`/`To-Do`, `Ready`,
-`Doing`/`In progress`, `Review`, `Done`). Anything missing, duplicated or
+remaining columns are matched by their exact title, ignoring case; synonyms
+such as Vikunja's default `To-Do` and `Doing` are not recognized. Anything missing, duplicated or
 ambiguous is reported per project and blocks `--apply` rather than being
 guessed. There is no per-repository override table: a board that does not say
 what its columns mean is fixed in the tracker.
@@ -124,7 +124,7 @@ does not prove the original request cannot still complete. Tracker and workflow
 errors expose the same category and retry hint.
 
 Claims check status, dependencies and assignees, assign the authenticated user,
-move to Doing, and reread the result. Same-user Doing tasks require deliberate
+move to In progress, and reread the result. Same-user In progress tasks require deliberate
 `--resume`. A local file lock protects simultaneous local claim commands.
 Vikunja assignment plus column movement is **not an atomic distributed lock**;
 separate machines and sessions using one account require coordination. The adapter rereads and compares the task before editing; changed snapshots

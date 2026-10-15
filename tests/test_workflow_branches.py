@@ -20,7 +20,7 @@ class DerivedIdentityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = repository(directory)
             gw.git(root, "switch", "-c", "ab/7-parent-task")
-            parent = Task("7", "1", "Parent task", state="Doing", assignees=["1"])
+            parent = Task("7", "1", "Parent task", state="In progress", assignees=["1"])
             adapter = Mock()
             adapter.get.return_value = parent
             adapter.comments.return_value = [{"comment": POISON}]
@@ -98,7 +98,7 @@ class ParentSubtaskBranchTests(unittest.TestCase):
             def claimed(_adapter, task_id, resume=False):
                 task = {"7": parent, "8": child}[task_id]
                 starting = task.state == "Ready"
-                task.state, task.assignees = "Doing", ["1"]
+                task.state, task.assignees = "In progress", ["1"]
                 return task, starting
 
             with patch.object(workflow, "claim", side_effect=claimed), \
@@ -143,7 +143,7 @@ class FreshCloneBranchTests(unittest.TestCase):
 
             def claimed(_adapter, task_id, resume=False):
                 starting = parent.state == "Ready"
-                parent.state, parent.assignees = "Doing", ["1"]
+                parent.state, parent.assignees = "In progress", ["1"]
                 return parent, starting
 
             with patch.object(workflow, "claim", side_effect=claimed):
@@ -164,7 +164,7 @@ class FreshCloneBranchTests(unittest.TestCase):
             gw.git(root, "push", "-u", "origin", "ab/8-first-subtask")
             published = gw.git(root, "rev-parse", "HEAD")
             other = clone(directory)
-            parent = Task("7", "1", "Parent deliverable", state="Doing", assignees=["1"], children=["8"])
+            parent = Task("7", "1", "Parent deliverable", state="In progress", assignees=["1"], children=["8"])
             child = Task("8", "1", "First subtask", state="Ready", parent="7")
             adapter = Mock()
             adapter.identity.return_value = {"id": 1}
@@ -173,7 +173,7 @@ class FreshCloneBranchTests(unittest.TestCase):
             def claimed(_adapter, task_id, resume=False):
                 task = {"7": parent, "8": child}[task_id]
                 starting = task.state == "Ready"
-                task.state, task.assignees = "Doing", ["1"]
+                task.state, task.assignees = "In progress", ["1"]
                 return task, starting
 
             with patch.object(workflow, "claim", side_effect=claimed):
@@ -243,7 +243,7 @@ class SubtaskIntegrationTests(unittest.TestCase):
             def claimed(_adapter, task_id, resume=False):
                 task = {"7": parent, "8": child}[task_id]
                 starting = task.state == "Ready"
-                task.state, task.assignees = "Doing", ["1"]
+                task.state, task.assignees = "In progress", ["1"]
                 return task, starting
 
             state = Path(directory) / "state"

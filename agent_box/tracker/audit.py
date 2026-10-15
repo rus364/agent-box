@@ -59,8 +59,8 @@ def task_problems(task, get):
             report("early-progress", "records checked progress but has not started")
         if task.assignees:
             report("early-assignee", "carries an assignee but has not started")
-    if task.state == "Doing" and not task.assignees:
-        report("unowned", "is in Doing with nobody assigned")
+    if task.state == "In progress" and not task.assignees:
+        report("unowned", "is In progress with nobody assigned")
     if task.state == "Done" and any(not item["checked"] for item in items):
         report("done-unfinished", "is Done with unfinished checklist items")
     broken_parent = False

@@ -118,7 +118,7 @@ class WorkflowCase(unittest.TestCase):
         self.root = repository(self.directory.name)
         gw.git(self.root, "switch", "-c", "ab/1-task")
         self.task = Task("1", "1", "Task", description="## Acceptance\n- [ ] requirement",
-                         state="Doing", assignees=["1"], labels=["ab:tier:1"])
+                         state="In progress", assignees=["1"], labels=["ab:tier:1"])
         self.config = Config()
         self.config.workflow.enabled = True
         # The task is labelled tier 1; with tiers on, its reviewer routes at that tier.
@@ -192,7 +192,7 @@ class LandingCase(unittest.TestCase):
         (self.root / "change.py").write_text("value = 1\n")
         gw.git(self.root, "add", "change.py")
         gw.git(self.root, "commit", "-m", "task work")
-        self.parent = Task("7", "1", "Parent", state="Review", assignees=["1"],
+        self.parent = Task("7", "1", "Parent", state="In review", assignees=["1"],
                            description="## Acceptance\n- [x] accepted")
         self.adapter = Mock()
         self.adapter.identity.return_value = {"id": 1}

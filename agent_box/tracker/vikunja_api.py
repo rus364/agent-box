@@ -905,7 +905,7 @@ def plan_board_init(resolved, states):
 
     Only additive: a column that exists keeps its title and its cards, and a
     board whose columns are ambiguous is left to the user, because choosing
-    which of two candidates means Doing is a decision and not a repair. New
+    which of two candidates means In progress is a decision and not a repair. New
     columns are positioned between the neighbours they belong between, so the
     board reads in lifecycle order instead of growing a tail.
     """

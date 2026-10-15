@@ -51,7 +51,7 @@ class LocalLandTests(LandingCase):
         self.saved["review"] = {"verdict": "PASS"}
         base_head = gw.local_branch_head(self.root, "main")
         for command in (["finish", "7"], ["land", "7", "merge"]):
-            self.parent.state = "Doing" if command[0] == "finish" else "Review"
+            self.parent.state = "In progress" if command[0] == "finish" else "In review"
             workflow.save_evidence(self.root, self.parent, self.saved)
             original_lock = workflow.lock
             reserved = []
@@ -212,7 +212,7 @@ class LocalLandTests(LandingCase):
 
     def test_explicit_human_acceptance_lands_and_cleans_up_without_fabricating_review(self):
         """Human approval is separate evidence and retains the normal completion path."""
-        self.parent.state = "Doing"
+        self.parent.state = "In progress"
         self.config.workflow.review.policy = "always"
         self.config.workflow.cleanup_local_branches = True
         self.config.workflow.cleanup_remote_branches = True
@@ -221,8 +221,8 @@ class LocalLandTests(LandingCase):
         saved = workflow.read_evidence(self.root, self.parent)
         self.assertNotIn("review", saved)
         self.dispatch(["finish", "7"])
-        self.adapter.set_state.assert_called_with(self.parent, "Review")
-        self.parent.state = "Review"
+        self.adapter.set_state.assert_called_with(self.parent, "In review")
+        self.parent.state = "In review"
         with patch("agent_box.branch_cleanup._remote_refs", side_effect=AgentBoxError("SSH host key unavailable")):
             result = self.dispatch(["land", "7", "merge"])
         self.assertEqual(result["state"], "Done")
@@ -234,11 +234,11 @@ class LocalLandTests(LandingCase):
 
     def test_an_open_manual_check_blocks_landing_but_not_acceptance_or_review(self):
         """A check nobody can run from a container once held up the round that judges the code."""
-        self.parent.state = "Doing"
+        self.parent.state = "In progress"
         self.parent.description = "## Acceptance\n- [x] accepted\n\n## Validation\n- [ ] user checks the real payload"
         self.assertEqual(self.approve()["human_acceptance"]["actor"], "1")
-        self.assertEqual(self.dispatch(["finish", "7"])["state"], "Review")
-        self.parent.state = "Review"
+        self.assertEqual(self.dispatch(["finish", "7"])["state"], "In review")
+        self.parent.state = "In review"
         with self.assertRaisesRegex(AgentBoxError, "checklist remains incomplete"):
             self.dispatch(["land", "7", "merge"])
 
@@ -288,13 +288,13 @@ class LocalLandTests(LandingCase):
     def test_human_acceptance_replaces_the_parent_review_in_github_mode_too(self):
         """The user's explicit decision closes a looping review in either merge mode."""
         self.config.workflow.review.policy = "always"
-        self.parent.state = "Doing"
+        self.parent.state = "In progress"
         self.config.workflow.merge_mode = "github"
         workflow.save_evidence(self.root, self.parent, self.saved)
         with self.assertRaisesRegex(AgentBoxError, "PASS review"):
             self.dispatch(["finish", "7"])
         self.approve()
-        self.assertEqual(self.dispatch(["finish", "7"])["state"], "Review")
+        self.assertEqual(self.dispatch(["finish", "7"])["state"], "In review")
 
     def test_merge_refuses_dirty_or_diverged_work_before_switching(self):
         (self.root / "dirty").write_text("dirty")
@@ -310,9 +310,9 @@ class LocalLandTests(LandingCase):
         self.assertEqual(gw.current_branch(self.root), "ab/7-parent")
 
     def test_merge_rereads_ownership_dependencies_children_and_checklist(self):
-        child = Task("8", "1", "Child", state="Doing", parent="7",
+        child = Task("8", "1", "Child", state="In progress", parent="7",
                      description="- [x] child")
-        dependency = Task("9", "1", "Dependency", state="Doing")
+        dependency = Task("9", "1", "Dependency", state="In progress")
         self.parent.children = ["8"]
         self.parent.blockers = ["9"]
         self.parent.assignees = ["2"]
@@ -342,7 +342,7 @@ class LocalLandTests(LandingCase):
         with self.assertRaisesRegex(AgentBoxError, "No acceptance is recorded"):
             self.operate("merge", saved={})
         self.adapter.set_state.assert_not_called()
-        self.assertEqual(self.parent.state, "Review")
+        self.assertEqual(self.parent.state, "In review")
 
     def test_merge_refuses_a_raw_manual_merge_without_acceptance(self):
         """Manual Git inclusion is not evidence of workflow acceptance."""
@@ -372,7 +372,7 @@ class LocalLandTests(LandingCase):
             gw.git(self.root, "switch", "main")
             gw.git(self.root, "merge", "--ff-only", "ab/7-parent")
         self.adapter.set_state.assert_not_called()
-        self.assertEqual(self.parent.state, "Review")
+        self.assertEqual(self.parent.state, "In review")
 
     def test_merge_rejects_evidence_that_was_lost_after_the_merge(self):
         """Without acceptance recorded for it, the merged head is not completed."""
@@ -380,7 +380,7 @@ class LocalLandTests(LandingCase):
         with self.assertRaisesRegex(AgentBoxError, "No acceptance is recorded.*workflow validate"):
             self.operate("merge", saved={})
         self.adapter.set_state.assert_not_called()
-        self.assertEqual(self.parent.state, "Review")
+        self.assertEqual(self.parent.state, "In review")
 
     def test_a_repeated_merge_reuses_the_recorded_acceptance_after_card_edits(self):
         """Links, labels, a tier or a new checked item cannot demand another review after a tracker outage."""
@@ -877,7 +877,7 @@ class MergeModeRoutingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = repository(directory)
             gw.git(root, "switch", "-c", "ab/7-parent")
-            task = Task("7", "1", "Parent", state="Review", assignees=["1"],
+            task = Task("7", "1", "Parent", state="In review", assignees=["1"],
                         description="- [x] accepted")
             adapter = Mock()
             adapter.identity.return_value = {"id": 1}

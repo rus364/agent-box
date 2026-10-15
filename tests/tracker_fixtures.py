@@ -15,7 +15,7 @@ from agent_box.tracker.core import NORMALIZED_LABEL, TrackerError
 from agent_box.tracker.vikunja import VikunjaAdapter
 
 
-def board(view_id, first, *, done_bucket=None, titles=("Backlog", "Ready", "Doing", "Review", "Done"),
+def board(view_id, first, *, done_bucket=None, titles=("Backlog", "Ready", "In progress", "In review", "Done"),
           extra_views=()):
     view = {"id": view_id, "title": "Board", "view_kind": "kanban", "bucket_configuration_mode": "manual"}
     if done_bucket is not None:

@@ -22,7 +22,7 @@ class InspectTests(unittest.TestCase):
         (self.root / "code.py").write_text("value = 1\n")
         gw.git(self.root, "add", "code.py")
         gw.git(self.root, "commit", "-m", "implementation")
-        self.task = Task("1", "1", "Task", state="Doing", assignees=["1"],
+        self.task = Task("1", "1", "Task", state="In progress", assignees=["1"],
                          description="## Acceptance\n- [x] implementation")
         self.tasks = {"1": self.task}
         self.adapter = Mock()
@@ -71,7 +71,7 @@ class InspectTests(unittest.TestCase):
         gw.git(self.root, "switch", "main")
         gw.git(self.root, "branch", "-D", "ab/1-task")
         for state, next_step in (("Ready", "workflow begin 1"), ("Backlog", "ab-plan"),
-                                 ("Doing", "--resume"), ("Review", "--resume"),
+                                 ("In progress", "--resume"), ("In review", "--resume"),
                                  ("Done", "do not restart")):
             with self.subTest(state=state):
                 self.task.state = state
@@ -96,7 +96,7 @@ class InspectTests(unittest.TestCase):
         workflow.save_evidence(self.root, self.task, {"scope": self.scope, "validation": {"exit": 0},
                                                       "review": {"verdict": "PASS"}})
         self.assertIn("workflow finish 1", self.inspect_readonly()["next_step"])
-        self.task.state = "Review"
+        self.task.state = "In review"
         self.assertIn("ab-land", self.inspect_readonly()["next_step"])
         self.config.workflow.merge_mode = "github"
         self.assertIn("ab-pr", self.inspect_readonly()["next_step"])
@@ -105,7 +105,7 @@ class InspectTests(unittest.TestCase):
         self.config.workflow.review.github_provider = "codex"
         self.assertIn("workflow review 1", self.inspect_readonly()["next_step"])
         self.assertNotIn("--native", self.inspect_readonly()["next_step"])
-        self.task.state = "Doing"
+        self.task.state = "In progress"
         workflow.save_evidence(self.root, self.task, {"scope": self.scope, "validation": {"exit": 0}})
         self.assertIn("workflow finish 1", self.inspect_readonly()["next_step"])
 
@@ -113,12 +113,12 @@ class InspectTests(unittest.TestCase):
         """Git shows the same two commits for an unmoved branch and a base that absorbed the head."""
         gw.git(self.root, "switch", "-C", "ab/1-task", "main")
         self.assertIn("Commit the implementation", self.inspect_readonly()["next_step"])
-        self.task.state = "Review"
+        self.task.state = "In review"
         self.assertNotIn("Commit the implementation", self.inspect_readonly()["next_step"])
 
     def test_an_unstarted_subtask_is_sent_to_work_and_a_done_one_to_its_parent(self):
         """A finished subtask's branch is released, so proposing a switch to it sent work nowhere."""
-        child = Task("2", "1", "Child", parent="1", state="Doing", assignees=["1"],
+        child = Task("2", "1", "Child", parent="1", state="In progress", assignees=["1"],
                      description="## Acceptance\n- [ ] child work")
         self.tasks["2"] = child
         self.task.children = ["2"]
@@ -142,7 +142,7 @@ class InspectTests(unittest.TestCase):
 
     def test_an_integrated_subtask_branch_is_not_mistaken_for_one_that_never_moved(self):
         """A failed Done write leaves the child's commits inside the parent, where Git stops telling them apart."""
-        child = Task("2", "1", "Child", parent="1", state="Doing", assignees=["1"],
+        child = Task("2", "1", "Child", parent="1", state="In progress", assignees=["1"],
                      description="## Acceptance\n- [x] child work")
         self.tasks["2"] = child
         self.task.children = ["2"]

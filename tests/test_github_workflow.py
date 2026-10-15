@@ -52,7 +52,7 @@ class MergeAcceptanceTests(unittest.TestCase):
         from agent_box import github_workflow as github
         from agent_box.config import Config
         from agent_box.errors import AgentBoxError
-        parent = Task("1", "1", "Parent", state="Review", assignees=["1"], description="- [x] Accepted")
+        parent = Task("1", "1", "Parent", state="In review", assignees=["1"], description="- [x] Accepted")
         adapter = Mock()
         adapter.identity.return_value = {"id": 1}
         adapter.get.side_effect = lambda ident: {"1": parent}[ident]
@@ -95,7 +95,7 @@ class MergeAcceptanceTests(unittest.TestCase):
         from agent_box import github_workflow as github
         from agent_box.config import Config
         from agent_box.errors import AgentBoxError
-        parent = Task("1", "1", "Parent", state="Review", assignees=["1"], description="- [x] Accepted")
+        parent = Task("1", "1", "Parent", state="In review", assignees=["1"], description="- [x] Accepted")
         adapter = Mock()
         adapter.identity.return_value = {"id": 1}
         adapter.get.side_effect = lambda ident: {"1": parent}[ident]
@@ -140,7 +140,7 @@ class MergeAcceptanceTests(unittest.TestCase):
         from agent_box import github_workflow as github
         from agent_box.config import Config
         from agent_box.errors import AgentBoxError
-        parent = Task("1", "1", "Parent", state="Review", assignees=["1"], description="- [x] Accepted")
+        parent = Task("1", "1", "Parent", state="In review", assignees=["1"], description="- [x] Accepted")
         adapter = Mock()
         adapter.identity.return_value = {"id": 1}
         adapter.get.side_effect = lambda ident: {"1": parent}[ident]
@@ -325,7 +325,7 @@ class LandingFreshnessTests(LandingCase):
         self.config.workflow.cleanup_local_branches = True
         self.config.workflow.cleanup_remote_branches = True
         inspected = self.run_land(action="inspect", merged=True)
-        self.assertEqual(inspected["state"], "Review")
+        self.assertEqual(inspected["state"], "In review")
         self.assertEqual(inspected["blockers"], [])
         self.assertNotIn("cleanup", inspected)
         self.adapter.set_state.assert_not_called()
@@ -530,7 +530,7 @@ class LandingFreshnessTests(LandingCase):
         self.saved["scope"] = workflow.scope(self.root, "main")
         workflow.save_evidence(self.root, self.parent, self.saved)
         with self.assertRaisesRegex(AgentBoxError, "subtasks"):
-            self.run_land("threads", lambda: setattr(self, "child", replace(self.child, state="Doing")))
+            self.run_land("threads", lambda: setattr(self, "child", replace(self.child, state="In progress")))
         self.command.assert_not_called()
         self.child = replace(self.child, state="Done")
         with self.assertRaisesRegex(AgentBoxError, "checklist"):
@@ -598,7 +598,7 @@ class LandingFreshnessTests(LandingCase):
         from dataclasses import replace
         from agent_box.errors import AgentBoxError
         original = self.parent
-        self.child = replace(self.child, state="Doing")
+        self.child = replace(self.child, state="In progress")
         for change in ({"children": ["8"]}, {"assignees": ["2"]}, {"blockers": ["8"]}):
             self.parent = original
             with self.subTest(change=change):
@@ -633,7 +633,7 @@ class LandingFreshnessTests(LandingCase):
                 self.adapter.set_state.assert_not_called()
 
     def test_current_merge_and_merge_queue_preserve_completion_boundary(self):
-        """Confirmed current work completes; a queued PR remains Review."""
+        """Confirmed current work completes; a queued PR remains In review."""
         merged = self.merged
         self.merged = self.pr
         self.assertEqual(self.run_land()["state"], "OPEN")

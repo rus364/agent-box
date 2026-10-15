@@ -10,8 +10,8 @@ task database, bootstrap framework, update patches or agent-turn push hooks.
 | --- | --- |
 | Backlog | Requirements or scheduling are not ready |
 | Ready | Specified; dependencies and ownership are checked before starting |
-| Doing | Assigned to the API-key user; implementation or review fixes underway |
-| Review | Parent implementation accepted locally; configured landing pending |
+| In progress | Assigned to the API-key user; implementation or review fixes underway |
+| In review | Parent implementation accepted locally; configured landing pending |
 | Done | Subtask integrated and validated, or parent proven merged into base |
 
 A parent task represents a deliverable/spec, and subtasks belong to the bound
@@ -34,10 +34,10 @@ branch creation by delegated agents. Read-only scouts may run concurrently withi
 another parent remains blocked until that parent's merge.
 
 `workflow begin CHILD` records the initial head only for a new branch claimed
-from Ready to Doing, in the existing local evidence. A child still at that head
+from Ready to In progress, in the existing local evidence. A child still at that head
 can finish without commits after
 `workflow validate CHILD -- COMMAND ARGS` and the configured review. Resuming
-Doing/Review work (even with a missing branch) or adopting a remote branch does
+In progress/In review work (even with a missing branch) or adopting a remote branch does
 not create or reset this evidence. Child finish saves acceptance before
 integration/publication, so retry `workflow finish CHILD`
 after a failed Done write. It rechecks the accepted head, base and current
@@ -208,7 +208,7 @@ Git commands, without Edit/Write. Native Claude inherits session shell permissio
 its no-file-edit rule is a role contract, not filesystem isolation. Both routes
 use tracker CLI binding and revision guards (`update --revision REV`), reread
 before edits and confirm saved text. The executor itself edits open tasks in scope,
-including Backlog, Ready, Doing and Review; being open never makes a task read-only.
+including Backlog, Ready, In progress and In review; being open never makes a task read-only.
 Only Done tasks remain historical evidence: text superseded by accepted decisions
 and current documents is not a blocker. Lifecycle, assignees, dependencies and
 progress marks remain unchanged; actual decision conflicts require clarification.
@@ -420,7 +420,7 @@ brief blocks review even when no branch switch is needed. An acceptance or valid
 only the user can close, such as a check that cannot run from a container, is asked for by landing
 alone, which reads the whole tree, so nothing merges while one is open. A review round,
 `approve` and `finish` never wait for it: a checkmark is the coordinator's progress claim, while
-one open item would otherwise stop the subtask, its parent's move to Review, the pull request
+one open item would otherwise stop the subtask, its parent's move to In review, the pull request
 that move is the precondition for, and the cloud round that lives in it.
 Every native verdict uses a newly started reviewer in fresh context without the
 parent's history, never a resumed one; pass the returned `message` unchanged as its
@@ -519,7 +519,7 @@ survives scope changes and coordinator restarts, and never resets automatically.
 `workflow inspect` exposes `review.budget` with configured_limit, effective
 limit, used, remaining, failures and failure_limit; reviewer command results
 expose `review_budget` for the coordinator, outside the neutral reviewer prompt.
-On the user's explicit decision the assigned coordinator of a Doing/Review task
+On the user's explicit decision the assigned coordinator of an In progress/In review task
 runs `workflow review-budget ID --reason TEXT [--limit TOTAL]`. It always clears
 the failure count; `--limit` sets an absolute nonnegative ceiling (with three
 attempts used and three more authorized, set six), so repeating it adds nothing.
@@ -543,7 +543,7 @@ exit status; the coordinator does not self-review.
 `workflow.merge_mode` selects `github` (the default) or `local`. Both routes
 derive the base from origin's default branch and retain scoped validation,
 configured local review policy, ownership, dependency, subtask and checklist
-checks. `workflow finish PARENT` moves accepted parent work to Review and points
+checks. `workflow finish PARENT` moves accepted parent work to In review and points
 the coordinator at the configured route. With a cloud reviewer it asks for
 validation alone, because the reviewer reads a pull request that does not exist
 yet; the verdict is what the merge requires.
@@ -592,7 +592,7 @@ normal post-merge cleanup still runs.
 `workflow land PARENT merge` is one idempotent command: it checks acceptance of
 the task head, fast-forwards the base, publishes it, marks the task Done and runs
 cleanup. If any step fails, the merge and the task branch are preserved, the task
-stays Review, and running the same command again continues from the step that
+stays In review, and running the same command again continues from the step that
 failed. A head the base already contains is not merged a second time; publication
 of anything but the accepted head is refused, so an advanced local base stops the
 retry, and an already-published exact head lets it finish after a tracker
@@ -604,7 +604,7 @@ the current off/auto/always policy applies to the original diff rather than to
 the empty one the advanced base now shows. A changed task head invalidates
 acceptance even if the new head is also integrated. Git remains the authority for
 integration; the recorded pair neither records lifecycle nor selects branch refs.
-A refusal leaves the parent in Review.
+A refusal leaves the parent In review.
 
 Manual merge or ancestry alone cannot complete an unaccepted parent. When no
 acceptance is recorded for the head, including in a new clone, switch to the

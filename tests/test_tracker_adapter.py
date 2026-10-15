@@ -11,8 +11,8 @@ BOARD = {
     "/api/v2/projects/12/views": [
         {"id": 7, "title": "Board", "view_kind": "kanban", "done_bucket_id": 5}],
     "/api/v2/projects/12/views/7/buckets": [
-        {"id": 1, "title": "Backlog"}, {"id": 2, "title": "Ready"}, {"id": 3, "title": "Doing"},
-        {"id": 4, "title": "Review"}, {"id": 5, "title": "Done"}],
+        {"id": 1, "title": "Backlog"}, {"id": 2, "title": "Ready"}, {"id": 3, "title": "In progress"},
+        {"id": 4, "title": "In review"}, {"id": 5, "title": "Done"}],
 }
 
 

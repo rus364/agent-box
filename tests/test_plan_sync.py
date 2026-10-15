@@ -417,7 +417,7 @@ class PlanSyncTests(WorkflowCase):
     def test_parent_after_event_waits_for_merge_and_is_visible_after_interruption(self):
         """Finishing a parent for review is not integration; landing must leave a recoverable request."""
         self.config.workflow.sync.policy = "always"
-        with patch.object(workflow, "finish", return_value={"task": "1", "state": "Review"}):
+        with patch.object(workflow, "finish", return_value={"task": "1", "state": "In review"}):
             self.assertNotIn("plan_sync", self.run_workflow("finish", "1"))
         self.task.state = "Done"
         with patch.object(workflow, "landing", return_value={"task": "1", "state": "Done"}):

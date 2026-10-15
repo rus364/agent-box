@@ -19,7 +19,7 @@ class TrackerWorkflowTests(unittest.TestCase):
         from agent_box import workflow_state
         from agent_box.tracker import cli
 
-        for state in ("Ready", "Doing", "Review"):
+        for state in ("Ready", "In progress", "In review"):
             with self.subTest(state=state), tempfile.TemporaryDirectory() as tmp:
                 task = self.core().Task("1", "p", "Work", state=state, assignees=["7"])
                 adapter = Mock()
@@ -32,7 +32,7 @@ class TrackerWorkflowTests(unittest.TestCase):
                      patch.object(workflow_state, "WORKFLOW_STATE", Path(tmp) / "state"), \
                      redirect_stdout(output):
                     self.assertEqual(cli.main(["claim", "1", "--resume"]), 0)
-                self.assertEqual(json.loads(output.getvalue()), replace(task, state="Doing").to_dict())
+                self.assertEqual(json.loads(output.getvalue()), replace(task, state="In progress").to_dict())
 
     def test_untiered_readiness_claim_resume_and_completion_preserve_labels(self):
         """Ordinary tracker lifecycle operations must never invent a routing tier."""
@@ -53,18 +53,18 @@ class TrackerWorkflowTests(unittest.TestCase):
         self.assertEqual(c.ready_tasks([task], adapter.get, "7"), [task])
         claimed, started = c.claim(adapter, "1")
         self.assertTrue(started)
-        self.assertEqual((claimed.state, claimed.assignees), ("Doing", ["7"]))
+        self.assertEqual((claimed.state, claimed.assignees), ("In progress", ["7"]))
         self.assertIsNone(claimed.tier)
         self.assertEqual(claimed.labels, ["product"])
         self.assertIn("Acceptance or validation checklist remains incomplete",
                       c.completion_reasons(task, [task], "7"))
         adapter.update(task, {"description": c.set_checkboxes(task.description, [1], True)})
-        for state in ("Doing", "Review"):
+        for state in ("In progress", "In review"):
             current = adapter.set_state(task, state)
             self.assertEqual(c.completion_reasons(current, [current], "7"), [])
             resumed, started = c.claim(adapter, "1", resume=True)
             self.assertFalse(started)
-            self.assertEqual(resumed.state, "Doing")
+            self.assertEqual(resumed.state, "In progress")
             self.assertIsNone(resumed.tier)
             self.assertEqual(resumed.labels, ["product"])
         finished = adapter.set_state(task, "Done")
@@ -76,10 +76,10 @@ class TrackerWorkflowTests(unittest.TestCase):
 
     def test_cross_parent_blocker_waits_for_its_parent_merge(self):
         c = self.core()
-        tasks = {"1": c.Task("1", "p", "Parent A", state="Doing"),
+        tasks = {"1": c.Task("1", "p", "Parent A", state="In progress"),
                  "2": c.Task("2", "p", "API", state="Done", parent="1"),
                  "3": c.Task("3", "p", "UI", state="Ready", parent="1", blockers=["2"]),
-                 "4": c.Task("4", "p", "Other parent", state="Doing"),
+                 "4": c.Task("4", "p", "Other parent", state="In progress"),
                  "5": c.Task("5", "p", "External client", state="Ready", parent="4", blockers=["2"])}
         self.assertEqual(c.blocking_reasons(tasks["3"], tasks.__getitem__), [])
         self.assertTrue(c.blocking_reasons(tasks["5"], tasks.__getitem__))

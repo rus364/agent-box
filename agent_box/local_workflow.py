@@ -13,7 +13,7 @@ def _constraints(adapter, task):
     from .workflow import tree
 
     tasks = tree(adapter, task)
-    reasons = completion_reasons(task, tasks, str(adapter.identity()["id"]), states=("Review",))
+    reasons = completion_reasons(task, tasks, str(adapter.identity()["id"]), states=("In review",))
     reasons += blocking_reasons(task, adapter.get)
     return reasons, tasks
 
@@ -26,7 +26,7 @@ def _publish(root, config, task, base, task_head):
     except (AgentBoxError, OSError, subprocess.TimeoutExpired) as exc:
         raise AgentBoxError(
             f"Local merge succeeded, but base publication failed: {exc}. "
-            f"Task remains Review; preserve its branch and run workflow land {task.id} merge "
+            f"Task remains In review; preserve its branch and run workflow land {task.id} merge "
             "again after resolving the publication failure; it continues from the merge") from None
 
 

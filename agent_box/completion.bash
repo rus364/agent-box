@@ -45,7 +45,10 @@ _agent_box() {
             drop=$(( ${#words[-1]} - ${#cur} ))
             for word in "${reply[@]}"; do
                 word=${word%%$'\t'*}
-                COMPREPLY+=("${word:drop}")
+                word=${word:drop}
+                # A lifecycle state such as In progress is one argument; readline inserts it verbatim.
+                [[ $word == *[[:space:]]* ]] && printf -v word '%q' "$word"
+                COMPREPLY+=("$word")
             done
             ;;
     esac

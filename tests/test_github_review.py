@@ -683,16 +683,16 @@ class CloudRouteTests(LandingCase):
 
     def test_finishing_a_parent_leaves_its_final_review_to_the_pull_request(self):
         """The reviewer reads a pull request that does not exist before finish."""
-        self.parent.state = "Doing"
+        self.parent.state = "In progress"
         result = self.dispatch(["finish", "7"])
-        self.assertEqual(result["state"], "Review")
+        self.assertEqual(result["state"], "In review")
         self.assertIn("workflow review 7", result["next"])
-        self.adapter.set_state.assert_called_once_with(self.parent, "Review")
+        self.adapter.set_state.assert_called_once_with(self.parent, "In review")
 
     def test_a_local_route_still_requires_the_local_verdict_before_review(self):
         """Only a cloud provider moves the parent's final review out of the local round."""
         self.config.workflow.review.github_provider = "auto"
-        self.parent.state = "Doing"
+        self.parent.state = "In progress"
         with self.assertRaisesRegex(AgentBoxError, "fresh independent PASS"):
             self.dispatch(["finish", "7"])
         self.adapter.set_state.assert_not_called()
@@ -707,7 +707,7 @@ class CloudRouteTests(LandingCase):
     def test_a_subtask_keeps_its_local_round_in_either_mode(self):
         """Only the parent has a pull request; a subtask is reviewed where it is built."""
         from agent_box.tracker.core import Task
-        child = Task("8", "1", "Child", state="Doing", assignees=["1"], parent="7")
+        child = Task("8", "1", "Child", state="In progress", assignees=["1"], parent="7")
         self.assertFalse(workflow.cloud_review(self.config, child, self.parent))
         self.assertTrue(workflow.cloud_review(self.config, self.parent, self.parent))
 

@@ -55,8 +55,8 @@ class DeltaReviewTests(WorkflowCase):
         round_id = self.reviewed("Verdict: NEEDS_WORK\n\n- [LOW] change.py:1 — typo\n")
         self.commit("change.py", 2, "fix typo")
         self.run_workflow("validate", "1", "--", "true")
-        self.assertEqual(self.run_workflow("finish", "1")["state"], "Review")
-        self.task.state = "Review"
+        self.assertEqual(self.run_workflow("finish", "1")["state"], "In review")
+        self.task.state = "In review"
         inspected = self.run_workflow("land", "1", "inspect")
         self.assertEqual((inspected["blockers"], inspected["review"]["delta"]["round"]), ([], round_id))
         self.assertIsNone(inspected["review"]["verdict"])

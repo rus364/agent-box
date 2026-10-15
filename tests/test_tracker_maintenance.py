@@ -312,8 +312,8 @@ class MoveTests(unittest.TestCase):
         moved = self.run_cli('move', '21', '--project', '2')
         self.assertEqual([(row['id'], row['project'], row['state'], row['previous_number'], row['number'])
                           for row in moved],
-                         [('21', '2', 'Ready', 3, 2), ('22', '2', 'Doing', 4, 3),
-                          ('24', '2', 'Review', 6, 4), ('23', '2', 'Done', 5, 5)])
+                         [('21', '2', 'Ready', 3, 2), ('22', '2', 'In progress', 4, 3),
+                          ('24', '2', 'In review', 6, 4), ('23', '2', 'Done', 5, 5)])
         self.assertNotIn('description', moved[0])
         parent = self.adapter.get('21')
         self.assertEqual((parent.children, parent.blockers, parent.labels, parent.priority, parent.assignees),
@@ -340,7 +340,7 @@ class MoveTests(unittest.TestCase):
 
     def test_a_target_board_that_cannot_hold_the_states_stops_the_move_before_it_starts(self):
         """Discovering the missing column after the first patch would strand a task in Backlog."""
-        self.client.boards[2] = board(20, 200, done_bucket=203, titles=('Backlog', 'Ready', 'Doing', 'Done'))
+        self.client.boards[2] = board(20, 200, done_bucket=203, titles=('Backlog', 'Ready', 'In progress', 'Done'))
         with self.assertRaises(TrackerError) as raised:
             self.run_cli('move', '21', '--project', '2')
         self.assertEqual(raised.exception.category, 'configuration')
@@ -359,12 +359,12 @@ class MoveTests(unittest.TestCase):
             self.run_cli('move', '21', '--project', '2')
         self.client.writes.clear()
         moved = self.run_cli('move', '21', '--project', '2')
-        self.assertEqual([(row['id'], row['state']) for row in moved], [('24', 'Review'), ('23', 'Done')])
+        self.assertEqual([(row['id'], row['state']) for row in moved], [('24', 'In review'), ('23', 'Done')])
         self.assertNotIn(('/tasks/21', {'project_id': 2}), self.client.writes)
-        self.assertEqual(self.adapter.get('22').state, 'Doing')
+        self.assertEqual(self.adapter.get('22').state, 'In progress')
 
     def test_a_rerun_restores_the_column_a_card_lost_between_its_two_writes(self):
-        """After the project changes the card already says Backlog; only the journal remembers Review."""
+        """After the project changes the card already says Backlog; only the journal remembers In review."""
         original = self.adapter.set_state
 
         def interrupted(found, state):
@@ -377,7 +377,7 @@ class MoveTests(unittest.TestCase):
         self.assertEqual((self.adapter.get('24').project, self.adapter.get('24').state), ('2', 'Backlog'))
         moved = self.run_cli('move', '21', '--project', '2')
         self.assertEqual([(row['id'], row['state'], row['previous_number']) for row in moved],
-                         [('24', 'Review', 6), ('23', 'Done', 5)])
+                         [('24', 'In review', 6), ('23', 'Done', 5)])
         self.assertEqual(list(self.state.rglob('*.json')), [])
 
     def test_a_rerun_still_reports_what_the_interrupted_move_lost(self):

@@ -113,7 +113,7 @@ class WorkflowGitTests(unittest.TestCase):
             for args in (["init", "-b", "main"], ["config", "user.name", "Test"], ["config", "user.email", "test@example.invalid"],
                          ["commit", "--allow-empty", "-m", "initial"], ["switch", "-c", "ab/task"]):
                 subprocess.run(["git", *args], cwd=root, check=True, capture_output=True)
-            task = Task("1", "1", "Task", description="## Acceptance\n- [ ] requirement", state="Doing", assignees=["1"], labels=["ab:tier:1"])
+            task = Task("1", "1", "Task", description="## Acceptance\n- [ ] requirement", state="In progress", assignees=["1"], labels=["ab:tier:1"])
             config = Config()
             config.workflow.enabled = True
             config.workflow.review.policy = "always"

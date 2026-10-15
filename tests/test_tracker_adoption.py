@@ -21,17 +21,17 @@ def tasks(*items):
 class BoardRepairTests(unittest.TestCase):
     def test_a_missing_column_is_created_between_the_columns_it_belongs_between(self):
         """A lifecycle appended to the end of the board would not read as one."""
-        boards = {1: board(10, 100, titles=("Backlog", "Doing", "Done"))}
+        boards = {1: board(10, 100, titles=("Backlog", "In progress", "Done"))}
         instance, client = adapter(boards=boards)
         planned, = instance.initialize_boards(["1"])
         self.assertEqual([(column["title"], column["position"]) for column in planned["create"]],
-                         [("Ready", 150.0), ("Review", 250.0)])
+                         [("Ready", 150.0), ("In review", 250.0)])
         self.assertEqual(client.writes, [])
         applied, = instance.initialize_boards(["1"], apply=True)
         self.assertEqual(applied["problems"], [])
-        self.assertEqual(sorted(applied["states"]), ["Backlog", "Doing", "Done", "Ready", "Review"])
+        self.assertEqual(sorted(applied["states"]), ["Backlog", "Done", "In progress", "In review", "Ready"])
         self.assertEqual([bucket["title"] for bucket in instance.lifecycle("1")["buckets"]],
-                         ["Backlog", "Ready", "Doing", "Review", "Done"])
+                         ["Backlog", "Ready", "In progress", "In review", "Done"])
 
     def test_a_complete_board_is_left_alone(self):
         instance, client = adapter(boards={1: board(10, 100, done_bucket=104)})
@@ -40,17 +40,17 @@ class BoardRepairTests(unittest.TestCase):
         self.assertEqual(client.writes, [])
 
     def test_an_ambiguous_board_is_reported_instead_of_being_extended(self):
-        """Which of two columns means Doing is the user's answer, not a repair."""
-        boards = {1: board(10, 100, titles=("Backlog", "Ready", "Doing", "Review", "Done"))}
+        """Which of two columns means In progress is the user's answer, not a repair."""
+        boards = {1: board(10, 100, titles=("Backlog", "Ready", "In progress", "In review", "Done"))}
         boards[1]["buckets"][10].append({"id": 106, "title": "In progress", "position": 600})
         instance, client = adapter(boards=boards)
         planned, = instance.initialize_boards(["1"], apply=True)
-        self.assertEqual(planned["blocked"], ["several columns match Doing"])
+        self.assertEqual(planned["blocked"], ["several columns match In progress"])
         self.assertFalse(planned["applied"])
         self.assertEqual(client.writes, [])
 
     def test_a_filter_built_board_is_refused_rather_than_given_a_column(self):
-        boards = {1: board(10, 100, titles=("Backlog", "Doing", "Done"))}
+        boards = {1: board(10, 100, titles=("Backlog", "In progress", "Done"))}
         boards[1]["views"][0]["bucket_configuration_mode"] = "filter"
         instance, client = adapter(boards=boards)
         planned, = instance.initialize_boards(["1"], apply=True)
@@ -60,7 +60,7 @@ class BoardRepairTests(unittest.TestCase):
 
     def test_the_view_gains_a_done_column_only_when_it_names_none(self):
         """Vikunja's own done bucket is what marks a card finished, so it must exist."""
-        boards = {1: board(10, 100, titles=("Backlog", "Ready", "Doing", "Review", "Done"))}
+        boards = {1: board(10, 100, titles=("Backlog", "Ready", "In progress", "In review", "Done"))}
         instance, client = adapter(boards=boards)
         instance.initialize_boards(["1"], apply=True)
         self.assertEqual([body for path, body in client.writes if path == "/projects/1/views/10"],
@@ -73,12 +73,12 @@ class BoardRepairTests(unittest.TestCase):
         """Planning the whole subtree first is what keeps a repair from ending halfway."""
         second = {"id": 21, "title": "Other", "view_kind": "kanban",
                   "bucket_configuration_mode": "manual"}
-        boards = {1: board(10, 100, done_bucket=104, titles=("Backlog", "Doing", "Done")),
+        boards = {1: board(10, 100, done_bucket=104, titles=("Backlog", "In progress", "Done")),
                   2: board(20, 200, extra_views=(second,))}
         instance, client = adapter(boards=boards)
         first, other = instance.initialize_boards(["1", "2"], apply=True)
         self.assertTrue(first["applied"])
-        self.assertEqual([column["title"] for column in first["create"]], ["Ready", "Review"])
+        self.assertEqual([column["title"] for column in first["create"]], ["Ready", "In review"])
         self.assertFalse(other["applied"])
         self.assertEqual((other["view"], other["create"]), (None, []))
         self.assertIn("several kanban views", other["blocked"][0])
@@ -114,7 +114,7 @@ class UnreadableBoardTests(unittest.TestCase):
         self.assertIsNone(entry["view"])
         self.assertIn("several kanban views", entry["problems"][0])
         with self.assertRaisesRegex(TrackerError, "several kanban views"):
-            instance.set_state(instance.get("5"), "Doing")
+            instance.set_state(instance.get("5"), "In progress")
 
 
 class AuditTests(unittest.TestCase):
@@ -123,13 +123,13 @@ class AuditTests(unittest.TestCase):
 
     def test_optional_tier_is_valid_in_every_lifecycle_state(self):
         """Auditing must not require fabricated routing labels at any stage."""
-        for state in ("Backlog", "Ready", "Doing", "Review", "Done"):
+        for state in ("Backlog", "Ready", "In progress", "In review", "Done"):
             for tier in (None, 1, 2, 3):
                 with self.subTest(state=state, tier=tier):
                     labels = ["product"] + ([f"ab:tier:{tier}"] if tier else [])
                     task = Task("1", "1", "Fix", state=state, labels=list(labels),
                                 description="- [x] acceptance" if state == "Done" else "- [ ] acceptance",
-                                assignees=["7"] if state in ("Doing", "Review", "Done") else [])
+                                assignees=["7"] if state in ("In progress", "In review", "Done") else [])
                     report = audit([task], lambda _: task)
                     self.assertEqual(report["counts"], {})
                     self.assertTrue(report["clean"])
@@ -137,13 +137,13 @@ class AuditTests(unittest.TestCase):
 
     def test_invalid_tier_remains_an_error_in_every_lifecycle_state(self):
         """Optional labels do not make malformed or conflicting explicit tiers valid."""
-        for state in ("Backlog", "Ready", "Doing", "Review", "Done"):
+        for state in ("Backlog", "Ready", "In progress", "In review", "Done"):
             for labels in (["ab:tier:0"], ["ab:tier:four"], ["ab:tier:"],
                            ["ab:tier:1", "ab:tier:3"]):
                 with self.subTest(state=state, labels=labels):
                     task = Task("1", "1", "Fix", state=state, labels=list(labels),
                                 description="- [x] acceptance" if state == "Done" else "- [ ] acceptance",
-                                assignees=["7"] if state in ("Doing", "Review", "Done") else [])
+                                assignees=["7"] if state in ("In progress", "In review", "Done") else [])
                     report = audit([task], lambda _: task)
                     self.assertFalse(report["clean"])
                     self.assertEqual([item["code"] for item in report["errors"]], ["bad-tier"])

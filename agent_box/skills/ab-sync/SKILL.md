@@ -14,6 +14,6 @@ Coordinator only. The assigned sync executor follows its role instructions and u
 
 During adoption, wait until cutover: workflow sync uses the current repository binding, not staging.
 
-The agent searches affected tasks from source decisions; scope is not a full-task audit. It edits open tasks itself, including Backlog/Ready/Doing/Review; only Done is read-only history. It corrects concrete mismatches/references, never informational recaps or Git/workflow bookkeeping. Superseded history never blocks; actual decision conflicts return to ab-interview. Repository, Git, lifecycle and progress marks stay unchanged; sync is never code acceptance. A completed after event needs no repeat merely because task text changed.
+The agent searches affected tasks from source decisions; scope is not a full-task audit. It edits open tasks itself, including Backlog/Ready/In progress/In review; only Done is read-only history. It corrects concrete mismatches/references, never informational recaps or Git/workflow bookkeeping. Superseded history never blocks; actual decision conflicts return to ab-interview. Repository, Git, lifecycle and progress marks stay unchanged; sync is never code acceptance. A completed after event needs no repeat merely because task text changed.
 
 Managed executors carry a child-only role marker: nested `workflow sync` is refused before tracker/lock access. Native executors follow the same role instructions without this process marker; neither route gains filesystem write permission.

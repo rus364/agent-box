@@ -461,7 +461,7 @@ def review_result(root, binding, adapter, task, config, round_id=None, *, reconc
                         conditions = []
                         if gw.worktree_changes(root):
                             conditions.append("working_tree")
-                        if current_task.state not in ("Doing", "Review"):
+                        if current_task.state not in ("In progress", "In review"):
                             conditions.append("lifecycle")
                         if current_task.assignees != [str(adapter.identity()["id"])]:
                             conditions.append("ownership")
@@ -763,7 +763,7 @@ def recorded_step(task, parent, config, saved, blockers, *, no_work):
     exact head, the acceptance the head still needs, and the task's own state.
     A branch that never left its base and a base that has absorbed the head are
     the same two commits in Git, so `no_work` falls back to the task's own state:
-    work that reached Review or Done is not work that never started. A subtask
+    work that reached In review or Done is not work that never started. A subtask
     that still has its creation record needs no such guess.
     """
     if "Done" in (task.state, parent.state):
@@ -778,7 +778,7 @@ def recorded_step(task, parent, config, saved, blockers, *, no_work):
                 "choose the backend from execution.reviewer")
     if task.id != parent.id:
         return f"Integrate the accepted subtask with agent-box workflow finish {task.id}"
-    if task.state != "Review":
+    if task.state != "In review":
         return f"Complete the parent with agent-box workflow finish {task.id}"
     return landing_step(config, task, cloud_review(config, task, parent))
 
@@ -840,7 +840,7 @@ def inspect(root, binding, adapter, task, config, authors=None):
         elif not info["branch"] or not expected:
             if "Backlog" in (task.state, parent.state):
                 next_step = f"Use ab-plan or ab-interview to prepare any Backlog task or parent and mark it Ready before agent-box workflow begin {task.id}"
-            elif task.state in ("Doing", "Review"):
+            elif task.state in ("In progress", "In review"):
                 next_step = f"Inspect existing work and ownership before deliberate recovery with agent-box workflow begin {task.id} --resume"
             else:
                 next_step = f"Run agent-box workflow begin {task.id}; readiness and ownership checks still apply"
@@ -868,7 +868,7 @@ def inspect(root, binding, adapter, task, config, authors=None):
                   next_step=recorded_step(
                       task, parent, config, saved, blockers,
                       no_work=unmoved_child(saved, head, parent.id) if "child_start" in saved
-                      else gw.base_commit(root, base) == head and task.state not in ("Review", "Done")))
+                      else gw.base_commit(root, base) == head and task.state not in ("In review", "Done")))
     if "next_step" in result["plan_sync"]:
         result["next_step"] = result["plan_sync"]["next_step"]
     return result
@@ -1230,12 +1230,12 @@ def begin(root, adapter, task, resume):
     branch = existing or gw.branch_name(parent)
     if branch == base:
         raise AgentBoxError("Task branch cannot be the base branch")
-    if parent.state == "Ready" or parent.id == task.id or parent.state == "Review" and resume:
+    if parent.state == "Ready" or parent.id == task.id or parent.state == "In review" and resume:
         parent, _ = claim(adapter, parent.id, resume)
     else:
         user = str(adapter.identity()["id"])
-        if parent.state != "Doing" or parent.assignees != [user]:
-            raise AgentBoxError("Parent must be Doing and assigned to the current user")
+        if parent.state != "In progress" or parent.assignees != [user]:
+            raise AgentBoxError("Parent must be In progress and assigned to the current user")
     # A parent branch already exists once its first subtask started; that is not
     # the interrupted-work case --resume is for.
     gw.switch_branch(root, branch, base, resume=resume or bool(existing))
@@ -1388,7 +1388,7 @@ def finish(root, config, adapter, task_id):
         tasks = tree(adapter, task)
         # The checklist is the user's own gate, and landing is where it stands:
         # a check nobody can run from here would otherwise stop the subtask, its
-        # parent's move to Review, the pull request that move is the precondition
+        # parent's move to In review, the pull request that move is the precondition
         # for, and the cloud round that lives in it. Both landing routes read the
         # whole tree, so nothing merges with an item still open.
         reasons = completion_reasons(task, tasks, str(adapter.identity()["id"]),
@@ -1412,8 +1412,8 @@ def finish(root, config, adapter, task_id):
                                       integrated=integrated_parent(root, task, parent, base))
             if reasons:
                 raise AgentBoxError("; ".join(reasons))
-        adapter.set_state(task, "Review")
-        return {"task": task.id, "state": "Review", "next": landing_step(config, task, route)}
+        adapter.set_state(task, "In review")
+        return {"task": task.id, "state": "In review", "next": landing_step(config, task, route)}
 
 
 def finish_child(root, config, adapter, task, parent, info, branch, tasks):
@@ -1758,8 +1758,8 @@ def dispatch(args):
             raise AgentBoxError("Review budget requires a non-empty reason from the user and a nonnegative limit")
         with lock(root, "review-budget"):
             task = adapter.get(task.id)
-            if task.state not in ("Doing", "Review") or task.assignees != [str(adapter.identity()["id"])]:
-                raise AgentBoxError("Review budget requires the current user's Doing or Review task")
+            if task.state not in ("In progress", "In review") or task.assignees != [str(adapter.identity()["id"])]:
+                raise AgentBoxError("Review budget requires the current user's In progress or In review task")
             state = read_review_state(root, binding, task)
             if args.limit is not None:
                 state.update(ceiling=args.limit, ceiling_reason=args.reason.strip())
@@ -1789,7 +1789,7 @@ def dispatch(args):
             # The user accepts what is committed now; a later commit or base move retires it.
             fingerprint = scope(root, base)
             reasons = completion_reasons(task, tasks, str(adapter.identity()["id"]),
-                                         states=("Doing", "Review"), checklist=False)
+                                         states=("In progress", "In review"), checklist=False)
             reasons += blocking_reasons(task, adapter.get)
             if reasons:
                 raise AgentBoxError("Cannot accept: " + "; ".join(reasons))

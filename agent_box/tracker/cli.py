@@ -60,7 +60,7 @@ def parser():
         description = {"get": "Read a full task, including requirements, relations and comments",
                        "comments": "Read task comments",
                        "checklist": "Read the task revision and its checklist indices and text",
-                       "claim": "Claim an eligible task and enter Doing",
+                       "claim": "Claim an eligible task and enter In progress",
                        "update": "Update selected task fields",
                        "state": "Move one or more tasks to a lifecycle state",
                        "check": "Check or uncheck checklist items in one write",
@@ -425,7 +425,7 @@ def dispatch(args):
         if args.reason is not None and (not args.reason.strip() or args.state != "Done"):
             raise TrackerError("A reason records closing a task without implementation; "
                                "it belongs to Done and must say something")
-        if args.state == "Doing" and not args.adoption:
+        if args.state == "In progress" and not args.adoption:
             raise TrackerError("Use agent-box tracker claim to assign and start a task")
         # Everything this command can see is judged before the first task moves:
         # a batch that stops halfway leaves the user reconstructing what it did.

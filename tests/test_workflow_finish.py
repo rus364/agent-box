@@ -14,9 +14,9 @@ from workflow_fixtures import BINDING, LandingCase
 class ChildFinishTests(LandingCase):
     def setUp(self):
         LandingCase.setUp(self)
-        self.parent.state = "Doing"
+        self.parent.state = "In progress"
         self.parent.children = ["8"]
-        self.child = Task("8", "1", "Child", state="Doing", assignees=["1"],
+        self.child = Task("8", "1", "Child", state="In progress", assignees=["1"],
                           parent="7", description="- [x] accepted")
         self.adapter.get.side_effect = lambda ident: {"7": self.parent, "8": self.child}[ident]
         gw.git(self.root, "switch", "-c", "ab/8-child")
@@ -156,8 +156,8 @@ class ChildFinishTests(LandingCase):
         self.assertEqual(self.dispatch(["finish", "8"])["state"], "Done")
         self.child.state = "Done"
         self.dispatch(["validate", "7", "--", "true"])
-        self.assertEqual(self.dispatch(["finish", "7"])["state"], "Review")
-        self.parent.state = "Review"
+        self.assertEqual(self.dispatch(["finish", "7"])["state"], "In review")
+        self.parent.state = "In review"
         with self.assertRaisesRegex(AgentBoxError, "checklist remains incomplete"):
             self.dispatch(["land", "7", "merge"])
 
@@ -217,7 +217,7 @@ class ChildFinishTests(LandingCase):
             gw.git(self.root, "update-ref", "refs/heads/" + branch, original)
 
     def test_deleted_child_branch_and_lost_acceptance_cannot_invent_no_code_work(self):
-        """Resuming Doing after integration cannot recreate the provenance lost with state."""
+        """Resuming In progress after integration cannot recreate the provenance lost with state."""
         self.interrupted_finish()
         gw.git(self.root, "branch", "-D", "ab/8-child")
         workflow.evidence_path(self.root, self.child).unlink()
@@ -387,7 +387,7 @@ class NoCodeChildFinishTests(LandingCase):
 
     def setUp(self):
         LandingCase.setUp(self)
-        self.parent.state = "Doing"
+        self.parent.state = "In progress"
         self.parent.children = ["8"]
         self.child = Task("8", "1", "Child", state="Ready", assignees=["1"],
                           parent="7", description="- [x] accepted")
@@ -466,14 +466,14 @@ class NoCodeChildFinishTests(LandingCase):
 
                 def fail(root, *args, **kwargs):
                     if args[:2] == (failure, f"ab/{ident}-child"):
-                        self.assertEqual(self.child.state, "Doing")
+                        self.assertEqual(self.child.state, "In progress")
                         raise AgentBoxError("injected child Git failure")
                     return original_git(root, *args, **kwargs)
 
                 with patch.object(gw, "git", side_effect=fail), \
                      self.assertRaisesRegex(AgentBoxError, "injected child Git failure"):
                     self.begin_ready_child()
-                self.assertEqual(self.child.state, "Doing")
+                self.assertEqual(self.child.state, "In progress")
                 saved = workflow.read_evidence(self.root, self.child)
                 self.assertEqual(saved.get("child_begin", saved.get("child_start"))["head"], origin)
                 self.commit(f"parent-after-{ident}.py")
@@ -512,14 +512,14 @@ class NoCodeChildFinishTests(LandingCase):
                 gw.git(self.root, "branch", "-D", "ab/9-child")
 
     def test_stale_doing_snapshot_cannot_suppress_a_genuine_ready_start(self):
-        """The Ready claim read must prove no-code origin even if dispatch saw Doing."""
+        """The Ready claim read must prove no-code origin even if dispatch saw In progress."""
         for resume, ident in ((False, "9"), (True, "10")):
             with self.subTest(resume=resume):
                 self.child = replace(self.child, id=ident, state="Ready")
                 self.parent.children = [ident]
                 self.adapter.get.side_effect = lambda key: self.parent if key == "7" else self.child
                 ready = self.child
-                self.begin_ready_child(snapshot_state="Doing", resume=resume)
+                self.begin_ready_child(snapshot_state="In progress", resume=resume)
                 self.assertEqual(ready.state, "Ready")
                 self.assertEqual(workflow.read_evidence(self.root, self.child)["child_start"],
                                  {"head": gw.head_sha(self.root), "parent": self.parent.id,
@@ -530,18 +530,18 @@ class NoCodeChildFinishTests(LandingCase):
                 self.adapter.set_state.assert_called_once_with(self.child, "Done")
 
     def test_stale_ready_snapshot_requires_resume_and_cannot_invent_origin(self):
-        """Doing and Review claims need deliberate resume and never establish a new start."""
-        for state, ident in (("Doing", "9"), ("Review", "10")):
+        """In progress and In review claims need deliberate resume and never establish a new start."""
+        for state, ident in (("In progress", "9"), ("In review", "10")):
             with self.subTest(state=state):
                 self.child = replace(self.child, id=ident, state=state)
                 self.parent.children = [ident]
                 self.adapter.get.side_effect = lambda key: self.parent if key == "7" else self.child
                 current = self.child
-                with self.assertRaisesRegex(AgentBoxError, "already Doing"):
+                with self.assertRaisesRegex(AgentBoxError, "already In progress"):
                     self.begin_ready_child(snapshot_state="Ready")
                 self.begin_ready_child(snapshot_state="Ready", resume=True)
                 self.assertEqual(current.state, state)
-                self.assertEqual(self.child.state, "Doing")
+                self.assertEqual(self.child.state, "In progress")
                 self.assertNotIn("child_start", workflow.read_evidence(self.root, self.child))
                 self.adapter.reset_mock()
                 self.dispatch(["validate", ident, "--", "true"])
@@ -733,7 +733,7 @@ class NoCodeChildFinishTests(LandingCase):
         self.interrupted_finish()
         gw.git(self.root, "branch", "-D", "ab/8-child")
         self.child = replace(self.child, state="Ready")
-        self.begin_ready_child(snapshot_state="Doing", resume=True)
+        self.begin_ready_child(snapshot_state="In progress", resume=True)
         self.adapter.reset_mock()
         self.dispatch(["validate", "8", "--", "true"])
         with self.assertRaisesRegex(AgentBoxError, "original work is unproven"):
@@ -860,7 +860,7 @@ class TransitionReadTests(LandingCase):
             self.dispatch(["land", "7", "merge"])
         self.adapter.set_state.side_effect = None
         original_lock = workflow.lock
-        for initial, fresh in (("Review", "Done"), ("Done", "Review")):
+        for initial, fresh in (("In review", "Done"), ("Done", "In review")):
             self.parent.state = initial
             self.adapter.set_state.reset_mock()
             self.adapter.get.side_effect = lambda ident: replace(self.parent)

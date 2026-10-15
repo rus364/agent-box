@@ -604,7 +604,7 @@ class StagingTests(unittest.TestCase):
         """After the rename no staging move can run, and the journal holds the only record of the column."""
         report = self.clone()
         moving = next(t['id'] for t in self.client.tasks.values() if t['project_id'] == int(report['projects']['2']))
-        # A card in Review, which the target's default column would silently turn into Backlog.
+        # A card In review, which the target's default column would silently turn into Backlog.
         self.client.tasks[moving].update(description='Acceptance.', buckets=[
             {'id': int(report['projects']['2']) * 100 + 3, 'project_view_id': int(report['projects']['2']) * 10}])
         original = VikunjaAdapter.set_state
@@ -622,7 +622,7 @@ class StagingTests(unittest.TestCase):
             adoption.cutover(self.root, self.receipt, True)
         self.assertEqual(self.client.get('/projects/1')['title'], 'Root')
         moved = self.staging_move(str(moving), '--project', report['projects']['1'])
-        self.assertEqual(moved[0]['state'], 'Review')
+        self.assertEqual(moved[0]['state'], 'In review')
         self.assertTrue(adoption.cutover(self.root, self.receipt, True)['complete'])
 
     def test_the_frozen_mapping_still_names_every_lost_copy(self):

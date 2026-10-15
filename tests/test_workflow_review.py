@@ -490,7 +490,7 @@ class ReviewWorkflowTests(WorkflowCase):
         workflow.save_review_state(self.root, BINDING, self.task, state)
         accepted = {"scope": workflow.scope(self.root, "main"), "validation": {"exit": 0}, "review": {"verdict": "PASS"}}
         workflow.save_evidence(self.root, self.task, accepted)
-        for task_state in ("Doing", "Review"):
+        for task_state in ("In progress", "In review"):
             self.task.state = task_state
             budget = self.run_workflow("review-budget", "1", "--limit", "6", "--reason", "User grants three more")["review_budget"]
             self.assertEqual((budget["used"], budget["configured_limit"], budget["limit"], budget["remaining"]),
@@ -506,11 +506,11 @@ class ReviewWorkflowTests(WorkflowCase):
         for flags in (("--limit", "-1", "--reason", "User decision"), ("--limit", "6", "--reason", " ")):
             with self.subTest(flags=flags), self.assertRaisesRegex(AgentBoxError, "non-empty reason.*nonnegative limit"):
                 self.run_workflow("review-budget", "1", *flags)
-        for state, assignees in (("Done", ["1"]), ("Doing", ["someone-else"]), ("Review", [])):
+        for state, assignees in (("Done", ["1"]), ("In progress", ["someone-else"]), ("In review", [])):
             self.task.state, self.task.assignees = state, assignees
-            with self.subTest(state=state, assignees=assignees), self.assertRaisesRegex(AgentBoxError, "current user's Doing or Review"):
+            with self.subTest(state=state, assignees=assignees), self.assertRaisesRegex(AgentBoxError, "current user's In progress or In review"):
                 self.run_workflow("review-budget", "1", "--reason", "User decision")
-        self.task.state, self.task.assignees = "Doing", ["1"]
+        self.task.state, self.task.assignees = "In progress", ["1"]
         self.assertFalse(workflow.review_budget_path(self.root, BINDING, self.task).exists())
         for bad in ({"ceiling": True, "ceiling_reason": "Reason"}, {"ceiling": 6},
                     {"ceiling": -1, "ceiling_reason": "Reason"}):

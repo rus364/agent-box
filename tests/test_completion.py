@@ -83,7 +83,8 @@ class CandidateTests(unittest.TestCase):
         self.assertEqual(words("workflow lan")[1], ["land"])
 
     def test_tracker_and_workflow_complete_from_their_parsers(self):
-        self.assertEqual(words("tracker state 374 Re")[1], ["Ready", "Review"])
+        self.assertEqual(words("tracker state 374 Re")[1], ["Ready"])
+        self.assertEqual(words("tracker state 374 In")[1], ["In progress", "In review"])
         # A repeated positional gives way to the next one only once it has a value:
         # before any task ID, a lifecycle state would be parsed as the task.
         self.assertEqual(words("tracker state ")[1], [])
@@ -256,6 +257,16 @@ ask 'abx ins'
                                "complete -F _agent_box abp", "status,state,", "inspect,", "inspect,", "inspect,",
                                "codex,config,completion,", "status,state,", "always,", "status,state,",
                                "inspect,"]))
+
+    @unittest.skipUnless(shutil.which("bash"), "bash is not installed")
+    def test_bash_inserts_a_lifecycle_state_with_a_space_as_one_argument(self):
+        """Readline inserts a candidate verbatim, so an unquoted In progress would become two arguments."""
+        script = r"""
+source <(agent-box completion bash)
+COMP_LINE='agent-box tracker state 374 In'; COMP_POINT=${#COMP_LINE}; _agent_box; printf '%s,' "${COMPREPLY[@]}"
+"""
+        result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=self.alias_env(), timeout=60)
+        self.assertEqual((result.stderr, result.stdout), ("", "In\\ progress,In\\ review,"))
 
     @unittest.skipUnless(shutil.which("zsh"), "zsh is not installed")
     def test_zsh_completes_aliases_with_and_without_complete_aliases(self):

@@ -9,7 +9,7 @@ from ..errors import AgentBoxError
 
 NORMALIZED_LABEL = "ab:normalized"
 
-STATES = ("Backlog", "Ready", "Doing", "Review", "Done")
+STATES = ("Backlog", "Ready", "In progress", "In review", "Done")
 
 
 class TrackerError(AgentBoxError):
@@ -208,26 +208,26 @@ def claim(adapter: Adapter, task_id: str, resume=False) -> tuple[Task, bool]:
     user = str(adapter.identity()["id"])
     if any(assignee != user for assignee in task.assignees):
         raise TrackerError(f"Task {task_id} is assigned to another user", "conflict")
-    if task.state in ("Doing", "Review"):
+    if task.state in ("In progress", "In review"):
         if not resume or task.assignees != [user]:
-            raise TrackerError("Task is already Doing; use --resume after checking existing work", "conflict")
+            raise TrackerError("Task is already In progress; use --resume after checking existing work", "conflict")
         blockers = blocking_reasons(task, adapter.get)
         if blockers:
             raise TrackerError("; ".join(blockers), "conflict")
-        return (adapter.set_state(task, "Doing") if task.state == "Review" else task), False
+        return (adapter.set_state(task, "In progress") if task.state == "In review" else task), False
     if task.state != "Ready":
         raise TrackerError(f"Task must be Ready, currently {task.state}", "conflict")
     blockers = blocking_reasons(task, adapter.get)
     if blockers:
         raise TrackerError("; ".join(blockers), "conflict")
     task = adapter.update(task, {"assignees": [user]})
-    task = adapter.set_state(task, "Doing")
-    if task.assignees != [user] or task.state != "Doing":
+    task = adapter.set_state(task, "In progress")
+    if task.assignees != [user] or task.state != "In progress":
         raise TrackerError("Claim was not confirmed; inspect the task before continuing", "conflict")
     return task, True
 
 
-def completion_reasons(task, tasks, user, *, states=("Doing", "Review"), checklist=True):
+def completion_reasons(task, tasks, user, *, states=("In progress", "In review"), checklist=True):
     """Why this task cannot be completed yet; `checklist` belongs to landing alone.
 
     An item only the user can close, such as a check that cannot run from a

@@ -323,19 +323,19 @@ class CleanupTests(unittest.TestCase):
     def test_unfinished_descendant_is_preserved_but_completed_nested_task_is_considered(self):
         """Done on the parent never substitutes for a descendant's live lifecycle."""
         self.integrated()
-        child, branch = self.descendant('8', state='Doing')
+        child, branch = self.descendant('8', state='In progress')
         self.descendant('9', parent=child)
         result = self.descendant_outcomes(self.run_cleanup())
         for kind in ('local', 'remote'):
             self.assertEqual(result['8'][kind]['status'], 'preserved')
-            self.assertIn('Doing', result['8'][kind]['reason'])
+            self.assertIn('In progress', result['8'][kind]['reason'])
             self.assertEqual(result['9'][kind]['status'], 'deleted')
         self.assertEqual(gw.local_branch_head(self.root, branch), self.head)
         self.assertEqual(gw.local_branch_head(self.origin, branch), self.head)
 
     def test_unfinished_discovery_reports_refs_without_proof_or_writes(self):
         """Unfinished namespaces expose live refs and failures without authorizing cleanup."""
-        _, branch = self.descendant('8', state='Doing')
+        _, branch = self.descendant('8', state='In progress')
         ref = 'refs/heads/' + branch
         second = 'ab/8-second'
         second_ref = 'refs/heads/' + second
@@ -348,7 +348,7 @@ class CleanupTests(unittest.TestCase):
         self.config.workflow.merge_mode = 'github'
         self.config.credentials.github.token = False
         original_remote = cleanup._remote_refs
-        reason = 'Task 8 is Doing, not Done'
+        reason = 'Task 8 is In progress, not Done'
         for scenario in ('unique', 'ambiguous-local', 'ambiguous-remote', 'absent', 'remote-error'):
             for local_enabled, remote_enabled in ((True, True), (True, False), (False, True)):
                 with self.subTest(scenario=scenario, local=local_enabled, remote=remote_enabled):
@@ -401,7 +401,7 @@ class CleanupTests(unittest.TestCase):
         child, branch = self.descendant('8')
         occupied = self.directory / 'occupied'
         gw.git(self.root, 'worktree', 'add', str(occupied), branch)
-        self.task.state = 'Review'
+        self.task.state = 'In review'
         gw.git(self.root, 'switch', self.branch)
         self.adapter.identity.return_value = {'id': 1}
         self.config.workflow.review.policy = 'off'
@@ -925,7 +925,7 @@ class CleanupTests(unittest.TestCase):
         opened = {**merged, 'state': 'OPEN', 'isDraft': False, 'mergeable': 'MERGEABLE',
                   'mergeStateStatus': 'CLEAN', 'statusCheckRollup': []}
         gw.git(self.root, 'switch', self.branch)
-        self.task.state = 'Review'
+        self.task.state = 'In review'
         adapter = self.adapter
         adapter.identity.return_value = {'id': 1}
         args = SimpleNamespace(command='land', task=self.task.id, action='merge', method=None)
@@ -996,7 +996,7 @@ class CleanupTests(unittest.TestCase):
         gh.assert_not_called()
 
     def test_retry_refuses_non_done_or_child_tasks_without_deletion(self):
-        for state, parent in (('Review', None), ('Done', '6')):
+        for state, parent in (('In review', None), ('Done', '6')):
             self.task.state, self.task.parent = state, parent
             with self.assertRaisesRegex(AgentBoxError, 'Done parent'):
                 self.dispatch_land('cleanup')
@@ -1004,7 +1004,7 @@ class CleanupTests(unittest.TestCase):
 
     def test_cleanup_runs_only_after_tracker_success_and_failure_preserves_done_result(self):
         child, _ = self.descendant('8')
-        self.task.state = 'Review'
+        self.task.state = 'In review'
         gw.git(self.root, 'switch', self.branch)
         adapter = self.adapter
         adapter.identity.return_value = {'id': 1}
@@ -1030,7 +1030,7 @@ class CleanupTests(unittest.TestCase):
 
     def test_local_landing_discovers_a_child_attached_at_done_despite_a_stale_card(self):
         """Adapters return new snapshots; a late Done child must not escape cleanup."""
-        self.task.state = 'Review'
+        self.task.state = 'In review'
         fresh = replace(self.task, state='Done', children=[])
         child, child_branch = self.descendant('8', parent=fresh)
         self.adapter.get.side_effect = lambda task_id: copy.deepcopy(self.tasks[task_id])
@@ -1055,7 +1055,7 @@ class CleanupTests(unittest.TestCase):
         with patch.object(cleanup, 'cleanup', side_effect=after_state):
             result = workflow.landing(args, self.root, self.config, self.adapter)
         self.assertEqual(result['state'], 'Done')
-        self.assertEqual(self.task.state, 'Review')
+        self.assertEqual(self.task.state, 'In review')
         self.assertEqual(self.task.children, [])
         self.assertEqual(set(self.descendant_outcomes(result['cleanup'])), {child.id})
         for item in [result['cleanup'], *result['cleanup']['descendants']]:

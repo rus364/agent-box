@@ -271,7 +271,7 @@ class DelegateCommandTests(WorkflowCase):
         gw.git(self.root, "commit", "-m", "direct change")
         self.run_workflow("validate", "1", "--", "true")
         self.assertEqual(self.run_workflow("review", "1")["review"]["verdict"], "SKIPPED")
-        self.assertEqual(self.run_workflow("finish", "1")["state"], "Review")
+        self.assertEqual(self.run_workflow("finish", "1")["state"], "In review")
         for removed in ("writer", "run"):
             with self.subTest(command=removed), contextlib.redirect_stderr(io.StringIO()), \
                  self.assertRaises(SystemExit):

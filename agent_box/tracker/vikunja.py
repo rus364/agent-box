@@ -7,17 +7,6 @@ from urllib.parse import urlsplit
 from .core import NORMALIZED_LABEL, Task, TrackerError, STATES, root_task
 from . import vikunja_api as api
 
-# Column titles agent-box accepts for each lifecycle state. A per-repository
-# override table would be a second mapping language to keep correct; a project
-# whose board does not say what it means is refused instead.
-LIFECYCLE_ALIASES = {
-    "Backlog": ("backlog", "todo", "to do", "to-do"),
-    "Ready": ("ready",),
-    "Doing": ("doing", "in progress", "in-progress"),
-    "Review": ("review", "in review", "in-review"),
-    "Done": ("done", "completed"),
-}
-
 
 class VikunjaAdapter:
     capabilities = frozenset({"tasks", "projects", "comments", "checklists", "relations",
@@ -55,7 +44,11 @@ class VikunjaAdapter:
 
         Vikunja already knows which bucket means done, so that one is taken from
         the view rather than guessed from a title. The remaining states are
-        matched by title; anything ambiguous is reported, never resolved.
+        matched by their exact title, ignoring case; anything ambiguous is
+        reported, never resolved. Synonyms such as Vikunja's default To-Do and
+        Doing are not accepted: a second vocabulary, or a per-repository override
+        table, would be one more mapping to keep correct, so a board that does not
+        say what its columns mean is fixed in the tracker.
 
         A project with no kanban view, or several, is reported the same way. It
         used to raise, which made every read of every task in that project fail,
@@ -82,7 +75,7 @@ class VikunjaAdapter:
             for state in STATES:
                 if state in states:
                     continue
-                found = [ident for alias in LIFECYCLE_ALIASES[state] for ident in titles.get(alias, [])]
+                found = titles.get(state.casefold(), [])
                 if len(found) == 1:
                     states[state] = found[0]
                 elif found:

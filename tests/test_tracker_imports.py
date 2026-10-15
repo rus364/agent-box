@@ -436,7 +436,7 @@ class _MemoryVikunja:
         self.users = [{"id": 9, "username": "operator"}]
         self.views = {1: [{"id": 50, "title": "Kanban", "view_kind": "kanban",
                            "bucket_configuration_mode": "manual"}]}
-        self.buckets = {50: [{"id": 60, "title": "Doing", "project_view_id": 50}]}
+        self.buckets = {50: [{"id": 60, "title": "In progress", "project_view_id": 50}]}
         self.writes = []
 
     def paginate(self, path, _params=None):
@@ -585,7 +585,7 @@ class KanbanTests(unittest.TestCase):
                  "bucket_configuration_mode": "manual"},
             ],
             buckets if buckets is not None else [
-                {"id": 60, "title": "To-Do"}, {"id": 61, "title": "Doing"},
+                {"id": 60, "title": "Backlog"}, {"id": 61, "title": "In progress"},
             ],
         )
 
@@ -609,9 +609,9 @@ class KanbanTests(unittest.TestCase):
 
     def test_bucket_resolves_by_title_or_id_and_missing_names_the_alternatives(self):
         buckets = self._service().buckets
-        self.assertEqual(vikunja.resolve_bucket(buckets, "Doing")["id"], 61)
-        self.assertEqual(vikunja.resolve_bucket(buckets, "60")["title"], "To-Do")
-        with self.assertRaisesRegex(vikunja.NotFound, "To-Do, Doing|Doing, To-Do"):
+        self.assertEqual(vikunja.resolve_bucket(buckets, "In progress")["id"], 61)
+        self.assertEqual(vikunja.resolve_bucket(buckets, "60")["title"], "Backlog")
+        with self.assertRaisesRegex(vikunja.NotFound, "Backlog, In progress"):
             vikunja.resolve_bucket(buckets, "Nowhere")
 
     def test_filter_configured_board_refuses_a_hand_move_with_a_reason(self):
@@ -627,8 +627,8 @@ class KanbanTests(unittest.TestCase):
                          [("/projects/1/views/8/buckets/61/tasks", {"task_id": 42})])
 
     def test_column_comes_from_the_expanded_buckets_not_the_always_zero_bucket_id(self):
-        task = {"bucket_id": 0, "buckets": [{"id": 61, "title": "Doing"}]}
-        self.assertEqual(vikunja.task_bucket_titles(task), ["Doing"])
+        task = {"bucket_id": 0, "buckets": [{"id": 61, "title": "In progress"}]}
+        self.assertEqual(vikunja.task_bucket_titles(task), ["In progress"])
         self.assertEqual(vikunja.task_bucket_titles({"bucket_id": 61}), [])
 
 
@@ -761,7 +761,7 @@ class RichFieldImportTests(unittest.TestCase):
             plan = self._plan(directory, [
                 {"id": "P", "title": "Parent", "project": "Root", "description": "D"},
                 {"id": "C", "title": "Child", "project": "Root", "description": "D",
-                 "parent": "P", "assignees": ["operator"], "bucket": "Doing",
+                 "parent": "P", "assignees": ["operator"], "bucket": "In progress",
                  "due_date": "2026-09-10", "percent_done": 0.25, "hex_color": "aabbcc"},
             ])
             service = _MemoryVikunja()
@@ -774,7 +774,7 @@ class RichFieldImportTests(unittest.TestCase):
             self.assertEqual(child["due_date"], "2026-09-10T00:00:00Z")
             self.assertEqual(child["percent_done"], 0.25)
             self.assertEqual(child["hex_color"], "aabbcc")
-            self.assertEqual([b["title"] for b in child["buckets"]], ["Doing"])
+            self.assertEqual([b["title"] for b in child["buckets"]], ["In progress"])
             self.assertEqual([u["username"] for u in child["assignees"]], ["operator"])
             self.assertIn("parenttask", child["related_tasks"])
             resumed = vikunja.Importer(service, plan, Path(directory)).apply()
@@ -799,15 +799,15 @@ class RichFieldImportTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             plan = self._plan(directory, [{"id": "A", "title": "T", "project": "Root",
                                            "description": "D", "bucket": "Nowhere"}])
-            with self.assertRaisesRegex(vikunja.ImportConflict, "Doing"):
+            with self.assertRaisesRegex(vikunja.ImportConflict, "In progress"):
                 vikunja.Importer(_MemoryVikunja(), plan, Path(directory)).apply()
 
 
 
 
 class BucketInViewTests(unittest.TestCase):
-    TASK = {"buckets": [{"id": 60, "title": "Doing", "project_view_id": 8},
-                        {"id": 90, "title": "Doing", "project_view_id": 9}]}
+    TASK = {"buckets": [{"id": 60, "title": "In progress", "project_view_id": 8},
+                        {"id": 90, "title": "In progress", "project_view_id": 9}]}
 
     def test_the_column_is_read_from_the_view_being_moved_on(self):
         self.assertEqual(vikunja.task_bucket_in_view(self.TASK, 9)["id"], 90)
