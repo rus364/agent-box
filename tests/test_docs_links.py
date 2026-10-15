@@ -22,7 +22,7 @@ TITLE = r"""(?:\s+(?:"[^"]*"|'[^']*'|\([^)]*\)))?"""
 INLINE_LINK = re.compile(r"!?\[(?:[^\[\]]|\[[^\[\]]*\])*\]\(\s*<?([^)\s>]*)>?" + TITLE + r"\s*\)")
 REFERENCE_DEFINITION = re.compile(r"^ {0,3}\[[^\]]+\]:\s*<?(\S+?)>?" + TITLE + r"\s*$", re.MULTILINE)
 HEADING = re.compile(r"^ {0,3}(#{1,6})\s+(.*?)(?:\s+#+)?\s*$")
-EXPLICIT_ANCHOR = re.compile(r"<a\s[^>]*\b(?:id|name)\s*=\s*\"([^\"]+)\"", re.IGNORECASE)
+EXPLICIT_ANCHOR = re.compile(r"""<a\s[^>]*?(?<![\w-])(?:id|name)\s*=\s*(?:"([^"]+)"|'([^']+)')""", re.IGNORECASE)
 SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
 
 
@@ -54,15 +54,21 @@ def prose(text: str) -> str:
 
 def slug(heading: str) -> str:
     """GitHub's heading id: rendered text, lowercased, punctuation dropped, spaces to hyphens."""
-    text = re.sub(r"!?\[([^\]]*)\]\([^)]*\)", r"\1", heading)
-    text = re.sub(r"<[^>]+>", "", text).replace("`", "").lower()
-    text = "".join(ch for ch in text if ch.isalnum() or ch in "_- ")
+    parts = []
+    # Inline code renders verbatim, so only the text around it loses link syntax and HTML tags.
+    for index, part in enumerate(re.split(r"(`+[^`]*?`+)", heading)):
+        if index % 2:
+            parts.append(part.strip("`"))
+        else:
+            part = re.sub(r"!?\[([^\]]*)\]\([^)]*\)", r"\1", part)
+            parts.append(re.sub(r"<[^>]+>", "", part))
+    text = "".join(ch for ch in "".join(parts).lower() if ch.isalnum() or ch in "_- ")
     return text.replace(" ", "-")
 
 
 def anchors(path: Path) -> set[str]:
     text = path.read_text(encoding="utf-8")
-    found = set(EXPLICIT_ANCHOR.findall(prose(text)))
+    found = {double or single for double, single in EXPLICIT_ANCHOR.findall(prose(text))}
     seen: dict[str, int] = {}
     for raw, visible in zip(text.split("\n"), prose(text).split("\n")):
         # The blanked line says whether this is a heading at all; the raw one keeps its code text.
@@ -177,6 +183,17 @@ class LinkCheckerTests(unittest.TestCase):
         """An example anchor in a code block is not on the rendered page, so a link to it is broken."""
         problems = self.check({"README.md": '# T\n\n```html\n<a id="example"></a>\n```\n\n[e](#example)\n'})
         self.assertEqual(problems, ["README.md:7: #example (no such anchor)"])
+
+    def test_only_real_id_and_name_attributes_are_anchors(self):
+        problems = self.check({"README.md": (
+            "# T\n\n<a data-id=\"fake\"></a>\n<a id='single'></a>\n\n[f](#fake) [s](#single)\n"
+        )})
+        self.assertEqual(problems, ["README.md:6: #fake (no such anchor)"])
+
+    def test_inline_code_keeps_angle_brackets_in_the_slug(self):
+        """GitHub keeps text inside code, so `<NAME>` contributes "name" to the id."""
+        problems = self.check({"README.md": "# T\n\n## `--env=<NAME>`\n\n[a](#--envname) [b](#--env)\n"})
+        self.assertEqual(problems, ["README.md:5: #--env (no such anchor)"])
 
     def test_external_urls_are_not_checked(self):
         problems = self.check({"README.md": "# T\n\n[gh](https://github.com/x/y#z) [m](mailto:a@b.c)\n"})
