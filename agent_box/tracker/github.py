@@ -390,7 +390,9 @@ class GitHubAdapter:
         if state != "Done" and raw["state"] == "CLOSED":
             api.mutate(self.client, "ReopenIssue", issueId=raw["id"])
         self.set_option(bound, item, "Status", status)
-        if state == "Done" and raw["state"] == "OPEN":
+        # Closing without implementation is also a correction of an issue the board
+        # already closed as completed, for instance when our own close was lost.
+        if state == "Done" and (raw["state"] == "OPEN" or unimplemented and raw["state_reason"] != "NOT_PLANNED"):
             reason = "NOT_PLANNED" if unimplemented else "COMPLETED"
             api.mutate(self.client, "CloseIssue", issueId=raw["id"], stateReason=reason)
         expected = CLOSE_REASONS.get(reason)

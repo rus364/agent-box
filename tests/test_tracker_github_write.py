@@ -25,6 +25,14 @@ class LifecycleWriteTests(unittest.TestCase):
         self.assertEqual(tracker.set_state(stalled, "Done").state, "Done")
         self.assertEqual(raw(client, 1)["state"], "CLOSED")
 
+    def test_rerun_corrects_a_completed_close_the_board_made_while_ours_was_lost(self):
+        tracker, client = writable([issue(1, status="Ready")], auto_close=True, fail=["CloseIssue"])
+        with self.assertRaises(TrackerError):
+            tracker.set_state(tracker.get("1"), "Done", unimplemented=True)
+        self.assertEqual(raw(client, 1)["stateReason"], "COMPLETED")
+        task = tracker.set_state(tracker.get("1"), "Done", unimplemented=True)
+        self.assertEqual((task.state_reason, raw(client, 1)["stateReason"]), ("closed as not planned", "NOT_PLANNED"))
+
     def test_not_planned_survives_the_board_closing_the_issue_first(self):
         """Auto-close may close the issue as completed between our writes; the reason given still wins."""
         tracker, client = writable([issue(1, status="Ready")], auto_close=True)
