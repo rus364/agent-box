@@ -265,12 +265,15 @@ class GitHubAdapter:
                 option.setdefault("color", "GRAY")
                 option.setdefault("description", "")
             if field["exists"]:
-                # GitHub replaces the whole list; an option left out takes every card's value with it.
-                kept = {option.get("id") for option in options}
-                current, _ = self.single_select(project, field["field"])
-                if any(option["id"] not in kept for option in current["options"]):
-                    raise TrackerError(f"Board init would drop a {field['field']} option; nothing was written",
-                                       "conflict")
+                # GitHub replaces the whole list; an option left out takes every card's value
+                # with it. The field is read again right before the write, not from the plan's
+                # snapshot, so an option someone added since is not silently deleted.
+                fresh, _ = self.single_select(api.project(self.client, project["owner"], project["number"]),
+                                              field["field"])
+                planned = {option["id"] for option in options if option.get("id")}
+                if not fresh or {option["id"] for option in fresh["options"]} != planned:
+                    raise TrackerError(f"Project {project['id']} {field['field']} options changed since the plan; "
+                                       "rerun board init", "conflict")
                 api.mutate(self.client, "UpdateField", fieldId=field["id"], singleSelectOptions=options)
             else:
                 api.mutate(self.client, "CreateField", projectId=project["node"], dataType="SINGLE_SELECT",

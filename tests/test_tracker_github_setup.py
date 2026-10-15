@@ -66,6 +66,15 @@ class BoardInitTests(unittest.TestCase):
         self.assertEqual(client.writes, ["UpdateField"])
         self.assertEqual(len(client.projects[2]["fields"]["nodes"][1]["options"]), 6)
 
+    def test_option_added_after_the_plan_is_never_deleted(self):
+        """The replacement list comes from the plan; an option added since must stop the write."""
+        tracker, client = writable(projects={2: project(status=BOARD, priority=P_SCALE)})
+        plan = tracker.board_plan("octo/2")
+        client.projects[2]["fields"]["nodes"][2]["options"].append({"id": "late", "name": "P3"})
+        with self.assertRaisesRegex(TrackerError, "changed since the plan"):
+            tracker.apply_board_plan(plan)
+        self.assertIn("late", [o["id"] for o in client.projects[2]["fields"]["nodes"][2]["options"]])
+
     def test_missing_priority_field_is_created_and_a_clashing_one_is_left(self):
         tracker, client = writable(projects={2: project(priority=None)})
         tracker.initialize_boards(["octo/2"], apply=True)
