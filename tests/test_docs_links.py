@@ -17,7 +17,7 @@ from urllib.parse import unquote
 ROOT = Path(__file__).resolve().parent.parent
 
 QUOTE = re.compile(r"^(?: {0,3}> ?)*")
-FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
+FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
 CODE_SPAN = re.compile(r"(`+)(?:(?!\1).)+?\1", re.DOTALL)
 TITLE = r"""(?:\s+(?:"[^"]*"|'[^']*'|\([^)]*\)))?"""
 # A destination in angle brackets may contain spaces; a bare one ends at whitespace.
@@ -48,7 +48,9 @@ def prose(text: str) -> str:
             fence = match.group(1)
             lines[index] = ""
         elif fence is not None:
-            if match and match.group(1)[0] == fence[0] and len(match.group(1)) >= len(fence):
+            # Only a bare fence closes the block; a fence with an info string is content.
+            closes = match and not match.group(2).strip()
+            if closes and match.group(1)[0] == fence[0] and len(match.group(1)) >= len(fence):
                 fence = None
             lines[index] = ""
     blanked = "\n".join(lines)
@@ -64,7 +66,9 @@ def slug(heading: str) -> str:
             parts.append(part.strip("`"))
         else:
             part = re.sub(r"!?\[([^\]]*)\]\([^)]*\)", r"\1", part)
-            parts.append(re.sub(r"<[^>]+>", "", part))
+            part = re.sub(r"<[^>]+>", "", part)
+            # Emphasis delimiters flank words; an underscore inside a word is literal text.
+            parts.append(re.sub(r"(?<!\w)[*_]+|[*_]+(?!\w)", "", part))
     text = "".join(ch for ch in "".join(parts).lower() if ch.isalnum() or ch in "_- ")
     return text.replace(" ", "-")
 
@@ -169,6 +173,16 @@ class LinkCheckerTests(unittest.TestCase):
     def test_fenced_example_inside_a_blockquote_is_not_checked(self):
         problems = self.check({"README.md": "# T\n\n> ~~~markdown\n> [example](missing.md)\n> ~~~\n"})
         self.assertEqual(problems, [])
+
+    def test_emphasis_does_not_reach_the_slug(self):
+        problems = self.check({"README.md": "# T\n\n## _Setup_ for snake_case\n\n[a](#setup-for-snake_case)\n"})
+        self.assertEqual(problems, [])
+
+    def test_fence_with_an_info_string_does_not_close_a_block(self):
+        problems = self.check({"README.md": (
+            "# T\n\n```\n```python\n```\n\n[x](missing.md)\n"
+        )})
+        self.assertEqual(problems, ["README.md:7: missing.md (no such file)"])
 
     def test_links_shown_inside_code_are_not_checked(self):
         problems = self.check({"README.md": (
