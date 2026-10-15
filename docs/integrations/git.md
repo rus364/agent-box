@@ -28,12 +28,12 @@ unchanged.
 
 Only HTTPS GitHub authentication is forwarded. SSH keys and the host SSH agent
 are never mounted, so `Host key verification failed` inside the box means a
-remote still uses SSH on another host; use HTTPS rather than mounting keys or
-disabling host-key checks.
+remote still uses SSH — on `github.com` too while the token is off; use HTTPS
+rather than mounting keys or disabling host-key checks.
 
 Git and `gh` configuration is copied into the box when it is created; changes
-made inside the box disappear with it, and changing these settings takes
-effect for the next box (`agent-box stop`, then launch).
+made inside the box disappear with it. Changed settings or a renewed host `gh`
+login take effect for the next box (`agent-box stop`, then launch).
 
 ## One-session overrides
 

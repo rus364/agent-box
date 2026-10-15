@@ -15,9 +15,11 @@ host stays the source of truth; changes made in the box disappear with it.
   kubeconfigs) or writable where it must refresh tokens (`yc`). Variables
   carry paths only, so no credential appears in Podman's argv. Turning a
   forwarding off or emptying its list removes the copies and the mount.
-- A box keeps its creation-time switches and selections; later launches
-  re-render only those choices, which is how renewed host logins (for example
-  a 12-hour Yandex IAM token) reach a running box without recreating it.
+- A box keeps its creation-time switches and selections. Registry logins,
+  kubeconfigs and cloud profiles are re-rendered from those choices at every
+  launch, which is how renewed host logins (for example a 12-hour Yandex IAM
+  token) reach a running box. Git and `gh` copies are seeded only when the box
+  is created, so a renewed `gh` login needs a new box.
 - **Git.** Identity is read key by key with `git config --get`. The GitHub
   token is forwarded by name (`--env=GH_TOKEN`, or the existing
   `GH_TOKEN`/`GITHUB_TOKEN`) so its value never lands in argv, which `/proc`
