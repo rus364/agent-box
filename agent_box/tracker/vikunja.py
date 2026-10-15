@@ -404,7 +404,8 @@ class VikunjaAdapter:
                             {"assignees": [{"id": int(user)} for user in assignments]})
         return self.get(task.id)
 
-    def set_state(self, task, state):
+    def set_state(self, task, state, unimplemented=False):
+        """``unimplemented`` changes nothing here: Vikunja's done flag has no reason."""
         if state not in STATES:
             raise TrackerError(f"Unknown lifecycle state: {state}")
         if task.project not in self.projects_in_scope():

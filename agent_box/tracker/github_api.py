@@ -74,6 +74,30 @@ QUERIES = {
     **{"Issue" + name[0].upper() + name[1:]:
        f"query Issue{name[0].upper() + name[1:]}($id: ID!, $after: String) {{ node(id: $id) {{ ... on Issue {{ {connection(name)} }} }} }}"
        for name in CONNECTIONS},
+    "Repository": """query Repository($owner: String!, $name: String!, $label: String!) {
+  repository(owner: $owner, name: $name) { id label(name: $label) { id name } }
+}""",
+    **{name: f"mutation {name}($input: {kind}Input!) {{ {field}(input: $input) {{ {result} }} }}"
+       for name, kind, field, result in (
+           ("CreateIssue", "CreateIssue", "createIssue", "issue { id number }"),
+           ("UpdateIssue", "UpdateIssue", "updateIssue", "issue { id }"),
+           ("CloseIssue", "CloseIssue", "closeIssue", "issue { id }"),
+           ("ReopenIssue", "ReopenIssue", "reopenIssue", "issue { id }"),
+           ("ReplaceAssignees", "ReplaceActorsForAssignable", "replaceActorsForAssignable", "clientMutationId"),
+           ("AddItem", "AddProjectV2ItemById", "addProjectV2ItemById", "item { id }"),
+           ("SetField", "UpdateProjectV2ItemFieldValue", "updateProjectV2ItemFieldValue", "projectV2Item { id }"),
+           ("ClearField", "ClearProjectV2ItemFieldValue", "clearProjectV2ItemFieldValue", "projectV2Item { id }"),
+           ("AddSubIssue", "AddSubIssue", "addSubIssue", "issue { id }"),
+           ("RemoveSubIssue", "RemoveSubIssue", "removeSubIssue", "issue { id }"),
+           ("AddBlockedBy", "AddBlockedBy", "addBlockedBy", "clientMutationId"),
+           ("RemoveBlockedBy", "RemoveBlockedBy", "removeBlockedBy", "clientMutationId"),
+           ("AddRelatesTo", "AddRelatesTo", "addRelatesTo", "clientMutationId"),
+           ("RemoveRelatesTo", "RemoveRelatesTo", "removeRelatesTo", "clientMutationId"),
+           ("UnmarkDuplicate", "UnmarkIssueAsDuplicate", "unmarkIssueAsDuplicate", "clientMutationId"),
+           ("AddComment", "AddComment", "addComment", "commentEdge { node { id url body } }"),
+           ("CreateLabel", "CreateLabel", "createLabel", "label { id }"),
+           ("AddLabels", "AddLabelsToLabelable", "addLabelsToLabelable", "clientMutationId"),
+           ("RemoveLabels", "RemoveLabelsFromLabelable", "removeLabelsFromLabelable", "clientMutationId"))},
     "Comments": """query Comments($owner: String!, $name: String!, $number: Int!, $after: String) {
   repository(owner: $owner, name: $name) { issue(number: $number) { comments(first: 100, after: $after) {
     pageInfo { hasNextPage endCursor }
@@ -328,3 +352,17 @@ def comments(client, repository, number):
     return [{"id": node["id"], "author": (node.get("author") or {}).get("login"), "created": node.get("createdAt"),
              "updated": node.get("updatedAt"), "url": node.get("url"), "comment": node.get("body") or ""}
             for node in nodes]
+
+
+def mutate(client, operation, /, **values):
+    """Run one input-object mutation; omitted fields stay untouched by GitHub."""
+    return client.graphql(QUERIES[operation], {"input": values})
+
+
+def repository(client, repository, label=""):
+    """The repository's node and, when named, one of its labels."""
+    owner, name = repository.split("/", 1)
+    found = client.graphql(QUERIES["Repository"], {"owner": owner, "name": name, "label": label})["repository"]
+    if not found:
+        raise APIError(404, f"repository {repository} not found", kind="NOT_FOUND")
+    return found

@@ -451,7 +451,7 @@ def dispatch(args):
             if args.reason:
                 adapter.comment(found.id, args.reason)
             # Compact rows: a batch answers with what moved, not with every body it read.
-            changed.append(adapter.set_state(found, args.state).to_dict(full=False))
+            changed.append(adapter.set_state(found, args.state, unimplemented=bool(args.reason)).to_dict(full=False))
         return changed
     if args.command == "move":
         if "move" not in adapter.capabilities:

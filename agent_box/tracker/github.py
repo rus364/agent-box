@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 import re
+import time
 from urllib.parse import urlsplit
 
-from .core import STATES, Task, TrackerError
+from .core import NORMALIZED_LABEL, STATES, Task, TrackerError
 from . import github_api as api
 
 #: Priority options, highest first, as the board lists them: the board sorts and
@@ -12,6 +13,9 @@ from . import github_api as api
 PRIORITIES = ("Immediate", "Urgent", "High", "Medium", "Low")
 PRIORITY_VALUES = {name.casefold(): 5 - index for index, name in enumerate(PRIORITIES)}
 CLOSE_REASONS = {"NOT_PLANNED": "closed as not planned", "DUPLICATE": "closed as a duplicate"}
+RELATIONS = ("parent", "child", "blocks", "blocked-by", "related", "duplicate")
+#: Pauses before rereading a write; GitHub applies project workflows a few seconds late.
+CONFIRM_DELAYS = (0, 1, 2, 4)
 
 
 def repository_from_url(url, web_host):
@@ -51,6 +55,7 @@ class GitHubAdapter:
         # Fields and options are read once per process, never persisted: an option
         # ID kept in the repository would outlive the option it names.
         self._projects = {}
+        self.sleep = time.sleep
 
     def repository(self):
         if self._repository is None:
@@ -304,3 +309,226 @@ class GitHubAdapter:
     def comments(self, task_id):
         repository, number = self.issue_ref(task_id)
         return api.comments(self.client, repository, number)
+
+    # Writes. Only this repository's issues on the bound board are written, and
+    # every write is confirmed by reading it back.
+
+    def writable(self, task_id):
+        """The issue, its card on the bound board and the board, or a refusal before any write."""
+        repository, number = self.issue_ref(task_id)
+        raw = api.issue(self.client, repository, number)
+        bound = self.bound_project()
+        item = next((item for item in raw["items"] if item["project"] == bound["node"]), None)
+        if raw["repository"].casefold() != self.repository().casefold() or not item:
+            raise TrackerError(f"Task {task_id} is outside the repository binding: only this repository's issues "
+                               f"on project {bound['id']} are written", "conflict")
+        return raw, item, bound
+
+    def confirm(self, task_id, check, message):
+        """Reread until the write shows; a board workflow may land a few seconds after it."""
+        for delay in CONFIRM_DELAYS:
+            self.sleep(delay)
+            task = self.get(task_id)
+            if check(task):
+                return task
+        raise TrackerError(f"{message}; inspect task {task_id} in the tracker", "conflict")
+
+    def set_option(self, bound, item, name, option):
+        field, problem = self.single_select(bound, name)
+        if not field:
+            raise TrackerError(f"Project {bound['id']}: {problem}; run tracker provider github board init", "configuration")
+        if option is None:
+            api.mutate(self.client, "ClearField", projectId=bound["node"], itemId=item["id"], fieldId=field["id"])
+            return
+        found = [choice for choice in field["options"] if choice["name"].casefold() == option.casefold()]
+        if len(found) != 1:
+            raise TrackerError(f"Project {bound['id']} has no single {name} option {option}; "
+                               "run tracker provider github board init", "configuration")
+        api.mutate(self.client, "SetField", projectId=bound["node"], itemId=item["id"], fieldId=field["id"],
+                   value={"singleSelectOptionId": found[0]["id"]})
+
+    def priority_option(self, bound, priority):
+        """The option name for a priority, checked before the first write."""
+        if not priority:
+            return None
+        name = PRIORITIES[5 - int(priority)]
+        field, problem = self.single_select(bound, "Priority")
+        if not field or not any(choice["name"].casefold() == name.casefold() for choice in field["options"]):
+            raise TrackerError(f"Project {bound['id']} has no Priority option {name}; "
+                               "run tracker provider github board init", "configuration")
+        return name
+
+    def set_state(self, task, state, unimplemented=False):
+        """Done is a closed issue and the Done column; agent-box writes both.
+
+        The issue is closed before its card moves: the board's Auto-close
+        workflow would otherwise close it as completed first, and a closed issue
+        keeps the first reason it was given. Leaving Done reopens the issue,
+        because reopening leaves the card where it was.
+        """
+        if state not in STATES:
+            raise TrackerError(f"Unknown lifecycle state: {state}")
+        raw, item, bound = self.writable(task.id)
+        status = self.option_name(bound, state)
+        if state == "Done":
+            if raw["state"] == "OPEN":
+                api.mutate(self.client, "CloseIssue", issueId=raw["id"],
+                           stateReason="NOT_PLANNED" if unimplemented else "COMPLETED")
+        elif raw["state"] == "CLOSED":
+            api.mutate(self.client, "ReopenIssue", issueId=raw["id"])
+        self.set_option(bound, item, "Status", status)
+        return self.confirm(task.id, lambda current: current.state == state,
+                            f"State transition not confirmed: expected {state}")
+
+    def update(self, task, fields):
+        current = self.get(task.id)
+        if current != task:
+            raise TrackerError("Task changed; reread before updating", "conflict")
+        fields = dict(fields)
+        unsupported = fields.keys() - {"title", "description", "priority", "assignees"}
+        if unsupported:
+            raise TrackerError(f"Unsupported task fields: {sorted(unsupported)}")
+        raw, item, bound = self.writable(task.id)
+        option = self.priority_option(bound, fields["priority"]) if "priority" in fields else None
+        text = {name: fields[key] for key, name in (("title", "title"), ("description", "body")) if key in fields}
+        if text:
+            api.mutate(self.client, "UpdateIssue", id=raw["id"], **text)
+        if "priority" in fields:
+            self.set_option(bound, item, "Priority", option)
+        if "assignees" in fields:
+            api.mutate(self.client, "ReplaceAssignees", assignableId=raw["id"], actorLogins=list(fields["assignees"]))
+        expected = {"title": "title", "description": "description", "priority": "priority", "assignees": "assignees"}
+        return self.confirm(task.id, lambda found: all(getattr(found, expected[key]) == value
+                                                       for key, value in fields.items()),
+                            "Task update not confirmed")
+
+    def create(self, project, title, description="", parent=None, priority=0):
+        """A new issue here, on the bound board in Backlog; everything is checked before it exists."""
+        bound = self.bound_project()
+        if self.project(project)["id"] != bound["id"]:
+            raise TrackerError("Create the task on the bound project")
+        self.board(bound["id"])
+        option = self.priority_option(bound, priority)
+        if parent:
+            self.writable(parent)
+        repository = api.repository(self.client, self.repository())
+        created = api.mutate(self.client, "CreateIssue", repositoryId=repository["id"], title=title,
+                             body=description)["createIssue"]["issue"]
+        item = {"id": api.mutate(self.client, "AddItem", projectId=bound["node"],
+                                 contentId=created["id"])["addProjectV2ItemById"]["item"]["id"]}
+        self.set_option(bound, item, "Status", self.option_name(bound, "Backlog"))
+        if option:
+            self.set_option(bound, item, "Priority", option)
+        task_id = str(created["number"])
+        if parent:
+            self.relate(task_id, "parent", parent)
+        return self.confirm(task_id, lambda task: task.state == "Backlog" and task.priority == priority,
+                            "New task's Backlog column was not confirmed")
+
+    def option_name(self, bound, state):
+        resolved = self.board(bound["id"])
+        return next(option["name"] for option in resolved["options"] if option["id"] == resolved["states"][state])
+
+    def comment(self, task_id, text):
+        if not text.strip():
+            raise TrackerError("Comment must not be empty")
+        raw, _, _ = self.writable(task_id)
+        node = api.mutate(self.client, "AddComment", subjectId=raw["id"], body=text)["addComment"]["commentEdge"]["node"]
+        return {"id": node["id"], "url": node.get("url"), "comment": node.get("body", text)}
+
+    def related_to(self, task_id, kind, other):
+        task = self.get(task_id)
+        if kind == "parent":
+            return task.parent == other
+        if kind == "child":
+            return other in task.children
+        if kind == "blocks":
+            return task_id in self.get(other).blockers
+        if kind == "blocked-by":
+            return other in task.blockers
+        if kind == "related":
+            return other in task.related
+        raw = api.issue(self.client, *self.issue_ref(task_id))
+        return bool(raw["duplicate_of"]) and self.task_id(raw["duplicate_of"]) == other
+
+    def relate(self, task_id, kind, other, remove=False):
+        """Every relation is GitHub's own: sub-issues, dependencies, relates-to and duplicates.
+
+        A duplicate is a closing reason on GitHub, so marking one closes the task
+        as Done, and only an open issue can be marked. Removing the mark leaves
+        the issue closed, as GitHub does; reopening is a state change.
+        """
+        task_id, other = str(task_id), str(other)
+        if kind not in RELATIONS or task_id == other:
+            raise TrackerError("Invalid relation")
+        raw, item, bound = self.writable(task_id)
+        other_raw, _, _ = self.writable(other)
+        if self.related_to(task_id, kind, other) == (not remove):
+            return self.get(task_id)
+        if not remove and kind in ("parent", "child", "blocks", "blocked-by"):
+            origin, target = (other, task_id) if kind in ("child", "blocks") else (task_id, other)
+            if kind in ("parent", "child"):
+                existing = self.get(origin)
+                if existing.parent and existing.parent != target:
+                    raise TrackerError("Task already has a different parent", "conflict")
+            pending, seen = [target], set()
+            while pending:
+                node = pending.pop()
+                if node == origin:
+                    raise TrackerError("Relation would introduce a cycle", "conflict")
+                if node in seen:
+                    continue
+                seen.add(node)
+                found = self.get(node)
+                pending.extend(([found.parent] if found.parent else []) if kind in ("parent", "child") else found.blockers)
+        if kind == "duplicate" and not remove and raw["state"] == "CLOSED":
+            raise TrackerError("GitHub marks only an open issue as a duplicate; reopen it first", "conflict")
+        mine, theirs = raw["id"], other_raw["id"]
+        verb = "Remove" if remove else "Add"
+        if kind in ("parent", "child"):
+            parent, child = (theirs, mine) if kind == "parent" else (mine, theirs)
+            api.mutate(self.client, verb + "SubIssue", issueId=parent, subIssueId=child)
+        elif kind in ("blocks", "blocked-by"):
+            blocked, blocking = (theirs, mine) if kind == "blocks" else (mine, theirs)
+            api.mutate(self.client, verb + "BlockedBy", issueId=blocked, blockingIssueId=blocking)
+        elif kind == "related":
+            api.mutate(self.client, verb + "RelatesTo", issueId=mine, relatedIssueId=theirs)
+        elif remove:
+            api.mutate(self.client, "UnmarkDuplicate", duplicateId=mine, canonicalId=theirs)
+        else:
+            api.mutate(self.client, "CloseIssue", issueId=mine, stateReason="DUPLICATE", duplicateIssueId=theirs)
+            self.set_option(bound, item, "Status", self.option_name(bound, "Done"))
+        self.confirm(task_id, lambda _: self.related_to(task_id, kind, other) == (not remove),
+                     "Relation change was not confirmed")
+        return self.get(task_id)
+
+    def label(self, name, create=True):
+        found = api.repository(self.client, self.repository(), name)
+        if found["label"] or not create:
+            return (found["label"] or {}).get("id")
+        return api.mutate(self.client, "CreateLabel", repositoryId=found["id"], name=name,
+                          color="ededed")["createLabel"]["label"]["id"]
+
+    def set_labels(self, task_id, add, remove):
+        """Attach and detach this repository's labels by name; other labels stay."""
+        raw, _, _ = self.writable(task_id)
+        detach = [self.label(name, False) for name in raw["labels"] if name in remove]
+        if any(detach):
+            api.mutate(self.client, "RemoveLabels", labelableId=raw["id"], labelIds=[i for i in detach if i])
+        if add and add not in raw["labels"]:
+            api.mutate(self.client, "AddLabels", labelableId=raw["id"], labelIds=[self.label(add)])
+        return self.confirm(task_id, lambda task: (not add or add in task.labels)
+                            and not set(remove) & set(task.labels), "Label change was not confirmed")
+
+    def set_tier(self, task_id, tier):
+        if tier not in (1, 2, 3):
+            raise TrackerError("Task tier must be 1, 2, or 3")
+        title = f"ab:tier:{tier}"
+        current = self.get(task_id)
+        return self.set_labels(task_id, title, [name for name in current.labels
+                                                if name.startswith("ab:tier:") and name != title])
+
+    def set_normalized(self, task_id, normalized=True):
+        """The marker records completed processing, independently of task readiness."""
+        return self.set_labels(task_id, NORMALIZED_LABEL if normalized else None,
+                               [] if normalized else [NORMALIZED_LABEL])
