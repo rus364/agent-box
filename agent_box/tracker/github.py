@@ -324,12 +324,25 @@ class GitHubAdapter:
                                f"on project {bound['id']} are written", "conflict")
         return raw, item, bound
 
+    def column(self, raw, bound):
+        """The Status option name of the issue's card on the bound board, or None."""
+        item = next((item for item in raw["items"] if item["project"] == bound["node"]), None)
+        field, _ = self.single_select(bound, "Status")
+        value = (item or {}).get("values", {}).get(field["id"]) if field else None
+        return value["name"] if value else None
+
     def confirm(self, task_id, check, message):
-        """Reread until the write shows; a board workflow may land a few seconds after it."""
+        """Reread until the write shows; a board workflow may land a few seconds after it.
+
+        ``check`` sees the task and its card's Status: a closed issue reads as Done
+        wherever its card sits, so a Done transition has to look at the card too.
+        """
+        bound = self.bound_project()
         for delay in CONFIRM_DELAYS:
             self.sleep(delay)
-            task = self.get(task_id)
-            if check(task):
+            raw = api.issue(self.client, *self.issue_ref(task_id))
+            task = self.normalize(raw)
+            if check(task, self.column(raw, bound)):
                 return task
         raise TrackerError(f"{message}; inspect task {task_id} in the tracker", "conflict")
 
@@ -377,7 +390,7 @@ class GitHubAdapter:
         elif raw["state"] == "CLOSED":
             api.mutate(self.client, "ReopenIssue", issueId=raw["id"])
         self.set_option(bound, item, "Status", status)
-        return self.confirm(task.id, lambda current: current.state == state,
+        return self.confirm(task.id, lambda current, column: current.state == state and column == status,
                             f"State transition not confirmed: expected {state}")
 
     def update(self, task, fields):
@@ -398,7 +411,7 @@ class GitHubAdapter:
         if "assignees" in fields:
             api.mutate(self.client, "ReplaceAssignees", assignableId=raw["id"], actorLogins=list(fields["assignees"]))
         expected = {"title": "title", "description": "description", "priority": "priority", "assignees": "assignees"}
-        return self.confirm(task.id, lambda found: all(getattr(found, expected[key]) == value
+        return self.confirm(task.id, lambda found, _: all(getattr(found, expected[key]) == value
                                                        for key, value in fields.items()),
                             "Task update not confirmed")
 
@@ -422,7 +435,9 @@ class GitHubAdapter:
         task_id = str(created["number"])
         if parent:
             self.relate(task_id, "parent", parent)
-        return self.confirm(task_id, lambda task: task.state == "Backlog" and task.priority == priority,
+        backlog = self.option_name(bound, "Backlog")
+        return self.confirm(task_id, lambda task, column: task.state == "Backlog" and column == backlog
+                            and task.priority == priority,
                             "New task's Backlog column was not confirmed")
 
     def option_name(self, bound, state):
@@ -463,7 +478,13 @@ class GitHubAdapter:
             raise TrackerError("Invalid relation")
         raw, item, bound = self.writable(task_id)
         other_raw, _, _ = self.writable(other)
+        # A duplicate closes the issue, so its Done column is resolved before any
+        # write, and a rerun after a broken board finishes moving the card.
+        done = self.option_name(bound, "Done") if kind == "duplicate" and not remove else None
         if self.related_to(task_id, kind, other) == (not remove):
+            if done and self.column(raw, bound) != done:
+                self.set_option(bound, item, "Status", done)
+                return self.confirm(task_id, lambda _, column: column == done, "Duplicate's Done column was not confirmed")
             return self.get(task_id)
         if not remove and kind in ("parent", "child", "blocks", "blocked-by"):
             origin, target = (other, task_id) if kind in ("child", "blocks") else (task_id, other)
@@ -497,9 +518,9 @@ class GitHubAdapter:
             api.mutate(self.client, "UnmarkDuplicate", duplicateId=mine, canonicalId=theirs)
         else:
             api.mutate(self.client, "CloseIssue", issueId=mine, stateReason="DUPLICATE", duplicateIssueId=theirs)
-            self.set_option(bound, item, "Status", self.option_name(bound, "Done"))
-        self.confirm(task_id, lambda _: self.related_to(task_id, kind, other) == (not remove),
-                     "Relation change was not confirmed")
+            self.set_option(bound, item, "Status", done)
+        self.confirm(task_id, lambda _, column: self.related_to(task_id, kind, other) == (not remove)
+                     and (not done or column == done), "Relation change was not confirmed")
         return self.get(task_id)
 
     def label(self, name, create=True):
@@ -517,7 +538,7 @@ class GitHubAdapter:
             api.mutate(self.client, "RemoveLabels", labelableId=raw["id"], labelIds=[i for i in detach if i])
         if add and add not in raw["labels"]:
             api.mutate(self.client, "AddLabels", labelableId=raw["id"], labelIds=[self.label(add)])
-        return self.confirm(task_id, lambda task: (not add or add in task.labels)
+        return self.confirm(task_id, lambda task, _: (not add or add in task.labels)
                             and not set(remove) & set(task.labels), "Label change was not confirmed")
 
     def set_tier(self, task_id, tier):

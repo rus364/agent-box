@@ -33,6 +33,18 @@ class LifecycleWriteTests(unittest.TestCase):
         tracker, _ = writable([issue(1, status="Ready")], lag=2)
         self.assertEqual(tracker.set_state(tracker.get("1"), "In review").state, "In review")
 
+    def test_closing_is_confirmed_only_once_the_card_reaches_done(self):
+        """A closed issue reads as Done from any column, so the card itself must be checked."""
+        for lag, confirmed in ((2, True), (10, False)):
+            tracker, client = writable([issue(1, status="Ready")], lag=lag)
+            with self.subTest(lag=lag):
+                if confirmed:
+                    tracker.set_state(tracker.get("1"), "Done")
+                    self.assertEqual(raw(client, 1)["status"], "Done")
+                else:
+                    with self.assertRaisesRegex(TrackerError, "not confirmed"):
+                        tracker.set_state(tracker.get("1"), "Done")
+
     def test_a_write_that_never_shows_is_reported(self):
         tracker, _ = writable([issue(1, status="Ready")], lag=10)
         with self.assertRaisesRegex(TrackerError, "not confirmed"):
@@ -140,6 +152,18 @@ class RelationWriteTests(unittest.TestCase):
         self.assertEqual((task.state, raw(self.client, 1)["duplicateOf"]), ("Done", None))
         with self.assertRaisesRegex(TrackerError, "only an open issue"):
             self.tracker.relate("1", "duplicate", "3")
+
+    def test_duplicate_on_a_broken_board_writes_nothing_and_a_rerun_finishes_the_card(self):
+        board = self.client.projects[2]["fields"]["nodes"][1]
+        done = board["options"].pop()
+        with self.assertRaisesRegex(TrackerError, "Done"):
+            self.tracker.relate("1", "duplicate", "2")
+        self.assertEqual(self.client.writes, [])
+        board["options"].append(done)
+        self.client.op_CloseIssue(issueId=f"N-{REPO}-1", stateReason="DUPLICATE", duplicateIssueId=f"N-{REPO}-2")
+        self.tracker._projects.clear()
+        self.tracker.relate("1", "duplicate", "2")
+        self.assertEqual(raw(self.client, 1)["status"], "Done")
 
 
 if __name__ == "__main__":
