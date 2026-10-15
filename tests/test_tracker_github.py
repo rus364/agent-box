@@ -42,7 +42,7 @@ class LifecycleReadTests(unittest.TestCase):
         self.assertEqual(self.state(issue(1, status="Todo"), projects={2: board}),
                          ("Unknown", "Status 'Todo' maps to no lifecycle state"))
         self.assertEqual(self.state(issue(1, on=[2])), ("Unknown", "issue has no Status on the project"))
-        self.assertEqual(self.state(issue(1)), ("Unknown", "issue is not on the bound project"))
+        self.assertEqual(self.state(issue(1)), ("Unknown", "issue is not on the project"))
 
     def test_board_without_every_state_cannot_be_written_but_still_reads(self):
         board = project(status=("Todo", "In Progress", "Done"))
@@ -153,6 +153,16 @@ class SearchTests(unittest.TestCase):
         self.assertEqual(len(tracker.search("octo/2")), 8)
         self.assertEqual([v["query"] for op, v in client.operations if op == "Items"][0], "is:open")
 
+    def test_selected_project_supplies_the_columns_bound_or_not(self):
+        """Searching another board must read that board's Status and Priority, not the bound one's."""
+        issues = [issue(1, status="Ready", priority="High", on=[9])]
+        boards = {2: project(), 9: project(number=9)}
+        for bound in (None, "octo/2"):
+            tracker, _ = adapter(issues, bound=bound, projects=boards)
+            with self.subTest(bound=bound):
+                found = tracker.search("octo/9")
+                self.assertEqual([(t.project, t.state, t.priority) for t in found], [("octo/9", "Ready", 3)])
+
     def test_recursive_scope_is_refused(self):
         """GitHub projects have no children; quietly ignoring the flag would misreport the scope."""
         tracker, _ = adapter([])
@@ -253,6 +263,7 @@ class ConfigurationTests(unittest.TestCase):
         for url in ("git@github.com:octo/app.git", "https://github.com/octo/app", "ssh://git@github.com/octo/app.git"):
             with self.subTest(url=url):
                 self.assertEqual(repository_from_url(url, "github.com"), REPO)
+        self.assertEqual(repository_from_url("ssh://git@ghe.example:2222/octo/app.git", "ghe.example"), REPO)
         self.assertIsNone(repository_from_url("https://gitlab.com/octo/app.git", "github.com"))
         self.assertIsNone(repository_from_url("https://user:pw@github.com/octo/app.git", "github.com"))
 

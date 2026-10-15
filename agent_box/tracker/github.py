@@ -18,7 +18,7 @@ def repository_from_url(url, web_host):
     """owner/name of a Git remote on this GitHub instance, or None."""
     if not url:
         return None
-    match = re.fullmatch(r"(?:ssh://)?git@([^:/]+)[:/](.+)", url)
+    match = None if "://" in url else re.fullmatch(r"git@([^:/]+):(.+)", url)
     if match:
         host, path = match[1], match[2]
     else:
@@ -187,9 +187,10 @@ class GitHubAdapter:
                                " run tracker resolve for user references")
         return match[1], int(match[2])
 
-    def normalize(self, raw):
+    def normalize(self, raw, board=None):
+        """``board`` is the project a search reads; otherwise the bound one gives the column."""
         own = raw["repository"].casefold() == self.repository().casefold()
-        bound = self.bound_project() if self.binding else None
+        bound = board or (self.bound_project() if self.binding else None)
         item = next((item for item in raw["items"] if bound and item["project"] == bound["node"]), None)
         state, reason = self.issue_state(raw, item, bound)
         priority = 0
@@ -221,7 +222,7 @@ class GitHubAdapter:
                 return "Done", f"closed as a duplicate of {self.task_id(raw['duplicate_of'])}"
             return "Done", CLOSE_REASONS.get(raw["state_reason"])
         if not item:
-            return "Unknown", ("issue is not on the bound project" if bound
+            return "Unknown", ("issue is not on the project" if bound
                                else "no project is bound, so the issue has no lifecycle column")
         resolved = self.lifecycle(bound["id"])
         if resolved["problems"]:
@@ -289,7 +290,7 @@ class GitHubAdapter:
         resolved = self.project(self.subtree(project, recursive)[0])
         needle = query.casefold()
         raws = api.project_issues(self.client, resolved["node"], "is:open" if open_only else "")
-        tasks = [self.normalize(raw) for raw in raws
+        tasks = [self.normalize(raw, resolved) for raw in raws
                  if raw["repository"].casefold() == self.repository().casefold()
                  and (needle in raw["title"].casefold() or needle in raw["body"].casefold())]
         return [task for task in tasks if not open_only or task.state != "Done"]
