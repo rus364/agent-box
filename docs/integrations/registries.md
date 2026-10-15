@@ -32,28 +32,16 @@ When `REGISTRY_AUTH_FILE`, `HELM_REGISTRY_CONFIG` or `HELM_REPOSITORY_CONFIG` is
 set, that file is read instead, as the tools themselves do. This is also how a
 launch nested inside a box forwards the copies that box was given.
 
-Each file is filtered into its own copy and never merged with another: Helm
-often holds registries podman does not. Where both container auth files hold
-logins for one registry, a key from the second counts unless the first has the
-same or a wider one, matching podman's lookup. agent-box copies entries
-already written; it never runs a login command on the host. Logins kept by a
-credential helper (`credHelpers`, `credsStore`) cannot be copied and are
-reported at launch, as are chosen hosts or repositories the host no longer has
-and files it cannot read. A launch never fails over them.
-
-`repositories.yaml` is read without a YAML library, as Helm writes it: plain,
-quoted, wrapped and literal-block values. An entry written beyond that, such
-as one with nested fields, anchors or a folded `>` block, is left out and
-reported with its line, and the other entries still count. Of two entries
-with the same name the first counts, as in Helm.
+Each file is filtered into its own copy containing only the chosen hosts and
+repositories. agent-box copies logins already written; it never runs a login
+command on the host. Logins kept by a credential helper (`credHelpers`,
+`credsStore`), Helm repository entries in YAML forms Helm itself does not
+write, chosen entries the host no longer has and unreadable files are reported
+at launch, and the launch continues without them.
 
 ## How it reaches the container
 
-The copies are rendered into a private per-workspace directory (mode 0700,
-files 0600) and that directory is mounted read-only. The variables carry paths
-only, so no credential appears in Podman's arguments. Turning forwarding off
-or emptying the lists removes the copies and the mount.
-
+The copies are mounted read-only, and the variables carry only their paths.
 The copies are rendered again at every launch. A login renewed on the host,
 such as a Yandex IAM token after 12 hours, reaches an already running box at
 the next `agent-box` launch for that project, without recreating it. The box

@@ -69,7 +69,7 @@ alone. The interactive menu refuses in a box.
 | Claude status line | on | Workspace, Git state, context and provider usage in one line |
 | Git identity | on | `user.name` / `user.email` for commit attribution |
 | Provider transport settings | on | Base URL, proxies and CA bundle, so a box behind a proxy reaches the network |
-| Share skills with Claude | on | Link `~/.agents/skills` into `~/.claude/skills` |
+| Claude skill links | on | Link `~/.agents/skills` into `~/.claude/skills` |
 | Image tool groups | `analysis`, `kubernetes` | What the [workspace image](image.md) is built with |
 | Everything else | off | Credentials, tracker, workflow, browser, k3s, audio, notifications and the other [integrations](integrations/README.md) |
 

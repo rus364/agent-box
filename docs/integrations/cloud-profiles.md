@@ -86,15 +86,11 @@ it leaves the host's copy stale, and the host needs a browser sign-in once.
 
 ## How it reaches the container
 
-The copies are written into a private per-workspace directory (mode 0700,
-files 0600), and that directory is mounted as the box's
-`~/.config/yandex-cloud`. No profile value appears in Podman's arguments.
-Turning forwarding off or emptying the list removes the copies and the mount.
-
-The mount is part of the box's identity. Turning forwarding on or off, or
-emptying or filling the list, recreates the box; a box that is still running
-refuses the change until `agent-box stop`. Changing which profiles are chosen
-only changes the copies.
+The copies are mounted as the box's `~/.config/yandex-cloud`; no profile value
+appears in Podman's arguments. The mount is part of the box itself: turning
+forwarding on or off, or emptying or filling the list, needs a new box, and a
+running box refuses the change until `agent-box stop`. A different selection
+of profiles also applies from the next box on, as described above.
 
 ## One-off overrides
 

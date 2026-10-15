@@ -1,10 +1,11 @@
 # Web links and CLI callbacks
 
-The image provides `xdg-open`, also selected by `BROWSER`. It displays HTTP(S)
-links on stderr, including when there is no terminal. CLI JSON on stdout stays
-clean. If a CLI discards the opener's stderr through `/dev/null`, the handler
-uses its controlling terminal when available. This alone lets tools such as `yc` pass opener discovery before reading
-their saved credentials; kubeconfigs need no changes.
+Inside the box, `xdg-open` (also set as `BROWSER`) displays HTTP(S) links on
+stderr instead of failing, so CLIs that open a browser for login keep working
+and their JSON on stdout stays clean. `agent-box links open URL` does the same
+by hand. With host access enabled, agent-box can also open those links on your
+desktop and route a CLI's localhost login callback back into the box, locally
+or through an SSH or Coder tunnel.
 
 The host link integration is separate from the [agent browser](browser.md) and
 Remote Control. Both host access and automatic browser opening are off by
@@ -39,26 +40,16 @@ says so once, and links in the nested box are only displayed. A nested
 launcher keeps its own broker directory, so it never reaches the outer box's
 broker.
 
-The socket uses an owner-checked private directory under `/tmp`, including on
-Coder/headless hosts without `/run/user/<uid>`. Connection hints are refreshed
-when another session launches or uses `agent-box attach`. Once any session is
-remote/headless, automatic opening stays suppressed until stop/recreation; later local
-sessions also receive manual instructions. The host policy file is outside
-the mounted socket directory and cannot be changed by the box.
-Broker recovery retains this private policy; only workspace stop/recreation
-removes it. Broker exit still closes every callback listener and its socket.
-New SSH/Coder connection details replace the preceding transport; a headless
-attachment without either retains the last hint. A new callback request also
-updates its server listener to match that transport.
+Once any session of a box is remote or headless, automatic opening stays off
+for that box until it is stopped, and later sessions get manual instructions.
 
 ## Local workstation
 
 The handler recognises a standard OAuth `redirect_uri` pointing to loopback,
-or a direct loopback web URL. Before displaying/opening the link, it binds the
-same host loopback port and routes connections to the CLI's loopback **inside
-the container** using `podman exec`. `localhost` prepares both IPv4 and IPv6
-atomically, refusing the request if either loopback port is unavailable. This
-works without publishing container ports or depending on pasta/slirp networking.
+or a direct loopback web URL. Before displaying or opening the link, it listens
+on the same host loopback port and forwards connections to the CLI inside the
+box, without publishing container ports. For `localhost` both IPv4 and IPv6
+ports must be free.
 
 With `open_browser=false`, open the displayed URL yourself. With it enabled,
 agent-box requests the host's `xdg-open` only on a local graphical desktop.
@@ -141,6 +132,5 @@ After upgrading the image, check the opener locally without cloud access:
 agent-box shell -c 'command -v xdg-open; xdg-open https://example.invalid/'
 ```
 
-The offline smoke test uses a fake HTTP callback in real Podman. It proves the
-host-to-container route and remote-mode instructions, not a real identity
-provider login or an external SSH/Coder deployment.
+How the broker is built is recorded in the
+[integration design notes](../design/integrations.md#web-links).

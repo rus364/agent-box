@@ -24,7 +24,8 @@ X11/Wayland forwarding.
 ## Enabling it
 
 Turn on the **`browser` tool group** under **Workspace box → Image tools** in
-`agent-box config` (`box.tools.browser`). Chromium and Playwright MCP are roughly 400 MB, so they are
+`agent-box config` (`box.tools.browser`, which a project may also set in
+`.agent-box.json`). Chromium and Playwright MCP are roughly 400 MB, so they are
 built only when asked for. The group both builds them into the image and wires
 the MCP server into every containerized Claude and Codex session; a separate
 switch for the server would isolate nothing, because an agent can drive the

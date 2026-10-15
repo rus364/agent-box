@@ -1,7 +1,8 @@
 # Nested rootless Podman
 
-Enable **Workspace box → Image tools → Podman** in `agent-box config`,
-then run `agent-box build`. The group is off by default. Changing it changes
+Enable **Workspace box → Image tools → Podman** in `agent-box config`
+(`box.tools.podman`, which a project may also set in `.agent-box.json`), then
+run `agent-box build`. The group is off by default. Changing it changes
 the workspace definition. Finish active work and run `agent-box stop` before
 launching a workspace with the new permissions.
 
@@ -76,75 +77,12 @@ does not disable those policies or change host sysctls automatically.
 
 ### Codex sandbox
 
-The image gives Codex's bundled `bwrap` an **empty** file-capability set when
-the Podman group is enabled. Linux clears ambient capabilities on execution of
-that file, so bwrap can start its unprivileged sandbox. No capability is granted
-to bwrap, its binary content is unchanged, and Codex's digest check remains intact.
-The parent Codex process retains the permissions needed by Podman's ID helpers.
-Clearing capabilities around the whole Codex process would break creation of a
-fresh nested Podman user namespace under `no-new-privileges`.
-
-This applies to interactive and managed Codex processes using the image's CLI;
-launching does not rewrite CLI settings. The disabled Podman group skips this
-image step. Rebuild and recreate the workspace to pick up the change. Replacing
-Codex manually inside a running workspace can replace this file attribute too.
-
-Sandbox restrictions still apply: read-only commands cannot create Podman state,
-and nested Podman operations can require execution outside Codex's command sandbox
-under the session's approval policy. The workspace itself remains rootless.
-Run `python3 tests/smoke_codex_sandbox.py --podman on` in an enabled workspace,
-and use `--podman off` in a disabled one. The smoke checks the expected ambient
-capabilities before testing the sandbox. It verifies
-offline source/evidence reads, read-only/workspace-write boundaries and unchanged
-temporary CLI settings. Run the separate nested Podman smoke for actual build/run
-support; a sandbox smoke does not invoke a model or prove a provider review.
-
-## Developing agent-box inside agent-box
-
-The `agent-box` command on PATH includes its build context and can build an
-image or launch the next workspace from any project directory. After updating
-agent-box, recreate an existing workspace from its parent environment to pick
-up changed mounts; keep active work in mind before running `agent-box stop`.
-
-Keep the outer shell open and run the checkout's commands inside it:
-
-```sh
-./agent-box build
-./agent-box update
-./agent-box shell -c 'id; podman info'
-python3 tests/run_suite.py
-./agent-box selftest
-```
-
-The inner invocation inherits the rendered image-group settings from the
-outer session, including `podman`. Its image build and workspace use the
-inner engine. They do not update or recreate the physical host's workspace.
-The launcher keeps its build markers, workspace records and generated policy
-in a writable `~/.local/share/agent-box-launcher-<namespace>` directory inside
-the container. The directory is stable for that container's lifetime and is
-removed with it. Notification state and explicitly forwarded workflow state
-keep their shared mounts. An explicit `AGENT_BOX_STATE_DIR` still takes
-precedence, including for isolated tests.
-
-For a small development check, once the inner engine has an agent-box image:
-
-```sh
-agent-box selftest
-agent-box shell -c 'id; agent-box selftest'
-```
-
-This checks a real launch through PATH. Without an inner image, launching
-builds one first; that can download packages. The outer engine's image store
-is not exposed to the workspace.
-
-The test runner redirects state and integration paths. Tests of configuration
-application must retain that isolation: agent configuration directories mounted
-from the physical host are still host-owned files.
-
-Run `sh tests/smoke_nested_podman.sh` inside an enabled workspace to check a
-real build, multiple-UID ownership, `run`/`exec`, networking, a published HTTP
-port, a bind mount and named-volume reuse. It downloads Alpine packages and
-removes only the uniquely named resources it creates.
+With the `podman` group enabled, the image adjusts Codex's bundled sandbox
+helper so Codex's command sandbox works alongside nested Podman; rebuild the
+image and recreate the box after toggling the group. Sandbox restrictions still
+apply: read-only commands cannot create Podman state, and nested Podman
+operations may need to run outside Codex's sandbox under the session's
+approval policy.
 
 ## Doctor
 
@@ -153,12 +91,7 @@ is enabled. It reports the version, rootless mode, storage driver/path, OCI
 runtime, cgroup manager/version and network backend, then tests a user namespace.
 Each Podman command has a 20-second timeout.
 
-If the configured local agent-box image (`AGENT_BOX_IMAGE`, default
-`localhost/agent-box:latest`), `docker.io/library/alpine:3.23` or
-`docker.io/library/busybox:latest` image exists, doctor runs a shell with an
-explicit entrypoint, no network and `--pull=never`, and verifies a writable
-container filesystem. It removes only its uniquely named probe container.
-Without one of those images it reports `SKIPPED`; it never downloads an image.
-Errors are reported as `FAILED`, independently of CLI availability. This
-does not test pull, build, networking, ports or persistent volumes; use the
-separate smoke script above for those checks.
+When a local image is already present (the agent-box image, `alpine:3.23` or
+`busybox`), doctor also starts a throwaway container without network and checks
+its filesystem; otherwise that probe is `SKIPPED`, since doctor never downloads
+an image. Building, networking, ports and volumes are not covered by doctor.

@@ -1,26 +1,26 @@
 # Shared skills
 
-agent-box ships and maintains its own short `ab-*` skills in
-`agent_box/skills/`. They are installed into `~/.agents/skills` and optionally
-linked into `~/.claude/skills`, so host and container agents share one copy.
-Override the shared tree through `AGENT_BOX_AGENTS_DIR`.
+agent-box ships its own short `ab-*` skills in `agent_box/skills/` and installs
+them into the shared tree `~/.agents/skills` (override with
+`AGENT_BOX_AGENTS_DIR`). With **Host → Claude skill links** on (the default),
+that tree is also linked into `~/.claude/skills`, so host and container agents
+read one copy.
 
 | Skill | Installed when |
 | --- | --- |
 | `ab-tracker` | Tracker or workflow enabled |
-| `ab-setup`, `ab-adopt`, `ab-normalize`, `ab-interview`, `ab-plan`, `ab-work`, `ab-review`, `ab-pr`, `ab-land` | Workflow enabled |
+| `ab-setup`, `ab-adopt`, `ab-normalize`, `ab-interview`, `ab-plan`, `ab-work`, `ab-sync`, `ab-review`, `ab-pr`, `ab-land` | Workflow enabled |
+| `ab-config` | Never installed; `agent-box config ai` reads it from the checkout |
 
-Enable integrations and configure models in `agent-box config`. Save and apply,
-`config apply`, or `upgrade` installs/refreshes skills and native agent profiles.
-Starting an agent does not install or rewrite them.
+Saving in `agent-box config`, `config apply` and `upgrade` install or refresh
+the skills and the native agent profiles; starting an agent never does.
 
-Installed skill directories carry a content fingerprint. Intact owned copies
-can be updated or removed when disabled. User-owned directories, symlinks and
-locally edited copies are preserved with a diagnostic. Claude links are removed
-only when they point at the shared tree. Native profiles use matching sidecar
-fingerprints and the same refusal policy.
+**Your own skills are safe.** Installed skill directories carry a content
+fingerprint. agent-box updates or removes only intact copies it installed;
+user-owned directories, symlinks and locally edited copies are kept with a
+diagnostic. Claude links are removed only when they point into the shared
+tree. Native agent profiles follow the same rules.
 
-Planning, debugging, proportionate regression testing and fresh review are
-integrated into the workflow skills. There is no separate upstream updater,
-patching pipeline or unused bundle of practice skills. Sources of the workflow
-ideas and library decisions are recorded in [design references](../design/workflow-references.md).
+Planning, debugging, proportionate testing and fresh review are built into the
+workflow skills; the sources they draw on are recorded in the
+[design references](../design/workflow-references.md).

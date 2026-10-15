@@ -1,124 +1,74 @@
 # Telegram
 
-Two unrelated things share a name here. **Control** is driving a live Claude
-session from your phone, and agent-box does not implement it — Anthropic's
-official plugin does. **Notifications** are one-way pings from a host or container
-session, and those are agent-box's.
+Two separate things share the name, and both are off by default:
 
-Both are off by default.
+- **Control** — driving a live Claude session from your phone — is Anthropic's
+  official `telegram@claude-plugins-official` plugin. agent-box only starts
+  Claude with it and keeps two sessions from fighting over one bot.
+- **Notifications** — one-way messages when a Claude or Codex session needs you
+  or finishes — are agent-box's own.
+
+For native remote access to Claude or Codex without Telegram, see
+[Remote Control](remote-control.md).
 
 ## Control: the official Claude channel
 
-Remote control is provided by Anthropic's `telegram@claude-plugins-official`
-plugin. agent-box implements no Telegram control daemon, pairing protocol,
-session router or permission bridge of its own; it only passes the flag that
-activates the plugin, and keeps two live sessions from fighting over the same
-bot token.
+1. Install and configure the plugin from inside Claude:
 
-Install and configure the plugin from inside Claude:
+   ```text
+   agent-box claude
+   /plugin install telegram@claude-plugins-official
+   /telegram:configure <BOT_TOKEN>
+   ```
 
-```text
-agent-box claude
-/plugin install telegram@claude-plugins-official
-/telegram:configure <BOT_TOKEN>
-```
+2. Enable **Agents → Claude → Telegram channel**
+   (`agents.claude.telegram_channel`) in `agent-box config`. The menu refuses
+   to save it before the plugin and its token exist.
+3. Start a new Claude session and pair your account:
 
-Then enable the channel:
+   ```text
+   /telegram:access pair <code>
+   /telegram:access policy allowlist
+   ```
 
-```bash
-agent-box config
-```
+`agent-box config check` verifies agent-box's side: the setting, the installed
+plugin, the bot token and which session owns the channel. Pairing and the
+access policy live in the plugin and are not checked.
 
-Start a fresh Claude session and pair your account:
-
-```text
-/telegram:access pair <code>
-/telegram:access policy allowlist
-```
-
-`agent-box config` refuses to store an enabled channel before the plugin and its
-token exist, because the bootstrap order is necessarily: run Claude, install and
-configure the plugin, then come back. Storing `true` early would only produce a
-setting every later run has to warn about.
-
-Only one Claude session can own Telegram polling for a bot token at a time.
-agent-box tracks that owner and prevents another local session from
-accidentally stealing the plugin's poller; a session started while another owns
-the channel starts normally, just without Telegram.
-
-Check the whole chain with:
-
-```bash
-agent-box config check
-```
-
-> [!NOTE]
-> Codex remote control is not implemented by agent-box. Use OpenAI's official
-> ChatGPT/Codex remote-control experience where supported.
+Only one Claude session can poll a bot at a time. agent-box tracks the owner; a
+session started while another owns the channel starts normally, just without
+Telegram. `--no-remote-control` also keeps one launch off Telegram.
 
 ## Notifications
 
-Separate from control, and useful without it: a message when a long run finishes
-in a box you are not watching.
+1. Under **Host → Notifications** in `agent-box config`, enable them and set
+   the bot token and chat ID (`host.notifications.*`).
+2. Save, then try it: `agent-box notify test`.
 
-```bash
-agent-box config      # Host → Notifications: bot token + chat id
-agent-box notify test
-```
+| Agent | You are notified when |
+| --- | --- |
+| Claude | It waits for input, needs a permission, completes or fails |
+| Codex | A turn completes, with the final assistant message |
 
-One-way only. No polling, no `getUpdates`, no callback handling, no way to drive
-a session from Telegram.
+Messages carry the agent's own text, sanitized and length-limited; an oversized
+message is replaced by an explicit notice. While a Claude session owns the
+Telegram channel, its interaction notifications are suppressed (the channel
+already relays them), but completion and failure still arrive. Notifications are
+one-way: nothing is read back from Telegram.
 
-- **Codex**: turn completed, including the final assistant message.
-- **Claude**: waiting for input, permission required, completed, or failed.
+`--notify` and `--no-notify` turn notifications on or off for one launch;
+turning them on needs them configured first.
 
-Saving `agent-box config` or running `agent-box config apply` installs both
-integrations globally. Codex uses this root setting in its user
-`~/.codex/config.toml` (or the configured Codex home):
+**What is installed.** Saving or `agent-box config apply` adds agent-box's
+hooks to Claude's `~/.claude/settings.json` and a marked
+`notify = ["agent-box", "notify", "codex"]` block at the top of
+`~/.codex/config.toml`. This covers `codex`, `agent-box --host codex` and boxes
+that load that configuration, provided `agent-box` is on the host's PATH. An
+existing different Codex `notify` setting is kept with a warning. Disabling or
+uninstalling removes only agent-box's own hooks and its unchanged block.
+Managed workflow delegates run Codex without your user configuration and send
+no notifications.
 
-```toml
-notify = ["agent-box", "notify", "codex"]
-```
-
-This covers ordinary `codex`, `agent-box --host codex`, and container launches
-that load that user configuration. The host needs `agent-box` on `PATH` and the
-rendered notification credentials described below. Launching never installs
-the setting or passes a notification override. `notify` only delivers
-`agent-turn-complete`; it needs no `/hooks` trust and does not deliver approval
-requests. Managed Codex delegates use `--ignore-user-config` and do not inherit
-this integration; separate delegate notifications are not enabled here.
-
-agent-box prepends a marked block without rewriting the rest of the TOML.
-An existing different `notify` is preserved with a warning. Disabling
-notifications or uninstalling removes only the exact unchanged leading block;
-moved or edited blocks and manually configured settings remain user-owned.
-The JSON formatter and Telegram sender are shared with Claude's existing hooks.
-
-A completion notification carries the text the agent itself wrote, in its own
-language: every role answers in Markdown, and agent-box reformats none of it.
-It is model output rather than trusted markup, so it goes through the same
-sanitization, delivery limits and plain-text fallback as other completion
-messages; an oversized message produces an explicit delivery notice.
-
-When a Claude session already owns the official channel, duplicate *interaction*
-notifications are suppressed — the channel is already relaying those to the same
-chat — while lifecycle completion and failure signals keep coming.
-
-### Where the credentials go
-
-The bot token lives in `~/.config/agent-box/config.json` (mode 0600) with every
-other setting. The container never sees that file: agent-box derives a two-key
-file from it —
-
-```text
-~/.local/share/agent-box/runtime/notify.json
-```
-
-— and it exists only while notifications are actually usable. Turning them off
-deletes it. Persistent workspace boxes receive the two values through the
-notification-capable exec environment rather than a mount, so they never enter
-the box's metadata.
-
-The hooks that deliver Claude's events live in `~/.claude/settings.json` and are
-installed by `agent-box config` / `agent-box config apply`, alongside anything you
-configured yourself there — agent-box only ever removes its own handlers.
+**Where the token goes.** The bot token stays in
+`~/.config/agent-box/config.json` (mode 0600). Boxes never see that file; they
+receive only the token and chat ID, and only while notifications are usable.

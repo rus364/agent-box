@@ -86,12 +86,8 @@ anyway, the launch says so.
 
 ## How it reaches the container
 
-The copies are written into a private per-workspace directory (mode 0700,
-files 0600), and that directory is mounted as the box's `~/.kube`. No
-kubeconfig content appears in Podman's arguments. Turning
-forwarding off or emptying the list removes the copies and the mount.
-
-The copies are written again at every launch. A file changed on the host
+The copies are mounted as the box's read-only `~/.kube`; turning forwarding
+off or emptying the list removes them. They are written again at every launch. A file changed on the host
 reaches an already running box at the next `agent-box` launch for that
 project, without recreating the box. A launch nested inside a box finds the
 copies that box was given in its `~/.kube`.

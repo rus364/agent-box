@@ -1,21 +1,10 @@
 # Host audio
 
-Off by default. When enabled, workspace boxes get the host's sound server, so
-an agent CLI inside the box can use the microphone and speakers. Today that
-means Claude Code's voice dictation (`/voice`); Codex CLI has no voice mode yet,
-and its upcoming voice helper records through ALSA the same way.
-
-```text
-Claude Code /voice
-      |
-      | ALSA default device
-      v
-pulse ALSA plugin (in the image)
-      |
-      | $PULSE_SERVER
-      v
-/run/user/<uid>/pulse/native  -- bind mount -->  host PipeWire or PulseAudio
-```
+Off by default and global only. When enabled, workspace boxes get the host's
+sound server, so an agent CLI inside the box can use the microphone and
+speakers — today, Claude Code's voice dictation (`/voice`). Inside the box the
+ALSA default device goes through the image's PulseAudio plugin to the host's
+socket at `/run/user/<uid>/pulse/native`, served by PipeWire or PulseAudio.
 
 ## Enabling it
 

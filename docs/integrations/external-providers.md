@@ -261,17 +261,9 @@ another API therefore runs as a separate managed `codex exec` or `claude -p`
 process, and a built-in candidate called from an external session uses one with
 the original API environment restored. `workflow delegate` and `workflow review`
 always run managed, so a worker, scout or reviewer reaches its candidate's API.
-Routes expose CLI, API name, model and an endpoint/catalog fingerprint; keys and
-key fingerprints are absent. Changed endpoints, deleted/disabled definitions and
-missing credentials fail before execution, and the accepted route records
-`api_provider` and `api_fingerprint`.
-
-A native review (`workflow review --native`) is recorded on trust with the
-provider and model the coordinator names; it runs wherever the coordinator's own
-subagent runs. Native model and effort follow the live tool. Codex `spawn_agent`
-takes catalog `model` and `reasoning_effort` of the session's API. Claude's Agent
-tool accepts only model aliases, which `ext` maps to the session model, and the
-session's `CLAUDE_CODE_EFFORT_LEVEL` overrides a profile's effort.
+A changed endpoint, a deleted or disabled connection or a missing key fails
+before anything runs. A native review runs on the coordinator's own API,
+whatever the reviewer list names.
 
 Owned native profiles are removed for external candidates when configuration is
 applied. Existing role contracts, the reviewer's verdict format, review budgets
@@ -304,20 +296,5 @@ Claude's external session settings also disable native RC startup. A normal
 session and an external process can coexist without changing the parent's
 endpoint, auth, settings or RC lifecycle. See [Remote Control](remote-control.md).
 
-Local probes used Codex 0.154.0 and Claude Code 2.1.269 with temporary provider
-homes, fake keys and synthetic HTTP APIs. Codex TUI/exec worked while the RC
-lock remained held; no RC descendant process was observed. These checks do not
-prove compatibility with a live commercial API or phone-paired Remote Control.
-
-Model-settings smoke on the same CLI versions verified Codex `model/list`
-returns the configured display name, image modality and low/high/max efforts;
-`config/read` confirms explicit `-c model_reasoning_effort="max"` overrides the
-model's `high` default in the effective session config.
-Claude `-p` completed against a loopback Messages stub, reported its `[1m]`
-context as 1,000,000 tokens, stripped the suffix in the API request and sent
-explicit `max` effort. The unknown synthetic model warning was expected.
-An additional interactive PTY run with a temporary home opened Claude's
-`/model` picker: it displayed the configured label and only the default/custom
-options, confirming the rendered settings and replacement picker were accepted.
-Unit tests verify catalog context/compact fields and env restoration; this smoke
-does not prove automatic compaction at the threshold or live DeepSeek behavior.
+Compatibility evidence for these boundaries is recorded in the
+[integration design notes](../design/integrations.md#external-api-providers).

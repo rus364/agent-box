@@ -1,8 +1,10 @@
 # Optional integrations
 
-Everything here is off by default and independent of everything else. agent-box
-works as a plain workspace runtime with none of it enabled; each page below
-describes one thing you can turn on, what it exposes, and what it costs.
+Each integration is independent of the others, and everything that exposes a
+credential or widens what an agent can reach starts off; only Git identity and
+Claude skill links are on by default. agent-box works as a plain workspace
+runtime with none of them enabled. Each page describes what you can turn on,
+what it exposes and what it costs.
 
 | Integration | Default | What it is |
 | --- | --- | --- |
@@ -20,12 +22,9 @@ describes one thing you can turn on, what it exposes, and what it costs.
 | [Container registries](registries.md) | off | Chosen podman, skopeo and Helm logins from the host |
 | [Kubernetes configs](kubeconfigs.md) | off | Chosen kubeconfig files from the host's `~/.kube` |
 | [Cloud CLI profiles](cloud-profiles.md) | off | Chosen Yandex Cloud CLI profiles, with their sign-in |
+| [Nested Podman](../nested-podman.md) | off | Rootless Podman inside the box, for builds and containers |
 
-All of them are answered in one place:
-
-```bash
-agent-box config
-```
-
-and applied by that command, or later by `agent-box config apply`. Starting an agent
-applies nothing — see [Configuration](../configuration.md).
+All of them are set in `agent-box config` and applied by it, or later by
+`agent-box config apply`; starting an agent applies nothing. The settings listed
+under [project configuration](../configuration.md#project-configuration)
+can also be set per repository.
