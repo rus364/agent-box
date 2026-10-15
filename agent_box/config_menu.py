@@ -180,10 +180,10 @@ OPTION_HELP = {
         "codex": "A bare `agent-box` starts Codex CLI.",
     },
     "tracker.provider": {
-        "vikunja": "Vikunja: the implemented adapter for projects, columns and task relations.",
+        "vikunja": "Vikunja: projects, subprojects, columns and task relations.",
         "jira": "Jira: reserved; its adapter is not implemented yet, so tracker commands refuse it.",
         "linear": "Linear: reserved; its adapter is not implemented yet, so tracker commands refuse it.",
-        "github": "GitHub Issues: reserved; its adapter is not implemented yet, so tracker commands refuse it.",
+        "github": "GitHub Projects: a project's Status column and this repository's issues, with sub-issues and dependencies.",
     },
     "workflow.merge_mode": {
         "github": "Parent work lands through a GitHub pull request; publishing needs GitHub integration.",
@@ -414,6 +414,11 @@ def help_for(path):
         return f"{TOOL_GROUP_HELP.get(path[-1], path[-1])}. Rebuild the workspace image to install or remove this group; browsing and saving this selection do not rebuild it."
     if len(path) == 3 and path[:2] == ("tracker", "connections"):
         return f"Connection settings for the {path[-1]} tracker. It is exposed only when tracker integration is enabled."
+    if path == ("tracker", "connections", "github", "url"):
+        return "GitHub API URL; empty means https://api.github.com. GitHub Enterprise Server: https://HOST/api/v3."
+    if path == ("tracker", "connections", "github", "token"):
+        return ("Classic token or `gh auth token` with scopes repo and project; fine-grained tokens cannot reach "
+                "projects of a personal account. It can also push code, so enabling the tracker gives the box that access.")
     if len(path) == 4 and path[:2] == ("tracker", "connections"):
         if path[-1] == "url":
             return f"Base URL for the {path[-2]} tracker API. No network request is made while editing."

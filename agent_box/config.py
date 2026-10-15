@@ -770,7 +770,13 @@ class TrackerConfig:
     connections: dict[str, TrackerConnection] = field(default_factory=dict)
 
     def connection(self, provider=None):
-        return self.connections.get(provider or self.provider, TrackerConnection())
+        """GitHub's API address is known, so only Enterprise Server needs one saved."""
+        provider = provider or self.provider
+        connection = self.connections.get(provider, TrackerConnection())
+        if provider == "github" and not connection.url:
+            from .tracker.github_api import DEFAULT_API
+            connection = TrackerConnection(DEFAULT_API, connection.token)
+        return connection
 
     def to_dict(self):
         return {"enabled": self.enabled, "provider": self.provider,

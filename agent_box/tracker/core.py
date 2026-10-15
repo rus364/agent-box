@@ -48,7 +48,8 @@ class Task:
     revision: str = ""
     url: str = ""
     number: int | None = None
-    # Why state is Unknown, from the board itself; None whenever a state was read.
+    # Why state is Unknown, from the board itself, or how a provider that records
+    # it closed a Done task other than as completed; None otherwise.
     state_reason: str | None = None
 
     @property

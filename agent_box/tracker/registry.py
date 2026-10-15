@@ -14,8 +14,9 @@ def make_adapter(binding=None, provider=None, config=None):
     provider = provider or (binding.provider if binding else config.tracker.provider)
     if provider not in TRACKER_PROVIDERS:
         raise TrackerError(f"Unknown tracker provider {provider}; choose {', '.join(TRACKER_PROVIDERS)}")
-    if provider != "vikunja":
-        raise TrackerError(f"Tracker provider '{provider}' is not implemented; configure Vikunja with agent-box config", "unsupported")
+    if provider not in ("vikunja", "github"):
+        raise TrackerError(f"Tracker provider '{provider}' is not implemented; configure Vikunja or GitHub with agent-box config",
+                           "unsupported")
     if not config.tracker.enabled:
         raise TrackerError("Tracker is disabled; enable it with agent-box config", "disabled")
     connection = session_account(config).connection(provider)
@@ -35,5 +36,8 @@ def make_adapter(binding=None, provider=None, config=None):
                 url = rendered.get("tracker_urls", {}).get(provider, url)
             else:
                 url = container_tracker_url(url)
+    if provider == "github":
+        from .github import GitHubAdapter
+        return GitHubAdapter(url, connection.token, binding)
     from .vikunja import VikunjaAdapter
     return VikunjaAdapter(url, connection.token, binding)
