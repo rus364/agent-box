@@ -135,7 +135,7 @@ def parser():
                           "boards and cutover use the repository's only receipt")
     cmd.add_argument("--apply", action="store_true")
     cmd = sub.add_parser("provider", help="Run an explicitly provider-specific command")
-    cmd.add_argument("provider", choices=("vikunja",))
+    cmd.add_argument("provider", choices=("vikunja", "github"))
     cmd.add_argument("arguments", nargs=argparse.REMAINDER)
     return p
 
@@ -268,7 +268,10 @@ def dispatch(args):
         adapter, binding, _ = adoption.staging_context(args.receipt, root)
         return adapter.initialize_boards(adapter.subtree(binding.project, True), args.apply)
     if args.command == "provider":
-        from .extensions import run
+        if args.provider == "github":
+            from .github_extensions import run
+        else:
+            from .extensions import run
         adapter, _, _ = context(args.provider)
         return run(adapter, args.arguments)
     if args.command == "setup":

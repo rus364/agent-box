@@ -13,6 +13,11 @@ from . import github_api as api
 PRIORITIES = ("Immediate", "Urgent", "High", "Medium", "Low")
 PRIORITY_VALUES = {name.casefold(): 5 - index for index, name in enumerate(PRIORITIES)}
 CLOSE_REASONS = {"NOT_PLANNED": "closed as not planned", "DUPLICATE": "closed as a duplicate"}
+#: What board init renames when the agreed name is missing: GitHub's Board template
+#: says Todo for work not yet started, and its Priority field counts P0 down.
+RENAMES = {"Status": {"todo": "Backlog"}, "Priority": {"p0": "Urgent", "p1": "High", "p2": "Medium"}}
+#: Built-in workflows that move a card when a pull request links or merges.
+PULL_REQUEST_WORKFLOWS = ("Pull request linked to issue", "Pull request merged")
 RELATIONS = ("parent", "child", "blocks", "blocked-by", "related", "duplicate")
 #: Pauses before rereading a write; GitHub applies project workflows a few seconds late.
 CONFIRM_DELAYS = (0, 1, 2, 4)
@@ -168,10 +173,97 @@ class GitHubAdapter:
             try:
                 resolved = self.lifecycle(project)
                 report.append({"project": resolved["project"], "field": resolved["field"],
-                               "states": resolved["states"], "problems": resolved["problems"]})
+                               "states": resolved["states"], "problems": resolved["problems"],
+                               "warnings": self.warnings(project)})
             except TrackerError as exc:
-                report.append({"project": str(project), "field": None, "states": {}, "problems": [str(exc)]})
+                report.append({"project": str(project), "field": None, "states": {}, "problems": [str(exc)],
+                               "warnings": []})
         return report
+
+    def warnings(self, project):
+        """Board workflows that move cards behind agent-box's back; returned, never printed.
+
+        Linking a pull request with a closing keyword moves its issue back to In
+        progress, and merging one closes it before workflow finish has proved
+        anything. agent-box writes no closing keywords, but a person may.
+        """
+        return [f"Project {self.project(project)['id']} workflow '{workflow['name']}' is enabled; it moves cards when "
+                "a pull request links or merges. Turn it off under the project's Workflows"
+                for workflow in self.project(project)["workflows"]
+                if workflow["enabled"] and workflow["name"] in PULL_REQUEST_WORKFLOWS]
+
+    def board_plan(self, project):
+        """What repairing one project's Status and Priority would change, without changing it."""
+        resolved = self.project(project)
+        fields = [self.field_plan(resolved, "Status", STATES), self.field_plan(resolved, "Priority", PRIORITIES)]
+        return {"project": resolved["id"], "fields": fields, "applied": False,
+                "problems": self.lifecycle(project)["problems"], "warnings": self.warnings(project)}
+
+    def field_plan(self, project, name, names):
+        """Add missing options in lifecycle order and rename template ones, keeping every ID.
+
+        An option keeps its ID through a rename, so every card keeps its value; an
+        option agent-box does not recognize is listed and left where it is.
+        """
+        field, problem = self.single_select(project, name)
+        if problem and any(other["name"].casefold() == name.casefold() for other in project["fields"]):
+            return {"field": name, "blocked": problem.replace("no single-select", "a non single-select")}
+        existing = [dict(option) for option in field["options"]] if field else []
+        present = {option["name"].casefold() for option in existing}
+        renames = []
+        for option in existing:
+            target = RENAMES[name].get(option["name"].casefold())
+            if target and target.casefold() not in present:
+                renames.append({"from": option["name"], "to": target})
+                present.add(target.casefold())
+                option["name"] = target
+        missing = [wanted for wanted in names if wanted.casefold() not in present]
+        order, pending = [], list(missing)
+        for option in existing:
+            index = next((i for i, wanted in enumerate(names) if wanted.casefold() == option["name"].casefold()), None)
+            if index is not None:
+                while pending and names.index(pending[0]) < index:
+                    order.append({"name": pending.pop(0)})
+            order.append(option)
+        order += [{"name": wanted} for wanted in pending]
+        known = {wanted.casefold() for wanted in names}
+        return {"field": name, "exists": bool(field), "id": field["id"] if field else None,
+                "rename": renames, "add": missing, "order": [option["name"] for option in order],
+                "unrecognized": [option["name"] for option in existing if option["name"].casefold() not in known],
+                "options": order}
+
+    def initialize_boards(self, projects, apply=False):
+        """Plan every project first, then write; a field the plan cannot describe is left alone."""
+        plans = [self.board_plan(project) for project in projects]
+        if not apply:
+            return [self.public_plan(plan) for plan in plans]
+        return [self.public_plan(self.apply_board_plan(plan)) for plan in plans]
+
+    def public_plan(self, plan):
+        return {**plan, "fields": [{key: value for key, value in field.items() if key not in ("options", "id")}
+                                   for field in plan["fields"]]}
+
+    def apply_board_plan(self, plan):
+        project = self.project(plan["project"])
+        for field in plan["fields"]:
+            if field.get("blocked") or field["exists"] and not (field["rename"] or field["add"]):
+                continue
+            options = [{key: option[key] for key in ("id", "name", "color", "description") if key in option}
+                       for option in field["options"]]
+            for option in options:
+                option.setdefault("color", "GRAY")
+                option.setdefault("description", "")
+            if field["exists"]:
+                api.mutate(self.client, "UpdateField", fieldId=field["id"], singleSelectOptions=options)
+            else:
+                api.mutate(self.client, "CreateField", projectId=project["node"], dataType="SINGLE_SELECT",
+                           name=field["field"], singleSelectOptions=options)
+        self._projects.pop(plan["project"].casefold(), None)
+        after = self.board_plan(plan["project"])
+        pending = [field["field"] for field in after["fields"] if field.get("rename") or field.get("add")]
+        if pending:
+            raise TrackerError("Board init was not confirmed for " + ", ".join(pending), "conflict")
+        return {**after, "applied": True}
 
     def identity(self):
         login = api.viewer(self.client)["login"]

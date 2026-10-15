@@ -314,6 +314,26 @@ class WritableGitHub(FakeGitHub):
         raw["labels"] = [name for name in raw["labels"] if f"L-{name}" not in labelIds]
         return {"removeLabelsFromLabelable": {"clientMutationId": None}}
 
+    def op_UpdateField(self, fieldId, singleSelectOptions):
+        field = next(f for p in self.projects.values() for f in p["fields"]["nodes"] if f["id"] == fieldId)
+        known = {option["id"]: option["name"] for option in field["options"]}
+        assert all(option.get("id") in known for option in singleSelectOptions if "id" in option)
+        # Cards hold option IDs on GitHub; this fake holds names, so a rename carries them over.
+        renamed = {known[o["id"]]: o["name"] for o in singleSelectOptions if o.get("id") and known[o["id"]] != o["name"]}
+        for raw in self.issues.values():
+            key = field["name"].lower()
+            if raw.get(key) in renamed:
+                raw[key] = renamed[raw[key]]
+        field["options"] = [{"id": option.get("id") or f"{fieldId}-new-{index}", "name": option["name"]}
+                            for index, option in enumerate(singleSelectOptions)]
+        return {"updateProjectV2Field": {"clientMutationId": None}}
+
+    def op_CreateField(self, projectId, dataType, name, singleSelectOptions):
+        board = next(p for p in self.projects.values() if p["id"] == projectId)
+        board["fields"]["nodes"].append(field(f"F-{name.lower()}", name, [o["name"] for o in singleSelectOptions]))
+        board["fields"]["totalCount"] += 1
+        return {"createProjectV2Field": {"clientMutationId": None}}
+
 
 def writable(issues=(), **options):
     client = WritableGitHub(issues, **options)

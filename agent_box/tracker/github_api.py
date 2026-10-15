@@ -47,7 +47,7 @@ id number title url closed
 owner { ... on User { login } ... on Organization { login } }
 fields(first: 100) {
   totalCount
-  nodes { ... on ProjectV2FieldCommon { id name dataType } ... on ProjectV2SingleSelectField { options { id name } } }
+  nodes { ... on ProjectV2FieldCommon { id name dataType } ... on ProjectV2SingleSelectField { options { id name color description } } }
 }
 workflows(first: 50) { nodes { name enabled } }
 """
@@ -97,7 +97,9 @@ QUERIES = {
            ("AddComment", "AddComment", "addComment", "commentEdge { node { id url body } }"),
            ("CreateLabel", "CreateLabel", "createLabel", "label { id }"),
            ("AddLabels", "AddLabelsToLabelable", "addLabelsToLabelable", "clientMutationId"),
-           ("RemoveLabels", "RemoveLabelsFromLabelable", "removeLabelsFromLabelable", "clientMutationId"))},
+           ("RemoveLabels", "RemoveLabelsFromLabelable", "removeLabelsFromLabelable", "clientMutationId"),
+           ("UpdateField", "UpdateProjectV2Field", "updateProjectV2Field", "clientMutationId"),
+           ("CreateField", "CreateProjectV2Field", "createProjectV2Field", "clientMutationId"))},
     "Comments": """query Comments($owner: String!, $name: String!, $number: Int!, $after: String) {
   repository(owner: $owner, name: $name) { issue(number: $number) { comments(first: 100, after: $after) {
     pageInfo { hasNextPage endCursor }
@@ -284,7 +286,8 @@ def project_record(raw):
     for node in complete(raw.get("fields"), "a project's fields"):
         if node.get("id"):
             fields.append({"id": node["id"], "name": node.get("name") or "", "type": node.get("dataType"),
-                           "options": [{"id": option["id"], "name": option["name"]}
+                           "options": [{"id": option["id"], "name": option["name"], "color": option.get("color") or "GRAY",
+                                        "description": option.get("description") or ""}
                                        for option in node.get("options") or []]})
     owner = (raw.get("owner") or {}).get("login") or ""
     return {"node": raw["id"], "id": f"{owner}/{raw['number']}", "owner": owner, "number": int(raw["number"]),
