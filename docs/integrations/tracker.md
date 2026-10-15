@@ -1,377 +1,229 @@
 # Tracker
 
-Enable **tracker** in `agent-box config`, select a provider, and configure its
-server URL and API token under **connections**. Vikunja API v2 is implemented;
-Jira, Linear and GitHub Issues entries are explicit unsupported-provider stubs.
-They fail with an actionable error instead of pretending to synchronize tasks.
+The tracker integration gives agents one command, `agent-box tracker`, for
+reading and maintaining tasks in an external tracker, in host and container
+sessions alike. Two providers are implemented: **Vikunja** (API v2) and
+**GitHub Projects**. Jira and Linear are reserved names that fail with an
+explicit error.
 
-The command is `agent-box tracker` in both host and container sessions. There is
-no separate skill-owned executable or independent credential configuration. Output
-is JSON by default; no `--json` flag. `agent-box tracker status` reads account,
-binding and lifecycle columns; `agent-box tracker get ID` reads a full task.
-Enable the workflow to install the remaining `ab-*` skills, then use `ab-setup`
-to connect a repository to a project.
+The tracker is the source of truth. Lifecycle comes from the board's own
+columns, branches and pull requests from Git and GitHub; agent-box stores no
+copy of either, and comments are a human journal with nothing machine-readable
+in them. The [workflow](workflow.md) builds on this integration.
+
+## Enabling it
+
+1. In `agent-box config`, enable **Tracker**, choose the provider and fill its
+   connection under **connections**: the server URL and a token. Credentials
+   stay in the global configuration and reach a session only through its
+   private snapshot; see the provider sections below for what each needs.
+2. Enable the **workflow** if you want the `ab-*` skills; with the tracker
+   alone only `ab-tracker` is installed.
+3. Bind each repository to its project with the `ab-setup` skill, or directly:
 
 ```bash
-agent-box tracker status
-agent-box tracker projects
-agent-box tracker setup --project 12 --recursive
-agent-box tracker setup --project 12 --recursive --apply
-agent-box tracker ready
-agent-box tracker get "#21"
-agent-box tracker get "Exact task title"
-agent-box tracker resolve "#21" --project 42
-agent-box tracker get 123
-agent-box tracker claim 123
-agent-box tracker checklist 123
-agent-box tracker check 123 1 3 --revision '"1789633065000000000-2"'
-agent-box tracker comment 123 --file /tmp/progress.md
-agent-box tracker state 123 124 Done --reason 'Superseded by task 130'
-agent-box tracker normalized --done --recursive
-agent-box tracker move 123 --project 42
-agent-box tracker delete-project 42
+agent-box tracker status                           # account, binding, lifecycle columns
+agent-box tracker projects                         # projects visible to the token
+agent-box tracker setup --project 12               # preview
+agent-box tracker setup --project 12 --apply       # save the binding
 ```
 
-`setup` previews, for every project in scope, the kanban view it resolved and
-the lifecycle columns it recognized. It requires five distinct states:
-**Backlog, Ready, In progress, In review, Done**, and it does not add columns
-automatically. Each project needs exactly one kanban view with manually managed
-buckets; the view's own done bucket is taken as Done when it has one, and the
-remaining columns are matched by their exact title, ignoring case; synonyms
-such as Vikunja's default `To-Do` and `Doing` are not recognized. Anything missing, duplicated or
-ambiguous is reported per project and blocks `--apply` rather than being
-guessed. There is no per-repository override table: a board that does not say
-what its columns mean is fixed in the tracker.
+`setup` previews, for every project in scope, the board it resolved and the
+lifecycle columns it recognized; `--apply` writes `.agent-box.json` and a
+managed block at the start of `AGENTS.md` (and an import into an existing
+`CLAUDE.md`, which it never creates). It preserves your other project
+overrides and text, and refuses blocks you edited. Commit the binding: a clone
+on another machine then needs only a matching global connection.
 
-Views and column IDs are read live on every run and never stored, so a renamed
-or deleted column surfaces as an error instead of silently moving a card. The
-same holds for the base branch, which is origin's default branch, and for the
-pull request, which is looked up on GitHub by head and base.
+The binding stores `tracker.provider`, `tracker.project`, `tracker.recursive`
+and the connection URL; see
+[project configuration](../configuration.md#project-configuration). The global
+connection must match that URL.
 
-Repeating `tracker setup` for the same provider, server and project preserves the
-saved recursive scope when neither flag is given. Use `--recursive` to include
-children or `--no-recursive` to select only the root; new bindings default to root only.
+## Lifecycle
 
-With `--recursive` the binding covers the root project **and every project under
-it**: those projects are searched together, each resolves its own board, and
-tasks in them can be claimed and moved. Projects outside the subtree stay
-readable but can never be mutated by this repository's workflow. Any readable
-task, inside the binding or not, reads its state from its own project's board.
-A board without a usable lifecycle yields `Unknown`, and `state_reason` says why:
-a board problem, a card outside every column, or a column that maps to no state.
+Every bound project needs exactly these five states on its board:
 
-Global configuration holds accounts, credentials and integration permissions.
-`.agent-box.json` stores `tracker.provider`, `tracker.project`,
-`tracker.recursive` and `tracker.connections.<provider>.url`, alongside optional
-[project configuration overrides](../configuration.md#project-configuration).
-A project ID identifies a project on that server; the selected connection URL
-must match it. Commit this portable configuration. A fresh clone on another
-device needs a matching global connection, or `--tracker URL` with
-`VIKUNJA_TOKEN` exported for one session. Changing servers permanently requires
-updating the project binding. Setup and adoption
-preserve other project overrides. Setup maintains checksum blocks in
-`AGENTS.md` and the import in an existing `CLAUDE.md`, preserving outside text
-and refusing edited blocks, symlinks and ambiguous ownership. Setup and adoption
-never create an absent `CLAUDE.md`, including one deliberately removed by the project.
+| State | Meaning |
+| --- | --- |
+| Backlog | Requirements or scheduling are not ready |
+| Ready | Specified; dependencies and ownership are checked before starting |
+| In progress | Claimed by the token's user and being worked on |
+| In review | The parent's work is accepted locally; landing is pending |
+| Done | Integrated and validated, or closed with a reason |
 
-Search returns compact summaries of open tasks, including `Unknown`; use
-`search QUERY --include-done` for completed tasks and historical decisions.
-Vikunja filters completed flags, project scope and query on the server; all result
-pages are read, and cards mapped to Done are excluded before output. Query is one
-case-insensitive substring of title or description, not comments or an AND/OR
-expression. Search distinct paths, anchors or terms separately.
+Columns are matched by their exact names, ignoring case, and read live on every
+command, so a renamed or deleted column becomes an error rather than a misplaced
+card. A task whose state cannot be read — a broken board, a card outside every
+column — reads as `Unknown`, with `state_reason` saying why.
 
-`get REFERENCE --no-comments` reads a candidate's description, relationships and
-revision without fetching its journal. `get` includes comments by default;
-`comments ID` reads them separately when decision evidence is needed. `get`
-accepts the user's reference directly.
+## Everyday commands
 
-`tracker resolve REFERENCE` selects by visible project number (`21` or quoted
-`"#21"`), exact title, or a task URL from the configured tracker. It searches the
-repository binding, including children when recursive. Numbers use Vikunja’s
-`GET /api/v2/projects/{project}/tasks/by-index/{index}` for each scoped project.
-Only a missing-task response counts as absence; other API errors stop resolution. One exact match returns
-the task; duplicates report project names, numbers, titles and URLs for a user
-choice. `--project PROJECT` narrows to that single project inside the binding;
-`--title` treats even a numeric reference as a title. Missing matches fail without
-falling back to description text or global IDs. URLs outside the selected scope
-fail and are never redirected to adopted copies.
+Output is JSON. `get` accepts what a user would type: a visible number such as
+`"#21"`, an exact title or a task URL. Other task commands take the canonical
+`id` that `get` returns.
 
-`tracker get REFERENCE` applies the same rules and also accepts a canonical ID.
-A bare number is looked up both ways: when a canonical ID inside the binding and
-a visible number name different tasks, `get` refuses and asks for the quoted
-`"#21"` or the task URL instead of guessing. A canonical ID outside the binding
-still reads when no visible number matches.
+```bash
+agent-box tracker ready                            # Ready tasks you may claim
+agent-box tracker get "#21"                        # full task, with comments
+agent-box tracker get 123 --no-comments
+agent-box tracker search "login" --include-done    # open tasks; --include-done adds finished ones
+agent-box tracker claim 123                        # assign yourself and enter In progress
+agent-box tracker checklist 123                    # revision and checklist items
+agent-box tracker check 123 1 3 --revision REV     # tick items 1 and 3
+agent-box tracker comment 123 --file progress.md   # append a journal comment
+agent-box tracker create --title "..." --description-file task.md --parent 120
+agent-box tracker relation 124 blocked-by 123
+agent-box tracker state 123 Done --reason "Superseded by #130"
+```
 
-Full and compact tasks expose `number` alongside canonical `id`, project and URL.
-Pass that `id` unchanged to mutations and workflow commands; read-only
-`workflow inspect REFERENCE` also accepts the same references as `tracker get`. Internal IDs,
-relations and branch names retain their existing meaning. Text search only finds
-candidates; a substring match does not establish the user's intended task.
+- **Claiming** checks state, dependencies and assignees, then assigns you and
+  moves the task to In progress. Assignment is a cooperative lock, not a
+  distributed one: coordinate when several machines share one account.
+- **Done** belongs to `agent-box workflow finish`, which proves the work was
+  integrated. `state ... Done --reason` closes tasks that were never
+  implemented, and refuses while a task's `ab/<id>-` branch still holds commits
+  that were not integrated.
+- **Priority** is a field, not text: `create --priority N` or
+  `update ID --priority N`, with 0 unset, 1 low, 2 medium, 3 high, 4 urgent,
+  5 immediate.
+- **Relations** are `parent`, `child`, `blocks`, `blocked-by`, `related` and
+  `duplicate`. Only blockers gate work: a blocked task cannot be claimed.
+- **Search** matches one case-insensitive substring of the title or
+  description, not comments; search distinct terms separately.
 
-Comments are not included in Vikunja's server-side text search. Task IDs resolve
-directly; ambiguous project names require an exact path or ID.
+## Failures and retries
 
-Network timeouts and disconnected responses are reported as `transport` for reads.
-A lost write reply, server/gateway failure or invalid successful response yields
-`unknown-outcome`, `retryable: false`: the server may have applied the write.
-Explicit authentication and revision-conflict denials retain their categories.
-There are no automatic request retries. `retryable` describes the failed request,
-not the whole command: earlier writes may have completed. Reread task state or
-`comments ID` before another write. For an unknown create, use
-`search "task title" --include-done` and inspect candidates; absence in one read
-does not prove the original request cannot still complete. Tracker and workflow
-errors expose the same category and retry hint.
+There are no automatic retries. Every error carries a `category` and a
+`retryable` hint about the failed request.
 
-Claims check status, dependencies and assignees, assign the authenticated user,
-move to In progress, and reread the result. Same-user In progress tasks require deliberate
-`--resume`. A local file lock protects simultaneous local claim commands.
-Vikunja assignment plus column movement is **not an atomic distributed lock**;
-separate machines and sessions using one account require coordination. The adapter rereads and compares the task before editing; changed snapshots
-return a conflict for reconciliation, never a blind retry. It also sends ETags
-when supplied, but the tested Vikunja version ignores If-Match on PATCH despite
-returning ETags on GET. Optimistic checks cannot close the race between the
-last read and the write; they are not atomic compare-and-swap.
+- `transport` on a read: retry the read.
+- `unknown-outcome`: a write may have been applied. Reread the task (or
+  `comments ID`) before writing again; after an uncertain `create`, search by
+  title with `--include-done` instead of creating a second task.
+- `conflict`: the task changed since it was read, for example a checklist
+  revision that moved because someone commented. Read again, then write.
 
-`checklist` prints the task's revision beside the item indices, and `check
-ID INDEX... --revision REVISION` writes every named item into the description
-at once. The revision is the same ETag the adapter reads; comparing it before
-the write catches a checklist edited since it was read, and it is a client-side
-check, not a compare-and-swap, for the same reason ETags cannot be one here. It
-belongs to the whole task rather than the description, so posting a progress
-comment moves it as well: read `checklist` immediately before `check`.
+## Vikunja
 
-`Done` belongs to `agent-box workflow finish`, which proves integration.
-`state TASK... Done --reason TEXT` is the exception for tasks that were never
-implemented: it closes them and journals that reason on each. It refuses while
-a task's `ab/<id>-` branch still holds commits neither the base branch nor the
-parent task's branch contains, naming the branch and the `workflow finish`
-command that would move them, and it judges every named task before moving any
-of them. Origin is asked for those branches directly, because another checkout
-can advance or even create one and `refs/remotes/*` is only as fresh as the last
-fetch; a commit origin reports and this checkout has never fetched is left
-unjudged, and the refusal asks for a fetch rather than assuming it landed. `normalized --done` marks every completed task in scope as processed
-in one command, because a Done task has nothing left for `ab-normalize` to do.
+**Connection:** the server URL and an API token. A loopback URL is reached
+from the box through `host.containers.internal`.
 
-`move TASK... --project P` moves tasks into another project of the binding,
-each with its whole subtask tree, because the provider keeps a parent and its
-subtasks in one project; a subtask whose parent stays behind is refused. The
-task keeps its ID, relations, labels, comments, priority and assignees, which
-the move checks afterwards, but gets a new visible number (rows report
-`previous_number`). Vikunja drops a moved card into the target's default column
-and ignores a column sent with the project change, so the state read beforehand
-is restored by a second write. Between the two writes that state exists nowhere
-else, so the move records it in workflow state first; a rerun of the same
-command restores what an interruption left, and any other move waits for it.
-Moving is only this command: neither `task-fields` nor `bulk-update` accepts `project_id`.
-`delete-project P` then deletes an emptied subproject of the binding. The
-provider would delete a project's tasks and child projects with it and has no
-undo, so a project that still holds either, the binding root and any project
-outside the binding are refused. The provider's delete is unconditional, so the
-command archives the project, which then refuses new tasks, moved-in tasks and
-child projects, checks it is still empty, and only then deletes it; a refusal
-unarchives it again.
+**Projects and boards.** A binding names a project ID and may be
+`--recursive`, covering every project under it. A new binding is root only;
+rerunning `setup` without `--recursive` or `--no-recursive` keeps the saved
+scope. With `--recursive` the projects are searched
+together and each resolves its own board. Projects outside the subtree stay
+readable and are never changed. Each project needs exactly one Kanban view with
+manually managed buckets named after the five states; the view's done bucket is
+Done. Vikunja's default `To-Do` and `Doing` are not recognized, so add the
+missing columns:
 
-Comments are a human journal. Nothing machine-readable lives in one: branch,
-base branch and pull request come from Git and GitHub, lifecycle from the
-tracker's own fields. Tracker content authored by the coordinator follows the
-task's language. Fixed diagnostic comments generated automatically by agent-box
-may be English; they are stable system explanations rather than user-authored
-task content.
+```bash
+agent-box tracker provider vikunja board init 12 --recursive          # dry run
+agent-box tracker provider vikunja board init 12 --recursive --apply
+```
 
-Task content uses its language. Markdown checkboxes represent evidenced progress;
-only independent review can provide review acceptance. The coordinator owns
-requirements, lifecycle, assignees, relations, progress comments and checkboxes.
-Plan sync may also update task descriptions and journal comments within its assigned scope.
-A worker changes project files and answers
-the coordinator; reviewers and scouts only read. That is a contract, not credential
-isolation, and it is the same for a native subagent and a managed CLI run.
+Board init only adds columns and sets the done bucket; a column it cannot
+recognize, an ambiguous name or a filter-built board stays reported for you to
+fix in Vikunja.
 
-## Product extensions
+**Moving and cleanup.** `tracker move TASK... --project P` moves tasks, each
+with its whole subtree, into another project of the binding; IDs stay and
+visible numbers change. `tracker delete-project P` deletes an emptied
+subproject of the binding, never the root or a project that still holds tasks.
 
-Use `agent-box tracker provider vikunja --help`. Common workflow operations stay
-in the provider-neutral commands. Extensions cover:
+**Product extensions** (`agent-box tracker provider vikunja --help`): project
+and label management, board views and buckets, raw task fields, bulk updates,
+and structured imports of a CSV or JSON plan. Imports, bulk updates and board
+init preview by default and write with `--apply`; the other commands act
+directly. An import only creates tasks; afterwards
+they are maintained in the tracker, not by editing and re-importing the plan.
 
-- `projects tree|children|create|update|delete` and `labels list|create|add|remove|delete`;
-- `board show|buckets|move` with an explicit project and optional view;
-- `task-fields` and `delete-task --force`;
-- `bulk-update FILE` (preview by default, `--apply` to write);
-- `import validate|plan FILE`, accepting CSV or JSON. `plan` is a dry run
-  unless `--apply` is supplied; `--create-root` explicitly permits a missing root.
-
-An import creates tasks once, with dependency and parent relations, labels,
-assignees, scheduling fields and bucket placement. A plan ID links rows only
-within its file; a row that depends on or belongs under an existing task names
-that task's tracker ID. An interrupted import resumes from its local checkpoint,
-which is the only link between rows and created tasks: nothing is written into
-a task body, and a task title already present in the target project is refused
-rather than reused. Once imported, tasks are maintained in the tracker, not by
-editing and re-importing the plan. Use normal task creation for workflow planning; there is no
-requirement to make a subproject per parent task.
-
-## Adoption of existing projects
-
-`ab-adopt` normalizes a native copy of an existing tree. Source tasks, comments,
-attachments, relations and project IDs remain available. It does not plan,
-decompose or implement tasks; unresolved requirements stay in Backlog for
-`ab-interview`, and future planning belongs to `ab-plan`. Adoption also analyzes
-relations across the complete tree, adds evidenced missing dependencies and
-corrects mistaken internal links. Similar topics alone do not establish a blocker;
-material ambiguity is discussed before changing links.
+**Adopting an existing project.** `ab-adopt` brings a project that already
+holds tasks into the workflow without touching the original: it copies the tree
+with Vikunja's native duplication, normalizes the copy, audits it, and at
+cutover renames the original to `TITLE — backup ID` and binds the repository to
+the copy. Each step previews before `--apply`, and an interrupted step is
+resumed by rerunning it with the same receipt:
 
 ```bash
 agent-box tracker audit --project 12 --recursive
-agent-box tracker adopt clone --project 12 --receipt /tmp/adoption.json
-agent-box tracker adopt clone --project 12 --receipt /tmp/adoption.json --apply
-agent-box tracker adopt boards --receipt /tmp/adoption.json --apply
-agent-box tracker --adoption /tmp/adoption.json audit
-agent-box tracker --adoption /tmp/adoption.json update 456 --description-file /tmp/task.md
-agent-box tracker adopt cutover --receipt /tmp/adoption.json
-agent-box tracker adopt cutover --receipt /tmp/adoption.json --apply
+agent-box tracker adopt clone --project 12 --receipt adoption.json --apply
+agent-box tracker adopt boards --receipt adoption.json --apply
+agent-box tracker --adoption adoption.json audit
+agent-box tracker adopt cutover --receipt adoption.json --apply
 ```
 
-The receipt records the repository/server, source and new project IDs, intended
-names, previous binding and exact intentional internal relation removals; it
-contains no tracker snapshot or task lifecycle. Staging `relation ... --remove`
-records that intent before the API call, allowing safe retries and excluding only
-that edge from source-copy preservation checks. Adding it back clears the
-exception before the API call. Other missing internal edges still block cutover.
-Keep it until adoption finishes. The staging scope is temporary and does not
-change `.agent-box.json`. Ordinary staging commands refuse source/external task
-mutations and task creation. Audit reports structural errors separately from
-preparation warnings: a Backlog task without enough evidence for acceptance or a
-tier does not need fabricated requirements to pass adoption.
+Pause other edits to the project while adopting; there is no incremental sync.
+Relations to tasks outside the tree are carried over where Vikunja allows it,
+and the report names every one that needs a human decision.
 
-Cutover checks the copy and audit, prepares managed repository instructions,
-renames the original root to `TITLE — backup ID`, renames staging to `TITLE`, then
-atomically writes the new recursive binding. If interrupted, rerun cutover with
-the same receipt: actual names and binding determine which steps remain. No
-tracker objects are deleted, and no tracker restoration is attempted. Concurrent
-source/staging editing must be paused for adoption; there is no incremental sync.
-A changing source remains usable but the copy can become stale.
+## GitHub Projects
 
-A clone interrupted before normalization can be resumed with the same command.
-A `clone.pending` project marks an uncertain duplicate POST result. Inspect the
-provider, enter the verified new ID into `clone.projects` under that source ID,
-and clear `clone.pending` only once verified. If no copy exists, clear the pending
-entry only after confirming the request did not commit. Never infer a successful
-copy from a similar title or automatically retry an uncertain POST. Do not rerun
-clone after normalization: audit staging instead. Incomplete staging projects
-remain for inspection; removal is an explicit separate operation.
+**Connection:** the API URL (`https://api.github.com`, or
+`https://HOST/api/v3` for GitHub Enterprise Server) and a **classic** token
+with the `repo` and `project` scopes, or `gh auth token` with those scopes.
+Fine-grained tokens cannot reach projects of a personal account. This token is
+separate from **Credentials → GitHub**, and it can also push code, so enabling
+the tracker gives the box that access.
 
-Vikunja v2.5.0 uses `POST /api/v2/projects/{id}/duplicate` once per project,
-with `duplicate_shares: true` and the corresponding new parent. The adapter
-matches tasks by their preserved, unique per-project index, adds missing
-assignments after native shares exist, and connects relations between copied
-projects. Internal relations, comments, attachments/files, views/buckets and
-positions use native copying. No custom task/file deep-copy engine is involved.
+**Binding.** A binding names a user or organization project, as `owner/number`
+or the project's URL (for example `octo-org/5`), plus this repository, which
+is read from origin. GitHub projects have no subprojects, so bindings are never
+recursive.
 
-Collapsing subprojects is optional and happens only when the user asks for it:
-`tracker --adoption PATH move TASK... --project P` moves staging tasks between
-staging projects and refuses any target outside staging. A moved task gets a new
-visible number, which would break the per-project index pairing, so before the
-first move the receipt saves `clone.tasks`, the source-to-staging task mapping,
-while the indexes still pair up. From then on clone verification and cutover use
-that mapping instead, and `clone --apply` refuses to run again.
-`tracker --adoption PATH delete-project P` deletes an emptied staging
-subproject. After the same checks, and before the delete, it saves the mapping
-if no move has, and records the source project in `clone.removed`; clone
-verification and cutover then treat that copy as intentionally gone. A copy
-recorded as removed that still exists, because the delete was interrupted,
-blocks cutover until the command is rerun.
+- **Tasks are this repository's issues on the board.** The issue number is
+  the task ID. Issues of other repositories on the same board are read-only
+  (`owner/repo#N`), useful as blockers. Draft items are not tasks:
+  `tracker provider github drafts list` shows them and
+  `drafts convert ITEM` turns one into an issue in the same column. Pull
+  requests are never tasks.
+- **Done is a closed issue.** agent-box moves the card and closes or reopens
+  the issue itself; an open issue in the Done column reads as `Unknown` until
+  one of the two is fixed. `state ... Done --reason` closes the issue as not
+  planned.
+- **Relations are GitHub's own:** sub-issues for parent and child,
+  issue dependencies for blockers, *relates to*, and *duplicate of* — which
+  closes the issue as a duplicate.
+- **Priority** is the board's Priority field with the options Immediate,
+  Urgent, High, Medium and Low, highest first. Tier and normalization markers
+  are repository labels (`ab:tier:N`, `ab:normalized`).
+- `move` and `delete-project` do not apply.
 
-Labels are still global shared objects: adoption may create missing `ab:tier:*`
-labels and edit staging attachments, but never rename/delete global labels.
-Shares are copied immediately, without a separate permissions
-lifecycle. Link hashes, project/task IDs and task UIDs change. Ownership follows
-the provider's creating-user rules. Complete history, webhooks, reactions and
-all subscriptions are not migrated. Inspect view filters and embedded links for
-old IDs. Native copying can skip missing attachment files; attachment/comment
-counts and assignment preservation are checked before normalization and again
-before cutover, along with preservation of internal source relations. Added
-journal comments are allowed; cutover cannot conceal an interrupted internal copy.
+**Preparing the board.** Board init plans the Status options (Backlog, Ready,
+In progress, In review, Done) and the Priority options. It renames the Board
+template's `Todo` to Backlog and `P0`–`P2` to Urgent, High and Medium, keeping
+option IDs so existing cards keep their values:
 
-External relations are best effort. Clone and cutover add missing `related`,
-`duplicateof`/`duplicates`, `precedes`/`follows` and incoming `blocked` relations
-from staging. Vikunja adds the inverse on the external task; it requires read
-access there and write access on staging. Ordering is preserved as metadata;
-agent-box enforces only blockers, with its usual dependency checks. Outgoing
-`blocking`, external parent/subtask, historical `copiedfrom`/`copiedto` and
-unknown kinds are skipped for a human decision. If already present on staging,
-they are reported as `manual` with the same policy warning, never as an approved
-automatic transfer. Source/backup relations stay intact.
+```bash
+agent-box tracker provider github board show octo-org/5
+agent-box tracker provider github board init octo-org/5            # dry run
+agent-box tracker provider github board init octo-org/5 --apply
+```
 
-Skipped or failed external edges are warnings, not cutover blockers. The report
-names source, staging, relation kind, external task and the reason. A short
-staging comment gives options specific to the relation type. These comments are
-fixed agent-box diagnostics and may be English regardless of the task language;
-the coordinator still explains the warnings to the user in the user's language.
-Eligible relations may need access or manual addition; unsafe types require
-agreement on workflow, hierarchy or provenance, another suitable type, or
-keeping the original alone. Failure to post that comment is reported as
-`comment_warning` for the current apply attempt. Read-only reports, including
-repeated completed cutover, do not check journal delivery or reconstruct
-previous comment failures; retain the apply output if that diagnostic is needed.
-Comments never determine resolution; identical journal entries are reused only
-to avoid repeated explanations. Keep work requiring clarification in Backlog; a
-missing `related` alone does not reset its status. Ordinary staging CLI writes
-remain restricted to staging endpoints and relations.
+**Turn off two project workflows.** Under the project's **Workflows**, disable
+*Pull request linked to issue* and *Pull request merged*: they move cards when
+a pull request links or merges, before agent-box has proved anything.
+`tracker status` and `setup` warn while either is on. For the same reason
+agent-box writes no closing keywords such as `Closes #N` into pull requests and
+refuses a pull request body that contains one.
 
-Before switching binding, cutover retries eligible missing external edges and
-rechecks the staging audit. Lost write responses are checked against live tasks.
-An API outage or inability to read staging still stops cutover. After binding
-switches, rerunning cutover only reads the current report. No relation progress
-or resolution flags are stored in the receipt. The ordinary workflow does not
-track omitted adoption relations after cutover; the report and comments explain
-those omissions to people. Ambiguous boards and invalid staging hierarchy remain
-structural errors, including external or unreadable children of staging parents.
+**Adopting an existing project** happens in place: run board init, then
+`ab-normalize` to process the tasks already there.
 
-Structured imports remain independent. To import into a copied project, use
-`tracker provider vikunja import plan FILE --project NEW_ROOT_ID` (and `--apply`
-after review). The plan's root name denotes that explicit target even if staging
-has a different title or an external parent. Tracker references resolve only
-within its subtree, and checkpoints are separated by server/target ID.
+## Normalizing tasks
 
-Run `PYTHONPATH=. python3 tests/live_vikunja_adoption.py --run` from the checkout
-for the opt-in live contract check. It creates and removes its own test projects,
-label and attachments; it never accepts an existing project as a target. The
-offline suite does not run it.
+`ab-normalize` processes tasks in a bound project that have not been handled
+yet. A processed task carries the `ab:normalized` label, which means
+processed, not Ready or Done; remove it, or run
+`tracker normalized ID --undo`, to request another pass.
+`tracker normalized --done` marks every completed task in scope at once.
 
-## Container access
+## In the box
 
-An enabled tracker renders connections and runtime policy into an immutable
-`runtime/tracker/workspaces/<id>/sessions/<session>/config.json` snapshot
-(session directory 0700, file 0600). The container receives only its workspace's
-snapshot directory read-only, not the global config file or snapshots from host
-launches or other workspaces. Sessions in the same box share access to these files.
-Local workflow evidence, locks, counters and import checkpoints have their own
-read-write state mount. Disabling tracker removes connection secrets from the
-rendered artifact even when workflow remains enabled.
-
-Loopback addresses become `host.containers.internal`. A DNS name resolving to
-the host retains its URL for TLS and virtual-host routing and receives a Podman
-host mapping. Remote URLs stay unchanged. Secrets never enter Podman argv.
-
-## Incremental normalization
-
-Use `ab-normalize` for unprocessed tasks in an already bound project. It selects
-candidates with `tracker search --exclude-label ab:normalized`; exclusion happens
-before CLI output, after the adapter has read all result pages. This limits agent
-context, not necessarily API traffic. Compact searches with `--include-done` and
-no label exclusion discover links to previously processed or completed tasks.
-
-Normalization preserves each reference-document section's heading, language and
-location. It verifies `path#heading` links and their purpose against existing
-decisions; missing decisions stay explicit for interview. Adoption uses the same
-rules on staging. Run Plan sync only after cutover, because it uses the current
-repository binding rather than the adoption receipt.
-
-`tracker normalized ID` adds the shared `ab:normalized` label only after edits,
-journal writes and verification finish. Adoption uses the same marker. It means
-processed, not Ready or Done: unresolved decisions can remain explicit in Backlog.
-Remove the label in the tracker UI or with `tracker normalized ID --undo` to request
-another pass. Other labels are preserved; edits do not automatically reset it.
-
-Priority uses the existing scale: 0 unset, 1 low, 2 medium, 3 high, 4 urgent,
-5 immediate. `tracker create --priority N` and `tracker update ID --priority N`
-store an assessment grounded in urgency, deadlines and consequences of delay.
+An enabled tracker renders its connection into the session's private snapshot;
+the box never sees `config.json`. Disabling the tracker removes the connection
+secrets from the rendered files even while the workflow stays enabled. How the
+contract is implemented — reference resolution, write checks, adoption
+receipts — is recorded in the [tracker design notes](../design/tracker.md).
