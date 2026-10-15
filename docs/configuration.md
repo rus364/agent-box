@@ -4,8 +4,9 @@
 
 Settings come from three layers: built-in defaults, your global overrides in
 `~/.config/agent-box/config.json`, then the project overrides in the
-repository's `.agent-box.json`. Each file stores only what differs from the
-layer below; missing settings inherit. The defaults are defined by the
+repository's `.agent-box.json`. Missing settings inherit from the layer
+below. A global save keeps only what differs from the defaults; a project file
+keeps every value it sets explicitly, even one equal to the global setting. The defaults are defined by the
 configuration dataclasses in `agent_box/config.py`; there is no separate JSON
 template.
 
@@ -20,9 +21,9 @@ agent-box config ai         # set things up together with an agent
 
 **Starting an agent applies nothing.** `agent-box claude` and
 `agent-box codex` read the configuration but never install a skill, write a
-symlink or rewrite `settings.json`. Only `agent-box config` (including
-`config apply`), `agent-box upgrade` and `agent-box uninstall` change files in
-your home directory.
+symlink or rewrite `settings.json`; they only keep agent-box's own runtime
+state. Integrations are applied by `agent-box config` (including
+`config apply`) and `agent-box upgrade`, and removed by `agent-box uninstall`.
 
 ## The configuration menu
 
@@ -159,7 +160,10 @@ settings into agent-box's runtime state. A box mounts only its own workspace's
 snapshots, and each consumer applies the current project's overrides to the
 snapshot's global baseline, so another project, session or a global apply
 cannot change an active session's settings or credentials. With tracker and
-workflow disabled, only a credential-free policy directory is mounted.
+workflow disabled, only a policy directory is mounted; it holds no tracker or
+GitHub account, but the keys of enabled
+[external API providers](integrations/external-providers.md) are rendered
+there for the sessions of that box.
 
 ## Guided setup with `config ai`
 

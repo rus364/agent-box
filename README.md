@@ -104,7 +104,7 @@ flowchart LR
 
 **Workspace box.** The first command in a project creates its box; later
 commands join it. A different project gets a different box, and a box with no
-sessions left exits and is removed. The box mounts the Git top level of the
+workload left exits and is removed. The box mounts the Git top level of the
 current directory and your agent state; any other host path, credential or
 device only when you enable it.
 
@@ -115,8 +115,8 @@ do not apply.
 
 **Configuration.** Built-in defaults, then your global
 `~/.config/agent-box/config.json`, then the repository's `.agent-box.json`.
-`agent-box config` edits and applies settings; starting an agent never changes
-anything in your home directory.
+`agent-box config` edits settings and applies integrations; starting an agent
+never installs skills or rewrites your agent settings.
 
 ## Documentation
 

@@ -27,7 +27,8 @@ flags. Later `claude`, `codex`, `shell` (including `shell -c ...`) and
 without repeating its creation flags. The box keeps its image, mounts,
 devices, k3s cluster and shared access choices; each new process uses its own
 workflow and session settings. A different workspace gets a different box.
-When no session is left, the box exits and Podman removes it.
+When no workload remains — no session, background daemon or nested
+container — the box exits and Podman removes it.
 
 An explicit option that conflicts with the running box names the conflict and
 asks you to end the box first. Matching shared-access flags and already
