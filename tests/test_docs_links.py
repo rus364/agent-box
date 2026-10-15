@@ -100,15 +100,17 @@ def broken_links(root: Path) -> list[str]:
     cache: dict[Path, set[str]] = {}
     for source in documentation_files(root):
         text = prose(source.read_text(encoding="utf-8"))
+        # Quote markers are dropped per line, so a definition inside a blockquote keeps its line number.
+        unquoted = "\n".join(QUOTE.sub("", line, count=1) for line in text.split("\n"))
         targets = []
-        for pattern in (INLINE_LINK, REFERENCE_DEFINITION):
-            for m in pattern.finditer(text):
+        for pattern, searched in ((INLINE_LINK, text), (REFERENCE_DEFINITION, unquoted)):
+            for m in pattern.finditer(searched):
                 group = 1 if m.group(1) is not None else 2
-                targets.append((m.start(group), m.group(group)))
-        for offset, target in sorted(targets):
+                targets.append((searched.count("\n", 0, m.start(group)), m.group(group)))
+        for newlines, target in sorted(targets):
             if not target or SCHEME.match(target):
                 continue
-            where = f"{source.relative_to(root)}:{text.count(chr(10), 0, offset) + 1}: {target}"
+            where = f"{source.relative_to(root)}:{newlines + 1}: {target}"
             path_part, _, anchor = target.partition("#")
             resolved = (source.parent / unquote(path_part)).resolve() if path_part else source
             if not resolved.is_relative_to(root.resolve()):
@@ -200,6 +202,13 @@ class LinkCheckerTests(unittest.TestCase):
     def test_code_span_closes_only_on_an_equal_backtick_run(self):
         problems = self.check({"README.md": "# T\n\nA `tick [bad](missing.md) `` run.\n"})
         self.assertEqual(problems, ["README.md:3: missing.md (no such file)"])
+
+    def test_reference_definition_inside_a_blockquote_is_checked(self):
+        problems = self.check({"README.md": "# T\n\n> [Guide][g]\n>\n> [g]: missing.md\n> [h]: README.md#nowhere\n"})
+        self.assertEqual(problems, [
+            "README.md:5: missing.md (no such file)",
+            "README.md:6: README.md#nowhere (no such anchor)",
+        ])
 
     def test_links_shown_inside_code_are_not_checked(self):
         problems = self.check({"README.md": (
