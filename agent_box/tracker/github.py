@@ -218,17 +218,23 @@ class GitHubAdapter:
                 present.add(target.casefold())
                 option["name"] = target
         missing = [wanted for wanted in names if wanted.casefold() not in present]
-        order, pending = [], list(missing)
+        # Agreed options take the agreed order, since views sort and group by it;
+        # an unknown option stays right after the agreed one it followed.
+        known = {wanted.casefold(): wanted for wanted in names}
+        by_name = {option["name"].casefold(): option for option in existing if option["name"].casefold() in known}
+        anchored, anchor = {}, None
         for option in existing:
-            index = next((i for i, wanted in enumerate(names) if wanted.casefold() == option["name"].casefold()), None)
-            if index is not None:
-                while pending and names.index(pending[0]) < index:
-                    order.append({"name": pending.pop(0)})
-            order.append(option)
-        order += [{"name": wanted} for wanted in pending]
-        known = {wanted.casefold() for wanted in names}
+            if option["name"].casefold() in known:
+                anchor = option["name"].casefold()
+            else:
+                anchored.setdefault(anchor, []).append(option)
+        order = list(anchored.get(None, []))
+        for wanted in names:
+            order.append(by_name.get(wanted.casefold(), {"name": wanted}))
+            order += anchored.get(wanted.casefold(), [])
+        reorder = [option["id"] for option in order if "id" in option] != [option["id"] for option in existing]
         return {"field": name, "exists": bool(field), "id": field["id"] if field else None,
-                "rename": renames, "add": missing, "order": [option["name"] for option in order],
+                "rename": renames, "add": missing, "reorder": reorder, "order": [option["name"] for option in order],
                 "unrecognized": [option["name"] for option in existing if option["name"].casefold() not in known],
                 "options": order}
 
@@ -246,7 +252,7 @@ class GitHubAdapter:
     def apply_board_plan(self, plan):
         project = self.project(plan["project"])
         for field in plan["fields"]:
-            if field.get("blocked") or field["exists"] and not (field["rename"] or field["add"]):
+            if field.get("blocked") or field["exists"] and not (field["rename"] or field["add"] or field["reorder"]):
                 continue
             options = [{key: option[key] for key in ("id", "name", "color", "description") if key in option}
                        for option in field["options"]]
@@ -260,7 +266,8 @@ class GitHubAdapter:
                            name=field["field"], singleSelectOptions=options)
         self._projects.pop(plan["project"].casefold(), None)
         after = self.board_plan(plan["project"])
-        pending = [field["field"] for field in after["fields"] if field.get("rename") or field.get("add")]
+        pending = [field["field"] for field in after["fields"]
+                   if field.get("rename") or field.get("add") or field.get("reorder")]
         if pending:
             raise TrackerError("Board init was not confirmed for " + ", ".join(pending), "conflict")
         return {**after, "applied": True}

@@ -41,11 +41,21 @@ class BoardInitTests(unittest.TestCase):
         self.assertEqual(client.writes, ["UpdateField"])
         self.assertEqual((plan["Status"]["rename"], plan["Status"]["add"]), ([], []))
 
-    def test_unknown_options_stay_and_are_named(self):
+    def test_unknown_options_stay_after_the_option_they_followed(self):
         tracker, _ = writable(projects={2: project(status=("Backlog", "Blocked", "Ready", "In progress", "In review", "Done"))})
         plan = fields(tracker.initialize_boards(["octo/2"])[0])
         self.assertEqual(plan["Status"]["unrecognized"], ["Blocked"])
-        self.assertIn("Blocked", plan["Status"]["order"])
+        self.assertEqual(plan["Status"]["order"], ["Backlog", "Blocked", "Ready", "In progress", "In review", "Done"])
+        self.assertFalse(plan["Status"]["reorder"])
+
+    def test_priority_options_in_the_wrong_order_are_reordered_keeping_values(self):
+        """Views sort by option order, so Low above Immediate would put idle work first."""
+        tracker, client = writable([issue(1, status="Ready", priority="Low")],
+                                   projects={2: project(priority=("Low", "Medium", "High", "Urgent", "Immediate"))})
+        result = fields(tracker.initialize_boards(["octo/2"], apply=True)[0])
+        self.assertEqual(result["Priority"]["order"], ["Immediate", "Urgent", "High", "Medium", "Low"])
+        self.assertEqual(client.writes, ["UpdateField"])
+        self.assertEqual(tracker.get("1").priority, 1)
 
     def test_missing_priority_field_is_created_and_a_clashing_one_is_left(self):
         tracker, client = writable(projects={2: project(priority=None)})
