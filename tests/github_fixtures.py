@@ -161,15 +161,20 @@ class WritableGitHub(FakeGitHub):
     the write that triggered them.
     """
 
-    def __init__(self, *args, lag=0, labels=(), **kwargs):
+    def __init__(self, *args, lag=0, labels=(), auto_close=False, fail=(), **kwargs):
         super().__init__(*args, **kwargs)
         self.lag, self.pending = lag, []
+        self.auto_close, self.fail = auto_close, list(fail)
         self.labels = set(labels)
         self.writes = []
 
     def graphql(self, query, variables=None):
         operation = re.match(r"\s*(query|mutation)\s+(\w+)", query)
         if operation[1] == "mutation":
+            if operation[2] in self.fail:
+                self.fail.remove(operation[2])
+                from agent_box.tracker.github_api import APIError
+                raise APIError(502, "Bad Gateway", write=True)
             self.writes.append(operation[2])
             self.operations.append((operation[2], variables))
             return getattr(self, "op_" + operation[2])(**variables["input"])
@@ -239,6 +244,8 @@ class WritableGitHub(FakeGitHub):
         def apply():
             raw[field["name"].lower()] = name
             raw["itemUpdatedAt"] = "2026-03-03T00:00:00Z"
+            if self.auto_close and field["name"] == "Status" and name == "Done" and raw["state"] == "OPEN":
+                raw.update(state="CLOSED", stateReason="COMPLETED")
         if field["name"] == "Status" and self.lag:
             self.pending.append([self.lag, apply])
         else:

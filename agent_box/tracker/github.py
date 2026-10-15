@@ -374,23 +374,28 @@ class GitHubAdapter:
     def set_state(self, task, state, unimplemented=False):
         """Done is a closed issue and the Done column; agent-box writes both.
 
-        The issue is closed before its card moves: the board's Auto-close
-        workflow would otherwise close it as completed first, and a closed issue
-        keeps the first reason it was given. Leaving Done reopens the issue,
-        because reopening leaves the card where it was.
+        The card moves first. A failure between the two writes then leaves an
+        open issue in Done, which reads as Unknown and is finished by any rerun;
+        the other order would leave a closed issue in its old column reading as
+        Done, which nothing would revisit. The board's Auto-close workflow may
+        close the issue as completed in between; closing it again still sets
+        the reason given here, as GitHub lets a closed issue's reason change.
+        Leaving Done reopens the issue, because reopening leaves the card where it was.
         """
         if state not in STATES:
             raise TrackerError(f"Unknown lifecycle state: {state}")
         raw, item, bound = self.writable(task.id)
         status = self.option_name(bound, state)
-        if state == "Done":
-            if raw["state"] == "OPEN":
-                api.mutate(self.client, "CloseIssue", issueId=raw["id"],
-                           stateReason="NOT_PLANNED" if unimplemented else "COMPLETED")
-        elif raw["state"] == "CLOSED":
+        reason = None
+        if state != "Done" and raw["state"] == "CLOSED":
             api.mutate(self.client, "ReopenIssue", issueId=raw["id"])
         self.set_option(bound, item, "Status", status)
-        return self.confirm(task.id, lambda current, column: current.state == state and column == status,
+        if state == "Done" and raw["state"] == "OPEN":
+            reason = "NOT_PLANNED" if unimplemented else "COMPLETED"
+            api.mutate(self.client, "CloseIssue", issueId=raw["id"], stateReason=reason)
+        expected = CLOSE_REASONS.get(reason)
+        return self.confirm(task.id, lambda current, column: current.state == state and column == status
+                            and (reason is None or current.state_reason == expected),
                             f"State transition not confirmed: expected {state}")
 
     def update(self, task, fields):

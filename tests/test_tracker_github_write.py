@@ -10,12 +10,26 @@ def raw(client, number, repo=REPO):
 
 
 class LifecycleWriteTests(unittest.TestCase):
-    def test_done_closes_the_issue_before_moving_its_card(self):
-        """Auto-close would otherwise close it as completed first, and a closed issue keeps that reason."""
+    def test_done_moves_the_card_and_closes_the_issue(self):
         tracker, client = writable([issue(1, status="In review")])
         task = tracker.set_state(tracker.get("1"), "Done")
         self.assertEqual((task.state, raw(client, 1)["state"], raw(client, 1)["status"]), ("Done", "CLOSED", "Done"))
-        self.assertLess(client.writes.index("CloseIssue"), client.writes.index("SetField"))
+
+    def test_failure_between_the_two_writes_is_finished_by_a_rerun(self):
+        """The card moves first, so a lost close reads as Unknown instead of a Done nothing revisits."""
+        tracker, client = writable([issue(1, status="In review")], fail=["CloseIssue"])
+        with self.assertRaises(TrackerError):
+            tracker.set_state(tracker.get("1"), "Done")
+        stalled = tracker.get("1")
+        self.assertEqual(stalled.state, "Unknown")
+        self.assertEqual(tracker.set_state(stalled, "Done").state, "Done")
+        self.assertEqual(raw(client, 1)["state"], "CLOSED")
+
+    def test_not_planned_survives_the_board_closing_the_issue_first(self):
+        """Auto-close may close the issue as completed between our writes; the reason given still wins."""
+        tracker, client = writable([issue(1, status="Ready")], auto_close=True)
+        task = tracker.set_state(tracker.get("1"), "Done", unimplemented=True)
+        self.assertEqual((task.state_reason, raw(client, 1)["stateReason"]), ("closed as not planned", "NOT_PLANNED"))
 
     def test_closing_without_implementation_is_not_planned(self):
         tracker, client = writable([issue(1, status="Ready")])
