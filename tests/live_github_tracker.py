@@ -32,8 +32,11 @@ def run(project, repository, token):
     binding = Binding("github", api.DEFAULT_API, project)
     tracker = GitHubAdapter(binding.server, token, binding, repository=repository)
     config = effective_config()
-    # Plan sync would launch an agent per finish; this check is about the tracker.
+    # The check is about the tracker, so the workflow policy is its own: no plan
+    # sync or review agent is launched, and landing stays local.
+    config.workflow.enabled = True
     config.workflow.sync.policy = "off"
+    config.workflow.review.policy = "off"
     config.workflow.merge_mode = "local"
     tag = uuid.uuid4().hex[:8]
     with tempfile.TemporaryDirectory(prefix="agent-box-github-live-") as tmp:
