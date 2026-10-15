@@ -85,8 +85,9 @@ agent-box attach claude-31337    # a named session
 ```
 
 A detached session keeps its box alive. Only real terminals are wrapped:
-pipes, redirects, CI and `claude -p` write straight to stdout, and `--no-tmux`
-disables tmux for one launch. A wrapped session that fails reports only its
+pipes, redirects and CI write straight to stdout. In the box, a batch command
+such as `claude -p` started from a terminal is wrapped too; pass `--no-tmux`
+to get its output directly, as for any one launch. A wrapped session that fails reports only its
 exit status, because its pane is destroyed with it; rerun with `--no-tmux` to
 read the output.
 
