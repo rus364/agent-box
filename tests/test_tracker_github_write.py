@@ -67,6 +67,21 @@ class LifecycleWriteTests(unittest.TestCase):
                     with self.assertRaisesRegex(TrackerError, "not confirmed"):
                         tracker.set_state(tracker.get("1"), "Done")
 
+    def test_a_late_workflow_overwriting_the_column_is_written_again(self):
+        """Item closed may land after a quick close and reopen and put the card back in Done."""
+        tracker, client = writable([issue(1, status="Done", state="CLOSED", reason="COMPLETED")])
+        apply = client.op_SetField
+
+        def overwritten_once(**values):
+            result = apply(**values)
+            if not getattr(client, "overwrote", False):
+                client.overwrote = True
+                client.pending.append([0, lambda: client.issues[("octo/app", 1)].update(status="Done")])
+            return result
+        client.op_SetField = overwritten_once
+        task = tracker.set_state(tracker.get("1"), "Ready")
+        self.assertEqual((task.state, client.issues[("octo/app", 1)]["status"]), ("Ready", "Ready"))
+
     def test_a_write_that_never_shows_is_reported(self):
         tracker, _ = writable([issue(1, status="Ready")], lag=10)
         with self.assertRaisesRegex(TrackerError, "not confirmed"):
@@ -115,10 +130,14 @@ class FieldWriteTests(unittest.TestCase):
         self.assertEqual(tracker.update(task, {"priority": 0}).priority, 0)
 
     def test_priority_without_its_option_is_refused_before_writing(self):
-        tracker, client = writable([issue(1, status="Ready")], projects={2: project(priority=("P0", "P1", "P2"))})
-        with self.assertRaisesRegex(TrackerError, "no Priority option High; run tracker provider github board init"):
-            tracker.update(tracker.get("1"), {"title": "T", "priority": 3})
-        self.assertEqual(client.writes, [])
+        cases = [(project(priority=("P0", "P1", "P2")), 3, "no single Priority option High"),
+                 (project(priority=("High", "high")), 3, "no single Priority option High"),
+                 (project(priority=None), 0, "no single-select Priority field")]
+        for board, priority, message in cases:
+            tracker, client = writable([issue(1, status="Ready")], projects={2: board})
+            with self.subTest(priority=priority, message=message), self.assertRaisesRegex(TrackerError, message):
+                tracker.update(tracker.get("1"), {"title": "T", "priority": priority})
+            self.assertEqual(client.writes, [])
 
     def test_create_puts_a_new_issue_on_the_board_in_backlog_under_its_parent(self):
         """Item added and Auto-add sub-issues may be off; the adapter does not rely on them."""

@@ -459,30 +459,29 @@ class GitHubAdapter:
                 return task
         raise TrackerError(f"{message}; inspect task {task_id} in the tracker", "conflict")
 
-    def set_option(self, bound, item, name, option):
+    def choice(self, bound, name, option):
+        """The field and option to write, resolved before the first write; None option clears."""
         field, problem = self.single_select(bound, name)
         if not field:
             raise TrackerError(f"Project {bound['id']}: {problem}; run tracker provider github board init", "configuration")
         if option is None:
-            api.mutate(self.client, "ClearField", projectId=bound["node"], itemId=item["id"], fieldId=field["id"])
-            return
-        found = [choice for choice in field["options"] if choice["name"].casefold() == option.casefold()]
+            return field["id"], None
+        found = [entry for entry in field["options"] if entry["name"].casefold() == option.casefold()]
         if len(found) != 1:
             raise TrackerError(f"Project {bound['id']} has no single {name} option {option}; "
                                "run tracker provider github board init", "configuration")
-        api.mutate(self.client, "SetField", projectId=bound["node"], itemId=item["id"], fieldId=field["id"],
-                   value={"singleSelectOptionId": found[0]["id"]})
+        return field["id"], found[0]["id"]
 
-    def priority_option(self, bound, priority):
-        """The option name for a priority, checked before the first write."""
-        if not priority:
-            return None
-        name = PRIORITIES[5 - int(priority)]
-        field, problem = self.single_select(bound, "Priority")
-        if not field or not any(choice["name"].casefold() == name.casefold() for choice in field["options"]):
-            raise TrackerError(f"Project {bound['id']} has no Priority option {name}; "
-                               "run tracker provider github board init", "configuration")
-        return name
+    def set_option(self, bound, item, choice):
+        field, option = choice
+        if option is None:
+            api.mutate(self.client, "ClearField", projectId=bound["node"], itemId=item["id"], fieldId=field)
+        else:
+            api.mutate(self.client, "SetField", projectId=bound["node"], itemId=item["id"], fieldId=field,
+                       value={"singleSelectOptionId": option})
+
+    def priority_choice(self, bound, priority):
+        return self.choice(bound, "Priority", PRIORITIES[5 - int(priority)] if priority else None)
 
     def set_state(self, task, state, unimplemented=False):
         """Done is a closed issue and the Done column; agent-box writes both.
@@ -494,24 +493,34 @@ class GitHubAdapter:
         close the issue as completed in between; closing it again still sets
         the reason given here, as GitHub lets a closed issue's reason change.
         Leaving Done reopens the issue, because reopening leaves the card where it was.
+
+        A board workflow can also land after our write and overwrite it, such as
+        Item closed after a quick close and reopen; the transition is then
+        written once more from the current state before it is reported.
         """
         if state not in STATES:
             raise TrackerError(f"Unknown lifecycle state: {state}")
-        raw, item, bound = self.writable(task.id)
-        status = self.option_name(bound, state)
-        reason = None
-        if state != "Done" and raw["state"] == "CLOSED":
-            api.mutate(self.client, "ReopenIssue", issueId=raw["id"])
-        self.set_option(bound, item, "Status", status)
-        # Closing without implementation is also a correction of an issue the board
-        # already closed as completed, for instance when our own close was lost.
-        if state == "Done" and (raw["state"] == "OPEN" or unimplemented and raw["state_reason"] != "NOT_PLANNED"):
-            reason = "NOT_PLANNED" if unimplemented else "COMPLETED"
-            api.mutate(self.client, "CloseIssue", issueId=raw["id"], stateReason=reason)
-        expected = CLOSE_REASONS.get(reason)
-        return self.confirm(task.id, lambda current, column: current.state == state and column == status
-                            and (reason is None or current.state_reason == expected),
-                            f"State transition not confirmed: expected {state}")
+        expected = None
+        for attempt in range(2):
+            raw, item, bound = self.writable(task.id)
+            status = self.option_name(bound, state)
+            target = self.choice(bound, "Status", status)
+            if state != "Done" and raw["state"] == "CLOSED":
+                api.mutate(self.client, "ReopenIssue", issueId=raw["id"])
+            self.set_option(bound, item, target)
+            # Closing without implementation also corrects an issue the board
+            # already closed as completed, for instance when our own close was lost.
+            if state == "Done" and (raw["state"] == "OPEN" or unimplemented and raw["state_reason"] != "NOT_PLANNED"):
+                reason = "NOT_PLANNED" if unimplemented else "COMPLETED"
+                api.mutate(self.client, "CloseIssue", issueId=raw["id"], stateReason=reason)
+                expected = (CLOSE_REASONS.get(reason),)
+            try:
+                return self.confirm(task.id, lambda current, column: current.state == state and column == status
+                                    and (expected is None or current.state_reason == expected[0]),
+                                    f"State transition not confirmed: expected {state}")
+            except TrackerError:
+                if attempt:
+                    raise
 
     def update(self, task, fields):
         current = self.get(task.id)
@@ -522,12 +531,12 @@ class GitHubAdapter:
         if unsupported:
             raise TrackerError(f"Unsupported task fields: {sorted(unsupported)}")
         raw, item, bound = self.writable(task.id)
-        option = self.priority_option(bound, fields["priority"]) if "priority" in fields else None
+        priority = self.priority_choice(bound, fields["priority"]) if "priority" in fields else None
         text = {name: fields[key] for key, name in (("title", "title"), ("description", "body")) if key in fields}
         if text:
             api.mutate(self.client, "UpdateIssue", id=raw["id"], **text)
-        if "priority" in fields:
-            self.set_option(bound, item, "Priority", option)
+        if priority:
+            self.set_option(bound, item, priority)
         if "assignees" in fields:
             api.mutate(self.client, "ReplaceAssignees", assignableId=raw["id"], actorLogins=list(fields["assignees"]))
         expected = {"title": "title", "description": "description", "priority": "priority", "assignees": "assignees"}
@@ -541,7 +550,8 @@ class GitHubAdapter:
         if self.project(project)["id"] != bound["id"]:
             raise TrackerError("Create the task on the bound project")
         self.board(bound["id"])
-        option = self.priority_option(bound, priority)
+        target = self.choice(bound, "Status", self.option_name(bound, "Backlog"))
+        option = self.priority_choice(bound, priority) if priority else None
         if parent:
             self.writable(parent)
         repository = api.repository(self.client, self.repository())
@@ -549,9 +559,9 @@ class GitHubAdapter:
                              body=description)["createIssue"]["issue"]
         item = {"id": api.mutate(self.client, "AddItem", projectId=bound["node"],
                                  contentId=created["id"])["addProjectV2ItemById"]["item"]["id"]}
-        self.set_option(bound, item, "Status", self.option_name(bound, "Backlog"))
+        self.set_option(bound, item, target)
         if option:
-            self.set_option(bound, item, "Priority", option)
+            self.set_option(bound, item, option)
         task_id = str(created["number"])
         if parent:
             self.relate(task_id, "parent", parent)
@@ -601,9 +611,10 @@ class GitHubAdapter:
         # A duplicate closes the issue, so its Done column is resolved before any
         # write, and a rerun after a broken board finishes moving the card.
         done = self.option_name(bound, "Done") if kind == "duplicate" and not remove else None
+        done_choice = self.choice(bound, "Status", done) if done else None
         if self.related_to(task_id, kind, other) == (not remove):
             if done and self.column(raw, bound) != done:
-                self.set_option(bound, item, "Status", done)
+                self.set_option(bound, item, done_choice)
                 return self.confirm(task_id, lambda _, column: column == done, "Duplicate's Done column was not confirmed")
             return self.get(task_id)
         if not remove and kind in ("parent", "child", "blocks", "blocked-by"):
@@ -638,7 +649,7 @@ class GitHubAdapter:
             api.mutate(self.client, "UnmarkDuplicate", duplicateId=mine, canonicalId=theirs)
         else:
             api.mutate(self.client, "CloseIssue", issueId=mine, stateReason="DUPLICATE", duplicateIssueId=theirs)
-            self.set_option(bound, item, "Status", done)
+            self.set_option(bound, item, done_choice)
         self.confirm(task_id, lambda _, column: self.related_to(task_id, kind, other) == (not remove)
                      and (not done or column == done), "Relation change was not confirmed")
         return self.get(task_id)
