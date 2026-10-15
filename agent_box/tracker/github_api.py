@@ -118,7 +118,8 @@ class APIError(TrackerError):
         self.status = status
         self.kind = kind
         transient = rate_limited or status in (0, 408, 500, 502, 503, 504)
-        unknown = write and not rate_limited and (status in (0, 408) or status >= 500)
+        # An unreadable success reply is as unknown as a lost one: the write may have landed.
+        unknown = write and not rate_limited and (status in (0, 408) or status >= 500 or 200 <= status < 300)
         suffix = ""
         if unknown:
             suffix = ". Write outcome unknown; the server may have applied it. Do not repeat the write; reread task state/comments first"

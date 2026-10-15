@@ -206,6 +206,22 @@ class TransportTests(unittest.TestCase):
                 self.client(outcome).graphql(query)
             self.assertEqual((raised.exception.category, raised.exception.retryable), (category, retryable))
 
+    def test_unreadable_success_of_a_mutation_is_an_unknown_outcome(self):
+        """A create whose reply cannot be read may exist; a retry would duplicate it."""
+        def opener(request, timeout):
+            body = io.BytesIO(b"<html>proxy</html>")
+            body.status = 200
+            return body
+        client = api.GitHubClient(api.DEFAULT_API, "t", opener=opener)
+        for query, category in (("mutation CreateIssue {}", "unknown-outcome"), ("query Viewer {}", "provider")):
+            with self.subTest(query=query), self.assertRaises(api.APIError) as raised:
+                client.graphql(query)
+            self.assertEqual(raised.exception.category, category)
+        refused = self.client({"errors": [{"type": "UNPROCESSABLE", "message": "no"}]})
+        with self.assertRaises(api.APIError) as raised:
+            refused.graphql("mutation CreateIssue {}")
+        self.assertEqual(raised.exception.category, "provider")
+
     def test_token_never_reaches_a_message(self):
         with self.assertRaises(api.APIError) as raised:
             self.client(OSError("connection to secret-token failed")).graphql("query Viewer {}")
