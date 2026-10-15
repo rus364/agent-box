@@ -18,7 +18,8 @@ ROOT = Path(__file__).resolve().parent.parent
 
 QUOTE = re.compile(r"^(?: {0,3}> ?)*")
 FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
-CODE_SPAN = re.compile(r"(`+)(?:(?!\1).)+?\1", re.DOTALL)
+# A code span closes only on a backtick run of exactly its opening length.
+CODE_SPAN = re.compile(r"(?<!`)(`+)(?!`)(.+?)(?<!`)\1(?!`)", re.DOTALL)
 TITLE = r"""(?:\s+(?:"[^"]*"|'[^']*'|\([^)]*\)))?"""
 # A destination in angle brackets may contain spaces; a bare one ends at whitespace.
 DESTINATION = r"(?:<([^<>\n]*)>|([^<\s)][^\s)]*))"
@@ -59,16 +60,18 @@ def prose(text: str) -> str:
 
 def slug(heading: str) -> str:
     """GitHub's heading id: rendered text, lowercased, punctuation dropped, spaces to hyphens."""
-    parts = []
+    def rendered(part: str) -> str:
+        part = re.sub(r"!?\[([^\]]*)\](?:\([^)]*\)|\[[^\]]*\])", r"\1", part)
+        part = re.sub(r"<[^>]+>", "", part)
+        # Emphasis delimiters flank words; an underscore inside a word is literal text.
+        return re.sub(r"(?<!\w)[*_]+|[*_]+(?!\w)", "", part)
+
     # Inline code renders verbatim, so only the text around it loses link syntax and HTML tags.
-    for index, part in enumerate(re.split(r"(`+[^`]*?`+)", heading)):
-        if index % 2:
-            parts.append(part.strip("`"))
-        else:
-            part = re.sub(r"!?\[([^\]]*)\]\([^)]*\)", r"\1", part)
-            part = re.sub(r"<[^>]+>", "", part)
-            # Emphasis delimiters flank words; an underscore inside a word is literal text.
-            parts.append(re.sub(r"(?<!\w)[*_]+|[*_]+(?!\w)", "", part))
+    parts, end = [], 0
+    for code in CODE_SPAN.finditer(heading):
+        parts += [rendered(heading[end:code.start()]), code.group(2)]
+        end = code.end()
+    parts.append(rendered(heading[end:]))
     text = "".join(ch for ch in "".join(parts).lower() if ch.isalnum() or ch in "_- ")
     return text.replace(" ", "-")
 
@@ -79,9 +82,9 @@ def anchors(path: Path) -> set[str]:
     occurrences: dict[str, int] = {}
     for raw, visible in zip(text.split("\n"), prose(text).split("\n")):
         # The blanked line says whether this is a heading at all; the raw one keeps its code text.
-        if not HEADING.match(visible):
+        if not HEADING.match(QUOTE.sub("", visible, count=1)):
             continue
-        match = HEADING.match(raw)
+        match = HEADING.match(QUOTE.sub("", raw, count=1))
         # github-slugger: a suffix already taken by another heading is skipped.
         base = result = slug(match.group(2))
         while result in occurrences:
@@ -183,6 +186,20 @@ class LinkCheckerTests(unittest.TestCase):
             "# T\n\n```\n```python\n```\n\n[x](missing.md)\n"
         )})
         self.assertEqual(problems, ["README.md:7: missing.md (no such file)"])
+
+    def test_heading_inside_a_blockquote_is_an_anchor(self):
+        problems = self.check({"README.md": "# T\n\n> ## Setup\n\n[go](#setup)\n"})
+        self.assertEqual(problems, [])
+
+    def test_reference_link_label_does_not_reach_the_slug(self):
+        problems = self.check({"README.md": (
+            "# T\n\n## [Setup][guide]\n\n[guide]: README.md\n\n[a](#setup) [b](#setupguide)\n"
+        )})
+        self.assertEqual(problems, ["README.md:7: #setupguide (no such anchor)"])
+
+    def test_code_span_closes_only_on_an_equal_backtick_run(self):
+        problems = self.check({"README.md": "# T\n\nA `tick [bad](missing.md) `` run.\n"})
+        self.assertEqual(problems, ["README.md:3: missing.md (no such file)"])
 
     def test_links_shown_inside_code_are_not_checked(self):
         problems = self.check({"README.md": (
