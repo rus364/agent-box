@@ -75,6 +75,14 @@ class BoardInitTests(unittest.TestCase):
             tracker.apply_board_plan(plan)
         self.assertIn("late", [o["id"] for o in client.projects[2]["fields"]["nodes"][2]["options"]])
 
+    def test_option_edited_after_the_plan_is_not_overwritten(self):
+        tracker, client = writable(projects={2: project(status=BOARD, priority=P_SCALE)})
+        plan = tracker.board_plan("octo/2")
+        client.projects[2]["fields"]["nodes"][1]["options"][1]["description"] = "edited meanwhile"
+        with self.assertRaisesRegex(TrackerError, "changed since the plan"):
+            tracker.apply_board_plan(plan)
+        self.assertEqual(client.writes, [])
+
     def test_missing_priority_field_is_created_and_a_clashing_one_is_left(self):
         tracker, client = writable(projects={2: project(priority=None)})
         tracker.initialize_boards(["octo/2"], apply=True)

@@ -239,6 +239,7 @@ class GitHubAdapter:
             order += anchored.get(wanted.casefold(), [])
         reorder = [option["id"] for option in order if "id" in option] != [option["id"] for option in existing]
         return {"field": name, "exists": bool(field), "id": field["id"] if field else None,
+                "before": [dict(option) for option in field["options"]] if field else [],
                 "rename": renames, "add": missing, "reorder": reorder, "order": [option["name"] for option in order],
                 "unrecognized": [option["name"] for option in existing if option["name"].casefold() not in known],
                 "options": order}
@@ -251,7 +252,7 @@ class GitHubAdapter:
         return [self.public_plan(self.apply_board_plan(plan)) for plan in plans]
 
     def public_plan(self, plan):
-        return {**plan, "fields": [{key: value for key, value in field.items() if key not in ("options", "id")}
+        return {**plan, "fields": [{key: value for key, value in field.items() if key not in ("options", "id", "before")}
                                    for field in plan["fields"]]}
 
     def apply_board_plan(self, plan):
@@ -265,13 +266,12 @@ class GitHubAdapter:
                 option.setdefault("color", "GRAY")
                 option.setdefault("description", "")
             if field["exists"]:
-                # GitHub replaces the whole list; an option left out takes every card's value
-                # with it. The field is read again right before the write, not from the plan's
-                # snapshot, so an option someone added since is not silently deleted.
+                # GitHub replaces the whole list: an option left out takes every card's value
+                # with it, and a stale one overwrites its owner's edit. The field is read again
+                # right before the write and must still be exactly what the plan was made from.
                 fresh, _ = self.single_select(api.project(self.client, project["owner"], project["number"]),
                                               field["field"])
-                planned = {option["id"] for option in options if option.get("id")}
-                if not fresh or {option["id"] for option in fresh["options"]} != planned:
+                if not fresh or fresh["options"] != field["before"]:
                     raise TrackerError(f"Project {project['id']} {field['field']} options changed since the plan; "
                                        "rerun board init", "conflict")
                 api.mutate(self.client, "UpdateField", fieldId=field["id"], singleSelectOptions=options)
