@@ -20,8 +20,10 @@ QUOTE = re.compile(r"^(?: {0,3}> ?)*")
 FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
 CODE_SPAN = re.compile(r"(`+)(?:(?!\1).)+?\1", re.DOTALL)
 TITLE = r"""(?:\s+(?:"[^"]*"|'[^']*'|\([^)]*\)))?"""
-INLINE_LINK = re.compile(r"!?\[(?:[^\[\]]|\[[^\[\]]*\])*\]\(\s*<?([^)\s>]*)>?" + TITLE + r"\s*\)")
-REFERENCE_DEFINITION = re.compile(r"^ {0,3}\[[^\]]+\]:\s*<?(\S+?)>?" + TITLE + r"\s*$", re.MULTILINE)
+# A destination in angle brackets may contain spaces; a bare one ends at whitespace.
+DESTINATION = r"(?:<([^<>\n]*)>|([^<\s)][^\s)]*))"
+INLINE_LINK = re.compile(r"!?\[(?:[^\[\]]|\[[^\[\]]*\])*\]\(\s*" + DESTINATION + TITLE + r"\s*\)")
+REFERENCE_DEFINITION = re.compile(r"^ {0,3}\[[^\]]+\]:\s*" + DESTINATION + TITLE + r"\s*$", re.MULTILINE)
 HEADING = re.compile(r"^ {0,3}(#{1,6})\s+(.*?)(?:\s+#+)?\s*$")
 EXPLICIT_ANCHOR = re.compile(r"""<a\s[^>]*?(?<![\w-])(?:id|name)\s*=\s*(?:"([^"]+)"|'([^']+)')""", re.IGNORECASE)
 SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
@@ -91,8 +93,11 @@ def broken_links(root: Path) -> list[str]:
     cache: dict[Path, set[str]] = {}
     for source in documentation_files(root):
         text = prose(source.read_text(encoding="utf-8"))
-        targets = [(m.start(1), m.group(1)) for m in INLINE_LINK.finditer(text)]
-        targets += [(m.start(1), m.group(1)) for m in REFERENCE_DEFINITION.finditer(text)]
+        targets = []
+        for pattern in (INLINE_LINK, REFERENCE_DEFINITION):
+            for m in pattern.finditer(text):
+                group = 1 if m.group(1) is not None else 2
+                targets.append((m.start(group), m.group(group)))
         for offset, target in sorted(targets):
             if not target or SCHEME.match(target):
                 continue
@@ -206,6 +211,10 @@ class LinkCheckerTests(unittest.TestCase):
         """GitHub keeps text inside code, so `<NAME>` contributes "name" to the id."""
         problems = self.check({"README.md": "# T\n\n## `--env=<NAME>`\n\n[a](#--envname) [b](#--env)\n"})
         self.assertEqual(problems, ["README.md:5: #--env (no such anchor)"])
+
+    def test_angle_bracket_destination_may_contain_spaces(self):
+        problems = self.check({"README.md": "# T\n\n[g](<docs/user guide.md#missing>)\n", "docs/user guide.md": "# Guide\n"})
+        self.assertEqual(problems, ["README.md:3: docs/user guide.md#missing (no such anchor)"])
 
     def test_external_urls_are_not_checked(self):
         problems = self.check({"README.md": "# T\n\n[gh](https://github.com/x/y#z) [m](mailto:a@b.c)\n"})
