@@ -160,6 +160,13 @@ class FieldWriteTests(unittest.TestCase):
                          ("2", "octo/2", "Backlog", 2, "1"))
         self.assertEqual(tracker.get("1").children, ["2"])
 
+    def test_failure_after_the_issue_exists_names_it(self):
+        """An issue left off the board is invisible to search; the error is the only way back to it."""
+        tracker, client = writable([], fail=["AddItem"])
+        with self.assertRaisesRegex(TrackerError, "Issue #1 .* was created.*Do not create it again") as raised:
+            tracker.create("octo/2", "Lost")
+        self.assertEqual(raised.exception.category, "unknown-outcome")
+
     def test_create_with_an_unwritable_parent_creates_nothing(self):
         tracker, client = writable([issue(1, repo="other/lib", status="Ready")])
         with self.assertRaises(TrackerError):

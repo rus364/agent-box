@@ -21,8 +21,9 @@ PULL_REQUEST_WORKFLOWS = ("Pull request linked to issue", "Pull request merged")
 RELATIONS = ("parent", "child", "blocks", "blocked-by", "related", "duplicate")
 #: Pauses before rereading a write; GitHub applies project workflows a few seconds late.
 CONFIRM_DELAYS = (0, 1, 2, 4)
-#: How long a reopened issue waits for a board workflow its recent close triggered.
-SETTLE = 3
+#: How long a reopened issue waits for a board workflow its recent close triggered:
+#: on the sandbox those workflows landed 2-5 seconds after the write, so this keeps a margin.
+SETTLE = 8
 
 
 def repository_from_url(url, web_host):
@@ -567,18 +568,25 @@ class GitHubAdapter:
         repository = api.repository(self.client, self.repository())
         created = api.mutate(self.client, "CreateIssue", repositoryId=repository["id"], title=title,
                              body=description)["createIssue"]["issue"]
-        item = {"id": api.mutate(self.client, "AddItem", projectId=bound["node"],
-                                 contentId=created["id"])["addProjectV2ItemById"]["item"]["id"]}
-        self.set_option(bound, item, target)
-        if option:
-            self.set_option(bound, item, option)
         task_id = str(created["number"])
-        if parent:
-            self.relate(task_id, "parent", parent)
-        backlog = self.option_name(bound, "Backlog")
-        return self.confirm(task_id, lambda task, column: task.state == "Backlog" and column == backlog
-                            and task.priority == priority,
-                            "New task's Backlog column was not confirmed")
+        try:
+            item = {"id": api.mutate(self.client, "AddItem", projectId=bound["node"],
+                                     contentId=created["id"])["addProjectV2ItemById"]["item"]["id"]}
+            self.set_option(bound, item, target)
+            if option:
+                self.set_option(bound, item, option)
+            if parent:
+                self.relate(task_id, "parent", parent)
+            backlog = self.option_name(bound, "Backlog")
+            return self.confirm(task_id, lambda task, column: task.state == "Backlog" and column == backlog
+                                and task.priority == priority,
+                                "New task's Backlog column was not confirmed")
+        except TrackerError as exc:
+            # The issue exists from here on and may be off the board, where search
+            # cannot find it; a second create would only add a duplicate.
+            raise TrackerError(f"Issue #{task_id} ({self.repository()}) was created, but finishing it failed: {exc}. "
+                               f"Do not create it again: put it on project {bound['id']} in Backlog on GitHub, "
+                               f"then continue with tracker commands on {task_id}", exc.category, exc.retryable) from exc
 
     def option_name(self, bound, state):
         resolved = self.board(bound["id"])
