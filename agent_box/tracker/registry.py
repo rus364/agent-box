@@ -4,7 +4,7 @@ from pathlib import Path
 
 from ..atomicio import read_json
 
-from ..config import TRACKER_PROVIDERS, effective_config, session_account
+from ..config import IMPLEMENTED_TRACKERS, TRACKER_PROVIDERS, effective_config, session_account
 from ..repo_binding import server_identity
 from .core import TrackerError
 
@@ -14,7 +14,7 @@ def make_adapter(binding=None, provider=None, config=None):
     provider = provider or (binding.provider if binding else config.tracker.provider)
     if provider not in TRACKER_PROVIDERS:
         raise TrackerError(f"Unknown tracker provider {provider}; choose {', '.join(TRACKER_PROVIDERS)}")
-    if provider not in ("vikunja", "github"):
+    if provider not in IMPLEMENTED_TRACKERS:
         raise TrackerError(f"Tracker provider '{provider}' is not implemented; configure Vikunja or GitHub with agent-box config",
                            "unsupported")
     if not config.tracker.enabled:

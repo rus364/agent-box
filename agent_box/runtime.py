@@ -37,7 +37,7 @@ from . import k3s
 from . import host_podman, nested_podman
 from . import cloud, kubeconfigs, registries, links
 from .atomicio import atomic_write_json, atomic_write_text, read_json
-from .config import ENV_PREFIX, WORKFLOW_SKILLS, Config, apply_box_policy, load_config, effective_config, session_account
+from .config import ENV_PREFIX, IMPLEMENTED_TRACKERS, WORKFLOW_SKILLS, Config, apply_box_policy, load_config, effective_config, session_account
 from .errors import AgentBoxError
 from .external_config import has_toml_spelling, toml_string
 from .identity import HostIdentity, detect_host_identity
@@ -1093,8 +1093,9 @@ def tracker_warnings(config: Config) -> list[str]:
     if config.tracker.enabled:
         if not config.tracker.connection().usable:
             problems.append("Tracker is enabled but its default connection needs a server URL and token")
-        if config.tracker.provider != "vikunja":
-            problems.append(f"Tracker provider {config.tracker.provider} is not implemented; choose Vikunja")
+        if config.tracker.provider not in IMPLEMENTED_TRACKERS:
+            problems.append(f"Tracker provider {config.tracker.provider} is not implemented; choose "
+                            + " or ".join(name.title() for name in IMPLEMENTED_TRACKERS))
     if config.workflow.enabled and not config.tracker.enabled:
         problems.append("Workflow needs an enabled tracker connection before tracked work")
     return problems

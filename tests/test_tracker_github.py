@@ -84,13 +84,15 @@ class TaskShapeTests(unittest.TestCase):
         moved, _ = adapter([issue(1, status="Ready", item_updated="2026-02-02T00:00:00Z")])
         self.assertNotEqual(first.get("1").revision, moved.get("1").revision)
 
-    def test_partly_returned_relation_list_is_refused(self):
-        """A truncated list would make a blocker silently disappear."""
-        tracker, client = adapter([issue(1, status="Ready", blocked_by=[2])])
-        rendered = client.render
-        client.render = lambda raw: {**rendered(raw), "blockedBy": {"totalCount": 120, "nodes": []}}
-        with self.assertRaisesRegex(TrackerError, "only part of an issue's blockers"):
-            tracker.get("1")
+    def test_long_lists_are_read_to_their_end(self):
+        """A list read in part would make a blocker, a child or the bound card silently vanish."""
+        tracker, client = adapter([issue(1, status="Ready", priority="High", blocked_by=[2, 3, 4], children=[5, 6, 7],
+                                         labels=["a", "b", "c"], on=[9, 2])],
+                                  projects={2: project(), 9: project(number=9)}, list_page=2)
+        task = tracker.get("1")
+        self.assertEqual((task.blockers, task.children, task.labels), (["2", "3", "4"], ["5", "6", "7"], ["a", "b", "c"]))
+        self.assertEqual((task.state, task.priority), ("Ready", 3))
+        self.assertIn("IssueBlockedBy", [operation for operation, _ in client.operations])
 
 
 class ReferenceTests(unittest.TestCase):
@@ -238,6 +240,14 @@ class ConfigurationTests(unittest.TestCase):
             env.pop("AGENT_BOX_RUNTIME_CONFIG", None)
             tracker = make_adapter(Binding("github", api.DEFAULT_API, "octo/2"), config=config)
         self.assertIsInstance(tracker, GitHubAdapter)
+
+    def test_launch_and_apply_do_not_call_github_unimplemented(self):
+        from agent_box.runtime import tracker_warnings
+        for provider, warned in (("github", False), ("jira", True)):
+            config = Config.from_dict({"tracker": {"enabled": True, "provider": provider,
+                                                   "connections": {provider: {"url": "https://jira.example", "token": "t"}}}})
+            with self.subTest(provider=provider):
+                self.assertEqual(any("not implemented" in line for line in tracker_warnings(config)), warned)
 
     def test_repository_comes_from_an_origin_on_the_same_instance(self):
         for url in ("git@github.com:octo/app.git", "https://github.com/octo/app", "ssh://git@github.com/octo/app.git"):

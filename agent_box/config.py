@@ -718,6 +718,8 @@ class ToolsConfig:
 
 
 TRACKER_PROVIDERS = ("vikunja", "jira", "linear", "github")
+#: Providers with an adapter; the rest are reserved names that tracker commands refuse.
+IMPLEMENTED_TRACKERS = ("vikunja", "github")
 AGENT_PROVIDERS = ("codex", "claude")
 AGENT_EFFORTS = {
     "codex": ("default", "low", "medium", "high", "xhigh", "max", "ultra"),

@@ -19,27 +19,29 @@ from .core import TrackerError
 DEFAULT_API = "https://api.github.com"
 
 REF = "number repository { nameWithOwner }"
-ISSUE = f"""
-id number title body state stateReason url updatedAt
-repository {{ nameWithOwner }}
-labels(first: 100) {{ totalCount nodes {{ name }} }}
-assignees(first: 100) {{ totalCount nodes {{ login }} }}
-parent {{ {REF} }}
-subIssues(first: 100) {{ totalCount nodes {{ {REF} }} }}
-blockedBy(first: 100) {{ totalCount nodes {{ {REF} }} }}
-relatesTo(first: 100) {{ totalCount nodes {{ {REF} }} }}
-duplicateOf {{ {REF} }}
-projectItems(first: 50, includeArchived: false) {{
+ITEM = """id updatedAt project { id }
+fieldValues(first: 50) {
   totalCount
-  nodes {{
-    id updatedAt project {{ id }}
-    fieldValues(first: 50) {{
-      totalCount
-      nodes {{ ... on ProjectV2ItemFieldSingleSelectValue {{ name optionId field {{ ... on ProjectV2FieldCommon {{ id }} }} }} }}
-    }}
-  }}
-}}
-"""
+  nodes { ... on ProjectV2ItemFieldSingleSelectValue { name optionId field { ... on ProjectV2FieldCommon { id } } } }
+}"""
+#: An issue's lists, each read to its end: a list read in part would make a
+#: blocker, a child or the card on the bound board silently vanish. Project
+#: items pages are small because each carries its field values, and GitHub
+#: refuses a query that could return more than 500,000 nodes.
+CONNECTIONS = {"labels": (100, "", "name"), "assignees": (100, "", "login"), "subIssues": (100, "", REF),
+               "blockedBy": (100, "", REF), "relatesTo": (100, "", REF),
+               "projectItems": (20, ", includeArchived: false", ITEM)}
+
+
+def connection(name):
+    size, arguments, selection = CONNECTIONS[name]
+    return (f"{name}(first: {size}, after: $after{arguments}) "
+            f"{{ totalCount pageInfo {{ hasNextPage endCursor }} nodes {{ {selection} }} }}")
+
+
+ISSUE = ("id number title body state stateReason url updatedAt repository { nameWithOwner } "
+         f"parent {{ {REF} }} duplicateOf {{ {REF} }} "
+         + " ".join(connection(name).replace(", after: $after", "") for name in CONNECTIONS))
 PROJECT = """
 id number title url closed
 owner { ... on User { login } ... on Organization { login } }
@@ -69,6 +71,9 @@ QUERIES = {
     nodes {{ type content {{ __typename ... on Issue {{ {ISSUE} }} }} }}
   }} }} }}
 }}""",
+    **{"Issue" + name[0].upper() + name[1:]:
+       f"query Issue{name[0].upper() + name[1:]}($id: ID!, $after: String) {{ node(id: $id) {{ ... on Issue {{ {connection(name)} }} }} }}"
+       for name in CONNECTIONS},
     "Comments": """query Comments($owner: String!, $name: String!, $number: Int!, $after: String) {
   repository(owner: $owner, name: $name) { issue(number: $number) { comments(first: 100, after: $after) {
     pageInfo { hasNextPage endCursor }
@@ -196,9 +201,9 @@ class GitHubClient:
 
 
 def complete(connection, what):
-    """Nodes of a first-page connection, refusing a list GitHub cut short.
+    """Nodes of a list GitHub caps below one page, refusing one it cut short anyway.
 
-    A relation list read in part would make a blocker or a child silently vanish.
+    A project item's field values are bounded by the project's limit of 50 fields.
     """
     nodes = (connection or {}).get("nodes") or []
     if (connection or {}).get("totalCount", len(nodes)) > len(nodes):
@@ -206,14 +211,29 @@ def complete(connection, what):
     return nodes
 
 
+def all_nodes(client, raw, name):
+    """Every node of one of an issue's lists, following its cursor past the first page."""
+    found = raw.get(name) or {}
+    nodes, info = list(found.get("nodes") or []), found.get("pageInfo") or {}
+    operation = "Issue" + name[0].upper() + name[1:]
+    for _ in range(10000):
+        if not info.get("hasNextPage"):
+            return nodes
+        data = client.graphql(QUERIES[operation], {"id": raw["id"], "after": info.get("endCursor")})
+        found = ((data.get("node") or {}).get(name)) or {}
+        nodes.extend(found.get("nodes") or [])
+        info = found.get("pageInfo") or {}
+    raise APIError(200, f"pagination of an issue's {name} did not converge")
+
+
 def ref(node):
     return (node["repository"]["nameWithOwner"], int(node["number"])) if node else None
 
 
-def issue_record(raw):
+def issue_record(client, raw):
     """A GraphQL issue as plain data; everything the adapter reads comes from here."""
     items = []
-    for item in complete(raw.get("projectItems"), "an issue's project items"):
+    for item in all_nodes(client, raw, "projectItems"):
         values = {}
         for value in complete(item.get("fieldValues"), "a project item's field values"):
             field = (value or {}).get("field") or {}
@@ -225,12 +245,12 @@ def issue_record(raw):
             "title": raw.get("title") or "", "body": raw.get("body") or "", "state": raw["state"],
             "state_reason": raw.get("stateReason"), "url": raw.get("url") or "",
             "updated_at": raw.get("updatedAt") or "",
-            "labels": [label["name"] for label in complete(raw.get("labels"), "an issue's labels")],
-            "assignees": [user["login"] for user in complete(raw.get("assignees"), "an issue's assignees")],
+            "labels": [label["name"] for label in all_nodes(client, raw, "labels")],
+            "assignees": [user["login"] for user in all_nodes(client, raw, "assignees")],
             "parent": ref(raw.get("parent")),
-            "children": [ref(node) for node in complete(raw.get("subIssues"), "an issue's sub-issues")],
-            "blocked_by": [ref(node) for node in complete(raw.get("blockedBy"), "an issue's blockers")],
-            "related": [ref(node) for node in complete(raw.get("relatesTo"), "an issue's related issues")],
+            "children": [ref(node) for node in all_nodes(client, raw, "subIssues")],
+            "blocked_by": [ref(node) for node in all_nodes(client, raw, "blockedBy")],
+            "related": [ref(node) for node in all_nodes(client, raw, "relatesTo")],
             "duplicate_of": ref(raw.get("duplicateOf")), "items": items}
 
 
@@ -291,13 +311,13 @@ def issue(client, repository, number):
     raw = (data.get("repository") or {}).get("issue")
     if not raw:
         raise APIError(404, f"issue {repository}#{number} not found", kind="NOT_FOUND")
-    return issue_record(raw)
+    return issue_record(client, raw)
 
 
 def project_issues(client, project_node, query=""):
     """Issues on a project's board; draft items and pull requests are not issues."""
     nodes = pages(client, "Items", {"project": project_node, "query": query or None}, ("node", "items"), "project items")
-    return [issue_record(node["content"]) for node in nodes
+    return [issue_record(client, node["content"]) for node in nodes
             if node.get("type") == "ISSUE" and (node.get("content") or {}).get("__typename") == "Issue"]
 
 
