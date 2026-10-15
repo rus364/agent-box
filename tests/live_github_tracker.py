@@ -41,7 +41,9 @@ def run(project, repository, token):
         subprocess.run(["gh", "repo", "clone", repository, str(root), "--", "-q"], check=True)
         write_setup(root, binding)
         git(root, "add", "-A")
-        git(root, "commit", "-q", "-m", f"Bind the sandbox for live check {tag}")
+        # An earlier run already landed the same binding on the sandbox's default branch.
+        if subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=root).returncode:
+            git(root, "commit", "-q", "-m", f"Bind the sandbox for live check {tag}")
         parent = tracker.create(project, f"Live cycle {tag}", "- [x] parent acceptance\n")
         child = tracker.create(project, f"Live cycle {tag} child", "- [x] child acceptance\n", parent=parent.id)
         for task in (parent, child):
