@@ -14,7 +14,7 @@ from agent_box import notify
 class NotifyLogicTests(unittest.TestCase):
     def _codex_requests(
         self, detail: str, *, responses: list[object] | None = None,
-        project: str = "infrado",
+        project: str = "example",
     ) -> list[tuple[str, dict]]:
         """Run the real Codex notifier and capture serialized Telegram requests."""
         sent: list[tuple[str, dict]] = []
@@ -45,7 +45,7 @@ class NotifyLogicTests(unittest.TestCase):
             }))
         return sent
 
-    def _codex_oversized_notice(self, project: str = "infrado") -> str:
+    def _codex_oversized_notice(self, project: str = "example") -> str:
         return (
             f"✅ <b>Codex · {project}</b>\nTurn finished\n"
             "Full report was too large for bounded Telegram delivery."
@@ -276,7 +276,7 @@ class NotifyLogicTests(unittest.TestCase):
                   "- [LOW] tests/test_notify.py:12 — Second issue.")
         sent = self._codex_requests(report, responses=[b'{"ok": false}'])
         rich = sent[0][1]["rich_message"]["markdown"]
-        self.assertEqual(rich, "✅ **Codex · infrado**\nTurn finished\n\n" + notify.sanitize_rich_markdown(report))
+        self.assertEqual(rich, "✅ **Codex · example**\nTurn finished\n\n" + notify.sanitize_rich_markdown(report))
         self.assertIn("Verdict: NEEDS_WORK", rich)
         self.assertNotIn("<b>Issue</b>", rich)
         self.assertNotIn("tg://", rich)
@@ -314,7 +314,7 @@ class NotifyLogicTests(unittest.TestCase):
             "chat_id": "chat",
             "rich_message": {
                 "markdown": (
-                    "✅ **Codex · infrado**\nTurn finished\n\n"
+                    "✅ **Codex · example**\nTurn finished\n\n"
                     "## Quality Audit — Standards axis\n\n"
                     "### Summary\n\n"
                     "- **Ship:** ✅ Ship\n"
@@ -463,7 +463,7 @@ class NotifyLogicTests(unittest.TestCase):
             signal.signal(signal.SIGALRM, previous_handler)
 
     def test_codex_first_line_near_limit_fence_falls_back_without_emitting_it_partially(self):
-        prefix = "✅ **Codex · infrado**\nTurn finished\n\n"
+        prefix = "✅ **Codex · example**\nTurn finished\n\n"
         marker = "```"
         opener = marker + "x" * (notify.TELEGRAM_RICH_TEXT_LIMIT - len(marker) - 5)
         trusted_literal = '<tg-button type="copy_text" text="x">Copy</tg-button>'
@@ -536,7 +536,7 @@ class NotifyLogicTests(unittest.TestCase):
 
     def test_codex_allows_exactly_eight_planned_rich_chunks(self):
         rich_chunk_limit = 8
-        prefix = "✅ **Codex · infrado**\nTurn finished\n\n"
+        prefix = "✅ **Codex · example**\nTurn finished\n\n"
         detail = "x" * (
             notify.TELEGRAM_RICH_TEXT_LIMIT - len(prefix)
             + (rich_chunk_limit - 1) * notify.TELEGRAM_RICH_TEXT_LIMIT
@@ -553,7 +553,7 @@ class NotifyLogicTests(unittest.TestCase):
 
     def test_codex_ninth_planned_rich_chunk_falls_back_before_any_rich_send(self):
         rich_chunk_limit = 8
-        prefix = "✅ **Codex · infrado**\nTurn finished\n\n"
+        prefix = "✅ **Codex · example**\nTurn finished\n\n"
         detail = "x" * (
             notify.TELEGRAM_RICH_TEXT_LIMIT - len(prefix)
             + rich_chunk_limit * notify.TELEGRAM_RICH_TEXT_LIMIT
@@ -572,7 +572,7 @@ class NotifyLogicTests(unittest.TestCase):
 
     def test_codex_allows_exactly_eight_planned_plain_messages(self):
         plain_message_limit = 8
-        visible_header = "✅ Codex · infrado\nTurn finished\n"
+        visible_header = "✅ Codex · example\nTurn finished\n"
         inline_code = "`x`"
         detail = "x" * (
             notify.TELEGRAM_TEXT_LIMIT - len(visible_header)
@@ -585,12 +585,12 @@ class NotifyLogicTests(unittest.TestCase):
         self.assertEqual([method for method, _body in sent], ["sendMessage"] * plain_message_limit)
         self.assertEqual(
             "".join(body["text"] for _method, body in sent),
-            "✅ <b>Codex · infrado</b>\nTurn finished\n" + notify.html.escape(detail),
+            "✅ <b>Codex · example</b>\nTurn finished\n" + notify.html.escape(detail),
         )
 
     def test_codex_ninth_planned_plain_message_uses_compact_notice(self):
         plain_message_limit = 8
-        visible_header = "✅ Codex · infrado\nTurn finished\n"
+        visible_header = "✅ Codex · example\nTurn finished\n"
         inline_code = "`x`"
         detail = "x" * (
             notify.TELEGRAM_TEXT_LIMIT - len(visible_header)
@@ -629,7 +629,7 @@ class NotifyLogicTests(unittest.TestCase):
         )
 
     def test_codex_partial_rich_failure_sends_one_compact_notice_without_resend(self):
-        prefix = "✅ **Codex · infrado**\nTurn finished\n\n"
+        prefix = "✅ **Codex · example**\nTurn finished\n\n"
         detail = "x" * (
             notify.TELEGRAM_RICH_TEXT_LIMIT - len(prefix)
             + 2 * notify.TELEGRAM_RICH_TEXT_LIMIT
@@ -644,12 +644,12 @@ class NotifyLogicTests(unittest.TestCase):
             ["sendRichMessage", "sendRichMessage", "sendRichMessage", "sendMessage"],
         )
         self.assertEqual(sent[-1][1]["text"], (
-            "✅ <b>Codex · infrado</b>\nTurn finished\n"
+            "✅ <b>Codex · example</b>\nTurn finished\n"
             "Some of the rich report was delivered; the remainder could not be sent."
         ))
 
     def test_codex_oversized_inline_code_line_falls_back_without_exposing_literal_html(self):
-        prefix = "✅ **Codex · infrado**\nTurn finished\n\n"
+        prefix = "✅ **Codex · example**\nTurn finished\n\n"
         trusted_literal = '<tg-button type="copy_text" text="x">Copy</tg-button>'
         detail = "x" * (notify.TELEGRAM_RICH_TEXT_LIMIT - len(prefix) - 1)
         detail += f"`{trusted_literal}`"
@@ -673,7 +673,7 @@ class NotifyLogicTests(unittest.TestCase):
         self.assertEqual(sent[1][1], {
             "chat_id": "chat",
             "text": (
-                "✅ <b>Codex · infrado</b>\nTurn finished\n"
+                "✅ <b>Codex · example</b>\nTurn finished\n"
                 "## Report\n\n- **unsafe &lt;b&gt;tag&lt;/b&gt; &amp; useful**"
             ),
             "parse_mode": "HTML",
@@ -681,7 +681,7 @@ class NotifyLogicTests(unittest.TestCase):
         })
 
     def test_codex_rich_messages_split_at_documented_limit(self):
-        prefix = "✅ **Codex · infrado**\nTurn finished\n\n"
+        prefix = "✅ **Codex · example**\nTurn finished\n\n"
         detail = "a" * (notify.TELEGRAM_RICH_TEXT_LIMIT - len(prefix) + 1)
 
         sent = self._codex_requests(detail)
@@ -693,7 +693,7 @@ class NotifyLogicTests(unittest.TestCase):
         self.assertEqual(chunks[1], "a")
 
     def test_codex_exact_rich_limit_stays_in_one_unicode_safe_request(self):
-        prefix = "✅ **Codex · infrado**\nTurn finished\n\n"
+        prefix = "✅ **Codex · example**\nTurn finished\n\n"
         detail = "🙂" * (notify.TELEGRAM_RICH_TEXT_LIMIT - len(prefix))
 
         sent = self._codex_requests(detail)
@@ -704,7 +704,7 @@ class NotifyLogicTests(unittest.TestCase):
         self.assertEqual(markdown, prefix + detail)
 
     def test_codex_split_closes_and_reopens_fenced_code(self):
-        prefix = "✅ **Codex · infrado**\nTurn finished\n\n"
+        prefix = "✅ **Codex · example**\nTurn finished\n\n"
         detail = "```text\n" + "x" * notify.TELEGRAM_RICH_TEXT_LIMIT + "\n```"
 
         sent = self._codex_requests(detail)
@@ -718,7 +718,7 @@ class NotifyLogicTests(unittest.TestCase):
         self.assertTrue(chunks[-1].endswith("\n```"))
 
     def test_codex_plain_fallback_splits_at_regular_message_limit(self):
-        visible_header = "✅ Codex · infrado\nTurn finished\n"
+        visible_header = "✅ Codex · example\nTurn finished\n"
         detail = "🙂" * (notify.TELEGRAM_TEXT_LIMIT - len(visible_header) + 1)
 
         sent = self._codex_requests(detail, responses=[b'{"ok": false}'])

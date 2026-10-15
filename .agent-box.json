@@ -1,11 +1,11 @@
 {
   "tracker": {
-    "provider": "vikunja",
-    "project": "84",
-    "recursive": true,
+    "provider": "github",
+    "project": "rus364/2",
+    "recursive": false,
     "connections": {
-      "vikunja": {
-        "url": "http://pm.infrado.org:3456"
+      "github": {
+        "url": "https://api.github.com"
       }
     }
   },
