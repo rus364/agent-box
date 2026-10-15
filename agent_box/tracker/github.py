@@ -242,7 +242,11 @@ class GitHubAdapter:
         return self.normalize(api.issue(self.client, repository, number))
 
     def resolve(self, reference, project, recursive=False, *, title=False, canonical=False):
-        """Visible numbers are canonical IDs here, so a bare number has one reading."""
+        """Visible numbers are canonical IDs here, so a bare number has one reading.
+
+        It names an issue of this repository; only the board check differs between
+        a canonical ID, readable anywhere, and a visible number on the board.
+        """
         text = reference.strip()
         if not text:
             raise TrackerError("Pass a visible task number, exact title or task URL")
@@ -262,7 +266,9 @@ class GitHubAdapter:
         number = re.fullmatch(r"#?([0-9]+)", text) if not title else None
         if number:
             task = self.found(self.repository(), int(number[1]))
-            if task.project not in scope:
+            # A bare number given as a canonical ID reads like any other ID, on
+            # the board or not; #N and resolve still name a card on the board.
+            if task.project not in scope and not (canonical and not text.startswith("#")):
                 raise TrackerError(f"Issue #{number[1]} is not on project {', '.join(sorted(scope))}", "not-found")
             return task
         matches = [task for task in self.search(project, text) if task.title == text]

@@ -113,6 +113,12 @@ class ReferenceTests(unittest.TestCase):
         """IDs are the visible numbers, so tracker get needs no #N to disambiguate."""
         self.assertEqual(self.resolve("7", canonical=True).id, "7")
 
+    def test_canonical_id_of_an_issue_off_the_board_still_reads(self):
+        """A blocker off the board is returned as ID 8; tracker get 8 must then read it."""
+        self.assertEqual(self.resolve("8", canonical=True).project, "")
+        with self.assertRaises(TrackerError):
+            self.resolve("#8", canonical=True)
+
     def test_other_repository_reads_by_canonical_id_but_not_by_url(self):
         self.assertEqual(self.resolve("other/lib#3").id, "other/lib#3")
         with self.assertRaisesRegex(TrackerError, "outside the selected project scope"):
