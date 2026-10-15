@@ -235,7 +235,8 @@ In each Codex/Claude candidate of a role's `models` or a worker/reviewer
 built-in models and configured models from enabled API connections, labeled
 with their API. Selecting a row saves API and model together; project overrides
 pin both, and resetting the model restores inheritance for both. Custom IDs can
-be entered for any enabled API. An empty model disables that candidate. For example, a project may select this global connection:
+be entered for any enabled API. Every candidate needs a model; to stop using one,
+remove the candidate. For example, a project may select this global connection:
 
 ```json
 {

@@ -22,7 +22,7 @@ FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
 CODE_SPAN = re.compile(r"(?<!`)(`+)(?!`)(.+?)(?<!`)\1(?!`)", re.DOTALL)
 TITLE = r"""(?:\s+(?:"[^"]*"|'[^']*'|\([^)]*\)))?"""
 # A destination in angle brackets may contain spaces; a bare one ends at whitespace.
-DESTINATION = r"(?:<([^<>\n]*)>|([^<\s)][^\s)]*))"
+DESTINATION = r"(?:<([^<>\n]*)>|((?:[^<\s()]|\([^\s()]*\))(?:[^\s()]|\([^\s()]*\))*))"
 INLINE_LINK = re.compile(r"!?\[(?:[^\[\]]|\[[^\[\]]*\])*\]\(\s*" + DESTINATION + TITLE + r"\s*\)")
 REFERENCE_DEFINITION = re.compile(r"^ {0,3}\[[^\]]+\]:\s*" + DESTINATION + TITLE + r"\s*$", re.MULTILINE)
 HEADING_LINK = re.compile(r"!?\[((?:[^\[\]]|\[[^\[\]]*\])*)\](?:\([^)]*\)|\[[^\]]*\])")
@@ -270,6 +270,13 @@ class LinkCheckerTests(unittest.TestCase):
     def test_angle_bracket_destination_may_contain_spaces(self):
         problems = self.check({"README.md": "# T\n\n[g](<docs/user guide.md#missing>)\n", "docs/user guide.md": "# Guide\n"})
         self.assertEqual(problems, ["README.md:3: docs/user guide.md#missing (no such anchor)"])
+
+    def test_destination_may_contain_balanced_parentheses(self):
+        problems = self.check({"README.md": "# T\n\n[a](docs/guide(v2).md) [b][g]\n\n[g]: docs/other(v2).md\n"})
+        self.assertEqual(problems, [
+            "README.md:3: docs/guide(v2).md (no such file)",
+            "README.md:5: docs/other(v2).md (no such file)",
+        ])
 
     def test_external_urls_are_not_checked(self):
         problems = self.check({"README.md": "# T\n\n[gh](https://github.com/x/y#z) [m](mailto:a@b.c)\n"})

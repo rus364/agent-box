@@ -48,9 +48,13 @@ implement and test in one go. Small work stays one task with a checklist.
    commits, validates, gets the review the policy asks for, and finishes it: the
    subtask merges into the parent branch and becomes Done.
 4. **Parent review.** When all subtasks are Done, the complete parent diff is
-   validated and reviewed, and the parent moves to In review.
+   validated and reviewed, and `finish` moves the parent to In review.
 5. **Landing** merges the parent into the base, by a local fast-forward or a
    GitHub pull request, and marks it Done.
+
+With a [cloud reviewer](#cloud-review-in-the-pull-request) the parent's review
+happens in its pull request, so the order is validate → `finish` → `pr` →
+`review` → `land merge`.
 
 The commands behind those steps:
 
@@ -169,7 +173,8 @@ SKIPPED, INCONCLUSIVE and provider errors are not PASS.
 ### Cloud review in the pull request
 
 With `workflow.review.github_provider` set to `codex` or `claude` in GitHub
-merge mode, the parent's final review happens in its pull request:
+merge mode, the parent's final review happens in its pull request. `finish`
+then asks only for validation, `ab-pr` opens the pull request, and
 `workflow review PARENT` posts one `@codex review` or `@claude review` request
 for the exact head, and every later run reads the bot's answer back into the
 same budget. Subtasks keep their local rounds. Silence is never acceptance:
