@@ -21,6 +21,8 @@ PULL_REQUEST_WORKFLOWS = ("Pull request linked to issue", "Pull request merged")
 RELATIONS = ("parent", "child", "blocks", "blocked-by", "related", "duplicate")
 #: Pauses before rereading a write; GitHub applies project workflows a few seconds late.
 CONFIRM_DELAYS = (0, 1, 2, 4)
+#: How long a reopened issue waits for a board workflow its recent close triggered.
+SETTLE = 3
 
 
 def repository_from_url(url, web_host):
@@ -505,7 +507,8 @@ class GitHubAdapter:
             raw, item, bound = self.writable(task.id)
             status = self.option_name(bound, state)
             target = self.choice(bound, "Status", status)
-            if state != "Done" and raw["state"] == "CLOSED":
+            reopened = state != "Done" and raw["state"] == "CLOSED"
+            if reopened:
                 api.mutate(self.client, "ReopenIssue", issueId=raw["id"])
             self.set_option(bound, item, target)
             # Closing without implementation also corrects an issue the board
@@ -514,10 +517,17 @@ class GitHubAdapter:
                 reason = "NOT_PLANNED" if unimplemented else "COMPLETED"
                 api.mutate(self.client, "CloseIssue", issueId=raw["id"], stateReason=reason)
                 expected = (CLOSE_REASONS.get(reason),)
+            def landed(current, column):
+                return (current.state == state and column == status
+                        and (expected is None or current.state_reason == expected[0]))
             try:
-                return self.confirm(task.id, lambda current, column: current.state == state and column == status
-                                    and (expected is None or current.state_reason == expected[0]),
-                                    f"State transition not confirmed: expected {state}")
+                found = self.confirm(task.id, landed, f"State transition not confirmed: expected {state}")
+                if reopened and not attempt:
+                    # The close this undoes may still have Item closed pending; it lands
+                    # within seconds, so one settled reread catches it.
+                    self.sleep(SETTLE)
+                    found = self.confirm(task.id, landed, f"State transition not confirmed: expected {state}")
+                return found
             except TrackerError:
                 if attempt:
                     raise

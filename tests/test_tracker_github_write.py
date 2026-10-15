@@ -82,6 +82,19 @@ class LifecycleWriteTests(unittest.TestCase):
         task = tracker.set_state(tracker.get("1"), "Ready")
         self.assertEqual((task.state, client.issues[("octo/app", 1)]["status"]), ("Ready", "Ready"))
 
+    def test_reopening_waits_for_the_close_workflow_it_may_still_trigger(self):
+        """Item closed from a quick close can land after Ready was already confirmed."""
+        tracker, client = writable([issue(1, status="Done", state="CLOSED", reason="COMPLETED")])
+        reopen = client.op_ReopenIssue
+
+        def late_item_closed(**values):
+            result = reopen(**values)
+            client.pending.append([1, lambda: client.issues[("octo/app", 1)].update(status="Done")])
+            return result
+        client.op_ReopenIssue = late_item_closed
+        task = tracker.set_state(tracker.get("1"), "Ready")
+        self.assertEqual((task.state, client.issues[("octo/app", 1)]["status"]), ("Ready", "Ready"))
+
     def test_a_write_that_never_shows_is_reported(self):
         tracker, _ = writable([issue(1, status="Ready")], lag=10)
         with self.assertRaisesRegex(TrackerError, "not confirmed"):

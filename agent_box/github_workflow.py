@@ -188,12 +188,16 @@ CLOSING = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b\s*:?\s+"
                      r"(?:[\w.-]+/[\w.-]+#\d+|#\d+|https?://\S+/issues/\d+)", re.IGNORECASE)
 
 
-def closing_references(adapter, body_file):
-    """Closing keywords a PR body may not carry; only a GitHub Projects tracker owns those issues."""
+def closing_references(adapter, body):
+    """Closing keywords a PR body may not carry; only a GitHub Projects tracker owns those issues.
+
+    ``body`` is the text, or a callable reading it, so a tracker that does not
+    care never opens the file.
+    """
     from .tracker.github import GitHubAdapter
     if not isinstance(adapter, GitHubAdapter):
         return []
-    return [match.group(0) for match in CLOSING.finditer(Path(body_file).read_text(encoding="utf-8"))]
+    return [match.group(0) for match in CLOSING.finditer(body() if callable(body) else body or "")]
 
 
 def _operate(args, root, config, adapter, task, parent, info, saved, tasks):
@@ -208,7 +212,7 @@ def _operate(args, root, config, adapter, task, parent, info, saved, tasks):
     if args.command == "pr":
         if task.state != "In review" or not saved.get("validation"):
             raise AgentBoxError("Finish parent acceptance and validation before opening a PR")
-        refused = closing_references(adapter, args.body_file)
+        refused = closing_references(adapter, lambda: Path(args.body_file).read_text(encoding="utf-8"))
         if refused:
             raise AgentBoxError("The PR body would close issues on merge (" + ", ".join(refused) + "); with a GitHub "
                                 "Projects tracker workflow closes tasks itself. Refer to the task without a closing keyword")
@@ -216,9 +220,14 @@ def _operate(args, root, config, adapter, task, parent, info, saved, tasks):
             raise AgentBoxError("All subtasks must be integrated before opening the parent PR")
         gw.push_parent(root, info["branch"], info["base"])
         existing = gh(root, "pr", "list", "--repo", repo, "--head", info["branch"], "--base", info["base"],
-                      "--state", "open", "--json", "number,url", json_output=True)
+                      "--state", "open", "--json", "number,url,body", json_output=True)
         if len(existing) > 1:
             raise AgentBoxError("Multiple matching PRs; select the intended PR explicitly")
+        # A reused PR keeps its own body, so that is the body a merge would act on.
+        refused = closing_references(adapter, existing[0].get("body") if existing else "")
+        if refused:
+            raise AgentBoxError(f"PR {existing[0]['url']} would close issues on merge (" + ", ".join(refused) + "); "
+                                "remove the closing keywords from its body; agent-box does not rewrite a PR body")
         if not existing:
             command = ["pr", "create", "--repo", repo, "--base", info["base"], "--head", info["branch"],
                        "--title", args.title, "--body-file", str(Path(args.body_file).resolve())]

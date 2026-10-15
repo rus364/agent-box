@@ -28,11 +28,29 @@ class ClosingKeywordTests(unittest.TestCase):
     def test_closing_keywords_are_refused_only_for_a_github_tracker(self):
         """A linked PR moves the card back to In progress and its merge closes the task before finish."""
         tracker, _ = writable()
-        body = self.body("Closes #12. Fixes: octo/app#3. resolved https://github.com/octo/app/issues/9. Refs #4.")
+        body = "Closes #12. Fixes: octo/app#3. resolved https://github.com/octo/app/issues/9. Refs #4."
         self.assertEqual(closing_references(tracker, body),
                          ["Closes #12", "Fixes: octo/app#3", "resolved https://github.com/octo/app/issues/9"])
-        self.assertEqual(closing_references(SimpleNamespace(), "/not/read"), [])
-        self.assertEqual(closing_references(tracker, self.body("Implements task #12; closes the gap in setup.")), [])
+        self.assertEqual(closing_references(SimpleNamespace(), lambda: self.fail("read for another tracker")), [])
+        self.assertEqual(closing_references(tracker, "Implements task #12; closes the gap in setup."), [])
+
+
+    def test_a_reused_pull_request_is_checked_by_its_own_body(self):
+        """workflow pr keeps an existing PR's body, so that body is the one a merge acts on."""
+        from agent_box import github_workflow
+        tracker, _ = writable([issue(1, status="In review")])
+        task = tracker.get("1")
+        config = Config()
+        config.credentials.github.token = True
+        args = SimpleNamespace(command="pr", body_file=self.body("Implements #1."), title="T", draft=False)
+        existing = [{"number": 5, "url": "https://github.com/octo/app/pull/5", "body": "Closes #1"}]
+        with patch.object(github_workflow, "gh", return_value=existing), \
+                patch.object(github_workflow.gw, "github_origin", return_value="octo/app"), \
+                patch.object(github_workflow.gw, "current_branch", return_value="ab/1-x"), \
+                patch.object(github_workflow.gw, "push_parent"):
+            with self.assertRaisesRegex(Exception, "pull/5 would close issues"):
+                github_workflow._operate(args, Path("/repo"), config, tracker, task, task,
+                                         {"branch": "ab/1-x", "base": "main"}, {"validation": {"exit": 0}}, [task])
 
 
 class DraftTests(unittest.TestCase):
