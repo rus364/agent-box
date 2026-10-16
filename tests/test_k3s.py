@@ -47,6 +47,8 @@ class FakePodman:
     def __init__(self, *, ready=True, dies=False):
         self.container = None  # {"running": bool, "spec": str}
         self.networks, self.volumes = set(), set()
+        # The rancher/k3s image declares VOLUME paths beside the data volume.
+        self.anonymous = set()
         self.ready, self.dies = ready, dies
         self.calls = []
         self.controllers = ["cpuset", "cpu", "io", "memory", "pids"]
@@ -89,6 +91,7 @@ class FakePodman:
             case ["create", *rest]:
                 spec = next(a.split("=", 2)[2] for a in rest if a.startswith(f"--label={k3s.SPEC_LABEL}="))
                 self.container = {"running": False, "spec": spec}
+                self.anonymous |= {f"{spec}-{path}" for path in ("log", "cni", "kubelet")}
                 return ok()
             case ["start", _]:
                 self.container["running"] = not self.dies
@@ -96,8 +99,10 @@ class FakePodman:
             case ["stop", *_]:
                 self.container["running"] = False
                 return ok()
-            case ["rm", *_]:
+            case ["rm", *flags, _]:
                 self.container = None
+                if "--volumes" in flags:
+                    self.anonymous.clear()
                 return ok()
             case ["exec", _, "kubectl", "get", "nodes", *_]:
                 self.probe_timeouts.append(_["timeout"])
@@ -434,6 +439,18 @@ class StopAndRemoveTests(SidecarTestCase):
         k3s.ensure(WID, K3sConfig(enabled=True), self.state, self.root)
         k3s.remove(WID, self.state, data=False)
         self.assertEqual((self.podman.container, self.podman.networks, self.podman.volumes), (None, set(), {NAME}))
+
+    def test_removing_or_recreating_the_sidecar_leaves_no_anonymous_volume(self):
+        """The image's VOLUME paths die with each container; Podman keeps them unless asked.
+
+        Every throwaway-cluster session recreated the sidecar, and 537 empty
+        volumes had piled up on a developer host before this was noticed.
+        """
+        k3s.ensure(WID, K3sConfig(enabled=True), self.state, self.root)
+        k3s.ensure(WID, K3sConfig(enabled=True, traefik=True), self.state, self.root)
+        k3s.remove(WID, self.state, data=False)
+        self.assertEqual(self.podman.anonymous, set())
+        self.assertEqual(self.podman.volumes, {NAME}, "the cluster's named data volume is not anonymous")
 
     def test_absent_objects_are_not_an_error(self):
         self.assertFalse(k3s.stop(WID, K3sConfig(enabled=True), self.state))

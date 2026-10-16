@@ -240,6 +240,17 @@ def _owned_exists(kind: str, workspace_id: str) -> bool:
     return True
 
 
+def _remove_container(resource: str) -> None:
+    """Remove the sidecar with the anonymous volumes of the image's ``VOLUME`` paths.
+
+    ``rancher/k3s`` declares ``/var/log``, ``/var/lib/cni`` and
+    ``/var/lib/kubelet`` as volumes; a new container never reuses them, so
+    without ``--volumes`` every recreation leaves three behind. The named data
+    volume is not anonymous and stays.
+    """
+    _checked("rm", "--force", "--volumes", resource)
+
+
 def _ensure_labeled(kind: str, workspace_id: str) -> None:
     if not _owned_exists(kind, workspace_id):
         _checked(kind, "create", f"--label={LABEL}={workspace_id}", name(workspace_id))
@@ -275,7 +286,7 @@ def ensure(workspace_id: str, k3s: K3sConfig, state_dir: Path, project_root: Pat
     container = inspect(workspace_id)
     labels = (container or {}).get("Config", {}).get("Labels") or {}
     if container is not None and labels.get(SPEC_LABEL) != wanted:
-        _checked("rm", "--force", resource)
+        _remove_container(resource)
         container = None
     if container is None:
         check_host()
@@ -369,7 +380,7 @@ def remove(workspace_id: str, state_dir: Path | None, *, data: bool) -> None:
     """
     resource = name(workspace_id)
     if inspect(workspace_id) is not None:
-        _checked("rm", "--force", resource)
+        _remove_container(resource)
     if _owned_exists("network", workspace_id):
         _checked("network", "rm", resource)
     if data:
