@@ -127,7 +127,7 @@ class HostGitDependencyTests(unittest.TestCase):
                  mock.patch.object(runtime, "launch_in_workspace_container", return_value=0), \
                  mock.patch.object(runtime, "warn") as warn, \
                  self.assertRaises(SystemExit):
-                runtime.runtime_main(["claude"], root)
+                runtime.runtime_main(["claude"], runtime.PACKAGE_ROOT)
         self.assertTrue(any("git not found" in call.args[0] for call in warn.call_args_list))
 
 

@@ -402,7 +402,7 @@ class DoctorLaunchTests(IsolatedRuntimeTest):
                  mock.patch.object(runtime, "workspace_container_spec"), \
                  mock.patch.object(runtime, "launch_in_workspace_container", side_effect=fake_launch), \
                  self.assertRaises(SystemExit):
-                runtime.runtime_main(["doctor"], Path.cwd())
+                runtime.runtime_main(["doctor"], runtime.PACKAGE_ROOT)
         return captured["env"]
 
     def test_doctor_is_told_the_browser_is_off(self):

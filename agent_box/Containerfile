@@ -282,7 +282,7 @@ RUN set -eux; \
 #
 # File capabilities avoid setuid-root helpers and keep no-new-privileges usable.
 # A dedicated workspace volume lets inner native overlay work without FUSE.
-COPY agent_box/nested_podman.py /tmp/agent-box-nested-podman.py
+COPY nested_podman.py /tmp/agent-box-nested-podman.py
 RUN --mount=type=cache,id=agent-box-apt,target=/var/cache/apt,sharing=locked \
     set -eux; \
     if [ "${TOOLS_PODMAN}" = "1" ]; then \

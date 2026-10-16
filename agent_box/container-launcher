@@ -1,0 +1,9 @@
+#!/usr/bin/env python3
+"""Container entry point: its Python and library belong to the box."""
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib/agent-box"))
+from agent_box.cli import main
+
+main()

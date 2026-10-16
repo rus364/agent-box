@@ -245,10 +245,6 @@ class LaunchAppliesNothingTests(unittest.TestCase):
 
     def _launch(self, config: Config, tmp: Path):
         workspace = Workspace(tmp, tmp)
-        # runtime_main resolves the Containerfile out of the checkout it was
-        # started from; a temporary one stands in so the launch gets far
-        # enough to prove it applies nothing.
-        (tmp / "Containerfile").write_text("FROM scratch\n")
         with mock.patch.object(runtime.host_podman, "require"), \
              mock.patch.object(runtime, "resolve_workspace", return_value=workspace), \
              mock.patch.object(runtime, "ensure_state_dirs"), \
@@ -260,7 +256,7 @@ class LaunchAppliesNothingTests(unittest.TestCase):
              mock.patch.object(runtime, "existing_workspace_spec", return_value=None), \
              mock.patch.object(runtime, "launch_in_workspace_container", return_value=0), \
              self.assertRaises(SystemExit):
-            runtime.runtime_main(["claude"], tmp)
+            runtime.runtime_main(["claude"], runtime.PACKAGE_ROOT)
 
     def test_a_launch_installs_no_skill_and_writes_no_settings(self):
         with tempfile.TemporaryDirectory() as tmp:

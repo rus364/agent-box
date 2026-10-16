@@ -317,7 +317,7 @@ class ExternalRuntimeTests(IsolatedRuntimeTest):
                         command = call.call_args.args[0]
                     else:
                         with self.assertRaises(SystemExit):
-                            runtime.runtime_main([cli], Path.cwd(), api_provider='deepseek')
+                            runtime.runtime_main([cli], runtime.PACKAGE_ROOT, api_provider='deepseek')
                         command = container.call_args.args[2]
                     self.assertIn('_external', command)
                     self.assertNotIn('private-api-key', str(command))

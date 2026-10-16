@@ -422,7 +422,7 @@ class ClaudeManagementArgvTests(unittest.TestCase):
              mock.patch.object(channel, "CLAUDE_HOME", home), \
              mock.patch.object(channel, "CHANNEL_LOCK", self.lock):
             with self.assertRaises(SystemExit):
-                runtime.runtime_main(["claude", *rest], Path(__file__).parents[1])
+                runtime.runtime_main(["claude", *rest], runtime.PACKAGE_ROOT)
         return captured[0], extra_env
 
     def test_bare_session_gets_the_container_bypass_and_telegram_channel(self):
@@ -562,7 +562,7 @@ class RuntimeNotificationSelectionTests(unittest.TestCase):
              mock.patch.object(runtime, "CLAUDE_HOME", Path(tmp) / "claude"), \
              mock.patch.object(runtime, "POLICY_RUNTIME_DIR", Path(tmp) / "runtime/policy"):
             with self.assertRaises(SystemExit):
-                runtime.runtime_main([agent], Path(__file__).parents[1])
+                runtime.runtime_main([agent], runtime.PACKAGE_ROOT)
         return captured
 
     def test_credentials_are_scoped_by_actual_launch_role(self):

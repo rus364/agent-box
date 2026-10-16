@@ -43,7 +43,7 @@ class WorkspaceContainerIdentityTests(unittest.TestCase):
             first_root.mkdir()
             second_root.mkdir()
             config = runtime.Config()
-            script_dir = Path(__file__).parents[1]
+            script_dir = runtime.PACKAGE_ROOT
             first = runtime.workspace_container_spec(
                 Workspace(first_root, first_root), [], script_dir, config,
             )
@@ -93,12 +93,13 @@ class WorkspaceContainerLifecycleTests(unittest.TestCase):
         root.mkdir()
         self.workspace = Workspace(root, root)
         self.config = runtime.Config()
-        self.script_dir = Path(__file__).parents[1]
+        self.script_dir = runtime.PACKAGE_ROOT
         self.spec = runtime.workspace_container_spec(self.workspace, [], self.script_dir, self.config)
 
     def _container(self, state="running", base_hash=None, extra_mounts_hash=None):
         return {"State": {"Status": state}, "Config": {"Labels": {
             runtime.WORKSPACE_CONTAINER_LABEL: "true",
+            runtime.WORKSPACE_RUNTIME_LABEL: runtime.runtime_bundle.identity(self.script_dir),
             runtime.WORKSPACE_CONTAINER_WORKSPACE_LABEL: self.spec.workspace_id,
             runtime.WORKSPACE_CONTAINER_SCHEMA_LABEL: runtime.WORKSPACE_CONTAINER_SCHEMA,
             runtime.WORKSPACE_CONTAINER_POLICY_LABEL: self.spec.policy_id,
@@ -120,6 +121,14 @@ class WorkspaceContainerLifecycleTests(unittest.TestCase):
                                *[{"Source": str(m.path), "Destination": str(m.path), "RW": not m.read_only}
                                  for m in extra_mounts]]
         return container, policy
+
+    def test_join_refuses_a_running_box_from_a_different_installed_runtime(self):
+        """A new install must not combine its protocol with a live old Python bundle."""
+        container, _ = self._live_box()
+        container["Config"]["Labels"][runtime.WORKSPACE_RUNTIME_LABEL] = "old-runtime"
+        with mock.patch.object(runtime, "inspect_workspace_container", return_value=container):
+            with self.assertRaisesRegex(AgentBoxError, "different agent-box runtime.*agent-box stop"):
+                runtime.existing_workspace_spec(self.workspace, LaunchOptions())
 
     def test_join_commands_use_box_access_and_new_process_policy_after_saved_config_changes(self):
         """A shell or new agent must not remove a neighbour's selected logins."""
@@ -574,6 +583,7 @@ class WorkspaceContainerLifecycleTests(unittest.TestCase):
         self.assertNotEqual(mounted.extra_mounts_hash, omitted.extra_mounts_hash)
         running = {"State": {"Status": "running"}, "Config": {"Labels": {
             runtime.WORKSPACE_CONTAINER_LABEL: "true",
+            runtime.WORKSPACE_RUNTIME_LABEL: runtime.runtime_bundle.identity(self.script_dir),
             runtime.WORKSPACE_CONTAINER_WORKSPACE_LABEL: mounted.workspace_id,
             runtime.WORKSPACE_CONTAINER_SCHEMA_LABEL: runtime.WORKSPACE_CONTAINER_SCHEMA,
             runtime.WORKSPACE_CONTAINER_BASE_CONFIG_LABEL: mounted.base_config_hash,
@@ -622,6 +632,7 @@ class WorkspaceContainerLifecycleTests(unittest.TestCase):
         )
         running = {"State": {"Status": "running"}, "Config": {"Labels": {
             runtime.WORKSPACE_CONTAINER_LABEL: "true",
+            runtime.WORKSPACE_RUNTIME_LABEL: runtime.runtime_bundle.identity(self.script_dir),
             runtime.WORKSPACE_CONTAINER_WORKSPACE_LABEL: rw.workspace_id,
             runtime.WORKSPACE_CONTAINER_SCHEMA_LABEL: runtime.WORKSPACE_CONTAINER_SCHEMA,
             runtime.WORKSPACE_CONTAINER_BASE_CONFIG_LABEL: rw.base_config_hash,

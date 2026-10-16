@@ -243,7 +243,7 @@ class NestedLauncherBundleTests(IsolatedRuntimeTest):
         import shutil
         import subprocess
         import sys
-        source = Path(__file__).resolve().parent.parent
+        source = runtime.PACKAGE_ROOT
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp) / "home"
             home.mkdir()
@@ -265,7 +265,7 @@ class NestedLauncherBundleTests(IsolatedRuntimeTest):
                         shutil.copytree(origin, destination, ignore=shutil.ignore_patterns("__pycache__"))
                     else:
                         shutil.copy2(origin, destination)
-            for name in ("agent-box", "Containerfile", ".containerignore", "agent_box/nested_podman.py"):
+            for name in ("agent_box/container-launcher", "agent_box/Containerfile", "agent_box/.containerignore", "agent_box/nested_podman.py"):
                 self.assertTrue((library / name).is_file(), name)
             # The actual PATH launcher must reach workspace resolution using
             # its own library root, without a checkout in cwd or PYTHONPATH.
@@ -290,6 +290,6 @@ with patch('agent_box.project_config.load', return_value={}), patch.object(runti
                  mock.patch.object(runtime, "CONTAINER_LAUNCHER_ROOT", library), \
                  mock.patch.object(runtime, "agent_tree_mounts", return_value=[]), \
                  mock.patch.object(runtime, "tracker_mounts", return_value=[]):
-                nested = runtime.build_mounts(workspace, [], library, Config())
-            self.assertIn(f"type=bind,src={library / 'agent-box'},dst={home / '.local/bin/agent-box'},ro=true", nested)
-            self.assertIn(f"type=bind,src={library / 'Containerfile'},dst={library / 'Containerfile'},ro=true", nested)
+                nested = runtime.build_mounts(workspace, [], library / "agent_box", Config())
+            self.assertIn(f"type=bind,src={library / 'agent_box/container-launcher'},dst={home / '.local/bin/agent-box'},ro=true", nested)
+            self.assertIn(f"type=bind,src={library / 'agent_box'},dst={library / 'agent_box'},ro=true", nested)

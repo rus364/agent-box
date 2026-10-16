@@ -1006,7 +1006,8 @@ def main() -> None:
         project_config.load()
     except AgentBoxError as exc:
         die(str(exc))
-    script_dir = Path(__file__).resolve().parent.parent
+    from .paths import PACKAGE_ROOT
+    script_dir = PACKAGE_ROOT
     try:
         from .completion import COMMANDS, HIDDEN
         refused = unknown_command(args, COMMANDS.keys() | HIDDEN, "agent-box")

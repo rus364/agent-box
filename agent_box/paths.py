@@ -116,7 +116,9 @@ CONFIG_ROOT = env_path("AGENT_BOX_CONFIG_DIR", XDG_CONFIG_HOME / "agent-box")
 HOST_SESSIONS_ROOT = STATE_ROOT / "runtime/host-sessions"
 HOST_TMUX_CONFIG = Path(__file__).with_name("tmux.conf")
 HOST_SESSION_RUNNER = Path(__file__).with_name("host_session.py")
-LOCAL_LAUNCHER = Path(__file__).resolve().parent.parent / "agent-box"
+PACKAGE_ROOT = Path(__file__).resolve().parent
+CONTAINER_LAUNCHER = HOST_HOME / ".local/bin/agent-box"
+LOCAL_LAUNCHER = PACKAGE_ROOT.parent / "agent-box"
 # Unix sockets need a short path; ignore caller-controlled TMPDIR.
 SESSION_TEMP_ROOT = Path("/tmp")
 

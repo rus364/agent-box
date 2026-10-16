@@ -674,7 +674,7 @@ class CodexRuntimeOverridesTests(IsolatedRuntimeTest):
                  mock.patch.object(runtime, "launch_in_workspace_container", return_value=0), \
                  mock.patch.object(runtime, "codex_runtime_overrides") as overrides, \
                  self.assertRaises(SystemExit):
-                runtime.runtime_main([agent], Path.cwd())
+                runtime.runtime_main([agent], runtime.PACKAGE_ROOT)
             overrides.assert_not_called()
 
     def test_bare_launch_starts_the_configured_agent_unless_named(self):
@@ -695,7 +695,7 @@ class CodexRuntimeOverridesTests(IsolatedRuntimeTest):
                  mock.patch.object(runtime, "codex_command", return_value=["codex"]), \
                  mock.patch.object(runtime, "launch_in_workspace_container", return_value=0) as launch, \
                  self.assertRaises(SystemExit):
-                runtime.runtime_main(args, Path.cwd())
+                runtime.runtime_main(args, runtime.PACKAGE_ROOT)
             self.assertEqual(launch.call_args.args[2][0], expected)
 
     def test_external_launch_selects_the_model_for_the_default_agent(self):
@@ -709,7 +709,7 @@ class CodexRuntimeOverridesTests(IsolatedRuntimeTest):
              mock.patch.object(runtime, "load_config", return_value=config), \
              mock.patch.object(external_launch, "selected_model", side_effect=AgentBoxError("stop")) as selected, \
              self.assertRaisesRegex(AgentBoxError, "stop"):
-            runtime.runtime_main(["--model", "m"], Path.cwd(), api_provider="deepseek")
+            runtime.runtime_main(["--model", "m"], runtime.PACKAGE_ROOT, api_provider="deepseek")
         self.assertEqual(selected.call_args.args[1:], ("deepseek", "codex", ["--model", "m"]))
 
 
@@ -830,7 +830,7 @@ class ClaudeNotifyHookLifecycleTests(IsolatedRuntimeTest):
                 mock.patch.object(runtime, "CLAUDE_HOME", root / "claude"),
                 self.assertRaises(SystemExit),
             ):
-                runtime.runtime_main(["claude"], Path(__file__).resolve().parent.parent)
+                runtime.runtime_main(["claude"], runtime.PACKAGE_ROOT)
             self.assertEqual(settings_path.read_text(), before)
 
     def test_a_host_launch_leaves_the_hooks_alone(self):
@@ -900,7 +900,7 @@ class HostModeTests(IsolatedRuntimeTest):
                     runtime.host_main(agent, ["--model", "example"])
                     command = [f"/usr/bin/{agent}", "--model", "example"]
                     if enabled:
-                        self.assertEqual(call.call_args.args[0][2:], ["_session", agent, *command])
+                        self.assertEqual(call.call_args.args[0][3:], ["_session", agent, *command])
                     else:
                         self.assertEqual(call.call_args.args[0], command)
 

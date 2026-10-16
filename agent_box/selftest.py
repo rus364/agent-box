@@ -84,6 +84,12 @@ def _checks() -> int:
                                               "telegram_chat_id": "1"}}}).host.notifications.usable,
           True, "notifications need token and chat id")
 
+    from .paths import PACKAGE_ROOT
+    for asset in ("Containerfile", ".containerignore", "container-launcher", "nested_podman.py",
+                  "keeper.sh", "host_session.py", "tmux.conf", "completion.bash", "completion.zsh",
+                  "skills/ab-work/SKILL.md"):
+        check((PACKAGE_ROOT / asset).is_file(), True, f"packaged resource {asset}")
+
     from .workspace import resolve_workspace
     with tempfile.TemporaryDirectory() as tmp:
         sub = Path(tmp) / "sub"

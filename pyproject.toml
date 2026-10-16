@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-box-tool"
+version = "0.1.0.dev0"
+description = "Run coding agents in rootless Podman workspace boxes"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+dependencies = []
+
+[project.scripts]
+agent-box = "agent_box.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["agent_box*"]
+namespaces = false
+
+[tool.setuptools.package-data]
+agent_box = ["Containerfile", ".containerignore", "container-launcher", "*.sh", "*.conf", "completion.*", "skills/**/*"]

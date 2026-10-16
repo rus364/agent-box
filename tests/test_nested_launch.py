@@ -40,7 +40,7 @@ class NestedLaunchTests(K3sRuntimeTest):
                 mock.patch.object(runtime, "warn") as warn, \
                 self.assertRaises(SystemExit):
             sidecar["api_port"].return_value = 41234
-            runtime.runtime_main(["doctor"], Path.cwd(), options)
+            runtime.runtime_main(["doctor"], runtime.PACKAGE_ROOT, options)
         target = Path(next(item.split("=", 1)[1] for item in captured["env"]
                            if item.startswith("AGENT_BOX_RUNTIME_CONFIG=")))
         source, destination, _ = runtime.tracker_mounts(Config(), runtime.workspace_runtime_state(self.workspace))[0]

@@ -26,6 +26,7 @@ def isolated_environment(directory):
     # Uninstall must not discover the developer's launcher through PATH; the
     # guard directory main fills shadows the host's podman.
     env["PATH"] = os.pathsep.join((str(directory / "guard-bin"), str(directory / "bin"), os.defpath))
+    env["PYTHONPATH"] = str(ROOT)
     env["GIT_CONFIG_GLOBAL"] = os.devnull
     env["GIT_CONFIG_NOSYSTEM"] = "1"
     return env

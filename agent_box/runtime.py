@@ -35,7 +35,7 @@ from . import channel as channel_module
 from . import claude_settings
 from . import notify as notify_module
 from . import k3s
-from . import host_podman, nested_podman
+from . import host_podman, nested_podman, runtime_bundle
 from . import cloud, kubeconfigs, registries, links
 from .atomicio import atomic_write_bytes, atomic_write_json, atomic_write_text, read_json
 from .config import ENV_PREFIX, IMPLEMENTED_TRACKERS, WORKFLOW_SKILLS, Config, apply_box_policy, load_config, effective_config, session_account
@@ -54,6 +54,8 @@ from .paths import (
     CODEX_PLUGIN_CACHE,
     CONFIG_ROOT,
     CONTAINER_LAUNCHER_ROOT,
+    CONTAINER_LAUNCHER,
+    PACKAGE_ROOT,
     CONTAINER_NOTIFY_CREDENTIALS,
     CONTAINER_TRACKER_RUNTIME_DIR,
     CONTAINER_POLICY_RUNTIME_DIR,
@@ -62,7 +64,6 @@ from .paths import (
     HOST_RUNTIME_DIR,
     HOST_SESSIONS_ROOT,
     HOST_SESSION_RUNNER,
-    LOCAL_LAUNCHER,
     MANAGED_SKILLS_SOURCE,
     NOTIFY_CREDENTIALS,
     NOTIFY_STATE_ROOT,
@@ -78,7 +79,8 @@ from .workspace import Workspace, resolve_workspace
 
 IMAGE = os.environ.get("AGENT_BOX_IMAGE", "localhost/agent-box:latest")
 CHATGPT_DESKTOP_RESOURCES = "/usr/lib/chatgpt/resources/"
-WORKSPACE_CONTAINER_SCHEMA = "3"
+WORKSPACE_CONTAINER_SCHEMA = "4"
+WORKSPACE_RUNTIME_LABEL = "io.agent-box.runtime"
 WORKSPACE_CONTAINER_POLICY_LABEL = "io.agent-box.policy"
 WORKSPACE_CONTAINER_LABEL = "io.agent-box.managed"
 WORKSPACE_CONTAINER_WORKSPACE_LABEL = "io.agent-box.workspace"
@@ -1443,7 +1445,8 @@ def build_mounts(
         # Notification hook delivery state is intentionally host-global so
         # duplicate suppression and rate tracking work across agent sessions.
         (NOTIFY_STATE_ROOT, HOST_HOME / ".local/share/agent-box/notify", False),
-        (script_dir / "agent-box", HOST_HOME / ".local/bin/agent-box", True),
+        (script_dir / "container-launcher", HOST_HOME / ".local/bin/agent-box", True),
+        (script_dir, CONTAINER_LAUNCHER_ROOT / "agent_box", True),
     ]
     if mount_workspace_runtime_state:
         # The keeper needs only this workspace's lifecycle lock and snapshots,
@@ -1453,13 +1456,6 @@ def build_mounts(
             # Read-only over the writable runtime root: the sidecar mounts
             # registries.yaml from here, and the box must not rewrite it.
             pairs.append((k3s_state_dir(runtime_state), k3s_state_dir(runtime_state), True))
-    if (script_dir / "agent_box").is_dir():
-        pairs.append((script_dir / "agent_box", CONTAINER_LAUNCHER_ROOT / "agent_box", True))
-    # PATH launches use the library root as their build context, including
-    # when that root becomes the source for another level of nesting.
-    for name in ("agent-box", "Containerfile", ".containerignore"):
-        if (script_dir / name).is_file():
-            pairs.append((script_dir / name, CONTAINER_LAUNCHER_ROOT / name, True))
     # The container never sees config.json. The legacy disposable argv helper
     # may request a derived two-key credential file; persistent workspace
     # boxes deliberately pass ``mount_notifications=False`` and use per-exec
@@ -2028,6 +2024,7 @@ def workspace_container_spec(
     policy_id = uuid.uuid4().hex
     labels = [
         f"--label={WORKSPACE_CONTAINER_LABEL}=true",
+        f"--label={WORKSPACE_RUNTIME_LABEL}={runtime_bundle.identity(script_dir)}",
         f"--label={WORKSPACE_CONTAINER_WORKSPACE_LABEL}={workspace_identity(workspace)}",
         f"--label={WORKSPACE_PATH_LABEL}={workspace.host_root.resolve()}",
         f"--label={WORKSPACE_CONTAINER_SCHEMA_LABEL}={WORKSPACE_CONTAINER_SCHEMA}",
@@ -2111,7 +2108,7 @@ def workspace_box_policy(spec: WorkspaceContainerSpec) -> dict:
     }
 
 
-def existing_workspace_spec(workspace: Workspace, options: LaunchOptions) -> WorkspaceContainerSpec | None:
+def existing_workspace_spec(workspace: Workspace, options: LaunchOptions, package: Path = PACKAGE_ROOT) -> WorkspaceContainerSpec | None:
     """Read a live box under the keeper lock; recheck its ID when admitting exec."""
     name = workspace_container_name(workspace)
     state = workspace_runtime_state(workspace)
@@ -2127,6 +2124,8 @@ def existing_workspace_spec(workspace: Workspace, options: LaunchOptions) -> Wor
         current = _wait_for_exiting_keeper(name, current)
         if current is None or current.get("State", {}).get("Status") != "running":
             return None
+        if labels.get(WORKSPACE_RUNTIME_LABEL) != runtime_bundle.identity(package):
+            raise AgentBoxError("running workspace box uses a different agent-box runtime; end it with agent-box stop and rerun")
         policy_id = labels.get(WORKSPACE_CONTAINER_POLICY_LABEL, "")
         if labels.get(WORKSPACE_CONTAINER_SCHEMA_LABEL) != WORKSPACE_CONTAINER_SCHEMA or not re.fullmatch(r"[0-9a-f]{32}", policy_id):
             raise AgentBoxError("running workspace box has no current creation policy; end it with agent-box stop and rerun")
@@ -3035,7 +3034,7 @@ def runtime_main(
     ensure_state_dirs()
     ensure_refresh_token()
     options, requested = nested_launch_options(options)
-    existing = existing_workspace_spec(workspace, options)
+    existing = existing_workspace_spec(workspace, options, script_dir)
     config = launch_config(options, box_policy=existing.creation_config._box_policy if existing else None)
     nested = list(dict.fromkeys(requested + withhold_from_nested_box(config)))
     agent, rest = config.agents.default, args
@@ -3128,7 +3127,8 @@ def runtime_main(
             command = remote_control_command(command, agent, config, container=True)
         if existing is None:
             prepare_k3s(config, workspace, runtime_state)
-            spec = workspace_container_spec(workspace, extra_mounts, script_dir, config, options.kvm)
+            bundle = runtime_bundle.prepare(script_dir, STATE_ROOT / "runtime/launcher")
+            spec = workspace_container_spec(workspace, extra_mounts, bundle, config, options.kvm)
         else:
             spec = existing
         invocation, process_env = invocation_env(config, agent)
@@ -3592,16 +3592,15 @@ def host_main(
 
 
 def external_command(command: list[str], agent: str, name: str, *, container: bool) -> list[str]:
-    launcher = CONTAINER_LAUNCHER_ROOT / "agent-box" if container else LOCAL_LAUNCHER
-    return ["python3" if container else sys.executable, str(launcher), "_external", name, agent, *command]
+    launcher = ["python3", str(CONTAINER_LAUNCHER)] if container else [sys.executable, "-m", "agent_box"]
+    return [*launcher, "_external", name, agent, *command]
 
 
 def remote_control_command(command: list[str], agent: str, config: Config, *, container: bool) -> list[str]:
     if not getattr(config.agents, agent).remote_control:
         return command
-    launcher = CONTAINER_LAUNCHER_ROOT / "agent-box" if container else LOCAL_LAUNCHER
-    return ["python3" if container else sys.executable, str(launcher), "_session",
-            agent, *command]
+    launcher = ["python3", str(CONTAINER_LAUNCHER)] if container else [sys.executable, "-m", "agent_box"]
+    return [*launcher, "_session", agent, *command]
 
 
 def remote_control_invocation(agent: str, rest: list[str]) -> bool:

@@ -16,7 +16,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-CONTAINERFILE = Path(__file__).resolve().parent.parent / "Containerfile"
+CONTAINERFILE = Path(__file__).resolve().parent.parent / "agent_box/Containerfile"
 REQUIRED_ARGS = ("USER_NAME", "USER_UID", "USER_GID", "USER_HOME")
 
 

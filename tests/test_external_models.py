@@ -52,7 +52,7 @@ class ExternalModelTests(unittest.TestCase):
                         if host:
                             runtime.host_main(cli, options, api_provider='deepseek')
                         else:
-                            runtime.runtime_main([cli, *options], Path.cwd(), api_provider='deepseek')
+                            runtime.runtime_main([cli, *options], runtime.PACKAGE_ROOT, api_provider='deepseek')
                     image.assert_not_called()
                     snapshot.assert_not_called()
                     container.assert_not_called()

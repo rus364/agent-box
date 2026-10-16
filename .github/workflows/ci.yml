@@ -59,3 +59,14 @@ jobs:
 
       - name: Run full test suite
         run: python tests/run_suite.py
+
+      - name: Build and check installed distributions
+        run: |
+          python -m pip install build
+          python -m build
+          package_env=$(mktemp -d "${RUNNER_TEMP}/agent-box-wheel.XXXXXX")
+          trap 'rm -rf "$package_env"' EXIT
+          python -m venv "$package_env"
+          "$package_env/bin/python" -m pip install dist/*.whl
+          cd "${RUNNER_TEMP}"
+          "$package_env/bin/agent-box" selftest
