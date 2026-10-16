@@ -80,12 +80,20 @@ class SettingTests(unittest.TestCase):
     def test_a_project_may_keep_or_drop_its_own_data(self):
         self.assertIs(project_config.project_field(("box", "podman", "persistent_data")), bool)
 
-    def test_a_session_follows_the_setting_its_box_was_created_with(self):
-        """A project edit after creation must not delete the data under a running box's feet."""
-        shared = Config()
-        shared.box.podman.persistent_data = True
-        session = runtime.apply_box_policy(Config(), {**shared.to_dict(), "workflow_mount": True})
-        self.assertTrue(session.box.podman.persistent_data)
+class SharedPolicyTests(NestedPodmanDataTestCase):
+    def test_a_joining_session_keeps_what_the_box_was_created_to_keep(self):
+        """The last session to leave decides; a joiner reading a default would delete kept data."""
+        created = self.config(persistent=True, podman=False)
+        spec = runtime.workspace_container_spec(self.workspace, [], Path(__file__).parents[1], created)
+        joined = runtime.apply_box_policy(Config(), runtime.workspace_box_policy(spec))
+        self.assertTrue(joined.box.podman.persistent_data)
+
+    def test_a_session_snapshot_carries_the_setting(self):
+        config = self.config(persistent=True, podman=False)
+        state = runtime.workspace_runtime_state(self.workspace)
+        path = runtime.session_runtime(config, runtime_state=state)
+        with mock.patch.dict(runtime.os.environ, {"AGENT_BOX_RUNTIME_CONFIG": str(path)}):
+            self.assertTrue(runtime.effective_config().box.podman.persistent_data)
 
 
 class OwnershipTests(NestedPodmanDataTestCase):
@@ -107,6 +115,14 @@ class OwnershipTests(NestedPodmanDataTestCase):
         with self.assertRaisesRegex(AgentBoxError, "did not create"):
             runtime.remove_nested_podman_volume(self.id)
         self.assertIn(self.volume, self.podman.volumes)
+
+    def test_a_failing_podman_is_not_absent_data(self):
+        """Reading a broken Podman as "no volume" would report data deleted that is still there."""
+        self.own_volume()
+        with mock.patch.object(runtime.subprocess, "run",
+                               return_value=CompletedProcess([], 125, "", "cannot connect to Podman")):
+            with self.assertRaisesRegex(AgentBoxError, "cannot connect"):
+                runtime.remove_nested_podman_volume(self.id)
 
     def test_removing_absent_data_is_not_an_error(self):
         self.assertFalse(runtime.remove_nested_podman_volume(self.id))

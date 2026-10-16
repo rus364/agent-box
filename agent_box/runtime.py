@@ -389,8 +389,13 @@ def _nested_podman_volume_owner(workspace_id: str) -> str | None:
     """The volume's owner label: ``None`` when it is absent, ``""`` when nobody's."""
     volume = nested_podman_volume(workspace_id)
     try:
-        if subprocess.run(["podman", "volume", "exists", volume], capture_output=True).returncode:
+        exists = subprocess.run(["podman", "volume", "exists", volume], text=True, capture_output=True)
+        # Only 1 means absent: a failing Podman must not pass for deleted data.
+        if exists.returncode == 1:
             return None
+        if exists.returncode:
+            raise AgentBoxError(f"cannot inspect the Podman volume {volume}: "
+                                f"{exists.stderr.strip() or f'exit {exists.returncode}'}")
         result = subprocess.run(["podman", "volume", "inspect", "--format",
                                  f'{{{{index .Labels "{NESTED_PODMAN_LABEL}"}}}}', volume],
                                 text=True, capture_output=True)
@@ -1030,6 +1035,7 @@ def sync_tracker_runtime(config: Config, directory: Path | None = None, *, polic
                         "cloud": config.credentials.cloud.to_dict()},
         # A nested box inherits the outer box's sound socket at the same path.
         "box": {"tools": config.box.tools.to_dict(), "k3s": config.box.k3s.to_dict(),
+                "podman": config.box.podman.to_dict(),
                 "audio": config.box.audio, "links": config.box.links.to_dict()},
         "container": container,
         # Re-applied over the project configuration inside the session.
@@ -2038,6 +2044,8 @@ def workspace_box_policy(spec: WorkspaceContainerSpec) -> dict:
     source, destination, read_only = tracker_mounts(config, spec.runtime_state)[0]
     return {
         "box": {"tools": tools, "k3s": config.box.k3s.to_dict(),
+                # Whichever session leaves last deletes or keeps the data by this.
+                "podman": config.box.podman.to_dict(),
                 "audio": any(arg.startswith("--env=PULSE_SERVER=") for arg in spec.create_argv),
                 "links": config.box.links.to_dict()},
         "credentials": {"git": config.credentials.git.to_dict(),
