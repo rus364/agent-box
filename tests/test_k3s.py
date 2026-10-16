@@ -348,6 +348,13 @@ class EnsureTests(SidecarTestCase):
         self.assertEqual(self.podman.did("volume", "rm") + self.podman.did("volume", "create"), [])
         self.assertEqual(self.podman.volumes, {NAME})
 
+    def test_the_cluster_names_its_project_on_its_volume_and_container(self):
+        """agent-box workspaces reads the directory back from these; the id alone cannot give it."""
+        k3s.ensure(WID, K3sConfig(enabled=True), self.state, self.root)
+        label = f"--label={k3s.WORKSPACE_PATH_LABEL}={self.root.resolve()}"
+        self.assertIn(label, self.podman.did("volume", "create")[0])
+        self.assertIn(label, self.podman.did("create")[0])
+
     def test_outdated_means_a_sidecar_exists_with_other_settings(self):
         self.assertFalse(k3s.is_outdated(WID, K3sConfig(enabled=True), self.state, self.root))
         k3s.ensure(WID, K3sConfig(enabled=True), self.state, self.root)

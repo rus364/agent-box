@@ -70,6 +70,10 @@ Sessions:
                           Remove the box and its sessions and stop its k3s cluster; --cluster-data also
                           deletes the cluster's data, --podman-data the nested Podman data even when
                           box.podman.persistent_data keeps it; with --host, this project's host sessions
+  workspaces [rm ID|PATH... | prune] [--yes]
+                          Every project's box, k3s cluster, nested Podman data and state on this host;
+                          rm deletes all of it for the named workspaces, prune for every workspace
+                          whose directory is gone; both confirm first unless --yes
 
 Configuration:
   config                  Interactive setup, saved to ~/.config/agent-box/config.json and applied
@@ -948,7 +952,7 @@ def selftest() -> None:
 NON_RUNTIME = {
     "usage", "statusline", "notify", "config", "selftest", "help", "-h", "--help",
     "build", "update", "rebuild", "tracker", "workflow", "attach", "stop", "upgrade", "uninstall",
-    "completion", "links",
+    "completion", "links", "workspaces",
 }
 #: --host only makes sense for a real agent launch, never for these.
 HOST_ONLY_AGENTS = {"claude", "codex"}
@@ -1055,6 +1059,9 @@ def main() -> None:
         if args and args[0] == "uninstall":
             from . import runtime
             raise SystemExit(runtime.uninstall_main(args[1:]))
+        if args and args[0] == "workspaces":
+            from . import workspaces
+            raise SystemExit(workspaces.main(args[1:]))
         if args and args[0] in {"attach", "stop"}:
             from . import runtime
             if options.host:

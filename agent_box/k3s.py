@@ -27,6 +27,7 @@ from pathlib import Path
 from .atomicio import atomic_write_text
 from .config import K3sConfig
 from .errors import AgentBoxError
+from .host_podman import WORKSPACE_PATH_LABEL
 
 IMAGE = "docker.io/rancher/k3s"
 #: The stable channel's release when last updated; pinned by its multi-arch
@@ -251,9 +252,9 @@ def _remove_container(resource: str) -> None:
     _checked("rm", "--force", "--volumes", resource)
 
 
-def _ensure_labeled(kind: str, workspace_id: str) -> None:
+def _ensure_labeled(kind: str, workspace_id: str, *labels: str) -> None:
     if not _owned_exists(kind, workspace_id):
-        _checked(kind, "create", f"--label={LABEL}={workspace_id}", name(workspace_id))
+        _checked(kind, "create", f"--label={LABEL}={workspace_id}", *labels, name(workspace_id))
 
 
 def _log_tail(workspace_id: str) -> str:
@@ -296,11 +297,12 @@ def ensure(workspace_id: str, k3s: K3sConfig, state_dir: Path, project_root: Pat
         # leaves a sidecar to stop.
         state_dir.mkdir(parents=True, exist_ok=True)
         _ensure_labeled("network", workspace_id)
-        _ensure_labeled("volume", workspace_id)
+        path_label = f"--label={WORKSPACE_PATH_LABEL}={project_root.resolve()}"
+        _ensure_labeled("volume", workspace_id, path_label)
         registries = registries_yaml(k3s)
         if registries:
             atomic_write_text(state_dir / REGISTRIES_FILE, registries, 0o644)
-        _checked("create", f"--name={resource}", f"--label={LABEL}={workspace_id}",
+        _checked("create", f"--name={resource}", f"--label={LABEL}={workspace_id}", path_label,
                  f"--label={SPEC_LABEL}={wanted}", *container_args(workspace_id, k3s, state_dir, project_root))
     if not _running(container):
         _say(f"starting the k3s cluster {resource}")

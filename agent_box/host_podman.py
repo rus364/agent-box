@@ -25,6 +25,10 @@ from .errors import AgentBoxError
 #: without a cluster; distributions that ship 4.x get the upstream guide.
 MIN_VERSION = (5, 0)
 INSTALL_GUIDE = "https://podman.io/docs/installation"
+#: The project directory a per-workspace resource (box, cluster, nested
+#: Podman volume) was created for: its workspace id is a hash that cannot be
+#: turned back into a path, so ``agent-box workspaces`` reads this instead.
+WORKSPACE_PATH_LABEL = "io.agent-box.path"
 OS_RELEASE = (Path("/etc/os-release"), Path("/usr/lib/os-release"))
 SUBID_FILES = (Path("/etc/subuid"), Path("/etc/subgid"))
 #: The first ID of the subordinate ranges ``useradd`` hands out.

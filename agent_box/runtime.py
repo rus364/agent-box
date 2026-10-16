@@ -37,7 +37,7 @@ from . import notify as notify_module
 from . import k3s
 from . import host_podman, nested_podman
 from . import cloud, kubeconfigs, registries, links
-from .atomicio import atomic_write_json, atomic_write_text, read_json
+from .atomicio import atomic_write_bytes, atomic_write_json, atomic_write_text, read_json
 from .config import ENV_PREFIX, IMPLEMENTED_TRACKERS, WORKFLOW_SKILLS, Config, apply_box_policy, load_config, effective_config, session_account
 from .errors import AgentBoxError
 from .external_config import has_toml_spelling, toml_string
@@ -87,8 +87,9 @@ WORKSPACE_CONTAINER_EXTRA_MOUNTS_LABEL = "io.agent-box.extra-mounts-hash"
 WORKSPACE_CONTAINER_SCHEMA_LABEL = "io.agent-box.schema"
 #: The workspace id that owns a nested Podman volume, as ``io.agent-box.k3s`` for a cluster.
 NESTED_PODMAN_LABEL = "io.agent-box.podman"
-#: The project directory a per-workspace resource was created for.
-WORKSPACE_PATH_LABEL = "io.agent-box.path"
+WORKSPACE_PATH_LABEL = host_podman.WORKSPACE_PATH_LABEL
+#: The project directory of a workspace, beside the rest of its state.
+WORKSPACE_PATH_FILE = "path"
 KEEPER_PATH = CONTAINER_LAUNCHER_ROOT / "agent_box/keeper.sh"
 #: Only these run as a person's live session; ``doctor`` is a diagnostic
 #: script whose output belongs on the caller's stdout.
@@ -798,8 +799,28 @@ class WorkspaceRuntimeState:
     gh: Path
 
 
+def workspace_state_root(workspace_id: str) -> Path:
+    return STATE_ROOT / "runtime/workspaces" / workspace_id
+
+
+def workspace_state_dirs(workspace_id: str) -> list[Path]:
+    """Every directory agent-box keeps for one workspace, its own state root first."""
+    return [workspace_state_root(workspace_id), TRACKER_RUNTIME_DIR / "workspaces" / workspace_id,
+            POLICY_RUNTIME_DIR / "workspaces" / workspace_id, registries.runtime_dir(workspace_id),
+            kubeconfigs.runtime_dir(workspace_id), cloud.runtime_dir(workspace_id).parent,
+            HOST_SESSIONS_ROOT / workspace_id, links.directory(workspace_id)]
+
+
+def record_workspace_path(workspace_id: str, path: str) -> None:
+    """Name the project beside its state, for ``agent-box workspaces``; the id alone cannot."""
+    root = workspace_state_root(workspace_id)
+    root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    # Bytes, as the path itself is: a directory name need not be UTF-8.
+    atomic_write_bytes(root / WORKSPACE_PATH_FILE, os.fsencode(path) + b"\n", 0o600)
+
+
 def workspace_runtime_state(workspace: Workspace) -> WorkspaceRuntimeState:
-    root = STATE_ROOT / "runtime/workspaces" / workspace_identity(workspace)
+    root = workspace_state_root(workspace_identity(workspace))
     return WorkspaceRuntimeState(root=root, git=root / "git", gh=root / "gh")
 
 
@@ -2008,6 +2029,7 @@ def workspace_container_spec(
     labels = [
         f"--label={WORKSPACE_CONTAINER_LABEL}=true",
         f"--label={WORKSPACE_CONTAINER_WORKSPACE_LABEL}={workspace_identity(workspace)}",
+        f"--label={WORKSPACE_PATH_LABEL}={workspace.host_root.resolve()}",
         f"--label={WORKSPACE_CONTAINER_SCHEMA_LABEL}={WORKSPACE_CONTAINER_SCHEMA}",
         f"--label={WORKSPACE_CONTAINER_BASE_CONFIG_LABEL}={base_config_hash}",
         f"--label={WORKSPACE_CONTAINER_EXTRA_MOUNTS_LABEL}={extra_mounts_hash}",
@@ -2040,7 +2062,13 @@ def workspace_transition_lock(workspace: Workspace):
     acquisition.  Workspace-box processes are trusted peers; preserving the
     simple shared lock is preferable to adding a second lifecycle mechanism.
     """
-    lock_path = workspace_lock_path(workspace)
+    with transition_lock_at(workspace_lock_path(workspace)):
+        yield
+
+
+@contextmanager
+def transition_lock_at(lock_path: Path):
+    """The transition lock by its file, for a workspace known only by its id."""
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
     try:
@@ -2340,6 +2368,7 @@ def ensure_workspace_container(spec: WorkspaceContainerSpec) -> None:
         for old in spec.runtime_state.root.glob("box-*.json"):
             old.unlink()
         atomic_write_json(spec.runtime_state.root / f"box-{spec.policy_id}.json", workspace_box_policy(spec), 0o600)
+        record_workspace_path(spec.workspace_id, spec.workspace_path)
         if spec.creation_config.box.tools.groups["podman"]:
             ensure_nested_podman_volume(spec.workspace_id, spec.workspace_path)
         created = subprocess.run(spec.create_argv, text=True, capture_output=True)
@@ -3627,6 +3656,7 @@ def host_tmux_launch(workspace: Workspace, agent: str, command: list[str],
     executable = str(Path(executable).resolve())
     root = HOST_SESSIONS_ROOT / workspace_identity(workspace)
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    record_workspace_path(workspace_identity(workspace), str(workspace.host_root.resolve()))
     existing = tmux_sessions(None, host_root=root)
     if existing:
         print(f"agent-box: host sessions already running ({', '.join(existing)}); "

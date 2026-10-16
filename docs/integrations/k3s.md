@@ -105,6 +105,7 @@ container can hold.
 | The box ends (`lifetime: box`) | stopped by agent-box | kept |
 | `agent-box stop` | stopped | kept, unless `persistent_data` is off |
 | `agent-box stop --cluster-data` | removed | deleted |
+| `agent-box workspaces rm` / `prune` | removed | deleted after you confirm |
 | `enabled` turned off | stopped when the next box is created | kept |
 | `agent-box uninstall` | removed | kept |
 | `agent-box uninstall --purge` | removed | deleted after you confirm |
@@ -114,7 +115,9 @@ finished) is noticed at the next agent-box command for the project. Until
 then the idle cluster uses about 500 MB of memory and a few percent of a core.
 
 The data lives in the Podman volume `agent-box-k3s-<workspace id>`; the
-container and network carry the same name.
+container and network carry the same name. `agent-box workspaces` lists every
+project's cluster with its data size and directory, and `agent-box workspaces
+rm` deletes a cluster together with the rest of what that project keeps.
 
 ## Trust boundary
 

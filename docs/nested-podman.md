@@ -36,8 +36,8 @@ containers and named volumes live in a dedicated outer volume named
 `agent-box-podman-<workspace id>`, independently of the host engine's existing
 images and containers. agent-box creates it before the box with two labels:
 `io.agent-box.podman` holds the workspace id and `io.agent-box.path` the
-project directory, so `podman volume ls --filter label=io.agent-box.podman`
-shows every such volume and the project it belongs to. A volume of that name
+project directory, so `agent-box workspaces` shows every such volume, its
+size and the project it belongs to. A volume of that name
 that agent-box did not create is refused, never used or deleted. Source files
 stay in the mounted project directory.
 

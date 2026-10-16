@@ -98,10 +98,19 @@ def config_words(args):
     return fixed("--project", "show", "describe", "set", "proposal", "ai", "check", "apply")(args)
 
 
+def workspaces_words(args):
+    """``rm`` takes workspace directories (or ids); ``prune`` only ``--yes``."""
+    if len(args) > 1 and args[0] == "rm":
+        return files(args)
+    if len(args) > 1 and args[0] == "prune":
+        return fixed("--yes")(args[1:])
+    return fixed("rm", "prune")(args)
+
+
 #: Every command ``cli.main`` dispatches, except HIDDEN; a test fails when one is missing.
 COMMANDS = {
     "claude": files, "codex": files, "shell": fixed(), "doctor": fixed(), "ext": external_command,
-    "attach": fixed(), "stop": fixed("--cluster-data", "--podman-data"),
+    "attach": fixed(), "stop": fixed("--cluster-data", "--podman-data"), "workspaces": workspaces_words,
     "config": config_words,
     "usage": fixed("codex", "claude", "all", "--no-cache", "--json"),
     "notify": fixed("test"),

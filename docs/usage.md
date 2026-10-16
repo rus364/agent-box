@@ -41,6 +41,24 @@ agent-box stop --cluster-data   # also delete the k3s cluster's data
 agent-box stop --podman-data    # also delete nested Podman data that box.podman.persistent_data keeps
 ```
 
+Each project keeps things on the host beyond its box: a k3s cluster, nested
+Podman data and agent-box's state directories, all under a workspace id that
+is a hash of the project directory. `agent-box workspaces` lists them with
+the directory each belongs to, so moving or deleting a project directory does
+not leave them behind unseen:
+
+```bash
+agent-box workspaces                  # ID, box, nested Podman data, k3s cluster, directory
+agent-box workspaces rm PATH|ID...    # delete everything agent-box keeps for these workspaces
+agent-box workspaces prune            # the same for every workspace whose directory is gone
+```
+
+Both deletions show what they will remove and ask first; `--yes` skips the
+question and is required without a terminal. A directory shown as
+`(unknown)` was never recorded, because the workspace has not had a box or
+host session since agent-box started recording it; `prune` leaves those
+alone, and `rm ID` removes one.
+
 How the workspace root is chosen and what the box can reach is described in
 [Workspace and security model](security.md).
 
