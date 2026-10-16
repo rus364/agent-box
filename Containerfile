@@ -464,9 +464,9 @@ RUN set -eux; \
 #
 
 RUN set -eux; \
-    printf '%s\n' 'path-exclude=/etc/binfmt.d/*' 'path-exclude=/usr/lib/binfmt.d/*' \
+    printf 'path-exclude=%s/*\n' /etc/binfmt.d /run/binfmt.d /usr/lib/binfmt.d \
         > /etc/dpkg/dpkg.cfg.d/agent-box-binfmt; \
-    rm -f /etc/binfmt.d/*.conf /usr/lib/binfmt.d/*.conf
+    rm -f /etc/binfmt.d/*.conf /run/binfmt.d/*.conf /usr/lib/binfmt.d/*.conf
 
 #
 # ---------------------------------------------------------------------------
@@ -715,7 +715,7 @@ RUN set -eux; \
     fd --version; \
     just --version; \
     test ! -e /usr/bin/pebble; \
-    test -z "$(find /etc/binfmt.d /usr/lib/binfmt.d -name '*.conf' 2>/dev/null)"; \
+    test -z "$(find /etc/binfmt.d /run/binfmt.d /usr/lib/binfmt.d -name '*.conf' 2>/dev/null)"; \
     tmux -V
 
 # Each group verifies only what it actually installed. A check that ran

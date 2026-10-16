@@ -342,13 +342,12 @@ class ImageSurfaceTests(unittest.TestCase):
         stable layers, and the sanity check must catch a base that ships one."""
         text = containerfile_text()
         exclusion = text.index("> /etc/dpkg/dpkg.cfg.d/agent-box-binfmt")
-        for path in ("/etc/binfmt.d/*", "/usr/lib/binfmt.d/*"):
-            self.assertIn(f"'path-exclude={path}'", text)
+        self.assertIn("printf 'path-exclude=%s/*\\n' /etc/binfmt.d /run/binfmt.d /usr/lib/binfmt.d", text)
         for stable in ("install --with-deps chromium", "jscpd@5.0.16"):
             self.assertLess(text.index(stable), exclusion)
         self.assertLess(exclusion, text.index("ARG TOOLS_REFRESH="))
-        self.assertIn("rm -f /etc/binfmt.d/*.conf /usr/lib/binfmt.d/*.conf", text)
-        self.assertIn("""test -z "$(find /etc/binfmt.d /usr/lib/binfmt.d -name '*.conf' 2>/dev/null)\"""", text)
+        self.assertIn("rm -f /etc/binfmt.d/*.conf /run/binfmt.d/*.conf /usr/lib/binfmt.d/*.conf", text)
+        self.assertIn("""test -z "$(find /etc/binfmt.d /run/binfmt.d /usr/lib/binfmt.d -name '*.conf' 2>/dev/null)\"""", text)
 
 
 class IdentityValidationShellTests(unittest.TestCase):
