@@ -117,6 +117,7 @@ HOST_SESSIONS_ROOT = STATE_ROOT / "runtime/host-sessions"
 HOST_TMUX_CONFIG = Path(__file__).with_name("tmux.conf")
 HOST_SESSION_RUNNER = Path(__file__).with_name("host_session.py")
 PACKAGE_ROOT = Path(__file__).resolve().parent
+HOST_LAUNCHER = PACKAGE_ROOT / "__main__.py"
 CONTAINER_LAUNCHER = HOST_HOME / ".local/bin/agent-box"
 LOCAL_LAUNCHER = PACKAGE_ROOT.parent / "agent-box"
 # Unix sockets need a short path; ignore caller-controlled TMPDIR.

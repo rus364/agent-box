@@ -900,7 +900,7 @@ class HostModeTests(IsolatedRuntimeTest):
                     runtime.host_main(agent, ["--model", "example"])
                     command = [f"/usr/bin/{agent}", "--model", "example"]
                     if enabled:
-                        self.assertEqual(call.call_args.args[0][3:], ["_session", agent, *command])
+                        self.assertEqual(call.call_args.args[0][2:], ["_session", agent, *command])
                     else:
                         self.assertEqual(call.call_args.args[0], command)
 

@@ -53,3 +53,24 @@ class RuntimeBundleTests(unittest.TestCase):
             self.assertTrue((bundle / 'Containerfile').is_file())
             self.assertTrue((bundle / '.containerignore').is_file())
             self.assertTrue((bundle / 'container-launcher').stat().st_mode & 0o111)
+
+    def test_host_wrappers_ignore_a_workspace_package_with_the_same_name(self):
+        """External and Remote Control launches must load the installed runtime."""
+        from agent_box import runtime
+        from agent_box.config import Config
+        with tempfile.TemporaryDirectory() as tmp:
+            shadow = Path(tmp) / 'agent_box'
+            shadow.mkdir()
+            (shadow / '__init__.py').write_text('raise RuntimeError("workspace package imported")\n')
+            (shadow / '__main__.py').write_text('raise RuntimeError("workspace entry point imported")\n')
+            config = Config()
+            config.agents.claude.remote_control = True
+            commands = [runtime.external_command(['claude'], 'claude', 'example', container=False),
+                        runtime.remote_control_command(['claude'], 'claude', config, container=False)]
+            for command in commands:
+                with self.subTest(command=command):
+                    marker = '_external' if '_external' in command else '_session'
+                    result = subprocess.run([*command[:command.index(marker)], 'selftest'],
+                                            cwd=tmp, text=True, capture_output=True)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertIn('self-tests passed', result.stdout)

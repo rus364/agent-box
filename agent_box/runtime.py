@@ -56,6 +56,7 @@ from .paths import (
     CONTAINER_LAUNCHER_ROOT,
     CONTAINER_LAUNCHER,
     PACKAGE_ROOT,
+    HOST_LAUNCHER,
     CONTAINER_NOTIFY_CREDENTIALS,
     CONTAINER_TRACKER_RUNTIME_DIR,
     CONTAINER_POLICY_RUNTIME_DIR,
@@ -3592,14 +3593,14 @@ def host_main(
 
 
 def external_command(command: list[str], agent: str, name: str, *, container: bool) -> list[str]:
-    launcher = ["python3", str(CONTAINER_LAUNCHER)] if container else [sys.executable, "-m", "agent_box"]
+    launcher = ["python3", str(CONTAINER_LAUNCHER)] if container else [sys.executable, str(HOST_LAUNCHER)]
     return [*launcher, "_external", name, agent, *command]
 
 
 def remote_control_command(command: list[str], agent: str, config: Config, *, container: bool) -> list[str]:
     if not getattr(config.agents, agent).remote_control:
         return command
-    launcher = ["python3", str(CONTAINER_LAUNCHER)] if container else [sys.executable, "-m", "agent_box"]
+    launcher = ["python3", str(CONTAINER_LAUNCHER)] if container else [sys.executable, str(HOST_LAUNCHER)]
     return [*launcher, "_session", agent, *command]
 
 
