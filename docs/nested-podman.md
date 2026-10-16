@@ -52,6 +52,9 @@ project in `.agent-box.json`:
 | `agent-box uninstall` | listed, kept | listed, kept |
 | `agent-box uninstall --purge` | deleted after you confirm | deleted after you confirm |
 
+A box keeps the setting it was created with: changing it while the box runs,
+or before a detached box is cleaned up, takes effect with the next box.
+
 With the default, each box starts with empty nested storage, so a scratch
 project leaves nothing behind but pays for its pulls and builds every time.
 Turn it on for a project whose images and build cache are worth keeping.

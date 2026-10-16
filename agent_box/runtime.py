@@ -1710,13 +1710,33 @@ def release_k3s(workspace: Workspace, config: Config | None = None,
         print(f"agent-box: stopped the k3s cluster {k3s.name(workspace_identity(workspace))}", file=sys.stderr)
 
 
+def last_box_config(workspace: Workspace) -> Config | None:
+    """The configuration the workspace's latest box was created with; ``None`` when unreadable.
+
+    Data a box used goes or stays by the policy that box was created with, as
+    every session in it did: a setting changed since, or read by a command
+    that never joined the box, must not delete what the box was told to keep.
+    Without any box record the current configuration applies.
+    """
+    config = effective_config(runtime_config_base())
+    policies = sorted(workspace_runtime_state(workspace).root.glob("box-*.json"))
+    if not policies:
+        return config
+    try:
+        return apply_box_policy(config, read_json(policies[-1]))
+    except (OSError, ValueError, TypeError, KeyError, AttributeError):
+        return None
+
+
 def release_nested_podman(workspace: Workspace, config: Config | None = None) -> None:
     """Delete disposable nested Podman data once the workspace has no box.
 
-    An exited box that is still present keeps its volume mounted; the next
-    box's creation decides for it.
+    ``config`` is the gone box's own; without it the box's record decides,
+    and an unreadable record keeps the data. An exited box that is still
+    present keeps its volume mounted; the next box's creation decides for it.
     """
-    if (config or effective_config(runtime_config_base())).box.podman.persistent_data:
+    config = config or last_box_config(workspace)
+    if config is None or config.box.podman.persistent_data:
         return
     workspace_id = workspace_identity(workspace)
     # The volume first: most workspaces have none, and then Podman is asked once.
@@ -3216,7 +3236,9 @@ def stop_main(args: list[str], workspace_root: str = "") -> int:
                                                                k3s_state_dir(runtime_state)):
             kept = "" if config.box.k3s.persistent_data else " and deleted its data"
             print(f"agent-box: stopped the k3s cluster {sidecar}{kept}", file=sys.stderr)
-        if (podman_data or not config.box.podman.persistent_data) and remove_nested_podman_volume(workspace_id):
+        box_config = last_box_config(workspace)
+        disposable = box_config is not None and not box_config.box.podman.persistent_data
+        if (podman_data or disposable) and remove_nested_podman_volume(workspace_id):
             print(f"agent-box: deleted the nested Podman data {nested_podman_volume(workspace_id)}", file=sys.stderr)
     return 0
 

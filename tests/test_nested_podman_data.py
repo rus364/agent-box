@@ -163,6 +163,30 @@ class ReleaseTests(NestedPodmanDataTestCase):
         with mock.patch.object(runtime, "inspect_workspace_container", return_value=box):
             runtime.release_nested_podman(self.workspace, config)
 
+    def record_box(self, config):
+        """What creating a box leaves in the workspace's state, as ensure_workspace_container writes it."""
+        spec = runtime.workspace_container_spec(self.workspace, [], Path(__file__).parents[1], config)
+        spec.runtime_state.root.mkdir(parents=True, exist_ok=True)
+        runtime.atomic_write_json(spec.runtime_state.root / f"box-{spec.policy_id}.json",
+                                  runtime.workspace_box_policy(spec), 0o600)
+
+    def test_a_gone_box_keeps_what_it_was_created_to_keep(self):
+        """attach cleans up without the box's spec; a setting changed since must not delete kept data."""
+        self.own_volume()
+        self.record_box(self.config(persistent=True, podman=False))
+        with mock.patch.object(runtime, "effective_config", return_value=self.config()):
+            self.release(None, None)
+        self.assertIn(self.volume, self.podman.volumes)
+
+    def test_an_unreadable_box_record_keeps_the_data(self):
+        self.own_volume()
+        root = runtime.workspace_runtime_state(self.workspace).root
+        root.mkdir(parents=True)
+        (root / "box-0.json").write_text("{")
+        with mock.patch.object(runtime, "effective_config", return_value=self.config()):
+            self.release(None, None)
+        self.assertIn(self.volume, self.podman.volumes)
+
     def test_disposable_data_goes_once_the_box_is_gone(self):
         self.own_volume()
         self.release(self.config(), None)
@@ -198,6 +222,12 @@ class StopTests(NestedPodmanDataTestCase):
     def test_stop_keeps_data_the_configuration_keeps(self):
         self.own_volume()
         self.stop(self.config(persistent=True))
+        self.assertIn(self.volume, self.podman.volumes)
+
+    def test_stop_follows_the_gone_box_rather_than_a_later_setting(self):
+        self.own_volume()
+        ReleaseTests.record_box(self, self.config(persistent=True, podman=False))
+        self.stop(self.config())
         self.assertIn(self.volume, self.podman.volumes)
 
     def test_podman_data_flag_deletes_kept_data(self):
