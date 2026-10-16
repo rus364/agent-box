@@ -450,6 +450,25 @@ RUN set -eux; \
     rm -rf /usr/bin/pebble /var/lib/pebble
 
 #
+# binfmt.d
+#
+# Rootless `podman build` (buildah's binfmt.MaybeRegister) registers every
+# binfmt.d line it finds, mounting binfmt_misc first. Since Linux 6.7 that
+# mount is a new, empty instance for the nested Podman user namespace, and it
+# hides the host's qemu-user registrations until the box stops: one stray
+# entry, python3.14-minimal's, turns every later cross-architecture build or
+# run into "Exec format error". Without entries buildah mounts nothing and the
+# host's emulation reaches the nested containers. The dpkg exclusion keeps
+# packages installed or upgraded later from bringing one back. Placed after the
+# large stable layers, like Pebble's removal, for the same reason.
+#
+
+RUN set -eux; \
+    printf '%s\n' 'path-exclude=/etc/binfmt.d/*' 'path-exclude=/usr/lib/binfmt.d/*' \
+        > /etc/dpkg/dpkg.cfg.d/agent-box-binfmt; \
+    rm -f /etc/binfmt.d/*.conf /usr/lib/binfmt.d/*.conf
+
+#
 # ---------------------------------------------------------------------------
 # Frequently updated tools
 # ---------------------------------------------------------------------------
@@ -696,6 +715,7 @@ RUN set -eux; \
     fd --version; \
     just --version; \
     test ! -e /usr/bin/pebble; \
+    test -z "$(find /etc/binfmt.d /usr/lib/binfmt.d -name '*.conf' 2>/dev/null)"; \
     tmux -V
 
 # Each group verifies only what it actually installed. A check that ran

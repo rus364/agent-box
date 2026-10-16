@@ -333,6 +333,23 @@ class ImageSurfaceTests(unittest.TestCase):
         self.assertLess(removal, text.index("ARG TOOLS_REFRESH="))
         self.assertIn("test ! -e /usr/bin/pebble", text)
 
+    def test_no_binfmt_entry_can_hide_the_hosts_emulation(self):
+        """Rootless podman build registers any binfmt.d entry in a fresh
+        binfmt_misc instance for the nested user namespace, which hides the
+        host's qemu registrations: python3.14-minimal's entry made arm64
+        builds and later runs fail with "Exec format error". dpkg must keep
+        later installs from adding one, the removal must not rebuild the
+        stable layers, and the sanity check must catch a base that ships one."""
+        text = containerfile_text()
+        exclusion = text.index("> /etc/dpkg/dpkg.cfg.d/agent-box-binfmt")
+        for path in ("/etc/binfmt.d/*", "/usr/lib/binfmt.d/*"):
+            self.assertIn(f"'path-exclude={path}'", text)
+        for stable in ("install --with-deps chromium", "jscpd@5.0.16"):
+            self.assertLess(text.index(stable), exclusion)
+        self.assertLess(exclusion, text.index("ARG TOOLS_REFRESH="))
+        self.assertIn("rm -f /etc/binfmt.d/*.conf /usr/lib/binfmt.d/*.conf", text)
+        self.assertIn("""test -z "$(find /etc/binfmt.d /usr/lib/binfmt.d -name '*.conf' 2>/dev/null)\"""", text)
+
 
 class IdentityValidationShellTests(unittest.TestCase):
     """Run the Containerfile's own validation snippet through /bin/sh.
