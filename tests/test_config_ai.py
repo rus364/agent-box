@@ -11,7 +11,7 @@ from unittest.mock import Mock, patch
 from agent_box import cli, completion, config as config_module, config_proposal, runtime
 from agent_box.config import Config, load_config, save_config
 from agent_box.errors import AgentBoxError
-from agent_box.paths import CONTAINER_LAUNCHER_ROOT, MANAGED_SKILLS_SOURCE
+from agent_box.paths import CONTAINER_LAUNCHER_ROOT, MANAGED_SKILLS_SOURCE, PACKAGE_ROOT
 
 SKILL = MANAGED_SKILLS_SOURCE / "ab-config" / "SKILL.md"
 
@@ -54,7 +54,8 @@ class ConfigAiTests(unittest.TestCase):
         args, script_dir, _ = self.launch.call_args.args
         self.assertEqual(args[0], "codex")
         self.assertIn(str(CONTAINER_LAUNCHER_ROOT / "agent_box/skills/ab-config/SKILL.md"), args[1])
-        self.assertTrue((script_dir / "agent_box/skills/ab-config/SKILL.md").is_file(), "the prompt names a shipped file")
+        self.assertEqual(script_dir, PACKAGE_ROOT)
+        self.assertTrue((script_dir / "skills/ab-config/SKILL.md").is_file(), "the prompt names a shipped file")
         self.run_ai()
         self.assertEqual(len(self.launch.call_args.args[0]), 1, "without an agent the configured default starts")
         self.apply.assert_not_called()

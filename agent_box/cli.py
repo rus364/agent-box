@@ -744,7 +744,7 @@ def config_ai(args: list[str]) -> None:
     """
     from . import runtime
     from .launch_options import LaunchOptions
-    from .paths import CONTAINER_LAUNCHER_ROOT, MANAGED_SKILLS_SOURCE
+    from .paths import CONTAINER_LAUNCHER_ROOT, MANAGED_SKILLS_SOURCE, PACKAGE_ROOT
     if len(args) > 1 or args and args[0] not in ("claude", "codex"):
         die("expected: agent-box config ai [claude|codex]")
     if _inside_session():
@@ -754,7 +754,7 @@ def config_ai(args: list[str]) -> None:
     skill = CONTAINER_LAUNCHER_ROOT / "agent_box/skills" / CONFIG_AI_SKILL
     prompt = f"Read {skill} completely and follow it to configure agent-box for this project with me."
     try:
-        runtime.runtime_main([*args, prompt], Path(__file__).resolve().parent.parent, LaunchOptions())
+        runtime.runtime_main([*args, prompt], PACKAGE_ROOT, LaunchOptions())
         code = 0
     except SystemExit as exc:
         code = exc.code
