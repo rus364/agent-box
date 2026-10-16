@@ -39,16 +39,16 @@ def ignored_rules(text):
 class SettingTests(unittest.TestCase):
     def test_an_empty_value_is_the_default_and_keeps_the_file_sparse(self):
         """Empty means today's rules; saving defaults must not pin it into config.json."""
-        self.assertEqual(Config().language, "")
-        self.assertEqual(Config.from_dict({"language": "  English  "}).language, "English")
+        self.assertEqual(Config().workflow.language, "")
+        self.assertEqual(Config.from_dict({"workflow": {"language": "  English  "}}).workflow.language, "English")
 
     def test_a_project_overrides_the_global_language(self):
         """One repository may keep its tasks in Russian while the global choice is English."""
         config = Config()
-        config.language = "English"
-        self.assertEqual(project_config.apply(config, {}).language, "English")
-        self.assertEqual(project_config.apply(config, {"language": "Русский"}).language, "Русский")
-        self.assertEqual(config.language, "English")
+        config.workflow.language = "English"
+        self.assertEqual(project_config.apply(config, {}).workflow.language, "English")
+        self.assertEqual(project_config.apply(config, {"workflow": {"language": "Русский"}}).workflow.language, "Русский")
+        self.assertEqual(config.workflow.language, "English")
 
     def test_a_value_that_would_break_or_extend_a_prompt_is_refused_everywhere_it_enters(self):
         """The value is substituted into prompts as is, so a second line could carry an instruction of its own."""
@@ -56,42 +56,42 @@ class SettingTests(unittest.TestCase):
                     "English\x1b[31m", "E" * 41):
             with self.subTest(bad=bad):
                 with self.assertRaisesRegex(AgentBoxError, "language"):
-                    project_config.validate({"language": bad}, Path(".agent-box.json"))
+                    project_config.validate({"workflow": {"language": bad}}, Path(".agent-box.json"))
                 config = Config()
-                config.language = bad
-                self.assertTrue(any("language" in error for error in config_menu.validate(config)))
+                config.workflow.language = bad
+                self.assertTrue(any("workflow.language" in error for error in config_menu.validate(config)))
                 with self.assertRaisesRegex(AgentBoxError, "language"):
-                    project_config.apply(Config(), {"language": bad})
+                    project_config.apply(Config(), {"workflow": {"language": bad}})
         for good in ("English", "Русский", "Português (Brasil)"):
             with self.subTest(good=good):
-                project_config.validate({"language": good}, Path(".agent-box.json"))
+                project_config.validate({"workflow": {"language": good}}, Path(".agent-box.json"))
 
     def test_the_menu_explains_the_setting_and_a_project_may_set_it(self):
         """config describe reports project_allowed from the loader's own field list."""
-        self.assertIn("Empty keeps", config_menu.help_for(("language",)))
-        self.assertIsNotNone(project_config.project_field(("language",)))
+        self.assertIn("Empty keeps", config_menu.help_for(("workflow", "language")))
+        self.assertIsNotNone(project_config.project_field(("workflow", "language")))
 
     def test_the_session_snapshot_carries_the_global_value_and_the_project_still_wins(self):
         """Inside a box config.json is absent, so a value missing from the snapshot would read as unset."""
         with tempfile.TemporaryDirectory() as directory:
             config = Config()
             config.tracker.enabled = True
-            config.language = "English"
+            config.workflow.language = "English"
             runtime.sync_tracker_runtime(config, Path(directory))
             artifact = Path(directory) / "config.json"
-            self.assertEqual(json.loads(artifact.read_text())["language"], "English")
+            self.assertEqual(json.loads(artifact.read_text())["workflow"]["language"], "English")
             with patch.dict(os.environ, {"AGENT_BOX_RUNTIME_CONFIG": str(artifact)}, clear=True):
                 with patch.object(project_config, "load", return_value={}):
-                    self.assertEqual(effective_config().language, "English")
-                with patch.object(project_config, "load", return_value={"language": "Deutsch"}):
-                    self.assertEqual(effective_config().language, "Deutsch")
+                    self.assertEqual(effective_config().workflow.language, "English")
+                with patch.object(project_config, "load", return_value={"workflow": {"language": "Deutsch"}}):
+                    self.assertEqual(effective_config().workflow.language, "Deutsch")
 
 
 class ReportTests(WorkflowCase):
     def test_workflow_inspect_and_begin_report_the_effective_language(self):
         """Skills read the value from here; null tells them to keep each text's own rule."""
         self.assertIsNone(self.run_workflow("inspect", "1")["configuration"]["language"])
-        self.config.language = "English"
+        self.config.workflow.language = "English"
         self.assertEqual(self.run_workflow("inspect", "1")["configuration"]["language"], "English")
 
     def test_tracker_status_reports_the_effective_language(self):
@@ -100,7 +100,7 @@ class ReportTests(WorkflowCase):
         self.adapter.capabilities = set()
         self.adapter.lifecycle_report.return_value = []
         for language, expected in (("", None), ("English", "English")):
-            self.config.language = language
+            self.config.workflow.language = language
             with self.subTest(language=language), \
                     patch.object(cli, "context", return_value=(self.adapter, BINDING, self.root)), \
                     patch.object(cli, "effective_config", return_value=self.config):
@@ -138,7 +138,7 @@ class GeneratedPromptTests(WorkflowCase):
         """
         before = self.sync_prompt()
         self.assertNotIn("Working language:", before)
-        self.config.language = "English"
+        self.config.workflow.language = "English"
         after = self.sync_prompt()
         self.assertTrue(after.startswith(before))
         self.assertIn("Working language: English\n", after)
@@ -155,7 +155,7 @@ class GeneratedPromptTests(WorkflowCase):
         """Code comments and docs are project text; the answer is a handoff and stays English."""
         before = self.worker_prompt()
         self.assertNotIn("Working language:", before)
-        self.config.language = "Русский"
+        self.config.workflow.language = "Русский"
         after = self.worker_prompt()
         self.assertIn("Working language: Русский\n", after)
         self.assertEqual(after.replace("Working language: Русский\n", ""), before)
@@ -164,7 +164,7 @@ class GeneratedPromptTests(WorkflowCase):
 
     def test_native_and_managed_reviewers_learn_the_working_language(self):
         """A reviewer judging comments and docs must not take Russian text for a defect when Russian is chosen."""
-        self.config.language = "Русский"
+        self.config.workflow.language = "Русский"
         opened = self.run_workflow("review", "1", "--native")
         self.assertIn("Working language: Русский.", self.delegation_input(opened).read_text())
         self.native_result()

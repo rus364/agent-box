@@ -65,14 +65,14 @@ class ConfigMenuTests(unittest.TestCase):
         data.pop('version')
         data['host'].pop('bin_dir')
         expected = {
-            (): ['agents', 'box', 'credentials', 'tracker', 'workflow', 'language', 'host'],
+            (): ['agents', 'box', 'credentials', 'tracker', 'workflow', 'host'],
             ('agents',): ['default', 'claude', 'codex', 'host_env', 'external_apis'],
             ('agents', 'codex'): ['native_agent_wait', 'remote_control'],
             ('box',): ['tools', 'k3s', 'audio', 'links', 'env'],
             ('credentials',): ['git', 'github', 'registries', 'kubernetes', 'cloud'],
             ('host',): ['notifications', 'claude_skill_links'],
             ('workflow',): ['enabled', 'merge_mode', 'auto_push', 'cleanup_local_branches',
-                           'cleanup_remote_branches', 'use_tiers', 'worker', 'scout', 'review', 'sync', 'timeout_seconds'],
+                           'cleanup_remote_branches', 'language', 'use_tiers', 'worker', 'scout', 'review', 'sync', 'timeout_seconds'],
             ('workflow', 'worker'): ['models', 'tiers'],
             ('workflow', 'scout'): ['limit', 'models'],
             ('workflow', 'sync'): ['policy', 'events', 'paths', 'scope', 'references', 'models', 'tiers'],

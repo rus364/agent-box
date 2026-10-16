@@ -173,9 +173,9 @@ def run(root, binding, adapter, config, task, event="manual", *, native=False, r
               f"project {binding.project}; recursive={str(binding.recursive).lower()}")
     prompt = (f"Assigned role: sync executor\nSource: {task.id}\nRead: agent-box tracker get {task.url or task.id} --no-comments\nEvent: {event}\nScope: {target}\n"
               f"References: {str(settings.references).lower()}\n")
-    if config.language:
+    if config.workflow.language:
         # The rules are also the native profile shared by every repository; only the value is this one's.
-        prompt += f"Working language: {config.language}\n"
+        prompt += f"Working language: {config.workflow.language}\n"
     saved = workflow.read_evidence(root, task)
     if saved.get("base_head") and saved.get("head"):
         prompt += f"Source commits: {saved['base_head']}..{saved['head']} (verify integration before propagation).\n"

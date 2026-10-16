@@ -185,7 +185,7 @@ def delete_project(root, path, adapter, project):
 
 def working_language():
     from ..config import effective_config
-    return effective_config().language
+    return effective_config().workflow.language
 
 
 def start(root, project, path=None, provider=None, apply=False):

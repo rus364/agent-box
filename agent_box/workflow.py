@@ -711,7 +711,7 @@ def configuration_summary(config):
             **scout_diagnostics(config),
             "cleanup_local_branches": config.workflow.cleanup_local_branches,
             "cleanup_remote_branches": config.workflow.cleanup_remote_branches,
-            "language": config.language or None}
+            "language": config.workflow.language or None}
 
 
 def resolve(root, adapter, task, *, allow_missing=False):
@@ -1557,7 +1557,7 @@ def delegate(args, root, adapter, config):
         raise AgentBoxError(f"{path} is empty, so the coordinator does this {args.role} work itself in its own "
                             f"session; configure candidates there to delegate it")
     selected = candidates(config, args.role, tier)
-    prompt = delegate_prompt(args.role, task, brief, repository_instructions(root), config.language)
+    prompt = delegate_prompt(args.role, task, brief, repository_instructions(root), config.workflow.language)
     # A worker shares the working tree with validation; scouts only read, up to their limit.
     slot = lock(root, "work") if args.role == "worker" else scout_slot(root, config.workflow.scout.limit)
     try:
@@ -1605,7 +1605,7 @@ def review(args, root, binding, adapter, config, task, parent, tasks, base, fing
         budget = start_review(root, binding, task, limit, round_id, fingerprint, "native")
         saved = evidence(root, task, fingerprint, base)
         prompt = reviewer_handoff(root, base, task, parent, tasks, brief, saved, review_context, round_id,
-                                  config.language)
+                                  config.workflow.language)
         descriptor = review_descriptor(identity, task, fingerprint, round_id)
         bind_delegation_input(root, descriptor, prompt)
         return {"task": task.id, "round": round_id, "scope": fingerprint, "review_budget": budget,
@@ -1649,7 +1649,7 @@ def review(args, root, binding, adapter, config, task, parent, tasks, base, fing
             started = True
             saved = evidence(root, task, fingerprint, base)
             prompt = reviewer_handoff(root, base, task, parent, tasks, brief, saved, review_context, round_id,
-                                      config.language)
+                                      config.workflow.language)
             descriptor = review_descriptor(identity, task, fingerprint, round_id)
             bind_delegation_input(root, descriptor, prompt)
             try:

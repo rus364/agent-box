@@ -934,7 +934,6 @@ def sync_tracker_runtime(config: Config, directory: Path | None = None, *, polic
         "global_tracker_urls": getattr(config, "_global_tracker_urls", {
             name: connection.url for name, connection in config.tracker.connections.items()}),
         "workflow": config.workflow.to_dict(),
-        "language": config.language,
         # Claude's status line is drawn inside the box, where the saved file is not
         # mounted; whether agent-box owns the host's statusLine slot stays host-only.
         "agents": {

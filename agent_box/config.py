@@ -965,6 +965,11 @@ class WorkflowConfig:
     cleanup_local_branches: bool = False
     cleanup_remote_branches: bool = False
     worker: WorkerConfig = field(default_factory=WorkerConfig)
+    #: The working language of project text in every area at once (tracker,
+    #: GitHub, commits, repository text); empty keeps each text's own rule.
+    #: Per-area switches were rejected as configuration nobody asked to vary.
+    #: It applies with the tracker alone too, since ab-tracker reads it.
+    language: str = ""
     #: Launch-only candidate lists pinned by --worker/--reviewer/--scout/--sync, keyed by role.
     #: Never serialized: a session re-derives them from its snapshot's launch
     #: flags, so no configuration file can hold one.
@@ -1017,6 +1022,7 @@ class WorkflowConfig:
         errors = []
         if self.merge_mode not in ("github", "local"):
             errors.append("workflow.merge_mode must be github or local")
+        errors += language_problems(self.language)
         value = self.timeout_seconds
         if not isinstance(value, int) or not math.isfinite(value) or not 30 <= value <= 86400:
             errors.append("workflow.timeout_seconds must be between 30 and 86400")
@@ -1101,6 +1107,7 @@ class WorkflowConfig:
         result.review = ReviewConfig.from_dict(data.get("review"))
         result.sync = PlanSyncConfig.from_dict(data.get("sync"))
         result.worker = WorkerConfig.from_dict(data.get("worker"))
+        result.language = _str(data, "language")
         return result
 
 
@@ -1296,28 +1303,21 @@ def language_problems(language: str) -> list[str]:
     # Zl and Zp are Unicode's line and paragraph separators, which a prompt reader also breaks on.
     if any(unicodedata.category(character)[0] == "C" or unicodedata.category(character) in ("Zl", "Zp")
            for character in language):
-        return ["language must be one line without control characters"]
+        return ["workflow.language must be one line without control characters"]
     if len(language) > LANGUAGE_LIMIT:
-        return [f"language must be at most {LANGUAGE_LIMIT} characters, a language name such as English"]
+        return [f"workflow.language must be at most {LANGUAGE_LIMIT} characters, a language name such as English"]
     return []
 
 
 @dataclass
 class Config:
-    """The whole file, one section per menu entry at the root.
-
-    ``language`` is the one root setting: the working language of project text
-    in every area at once (tracker, GitHub, commits, repository text). Per-area
-    switches were rejected as configuration nobody asked to vary; empty keeps
-    each kind of text's own rule.
-    """
+    """The whole file, one section per menu entry at the root."""
 
     agents: AgentsConfig = field(default_factory=AgentsConfig)
     box: BoxConfig = field(default_factory=BoxConfig)
     credentials: CredentialsConfig = field(default_factory=CredentialsConfig)
     tracker: TrackerConfig = field(default_factory=TrackerConfig)
     workflow: WorkflowConfig = field(default_factory=WorkflowConfig)
-    language: str = ""
     host: HostConfig = field(default_factory=HostConfig)
 
     def to_dict(self) -> dict[str, Any]:
@@ -1328,7 +1328,6 @@ class Config:
             "credentials": self.credentials.to_dict(),
             "tracker": self.tracker.to_dict(),
             "workflow": self.workflow.to_dict(),
-            "language": self.language,
             "host": self.host.to_dict(),
         }
 
@@ -1342,7 +1341,6 @@ class Config:
             credentials=CredentialsConfig.from_dict(data.get("credentials")),
             tracker=TrackerConfig.from_dict(data.get("tracker")),
             workflow=WorkflowConfig.from_dict(data.get("workflow")),
-            language=_str(data, "language"),
             host=HostConfig.from_dict(data.get("host")),
         )
 
