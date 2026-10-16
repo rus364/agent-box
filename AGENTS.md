@@ -1,11 +1,11 @@
-<!-- BEGIN AGENT-BOX workflow sha256=98bc9b8ea1c1ee0766607919331f90d7263bc4408086e97ee5f14af8486f794c -->
+<!-- BEGIN AGENT-BOX workflow sha256=16aadf98d034a14641721431422fad7a6a5be18d0038283d2c66af96eb4b49c6 -->
 Read the tracked task before work; .agent-box.json binds this repository to its tracker project.
 Use agent-box tracker for task state, progress and dependencies; read related history when context is missing.
 Use ab-interview, ab-plan, ab-work, ab-sync, ab-review, ab-pr, and ab-land as needed. ab-setup maintains this binding and ab-adopt brings an existing project in line with the workflow; ab-normalize processes unmarked tasks in a bound project.
 The coordinator owns branches, commits, lifecycle, dependencies, and GitHub actions. Delegate implementation sequentially and research to scouts, which may run in parallel, when their model lists are configured; with an empty list the coordinator does that work itself.
 A worker changes project files and answers; scouts and a fresh reviewer only read. Plan sync reads the repository and updates tracker descriptions and comments through agent-box tracker; it never changes project files, Git or lifecycle. The coordinator verifies answers and findings and commits what it accepts.
 Tracker comments are a human journal. Branch, base branch, and pull request come from Git and GitHub; lifecycle comes from the tracker's own fields, never from comment text.
-Use the user's language with them and the task's language in the tracker. Use English for agent handoffs, reports and implementation; generated diagnostics may be English.
+Use the user's language with them. Write tracker text, GitHub text, commit messages, code comments and documentation in the `language` that `agent-box tracker status` and `workflow inspect` report; when it is null, use the task's language in the tracker and English for implementation. Agent handoffs and reports stay English; generated diagnostics may be English.
 Complete subtasks only after validation and integration into the parent branch; complete parents only after merge into the base branch.
 <!-- END AGENT-BOX workflow -->
 

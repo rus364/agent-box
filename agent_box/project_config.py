@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 from .atomicio import atomic_write_text
-from .config import Config, MODEL_ENTRY, TRACKER_PROVIDERS
+from .config import Config, MODEL_ENTRY, TRACKER_PROVIDERS, language_problems
 from .errors import AgentBoxError
 from .repo_binding import BINDING_FILE, repository_root, server_identity
 
@@ -27,6 +27,7 @@ PROJECT_FIELDS = {
     "box": {"tools": _fields(Config().box.tools.to_dict()), "k3s": _fields(Config().box.k3s.to_dict(), ("k3s",))},
     "tracker": {"provider": str, "project": str, "recursive": bool,
                 "connections": {provider: {"url": str} for provider in TRACKER_PROVIDERS}},
+    "language": str,
 }
 CREDENTIAL_FIELDS = {("host", "notifications", "telegram_token"), ("credentials", "github", "token"),
                      *(("tracker", "connections", provider, "token") for provider in TRACKER_PROVIDERS)}
@@ -127,7 +128,7 @@ def validate(data, path):
         if key in workflow and not workflow[key]:
             raise AgentBoxError(f"Invalid project configuration: {path}: workflow.{key} must be nonempty")
     merged = Config.from_dict(merge(Config().to_dict(), data))
-    errors = merged.workflow.validate() + merged.box.validate()
+    errors = merged.workflow.validate() + merged.box.validate() + language_problems(merged.language)
     if errors:
         raise AgentBoxError(f"Invalid project configuration: {path}: {errors[0]}")
 
@@ -171,7 +172,7 @@ def apply(config, data):
     result = Config.from_dict(merge(config.to_dict(), data))
     # Preserve the selected account's address before overlaying project identity.
     result._project_base = getattr(config, '_project_base', config)
-    errors = result.workflow.validate()
+    errors = result.workflow.validate() + language_problems(result.language)
     if errors:
         raise AgentBoxError(errors[0])
     return result

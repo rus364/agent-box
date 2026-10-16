@@ -260,8 +260,13 @@ expected. A cleanup failure never undoes the merge or Done.
 | `workflow.review.github_provider` | `auto` | `auto`, `local`, `codex` or `claude` |
 | `workflow.review.wait_seconds` | 3600 | How long to wait for a cloud reviewer |
 
+The root setting `language` chooses the
+[working language](../configuration.md#the-configuration-menu) of tracker,
+GitHub, commit and repository text; `workflow inspect` reports it as
+`configuration.language`.
+
 All workflow settings except `enabled` can be overridden per project in
-`.agent-box.json`. Session options such as `--review`, `--rounds`, `--merge`
+`.agent-box.json`, and so can `language`. Session options such as `--review`, `--rounds`, `--merge`
 and `--no-push` override them for one session; see
 [session options](../usage.md#session-options).
 

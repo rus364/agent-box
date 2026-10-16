@@ -60,9 +60,18 @@ def delegate_rules(role):
                    "unverified or blocked.")
 
 
-def delegate_prompt(role, task, brief, repository_instructions):
-    """A managed worker or scout starts from the brief alone, never the coordinator's history."""
-    return (delegate_rules(role) + f"\n\nTask {task.id}: {task.title}\n\n----- Assignment -----\n{brief}\n"
+def delegate_prompt(role, task, brief, repository_instructions, language=""):
+    """A managed worker or scout starts from the brief alone, never the coordinator's history.
+
+    The working language is substituted here, per run, rather than into
+    delegate_rules: native profiles are installed once for every repository.
+    Only a worker writes project text; its answer stays an English handoff.
+    """
+    rules = delegate_rules(role)
+    if language and role == "worker":
+        rules += (f" Working language: {language}. Write new or changed code comments, docstrings and documentation "
+                  f"in {language}; the answer stays English.")
+    return (rules + f"\n\nTask {task.id}: {task.title}\n\n----- Assignment -----\n{brief}\n"
             + (f"\n----- Repository instructions -----\n{repository_instructions}\n" if repository_instructions else ""))
 
 

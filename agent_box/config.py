@@ -1280,15 +1280,42 @@ class HostConfig:
                    bin_dir=bin_dir if isinstance(bin_dir, str) else "")
 
 
+#: Long enough for any language name, short enough that a value cannot carry instructions into a prompt.
+LANGUAGE_LIMIT = 40
+
+
+def language_problems(language: str) -> list[str]:
+    """Why a working language cannot be put into a generated prompt as is.
+
+    The value is free text so any language can be named in its own words; a
+    list of codes would need a catalogue agent-box has no other use for. One
+    short line is the only shape that substitutes into a prompt without
+    breaking it or adding a rule of its own.
+    """
+    import unicodedata
+    if any(unicodedata.category(character).startswith("C") for character in language):
+        return ["language must be one line without control characters"]
+    if len(language) > LANGUAGE_LIMIT:
+        return [f"language must be at most {LANGUAGE_LIMIT} characters, a language name such as English"]
+    return []
+
+
 @dataclass
 class Config:
-    """The whole file, one section per menu entry at the root."""
+    """The whole file, one section per menu entry at the root.
+
+    ``language`` is the one root setting: the working language of project text
+    in every area at once (tracker, GitHub, commits, repository text). Per-area
+    switches were rejected as configuration nobody asked to vary; empty keeps
+    each kind of text's own rule.
+    """
 
     agents: AgentsConfig = field(default_factory=AgentsConfig)
     box: BoxConfig = field(default_factory=BoxConfig)
     credentials: CredentialsConfig = field(default_factory=CredentialsConfig)
     tracker: TrackerConfig = field(default_factory=TrackerConfig)
     workflow: WorkflowConfig = field(default_factory=WorkflowConfig)
+    language: str = ""
     host: HostConfig = field(default_factory=HostConfig)
 
     def to_dict(self) -> dict[str, Any]:
@@ -1299,6 +1326,7 @@ class Config:
             "credentials": self.credentials.to_dict(),
             "tracker": self.tracker.to_dict(),
             "workflow": self.workflow.to_dict(),
+            "language": self.language,
             "host": self.host.to_dict(),
         }
 
@@ -1312,6 +1340,7 @@ class Config:
             credentials=CredentialsConfig.from_dict(data.get("credentials")),
             tracker=TrackerConfig.from_dict(data.get("tracker")),
             workflow=WorkflowConfig.from_dict(data.get("workflow")),
+            language=_str(data, "language"),
             host=HostConfig.from_dict(data.get("host")),
         )
 

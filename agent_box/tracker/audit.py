@@ -31,6 +31,15 @@ NOTES = (
 )
 
 
+def notes(language=""):
+    """The notes for this repository: a configured working language replaces preserving a task's own."""
+    if not language:
+        return list(NOTES)
+    return [note.replace("Preserve meaning and language.",
+                         f"Preserve meaning; save every edited task text wholly in the working language, {language}.")
+            for note in NOTES]
+
+
 def task_problems(task, get):
     """Everything mechanically wrong with one task, as stable codes."""
     problems = []
@@ -91,7 +100,7 @@ def task_problems(task, get):
     return problems
 
 
-def audit(tasks, get, lifecycle=()):
+def audit(tasks, get, lifecycle=(), language=""):
     """Structural errors block cutover; preparation warnings remain visible."""
     duplicates = {}
     for task in tasks:
@@ -110,15 +119,15 @@ def audit(tasks, get, lifecycle=()):
                         "state": task.state, "problems": problems})
     errors = [dict(task=row["id"], **problem) for row in results for problem in row["problems"]
               if problem["severity"] == "error"]
-    return {"notes": list(NOTES), "scope": "project-tree",
+    return {"notes": notes(language), "scope": "project-tree",
             "lifecycle": list(lifecycle),
             "boards": [entry for entry in lifecycle if entry["problems"]],
             "tasks": results, "counts": counts, "errors": errors,
             "clean": not errors and not any(entry["problems"] for entry in lifecycle)}
 
 
-def audit_project(adapter, project, recursive=True):
+def audit_project(adapter, project, recursive=True, language=""):
     tasks = adapter.search(project, "", recursive)
     index = {task.id: task for task in tasks}
     return audit(tasks, lambda ident: index.get(ident) or adapter.get(ident),
-                 adapter.lifecycle_report(adapter.subtree(project, recursive)))
+                 adapter.lifecycle_report(adapter.subtree(project, recursive)), language)

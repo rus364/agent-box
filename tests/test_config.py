@@ -127,10 +127,10 @@ class SectionedSchemaTests(unittest.TestCase):
                "install": {"bin_dir": "/somewhere"}, "skills": {"claude_links": False}}
         self.assertEqual(Config.from_dict(old).to_dict(), Config().to_dict())
 
-    def test_the_root_holds_one_section_per_menu_entry(self):
+    def test_the_root_holds_one_entry_per_menu_entry(self):
         """The file and the menu share one tree, so a path read in one is found in the other."""
         self.assertEqual(list(Config().to_dict()),
-                         ["version", "agents", "box", "credentials", "tracker", "workflow", "host"])
+                         ["version", "agents", "box", "credentials", "tracker", "workflow", "language", "host"])
 
 
 class RoundTripTests(unittest.TestCase):

@@ -9,7 +9,7 @@ import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 
-from .config import AGENT_EFFORTS, AGENT_PROVIDERS, K3S_LIFETIMES, TOOL_GROUP_HELP, LAUNCH_AGENTS, Config, CredentialsConfig, EnvConfig, REVIEW_INCREMENTAL, REVIEW_PRESETS, TRACKER_PROVIDERS, TrackerConnection, candidate_label, model_entry
+from .config import AGENT_EFFORTS, AGENT_PROVIDERS, K3S_LIFETIMES, TOOL_GROUP_HELP, LAUNCH_AGENTS, Config, CredentialsConfig, EnvConfig, REVIEW_INCREMENTAL, REVIEW_PRESETS, TRACKER_PROVIDERS, TrackerConnection, candidate_label, language_problems, model_entry
 from . import api_models
 from .errors import AgentBoxError
 from .external_config import API_EFFORTS, EFFORTS, ExternalProvider, cli_models, model_defaults, model_settings, valid_model, valid_name, validate_connections
@@ -31,6 +31,10 @@ HELP = {
     "box": "What the workspace box is built with, the k3s cluster beside it, sound, and its environment.",
     "credentials": "Host identity and credentials the box's own tools may use. Everything that exposes a credential is off by default.",
     "host": "What agent-box does on the host itself: notifications, Claude skill links and the PATH symlink. Global only.",
+    "language": ("Working language of project text, such as English or Русский: tracker tasks and comments, pull requests and "
+                 "review replies, commit messages, code comments and documentation. Conversation with you stays in your "
+                 "language; agent handoffs and agent-box output stay English. Empty keeps each text's current rule. "
+                 "A project may override it."),
     "agents.default": "Agent started by `agent-box` without claude/codex; an explicit claude or codex always wins. Global only; not a project setting.",
     "host.bin_dir": "Directory holding the agent-box PATH symlink; empty means agent-box manages none. `agent-box config apply` restores the link here.",
     "agents.claude": "Claude session settings, including --host, and its status line. Global only.",
@@ -150,6 +154,7 @@ ACTION_HELP = {
 }
 LABELS = {
     "agents": "Agents", "box": "Workspace box", "credentials": "Credentials", "host": "Host",
+    "language": "Working language",
     "default": "Default agent", "statusline": "Status line",
     "claude": "Claude", "codex": "Codex", "github": "GitHub", "git": "Git",
     "command": "Custom command", "k3s": "k3s cluster", "links": "Web links", "claude_skill_links": "Claude skill links",
@@ -258,7 +263,7 @@ HOST_CHOICES = {("credentials", "registries", "hosts"), ("credentials", "registr
 # Presentation follows the user's decisions, not dataclass serialization order.
 MENU_GROUPS = {
     (): (
-        ("", ("agents", "box", "credentials", "tracker", "workflow", "host")),
+        ("", ("agents", "box", "credentials", "tracker", "workflow", "language", "host")),
     ),
     ("agents",): (
         ("Launch", ("default",)),
@@ -437,7 +442,7 @@ def needed_tools(draft):
 
 def validate(config):
     errors = (config.workflow.validate() + config.agents.codex.validate() + config.box.validate()
-              + validate_connections(config))
+              + validate_connections(config) + language_problems(config.language))
     if config.agents.claude.telegram_channel:
         from .channel import missing_requirements
         errors.extend(missing_requirements())

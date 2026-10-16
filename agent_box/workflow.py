@@ -710,7 +710,8 @@ def configuration_summary(config):
             "native_agent_wait": config.agents.codex.native_agent_wait.to_dict(),
             **scout_diagnostics(config),
             "cleanup_local_branches": config.workflow.cleanup_local_branches,
-            "cleanup_remote_branches": config.workflow.cleanup_remote_branches}
+            "cleanup_remote_branches": config.workflow.cleanup_remote_branches,
+            "language": config.language or None}
 
 
 def resolve(root, adapter, task, *, allow_missing=False):
@@ -1165,7 +1166,7 @@ def write_review_evidence(root, task_id, delegation, boundaries,
         raise
 
 
-def reviewer_handoff(root, base, task, parent, tasks, brief, saved, review_context, delegation):
+def reviewer_handoff(root, base, task, parent, tasks, brief, saved, review_context, delegation, language=""):
     """Compose the same neutral, complete review input for native and managed runs.
 
     Task descriptions and the diff live in files named by the manifest, so a large
@@ -1213,6 +1214,9 @@ def reviewer_handoff(root, base, task, parent, tasks, brief, saved, review_conte
         "Each finding needs proportionate severity, path/line, concrete scenario, impact, technical evidence and violated "
         "requirement. PASS has no findings.\n"
     )
+    if language:
+        prompt += (f"Working language: {language}. New or changed code comments, docstrings, documentation and commit "
+                   f"messages belong in {language}; task descriptions written earlier may be in another language.\n")
     prompt = render_handoff("reviewer", handoff, prompt)
     if len(prompt.encode()) > REVIEW_HANDOFF_MAX_BYTES:
         cleanup_review_evidence(evidence_path)
@@ -1553,7 +1557,7 @@ def delegate(args, root, adapter, config):
         raise AgentBoxError(f"{path} is empty, so the coordinator does this {args.role} work itself in its own "
                             f"session; configure candidates there to delegate it")
     selected = candidates(config, args.role, tier)
-    prompt = delegate_prompt(args.role, task, brief, repository_instructions(root))
+    prompt = delegate_prompt(args.role, task, brief, repository_instructions(root), config.language)
     # A worker shares the working tree with validation; scouts only read, up to their limit.
     slot = lock(root, "work") if args.role == "worker" else scout_slot(root, config.workflow.scout.limit)
     try:
@@ -1600,7 +1604,8 @@ def review(args, root, binding, adapter, config, task, parent, tasks, base, fing
     if args.native:
         budget = start_review(root, binding, task, limit, round_id, fingerprint, "native")
         saved = evidence(root, task, fingerprint, base)
-        prompt = reviewer_handoff(root, base, task, parent, tasks, brief, saved, review_context, round_id)
+        prompt = reviewer_handoff(root, base, task, parent, tasks, brief, saved, review_context, round_id,
+                                  config.language)
         descriptor = review_descriptor(identity, task, fingerprint, round_id)
         bind_delegation_input(root, descriptor, prompt)
         return {"task": task.id, "round": round_id, "scope": fingerprint, "review_budget": budget,
@@ -1643,7 +1648,8 @@ def review(args, root, binding, adapter, config, task, parent, tasks, base, fing
             start_review(root, binding, task, limit, round_id, fingerprint, "managed")
             started = True
             saved = evidence(root, task, fingerprint, base)
-            prompt = reviewer_handoff(root, base, task, parent, tasks, brief, saved, review_context, round_id)
+            prompt = reviewer_handoff(root, base, task, parent, tasks, brief, saved, review_context, round_id,
+                                      config.language)
             descriptor = review_descriptor(identity, task, fingerprint, round_id)
             bind_delegation_input(root, descriptor, prompt)
             try:

@@ -55,6 +55,19 @@ The picker offers Codex, Claude and enabled
 model IDs, since any CLI's model may serve any role. The suggestions are hints,
 not availability checks.
 
+**Working language.** `language` names the language of project text, such as
+`English` or `Русский`: tracker tasks and comments, pull requests and review
+replies, commit messages, code comments and documentation. Agents still talk
+to you in your own language; agent handoffs and agent-box's own output stay
+English. Empty, the default, keeps each text's current rule: the task's own
+language in the tracker, English for implementation. `agent-box tracker status`
+and `agent-box workflow inspect` report the effective value, and the shipped
+skills and the AGENTS.md workflow block read it from there; prompts agent-box
+generates for Plan sync, reviewers, workers and adoption name it directly.
+A task description an agent rewrites is saved wholly in the working language;
+older comments and untouched files are not translated. The value is one line
+of at most 40 characters.
+
 **Inside a workspace box** the saved file is not mounted. There
 `agent-box config apply` applies the session's rendered configuration — the
 shipped skills and the configured agent profiles — and leaves host-only parts
@@ -117,7 +130,8 @@ A project may set:
 - `box.tools` and `box.k3s`;
 - `tracker.provider` and `tracker.connections.<provider>.url`;
 - `tracker.project` and `tracker.recursive`, which identify the project and
-  exist only here.
+  exist only here;
+- `language`, the project's working language.
 
 Nested objects merge by key and lists replace the inherited list. An explicit
 `false`, an empty list or an allowed empty string is a choice, not a gap.

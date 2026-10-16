@@ -183,6 +183,11 @@ def delete_project(root, path, adapter, project):
     return adapter.delete_project(project, checkpoint)
 
 
+def working_language():
+    from ..config import effective_config
+    return effective_config().language
+
+
 def start(root, project, path=None, provider=None, apply=False):
     root = root.resolve()
     if path is None:
@@ -276,7 +281,7 @@ def check_cutover(root, path, apply=False):
     errors = [*copied["errors"], *copied["incomplete"]]
     if copied["missing_projects"]:
         errors.append("Clone is missing source projects")
-    report = audit_project(make_adapter(binding), target)
+    report = audit_project(make_adapter(binding), target, language=working_language())
     if not report["clean"]:
         errors.append("Staging audit has structural errors; resolve them before cutover")
     from .cli import move_journal
@@ -294,7 +299,7 @@ def check_cutover(root, path, apply=False):
     if errors:
         raise TrackerError("; ".join(errors), "conflict")
     copied["external_relations"] = adapter.preserve_external_relations(copied["external_relations"], True)
-    report = audit_project(make_adapter(binding), target)
+    report = audit_project(make_adapter(binding), target, language=working_language())
     result["audit"] = report
     if not report["clean"]:
         raise TrackerError("Staging audit has structural errors; resolve them before cutover", "conflict")
