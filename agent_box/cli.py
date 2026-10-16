@@ -521,6 +521,10 @@ def config_set(args: list[str]) -> None:
                 # The value may be a secret typed into the wrong place; name the setting only.
                 die(f'config set: the value for {name} must be JSON, for example true, 5, "text" or ["a"]')
             assignments.append((_setting_path(name), value))
+        elif not arg.startswith("-"):
+            # `PATH VALUE` is the usual slip; the stray word may be a secret, so it is not quoted back.
+            die("config set: give each setting as one PATH=JSON argument, for example "
+                "'workflow.language=\"English\"'; a value is never a separate argument")
         else:
             die(CONFIG_SET_USAGE)
     paths = [path for path, _ in assignments] + resets

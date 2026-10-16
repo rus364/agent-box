@@ -71,7 +71,10 @@ class ConfigSetTests(unittest.TestCase):
         self.assertIn("No changes", self.run_set("--project", "--reset", "workflow.review.max_lines"))
 
     def test_invalid_changes_leave_the_file_untouched_and_never_echo_the_value(self):
-        """A refused change must not half-apply, and a secret typed into it must not reach the transcript."""
+        """A refused change must not half-apply, and a secret typed into it must not reach the transcript.
+
+        `PATH VALUE` as two words is the usual slip; it gets its own hint instead of the bare usage line.
+        """
         before = self.file.read_text()
         refused = {
             ("audio.enabled=true",): "is not a project field",
@@ -80,6 +83,7 @@ class ConfigSetTests(unittest.TestCase):
             ("statusline.command=curl-secret-value",): "must be JSON",
             ("workflow.review.policy=\"sometimes\"",): "",
             ("--reset",): "expected",
+            ("workflow.language", "secret-value"): "one PATH=JSON argument",
             ("box.tools.browser=true", "box.tools.browser=false"): "once",
             ('workflow.review={"max_files": 5}', "workflow.review.max_lines=3"): "containing",
             ("--reset", "workflow.review", "workflow.review.max_lines=3"): "containing",
