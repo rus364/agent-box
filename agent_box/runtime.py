@@ -3280,28 +3280,6 @@ def stop_main(args: list[str], workspace_root: str = "") -> int:
     return 0
 
 
-def apply_path_symlink(config: Config) -> list[str]:
-    """Keep the recorded ``agent-box`` symlink pointing at this checkout.
-
-    Applying re-creates a link that something else removed, which is the whole
-    reason the directory is remembered. It never *chooses* one: an empty
-    ``host.bin_dir`` means the user declined the question or links the shim
-    themselves, and inventing a location here would be agent-box putting a
-    command on PATH that nobody asked for.
-
-    A refusal -- a foreign file already holding the name -- is reported and
-    the rest of the apply continues, because the symlink is independent of
-    the skills and settings that follow it.
-    """
-    from . import pathsetup
-    if not config.host.bin_dir:
-        return []
-    try:
-        return [pathsetup.install_symlink(Path(config.host.bin_dir))]
-    except AgentBoxError as exc:
-        return [f"warning: {exc}"]
-
-
 def apply_config(config: Config, *, session=False) -> list[str]:
     """Make the host match the configuration, and say what that took.
 
@@ -3317,12 +3295,11 @@ def apply_config(config: Config, *, session=False) -> list[str]:
     your home directory, and "when did that skill appear?" should have one
     answer: when you asked for it. The cost is that a newer agent-box does not
     refresh its shipped skills until this runs again, which is why
-    ``agent-box upgrade`` ends by calling it and ``agent-box config apply``
-    exists for a hand-edited file.
+    ``agent-box config apply`` must follow an installer upgrade.
 
     ``session`` applies only what a rendered session snapshot describes --
     the shipped skills and the configured agent profiles. The host-only
-    writers (PATH symlink, notification credentials and hooks, status line,
+    writers (notification credentials and hooks, status line,
     Claude skill links, runtime render) are skipped: the snapshot does not
     carry those sections, so reconciling them would remove host state.
 
@@ -3333,7 +3310,6 @@ def apply_config(config: Config, *, session=False) -> list[str]:
 
     ensure_state_dirs()
     if not session:
-        report.extend(apply_path_symlink(config))
         notify_module.sync_credentials(config, path=NOTIFY_CREDENTIALS)
         from . import codex_settings
         report.extend(codex_settings.reconcile_notify(CODEX_HOME / "config.toml", config.host.notifications.enabled))
@@ -3390,22 +3366,15 @@ def uninstall_main(args: list[str]) -> int:
     Two levels, because they are different decisions. The default removes
     what agent-box put in *other* people's places -- Claude's
     ``settings.json``, ``~/.claude/skills``, the shared agent tree, the
-    rendered credential files, the symlink it put on PATH -- and stops the
+    rendered credential files -- and stops the
     boxes holding those mounts open. ``--purge`` additionally deletes
     agent-box's own configuration and state, which is where the Telegram and
     Vikunja tokens live; that one is irreversible and is confirmed unless
     ``--yes`` says not to.
 
-    The PATH line in a shell startup file is the exception on both levels: it
-    is removed only under ``--purge``, and even then only when it still
-    matches byte for byte what agent-box wrote. An edited block is somebody's
-    own line by now, and a stray ``export PATH`` costs nothing to leave --
-    deleting the wrong two lines of a login shell's startup file costs a lot.
-    Everything not removed is reported with its location.
-
-    Neither level removes the container image or this source checkout: both
-    are large, both are trivially re-derived, and neither is something a
-    program should delete without being asked for it by name.
+    Installer-owned entry points and shell startup files are left alone.
+    The installer removes the Python package; the container image is also
+    left for explicit removal.
     """
     purge = False
     assume_yes = False
@@ -3472,17 +3441,6 @@ def uninstall_main(args: list[str]) -> int:
     shutil.rmtree(cloud.CLOUD_RUNTIME_DIR, ignore_errors=True)
     done.append("removed the rendered notification, tracker, registry, kubeconfig and cloud CLI credentials")
 
-    from . import pathsetup
-    for link in pathsetup.remove_symlinks():
-        done.append(f"removed the symlink {link}")
-    rc = pathsetup.rc_file()
-    rc_note: str | None = None
-    if rc is not None:
-        state = pathsetup.rc_state(rc)
-        if state.kind != "absent":
-            rc_note = (f"{rc} lines {state.span[0]}-{state.span[1]}"
-                       if state.span else str(rc))
-
     if purge:
         if not assume_yes:
             print(f"This deletes {CONFIG_ROOT} and {STATE_ROOT}, including any stored tokens.")
@@ -3513,15 +3471,6 @@ def uninstall_main(args: list[str]) -> int:
             shutil.rmtree(CONFIG_ROOT, ignore_errors=True)
             shutil.rmtree(STATE_ROOT, ignore_errors=True)
             done.append(f"deleted {CONFIG_ROOT} and {STATE_ROOT}")
-            if rc is not None and rc_note:
-                removed, note = pathsetup.remove_rc_block(rc)
-                if removed:
-                    done.append(note)
-                    rc_note = None
-                elif note:
-                    done.append(note)
-                    rc_note = None
-
     for line in done:
         print(f"agent-box: {line}")
     print()
@@ -3533,10 +3482,8 @@ def uninstall_main(args: list[str]) -> int:
         if podman_data:
             print("  nested Podman data        podman volume rm "
                   + " ".join(nested_podman_volume(w) for w in podman_data))
-    if rc_note:
-        print(f"  shell PATH line           {rc_note}")
     print(f"  container image           podman rmi {IMAGE}")
-    print(f"  the agent-box checkout    rm -rf {pathsetup.checkout_root()}")
+    print("  Python package            uv tool uninstall agent-box-tool (or pipx uninstall agent-box-tool)")
     return 0
 
 

@@ -1,7 +1,7 @@
 # The workspace image
 
 Every box runs the same local image, `localhost/agent-box:latest` (override
-with `AGENT_BOX_IMAGE`), built from the repository's `Containerfile` on
+with `AGENT_BOX_IMAGE`), built from the installed package's `Containerfile` on
 Ubuntu 26.04 LTS. It has a base set everyone gets plus optional tool groups
 chosen under **Workspace box → Image tools** in `agent-box config`
 (`box.tools.<group>`).
@@ -53,3 +53,7 @@ Changing a tool group takes effect on the next `agent-box build`. The image
 records what it was built with, so `agent-box config show`, `agent-box doctor`
 and every launch report when it no longer matches your configuration; none of
 them rebuild it on their own.
+
+The Python package includes the complete build context; no checkout is needed.
+An installer upgrade changes those inputs but does not rebuild an image or
+replace a running box.

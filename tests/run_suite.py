@@ -23,7 +23,7 @@ def isolated_environment(directory):
         "CLAUDE_CREDENTIALS_PATH": "claude/.credentials.json",
     }.items():
         env[name] = str(directory / child)
-    # Uninstall must not discover the developer's launcher through PATH; the
+    # Keep subprocess discovery independent of developer-installed commands; the
     # guard directory main fills shadows the host's podman.
     env["PATH"] = os.pathsep.join((str(directory / "guard-bin"), str(directory / "bin"), os.defpath))
     env["PYTHONPATH"] = str(ROOT)
@@ -36,14 +36,11 @@ def run_child(arguments):
     import unittest
 
     sys.path.insert(0, str(ROOT))
-    from agent_box import links, pathsetup
+    from agent_box import links
 
     # These defaults deliberately use passwd home in production, not env paths.
     directory = Path(os.environ["AGENT_BOX_STATE_DIR"]).parent
     links.LINKS_RUNTIME_DIR = directory / "links"
-    pathsetup.HOST_HOME = directory
-    pathsetup.DEFAULT_BIN_DIR = directory / "bin"
-    pathsetup.RC_FILES = {shell: directory / f".{shell}rc" for shell in ("bash", "zsh")}
     unittest.main(module=None, argv=[sys.argv[0], *arguments])
 
 

@@ -62,7 +62,7 @@ class ConfigDescribeTests(unittest.TestCase):
             check(data)
             self.assertTrue(all(field["help"] for field in fields.values()))
         self.assertIn("agents.external_apis.deepseek.models.v4-pro.codex.metadata", fields)
-        self.assertIn("host.bin_dir", fields)
+        self.assertIn("host.claude_skill_links", fields)
         self.assertEqual(fields["tracker.project"]["help"], config_menu.help_for(("tracker", "project")))
         # Only names the user chooses share generic help; a new fixed field needs its own.
         with self.assertRaises(KeyError):
@@ -134,7 +134,7 @@ class ConfigDescribeTests(unittest.TestCase):
         self.assertEqual(statusline["source"], "host-only")
         self.assertNotIn("global", statusline)
         self.assertNotIn("effective", statusline)
-        self.assertEqual(fields["host.bin_dir"]["source"], "host-only")
+        self.assertEqual(fields["host.claude_skill_links"]["source"], "host-only")
         self.assertEqual(fields["tracker.enabled"]["effective"], True)
 
     def test_a_snapshot_without_tracker_accounts_keeps_global_urls_and_an_unknown_token(self):

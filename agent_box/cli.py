@@ -43,7 +43,6 @@ def usage_text() -> None:
   agent-box notify test
   agent-box links open URL
   agent-box build | update | rebuild
-  agent-box upgrade [--check]
   agent-box uninstall [--purge] [--yes]
   agent-box completion bash|zsh
   agent-box tracker COMMAND | workflow COMMAND
@@ -92,8 +91,6 @@ Configuration:
 Installation:
   build                   Build the workspace image; update refreshes its tools,
                           rebuild also pulls the base image
-  upgrade                 Move this checkout to the newest release and apply the
-                          configuration; --check only reports
   uninstall               Remove what agent-box wrote outside its directories and every box;
                           --purge also deletes its config and state, --yes skips confirmation
   completion bash|zsh     Print a shell completion script; --help says how to load it
@@ -587,7 +584,7 @@ def _checked_global(baseline: dict, proposal: dict):
     for dotted in [*proposal["set"], *proposal["reset"]]:
         path = tuple(dotted.split("."))
         current = _lookup(baseline, path)
-        if path in (("version",), ("host", "bin_dir")) or _hidden(path):
+        if path == ("version",) or _hidden(path):
             raise AgentBoxError(f"config set --global: {dotted} is a credential, environment or installation "
                                 "setting; change it in 'agent-box config'")
         if current is _MISSING or isinstance(current, dict) and not config_menu.json_field(path):
@@ -823,24 +820,6 @@ def config_check() -> None:
     print(f"Ready. The next 'agent-box claude' will pass --channels {CLAUDE_TELEGRAM_CHANNEL}")
 
 
-def path_status(config) -> list[str]:
-    """What is left to do before the shell can run ``agent-box``.
-
-    Printed after applying rather than only inside the menu, because the two
-    ways to finish -- shell rc line, or nothing at all -- are both things the
-    user does next, in a terminal, with the commands in front of them.
-    """
-    from . import pathsetup
-    if pathsetup.link_state().kind == "ours":
-        return []
-    bin_dir = Path(config.host.bin_dir) if config.host.bin_dir else pathsetup.DEFAULT_BIN_DIR
-    if config.host.bin_dir:
-        return [f"{bin_dir} is not on PATH yet in this shell; open a new one, or add it:",
-                *pathsetup.rc_block(bin_dir).splitlines()]
-    return ["agent-box is not on PATH. Run 'agent-box config' and answer PATH "
-            "integration, or do it by hand:", *pathsetup.manual_instructions(bin_dir)]
-
-
 def config_interactive(project=False) -> None:
     if not project and session_snapshot_only():
         die("refusing to edit the saved configuration: this session reads the rendered "
@@ -858,16 +837,11 @@ def config_interactive(project=False) -> None:
         project_config.save(path, result.project)
         print(f"Saved project configuration: {path}")
         return
-    from . import pathsetup
     config = result.config
     save_config(config)
     for line in runtime.apply_config(config):
         print(line)
-    if result.edit_rc:
-        print(pathsetup.append_rc_block(pathsetup.rc_file(), Path(config.host.bin_dir)))
     config_show()
-    for line in path_status(config):
-        print(f"agent-box: {line}")
 
 
 def config_apply() -> None:
@@ -875,11 +849,8 @@ def config_apply() -> None:
 
     The interactive flow ends by calling exactly this, so a configuration
     answered in the UI and one edited by hand produce the same host state.
-    It is a subcommand of ``config`` rather than a verb of its own because
-    that is what it is -- there is no separate thing to install, and calling
-    it ``install`` only ever competed with the word for cloning the
-    repository. ``agent-box upgrade`` applies afterwards on its own, which
-    leaves hand-editing ``config.json`` as the one reason to run this.
+    Run it after an installer upgrade to refresh the shipped integrations,
+    or after editing config.json by hand.
 
     Inside a workspace box the saved file is not mounted, so the command
     applies what the rendered session snapshot describes -- the shipped
@@ -892,15 +863,12 @@ def config_apply() -> None:
     if session:
         print(f"agent-box: applying the rendered session configuration "
               f"{effective_config_source()['path']}: skills and profiles only; "
-              "notifications, hooks, status line, credentials, PATH and Claude "
+              "notifications, hooks, status line, credentials and Claude "
               "links are host-only and untouched")
     for line in runtime.apply_config(config, session=session):
         print(f"agent-box: {line}")
     for problem in runtime.tracker_warnings(config) + runtime.audio_warnings(config) + runtime.k3s_warnings(config):
         print(f"agent-box: warning: {problem}", file=sys.stderr)
-    if not session:
-        for line in path_status(config):
-            print(f"agent-box: {line}")
 
 
 def config_command(args: list[str]) -> None:
@@ -951,7 +919,7 @@ def selftest() -> None:
 
 NON_RUNTIME = {
     "usage", "statusline", "notify", "config", "selftest", "help", "-h", "--help",
-    "build", "update", "rebuild", "tracker", "workflow", "attach", "stop", "upgrade", "uninstall",
+    "build", "update", "rebuild", "tracker", "workflow", "attach", "stop", "uninstall",
     "completion", "links", "workspaces",
 }
 #: --host only makes sense for a real agent launch, never for these.
@@ -1054,9 +1022,6 @@ def main() -> None:
         if args and args[0] == "workflow":
             from . import workflow
             raise SystemExit(workflow.main(args[1:]))
-        if args and args[0] == "upgrade":
-            from . import selfupdate
-            raise SystemExit(selfupdate.upgrade_main(args[1:]))
         if args and args[0] == "uninstall":
             from . import runtime
             raise SystemExit(runtime.uninstall_main(args[1:]))

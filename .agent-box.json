@@ -16,13 +16,14 @@
         "**/config*",
         ".github/**",
         "agent_box/paths.py",
-        "agent_box/pathsetup.py",
-        "agent_box/selfupdate.py",
         "agent_box/runtime.py",
         "agent_box/notify.py",
         "agent_box/tracker/*_api.py",
-        "Containerfile",
-        "agent-box"
+        "pyproject.toml",
+        "agent_box/Containerfile",
+        "agent_box/runtime_bundle.py",
+        "agent_box/container-launcher",
+        "agent_box/__main__.py"
       ],
       "ignored_paths": [
         "docs/**",

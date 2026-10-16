@@ -2,8 +2,7 @@
 
 Everything that changes the places agent-box does not own goes through one
 function -- ``agent-box config`` at the end of its questions, ``agent-box
-config apply`` on its own, ``agent-box upgrade`` once it has moved the
-checkout -- so a configuration answered interactively and one edited by hand
+config apply`` on its own -- so a configuration answered interactively and one edited by hand
 produce the same host state.
 
 The negative half matters just as much. Starting Claude or Codex must not

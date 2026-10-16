@@ -153,13 +153,17 @@ the box's identity, so its appearance or disappearance needs a new box.
 
 The `agent-box` on PATH carries its build context and can build an image or
 launch the next box from any project directory. Inside a box with the `podman`
-group, keep the outer shell open and run the checkout's commands:
+group, keep the outer shell open. In an agent-box source checkout, create an
+editable environment with its own entry point so the mounted launcher stays
+available for the outer session:
 
 ```sh
-./agent-box build
-./agent-box shell -c 'id; podman info'
+uv venv .venv
+uv pip install --python .venv/bin/python --editable .
+.venv/bin/agent-box build
+.venv/bin/agent-box shell -c 'id; podman info'
 python3 tests/run_suite.py
-./agent-box selftest
+.venv/bin/agent-box selftest
 ```
 
 The inner launcher inherits the rendered image groups from the outer session.

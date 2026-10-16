@@ -8,7 +8,16 @@ from __future__ import annotations
 
 import os
 import pwd
+import shutil
 from pathlib import Path
+
+def public_launcher() -> Path:
+    """Preserve the installer's symlink rather than pinning its current venv."""
+    command = shutil.which("agent-box")
+    if command is None:
+        from .errors import AgentBoxError
+        raise AgentBoxError("agent-box is not on PATH; use uv tool update-shell or pipx ensurepath, then reopen your shell")
+    return Path(command).absolute()
 
 
 def passwd_home(uid: int | None = None) -> Path:
@@ -119,7 +128,6 @@ HOST_SESSION_RUNNER = Path(__file__).with_name("host_session.py")
 PACKAGE_ROOT = Path(__file__).resolve().parent
 HOST_LAUNCHER = PACKAGE_ROOT / "__main__.py"
 CONTAINER_LAUNCHER = HOST_HOME / ".local/bin/agent-box"
-LOCAL_LAUNCHER = PACKAGE_ROOT.parent / "agent-box"
 # Unix sockets need a short path; ignore caller-controlled TMPDIR.
 SESSION_TEMP_ROOT = Path("/tmp")
 

@@ -73,7 +73,6 @@ class ConfigProposalTests(unittest.TestCase):
         self.assertNotIn("tg-secret-value", output)
         saved = json.loads(self.global_file.read_text())
         self.assertEqual((saved["workflow"]["review"]["max_files"], saved["box"]["tools"]["browser"]), (9, True))
-        self.assertNotIn("bin_dir", saved.get("host", {}))
         self.assertEqual(load_config().host.notifications.telegram_token, "tg-secret-value")
         self.apply.assert_called_once()
         self.assertFalse(self.proposal.exists())
@@ -90,10 +89,9 @@ class ConfigProposalTests(unittest.TestCase):
                 self.assertEqual(self.proposal.exists(), kept)
         self.apply.assert_not_called()
 
-    def test_credentials_installation_and_invalid_values_are_refused_before_a_proposal_exists(self):
+    def test_credentials_and_invalid_values_are_refused_before_a_proposal_exists(self):
         """An agent must not propose what it may not read, and a bad value must fail where the agent can fix it."""
         for args, message in ((('host.notifications.telegram_token="token-secret-value"',), "credential"),
-                              (('host.bin_dir="/tmp/elsewhere"',), "installation"),
                               (('box.env.forward=["NAME"]',), "environment"),
                               (('workflow.review.max_files="nine"',), "invalid type"),
                               (('workflow.scout.models=["codex:gpt-5.5"]',), r"models\.0 must be an object"),

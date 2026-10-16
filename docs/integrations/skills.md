@@ -10,7 +10,7 @@ read one copy.
 | --- | --- |
 | `ab-tracker` | Tracker or workflow enabled |
 | `ab-setup`, `ab-adopt`, `ab-normalize`, `ab-interview`, `ab-plan`, `ab-work`, `ab-sync`, `ab-review`, `ab-pr`, `ab-land` | Workflow enabled |
-| `ab-config` | Never installed; `agent-box config ai` reads it from the checkout |
+| `ab-config` | Never installed; `agent-box config ai` reads it from the installed package |
 
 Saving in `agent-box config`, `config apply` and `upgrade` install or refresh
 the skills and the native agent profiles; starting an agent never does.

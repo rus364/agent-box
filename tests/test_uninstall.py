@@ -8,8 +8,7 @@ still reads. So the removal has to be a command, and it has to be as careful
 about ownership as the installs were: only what agent-box put there.
 
 ``--purge`` is the separate, irreversible decision -- it deletes the config
-file, which is where the Telegram and Vikunja tokens live, and only there is
-the PATH line in a shell startup file considered for removal at all.
+file, which is where the Telegram and Vikunja tokens live.
 """
 import io
 import json
@@ -18,7 +17,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from agent_box import claude_settings, cloud, kubeconfigs, pathsetup, registries, runtime
+from agent_box import claude_settings, cloud, kubeconfigs, registries, runtime
 from agent_box.config import Config
 
 
@@ -77,32 +76,6 @@ class UninstallTestCase(unittest.TestCase):
                                                remove_nested_podman_volume=mock.Mock())
         self.podman_data.start()
         self.addCleanup(self.podman_data.stop)
-        self.checkout = self.root / "checkout"
-        (self.checkout / "agent_box").mkdir(parents=True)
-        (self.checkout / "agent_box/__init__.py").write_text("")
-        (self.checkout / "agent-box").write_text("")
-        self.bin = self.root / "bin"
-        self.bin.mkdir()
-        self.rc = self.root / ".bashrc"
-        # Sandboxed here rather than around each call: uninstall scans PATH and
-        # unlinks what it finds, so a test that reaches uninstall_main without
-        # these patches deletes the symlink the developer runs the suite with.
-        self.path_patches = mock.patch.multiple(
-            pathsetup,
-            path_entries=lambda raw=None: [self.bin],
-            DEFAULT_BIN_DIR=self.bin,
-            rc_file=lambda: self.rc,
-            checkout_root=lambda: self.checkout,
-        )
-        self.path_patches.start()
-        self.addCleanup(self.path_patches.stop)
-
-    def _on_path(self):
-        """The symlink and the rc line a full install would have left."""
-        with mock.patch.object(pathsetup, "HOST_HOME", self.root):
-            pathsetup.install_symlink(self.bin)
-            pathsetup.append_rc_block(self.rc, self.bin)
-
     def _installed_state(self):
         """Everything agent-box would have created on a normal install."""
         settings = self.claude / "settings.json"
@@ -136,6 +109,25 @@ class UninstallTestCase(unittest.TestCase):
             return runtime.uninstall_main(list(args))
 
 class UninstallTests(UninstallTestCase):
+    def test_cleanup_leaves_installer_entry_point_and_shell_startup_untouched(self):
+        """Even purge owns integrations and state, never the installer's files."""
+        command = self.root / "bin/agent-box"
+        target = self.root / "tool-venv/bin/agent-box"
+        command.parent.mkdir()
+        target.parent.mkdir(parents=True)
+        target.write_text("installer entry point\n")
+        command.symlink_to(target)
+        rc = self.root / ".bashrc"
+        rc.write_text(f'export PATH="{command.parent}:$PATH"\n')
+        original = rc.read_bytes()
+        with mock.patch.dict("os.environ", {"PATH": str(command.parent)}):
+            for args in ((), ("--purge", "--yes")):
+                with self.subTest(args=args):
+                    self._uninstall(*args)
+                    self.assertTrue(command.is_symlink())
+                    self.assertEqual(command.read_text(), "installer entry point\n")
+                    self.assertEqual(rc.read_bytes(), original)
+
     def test_codex_notify_removal_preserves_other_settings(self):
         """Uninstall removes its global command without erasing Codex preferences."""
         from agent_box import codex_settings
@@ -267,37 +259,6 @@ class UninstallTests(UninstallTestCase):
             self._uninstall()
         for call in run.call_args_list:
             self.assertNotIn("rmi", call.args[0])
-
-
-class PathRemovalTests(UninstallTestCase):
-    """The symlink goes; the shell startup file is a decision, not a cleanup."""
-
-    def test_the_symlink_it_put_on_path_is_removed(self):
-        """Otherwise deleting the checkout leaves a dangling command behind."""
-        self._on_path()
-        self._uninstall()
-        self.assertFalse((self.bin / "agent-box").is_symlink())
-
-    def test_the_shell_startup_file_is_untouched_by_default(self):
-        """An export PATH line costs nothing to leave; a wrong deletion costs a lot."""
-        self._on_path()
-        before = self.rc.read_text()
-        self._uninstall()
-        self.assertEqual(self.rc.read_text(), before)
-
-    def test_purge_removes_a_block_that_still_matches(self):
-        self._on_path()
-        self._uninstall("--purge", "--yes")
-        self.assertNotIn(pathsetup.RC_BEGIN, self.rc.read_text())
-
-    def test_purge_leaves_a_block_someone_edited(self):
-        """By then those lines are the user's, whatever the markers say."""
-        self._on_path()
-        edited = self.rc.read_text().replace(
-            pathsetup.RC_END, "export EXTRA=1\n" + pathsetup.RC_END)
-        self.rc.write_text(edited)
-        self._uninstall("--purge", "--yes")
-        self.assertEqual(self.rc.read_text(), edited)
 
 
 if __name__ == "__main__":

@@ -2,6 +2,7 @@
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,6 +12,7 @@ from agent_box import project_config, runtime
 from agent_box.config import Config, TrackerConnection, effective_config, session_account
 from agent_box.launch_options import LaunchOptions
 from agent_box.errors import AgentBoxError
+from agent_box.paths import HOST_LAUNCHER
 from agent_box.repo_binding import Binding, write_binding, setup_content
 from agent_box.tracker.registry import make_adapter
 
@@ -195,8 +197,7 @@ class ProjectConfigTests(unittest.TestCase):
         subprocess.run(['git', 'init', '--bare', '-q', str(self.root / '.git')], check=True)
         child = self.root / 'ordinary'
         child.mkdir()
-        launcher = Path(__file__).resolve().parents[1] / 'agent-box'
-        result = subprocess.run([str(launcher), '--help'], cwd=child,
+        result = subprocess.run([sys.executable, str(HOST_LAUNCHER), '--help'], cwd=child,
                                 capture_output=True, text=True, timeout=15)
         self.assertEqual(result.returncode, 0, result.stderr)
 

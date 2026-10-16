@@ -3,8 +3,10 @@
 ## Requirements
 
 - Linux.
-- Python 3.11 or newer. The launcher uses only the standard library: there
-  is nothing to build and nothing to install into Python.
+- Python 3.11 or newer. The installed package has no runtime dependencies.
+- [uv](https://docs.astral.sh/uv/guides/tools/) or
+  [pipx](https://pipx.pypa.io/stable/), which manages the isolated Python environment
+  and the command on PATH.
 - Rootless Podman 5.0 or newer, with a subordinate UID/GID range for your user
   in `/etc/subuid` and `/etc/subgid` (most distributions add one when the user
   is created).
@@ -26,28 +28,35 @@ exact command that fixes what is missing. Distributions that ship Podman 4.x
 
 ## Install
 
-**1. Clone it.** Anywhere you like; the checkout is the whole program.
+**1. Install from Git.** The Python distribution is `agent-box-tool`; the
+command and product name remain `agent-box`. Until the public release, use
+an account with access to the repository:
 
 ```bash
-git clone https://github.com/rus364/agent-box.git ~/.local/src/agent-box
+uv tool install 'git+ssh://git@github.com/rus364/agent-box.git'
+uv tool update-shell   # if the installer reports its bin directory is not on PATH
 ```
 
-**2. Configure it.** Run it by path the first time:
+Or use pipx:
 
 ```bash
-~/.local/src/agent-box/agent-box config
+pipx install 'git+ssh://git@github.com/rus364/agent-box.git'
+pipx ensurepath
 ```
 
-The first question puts `agent-box` on your PATH. The menu offers the writable
-directories your PATH already has, or creates `~/.local/bin` and adds it.
-While your shell cannot find `agent-box`, the menu opens on that question and
-asks once more before saving without it. The symlink and the shell startup
-line are two separate questions, both declinable; declining either prints the
-exact command to run yourself. The chosen directory is saved, so if the
-symlink later disappears, `agent-box config apply` puts it back.
+Reopen the shell after changing PATH. Both installers build the package from
+Git; running it needs no source checkout. Public PyPI installation is separate
+release work and is not available through these instructions.
 
-Everything after that is optional; see [Configuration](configuration.md) and
-the [integrations](integrations/README.md).
+**2. Configure integrations.**
+
+```bash
+agent-box config
+```
+
+Save applies the integrations you select; see [Configuration](configuration.md)
+and the [integrations](integrations/README.md). Package installation itself does
+not edit Claude or Codex settings.
 
 **3. Authenticate the agents on the host.** agent-box mounts your existing
 `~/.claude` and `~/.codex` rather than keeping a second credential store, so
@@ -75,39 +84,56 @@ script.
 
 ## Updating
 
+Use the installer that owns the package, then refresh the integrations:
+
 ```bash
-agent-box upgrade           # fetch, move to the newest release, apply
-agent-box upgrade --check   # report what is available, change nothing
+uv tool upgrade agent-box-tool
+agent-box config apply
 ```
 
-Upgrading is a Git operation on the checkout: it moves to the newest release
-tag, or fast-forwards the tracking branch while the repository has no tags. It
-refuses on a checkout with uncommitted changes or with commits no remote has,
-since that is a working copy rather than an installation. Afterwards it
-applies your saved configuration, because the skills agent-box ships live in
-the checkout that just moved.
+With pipx, use `pipx upgrade agent-box-tool` followed by the same
+`agent-box config apply`. The installer retains the Git source selected at
+installation. An installation pinned to a tag or commit stays pinned; install
+from the new reference explicitly to change it.
 
-The workspace image is not rebuilt: `upgrade` reports when it has drifted from
-your configuration and leaves `agent-box build` to you.
+Running boxes retain an immutable copy of their launcher resources while the
+package is replaced. If a new invocation reports a different runtime, end that
+workspace's sessions with `agent-box stop` and launch again. Copies are retained
+in agent-box state until `agent-box uninstall --purge` removes that state.
+
+Updating the Python package does not rebuild the workspace image. Run
+`agent-box build` for changed build inputs, or `agent-box update` to refresh
+its tools; see [the image lifecycle](image.md#building-and-refreshing).
 
 ## Uninstalling
 
+Clean up integrations before removing the executable:
+
 ```bash
-agent-box uninstall [--purge] [--yes]
+agent-box uninstall       # add --purge to delete configuration and state too
+uv tool uninstall agent-box-tool
+# pipx users: pipx uninstall agent-box-tool
 ```
 
-Removes what agent-box wrote in places it does not own: its status line and
-hooks in Claude's `settings.json`, the skill links in `~/.claude/skills`, the
-skills it installed in `~/.agents/skills`, its rendered credential files, the
-symlink it put on your PATH, and every workspace box. Anything you wrote
-yourself in those places stays.
+`agent-box uninstall` removes its status line and hooks, owned skills and skill
+links, rendered credentials and workspace boxes. User-owned integrations stay.
+`--purge` also deletes configuration and state, including stored tokens; it asks
+first unless `--yes` is supplied.
 
-- **Configuration and state survive** a plain uninstall, so `agent-box config`
-  picks up where you left off. `--purge` deletes them too, including stored
-  tokens, and asks first unless you pass `--yes`.
-- **The PATH line in your shell startup file** stays by default. `--purge`
-  removes it only if it still matches, character for character, what
-  agent-box wrote; an edited block is reported with its file and line numbers
-  for you to decide about.
-- **The container image and the checkout** are never removed for you; the
-  command prints how.
+The installer owns its command and shell PATH setup, which agent-box leaves
+untouched. The container image also stays; the cleanup report prints its
+explicit removal command.
+
+## Contributor installation
+
+From a clone, install editable so the command uses your working tree:
+
+```bash
+uv tool install --editable .
+agent-box selftest
+python3 tests/run_suite.py
+```
+
+After changing shipped integrations, run `agent-box config apply` explicitly.
+For development inside a box, use the separate environment described in
+[Developing agent-box inside agent-box](design/integrations.md#developing-agent-box-inside-agent-box).

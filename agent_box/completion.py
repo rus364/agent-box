@@ -19,7 +19,7 @@ import sys
 from pathlib import Path
 
 from .launch_options import FLAGS
-from .paths import LOCAL_LAUNCHER
+from .paths import public_launcher
 
 SHELLS = ("bash", "zsh")
 
@@ -45,13 +45,9 @@ later alias, a wrapper function or a symlink NAME, add after the line:
 
 
 def script(shell: str) -> str:
-    """The shell's script, calling this checkout's launcher by its path.
-
-    ``command agent-box`` was the rejected call: an alias may name agent-box by a
-    path, through ``~`` or ``$HOME``, that is not on PATH or is not expanded yet.
-    """
+    """Keep the installer entry point, whose target may change on upgrade."""
     text = Path(__file__).with_name(f"completion.{shell}").read_text(encoding="utf-8")
-    return text.replace("@AGENT_BOX@", shlex.quote(str(LOCAL_LAUNCHER)))
+    return text.replace("@AGENT_BOX@", shlex.quote(str(public_launcher())))
 
 
 def fixed(*choices):
@@ -116,7 +112,7 @@ COMMANDS = {
     "notify": fixed("test"),
     "links": fixed("open"),
     "build": fixed(), "update": fixed(), "rebuild": fixed(),
-    "upgrade": fixed("--check"), "uninstall": fixed("--purge", "--yes"),
+    "uninstall": fixed("--purge", "--yes"),
     "tracker": argparse_command(tracker_parser), "workflow": argparse_command(workflow_parser),
     "completion": fixed(*SHELLS), "selftest": fixed(), "help": fixed(),
 }

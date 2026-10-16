@@ -23,7 +23,7 @@ agent-box config ai         # set things up together with an agent
 `agent-box codex` read the configuration but never install a skill, write a
 symlink or rewrite `settings.json`; they only keep agent-box's own runtime
 state. Integrations are applied by `agent-box config` (including
-`config apply`) and `agent-box upgrade`, and removed by `agent-box uninstall`.
+`config apply`), and removed by `agent-box uninstall`.
 
 ## The configuration menu
 
@@ -41,12 +41,11 @@ terminals and keeps the terminal's background.
 | F1 | Keyboard help inside an editor |
 
 Secret values stay masked in editors. **Cancel** writes nothing. **Save and
-apply** saves the file and performs the selected changes: the optional PATH
-setup, installing the skills your integrations need, linking them for Claude,
+apply** saves the file and performs the selected changes: installing the skills your integrations need, linking them for Claude,
 rendering credential files and reconciling Claude's `settings.json`.
 `agent-box config apply` does the same from the saved file, which is what you
-want after editing `config.json` by hand. `agent-box upgrade` applies on its
-own after moving the checkout.
+want after editing `config.json` by hand or upgrading the package through
+uv/pipx. PATH and package updates belong to that installer.
 
 **Model lists.** Worker, scout, Plan sync and reviewer models are ordered
 candidate lists: add, reorder, change effort or speed, or remove a candidate.

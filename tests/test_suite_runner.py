@@ -21,7 +21,7 @@ class SuiteRunnerTests(unittest.TestCase):
             fixture.write_text('''import os
 from pathlib import Path
 import unittest
-from agent_box import paths, pathsetup
+from agent_box import paths
 
 class Fixture(unittest.TestCase):
     def test_integration_writes(self):
@@ -33,8 +33,7 @@ class Fixture(unittest.TestCase):
         targets = [paths.CONFIG_FILE, paths.TOOLS_REFRESH_FILE,
                    paths.CLAUDE_HOME / "settings.json", paths.CODEX_HOME / "config.toml",
                    paths.AGENT_SKILLS_DIR / "fixture", paths.NOTIFY_CREDENTIALS,
-                   paths.TRACKER_RUNTIME_DIR / "token", paths.WORKFLOW_STATE / "fixture",
-                   pathsetup.DEFAULT_BIN_DIR / "agent-box", *pathsetup.RC_FILES.values()]
+                   paths.TRACKER_RUNTIME_DIR / "token", paths.WORKFLOW_STATE / "fixture"]
         for target in targets:
             self.assertTrue(target.is_relative_to(root), str(target))
             target.parent.mkdir(parents=True, exist_ok=True)

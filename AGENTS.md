@@ -14,10 +14,12 @@ Complete subtasks only after validation and integration into the parent branch; 
 ## What this is
 
 A launcher. `agent-box` runs Claude Code and Codex CLI inside rootless Podman
-workspace boxes. Pure Python standard library, no dependencies, no build step.
+workspace boxes. Python standard library at runtime, packaged as `agent-box-tool` with no
+runtime dependencies. Install editable for development; uv/pipx own the public
+`agent-box` command and package updates.
 
 ```text
-agent-box              launcher shim -> agent_box.cli:main
+pyproject.toml         package metadata and agent-box -> agent_box.cli:main
 agent_box/cli.py       argument parsing and command dispatch
 agent_box/config_menu.py stdlib curses configuration menu
 agent_box/tracker/     portable task contract and product adapters
@@ -25,10 +27,9 @@ agent_box/workflow.py  deterministic workflow boundaries; skills orchestrate
 agent_box/runtime.py   container lifecycle, mounts, launches, doctor
 agent_box/config.py    the whole config schema; flat dataclasses, no framework
 agent_box/paths.py     every host-side path; nothing else may hardcode a home layout
-agent_box/pathsetup.py the PATH symlink and the shell rc block, and their refusals
-agent_box/selfupdate.py `agent-box upgrade`: git operations on this checkout
+agent_box/runtime_bundle.py immutable package copies for running boxes
 agent_box/skills/      skills agent-box ships and installs (owned, checked in)
-Containerfile          the workspace image, with optional tool groups
+agent_box/Containerfile the workspace image, with optional tool groups
 tests/                 unittest, no plugins
 ```
 
@@ -48,7 +49,7 @@ can reach starts disabled. The exceptions are documented in the dataclass that
 defines them, with the reason.
 
 **Applying is not launching.** Only `agent-box config` (including `config
-apply`), `agent-box upgrade` and `agent-box uninstall` may write into
+apply`) and `agent-box uninstall` may write into
 `~/.claude` or `~/.agents`. Launching an
 agent reads configuration and changes nothing the user owns. `runtime.apply_config`
 is the single place that applies.
@@ -57,13 +58,10 @@ On-demand Claude usage may renew and atomically save its OAuth credentials;
 this is authentication maintenance, not integration application. Status-line
 reads never renew tokens. Coordinate credential writes with Claude's locks.
 
-**Adding to a user's file is not removing from it.** agent-box may append its
-marked block to `~/.bashrc`; it removes one only under `--purge`, and only when
-the contents between the markers still match, character for character, the
-line it generates. An edited block belongs to the user by then. Every case it
-will not touch is reported with a file and a line range instead. The same
-asymmetry governs the PATH symlink: a name that is not a symlink into an
-agent-box checkout is never replaced.
+**Installation belongs to the installer.** uv/pipx own the command and shell
+PATH setup. agent-box never edits shell startup files or installer entry points.
+After upgrading the package, `agent-box config apply` refreshes integrations;
+run `agent-box uninstall` before removing the package through its installer.
 
 **agent-box owns its integrations.** An integration configured somewhere else,
 that the user has to assemble first, is not an integration. Settings live in
@@ -129,9 +127,9 @@ Hook removal only ever touches agent-box's own commands.
 
 ```bash
 python3 tests/run_suite.py              # full suite; isolated paths, no outer PTY
-./agent-box selftest                     # fast, no Podman
+python3 -m agent_box selftest                     # fast, no Podman
 uvx ruff check --select E4,E9,F agent_box/ tests/   # what CI lints
-./agent-box config show                  # inspect the live config, tokens redacted
+python3 -m agent_box config show                  # inspect the live config, tokens redacted
 ```
 
 The runner uses unittest discovery, temporary state/integration paths and piped
@@ -144,12 +142,6 @@ Test modules import each other by bare name, so keep discovery.
   Anything that calls `config_interactive` or `apply_config` has to patch
   `runtime.CLAUDE_HOME`, `runtime.CODEX_HOME`, `runtime.AGENT_SKILLS_DIR`, `runtime.MANAGED_SKILLS_SOURCE`
   and the credential paths. This has bitten before.
-- The same applies to PATH, and more sharply: `config_interactive` may apply menu-selected PATH changes, and `uninstall_main`
-  scans the real PATH for symlinks to remove. Tests must stub the menu/apply
-  boundary or use a temporary selected bin directory, and patch
-  `pathsetup.path_entries`, `pathsetup.DEFAULT_BIN_DIR`, `pathsetup.rc_file`
-  and `pathsetup.checkout_root` — otherwise the suite deletes the developer's
-  own `agent-box` symlink or edits their `~/.bashrc`.
 - Module-level constants derived from `paths.py` (`AGENTS_DIR`, `TRACKER_RUNTIME_DIR`,
   `CONTAINER_TRACKER_RUNTIME_DIR`) are resolved at import; tests patch them on `runtime`,
   not on `paths`.
@@ -161,7 +153,7 @@ Test modules import each other by bare name, so keep discovery.
 - Inside a workspace box the saved configuration is not mounted: `config apply`
   then applies only the skills and profiles the rendered session snapshot
   describes and leaves host-only sections (notifications, hooks, status line,
-  credentials, PATH, Claude links) alone; the global `agent-box config` menu
+  credentials, Claude links) alone; the global `agent-box config` menu
   refuses because it edits a file that is not there.
 - `agent_box/skills/` contains short owned `ab-*` skills. Maintain them directly
   and keep their command/role contracts consistent with the Python helpers.

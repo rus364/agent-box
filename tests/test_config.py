@@ -66,7 +66,7 @@ class UnreadableFileTests(unittest.TestCase):
     """A saved file that cannot be read is an error, never the defaults.
 
     Read as defaults, it let the menu save them over the user's settings,
-    `upgrade` unapply every integration and `notify test` delete the rendered
+    `config apply` unapply every integration and `notify test` delete the rendered
     Telegram credentials, all without saying the file had stopped loading.
     """
 
@@ -124,7 +124,7 @@ class SectionedSchemaTests(unittest.TestCase):
                "tools": {"browser": True, "k3s": {"enabled": True}}, "audio": {"enabled": True},
                "notifications": {"enabled": True, "telegram_token": "t", "telegram_chat_id": "1"},
                "providers": {"api_keys": True}, "git": {"full_config": True},
-               "install": {"bin_dir": "/somewhere"}, "skills": {"claude_links": False}}
+               "skills": {"claude_links": False}}
         self.assertEqual(Config.from_dict(old).to_dict(), Config().to_dict())
 
     def test_the_root_holds_one_section_per_menu_entry(self):

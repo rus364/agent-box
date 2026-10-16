@@ -754,12 +754,11 @@ class ClaudeNotifyHookLifecycleTests(IsolatedRuntimeTest):
     def test_apply_and_disable_reconcile_codex_alongside_claude(self):
         """Both providers must gain and lose notifications at the apply boundary."""
         import tomllib
-        with mock.patch.object(runtime, "apply_path_symlink", return_value=[]):
-            runtime.apply_config(self._notifying())
-            path = runtime.CODEX_HOME / "config.toml"
-            self.assertEqual(tomllib.loads(path.read_text())["notify"], ["agent-box", "notify", "codex"])
-            runtime.apply_config(Config())
-            self.assertNotIn("notify", tomllib.loads(path.read_text()))
+        runtime.apply_config(self._notifying())
+        path = runtime.CODEX_HOME / "config.toml"
+        self.assertEqual(tomllib.loads(path.read_text())["notify"], ["agent-box", "notify", "codex"])
+        runtime.apply_config(Config())
+        self.assertNotIn("notify", tomllib.loads(path.read_text()))
 
     def test_apply_installs_the_managed_hooks_and_disturbs_nothing_else(self):
         with tempfile.TemporaryDirectory() as tmp:

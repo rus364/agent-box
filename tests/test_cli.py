@@ -185,8 +185,6 @@ class HostSessionDispatchTests(unittest.TestCase):
             self.assertIn("container-only", die.call_args.args[0])
 
 
-
-
 class NotifyCodexDispatchTests(unittest.TestCase):
     """Codex supports exactly one `notify` program, so `agent-box notify
     codex` must drive both outbound notifications and the Flow-Next
@@ -286,37 +284,3 @@ class UsageCommandColorTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
-
-class PathStatusTests(unittest.TestCase):
-    """Silence would read as success, so an unfinished PATH setup has to speak.
-
-    ``config`` and ``config apply`` both end here. The two unfinished states
-    need different advice: a directory was chosen but the shell has not picked
-    it up yet, or no directory was ever chosen at all.
-    """
-
-    def status(self, bin_dir, kind):
-        from pathlib import Path
-        from agent_box import pathsetup
-        from agent_box.cli import path_status
-        from agent_box.config import Config
-        config = Config()
-        config.host.bin_dir = bin_dir
-        found = Path(bin_dir or "/nowhere") / "agent-box"
-        with unittest.mock.patch.object(
-                pathsetup, "link_state", return_value=pathsetup.LinkState(kind, found)):
-            return path_status(config)
-
-    def test_a_working_link_says_nothing(self):
-        self.assertEqual(self.status("/home/somebody/.local/bin", "ours"), [])
-
-    def test_a_chosen_directory_the_shell_has_not_picked_up_gets_the_path_line(self):
-        lines = self.status("/home/somebody/.local/bin", "missing")
-        self.assertIn("not on PATH yet in this shell", lines[0])
-        self.assertTrue(any("export PATH=" in line for line in lines))
-
-    def test_no_chosen_directory_gets_the_commands_to_finish_by_hand(self):
-        lines = self.status("", "missing")
-        self.assertIn("agent-box is not on PATH", lines[0])
-        self.assertTrue(any(line.strip().startswith("ln -s") for line in lines))

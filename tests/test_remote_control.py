@@ -15,7 +15,7 @@ from unittest import mock
 
 from agent_box import remote_control as rc, runtime
 from agent_box.config import Config
-from agent_box.paths import LOCAL_LAUNCHER
+from agent_box.paths import HOST_LAUNCHER
 
 
 class RemoteControlTests(unittest.TestCase):
@@ -288,7 +288,7 @@ class CodexLifecycleTests(unittest.TestCase):
             return []
 
     def launch(self, *args, **env):
-        process = subprocess.Popen([sys.executable, str(LOCAL_LAUNCHER), '_session', 'codex', str(self.fake), *args],
+        process = subprocess.Popen([sys.executable, str(HOST_LAUNCHER), '_session', 'codex', str(self.fake), *args],
                                    env=dict(self.environment, **env), stdout=subprocess.PIPE,
                                    stderr=subprocess.PIPE, start_new_session=True)
         self.processes.append(process)

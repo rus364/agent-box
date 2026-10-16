@@ -1279,39 +1279,21 @@ class CredentialsConfig:
 
 @dataclass
 class HostConfig:
-    """What agent-box itself does on the host: notifications, skill links, PATH."""
+    """What agent-box itself does on the host: notifications and skill links."""
 
     notifications: NotificationsConfig = field(default_factory=NotificationsConfig)
     #: Link the shared skills into Claude's skill directory, so host Claude
     #: sessions see them as well.
     claude_skill_links: bool = True
-    #: Which directory agent-box keeps its own ``agent-box`` symlink in.
-    #:
-    #: Stored because the symlink is the one part of setup that something
-    #: else can undo: a directory cleaned by a version manager, a home restored
-    #: from backup, a ``~/.local/bin`` rebuilt by another installer.
-    #: Remembering the answer turns "run the menu again and find the PATH
-    #: question" into ``agent-box config apply``, which relinks whatever went
-    #: missing.
-    #:
-    #: Empty means agent-box maintains no symlink -- the honest default, since
-    #: a user who declined the question, or who links the shim themselves,
-    #: must not have one appear later. The value is a directory the user picked
-    #: from :func:`agent_box.pathsetup.bin_dir_choices`; the safety rules about
-    #: what may be replaced live in ``install_symlink`` and apply every time.
-    bin_dir: str = ""
-
     def to_dict(self) -> dict[str, Any]:
         return {"notifications": self.notifications.to_dict(),
-                "claude_skill_links": self.claude_skill_links, "bin_dir": self.bin_dir}
+                "claude_skill_links": self.claude_skill_links}
 
     @classmethod
     def from_dict(cls, data: Any) -> "HostConfig":
         data = _mapping(data)
-        bin_dir = data.get("bin_dir")
         return cls(notifications=NotificationsConfig.from_dict(data.get("notifications")),
-                   claude_skill_links=_bool(data, "claude_skill_links", True),
-                   bin_dir=bin_dir if isinstance(bin_dir, str) else "")
+                   claude_skill_links=_bool(data, "claude_skill_links", True))
 
 
 #: Long enough for any language name, short enough that a value cannot carry instructions into a prompt.
@@ -1376,7 +1358,7 @@ def load_config(path: Path | None = None) -> Config:
     """The saved configuration; only a missing file means all defaults.
 
     A file that exists but cannot be read stops here: read as defaults, it
-    would let the menu save them over it and `upgrade` unapply integrations.
+    would let the menu save them over it and `config apply` unapply integrations.
     """
     from .errors import AgentBoxError
     path = CONFIG_FILE if path is None else path

@@ -6,6 +6,7 @@ import io
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import textwrap
 import unittest
@@ -16,7 +17,6 @@ from agent_box import cli, completion
 from agent_box.errors import AgentBoxError
 from agent_box.launch_options import FLAGS
 
-SHIM = Path(__file__).resolve().parents[1] / "agent-box"
 
 
 def words(line, environ=None):
@@ -169,8 +169,9 @@ class CompletionCommandTests(unittest.TestCase):
         return stdout.getvalue(), die
 
     def test_scripts_register_for_their_shell(self):
-        self.assertIn("complete -F _agent_box agent-box", self.run_command("completion", "bash")[0])
-        self.assertIn("compdef _agent_box agent-box", self.run_command("completion", "zsh")[0])
+        with unittest.mock.patch.object(completion, "public_launcher", return_value=Path("/installer/bin/agent-box")):
+            self.assertIn("complete -F _agent_box agent-box", self.run_command("completion", "bash")[0])
+            self.assertIn("compdef _agent_box agent-box", self.run_command("completion", "zsh")[0])
 
     def test_help_explains_loading_for_both_shells(self):
         for argv in ([], ["--help"], ["-h"], ["bash", "--help"], ["zsh", "-h"]):
@@ -196,9 +197,30 @@ class ShellScriptTests(unittest.TestCase):
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
-        (Path(directory.name) / "agent-box").symlink_to(SHIM)
+        self.launcher = Path(directory.name) / "agent-box"
+        self.target = Path(directory.name) / "tool-venv/bin/agent-box"
+        self.target.parent.mkdir(parents=True)
+        self.target.write_text(f"#!{sys.executable}\nfrom agent_box.cli import main\nmain()\n")
+        self.target.chmod(0o755)
+        self.launcher.symlink_to(self.target)
         self.env = {name: value for name, value in os.environ.items() if not name.startswith("AGENT_BOX_")}
         self.env["PATH"] = f"{directory.name}:{self.env.get('PATH', '/usr/bin:/bin')}"
+
+    @unittest.skipUnless(shutil.which("bash"), "bash is not installed")
+    def test_loaded_completion_uses_reinstalled_command_after_venv_is_removed(self):
+        """A sourced completion must follow the stable symlink after an upgrade."""
+        loaded = subprocess.run([str(self.launcher), "completion", "bash"],
+                                capture_output=True, text=True, env=self.env, check=True)
+        replacement = self.launcher.parent / "new-venv/bin/agent-box"
+        replacement.parent.mkdir(parents=True)
+        replacement.write_text(f"#!{sys.executable}\nprint('words\\nnew-install')\n")
+        replacement.chmod(0o755)
+        self.launcher.unlink()
+        self.launcher.symlink_to(replacement)
+        self.target.unlink()
+        script = loaded.stdout + "\nCOMP_LINE='agent-box '; COMP_POINT=10; _agent_box; printf '%s' \"${COMPREPLY[*]}\"\n"
+        result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=self.env)
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "new-install", ""))
 
     @unittest.skipUnless(shutil.which("bash"), "bash is not installed")
     def test_bash_completes_through_the_real_script(self):
@@ -221,7 +243,7 @@ ask 'agent-box tracker st'
         """The environment plus agent-box's directory and a PATH that has python3 but no agent-box."""
         directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
         (directory / "python3").symlink_to(shutil.which("python3"))
-        return {**self.env, "AB_DIR": str(SHIM.parent), "NO_AB_PATH": str(directory)}
+        return {**self.env, "AB_DIR": str(self.launcher.parent), "NO_AB_PATH": str(directory)}
 
     @unittest.skipUnless(shutil.which("bash"), "bash is not installed")
     def test_bash_completes_aliases_defined_before_the_script(self):
@@ -332,7 +354,7 @@ zpty -d z
 
     @unittest.skipUnless(shutil.which("zsh"), "zsh is not installed")
     def test_zsh_script_parses(self):
-        script = subprocess.run([str(SHIM), "completion", "zsh"], capture_output=True, text=True, env=self.env, timeout=60)
+        script = subprocess.run([str(self.launcher), "completion", "zsh"], capture_output=True, text=True, env=self.env, timeout=60)
         result = subprocess.run(["zsh", "-n"], input=script.stdout, capture_output=True, text=True, timeout=60)
         self.assertEqual(result.returncode, 0, result.stderr)
 

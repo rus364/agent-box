@@ -30,13 +30,12 @@ HELP = {
     "agents": "Which agent starts, how Claude and Codex run, and which provider APIs and host variables they may use.",
     "box": "What the workspace box is built with, the k3s cluster and nested Podman storage beside it, sound, and its environment.",
     "credentials": "Host identity and credentials the box's own tools may use. Everything that exposes a credential is off by default.",
-    "host": "What agent-box does on the host itself: notifications, Claude skill links and the PATH symlink. Global only.",
+    "host": "What agent-box does on the host itself: notifications and Claude skill links. Global only.",
     "workflow.language": ("Working language of project text, such as English or Deutsch: tracker tasks and comments, pull requests and "
                  "review replies, commit messages, code comments and documentation. Conversation with you stays in your "
                  "language; agent handoffs and agent-box output stay English. Empty keeps each text's current rule. "
                  "A project may override it."),
     "agents.default": "Agent started by `agent-box` without claude/codex; an explicit claude or codex always wins. Global only; not a project setting.",
-    "host.bin_dir": "Directory holding the agent-box PATH symlink; empty means agent-box manages none. `agent-box config apply` restores the link here.",
     "agents.claude": "Claude session settings, including --host, and its status line. Global only.",
     "agents.claude.telegram_channel": "Start Claude with Anthropic's official Telegram channel plugin. This requires its host-side setup and exposes the session through that channel.",
     "agents.claude.remote_control": "Request Remote Control for new interactive Claude sessions, including --host. Off preserves native behavior. Resume and explicit settings use the ordinary launch. Requires eligible Claude login.",
@@ -149,7 +148,6 @@ HELP = {
     "workflow.cleanup_remote_branches": "Delete a proven merged parent branch on origin with an exact head lease. Disabled by default.",
 }
 ACTION_HELP = {
-    "path": "Choose whether agent-box maintains a safe PATH symlink. Nothing is changed until Save and apply.",
     "save": "Validate the draft, save it, and apply selected host integrations. This is the only menu action that writes changes.",
     "cancel": "Discard the complete draft and leave configuration and host integration unchanged.",
     "preset": "Set file and line thresholds together from a named review preset; all review fields remain editable.",
@@ -455,14 +453,8 @@ def validate(config):
 
 @dataclass
 class EditResult:
-    """The accepted configuration plus the one-off shell startup edit.
-
-    The symlink directory is stored in configuration so ``config apply`` can
-    restore it. Appending to a shell startup file happens only for the answer
-    given in this edit and is never repeated behind the user's back.
-    """
+    """Accepted global configuration or explicit project overrides."""
     config: Config
-    edit_rc: bool = False
     project: dict | None = None
 
 
@@ -575,11 +567,9 @@ def edit(config, *, project=None):
         import curses
     except ImportError:
         raise AgentBoxError("This Python build lacks stdlib curses; edit config.json and run config apply") from None
-    from . import pathsetup
     from .project_config import project_field, merge, validate as validate_project
     project_mode = project is not None
     overrides = copy.deepcopy(project) if project_mode else None
-    choices, link = ([], None) if project_mode else (pathsetup.bin_dir_choices(), pathsetup.link_state())
     model_suggestions = load_model_catalogs()
     inherited = copy.deepcopy(config.to_dict())
     if project_mode and hasattr(config, "_global_tracker_urls"):
@@ -590,8 +580,6 @@ def edit(config, *, project=None):
     global_values = copy.deepcopy(inherited)
     draft = merge(inherited, overrides) if project_mode else copy.deepcopy(inherited)
     draft.pop("version", None)
-    # PATH integration is an action in the Host section, not a free-text field.
-    draft["host"].pop("bin_dir", None)
     for provider in TRACKER_PROVIDERS:
         inherited["tracker"]["connections"].setdefault(provider, TrackerConnection().to_dict())
         draft["tracker"]["connections"].setdefault(provider, TrackerConnection().to_dict())
@@ -599,7 +587,6 @@ def edit(config, *, project=None):
         for target in (inherited, draft):
             target["tracker"].setdefault("project", "")
             target["tracker"].setdefault("recursive", False)
-    path_state = {"bin": Path(config.host.bin_dir) if config.host.bin_dir else None, "rc": False}
 
     def explicit(path):
         value = overrides
@@ -631,8 +618,6 @@ def edit(config, *, project=None):
         return copy.deepcopy(value)
 
     defaults = Config().to_dict()
-    # Resetting Host must not bring the PATH directory back as a free-text field.
-    defaults["host"].pop("bin_dir")
     for provider in TRACKER_PROVIDERS:
         defaults['tracker']['connections'][provider] = TrackerConnection().to_dict()
 
@@ -664,7 +649,7 @@ def edit(config, *, project=None):
         return copy.deepcopy(value)
 
     def drafted():
-        result = Config.from_dict({**draft, "host": {**draft["host"], "bin_dir": str(path_state["bin"]) if path_state["bin"] else ""}})
+        result = Config.from_dict(draft)
         # Empty connection rows exist for editing, not as configured accounts.
         result.tracker.connections = {provider: connection for provider, connection in result.tracker.connections.items()
                                       if connection != TrackerConnection()}
@@ -1060,20 +1045,6 @@ def edit(config, *, project=None):
                 del models[index]
                 changed = True
 
-    def path_pending():
-        """Would saving now leave the shell unable to find agent-box?"""
-        return not project_mode and path_state["bin"] is None and link.kind != "ours"
-
-    def path_row():
-        """Describe PATH ownership even when the guided section stays closed."""
-        if project_mode:
-            return "PATH integration: Global only"
-        if path_state["bin"] is not None:
-            return f"PATH integration: agent-box keeps {path_state['bin'] / pathsetup.COMMAND}"
-        if link.kind == "ours":
-            return f"PATH integration: found {link.found}, kept by you, not agent-box"
-        return "PATH integration: agent-box is not on PATH yet"
-
     def keep_tools(notice):
         """Forwarded configuration keeps its tool group ticked, whichever action took the tick away.
 
@@ -1118,10 +1089,6 @@ def edit(config, *, project=None):
 
     def menu(screen, data, path=()):
         selected, notice = 0, ""
-        if path_pending() and path in ((), ("host",)):
-            # Lead an unfinished setup to the PATH row inside Host.
-            selected = menu_keys(data, path).index("host") if not path else len(data)
-            notice = "Setup starts here: agent-box is not on PATH yet" + (" (open Host)" if not path else "")
         while True:
             notice = keep_tools(notice)
             keys = menu_keys(data, path)
@@ -1160,8 +1127,6 @@ def edit(config, *, project=None):
                 extras = [("Save and apply", "save", ACTION_HELP["save"]), ("Cancel", "cancel", ACTION_HELP["cancel"])]
                 if project_mode:
                     extras = [("Save project", "save", "Save explicit project overrides without applying host integrations."), ("Cancel", "cancel", ACTION_HELP["cancel"])]
-            elif path == ("host",):
-                extras = [(path_row(), "path", path_row() + ". " + ACTION_HELP["path"])]
             labels = [label_for(key, path) for key in keys]
             rows = []
             for key, label in zip(keys, labels):
@@ -1316,10 +1281,7 @@ def edit(config, *, project=None):
                         continue
                     if action == "cancel":
                         return None
-                    if action == "path":
-                        path_menu(screen)
-                        notice = ""
-                    elif action == "preset":
+                    if action == "preset":
                         names = list(REVIEW_PRESETS)
                         descriptions = [
                             f"{name.capitalize()}: review at {REVIEW_PRESETS[name][0]} changed files or "
@@ -1350,10 +1312,8 @@ def edit(config, *, project=None):
                             errors = validate(result)
                         if errors:
                             notice = errors[0]
-                        elif path_pending() and choices and not path_gate(screen):
-                            notice = "PATH left unchanged; agent-box still resolves only by path"
                         else:
-                            return EditResult(result, path_state["rc"], overrides)
+                            return EditResult(result, project=overrides)
                     continue
                 name, full, value = keys[selected], (*path, keys[selected]), data[keys[selected]]
                 if project_mode and project_field(full) is None:
@@ -1421,32 +1381,6 @@ def edit(config, *, project=None):
                             notice = str(exc)
                 if project_mode and accepted:
                     record(full, data[name])
-
-    def path_menu(screen):
-        """Prefer the relevant safe directory while retaining an explicit decline."""
-        rows = ["Leave PATH alone; agent-box maintains no symlink"] + ["Create agent-box symlink in " + str(c.path) + (" (also needs a shell startup line)" if c.needs_rc_line else "") for c in choices]
-        current = [i for i, c in enumerate(choices, 1) if c.path == path_state["bin"]]
-        picked = choose(screen, rows, "PATH: applied only when saving", current[0] if current else (1 if path_pending() and choices else 0), ACTION_HELP["path"])
-        if picked is None:
-            return
-        path_state.update(bin=None, rc=False)
-        if picked:
-            choice = choices[picked - 1]
-            path_state["bin"] = choice.path
-            rc_file = pathsetup.rc_file()
-            if choice.needs_rc_line and rc_file:
-                rc = choose(screen, ["Leave shell startup file unchanged", "Append PATH block to " + str(rc_file)], "Shell PATH block", 1, "The generated marked PATH block is appended only after saving. Existing or edited user-owned blocks are never replaced.")
-                path_state["rc"] = rc == 1
-
-    def path_gate(screen):
-        """Ask before saving a configuration for a command the shell cannot run."""
-        picked = choose(screen, ["Set up PATH now", "Save without putting agent-box on PATH"], path_row(), 0, "Saving without PATH is allowed, but the shell may only find agent-box through its checkout path.")
-        if picked is None:
-            return False
-        if picked == 1:
-            return True
-        path_menu(screen)
-        return path_state["bin"] is not None
 
     def start(screen):
         nonlocal global_only_color

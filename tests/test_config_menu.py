@@ -63,7 +63,6 @@ class ConfigMenuTests(unittest.TestCase):
         """Routing, review and delivery stay together even if storage order changes."""
         data = Config().to_dict()
         data.pop('version')
-        data['host'].pop('bin_dir')
         expected = {
             (): ['agents', 'box', 'credentials', 'tracker', 'workflow', 'host'],
             ('agents',): ['default', 'claude', 'codex', 'host_env', 'external_apis'],
@@ -204,16 +203,6 @@ class ConfigMenuTests(unittest.TestCase):
             save_config(result.config, path)
             self.assertEqual(json.loads(path.read_text()), {'version': 1})
 
-    def test_resetting_host_keeps_the_path_directory_an_action(self):
-        """A section reset restores fields; the PATH directory belongs to its own row and survives."""
-        import curses
-        config = Config()
-        config.host.claude_skill_links = False
-        config.host.bin_dir = "/kept/bin"
-        result, screen = self.edit(config, [*select("host"), 'r', '\n', '\x1b', curses.KEY_END, curses.KEY_UP, '\n'])
-        self.assertTrue(result.config.host.claude_skill_links)
-        self.assertEqual(result.config.host.bin_dir, "/kept/bin")
-        self.assertFalse(any(line.startswith("Bin dir") for line in screen.drawn))
 
     def test_cleanup_toggles_save_independently_without_enabling_the_other(self):
         import curses
@@ -395,18 +384,14 @@ class ConfigMenuTests(unittest.TestCase):
                 self.assertTrue(result.config.box.tools.groups["yc"])
                 self.assertTrue(any("Image tools:" in frame and " on for " in frame for frame in screen.frames))
 
-    def edit(self, config, keys, choices=(), link=None, screen=None, project=None, catalogs=None, published=None):
+    def edit(self, config, keys, screen=None, project=None, catalogs=None, published=None):
         """``published`` is what every external provider's model list returns; tests never reach a network."""
         import curses
-        from agent_box import pathsetup
         screen = screen or Screen(keys)
-        state = link or pathsetup.LinkState("ours", Path("/somewhere/bin/agent-box"))
         with patch.object(config_menu.sys.stdin, "isatty", return_value=True), patch.object(config_menu.sys.stdout, "isatty", return_value=True), \
              patch.object(curses, "wrapper", side_effect=lambda callback: callback(screen)), patch.object(curses, "curs_set"), \
              patch.object(config_menu, "load_model_catalogs", return_value=catalogs or BUNDLED_MODELS) as refresh, \
-             patch.object(config_menu.api_models, "load", return_value=published or ({}, "not requested in tests")), \
-             patch.object(pathsetup, "link_state", return_value=state), \
-             patch.object(pathsetup, "bin_dir_choices", return_value=list(choices)):
+             patch.object(config_menu.api_models, "load", return_value=published or ({}, "not requested in tests")):
             result = config_menu.edit(config, project=project)
             refresh.assert_called_once_with()
             return result, screen
@@ -422,7 +407,6 @@ class ConfigMenuTests(unittest.TestCase):
         result, _ = self.edit(config, [*keys, curses.KEY_END, curses.KEY_UP, "\n"])
         self.assertFalse(result.config.agents.claude.statusline.enabled)
         self.assertTrue(config.agents.claude.statusline.enabled)
-        self.assertEqual(result.config.host.bin_dir, "")
 
     def test_saved_token_is_not_drawn_when_opening_its_connection(self):
         import curses
@@ -451,7 +435,6 @@ class ConfigMenuTests(unittest.TestCase):
     def test_every_generated_section_and_field_has_specific_help(self):
         data = Config().to_dict()
         data.pop("version")
-        data["host"].pop("bin_dir")
         for provider in ("vikunja", "jira", "linear", "github"):
             data["tracker"]["connections"].setdefault(provider, {"url": "", "token": ""})
 
@@ -464,7 +447,7 @@ class ConfigMenuTests(unittest.TestCase):
                 check(child, full)
 
         check(data)
-        self.assertEqual(set(config_menu.ACTION_HELP), {"path", "save", "cancel", "preset"})
+        self.assertEqual(set(config_menu.ACTION_HELP), {"save", "cancel", "preset"})
 
     def test_editor_inserts_and_deletes_at_the_visible_cursor(self):
         import curses
@@ -529,14 +512,11 @@ class ConfigMenuTests(unittest.TestCase):
         import curses
         screen = Screen([curses.KEY_RESIZE, "?", curses.KEY_DOWN, "\x1b", "\x1b"],
                         sizes=[(7, 39), (8, 40), (8, 40), (8, 40)])
-        from agent_box import pathsetup
         with patch.object(config_menu.sys.stdin, "isatty", return_value=True), \
              patch.object(config_menu.sys.stdout, "isatty", return_value=True), \
              patch.object(curses, "wrapper", side_effect=lambda callback: callback(screen)), \
              patch.object(curses, "curs_set"), \
-             patch.object(config_menu, "load_model_catalogs", return_value=BUNDLED_MODELS), \
-             patch.object(pathsetup, "link_state", return_value=pathsetup.LinkState("ours", Path("/bin/agent-box"))), \
-             patch.object(pathsetup, "bin_dir_choices", return_value=[]):
+             patch.object(config_menu, "load_model_catalogs", return_value=BUNDLED_MODELS):
             self.assertIsNone(config_menu.edit(Config()))
         self.assertIn("Resize terminal to at least 40 columns x 8 rows (Esc: back)", screen.drawn)
         self.assertIn("Help: " + config_menu.menu_keys(Config().to_dict())[0], screen.drawn)
@@ -663,72 +643,6 @@ class ConfigMenuTests(unittest.TestCase):
         self.assertEqual(result.config.host.notifications.telegram_chat_id, "Q" + "a" * 149 + "Za")
         self.assertTrue(any("Resize terminal" in frame for frame in screen.frames))
         self.assertTrue(all(0 <= x < 120 for _, x in screen.cursor))
-
-
-class PathIntegrationTests(unittest.TestCase):
-    """Setup begins with PATH, so the menu must not let it be missed silently.
-
-    The complaint these protect against: the PATH question sat behind a row
-    that said nothing about its state, and every default answer -- the cursor
-    on the first row, "leave PATH unchanged" first in its submenu -- was the
-    one that left the shell unable to run agent-box.
-    """
-
-    def setUp(self):
-        from agent_box import pathsetup
-        self.missing = pathsetup.LinkState("missing")
-        self.bin = pathsetup.BinDir(Path("/home/somebody/.local/bin"), on_path=True, exists=True)
-
-    def edit(self, keys, config=None, choices=(), link=None):
-        return ConfigMenuTests.edit(self, config or Config(), keys, choices, link or self.missing)
-
-    def test_menu_opens_on_the_path_row_and_says_agent_box_is_not_on_path(self):
-        """The root points at Host, and Host opens on its PATH row."""
-        result, screen = self.edit(["\n", "\x1b", "\x1b"], choices=[self.bin])
-        self.assertIsNone(result)
-        self.assertIn("Setup starts here: agent-box is not on PATH yet (open Host)", " ".join(screen.drawn))
-        self.assertIn("PATH integration: agent-box is not on PATH yet", screen.drawn)
-        self.assertIn("Setup starts here: agent-box is not on PATH yet", screen.drawn)
-
-    def test_saving_without_a_path_answer_asks_before_leaving_the_shell_broken(self):
-        import curses
-        # The cursor starts on Host; down to "Save and apply"; the gate opens, and Escape declines it,
-        # so nothing is saved.
-        result, screen = self.edit([curses.KEY_DOWN, "\n", "\x1b", "\x1b"], choices=[self.bin])
-        self.assertIsNone(result)
-        self.assertIn("Set up PATH now", screen.drawn)
-        # Saving anyway stays available: it is the gate's second answer.
-        result, _ = self.edit(
-            [curses.KEY_DOWN, "\n", curses.KEY_DOWN, "\n"], choices=[self.bin])
-        self.assertEqual(result.config.host.bin_dir, "")
-
-    def test_the_path_submenu_starts_on_the_directory_rather_than_on_declining(self):
-        import curses
-        # The cursor opens on Host and then on its PATH row, Enter opens the
-        # PATH submenu, and the directory -- not "leave PATH alone" -- is what
-        # Enter takes there.
-        result, _ = self.edit(["\n", "\n", "\n", "\x1b", curses.KEY_DOWN, "\n"], choices=[self.bin])
-        self.assertEqual(result.config.host.bin_dir, str(self.bin.path))
-        self.assertFalse(result.edit_rc)
-
-    def test_a_recorded_directory_is_shown_and_kept_without_reopening_the_menu(self):
-        import curses
-        config = Config()
-        config.host.bin_dir = "/home/somebody/.local/bin"
-        result, screen = self.edit(
-            [*select("host"), "\n", "\x1b", curses.KEY_DOWN, "\n"], config=config, choices=[self.bin])
-        self.assertEqual(result.config.host.bin_dir, "/home/somebody/.local/bin")
-        self.assertIn(
-            "PATH integration: agent-box keeps /home/somebody/.local/bin/agent-box",
-            screen.drawn)
-
-    def test_a_link_agent_box_did_not_make_is_reported_as_unmaintained(self):
-        from agent_box import pathsetup
-        ours = pathsetup.LinkState("ours", Path("/usr/local/bin/agent-box"))
-        _, screen = self.edit([*select("host"), "\n", "\x1b", "\x1b"], choices=[self.bin], link=ours)
-        self.assertIn(
-            "PATH integration: found /usr/local/bin/agent-box, kept by you, not agent-box",
-            screen.drawn)
 
 
 class ProjectMenuTests(unittest.TestCase):
@@ -909,14 +823,12 @@ class ProjectMenuTests(unittest.TestCase):
     def test_new_project_and_cancel_do_not_persist_copies_or_path_actions(self):
         """Opening a new project starts inherited and cancellation drops copied values."""
         import curses
-        from agent_box import pathsetup
-        with patch.object(pathsetup, 'path_entries', side_effect=AssertionError('host PATH read')):
-            result, _ = self.edit(Config(), [curses.KEY_END, curses.KEY_UP, '\n'], project={})
-            self.assertEqual(result.project, {})
-            project = {}
-            cancelled, _ = self.edit(Config(), [*select("workflow"), 'g', '\x1b'], project=project)
-            self.assertIsNone(cancelled)
-            self.assertEqual(project, {})
+        result, _ = self.edit(Config(), [curses.KEY_END, curses.KEY_UP, '\n'], project={})
+        self.assertEqual(result.project, {})
+        project = {}
+        cancelled, _ = self.edit(Config(), [*select("workflow"), 'g', '\x1b'], project=project)
+        self.assertIsNone(cancelled)
+        self.assertEqual(project, {})
 
     def test_project_can_keep_equal_override_reset_and_block_global_fields(self):
         """Explicit equality is a choice; reset removes the choice from the file."""
@@ -946,7 +858,6 @@ class ProjectMenuTests(unittest.TestCase):
                  patch.object(config_menu, 'edit', return_value=result), \
                  patch.object(cli, 'save_config', side_effect=AssertionError('global write')), \
                  patch('agent_box.runtime.apply_config', side_effect=AssertionError('global apply')), \
-                 patch('agent_box.pathsetup.append_rc_block', side_effect=AssertionError('PATH write')), \
                  redirect_stdout(io.StringIO()):
                 cli.config_interactive(project=True)
                 self.assertEqual(json.loads(path.read_text()), result.project)
@@ -988,8 +899,7 @@ class ProjectMenuTests(unittest.TestCase):
                      patch.object(curses, 'curs_set'), \
                      patch.object(config_menu, 'load_model_catalogs', return_value=BUNDLED_MODELS), \
                      patch.object(cli, 'save_config', side_effect=AssertionError('global write')), \
-                     patch('agent_box.runtime.apply_config', side_effect=AssertionError('global apply')), \
-                     patch('agent_box.pathsetup.append_rc_block', side_effect=AssertionError('PATH write')):
+                     patch('agent_box.runtime.apply_config', side_effect=AssertionError('global apply')):
                     cli.config_interactive(project=True)
                     self.assertEqual(json.loads(path.read_text()), {
                         'tracker': {'provider': 'vikunja', 'connections': {'vikunja': {'url': expected}}}})
