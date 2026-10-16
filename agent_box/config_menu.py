@@ -31,7 +31,7 @@ HELP = {
     "box": "What the workspace box is built with, the k3s cluster beside it, sound, and its environment.",
     "credentials": "Host identity and credentials the box's own tools may use. Everything that exposes a credential is off by default.",
     "host": "What agent-box does on the host itself: notifications, Claude skill links and the PATH symlink. Global only.",
-    "workflow.language": ("Working language of project text, such as English or Русский: tracker tasks and comments, pull requests and "
+    "workflow.language": ("Working language of project text, such as English or Deutsch: tracker tasks and comments, pull requests and "
                  "review replies, commit messages, code comments and documentation. Conversation with you stays in your "
                  "language; agent handoffs and agent-box output stay English. Empty keeps each text's current rule. "
                  "A project may override it."),

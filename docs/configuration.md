@@ -56,7 +56,7 @@ model IDs, since any CLI's model may serve any role. The suggestions are hints,
 not availability checks.
 
 **Working language.** `workflow.language` names the language of project text, such as
-`English` or `Русский`: tracker tasks and comments, pull requests and review
+`English` or `Deutsch`: tracker tasks and comments, pull requests and review
 replies, commit messages, code comments and documentation. Agents still talk
 to you in your own language; agent handoffs and agent-box's own output stay
 English. Empty, the default, keeps each text's current rule: the task's own

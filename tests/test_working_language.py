@@ -43,11 +43,11 @@ class SettingTests(unittest.TestCase):
         self.assertEqual(Config.from_dict({"workflow": {"language": "  English  "}}).workflow.language, "English")
 
     def test_a_project_overrides_the_global_language(self):
-        """One repository may keep its tasks in Russian while the global choice is English."""
+        """One repository may keep its tasks in French while the global choice is English."""
         config = Config()
         config.workflow.language = "English"
         self.assertEqual(project_config.apply(config, {}).workflow.language, "English")
-        self.assertEqual(project_config.apply(config, {"workflow": {"language": "Русский"}}).workflow.language, "Русский")
+        self.assertEqual(project_config.apply(config, {"workflow": {"language": "Français"}}).workflow.language, "Français")
         self.assertEqual(config.workflow.language, "English")
 
     def test_a_value_that_would_break_or_extend_a_prompt_is_refused_everywhere_it_enters(self):
@@ -62,7 +62,7 @@ class SettingTests(unittest.TestCase):
                 self.assertTrue(any("workflow.language" in error for error in config_menu.validate(config)))
                 with self.assertRaisesRegex(AgentBoxError, "language"):
                     project_config.apply(Config(), {"workflow": {"language": bad}})
-        for good in ("English", "Русский", "Português (Brasil)"):
+        for good in ("English", "Français", "Português (Brasil)", "日本語"):
             with self.subTest(good=good):
                 project_config.validate({"workflow": {"language": good}}, Path(".agent-box.json"))
 
@@ -155,18 +155,18 @@ class GeneratedPromptTests(WorkflowCase):
         """Code comments and docs are project text; the answer is a handoff and stays English."""
         before = self.worker_prompt()
         self.assertNotIn("Working language:", before)
-        self.config.workflow.language = "Русский"
+        self.config.workflow.language = "Français"
         after = self.worker_prompt()
-        self.assertIn("Working language: Русский\n", after)
-        self.assertEqual(after.replace("Working language: Русский\n", ""), before)
-        scout = delegation.delegate_prompt("scout", self.task, "Brief.", "", "Русский")
+        self.assertIn("Working language: Français\n", after)
+        self.assertEqual(after.replace("Working language: Français\n", ""), before)
+        scout = delegation.delegate_prompt("scout", self.task, "Brief.", "", "Français")
         self.assertNotIn("Working language:", scout)
 
     def test_native_and_managed_reviewers_learn_the_working_language(self):
-        """A reviewer judging comments and docs must not take Russian text for a defect when Russian is chosen."""
-        self.config.workflow.language = "Русский"
+        """A reviewer judging comments and docs must not take French text for a defect when French is chosen."""
+        self.config.workflow.language = "Français"
         opened = self.run_workflow("review", "1", "--native")
-        self.assertIn("Working language: Русский.", self.delegation_input(opened).read_text())
+        self.assertIn("Working language: Français.", self.delegation_input(opened).read_text())
         self.native_result()
         seen = {}
 
@@ -178,7 +178,7 @@ class GeneratedPromptTests(WorkflowCase):
         workflow.gw.git(self.root, "commit", "-qm", "change")
         with patch.object(workflow, "run", side_effect=managed_runner(provider)):
             self.run_workflow("review", "1")
-        self.assertIn("Working language: Русский.", seen["prompt"])
+        self.assertIn("Working language: Français.", seen["prompt"])
 
     def test_adoption_audit_notes_name_the_working_language_and_empty_keeps_todays_notes(self):
         """Adoption edits are tracker text; preserving each task's language would contradict the setting."""
