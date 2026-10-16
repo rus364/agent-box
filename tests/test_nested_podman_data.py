@@ -153,6 +153,25 @@ class BoxCreationTests(NestedPodmanDataTestCase):
         self.create_box(self.config(persistent=True))
         self.assertEqual(self.podman.volumes[self.volume]["marker"], "old")
 
+    def test_data_a_disposable_box_left_is_not_kept_by_a_later_setting(self):
+        """Turning persistence on after the box ended must not resurrect what it was told to discard."""
+        self.own_volume(marker="old")
+        ReleaseTests.record_box(self, self.config(persistent=False, podman=False))
+        self.create_box(self.config(persistent=True))
+        self.assertNotIn("marker", self.podman.volumes[self.volume])
+
+    def test_a_disposable_box_starts_empty_even_after_a_keeping_one(self):
+        self.own_volume(marker="old")
+        ReleaseTests.record_box(self, self.config(persistent=True, podman=False))
+        self.create_box(self.config(persistent=False))
+        self.assertNotIn("marker", self.podman.volumes[self.volume])
+
+    def test_kept_data_stays_kept_from_box_to_box(self):
+        self.own_volume(marker="old")
+        ReleaseTests.record_box(self, self.config(persistent=True, podman=False))
+        self.create_box(self.config(persistent=True))
+        self.assertEqual(self.podman.volumes[self.volume]["marker"], "old")
+
     def test_a_box_without_the_group_gets_no_volume(self):
         self.create_box(self.config(podman=False))
         self.assertEqual(self.podman.volumes, {})
