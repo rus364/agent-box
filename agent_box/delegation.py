@@ -51,6 +51,8 @@ def delegate_rules(role):
             "import with @path. ")
     if role == "worker":
         text += ("Read the task’s reference documents before implementation; report missing sections or conflicting requirements. ")
+        text += ("Write new or changed code comments, docstrings and documentation in the assignment's Working language "
+                 "when it names one; the answer stays English. ")
         text += ("Change project files only within the assigned scope; you are not alone in the working tree, "
                  "so preserve others' changes. ")
     else:
@@ -63,15 +65,12 @@ def delegate_rules(role):
 def delegate_prompt(role, task, brief, repository_instructions, language=""):
     """A managed worker or scout starts from the brief alone, never the coordinator's history.
 
-    The working language is substituted here, per run, rather than into
-    delegate_rules: native profiles are installed once for every repository.
-    Only a worker writes project text; its answer stays an English handoff.
+    The rule for the working language lives in delegate_rules, which native
+    profiles install once for every repository; only the value is this
+    repository's, so it travels with the run. Only a worker writes project text.
     """
-    rules = delegate_rules(role)
-    if language and role == "worker":
-        rules += (f" Working language: {language}. Write new or changed code comments, docstrings and documentation "
-                  f"in {language}; the answer stays English.")
-    return (rules + f"\n\nTask {task.id}: {task.title}\n\n----- Assignment -----\n{brief}\n"
+    named = f"Working language: {language}\n" if language and role == "worker" else ""
+    return (delegate_rules(role) + f"\n\nTask {task.id}: {task.title}\n{named}\n----- Assignment -----\n{brief}\n"
             + (f"\n----- Repository instructions -----\n{repository_instructions}\n" if repository_instructions else ""))
 
 

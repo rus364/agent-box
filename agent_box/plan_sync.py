@@ -17,6 +17,7 @@ Edit open tasks in scope yourself, including Backlog, Ready, In progress and In 
 Edit only a concrete stale assertion or a decision changing the task's scope/acceptance. No informational additions, Git/sync bookkeeping (commit hashes, sync-task IDs), or restated workflow instructions. Preserve intended requirements and unrelated text; unresolved contradictions need a decision, never weaker acceptance. No correction means no write.
 With references enabled, repair missing/stale references needed to implement affected tasks; do not backfill unrelated tasks. Preserve the section's heading, language and location; if absent, add a task-language section under Context. Use path#heading plus purpose; verify sections and meaning, never line numbers or invented decisions.
 Before each edit, reread the task; use agent-box tracker update ID --revision REV --description-file - with its full preserved description in a direct heredoc, without pipes or temporary files. Read back saved text; journal substantive corrections in task language. On unknown-outcome, reread task/comments before any further write; never blindly retry.
+A Working language line in the assignment replaces task language in these rules: write task text, section headings and journal comments in that language and save a rewritten description wholly in it, preserving meaning.
 Report in English: task IDs, saved/partial corrections, evidence, unresolved issues. End with one line: Sync: UPDATED, Sync: UNCHANGED, Sync: BLOCKED, or Sync: ERROR. BLOCKED needs a decision; ERROR means reading, writing or verification failed.
 """
 
@@ -174,10 +175,8 @@ def run(root, binding, adapter, config, task, event="manual", *, native=False, r
     prompt = (f"Assigned role: sync executor\nSource: {task.id}\nRead: agent-box tracker get {task.url or task.id} --no-comments\nEvent: {event}\nScope: {target}\n"
               f"References: {str(settings.references).lower()}\n")
     if config.language:
-        # The rules are installed once as the native profile for every repository; the value is this one's.
-        prompt += (f"Working language: {config.language}. It replaces task language in these rules: write task text, "
-                   f"section headings and journal comments in {config.language}, and save a rewritten description "
-                   f"wholly in {config.language}, preserving meaning. The report stays English.\n")
+        # The rules are also the native profile shared by every repository; only the value is this one's.
+        prompt += f"Working language: {config.language}\n"
     saved = workflow.read_evidence(root, task)
     if saved.get("base_head") and saved.get("head"):
         prompt += f"Source commits: {saved['base_head']}..{saved['head']} (verify integration before propagation).\n"

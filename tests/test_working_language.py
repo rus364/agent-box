@@ -131,28 +131,36 @@ class GeneratedPromptTests(WorkflowCase):
             self.run_workflow("delegate", "1", "--role", "worker", "--brief", str(self.review_brief))
         return execute.call_args.args[4]
 
-    def test_plan_sync_writes_task_text_in_the_working_language_and_empty_keeps_todays_prompt(self):
-        """The sync rules are also the native profile, shared by every repository; the run says which language."""
+    def test_plan_sync_names_the_working_language_and_an_empty_value_names_none(self):
+        """The sync rules are also the native profile, shared by every repository; the run says which language.
+
+        Without the line the rules fall back to the task's own language, so an empty value keeps today's behaviour.
+        """
         before = self.sync_prompt()
-        self.assertNotIn("Working language", before)
+        self.assertNotIn("Working language:", before)
         self.config.language = "English"
         after = self.sync_prompt()
         self.assertTrue(after.startswith(before))
-        self.assertIn("Working language: English. It replaces task language in these rules", after)
-        self.assertIn("Working language: English", self.run_workflow("sync", "1", "--native")["message"])
+        self.assertIn("Working language: English\n", after)
+        self.assertIn("Working language: English\n", self.run_workflow("sync", "1", "--native")["message"])
+
+    def test_native_profiles_carry_the_rule_so_their_message_only_names_the_value(self):
+        """A profile is a higher-priority instruction than its message; a fixed language rule there would win."""
+        sync = delegation.profile_instructions("sync")
+        self.assertIn("A Working language line in the assignment replaces task language in these rules", sync)
+        worker = delegation.profile_instructions("worker")
+        self.assertIn("documentation in the assignment's Working language when it names one", worker)
 
     def test_a_worker_writes_repository_text_in_the_working_language_and_answers_in_english(self):
         """Code comments and docs are project text; the answer is a handoff and stays English."""
         before = self.worker_prompt()
-        self.assertNotIn("Working language", before)
+        self.assertNotIn("Working language:", before)
         self.config.language = "Русский"
         after = self.worker_prompt()
-        self.assertIn("Working language: Русский. Write new or changed code comments, docstrings and documentation "
-                      "in Русский; the answer stays English.", after)
-        self.assertEqual(after.replace(" Working language: Русский. Write new or changed code comments, docstrings "
-                                       "and documentation in Русский; the answer stays English.", ""), before)
+        self.assertIn("Working language: Русский\n", after)
+        self.assertEqual(after.replace("Working language: Русский\n", ""), before)
         scout = delegation.delegate_prompt("scout", self.task, "Brief.", "", "Русский")
-        self.assertNotIn("Working language", scout)
+        self.assertNotIn("Working language:", scout)
 
     def test_native_and_managed_reviewers_learn_the_working_language(self):
         """A reviewer judging comments and docs must not take Russian text for a defect when Russian is chosen."""
