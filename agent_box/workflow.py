@@ -29,7 +29,7 @@ from types import SimpleNamespace
 
 from .atomicio import atomic_write_text
 from .config import effective_config, effective_config_source
-from .delegation import bootstrap, delegate_prompt, render_handoff
+from .delegation import bootstrap, delegate_prompt, render_handoff, review_language
 from .errors import AgentBoxError
 from . import git_workflow as gw
 from .paths import WORKFLOW_STATE
@@ -1214,9 +1214,7 @@ def reviewer_handoff(root, base, task, parent, tasks, brief, saved, review_conte
         "Each finding needs proportionate severity, path/line, concrete scenario, impact, technical evidence and violated "
         "requirement. PASS has no findings.\n"
     )
-    if language:
-        prompt += (f"Working language: {language}. New or changed code comments, docstrings, documentation and commit "
-                   f"messages belong in {language}; task descriptions written earlier may be in another language.\n")
+    prompt += review_language(language)
     prompt = render_handoff("reviewer", handoff, prompt)
     if len(prompt.encode()) > REVIEW_HANDOFF_MAX_BYTES:
         cleanup_review_evidence(evidence_path)

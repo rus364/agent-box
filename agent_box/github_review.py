@@ -24,7 +24,7 @@ from pathlib import Path
 
 from .atomicio import atomic_write_text
 from . import git_workflow as gw
-from .delegation import REVIEW_SCOPE
+from .delegation import REVIEW_SCOPE, review_language
 from .errors import AgentBoxError
 from .provider_runner import ProviderFailure, review_report
 
@@ -56,7 +56,7 @@ Review commit {head}, as this pull request stands against base commit {base}, ag
 requirements quoted below, the repository's guidance and this pull request's description.
 Read only: change no files, push nothing, and answer in this pull request.
 {scope}
-
+{language}
 Report every finding on its own line as
 
 - [LOW|MEDIUM|HIGH|CRITICAL] path:line — what is wrong and why it matters
@@ -91,7 +91,7 @@ def quoted(text):
     return MENTION.sub("@<!-- -->", text.strip())
 
 
-def request_body(provider, head, base, descriptions, review_context="", brief=None):
+def request_body(provider, head, base, descriptions, review_context="", brief=None, language=""):
     """The request names both commits of the scope it asks about, because that is the
     only place a published request can record which diff the answer will describe.
 
@@ -107,7 +107,8 @@ def request_body(provider, head, base, descriptions, review_context="", brief=No
     note = f"\n\nContext from the coordinator:\n\n{quoted(brief)}" if brief else ""
     cards = "\n\n---\n\n".join(quoted(text) for text in descriptions.values())
     return REQUEST_FORM.format(provider=provider, head=head, base=base, context=context,
-                               brief=note, cards=cards, scope=REVIEW_SCOPE.strip())
+                               brief=note, cards=cards, scope=REVIEW_SCOPE.strip(),
+                               language=review_language(language))
 
 
 def paginate(root, repo, path):
@@ -450,7 +451,7 @@ def _round(root, binding, adapter, config, task, parent, tasks, fingerprint, ide
     # ours; anything else is a stranger's question, and this run publishes its own.
     request = find_request(comments, [*published_requests(root, task, provider, head, base_head),
                                       request_body(provider, head, base_head, descriptions,
-                                                   review_context, brief)])
+                                                   review_context, brief, config.workflow.language)])
     if descriptor is not None:
         round_id = descriptor["delegation"]
         report, url, note = None, None, None
@@ -500,7 +501,8 @@ def _round(root, binding, adapter, config, task, parent, tasks, fingerprint, ide
             + f"The round ended as failure {failures} of {REVIEW_FAILURE_LIMIT} without spending an attempt. "
             f"Ask the user before rerunning workflow review {task.id} or reviewing this head another way")
     body = (request["body"] if request is not None
-            else request_body(provider, head, base_head, descriptions, review_context, brief))
+            else request_body(provider, head, base_head, descriptions, review_context, brief,
+                              config.workflow.language))
     if request is None and len(body) > COMMENT_LIMIT:
         raise AgentBoxError(
             f"The request for {head[:12]} is {len(body)} characters and GitHub accepts {COMMENT_LIMIT}; "

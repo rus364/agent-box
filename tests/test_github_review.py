@@ -166,6 +166,16 @@ class CloudReviewTests(LandingCase):
                 "updated_at": created, "body": body,
                 "html_url": "https://github.com/o/r/pull/9#issuecomment-100"}
 
+    def test_the_cloud_request_names_the_working_language_and_an_empty_one_changes_nothing(self):
+        """The bot judges repository text as a local reviewer does, so it must learn the same language."""
+        descriptions = workflow.review_descriptions(self.parent, self.parent, [self.parent])
+        base = gw.base_commit(self.root, "main")
+        self.assertEqual(github_review.request_body("claude", self.head, base, descriptions, language=""),
+                         github_review.request_body("claude", self.head, base, descriptions))
+        self.config.workflow.language = "Français"
+        self.review()
+        self.assertIn("Working language: Français. New or changed code comments", self.published())
+
     def test_the_first_run_publishes_one_request_and_later_runs_publish_none(self):
         """A rerun is how the answer is read, so it must never ask a second time."""
         opened = self.review()

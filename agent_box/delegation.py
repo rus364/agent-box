@@ -44,6 +44,14 @@ REPORT_FORMAT = REVIEW_SCOPE + (
 )
 
 
+def review_language(language):
+    """What a reviewer of any route must know to judge repository text; empty names nothing."""
+    if not language:
+        return ""
+    return (f"Working language: {language}. New or changed code comments, docstrings, documentation and commit "
+            f"messages belong in {language}; task descriptions written earlier may be in another language.\n")
+
+
 def delegate_rules(role):
     """What a worker or scout may do, shared by managed prompts and native profiles."""
     text = (f"Act only as the assigned {role}. Use English. " + COORDINATOR_OWNS +
