@@ -49,8 +49,18 @@ def _podman_json(*args: str) -> list[dict]:
     return json.loads(result.stdout or "[]") or []
 
 
-def collect() -> list[Entry]:
-    """Every workspace that holds a box, a cluster, a nested Podman volume or a state directory."""
+def _has_state(directory: Path) -> bool:
+    """A state root holding only its lifecycle lock is empty: removal keeps that lock on purpose."""
+    if directory.parent != runtime.workspace_state_root("0" * 16).parent:
+        return True
+    return any(child.name != runtime.WORKSPACE_LOCK_FILE for child in directory.iterdir())
+
+
+def collect(podman: bool = True) -> list[Entry]:
+    """Every workspace that holds a box, a cluster, a nested Podman volume or a state directory.
+
+    Without Podman only the state directories are read: host sessions need none.
+    """
     found: dict[str, Entry] = {}
 
     def entry(workspace_id: str, path: str = "") -> Entry:
@@ -58,35 +68,36 @@ def collect() -> list[Entry]:
         item.path = item.path or path
         return item
 
-    for container in _podman_json("ps", "--all", f"--filter=label={runtime.WORKSPACE_CONTAINER_LABEL}=true"):
-        labels = container.get("Labels") or {}
-        workspace_id = labels.get(runtime.WORKSPACE_CONTAINER_WORKSPACE_LABEL, "")
-        if WORKSPACE_ID.fullmatch(workspace_id):
-            item = entry(workspace_id, labels.get(runtime.WORKSPACE_PATH_LABEL, ""))
-            item.box, item.box_state = (container.get("Names") or [""])[0], container.get("State", "")
-    for container in _podman_json("ps", "--all", f"--filter=label={k3s.LABEL}"):
-        labels = container.get("Labels") or {}
-        if WORKSPACE_ID.fullmatch(labels.get(k3s.LABEL, "")):
-            entry(labels[k3s.LABEL], labels.get(runtime.WORKSPACE_PATH_LABEL, "")).cluster = container.get("State", "")
-    # A network can outlive the rest of a cluster; it is still something to remove.
-    for network in _podman_json("network", "ls", f"--filter=label={k3s.LABEL}"):
-        labels = network.get("labels") or {}
-        if WORKSPACE_ID.fullmatch(labels.get(k3s.LABEL, "")):
-            item = entry(labels[k3s.LABEL])
-            item.cluster = item.cluster or "network"
-    for volume in _podman_json("volume", "ls"):
-        labels = volume.get("Labels") or {}
-        path = labels.get(runtime.WORKSPACE_PATH_LABEL, "")
-        if WORKSPACE_ID.fullmatch(labels.get(runtime.NESTED_PODMAN_LABEL, "")):
-            entry(labels[runtime.NESTED_PODMAN_LABEL], path).podman_volume = volume["Mountpoint"]
-        elif WORKSPACE_ID.fullmatch(labels.get(k3s.LABEL, "")) and volume.get("Name") == k3s.name(labels[k3s.LABEL]):
-            item = entry(labels[k3s.LABEL], path)
-            item.cluster_volume = volume["Mountpoint"]
-            item.cluster = item.cluster or "data"
+    if podman:
+        for container in _podman_json("ps", "--all", f"--filter=label={runtime.WORKSPACE_CONTAINER_LABEL}=true"):
+            labels = container.get("Labels") or {}
+            workspace_id = labels.get(runtime.WORKSPACE_CONTAINER_WORKSPACE_LABEL, "")
+            if WORKSPACE_ID.fullmatch(workspace_id):
+                item = entry(workspace_id, labels.get(runtime.WORKSPACE_PATH_LABEL, ""))
+                item.box, item.box_state = (container.get("Names") or [""])[0], container.get("State", "")
+        for container in _podman_json("ps", "--all", f"--filter=label={k3s.LABEL}"):
+            labels = container.get("Labels") or {}
+            if WORKSPACE_ID.fullmatch(labels.get(k3s.LABEL, "")):
+                entry(labels[k3s.LABEL], labels.get(runtime.WORKSPACE_PATH_LABEL, "")).cluster = container.get("State", "")
+        # A network can outlive the rest of a cluster; it is still something to remove.
+        for network in _podman_json("network", "ls", f"--filter=label={k3s.LABEL}"):
+            labels = network.get("labels") or {}
+            if WORKSPACE_ID.fullmatch(labels.get(k3s.LABEL, "")):
+                item = entry(labels[k3s.LABEL])
+                item.cluster = item.cluster or "network"
+        for volume in _podman_json("volume", "ls"):
+            labels = volume.get("Labels") or {}
+            path = labels.get(runtime.WORKSPACE_PATH_LABEL, "")
+            if WORKSPACE_ID.fullmatch(labels.get(runtime.NESTED_PODMAN_LABEL, "")):
+                entry(labels[runtime.NESTED_PODMAN_LABEL], path).podman_volume = volume["Mountpoint"]
+            elif WORKSPACE_ID.fullmatch(labels.get(k3s.LABEL, "")) and volume.get("Name") == k3s.name(labels[k3s.LABEL]):
+                item = entry(labels[k3s.LABEL], path)
+                item.cluster_volume = volume["Mountpoint"]
+                item.cluster = item.cluster or "data"
     # Each kind of state directory sits in a parent of its own, named by the id.
     for parent in {directory.parent for directory in runtime.workspace_state_dirs("0" * 16)}:
         for child in parent.glob("*") if parent.is_dir() else ():
-            if child.is_dir() and WORKSPACE_ID.fullmatch(child.name):
+            if child.is_dir() and WORKSPACE_ID.fullmatch(child.name) and _has_state(child):
                 entry(child.name).state = True
     for item in found.values():
         record = runtime.workspace_state_root(item.id) / runtime.WORKSPACE_PATH_FILE
@@ -136,27 +147,42 @@ def render(items: list[Entry]) -> str:
                      for row in rows)
 
 
-def remove(item: Entry) -> list[str]:
+def remove(item: Entry, podman: bool = True) -> list[str]:
     """Delete everything agent-box keeps for one workspace; what could not be deleted.
 
     All under the workspace's lifecycle lock, and the box looked up again
-    there: a launch while the user was confirming may have created one, and
-    a launch waiting for the lock starts afresh once the state is gone.
+    there: a launch while the user was confirming may have created one. The
+    lock file itself stays: a launch already waiting holds that inode, and a
+    recreated one would let the next launch run beside it.
     """
     root = runtime.workspace_state_root(item.id)
-    with runtime.transition_lock_at(root / "lifecycle.lock"):
-        for box in _podman_json("ps", "--all",
-                                f"--filter=label={runtime.WORKSPACE_CONTAINER_WORKSPACE_LABEL}={item.id}"):
-            runtime.remove_workspace_container_then_confirm_absent((box.get("Names") or [""])[0])
+    left = []
+    with runtime.transition_lock_at(root / runtime.WORKSPACE_LOCK_FILE):
+        if podman:
+            for box in _podman_json("ps", "--all",
+                                    f"--filter=label={runtime.WORKSPACE_CONTAINER_WORKSPACE_LABEL}={item.id}"):
+                runtime.remove_workspace_container_then_confirm_absent((box.get("Names") or [""])[0])
         sessions = runtime.HOST_SESSIONS_ROOT / item.id
-        if sessions.is_dir() and shutil.which("tmux"):
-            runtime.stop_host_sessions(sessions)
+        if sessions.is_dir() and any(sessions.iterdir()):
+            if shutil.which("tmux"):
+                runtime.stop_host_sessions(sessions)
+            else:
+                left.append(f"{sessions} (its host sessions may still run: tmux not found to stop them)")
         links.stop(item.id)
-        k3s.remove(item.id, root / "k3s", data=True)
-        runtime.remove_nested_podman_volume(item.id)
+        if podman:
+            k3s.remove(item.id, root / "k3s", data=True)
+            runtime.remove_nested_podman_volume(item.id)
         for directory in runtime.workspace_state_dirs(item.id):
-            shutil.rmtree(directory, ignore_errors=True)
-    return [str(directory) for directory in runtime.workspace_state_dirs(item.id) if directory.exists()]
+            if directory == root:
+                for child in root.iterdir() if root.is_dir() else ():
+                    if child.is_dir():
+                        shutil.rmtree(child, ignore_errors=True)
+                    elif child.name != runtime.WORKSPACE_LOCK_FILE:
+                        child.unlink(missing_ok=True)
+            elif not left or directory != sessions:
+                shutil.rmtree(directory, ignore_errors=True)
+    return left + [str(directory) for directory in runtime.workspace_state_dirs(item.id)
+                   if directory.exists() and _has_state(directory) and directory != sessions]
 
 
 def _resolve(targets: list[str], items: list[Entry]) -> list[Entry]:
@@ -190,8 +216,10 @@ def main(args: list[str]) -> int:
     words = [arg for arg in args if arg != "--yes"]
     if any(word.startswith("-") for word in words):
         raise AgentBoxError(USAGE)
-    runtime.host_podman.require()
-    items = collect()
+    podman = shutil.which("podman") is not None
+    if podman:
+        runtime.host_podman.require()
+    items = collect(podman)
     if not words:
         if assume_yes:
             raise AgentBoxError(USAGE)
@@ -216,7 +244,7 @@ def main(args: list[str]) -> int:
         return 1
     status = 0
     for item in chosen:
-        left = remove(item)
+        left = remove(item, podman)
         if left:
             status = 1
             print(f"agent-box: workspace {item.id} could not be removed completely; delete by hand: "

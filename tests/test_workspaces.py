@@ -78,7 +78,7 @@ class WorkspacesTestCase(unittest.TestCase):
         ]
         self.podman.networks = [{"name": k3s.name(NETWORK), "labels": {k3s.LABEL: NETWORK}}]
         runtime.record_workspace_path(STATE_ONLY, str(self.gone / "scratch"))
-        runtime.workspace_state_root(UNKNOWN).mkdir(parents=True)
+        (runtime.workspace_state_root(UNKNOWN) / "git").mkdir(parents=True)
         (runtime.TRACKER_RUNTIME_DIR / "workspaces" / self.box).mkdir(parents=True)
 
     def entry(self, workspace_id):
@@ -131,11 +131,15 @@ class RemovalTests(WorkspacesTestCase):
         self.removed.box.assert_called_once_with("agent-box-live-" + self.box)
         self.removed.cluster.assert_called_once_with(self.box, runtime.workspace_state_root(self.box) / "k3s", data=True)
         self.removed.podman.assert_called_once_with(self.box)
-        self.assertEqual([d for d in runtime.workspace_state_dirs(self.box) if d.exists()], [])
+        self.assertEqual([d for d in runtime.workspace_state_dirs(self.box) if d.exists()],
+                         [runtime.workspace_state_root(self.box)])
+        self.assertEqual([c.name for c in runtime.workspace_state_root(self.box).iterdir()],
+                         [runtime.WORKSPACE_LOCK_FILE], "only the lock a waiting launch may hold stays")
+        self.assertFalse(workspaces._has_state(runtime.workspace_state_root(self.box)), "a lone lock is nothing to list")
 
     def test_rm_by_id_reaches_a_workspace_whose_directory_nobody_recorded(self):
         workspaces.main(["rm", UNKNOWN, "--yes"])
-        self.assertFalse(runtime.workspace_state_root(UNKNOWN).exists())
+        self.assertFalse(workspaces._has_state(runtime.workspace_state_root(UNKNOWN)))
 
     def test_rm_of_something_agent_box_does_not_keep_is_refused(self):
         with self.assertRaisesRegex(AgentBoxError, "keeps nothing"):
@@ -157,8 +161,30 @@ class RemovalTests(WorkspacesTestCase):
     def test_rm_ends_the_workspace_host_sessions(self):
         sessions = runtime.HOST_SESSIONS_ROOT / UNKNOWN
         sessions.mkdir(parents=True)
+        (sessions / "claude-0123456789ab.status").write_text("")
         workspaces.main(["rm", UNKNOWN, "--yes"])
         self.removed.host_sessions.assert_called_once_with(sessions)
+
+    def test_host_sessions_that_cannot_be_stopped_make_removal_incomplete(self):
+        sessions = runtime.HOST_SESSIONS_ROOT / UNKNOWN
+        sessions.mkdir(parents=True)
+        (sessions / "claude-0123456789ab.status").write_text("")
+        with mock.patch.object(workspaces.shutil, "which", return_value=None), \
+             mock.patch("sys.stderr", new_callable=io.StringIO) as err:
+            self.assertEqual(workspaces.main(["rm", UNKNOWN, "--yes"]), 1)
+        self.assertIn("tmux not found", err.getvalue())
+        self.assertTrue(sessions.exists(), "the record of sessions still running must not be deleted")
+
+    def test_without_podman_host_state_is_still_listed_and_removed(self):
+        """--host needs no Podman, and what its sessions leave must stay manageable."""
+        def no_podman(argv, **_):
+            raise AssertionError(f"podman called without podman: {argv}")
+        with mock.patch.object(workspaces.shutil, "which", lambda name: None if name == "podman" else "/bin/" + name), \
+             mock.patch.object(workspaces.subprocess, "run", no_podman):
+            self.assertIn(STATE_ONLY, {item.id for item in workspaces.collect(podman=False)})
+            self.assertEqual(workspaces.main(["rm", STATE_ONLY, "--yes"]), 0)
+        self.removed.podman.assert_not_called()
+        self.assertFalse((runtime.workspace_state_root(STATE_ONLY) / runtime.WORKSPACE_PATH_FILE).exists())
 
     def test_a_box_created_while_confirming_is_removed_too(self):
         def launch_meanwhile(items, assume_yes):
@@ -174,6 +200,7 @@ class RemovalTests(WorkspacesTestCase):
         self.removed.cluster.assert_called_once_with(NETWORK, runtime.workspace_state_root(NETWORK) / "k3s", data=True)
 
     def test_state_that_could_not_be_deleted_is_reported_not_hidden(self):
+        (runtime.workspace_state_root(STATE_ONLY) / "gh").mkdir()
         with mock.patch.object(workspaces.shutil, "rmtree"), \
              mock.patch("sys.stderr", new_callable=io.StringIO) as err:
             self.assertEqual(workspaces.main(["rm", STATE_ONLY, "--yes"]), 1)

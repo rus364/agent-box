@@ -2079,8 +2079,11 @@ def transition_lock_at(lock_path: Path):
         os.close(fd)
 
 
+WORKSPACE_LOCK_FILE = "lifecycle.lock"
+
+
 def workspace_lock_path(workspace: Workspace) -> Path:
-    return workspace_runtime_state(workspace).root / "lifecycle.lock"
+    return workspace_runtime_state(workspace).root / WORKSPACE_LOCK_FILE
 
 
 def workspace_box_policy(spec: WorkspaceContainerSpec) -> dict:
