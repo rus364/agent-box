@@ -40,14 +40,14 @@ class UserEnvTests(unittest.TestCase):
 
     def test_an_explicit_assignment_carries_its_value(self):
         self.assertEqual(
-            runtime.user_env(_config(assignments={"TZ": "Europe/Moscow"})),
-            ["--env=TZ=Europe/Moscow"])
+            runtime.user_env(_config(assignments={"TZ": "Europe/Berlin"})),
+            ["--env=TZ=Europe/Berlin"])
 
     def test_an_explicit_assignment_wins_over_a_forward(self):
         """The config file is a statement, not a suggestion the shell overrides."""
         with mock.patch.dict(os.environ, {"TZ": "UTC"}):
-            flags = runtime.user_env(_config(forward=["TZ"], assignments={"TZ": "Europe/Moscow"}))
-        self.assertEqual(flags, ["--env=TZ=Europe/Moscow"])
+            flags = runtime.user_env(_config(forward=["TZ"], assignments={"TZ": "Europe/Berlin"}))
+        self.assertEqual(flags, ["--env=TZ=Europe/Berlin"])
 
     def test_assignments_are_ordered_so_the_argv_is_reproducible(self):
         flags = runtime.user_env(_config(assignments={"B": "2", "A": "1"}))
@@ -55,11 +55,11 @@ class UserEnvTests(unittest.TestCase):
 
     def test_the_flags_reach_a_launch(self):
         """Per-exec, so a value changed in the shell needs no new box."""
-        config = _config(forward=["MY_TOKEN"], assignments={"TZ": "Europe/Moscow"})
+        config = _config(forward=["MY_TOKEN"], assignments={"TZ": "Europe/Berlin"})
         with mock.patch.dict(os.environ, {"MY_TOKEN": "s3cret"}):
             pairs, env = runtime.invocation_env(config, "claude")
         self.assertIn("MY_TOKEN", pairs)
-        self.assertIn("TZ=Europe/Moscow", pairs)
+        self.assertIn("TZ=Europe/Berlin", pairs)
         self.assertEqual(env["MY_TOKEN"], "s3cret")
 
     def test_a_forwarded_secret_never_appears_in_the_launch_arguments(self):
@@ -82,8 +82,8 @@ class InvocationEnvTests(unittest.TestCase):
     """
 
     def test_a_flag_sets_a_variable_for_this_launch(self):
-        merged = Config().box.env.overlay([parse_env_spec("TZ=Europe/Moscow")], {})
-        self.assertEqual(merged.set, {"TZ": "Europe/Moscow"})
+        merged = Config().box.env.overlay([parse_env_spec("TZ=Europe/Berlin")], {})
+        self.assertEqual(merged.set, {"TZ": "Europe/Berlin"})
 
     def test_a_bare_flag_name_forwards_by_name(self):
         """The secret-safe form: the value never enters the argv."""
@@ -102,13 +102,13 @@ class InvocationEnvTests(unittest.TestCase):
 
     def test_a_flag_beats_the_shell_prefix(self):
         merged = Config().box.env.overlay(
-            [parse_env_spec("TZ=UTC")], {"AGENT_BOX_ENV_TZ": "Europe/Moscow"})
+            [parse_env_spec("TZ=UTC")], {"AGENT_BOX_ENV_TZ": "Europe/Berlin"})
         self.assertEqual(merged.set, {"TZ": "UTC"})
 
     def test_an_invocation_value_beats_the_stored_lists(self):
         config = _config(assignments={"TZ": "UTC"})
-        merged = config.box.env.overlay([parse_env_spec("TZ=Europe/Moscow")], {})
-        self.assertEqual(merged.set, {"TZ": "Europe/Moscow"})
+        merged = config.box.env.overlay([parse_env_spec("TZ=Europe/Berlin")], {})
+        self.assertEqual(merged.set, {"TZ": "Europe/Berlin"})
 
     def test_forwarding_a_name_that_is_stored_as_an_assignment_replaces_it(self):
         """The two lists must never claim the same name at once."""

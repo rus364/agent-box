@@ -46,11 +46,11 @@ class MaintenanceTests(unittest.TestCase):
 
     def test_tasks_that_were_never_implemented_close_with_one_journalled_reason(self):
         """Closing decided-elsewhere cards must not need the provider's bulk extension."""
-        closed = self.run_cli('state', '5', '8', 'Done', '--reason', 'Решено в задаче 12')
+        closed = self.run_cli('state', '5', '8', 'Done', '--reason', 'In Aufgabe 12 gelöst')
         self.assertNotIn('description', closed[0])
         self.assertEqual([(row['id'], row['state']) for row in closed], [('5', 'Done'), ('8', 'Done')])
-        self.assertEqual([entry['comment'] for entry in self.client.journal[5]], ['Решено в задаче 12'])
-        self.assertEqual([entry['comment'] for entry in self.client.journal[8]], ['Решено в задаче 12'])
+        self.assertEqual([entry['comment'] for entry in self.client.journal[5]], ['In Aufgabe 12 gelöst'])
+        self.assertEqual([entry['comment'] for entry in self.client.journal[8]], ['In Aufgabe 12 gelöst'])
 
     def test_closing_without_a_reason_still_sends_the_user_to_the_workflow(self):
         """The shortcut is for unbuilt work; implemented work still proves integration."""
@@ -58,17 +58,17 @@ class MaintenanceTests(unittest.TestCase):
             self.run_cli('state', '5', 'Done')
         self.assertEqual(self.client.writes, [])
         with self.assertRaisesRegex(TrackerError, 'belongs to Done'):
-            self.run_cli('state', '5', 'Ready', '--reason', 'Не нужна')
+            self.run_cli('state', '5', 'Ready', '--reason', 'Nicht mehr nötig')
         self.assertEqual(self.client.writes, [])
 
     def test_a_branch_whose_commits_nothing_contains_stops_the_whole_batch(self):
         """Closing that task by hand would abandon commits finish or land would move."""
         self.commit_on('ab/5-work')
         with self.assertRaisesRegex(TrackerError, 'ab/5-work.*workflow finish 5'):
-            self.run_cli('state', '8', '5', 'Done', '--reason', 'Не нужна')
+            self.run_cli('state', '8', '5', 'Done', '--reason', 'Nicht mehr nötig')
         self.assertEqual(self.client.writes, [])
         gw.git(self.root, 'merge', '--ff-only', 'ab/5-work')
-        closed = self.run_cli('state', '8', '5', 'Done', '--reason', 'Не нужна')
+        closed = self.run_cli('state', '8', '5', 'Done', '--reason', 'Nicht mehr nötig')
         self.assertEqual([row['state'] for row in closed], ['Done', 'Done'])
 
     def test_a_branch_another_checkout_pushed_further_is_still_unintegrated(self):
@@ -84,10 +84,10 @@ class MaintenanceTests(unittest.TestCase):
         gw.git(self.root, "reset", "--hard", "HEAD~1")
         gw.git(self.root, "switch", "main")
         with self.assertRaisesRegex(TrackerError, "ab/5-work"):
-            self.run_cli("state", "5", "Done", "--reason", "Не нужна")
+            self.run_cli("state", "5", "Done", "--reason", "Nicht mehr nötig")
         self.assertEqual(self.client.writes, [])
         gw.git(self.root, "merge", "--ff-only", "origin/ab/5-work")
-        self.assertEqual(self.run_cli("state", "5", "Done", "--reason", "Не нужна")[0]["state"], "Done")
+        self.assertEqual(self.run_cli("state", "5", "Done", "--reason", "Nicht mehr nötig")[0]["state"], "Done")
 
     def test_a_branch_only_origin_knows_about_stops_the_close_until_it_is_fetched(self):
         """Another checkout can create the branch; this one would never see it locally."""
@@ -98,13 +98,13 @@ class MaintenanceTests(unittest.TestCase):
         gw.git(other, "commit", "-m", "work elsewhere")
         gw.git(other, "push", "-q", "origin", "ab/5-work")
         with self.assertRaisesRegex(TrackerError, "has not fetched"):
-            self.run_cli("state", "5", "Done", "--reason", "Не нужна")
+            self.run_cli("state", "5", "Done", "--reason", "Nicht mehr nötig")
         gw.git(self.root, "fetch", "-q", "origin")
         with self.assertRaisesRegex(TrackerError, "workflow finish 5"):
-            self.run_cli("state", "5", "Done", "--reason", "Не нужна")
+            self.run_cli("state", "5", "Done", "--reason", "Nicht mehr nötig")
         self.assertEqual(self.client.writes, [])
         gw.git(self.root, "merge", "--ff-only", "origin/ab/5-work")
-        self.assertEqual(self.run_cli("state", "5", "Done", "--reason", "Не нужна")[0]["state"], "Done")
+        self.assertEqual(self.run_cli("state", "5", "Done", "--reason", "Nicht mehr nötig")[0]["state"], "Done")
 
     def test_an_origin_that_cannot_be_read_stops_the_close(self):
         """Reading nothing from origin must not be read as origin holding nothing."""
@@ -112,16 +112,16 @@ class MaintenanceTests(unittest.TestCase):
         for url in (origin, origin + ".mirror"):
             gw.git(self.root, "remote", "set-url", "--add", "--push", "origin", url)
         with self.assertRaisesRegex(TrackerError, "no single push destination"):
-            self.run_cli("state", "5", "Done", "--reason", "Не нужна")
+            self.run_cli("state", "5", "Done", "--reason", "Nicht mehr nötig")
         self.assertEqual(self.client.writes, [])
 
     def test_a_checkout_without_an_origin_answers_from_its_own_refs(self):
         """A remote that was never configured holds nothing, and the refusal names no remedy."""
         gw.git(self.root, "remote", "remove", "origin")
-        self.assertEqual(self.run_cli("state", "5", "Done", "--reason", "Не нужна")[0]["state"], "Done")
+        self.assertEqual(self.run_cli("state", "5", "Done", "--reason", "Nicht mehr nötig")[0]["state"], "Done")
         self.commit_on("ab/8-work")
         with self.assertRaisesRegex(TrackerError, "ab/8-work.*no origin"):
-            self.run_cli("state", "8", "Done", "--reason", "Не нужна")
+            self.run_cli("state", "8", "Done", "--reason", "Nicht mehr nötig")
 
     def test_a_base_another_checkout_advanced_asks_for_a_fetch_not_for_landing(self):
         """The work is landed; only this clone has not heard, and the remedy is a fetch."""
@@ -131,10 +131,10 @@ class MaintenanceTests(unittest.TestCase):
         gw.git(other, "merge", "--no-ff", "-m", "land the work", "origin/ab/5-work")
         gw.git(other, "push", "-q", "origin", "main")
         with self.assertRaisesRegex(TrackerError, "has not fetched"):
-            self.run_cli("state", "5", "Done", "--reason", "Не нужна")
+            self.run_cli("state", "5", "Done", "--reason", "Nicht mehr nötig")
         self.assertEqual(self.client.writes, [])
         gw.git(self.root, "fetch", "-q", "origin")
-        self.assertEqual(self.run_cli("state", "5", "Done", "--reason", "Не нужна")[0]["state"], "Done")
+        self.assertEqual(self.run_cli("state", "5", "Done", "--reason", "Nicht mehr nötig")[0]["state"], "Done")
 
     def test_work_the_parent_branch_already_carries_may_be_closed_by_hand(self):
         """A subtask branch outlives its integration in a clone; its commits are not lost."""
@@ -147,14 +147,14 @@ class MaintenanceTests(unittest.TestCase):
         gw.git(self.root, 'switch', 'ab/5-parent')
         gw.git(self.root, 'merge', '--ff-only', 'ab/8-child')
         gw.git(self.root, 'switch', 'main')
-        self.assertEqual(self.run_cli('state', '8', 'Done', '--reason', 'Вошла в родителя')[0]['state'], 'Done')
+        self.assertEqual(self.run_cli('state', '8', 'Done', '--reason', 'In der Elternaufgabe enthalten')[0]['state'], 'Done')
         with self.assertRaisesRegex(TrackerError, 'ab/5-parent'):
-            self.run_cli('state', '5', 'Done', '--reason', 'Не нужна')
+            self.run_cli('state', '5', 'Done', '--reason', 'Nicht mehr nötig')
 
     def test_a_batch_moves_nothing_until_every_named_task_is_reachable(self):
         """Half a closed batch is worse than none: the user has to reconstruct what moved."""
         with self.assertRaisesRegex(TrackerError, "outside the repository binding: 7"):
-            self.run_cli("state", "5", "7", "Done", "--reason", "Не нужна")
+            self.run_cli("state", "5", "7", "Done", "--reason", "Nicht mehr nötig")
         self.assertEqual(self.client.writes, [])
         self.assertEqual(self.adapter.get("5").state, "Backlog")
 
@@ -163,7 +163,7 @@ class MaintenanceTests(unittest.TestCase):
         broken = TrackerError("Vikunja API HTTP 503", "transport", retryable=True)
         with patch.object(self.adapter, "board", side_effect=broken):
             with self.assertRaises(TrackerError) as raised:
-                self.run_cli("state", "5", "Done", "--reason", "Не нужна")
+                self.run_cli("state", "5", "Done", "--reason", "Nicht mehr nötig")
         self.assertEqual((raised.exception.category, raised.exception.retryable), ("transport", True))
         self.assertEqual(self.client.writes, [])
 
@@ -174,13 +174,13 @@ class MaintenanceTests(unittest.TestCase):
         self.assertEqual(self.client.writes, [])
         with patch.object(self.adapter, "set_state", side_effect=TrackerError("transport", "transport")):
             with self.assertRaises(TrackerError):
-                self.run_cli("state", "5", "Done", "--reason", "Решено в задаче 12")
-        self.assertEqual([entry["comment"] for entry in self.client.journal[5]], ["Решено в задаче 12"])
+                self.run_cli("state", "5", "Done", "--reason", "In Aufgabe 12 gelöst")
+        self.assertEqual([entry["comment"] for entry in self.client.journal[5]], ["In Aufgabe 12 gelöst"])
         self.assertEqual(self.adapter.get("5").state, "Backlog")
 
     def test_one_write_records_several_checklist_decisions_for_a_known_revision(self):
         """A per-item write raced with itself and quoted back what the revision proves."""
-        self.client.tasks[5]['description'] = '## Приёмка\n- [ ] первый\n- [ ] второй\n- [ ] третий\n'
+        self.client.tasks[5]['description'] = '## Abnahme\n- [ ] erste Prüfung\n- [ ] zweite Prüfung\n- [ ] dritte Prüfung\n'
         self.client.revisions['/tasks/5'] = 'rev-1'
         listing = self.run_cli('checklist', '5')
         self.assertEqual(listing['revision'], 'rev-1')
@@ -193,7 +193,7 @@ class MaintenanceTests(unittest.TestCase):
 
     def test_a_checklist_read_before_someone_else_edited_it_changes_nothing(self):
         """Without the item text quoted back, the revision is what proves the read is current."""
-        self.client.tasks[5]['description'] = '- [ ] первый\n'
+        self.client.tasks[5]['description'] = '- [ ] erste Prüfung\n'
         self.client.revisions['/tasks/5'] = 'rev-2'
         with self.assertRaisesRegex(TrackerError, 'revision'):
             self.run_cli('check', '5', '1', '--revision', 'rev-1')
@@ -203,7 +203,7 @@ class MaintenanceTests(unittest.TestCase):
 
     def test_an_edit_needs_a_revision_the_provider_actually_returned(self):
         """Without an ETag the comparison would pass on two empty strings and prove nothing."""
-        self.client.tasks[5]["description"] = "- [ ] первый\n"
+        self.client.tasks[5]["description"] = "- [ ] erste Prüfung\n"
         with self.assertRaisesRegex(TrackerError, "no revision"):
             self.run_cli("check", "5", "1", "--revision", "")
         self.assertEqual(self.client.writes, [])
@@ -224,7 +224,7 @@ class MaintenanceTests(unittest.TestCase):
 
     def test_naming_a_task_by_id_is_no_way_past_the_binding(self):
         """Every task write shares one boundary; a project outside it stays readable only."""
-        self.client.tasks[7]["description"] = "- [ ] первый\n"
+        self.client.tasks[7]["description"] = "- [ ] erste Prüfung\n"
         self.client.revisions["/tasks/7"] = "rev-1"
         for command in (("check", "7", "1", "--revision", "rev-1"), ("normalized", "7"),
                         ("tier", "7", "2"), ("claim", "7")):
@@ -290,7 +290,7 @@ class MoveTests(unittest.TestCase):
             40: task(40, 2, 20, 200, index=1),
             50: task(50, 9, 90, 900, index=1),
         }
-        self.client.journal = {21: [{'comment': 'Решение'}, {'comment': 'Прогресс'}]}
+        self.client.journal = {21: [{'comment': 'Entscheidung'}, {'comment': 'Fortschritt'}]}
         self.binding = Binding('vikunja', self.client.url, '1', True)
         self.adapter = VikunjaAdapter(self.client.url, 'token', self.binding, self.client)
         directory = tempfile.TemporaryDirectory()

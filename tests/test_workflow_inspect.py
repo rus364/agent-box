@@ -259,13 +259,13 @@ class InspectTests(unittest.TestCase):
     def test_dirty_filenames_are_quoted_bounded_and_keep_status_columns(self):
         """Unusual names remain recognizable without allowing an unbounded diagnostic."""
         (self.root / "code.py").write_text("modified")
-        for name in (' leading name ', 'quote"name', 'line\nbreak', 'имя\u2028файла'):
+        for name in (' leading name ', 'quote"name', 'line\nbreak', '名前\u2028ファイル'):
             (self.root / name).write_text("untracked")
         changes = gw.worktree_changes(self.root)
         self.assertIn(" M code.py", changes)
         self.assertTrue(any('line\\nbreak' in item for item in changes))
         self.assertTrue(any(' leading name ' in item for item in changes))
-        self.assertTrue(any('имя\u2028файла' in item for item in changes))
+        self.assertTrue(any('名前\u2028ファイル' in item for item in changes))
         for number in range(20):
             (self.root / f"extra-{number:02}").write_text("untracked")
         reason = self.inspect_readonly()["acceptance"]["reasons"][0]

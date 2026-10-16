@@ -123,14 +123,14 @@ class HostLaunchDecisionTests(IsolatedRuntimeTest):
              mock.patch.object(runtime, 'HOST_SESSIONS_ROOT', Path(tmp)), \
              mock.patch.object(runtime, 'tmux_sessions', return_value=[]), \
              mock.patch.object(runtime, 'tmux_session_exists', return_value=False):
-            environment = {'TOKEN': 'private test value', 'LANG': 'ru_RU.UTF-8',
-                           'LC_CTYPE': 'ru_RU.UTF-8', 'LC_ALL': 'ru_RU.UTF-8'}
+            environment = {'TOKEN': 'private test value', 'LANG': 'de_DE.UTF-8',
+                           'LC_CTYPE': 'de_DE.UTF-8', 'LC_ALL': 'de_DE.UTF-8'}
             with mock.patch.object(runtime.subprocess, 'call', return_value=1) as launch:
                 runtime.host_tmux_launch(Workspace(Path(tmp), Path(tmp)), 'codex',
                                          ['/bin/false'], environment, '/usr/bin/tmux')
         client_env = launch.call_args.kwargs['env']
         for key in ('LANG', 'LC_CTYPE', 'LC_ALL'):
-            self.assertEqual(client_env[key], 'ru_RU.UTF-8')
+            self.assertEqual(client_env[key], 'de_DE.UTF-8')
         self.assertNotIn('TOKEN', client_env)
         self.assertEqual(client_env['PATH'], os.defpath)
 
@@ -314,14 +314,14 @@ class NativeHostSessionsTests(unittest.TestCase):
         """
         project = self.projects[0]
         argv = [sys.executable, '-c',
-                'import sys; print("Привет мир", flush=True); sys.stdin.read(1)']
+                'import sys; print("こんにちは世界", flush=True); sys.stdin.read(1)']
         client = self.spawn(project, argv=argv, environment={
             'PATH': os.defpath, 'TERM': 'xterm',
             'LANG': 'C.UTF-8', 'LC_ALL': 'C.UTF-8', 'LC_CTYPE': 'C.UTF-8'})
         _, fd = client
         seen = b''
         deadline = time.monotonic() + 10
-        target = 'Привет мир'.encode()
+        target = 'こんにちは世界'.encode()
         while time.monotonic() < deadline and target not in seen and b'_____' not in seen:
             ready, _, _ = select.select([fd], [], [], 0.05)
             if ready:

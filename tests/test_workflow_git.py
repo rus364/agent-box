@@ -71,7 +71,7 @@ class WorkflowGitTests(unittest.TestCase):
 
     def test_ignored_paths_match_real_names_of_renames_and_non_ascii_paths(self):
         """Git's display field joins renames as `old => new` and quotes non-ASCII paths;
-        matching it would drop code renamed out of docs and never ignore `docs/планы.md`.
+        matching it would drop code renamed out of docs and never ignore `docs/pläne.md`.
         A file moved out of a sensitive path into an ignored one must still trigger review."""
         from agent_box import git_workflow as gw
         from agent_box.workflow import diff_stats, review_reasons
@@ -91,7 +91,7 @@ class WorkflowGitTests(unittest.TestCase):
             gw.git(root, "mv", "docs/guide.md", "tool.py")
             gw.git(root, "mv", "docs/notes.md", "docs/archive.md")
             gw.git(root, "mv", "agent_box/api/handler.py", "docs/handler.py")
-            (root / "docs" / "планы.md").write_text("plan\n")
+            (root / "docs" / "pläne.md").write_text("plan\n")
             gw.git(root, "add", "-A")
             gw.git(root, "commit", "-m", "rename")
             config = ReviewConfig(ignored_paths=["docs/**"])

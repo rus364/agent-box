@@ -261,7 +261,7 @@ class PlanSyncTests(WorkflowCase):
 
     def test_managed_workflow_refresh_never_launches_auto_after_sync(self):
         """Refreshing shipped instructions has no project decision to propagate or model work to pay for."""
-        outside = "\n# Решения\r\nUse project authority.\r\n".encode()
+        outside = "\n# Entscheidungen\r\nUse project authority.\r\n".encode()
         self.source_instructions(block_text("Old workflow\n", "workflow").encode() + outside,
                                  block_text("New workflow\n", "workflow").encode() + outside)
         with patch.object(workflow, "execute", return_value={"report": "Sync: UNCHANGED\n",

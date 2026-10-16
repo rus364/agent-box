@@ -134,9 +134,9 @@ class GitProbeTests(unittest.TestCase):
         self._git("add", "a.txt")
         self._git("commit", "-q", "-m", "init")
         (self.repo / "a.txt").write_text("one\ntwo\n")
-        with mock.patch.dict(os.environ, {"LANGUAGE": "ru", "LC_ALL": "ru_RU.UTF-8", "LANG": "ru_RU.UTF-8"}):
+        with mock.patch.dict(os.environ, {"LANGUAGE": "de", "LC_ALL": "de_DE.UTF-8", "LANG": "de_DE.UTF-8"}):
             if "insertion" in statusline.git_output(self.repo, "diff", "--shortstat", "HEAD"):
-                self.skipTest("git has no Russian translation installed here")
+                self.skipTest("git has no German translation installed here")
             self.assertEqual(statusline.worktree_diff(self.repo), "+1/−0")
 
     def test_outside_a_repository_there_is_no_branch(self):
