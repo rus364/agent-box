@@ -68,6 +68,12 @@ def collect() -> list[Entry]:
         labels = container.get("Labels") or {}
         if WORKSPACE_ID.fullmatch(labels.get(k3s.LABEL, "")):
             entry(labels[k3s.LABEL], labels.get(runtime.WORKSPACE_PATH_LABEL, "")).cluster = container.get("State", "")
+    # A network can outlive the rest of a cluster; it is still something to remove.
+    for network in _podman_json("network", "ls", f"--filter=label={k3s.LABEL}"):
+        labels = network.get("labels") or {}
+        if WORKSPACE_ID.fullmatch(labels.get(k3s.LABEL, "")):
+            item = entry(labels[k3s.LABEL])
+            item.cluster = item.cluster or "network"
     for volume in _podman_json("volume", "ls"):
         labels = volume.get("Labels") or {}
         path = labels.get(runtime.WORKSPACE_PATH_LABEL, "")
@@ -130,17 +136,27 @@ def render(items: list[Entry]) -> str:
                      for row in rows)
 
 
-def remove(item: Entry) -> None:
-    """Delete everything agent-box keeps for one workspace: box, cluster, nested Podman data, state."""
+def remove(item: Entry) -> list[str]:
+    """Delete everything agent-box keeps for one workspace; what could not be deleted.
+
+    All under the workspace's lifecycle lock, and the box looked up again
+    there: a launch while the user was confirming may have created one, and
+    a launch waiting for the lock starts afresh once the state is gone.
+    """
     root = runtime.workspace_state_root(item.id)
     with runtime.transition_lock_at(root / "lifecycle.lock"):
-        if item.box:
-            runtime.remove_workspace_container_then_confirm_absent(item.box)
+        for box in _podman_json("ps", "--all",
+                                f"--filter=label={runtime.WORKSPACE_CONTAINER_WORKSPACE_LABEL}={item.id}"):
+            runtime.remove_workspace_container_then_confirm_absent((box.get("Names") or [""])[0])
+        sessions = runtime.HOST_SESSIONS_ROOT / item.id
+        if sessions.is_dir() and shutil.which("tmux"):
+            runtime.stop_host_sessions(sessions)
         links.stop(item.id)
         k3s.remove(item.id, root / "k3s", data=True)
         runtime.remove_nested_podman_volume(item.id)
-    for directory in runtime.workspace_state_dirs(item.id):
-        shutil.rmtree(directory, ignore_errors=True)
+        for directory in runtime.workspace_state_dirs(item.id):
+            shutil.rmtree(directory, ignore_errors=True)
+    return [str(directory) for directory in runtime.workspace_state_dirs(item.id) if directory.exists()]
 
 
 def _resolve(targets: list[str], items: list[Entry]) -> list[Entry]:
@@ -190,11 +206,6 @@ def main(args: list[str]) -> int:
         if unknown:
             print(f"agent-box: {unknown} workspace(s) with no recorded directory are left; "
                   "remove one with 'agent-box workspaces rm ID'", file=sys.stderr)
-        busy = [item for item in chosen if item.box_state == "running"]
-        for item in busy:
-            print(f"agent-box: {item.path} vanished but its box still runs; "
-                  f"'agent-box workspaces rm {item.id}' ends it", file=sys.stderr)
-        chosen = [item for item in chosen if item not in busy]
         if not chosen:
             print("agent-box: no workspace directory has vanished")
             return 0
@@ -203,7 +214,13 @@ def main(args: list[str]) -> int:
     if not _confirm(chosen, assume_yes):
         print("Nothing deleted.")
         return 1
+    status = 0
     for item in chosen:
-        remove(item)
-        print(f"agent-box: removed workspace {item.id} ({item.path or 'unknown directory'})")
-    return 0
+        left = remove(item)
+        if left:
+            status = 1
+            print(f"agent-box: workspace {item.id} could not be removed completely; delete by hand: "
+                  + ", ".join(left), file=sys.stderr)
+        else:
+            print(f"agent-box: removed workspace {item.id} ({item.path or 'unknown directory'})")
+    return status

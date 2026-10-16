@@ -1,4 +1,5 @@
 """agent-box workspaces: listing what each project keeps, and removing it."""
+import io
 import json
 import tempfile
 import unittest
@@ -9,21 +10,24 @@ from unittest import mock
 from agent_box import cloud, k3s, kubeconfigs, links, registries, runtime, workspaces
 from agent_box.errors import AgentBoxError
 
-CLUSTER, PODMAN, STATE_ONLY, UNKNOWN = ("2" * 16, "3" * 16, "4" * 16, "5" * 16)
+CLUSTER, PODMAN, STATE_ONLY, UNKNOWN, NETWORK = ("2" * 16, "3" * 16, "4" * 16, "5" * 16, "6" * 16)
 
 
 class FakePodman:
     """``ps``/``volume ls`` as JSON and ``unshare du``; nothing here deletes."""
 
     def __init__(self):
-        self.containers, self.volumes = [], []
+        self.containers, self.volumes, self.networks = [], [], []
 
     def __call__(self, argv, **_):
         args = argv[1:]
         ok = lambda out: CompletedProcess(argv, 0, out, "")  # noqa: E731
         if args[:2] == ["ps", "--all"]:
-            label = args[2].removeprefix("--filter=label=").split("=")[0]
-            return ok(json.dumps([c for c in self.containers if label in c["Labels"]]))
+            label, _, value = args[2].removeprefix("--filter=label=").partition("=")
+            return ok(json.dumps([c for c in self.containers
+                                  if label in c["Labels"] and (not value or c["Labels"][label] == value)]))
+        if args[:2] == ["network", "ls"]:
+            return ok(json.dumps(self.networks))
         if args[:2] == ["volume", "ls"]:
             return ok(json.dumps(self.volumes))
         if args[:2] == ["unshare", "du"]:
@@ -72,6 +76,7 @@ class WorkspacesTestCase(unittest.TestCase):
              "Labels": {runtime.NESTED_PODMAN_LABEL: PODMAN, path: str(self.live)}},
             {"Name": "somebody-elses", "Mountpoint": "/v/other", "Labels": {}},
         ]
+        self.podman.networks = [{"name": k3s.name(NETWORK), "labels": {k3s.LABEL: NETWORK}}]
         runtime.record_workspace_path(STATE_ONLY, str(self.gone / "scratch"))
         runtime.workspace_state_root(UNKNOWN).mkdir(parents=True)
         (runtime.TRACKER_RUNTIME_DIR / "workspaces" / self.box).mkdir(parents=True)
@@ -84,8 +89,9 @@ class ListingTests(WorkspacesTestCase):
     def test_every_source_contributes_its_workspace_and_path(self):
         self.populate()
         items = {item.id: item for item in workspaces.collect()}
-        self.assertEqual(set(items), {self.box, CLUSTER, PODMAN, STATE_ONLY, UNKNOWN},
+        self.assertEqual(set(items), {self.box, CLUSTER, PODMAN, STATE_ONLY, UNKNOWN, NETWORK},
                          "a volume agent-box did not label is not a workspace")
+        self.assertEqual(items[NETWORK].cluster, "network", "a leftover network alone is still something to remove")
         self.assertEqual(items[self.box].path, str(self.live))
         self.assertEqual((items[CLUSTER].cluster, items[CLUSTER].path), ("exited", str(self.gone)))
         self.assertEqual(items[PODMAN].podman_volume, "/v/podman")
@@ -113,6 +119,8 @@ class RemovalTests(WorkspacesTestCase):
             mock.patch.object(links, "stop", self.removed.links),
             mock.patch.object(k3s, "remove", self.removed.cluster),
             mock.patch.object(runtime, "remove_nested_podman_volume", self.removed.podman),
+            mock.patch.object(runtime, "stop_host_sessions", self.removed.host_sessions),
+            mock.patch.object(workspaces.shutil, "which", return_value="/usr/bin/tmux"),
         ):
             patch.start()
             self.addCleanup(patch.stop)
@@ -140,10 +148,36 @@ class RemovalTests(WorkspacesTestCase):
         self.assertTrue(runtime.workspace_state_root(UNKNOWN).exists())
         self.assertTrue((runtime.TRACKER_RUNTIME_DIR / "workspaces" / self.box).exists())
 
-    def test_prune_leaves_a_running_box_to_an_explicit_rm(self):
+    def test_prune_ends_a_box_whose_directory_is_gone(self):
+        """A detached session in a deleted project is exactly the leftover prune exists for."""
         self.podman.containers[0]["Labels"][runtime.WORKSPACE_PATH_LABEL] = str(self.gone / "running")
         workspaces.main(["prune", "--yes"])
-        self.removed.box.assert_not_called()
+        self.removed.box.assert_called_once_with("agent-box-live-" + self.box)
+
+    def test_rm_ends_the_workspace_host_sessions(self):
+        sessions = runtime.HOST_SESSIONS_ROOT / UNKNOWN
+        sessions.mkdir(parents=True)
+        workspaces.main(["rm", UNKNOWN, "--yes"])
+        self.removed.host_sessions.assert_called_once_with(sessions)
+
+    def test_a_box_created_while_confirming_is_removed_too(self):
+        def launch_meanwhile(items, assume_yes):
+            self.podman.containers.append({"Names": ["late-box"], "State": "running", "Labels": {
+                runtime.WORKSPACE_CONTAINER_LABEL: "true", runtime.WORKSPACE_CONTAINER_WORKSPACE_LABEL: STATE_ONLY}})
+            return True
+        with mock.patch.object(workspaces, "_confirm", launch_meanwhile):
+            workspaces.main(["rm", STATE_ONLY])
+        self.removed.box.assert_called_once_with("late-box")
+
+    def test_a_workspace_left_with_only_a_cluster_network_can_be_removed(self):
+        self.assertEqual(workspaces.main(["rm", NETWORK, "--yes"]), 0)
+        self.removed.cluster.assert_called_once_with(NETWORK, runtime.workspace_state_root(NETWORK) / "k3s", data=True)
+
+    def test_state_that_could_not_be_deleted_is_reported_not_hidden(self):
+        with mock.patch.object(workspaces.shutil, "rmtree"), \
+             mock.patch("sys.stderr", new_callable=io.StringIO) as err:
+            self.assertEqual(workspaces.main(["rm", STATE_ONLY, "--yes"]), 1)
+        self.assertIn(str(runtime.workspace_state_root(STATE_ONLY)), err.getvalue())
 
     def test_deleting_needs_a_terminal_or_yes(self):
         with mock.patch.object(workspaces.sys, "stdin", mock.Mock(isatty=mock.Mock(return_value=False))):

@@ -3687,6 +3687,22 @@ def host_tmux_launch(workspace: Workspace, agent: str, command: list[str],
             env_path.unlink(missing_ok=True)
 
 
+def stop_host_sessions(root: Path) -> list[str]:
+    """End the host tmux server of one workspace's sessions; the sessions it held."""
+    names = tmux_sessions(None, host_root=root)
+    if not names:
+        return []
+    result = subprocess.run(tmux_argv("kill-server", host_root=root), capture_output=True, text=True,
+                            env=host_tmux_env())
+    if result.returncode:
+        raise AgentBoxError(f"could not stop host sessions: {result.stderr.strip()}")
+    for name in names:
+        if re.fullmatch(r"(?:claude|codex)-[0-9a-f]{12}", name):
+            (root / f"{name}.status").unlink(missing_ok=True)
+            (root / f"{name}.env.json").unlink(missing_ok=True)
+    return names
+
+
 def host_session_main(args: list[str], *, stop: bool = False, workspace_root: str = "") -> int:
     command = "stop" if stop else "attach"
     if (stop and args) or len(args) > 1:
@@ -3696,21 +3712,14 @@ def host_session_main(args: list[str], *, stop: bool = False, workspace_root: st
     if not stop and not (sys.stdin.isatty() and sys.stdout.isatty()):
         raise AgentBoxError("agent-box --host attach needs a terminal")
     root = HOST_SESSIONS_ROOT / workspace_identity(resolved_workspace(workspace_root))
-    names = tmux_sessions(None, host_root=root)
     if stop:
+        names = stop_host_sessions(root)
         if not names:
             print("agent-box: no host sessions for this project", file=sys.stderr)
             return 0
-        result = subprocess.run(tmux_argv("kill-server", host_root=root), capture_output=True, text=True,
-                                env=host_tmux_env())
-        if result.returncode:
-            raise AgentBoxError(f"could not stop host sessions: {result.stderr.strip()}")
-        for name in names:
-            if re.fullmatch(r"(?:claude|codex)-[0-9a-f]{12}", name):
-                (root / f"{name}.status").unlink(missing_ok=True)
-                (root / f"{name}.env.json").unlink(missing_ok=True)
         print(f"agent-box: ended {len(names)} host session(s) for this project", file=sys.stderr)
         return 0
+    names = tmux_sessions(None, host_root=root)
     name = choose_session(names, args[0] if args else None, location="this project's host server")
     rc = subprocess.call(tmux_argv("attach-session", "-d", "-t", "=" + name, host_root=root),
                          env=host_tmux_env())
