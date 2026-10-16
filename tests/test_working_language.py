@@ -147,7 +147,7 @@ class GeneratedPromptTests(WorkflowCase):
     def test_native_profiles_carry_the_rule_so_their_message_only_names_the_value(self):
         """A profile is a higher-priority instruction than its message; a fixed language rule there would win."""
         sync = delegation.profile_instructions("sync")
-        self.assertIn("A Working language line in the assignment replaces task language in these rules", sync)
+        self.assertIn("Write in task language, or wholly in an assignment's Working language.", sync)
         worker = delegation.profile_instructions("worker")
         self.assertIn("documentation in the assignment's Working language when it names one", worker)
 
