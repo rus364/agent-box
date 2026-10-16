@@ -12,7 +12,7 @@ read one copy.
 | `ab-setup`, `ab-adopt`, `ab-normalize`, `ab-interview`, `ab-plan`, `ab-work`, `ab-sync`, `ab-review`, `ab-pr`, `ab-land` | Workflow enabled |
 | `ab-config` | Never installed; `agent-box config ai` reads it from the installed package |
 
-Saving in `agent-box config`, `config apply` and `upgrade` install or refresh
+Saving in `agent-box config` or running `agent-box config apply` installs or refreshes
 the skills and the native agent profiles; starting an agent never does.
 
 **Your own skills are safe.** Installed skill directories carry a content

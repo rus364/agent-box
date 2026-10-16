@@ -5,7 +5,7 @@ session.
 
 ## Using agent-box
 
-- [Installation, updating and removal](installation.md) — requirements, setup, shell completion, `upgrade`, `uninstall`.
+- [Installation, updating and removal](installation.md) — requirements, setup, shell completion, installer updates, `uninstall`.
 - [Using agent-box](usage.md) — sessions, the workspace box, options, mounts, environment, host mode, usage limits.
 - [Configuration](configuration.md) — layers, the menu, defaults, project configuration, `config ai`.
 - [The workspace image](image.md) — included tools, optional groups, `build`, `update`, `rebuild`.

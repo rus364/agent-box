@@ -55,7 +55,7 @@ jobs:
           git config --global user.email "agent-box-ci@example.invalid"
 
       - name: Run fast self-tests
-        run: python agent-box selftest
+        run: python -m agent_box selftest
 
       - name: Run full test suite
         run: python tests/run_suite.py
