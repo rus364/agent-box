@@ -1293,7 +1293,9 @@ def language_problems(language: str) -> list[str]:
     breaking it or adding a rule of its own.
     """
     import unicodedata
-    if any(unicodedata.category(character).startswith("C") for character in language):
+    # Zl and Zp are Unicode's line and paragraph separators, which a prompt reader also breaks on.
+    if any(unicodedata.category(character)[0] == "C" or unicodedata.category(character) in ("Zl", "Zp")
+           for character in language):
         return ["language must be one line without control characters"]
     if len(language) > LANGUAGE_LIMIT:
         return [f"language must be at most {LANGUAGE_LIMIT} characters, a language name such as English"]
