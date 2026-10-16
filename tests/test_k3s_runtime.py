@@ -194,6 +194,8 @@ class StopCommandTests(K3sRuntimeTest):
             mock.patch.object(runtime, "workspace_transition_lock", return_value=nullcontext()),
             mock.patch.object(runtime, "inspect_workspace_container", return_value=None),
             mock.patch.multiple(runtime.k3s, stop=mock.Mock(return_value=True), remove=mock.Mock()),
+            # stop also deletes disposable nested Podman data; none exists here.
+            mock.patch.object(runtime, "_nested_podman_volume_owner", return_value=None),
         ):
             patch.start()
             self.addCleanup(patch.stop)
