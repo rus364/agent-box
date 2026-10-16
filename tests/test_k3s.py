@@ -90,8 +90,9 @@ class FakePodman:
                 return ok()
             case ["create", *rest]:
                 spec = next(a.split("=", 2)[2] for a in rest if a.startswith(f"--label={k3s.SPEC_LABEL}="))
-                self.container = {"running": False, "spec": spec}
-                self.anonymous |= {f"{spec}-{path}" for path in ("log", "cni", "kubelet")}
+                own = {f"{spec}-{path}" for path in ("log", "cni", "kubelet")}
+                self.container = {"running": False, "spec": spec, "anonymous": own}
+                self.anonymous |= own
                 return ok()
             case ["start", _]:
                 self.container["running"] = not self.dies
@@ -100,9 +101,10 @@ class FakePodman:
                 self.container["running"] = False
                 return ok()
             case ["rm", *flags, _]:
-                self.container = None
+                # Like Podman, --volumes takes only this container's own volumes.
                 if "--volumes" in flags:
-                    self.anonymous.clear()
+                    self.anonymous -= self.container["anonymous"]
+                self.container = None
                 return ok()
             case ["exec", _, "kubectl", "get", "nodes", *_]:
                 self.probe_timeouts.append(_["timeout"])
