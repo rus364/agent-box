@@ -7,7 +7,7 @@ description: Resolve material ambiguity in a tracked task and save implementatio
 
 Read the task, relevant comments/relations and repository code first. Search older decisions with `tracker search QUERY --include-done`, or libraries, only when they can answer a current uncertainty; follow ab-tracker for focused reads.
 
-Identify unresolved decisions in dependency order. Ask one material question at a time in the user's language, with 2-4 concrete options and a recommendation when useful. Test uncertain assumptions against facts and concrete scenarios; do not manufacture disagreement or interrogate obvious work.
+Identify unresolved decisions in dependency order. Ask one material question at a time, with 2-4 concrete options and a recommendation when useful. Use the user's language for question text, option explanations and recommendations; literal project labels may stay quoted in the project language. Test uncertain assumptions against facts and concrete scenarios; do not manufacture disagreement or interrogate obvious work.
 
 Assess priority using ab-tracker’s evidence rules when preparing or creating tasks.
 

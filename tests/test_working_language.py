@@ -16,7 +16,7 @@ from unittest.mock import patch
 from agent_box import config_menu, delegation, project_config, runtime, workflow
 from agent_box.config import Config, effective_config
 from agent_box.errors import AgentBoxError
-from agent_box.repo_binding import AGENT_RULES
+from agent_box.repo_binding import AGENT_RULES, block_text
 from agent_box.tracker import audit
 from workflow_fixtures import BINDING, WorkflowCase, answer, candidate, managed_runner
 
@@ -207,12 +207,27 @@ class ShippedRuleTests(unittest.TestCase):
             with self.subTest(rule=rule):
                 self.assertEqual(ignored_rules(rule), [rule])
 
+    def test_conversation_rule_scopes_english_reports_to_other_agents(self):
+        """Project English must not spill into coordinator messages or question explanations.
+
+        These assertions protect instruction delivery, not live model compliance.
+        """
+        self.assertIn("Use the user's language for all coordinator messages to them: "
+                      "progress updates, questions, option explanations and final answers.", AGENT_RULES)
+        self.assertIn("Agent-to-agent handoffs and reports stay English", AGENT_RULES)
+        self.assertNotIn("Agent handoffs and reports stay English", AGENT_RULES)
+        self.assertIn(block_text(AGENT_RULES, "workflow"),
+                      (SKILLS.parents[1] / "AGENTS.md").read_text())
+        interview = (SKILLS / "ab-interview/SKILL.md").read_text()
+        self.assertIn("Use the user's language for question text, option explanations and recommendations", interview)
+        work = (SKILLS / "ab-work/SKILL.md").read_text()
+        self.assertIn("Record tracker progress in the working language", work)
+
     def test_skills_and_the_block_name_where_the_value_is_reported(self):
         """A global skill cannot hold a per-repository word, so it must say which command reports it."""
         tracker = (SKILLS / "ab-tracker/SKILL.md").read_text()
         self.assertIn("`agent-box tracker status` reads account, binding, lifecycle and `language`", tracker)
         self.assertIn("agent-box tracker status", AGENT_RULES)
-        self.assertIn("Use the user's language with them.", AGENT_RULES)
         for name in ("ab-pr", "ab-work"):
             with self.subTest(name=name):
                 self.assertIn("`configuration.language` that `workflow inspect` reports",
