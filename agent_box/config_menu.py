@@ -275,7 +275,7 @@ MENU_GROUPS = {
     ),
     ("box",): (
         ("Image", ("tools",)),
-        ("Beside the box", ("k3s", "podman")),
+        ("Workspace resources", ("k3s", "podman")),
         ("Inside the box", ("audio", "links", "env")),
     ),
     ("credentials",): (
