@@ -24,7 +24,8 @@ def _fields(value, parts=()):
 
 PROJECT_FIELDS = {
     "workflow": {key: _fields(value, ("workflow", key)) for key, value in Config().workflow.to_dict().items() if key != "enabled"},
-    "box": {"tools": _fields(Config().box.tools.to_dict()), "k3s": _fields(Config().box.k3s.to_dict(), ("k3s",))},
+    "box": {"tools": _fields(Config().box.tools.to_dict()), "k3s": _fields(Config().box.k3s.to_dict(), ("k3s",)),
+            "podman": _fields(Config().box.podman.to_dict())},
     "tracker": {"provider": str, "project": str, "recursive": bool,
                 "connections": {provider: {"url": str} for provider in TRACKER_PROVIDERS}},
 }

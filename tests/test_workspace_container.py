@@ -84,6 +84,8 @@ class WorkspaceContainerLifecycleTests(unittest.TestCase):
             mock.patch.object(runtime, "NOTIFY_CREDENTIALS", state / "runtime/notify.json"),
             mock.patch.object(runtime, "container_has_keeper", return_value=True),
             mock.patch.object(runtime, "image_tool_groups", return_value=None),
+            # No nested Podman volume exists; its lifecycle has its own tests.
+            mock.patch.object(runtime, "_nested_podman_volume_owner", return_value=None),
         ):
             patch.start()
             self.addCleanup(patch.stop)

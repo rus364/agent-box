@@ -33,12 +33,29 @@ host. `--network=host` on an inner container shares the workspace's network.
 
 Bind mounts can use paths visible inside the workspace. Images, build cache,
 containers and named volumes live in a dedicated outer volume named
-`agent-box-podman-<workspace-id>`, independently of the host engine's existing
-images and containers. This volume survives workspace removal and recreation;
-running inner processes stop with the outer workspace. There is no automatic
-volume deletion when the group is disabled. To discard that data, first end
-the workspace's sessions, then explicitly remove its named volume with the
-outer Podman. Source files stay in the mounted project directory.
+`agent-box-podman-<workspace id>`, independently of the host engine's existing
+images and containers. agent-box creates it before the box with two labels:
+`io.agent-box.podman` holds the workspace id and `io.agent-box.path` the
+project directory, so `podman volume ls --filter label=io.agent-box.podman`
+shows every such volume and the project it belongs to. A volume of that name
+that agent-box did not create is refused, never used or deleted. Source files
+stay in the mounted project directory.
+
+How long the data lives is `box.podman.persistent_data`, globally or per
+project in `.agent-box.json`:
+
+| Event | `persistent_data: false` (default) | `persistent_data: true` |
+| --- | --- | --- |
+| The box goes away (last session ended, `agent-box stop`) | deleted | kept |
+| A box that ended on its own is replaced by a new one | deleted before the new box | kept |
+| `agent-box stop --podman-data` | deleted | deleted |
+| `agent-box uninstall` | listed, kept | listed, kept |
+| `agent-box uninstall --purge` | deleted after you confirm | deleted after you confirm |
+
+With the default, each box starts with empty nested storage, so a scratch
+project leaves nothing behind but pays for its pulls and builds every time.
+Turn it on for a project whose images and build cache are worth keeping.
+Running inner processes always stop with the outer workspace.
 
 Podman's pause process, which holds the rootless user namespace and never
 exits by itself, is not a workspace workload: a workspace with nothing else

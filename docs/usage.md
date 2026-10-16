@@ -38,6 +38,7 @@ a running box.
 ```bash
 agent-box stop                  # end the box and every session in it, and stop its k3s cluster
 agent-box stop --cluster-data   # also delete the k3s cluster's data
+agent-box stop --podman-data    # also delete nested Podman data that box.podman.persistent_data keeps
 ```
 
 How the workspace root is chosen and what the box can reach is described in

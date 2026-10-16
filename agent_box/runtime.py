@@ -84,6 +84,10 @@ WORKSPACE_CONTAINER_WORKSPACE_LABEL = "io.agent-box.workspace"
 WORKSPACE_CONTAINER_BASE_CONFIG_LABEL = "io.agent-box.base-config-hash"
 WORKSPACE_CONTAINER_EXTRA_MOUNTS_LABEL = "io.agent-box.extra-mounts-hash"
 WORKSPACE_CONTAINER_SCHEMA_LABEL = "io.agent-box.schema"
+#: The workspace id that owns a nested Podman volume, as ``io.agent-box.k3s`` for a cluster.
+NESTED_PODMAN_LABEL = "io.agent-box.podman"
+#: The project directory a per-workspace resource was created for.
+WORKSPACE_PATH_LABEL = "io.agent-box.path"
 KEEPER_PATH = CONTAINER_LAUNCHER_ROOT / "agent_box/keeper.sh"
 #: Only these run as a person's live session; ``doctor`` is a diagnostic
 #: script whose output belongs on the caller's stdout.
@@ -377,6 +381,84 @@ def nested_podman_drift(config: Config) -> list[str]:
             "can delegate, so Podman in the box cannot start -- run 'agent-box build'"]
 
 
+def nested_podman_volume(workspace_id: str) -> str:
+    return f"agent-box-podman-{workspace_id}"
+
+
+def _nested_podman_volume_owner(workspace_id: str) -> str | None:
+    """The volume's owner label: ``None`` when it is absent, ``""`` when nobody's."""
+    volume = nested_podman_volume(workspace_id)
+    try:
+        if subprocess.run(["podman", "volume", "exists", volume], capture_output=True).returncode:
+            return None
+        result = subprocess.run(["podman", "volume", "inspect", "--format",
+                                 f'{{{{index .Labels "{NESTED_PODMAN_LABEL}"}}}}', volume],
+                                text=True, capture_output=True)
+    except OSError as exc:
+        raise AgentBoxError(f"cannot inspect the Podman volume {volume}: {exc}") from exc
+    if result.returncode:
+        raise AgentBoxError(f"cannot inspect the Podman volume {volume}: {result.stderr.strip()}")
+    owner = result.stdout.strip()
+    return "" if owner == "<no value>" else owner
+
+
+def _require_own_nested_podman_volume(workspace_id: str, owner: str) -> None:
+    if owner != workspace_id:
+        volume = nested_podman_volume(workspace_id)
+        raise AgentBoxError(f"the Podman volume {volume} exists but agent-box did not create it for this "
+                            f"workspace; agent-box neither uses nor deletes it -- inspect it, then "
+                            f"'podman volume rm {volume}'")
+
+
+def ensure_nested_podman_volume(workspace_id: str, workspace_path: str) -> None:
+    """Create the workspace's nested Podman volume with the labels that name its owner and project.
+
+    Explicit rather than left to ``--mount``, which creates an unlabelled
+    volume: the labels let ``uninstall`` and ``workspaces`` find every such
+    volume and say which project it belongs to, since the workspace id is a
+    hash that cannot be turned back into a path.
+    """
+    owner = _nested_podman_volume_owner(workspace_id)
+    if owner is None:
+        command = ["podman", "volume", "create", f"--label={NESTED_PODMAN_LABEL}={workspace_id}",
+                   f"--label={WORKSPACE_PATH_LABEL}={workspace_path}",
+                   nested_podman_volume(workspace_id)]
+        try:
+            created = subprocess.run(command, text=True, capture_output=True)
+        except OSError as exc:
+            raise AgentBoxError(f"cannot create the Podman volume: {exc}") from exc
+        if not created.returncode:
+            return
+        # Another launch may have created it first; anything else is an error.
+        owner = _nested_podman_volume_owner(workspace_id)
+        if owner is None:
+            raise AgentBoxError(f"cannot create the Podman volume: {created.stderr.strip()}")
+    _require_own_nested_podman_volume(workspace_id, owner)
+
+
+def remove_nested_podman_volume(workspace_id: str) -> bool:
+    """Delete the workspace's nested Podman data; whether there was any."""
+    owner = _nested_podman_volume_owner(workspace_id)
+    if owner is None:
+        return False
+    _require_own_nested_podman_volume(workspace_id, owner)
+    volume = nested_podman_volume(workspace_id)
+    result = subprocess.run(["podman", "volume", "rm", volume], text=True, capture_output=True)
+    if result.returncode:
+        raise AgentBoxError(f"cannot delete the Podman volume {volume}: {result.stderr.strip()}")
+    return True
+
+
+def nested_podman_workspaces() -> list[str]:
+    """Workspace ids with a nested Podman volume agent-box created, for uninstall."""
+    result = subprocess.run(["podman", "volume", "ls", f"--filter=label={NESTED_PODMAN_LABEL}",
+                             "--format={{.Name}}"], text=True, capture_output=True)
+    if result.returncode:
+        raise AgentBoxError(f"cannot list Podman volumes: {result.stderr.strip()}")
+    return sorted(match.group(1) for line in result.stdout.splitlines()
+                  if (match := re.fullmatch(r"agent-box-podman-([0-9a-f]{16})", line.strip())))
+
+
 def nested_podman_args(config: Config, workspace: Workspace) -> list[str]:
     if not config.box.tools.groups["podman"]:
         return []
@@ -394,7 +476,7 @@ def nested_podman_args(config: Config, workspace: Workspace) -> list[str]:
             atomic_write_text(path, text)
         return ["--cap-add=SETUID", "--cap-add=SETGID", "--device=/dev/net/tun",
                 "--security-opt=unmask=/proc/*", f"--security-opt=seccomp={path}",
-                f"--mount=type=volume,source=agent-box-podman-{workspace_identity(workspace)},"
+                f"--mount=type=volume,source={nested_podman_volume(workspace_identity(workspace))},"
                 f"target={HOST_HOME}/.local/share/containers"]
     except (OSError, ValueError, KeyError, TypeError) as exc:
         raise AgentBoxError(f"Cannot configure nested Podman: {exc}") from exc
@@ -1622,6 +1704,24 @@ def release_k3s(workspace: Workspace, config: Config | None = None,
         print(f"agent-box: stopped the k3s cluster {k3s.name(workspace_identity(workspace))}", file=sys.stderr)
 
 
+def release_nested_podman(workspace: Workspace, config: Config | None = None) -> None:
+    """Delete disposable nested Podman data once the workspace has no box.
+
+    An exited box that is still present keeps its volume mounted; the next
+    box's creation decides for it.
+    """
+    if (config or effective_config(runtime_config_base())).box.podman.persistent_data:
+        return
+    workspace_id = workspace_identity(workspace)
+    # The volume first: most workspaces have none, and then Podman is asked once.
+    if _nested_podman_volume_owner(workspace_id) is None:
+        return
+    if inspect_workspace_container(workspace_container_name(workspace)) is not None:
+        return
+    if remove_nested_podman_volume(workspace_id):
+        print(f"agent-box: deleted the nested Podman data {nested_podman_volume(workspace_id)}", file=sys.stderr)
+
+
 def confirm_k3s(spec: WorkspaceContainerSpec) -> None:
     """Refuse to start a box whose cluster moved after this launch prepared it.
 
@@ -1844,6 +1944,7 @@ class WorkspaceContainerSpec:
     policy_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     admitted_id: str = ""
     image: str = ""
+    workspace_path: str = ""
 
 
 def workspace_container_spec(
@@ -1897,6 +1998,7 @@ def workspace_container_spec(
         creation_config=config,
         runtime_state=runtime_state,
         policy_id=policy_id,
+        workspace_path=str(workspace.host_root.resolve()),
     )
 
 
@@ -2202,6 +2304,12 @@ def ensure_workspace_container(spec: WorkspaceContainerSpec) -> None:
         for old in spec.runtime_state.root.glob("box-*.json"):
             old.unlink()
         atomic_write_json(spec.runtime_state.root / f"box-{spec.policy_id}.json", workspace_box_policy(spec), 0o600)
+        # No box holds the volume now: disposable data a gone box left behind,
+        # one that ended on its own included, does not reach the new one.
+        if not spec.creation_config.box.podman.persistent_data:
+            remove_nested_podman_volume(spec.workspace_id)
+        if spec.creation_config.box.tools.groups["podman"]:
+            ensure_nested_podman_volume(spec.workspace_id, spec.workspace_path)
         created = subprocess.run(spec.create_argv, text=True, capture_output=True)
         if created.returncode:
             # Podman's name uniqueness is the final arbiter when two first
@@ -2499,6 +2607,7 @@ def launch_in_workspace_container(
         with workspace_transition_lock(workspace):
             cleanup_workspace_container_if_idle(spec.name)
             release_k3s(workspace, spec.creation_config, spec.runtime_state)
+            release_nested_podman(workspace, spec.creation_config)
     except (AgentBoxError, OSError, subprocess.SubprocessError) as exc:
         # The agent command's status is more meaningful than a best-effort
         # post-exit cleanup problem. A later launch will recover stale
@@ -3023,6 +3132,7 @@ def attach_main(args: list[str], workspace_root: str = "") -> int:
         # No box to attach to: a sidecar bound to the box it outlived stops now.
         with workspace_transition_lock(workspace):
             release_k3s(workspace)
+            release_nested_podman(workspace)
         raise
     session = choose_session(tmux_sessions(name), args[0] if args else None)
     # ``-d`` evicts whichever client still holds the session. After a closed
@@ -3042,25 +3152,28 @@ def attach_main(args: list[str], workspace_root: str = "") -> int:
         with workspace_transition_lock(workspace):
             cleanup_workspace_container_if_idle(name)
             release_k3s(workspace)
+            release_nested_podman(workspace)
     except (AgentBoxError, OSError, subprocess.SubprocessError) as exc:
         warn(f"could not clean up workspace container: {exc}")
     return rc
 
 
 def stop_main(args: list[str], workspace_root: str = "") -> int:
-    """``agent-box stop [--cluster-data]``: end this workspace's box and cluster.
+    """``agent-box stop [--cluster-data] [--podman-data]``: end this workspace's box and cluster.
 
     Ordinary boxes still disappear on their own once no workload remains. A
     detached session *is* a workload, so a box someone walked away from needs
     a way to be shut down deliberately. The k3s sidecar stops with it
     whatever its lifetime; its data stays unless ``persistent_data`` is off or
-    ``--cluster-data`` asks for it to go.
+    ``--cluster-data`` asks for it to go. Nested Podman data follows its own
+    ``persistent_data`` the same way, and ``--podman-data`` deletes it anyway.
     """
-    cluster_data = False
+    flags = {"--cluster-data", "--podman-data"}
     for arg in args:
-        if arg != "--cluster-data":
-            raise AgentBoxError(f"unexpected argument '{arg}'; agent-box stop takes only --cluster-data")
-        cluster_data = True
+        if arg not in flags:
+            raise AgentBoxError(f"unexpected argument '{arg}'; agent-box stop takes only "
+                                "--cluster-data and --podman-data")
+    cluster_data, podman_data = "--cluster-data" in args, "--podman-data" in args
     host_podman.require()
     workspace = resolved_workspace(workspace_root)
     name = workspace_container_name(workspace)
@@ -3095,6 +3208,8 @@ def stop_main(args: list[str], workspace_root: str = "") -> int:
                                                                k3s_state_dir(runtime_state)):
             kept = "" if config.box.k3s.persistent_data else " and deleted its data"
             print(f"agent-box: stopped the k3s cluster {sidecar}{kept}", file=sys.stderr)
+        if (podman_data or not config.box.podman.persistent_data) and remove_nested_podman_volume(workspace_id):
+            print(f"agent-box: deleted the nested Podman data {nested_podman_volume(workspace_id)}", file=sys.stderr)
     return 0
 
 
@@ -3255,6 +3370,13 @@ def uninstall_main(args: list[str]) -> int:
         else:
             if clusters:
                 done.append(f"removed {len(clusters)} k3s cluster(s)")
+    # Nested Podman data is agent-box state like a cluster's, kept until --purge.
+    podman_data: list[str] = []
+    if shutil.which("podman"):
+        try:
+            podman_data = nested_podman_workspaces()
+        except AgentBoxError as exc:
+            done.append(f"warning: nested Podman volumes were not listed: {exc}")
 
     settings = CLAUDE_HOME / "settings.json"
     if claude_settings.reconcile_claude_settings(
@@ -3313,6 +3435,14 @@ def uninstall_main(args: list[str]) -> int:
             else:
                 if clusters:
                     done.append(f"deleted the data of {len(clusters)} k3s cluster(s)")
+            try:
+                for workspace_id in podman_data:
+                    remove_nested_podman_volume(workspace_id)
+            except AgentBoxError as exc:
+                done.append(f"warning: nested Podman data was not removed: {exc}")
+            else:
+                if podman_data:
+                    done.append(f"deleted the nested Podman data of {len(podman_data)} workspace(s)")
             shutil.rmtree(CONFIG_ROOT, ignore_errors=True)
             shutil.rmtree(STATE_ROOT, ignore_errors=True)
             done.append(f"deleted {CONFIG_ROOT} and {STATE_ROOT}")
@@ -3333,6 +3463,9 @@ def uninstall_main(args: list[str]) -> int:
         print(f"  configuration and state   {CONFIG_ROOT}, {STATE_ROOT}")
         if clusters:
             print("  k3s cluster data          podman volume rm " + " ".join(k3s.name(c) for c in clusters))
+        if podman_data:
+            print("  nested Podman data        podman volume rm "
+                  + " ".join(nested_podman_volume(w) for w in podman_data))
     if rc_note:
         print(f"  shell PATH line           {rc_note}")
     print(f"  container image           podman rmi {IMAGE}")

@@ -194,6 +194,8 @@ class AttachAndStopTests(unittest.TestCase):
             mock.patch.object(runtime, "STATE_ROOT", Path(self.tmp.name) / "state"),
             # stop also stops the workspace's k3s sidecar; keep real Podman out of reach.
             mock.patch.multiple(runtime.k3s, stop=mock.Mock(return_value=False), remove=mock.Mock()),
+            # ... and deletes disposable nested Podman data; none exists here.
+            mock.patch.object(runtime, "_nested_podman_volume_owner", return_value=None),
             mock.patch.object(runtime, "effective_config", return_value=runtime.Config()),
             mock.patch.multiple(
                 runtime.sys,

@@ -672,6 +672,30 @@ class K3sConfig:
 
 
 @dataclass
+class PodmanConfig:
+    """How long nested Podman's storage outlives the box; the tool group itself is ``tools.podman``.
+
+    Images, build cache, containers and volumes of nested Podman live in the
+    outer volume ``agent-box-podman-<workspace id>``. ``persistent_data``
+    false deletes it once the workspace's box is gone, so a scratch project
+    leaves nothing behind; true keeps pulls and build cache between boxes
+    until ``agent-box stop --podman-data``.
+
+    Off by default because kept data piles up unseen: one host had gathered
+    7.5 GB in 19 such volumes, several for directories that no longer existed.
+    """
+
+    persistent_data: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"persistent_data": self.persistent_data}
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "PodmanConfig":
+        return cls(persistent_data=_bool(data, "persistent_data", cls().persistent_data))
+
+
+@dataclass
 class ToolsConfig:
     """Which optional tool groups the workspace image is built with.
 
@@ -1183,6 +1207,7 @@ class BoxConfig:
 
     tools: ToolsConfig = field(default_factory=ToolsConfig)
     k3s: K3sConfig = field(default_factory=K3sConfig)
+    podman: PodmanConfig = field(default_factory=PodmanConfig)
     #: The host's sound server inside workspace boxes.
     #:
     #: Off by default: turning it on lets everything in the box -- agents,
@@ -1201,14 +1226,14 @@ class BoxConfig:
     env: EnvConfig = field(default_factory=EnvConfig)
 
     def to_dict(self) -> dict[str, Any]:
-        return {"tools": self.tools.to_dict(), "k3s": self.k3s.to_dict(),
+        return {"tools": self.tools.to_dict(), "k3s": self.k3s.to_dict(), "podman": self.podman.to_dict(),
                 "audio": self.audio, "links": self.links.to_dict(), "env": self.env.to_dict()}
 
     @classmethod
     def from_dict(cls, data: Any) -> "BoxConfig":
         data = _mapping(data)
         return cls(tools=ToolsConfig.from_dict(data.get("tools")), k3s=K3sConfig.from_dict(data.get("k3s")),
-                   audio=_bool(data, "audio", False), links=LinksConfig.from_dict(data.get("links")),
+                   podman=PodmanConfig.from_dict(data.get("podman")), audio=_bool(data, "audio", False), links=LinksConfig.from_dict(data.get("links")),
                    env=EnvConfig.from_dict(data.get("env")))
 
     def validate(self) -> list[str]:
@@ -1399,6 +1424,7 @@ def apply_box_policy(config, policy):
     shared = Config.from_dict(policy)
     config.box.tools.groups = copy.deepcopy(shared.box.tools.groups)
     config.box.k3s = shared.box.k3s
+    config.box.podman = shared.box.podman
     config.box.audio = shared.box.audio
     config.box.links = shared.box.links
     config.credentials.git = shared.credentials.git

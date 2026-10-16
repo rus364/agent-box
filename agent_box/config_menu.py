@@ -28,7 +28,7 @@ CHOICES = {
 }
 HELP = {
     "agents": "Which agent starts, how Claude and Codex run, and which provider APIs and host variables they may use.",
-    "box": "What the workspace box is built with, the k3s cluster beside it, sound, and its environment.",
+    "box": "What the workspace box is built with, the k3s cluster and nested Podman storage beside it, sound, and its environment.",
     "credentials": "Host identity and credentials the box's own tools may use. Everything that exposes a credential is off by default.",
     "host": "What agent-box does on the host itself: notifications, Claude skill links and the PATH symlink. Global only.",
     "workflow.language": ("Working language of project text, such as English or Deutsch: tracker tasks and comments, pull requests and "
@@ -101,6 +101,8 @@ HELP = {
     "tracker.project": "Project tracker identity: the tracker project ID this repository's tasks belong to. Project setting only; setup and adopt write it.",
     "tracker.recursive": "Project tracker identity: include every project under the bound project in the workflow. Project setting only.",
     "tracker.connections": "Provider URLs and tokens rendered into minimal runtime credential files only when tracker integration is enabled.",
+    "box.podman": "Where nested Podman's images, build cache, containers and volumes live: the host Podman volume agent-box-podman-<workspace id>. The tool group itself is under Image tools.",
+    "box.podman.persistent_data": "Keep the volume after the box is gone, so pulls and build cache survive between sessions. Off deletes it whenever the box goes away, so each box starts empty. `agent-box stop --podman-data` deletes it on demand.",
     "box.audio": "Mount the host PulseAudio/PipeWire socket so agents can use the microphone and speakers, e.g. Claude Code /voice. Everything in the box gets both. Changing it recreates the box.",
     "box.links": "Web links and temporary localhost callback routes from the box to your workstation. Separate from the agent's Playwright browser.",
     "box.links.enabled": "Expose a host URL broker to the shared box, with temporary loopback forwarding for CLI login callbacks. Off by default; changing it recreates the box. Remote workstations also need the displayed SSH/Coder tunnel.",
@@ -174,6 +176,7 @@ PATH_LABELS = {
     "credentials.kubernetes": "Kubernetes configs", "credentials.kubernetes.files": "Kubeconfig files",
     "credentials.cloud": "Cloud CLI profiles", "credentials.cloud.yc": "Yandex Cloud (yc)",
     "credentials.cloud.yc.profiles": "yc profiles", "box.tools.yc": "Yandex Cloud CLI (yc)",
+    "box.podman": "Nested Podman storage",
 }
 
 #: What each offered value means, shown for the value under the cursor; the field's own
@@ -272,7 +275,7 @@ MENU_GROUPS = {
     ),
     ("box",): (
         ("Image", ("tools",)),
-        ("Beside the box", ("k3s",)),
+        ("Beside the box", ("k3s", "podman")),
         ("Inside the box", ("audio", "links", "env")),
     ),
     ("credentials",): (

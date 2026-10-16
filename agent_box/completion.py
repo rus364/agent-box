@@ -101,7 +101,7 @@ def config_words(args):
 #: Every command ``cli.main`` dispatches, except HIDDEN; a test fails when one is missing.
 COMMANDS = {
     "claude": files, "codex": files, "shell": fixed(), "doctor": fixed(), "ext": external_command,
-    "attach": fixed(), "stop": fixed("--cluster-data"),
+    "attach": fixed(), "stop": fixed("--cluster-data", "--podman-data"),
     "config": config_words,
     "usage": fixed("codex", "claude", "all", "--no-cache", "--json"),
     "notify": fixed("test"),

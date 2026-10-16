@@ -66,8 +66,10 @@ Sessions:
                           explicit shared-access conflicts require agent-box stop
   ext API                 Start claude/codex against an enabled external API provider
   attach [SESSION]        Reattach to a detached session; detach with C-\\ d
-  stop [--cluster-data]   Remove the box and its sessions and stop its k3s cluster; --cluster-data also
-                          deletes the cluster's data; with --host, this project's host sessions
+  stop [--cluster-data] [--podman-data]
+                          Remove the box and its sessions and stop its k3s cluster; --cluster-data also
+                          deletes the cluster's data, --podman-data the nested Podman data even when
+                          box.podman.persistent_data keeps it; with --host, this project's host sessions
 
 Configuration:
   config                  Interactive setup, saved to ~/.config/agent-box/config.json and applied

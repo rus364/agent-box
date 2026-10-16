@@ -11,6 +11,7 @@ about ownership as the installs were: only what agent-box put there.
 file, which is where the Telegram and Vikunja tokens live, and only there is
 the PATH line in a shell startup file considered for removal at all.
 """
+import io
 import json
 import tempfile
 import unittest
@@ -71,6 +72,11 @@ class UninstallTestCase(unittest.TestCase):
                                             remove=mock.Mock())
         self.clusters.start()
         self.addCleanup(self.clusters.stop)
+        # The same for nested Podman volumes: purge deletes every one Podman lists.
+        self.podman_data = mock.patch.multiple(runtime, nested_podman_workspaces=mock.Mock(return_value=[]),
+                                               remove_nested_podman_volume=mock.Mock())
+        self.podman_data.start()
+        self.addCleanup(self.podman_data.stop)
         self.checkout = self.root / "checkout"
         (self.checkout / "agent_box").mkdir(parents=True)
         (self.checkout / "agent_box/__init__.py").write_text("")
@@ -241,6 +247,19 @@ class UninstallTests(UninstallTestCase):
             runtime.k3s.remove.reset_mock()
             self._uninstall("--purge", "--yes", podman="/usr/bin/podman")
         self.assertEqual([c.kwargs["data"] for c in runtime.k3s.remove.call_args_list], [False, True])
+
+    def test_nested_podman_data_is_named_and_deleted_only_after_a_confirmed_purge(self):
+        """Pulled images and build cache are agent-box state like a cluster's, never lost unasked."""
+        runtime.nested_podman_workspaces.return_value = ["0123456789abcdef"]
+        with mock.patch.object(runtime, "managed_container_names", return_value=[]):
+            with mock.patch("sys.stdout", new_callable=io.StringIO) as out:
+                self._uninstall(podman="/usr/bin/podman")
+            self.assertIn("podman volume rm agent-box-podman-0123456789abcdef", out.getvalue())
+            with mock.patch("builtins.input", return_value="n"):
+                self._uninstall("--purge", podman="/usr/bin/podman")
+            runtime.remove_nested_podman_volume.assert_not_called()
+            self._uninstall("--purge", "--yes", podman="/usr/bin/podman")
+        runtime.remove_nested_podman_volume.assert_called_once_with("0123456789abcdef")
 
     def test_the_image_is_never_deleted(self):
         """Large, trivially rebuilt, and not something to remove unasked."""

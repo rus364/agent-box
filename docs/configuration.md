@@ -85,7 +85,7 @@ alone. The interactive menu refuses in a box.
 | Provider transport settings | on | Base URL, proxies and CA bundle, so a box behind a proxy reaches the network |
 | Claude skill links | on | Link `~/.agents/skills` into `~/.claude/skills` |
 | Image tool groups | `analysis`, `kubernetes` | What the [workspace image](image.md) is built with |
-| Everything else | off | Credentials, tracker, workflow, browser, k3s, audio, notifications and the other [integrations](integrations/README.md) |
+| Everything else | off | Credentials, tracker, workflow, browser, k3s, kept nested Podman data, audio, notifications and the other [integrations](integrations/README.md) |
 
 Within the opt-in workflow, auto-push defaults to on.
 
@@ -128,7 +128,7 @@ A project may set:
 - `workflow`, except its top-level `enabled` switch — including each role's
   candidate lists (`models`, and `tiers.N` for workers, Plan sync and
   reviewers), `use_tiers` and the working `language`;
-- `box.tools` and `box.k3s`;
+- `box.tools`, `box.k3s` and `box.podman`;
 - `tracker.provider` and `tracker.connections.<provider>.url`;
 - `tracker.project` and `tracker.recursive`, which identify the project and
   exist only here.
