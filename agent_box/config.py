@@ -1107,7 +1107,9 @@ class WorkflowConfig:
         result.review = ReviewConfig.from_dict(data.get("review"))
         result.sync = PlanSyncConfig.from_dict(data.get("sync"))
         result.worker = WorkerConfig.from_dict(data.get("worker"))
-        result.language = _str(data, "language")
+        # Only spaces are trimmed: a line break must reach validate(), not vanish into an empty value.
+        language = data.get("language")
+        result.language = language.strip(" ") if isinstance(language, str) else ""
         return result
 
 
