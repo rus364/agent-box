@@ -159,9 +159,9 @@ class RemovalTests(WorkspacesTestCase):
         self.removed.box.assert_called_once_with("agent-box-live-" + self.box)
 
     def test_rm_ends_the_workspace_host_sessions(self):
+        """A running session has consumed its env file and has no status yet: its directory is empty."""
         sessions = runtime.HOST_SESSIONS_ROOT / UNKNOWN
         sessions.mkdir(parents=True)
-        (sessions / "claude-0123456789ab.status").write_text("")
         workspaces.main(["rm", UNKNOWN, "--yes"])
         self.removed.host_sessions.assert_called_once_with(sessions)
 
@@ -201,10 +201,13 @@ class RemovalTests(WorkspacesTestCase):
 
     def test_state_that_could_not_be_deleted_is_reported_not_hidden(self):
         (runtime.workspace_state_root(STATE_ONLY) / "gh").mkdir()
+        sessions = runtime.HOST_SESSIONS_ROOT / STATE_ONLY
+        sessions.mkdir(parents=True)
         with mock.patch.object(workspaces.shutil, "rmtree"), \
              mock.patch("sys.stderr", new_callable=io.StringIO) as err:
             self.assertEqual(workspaces.main(["rm", STATE_ONLY, "--yes"]), 1)
         self.assertIn(str(runtime.workspace_state_root(STATE_ONLY)), err.getvalue())
+        self.assertIn(str(sessions), err.getvalue(), "a session directory may hold an unconsumed credential file")
 
     def test_deleting_needs_a_terminal_or_yes(self):
         with mock.patch.object(workspaces.sys, "stdin", mock.Mock(isatty=mock.Mock(return_value=False))):
@@ -222,7 +225,7 @@ class RemovalTests(WorkspacesTestCase):
 class PathRecordTests(unittest.TestCase):
     def test_a_directory_name_that_is_not_utf8_survives_the_record(self):
         with tempfile.TemporaryDirectory() as tmp, mock.patch.object(runtime, "STATE_ROOT", Path(tmp)):
-            path = "/home/u/" + bytes([0xFF, 0x41]).decode("utf-8", "surrogateescape")
+            path = "/home/u/" + bytes([0xFF, 0x41]).decode("utf-8", "surrogateescape") + "\n"
             runtime.record_workspace_path(UNKNOWN, path)
             with mock.patch.object(workspaces.subprocess, "run", FakePodman()):
                 self.assertEqual(next(item.path for item in workspaces.collect() if item.id == UNKNOWN), path)

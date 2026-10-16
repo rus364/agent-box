@@ -102,7 +102,8 @@ def collect(podman: bool = True) -> list[Entry]:
     for item in found.values():
         record = runtime.workspace_state_root(item.id) / runtime.WORKSPACE_PATH_FILE
         if not item.path and record.is_file():
-            item.path = os.fsdecode(record.read_bytes().rstrip(b"\n"))
+            # Exactly the one delimiter: a directory name may end in a newline itself.
+            item.path = os.fsdecode(record.read_bytes().removesuffix(b"\n"))
     return sorted(found.values(), key=lambda item: (not item.path, item.path, item.id))
 
 
@@ -163,7 +164,8 @@ def remove(item: Entry, podman: bool = True) -> list[str]:
                                     f"--filter=label={runtime.WORKSPACE_CONTAINER_WORKSPACE_LABEL}={item.id}"):
                 runtime.remove_workspace_container_then_confirm_absent((box.get("Names") or [""])[0])
         sessions = runtime.HOST_SESSIONS_ROOT / item.id
-        if sessions.is_dir() and any(sessions.iterdir()):
+        # A live session's directory is usually empty: ask its server, not the files.
+        if sessions.is_dir():
             if shutil.which("tmux"):
                 runtime.stop_host_sessions(sessions)
             else:
@@ -182,7 +184,7 @@ def remove(item: Entry, podman: bool = True) -> list[str]:
             elif not left or directory != sessions:
                 shutil.rmtree(directory, ignore_errors=True)
     return left + [str(directory) for directory in runtime.workspace_state_dirs(item.id)
-                   if directory.exists() and _has_state(directory) and directory != sessions]
+                   if directory.exists() and _has_state(directory) and not (left and directory == sessions)]
 
 
 def _resolve(targets: list[str], items: list[Entry]) -> list[Entry]:
