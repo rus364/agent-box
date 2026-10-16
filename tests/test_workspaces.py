@@ -158,6 +158,15 @@ class RemovalTests(WorkspacesTestCase):
         workspaces.main(["prune", "--yes"])
         self.removed.box.assert_called_once_with("agent-box-live-" + self.box)
 
+    def test_prune_keeps_a_workspace_whose_directory_came_back_while_confirming(self):
+        def restore_meanwhile(items, assume_yes):
+            self.gone.mkdir()
+            return True
+        with mock.patch.object(workspaces, "_confirm", restore_meanwhile):
+            workspaces.main(["prune"])
+        self.assertEqual([c.args[0] for c in self.removed.podman.call_args_list], [STATE_ONLY],
+                         "the cluster's directory is back; scratch below it is still gone")
+
     def test_rm_ends_the_workspace_host_sessions(self):
         """A running session has consumed its env file and has no status yet: its directory is empty."""
         sessions = runtime.HOST_SESSIONS_ROOT / UNKNOWN

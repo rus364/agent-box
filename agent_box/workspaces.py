@@ -148,17 +148,21 @@ def render(items: list[Entry]) -> str:
                      for row in rows)
 
 
-def remove(item: Entry, podman: bool = True) -> list[str]:
+def remove(item: Entry, podman: bool = True, *, only_vanished: bool = False) -> list[str] | None:
     """Delete everything agent-box keeps for one workspace; what could not be deleted.
 
     All under the workspace's lifecycle lock, and the box looked up again
     there: a launch while the user was confirming may have created one. The
     lock file itself stays: a launch already waiting holds that inode, and a
-    recreated one would let the next launch run beside it.
+    recreated one would let the next launch run beside it. With
+    ``only_vanished`` (prune) the directory is checked again there and
+    ``None`` returned when it has come back since the user confirmed.
     """
     root = runtime.workspace_state_root(item.id)
     left = []
     with runtime.transition_lock_at(root / runtime.WORKSPACE_LOCK_FILE):
+        if only_vanished and not item.vanished:
+            return None
         if podman:
             for box in _podman_json("ps", "--all",
                                     f"--filter=label={runtime.WORKSPACE_CONTAINER_WORKSPACE_LABEL}={item.id}"):
@@ -246,8 +250,10 @@ def main(args: list[str]) -> int:
         return 1
     status = 0
     for item in chosen:
-        left = remove(item, podman)
-        if left:
+        left = remove(item, podman, only_vanished=command == "prune")
+        if left is None:
+            print(f"agent-box: kept workspace {item.id}: {item.path} exists again", file=sys.stderr)
+        elif left:
             status = 1
             print(f"agent-box: workspace {item.id} could not be removed completely; delete by hand: "
                   + ", ".join(left), file=sys.stderr)
