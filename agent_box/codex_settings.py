@@ -29,8 +29,12 @@ def reconcile_notify(path: Path, enabled: bool) -> list[str]:
         source = path.read_bytes().decode("utf-8") if exists else ""
         data = tomllib.loads(source)
         mode = stat.S_IMODE(path.stat().st_mode) if exists else 0o600
-    except (OSError, UnicodeError, ValueError):
-        return [f"warning: cannot read valid Codex TOML; preserved {path}"]
+    except OSError as exc:
+        raise AgentBoxError(f"Cannot read Codex config {path}; fix file access and retry "
+                            "the launch or agent-box config apply") from exc
+    except (UnicodeError, ValueError):
+        raise AgentBoxError(f"Cannot parse Codex config {path}; file preserved; repair its TOML "
+                            "and retry the launch or agent-box config apply") from None
 
     owned = source.startswith(NOTIFY_BLOCK)
     if owned:

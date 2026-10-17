@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest import mock
 
 from agent_box import codex_settings
+from agent_box.errors import AgentBoxError
 
 
 class CodexNotifySettingsTests(unittest.TestCase):
@@ -75,7 +76,8 @@ class CodexNotifySettingsTests(unittest.TestCase):
         for source in (b'notify = [', b'\xff'):
             self.path.write_bytes(source)
             for enabled in (True, False):
-                self.assertIn('preserved', codex_settings.reconcile_notify(self.path, enabled)[0])
+                with self.assertRaisesRegex(AgentBoxError, 'preserved'):
+                    codex_settings.reconcile_notify(self.path, enabled)
                 self.assertEqual(self.path.read_bytes(), source)
         self.path.unlink()
         target = self.path.with_name('target.toml')

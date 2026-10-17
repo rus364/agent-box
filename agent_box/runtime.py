@@ -619,6 +619,7 @@ def install_managed_skill(name: str) -> None:
         return
     target = AGENT_SKILLS_DIR / name
     digest = skill_tree_digest(source)
+    recorded = None
     if target.exists() or target.is_symlink():
         recorded = managed_skill_digest(target)
         if recorded is None or target.is_symlink() or skill_tree_digest(target) != recorded:
@@ -635,8 +636,14 @@ def install_managed_skill(name: str) -> None:
         atomic_write_json(prepared / MANAGED_SKILL_MARKER,
                           {"format_version": migrations.SKILL_MARKER.version,
                            "skill": name, "digest": digest}, 0o644)
-        if target.exists():
-            shutil.rmtree(target)
+        if target.exists() or target.is_symlink():
+            if (recorded is None or target.is_symlink()
+                    or managed_skill_digest(target) != recorded or skill_tree_digest(target) != recorded):
+                warn(f"skill '{name}' changed during installation; keeping {target}")
+                return
+            # Retire the whole old tree before cleanup: a partial rmtree must
+            # never leave an unrecognizable installed skill behind on retry.
+            os.replace(target, Path(staging) / "retired")
         os.replace(prepared, target)
 
 
@@ -645,7 +652,8 @@ def remove_managed_skill(name: str) -> None:
     target = AGENT_SKILLS_DIR / name
     recorded = managed_skill_digest(target)
     if recorded is not None and not target.is_symlink() and skill_tree_digest(target) == recorded:
-        shutil.rmtree(target)
+        with tempfile.TemporaryDirectory(prefix=".agent-box-retired-", dir=target.parent) as retired:
+            os.replace(target, Path(retired) / name)
 
 
 def managed_skills(config: Config) -> set[str]:

@@ -101,6 +101,28 @@ class ApplyConfigTests(unittest.TestCase):
             self.assertTrue(marker.exists())
             self.assertTrue((runtime.CODEX_HOME / "config.toml").read_text().startswith(codex_settings.NOTIFY_BLOCK))
 
+    def test_failed_codex_config_read_does_not_complete_package_application(self):
+        """Read access recovery must trigger a retry without requiring another upgrade."""
+        saved = self._enabled()
+        saved.host.notifications.enabled = True
+        config_module.save_config(saved)
+        path = runtime.CODEX_HOME / "config.toml"
+        path.parent.mkdir(parents=True)
+        path.write_text('model = "fixture"\n')
+        read = Path.read_bytes
+        def denied(target):
+            if target == path:
+                raise PermissionError("temporary read failure")
+            return read(target)
+        with mock.patch.object(upgrades, "in_session", return_value=False):
+            with mock.patch.object(Path, "read_bytes", denied):
+                with self.assertRaisesRegex(AgentBoxError, "Cannot read Codex config"):
+                    upgrades.reconcile()
+            self.assertFalse(upgrades.APPLIED_PACKAGE.exists())
+            upgrades.reconcile()
+            self.assertTrue(upgrades.APPLIED_PACKAGE.exists())
+            self.assertTrue(path.read_text().startswith(codex_settings.NOTIFY_BLOCK))
+
     def test_it_links_the_shared_tree_for_claude(self):
         runtime.apply_config(self._enabled())
         self.assertTrue((self.claude / "skills/ab-tracker").is_symlink())

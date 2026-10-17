@@ -108,6 +108,48 @@ class ManagedSkillInstallTests(unittest.TestCase):
         self.assertEqual((mine / "SKILL.md").read_text(), "# mine\n")
         self.assertTrue(warn.called)
 
+    def test_partial_old_tree_cleanup_never_breaks_published_skill_or_retry(self):
+        """Only retired trees may be partly deleted, never the installed skill path."""
+        for remove in (False, True):
+            with self.subTest(remove=remove):
+                name = "remove" if remove else "replace"
+                source = _skill(self.shipped, name, body="# old\n")
+                runtime.install_managed_skill(name)
+                (source / "SKILL.md").write_text("# new\n")
+                target = self.installed / name
+                def partial(path, *args, **kwargs):
+                    for content in Path(path).rglob("SKILL.md"):
+                        content.unlink()
+                        break
+                    raise OSError("interrupted cleanup")
+                operation = runtime.remove_managed_skill if remove else runtime.install_managed_skill
+                with mock.patch.object(runtime.shutil, "rmtree", side_effect=partial):
+                    with self.assertRaises(OSError):
+                        operation(name)
+                operation(name)
+                if remove:
+                    self.assertFalse(target.exists())
+                else:
+                    self.assertEqual((target / "SKILL.md").read_text(), "# new\n")
+                    self.assertEqual(runtime.managed_skill_digest(target), runtime.skill_tree_digest(target))
+
+    def test_failed_publication_after_retiring_old_skill_can_retry(self):
+        """A gap between two renames is recoverable without an unmarked live tree."""
+        source = _skill(self.shipped, "fixture", body="# old\n")
+        runtime.install_managed_skill("fixture")
+        (source / "SKILL.md").write_text("# new\n")
+        target = self.installed / "fixture"
+        replace = runtime.os.replace
+        def interrupted(source, destination):
+            if destination == target:
+                raise OSError("interrupted publication")
+            return replace(source, destination)
+        with mock.patch.object(runtime.os, "replace", side_effect=interrupted):
+            with self.assertRaises(OSError):
+                runtime.install_managed_skill("fixture")
+        runtime.install_managed_skill("fixture")
+        self.assertEqual((target / "SKILL.md").read_text(), "# new\n")
+
     def test_an_unmanaged_directory_survives_removal_too(self):
         _skill(self.installed, "ab-tracker", body="# mine\n")
         runtime.remove_managed_skill("ab-tracker")
