@@ -28,25 +28,33 @@ exact command that fixes what is missing. Distributions that ship Podman 4.x
 
 ## Install
 
-**1. Install from Git.** The Python distribution is `agent-box-tool`; the
-command and product name remain `agent-box`. Until the public release, use
-an account with access to the repository:
+**1. Install from PyPI.** The Python distribution is `agent-box-tool`; the
+command and product name remain `agent-box`:
 
 ```bash
-uv tool install 'git+ssh://git@github.com/rus364/agent-box.git'
+uv tool install agent-box-tool
 uv tool update-shell   # if the installer reports its bin directory is not on PATH
 ```
 
 Or use pipx:
 
 ```bash
-pipx install 'git+ssh://git@github.com/rus364/agent-box.git'
+pipx install agent-box-tool
 pipx ensurepath
 ```
 
-Reopen the shell after changing PATH. Both installers build the package from
-Git; running it needs no source checkout. Public PyPI installation is separate
-release work and is not available through these instructions.
+Reopen the shell after changing PATH. Running the installed command needs no
+source checkout. To install a particular release, use `agent-box-tool==1.0.0`.
+
+Public Git installation is also supported, without a GitHub account:
+
+```bash
+uv tool install 'git+https://github.com/rus364/agent-box.git@v1.0.0'
+# or:
+pipx install 'git+https://github.com/rus364/agent-box.git@v1.0.0'
+```
+
+Omit `@v1.0.0` only when you deliberately want the development branch.
 
 **2. Configure integrations.**
 
@@ -95,9 +103,11 @@ saved data and refreshes configured integrations automatically. Unchanged launch
 do not reapply them. Use `agent-box config apply` for manual configuration edits
 or to retry a failed application. See [compatibility](compatibility.md).
 
-The installer retains the Git source selected at
-installation. An installation pinned to a tag or commit stays pinned; install
-from the new reference explicitly to change it.
+For a Git installation the installer retains its selected source. A pinned tag
+or commit stays pinned; select the new reference explicitly, for example
+`uv tool install --force 'git+https://github.com/rus364/agent-box.git@v1.1.0'`
+or `pipx install --force 'git+https://github.com/rus364/agent-box.git@v1.1.0'`
+once that version is released. Do not use TestPyPI for normal installations.
 
 Running boxes retain an immutable copy of their launcher resources while the
 package is replaced. If a new invocation reports a different runtime, end that

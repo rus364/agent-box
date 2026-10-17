@@ -8,6 +8,7 @@ session.
 - [Installation, updating and removal](installation.md) — requirements, setup, shell completion, installer updates, `uninstall`.
 - [Using agent-box](usage.md) — sessions, the workspace box, options, mounts, environment, host mode, usage limits.
 - [Configuration](configuration.md) — layers, the menu, defaults, project configuration, `config ai`.
+- [Compatibility and upgrades](compatibility.md) — SemVer, direct upgrades and migration requirements.
 - [The workspace image](image.md) — included tools, optional groups, `build`, `update`, `rebuild`.
 - [Workspace and security model](security.md) — what a box can reach and how it is hardened.
 - [Nested rootless Podman](nested-podman.md) — run Podman inside the workspace box.
@@ -21,6 +22,9 @@ each one with its default and what it exposes.
 ## Design records
 
 For contributors: decisions, evidence and provenance behind the implementation.
+
+- [Publishing releases](releasing.md) — Trusted Publishers, release validation and recovery.
+- [Release notes](../CHANGELOG.md) — changes in published versions.
 
 - [Workflow design notes](design/workflow.md) — how workflow guarantees are kept: branches, delegation, review rounds, landing, cleanup.
 - [Tracker design notes](design/tracker.md) — how the tracker contract is kept: resolution, writes, adoption, GitHub state.

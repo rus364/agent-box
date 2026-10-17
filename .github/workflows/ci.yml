@@ -15,7 +15,7 @@ concurrency:
 jobs:
   lint:
     name: Ruff
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - name: Check out repository
@@ -25,11 +25,11 @@ jobs:
         uses: astral-sh/ruff-action@v4.1.0
         with:
           version: "latest"
-          args: "check --select E4,E9,F"
+          args: "check --select E4,E9,F agent_box/ tests/ tools/"
 
   tests:
     name: Python ${{ matrix.python-version }}
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     strategy:
       fail-fast: false
@@ -62,11 +62,7 @@ jobs:
 
       - name: Build and check installed distributions
         run: |
-          python -m pip install build
+          python -m pip install build==1.6.1 twine==7.0.0 pipx==1.18.3 uv==0.13.1
           python -m build
-          package_env=$(mktemp -d "${RUNNER_TEMP}/agent-box-wheel.XXXXXX")
-          trap 'rm -rf "$package_env"' EXIT
-          python -m venv "$package_env"
-          "$package_env/bin/python" -m pip install dist/*.whl
-          cd "${RUNNER_TEMP}"
-          "$package_env/bin/agent-box" selftest
+          python -m twine check --strict dist/*
+          python tools/release.py artifacts --install

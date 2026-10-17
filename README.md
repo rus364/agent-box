@@ -48,8 +48,8 @@ fixes anything missing. Details: [Installation](docs/installation.md#requirement
 ## Installation
 
 ```bash
-# 1. Install with an account that has repository access.
-uv tool install 'git+ssh://git@github.com/rus364/agent-box.git'
+# 1. Install from PyPI.
+uv tool install agent-box-tool
 uv tool update-shell   # if the installer reports PATH setup is needed
 
 # 2. Reopen the shell if PATH changed, then configure integrations.
@@ -57,7 +57,7 @@ agent-box config
 ```
 
 The distribution is `agent-box-tool`; the command stays `agent-box`.
-[pipx and editable installs](docs/installation.md) are also supported.
+[pipx, public Git and editable installs](docs/installation.md) are also supported.
 
 3. Log in with `claude` and `codex` on the host; agent-box reuses those logins.
 4. Start a session in your project. The workspace image is built automatically
