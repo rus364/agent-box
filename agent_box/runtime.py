@@ -50,6 +50,8 @@ from .paths import (
     AGENTS_DIR,
     BUILD_STATE,
     CLAUDE_HOME,
+    DEFAULT_CLAUDE_HOME,
+    DEFAULT_CLAUDE_SIDECAR,
     CODEX_HOME,
     CODEX_PLUGIN_CACHE,
     CONFIG_ROOT,
@@ -1465,13 +1467,11 @@ def build_mounts(
     # concurrent process in that box.
     if mount_notifications and NOTIFY_CREDENTIALS.is_file():
         pairs.append((NOTIFY_CREDENTIALS, CONTAINER_NOTIFY_CREDENTIALS, True))
-    # Claude Code's ~/.claude.json sits *beside* the config directory rather
-    # than inside it. When CLAUDE_CONFIG_DIR relocates that directory, the
-    # relocated tree is already mounted whole (CLAUDE_HOME above), so only the
-    # default home location needs its own mount.
-    for claude_json in {HOST_HOME / ".claude.json", CLAUDE_HOME.parent / ".claude.json"}:
-        if claude_json.is_file():
-            pairs.append((claude_json, claude_json, False))
+    # Only default-home preferences live outside the mounted Claude tree.
+    # A relocated home keeps its preferences inside that tree and must not
+    # gain access to unrelated default or sibling sidecars.
+    if CLAUDE_HOME == DEFAULT_CLAUDE_HOME and DEFAULT_CLAUDE_SIDECAR.is_file():
+        pairs.append((DEFAULT_CLAUDE_SIDECAR, DEFAULT_CLAUDE_SIDECAR, False))
 
     # Both directories are always mounted so git and gh work inside the
     # container. Their source contents are prepared separately at box

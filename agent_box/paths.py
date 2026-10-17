@@ -154,7 +154,9 @@ CONTAINER_NOTIFY_CREDENTIALS = HOST_HOME / ".local/share/agent-box/runtime/notif
 # (see agent_box.channel).
 CHANNEL_LOCK = STATE_ROOT / "runtime/telegram-channel.json"
 
-CLAUDE_HOME = env_path("CLAUDE_CONFIG_DIR", HOST_HOME / ".claude")
+DEFAULT_CLAUDE_HOME = HOST_HOME / ".claude"
+DEFAULT_CLAUDE_SIDECAR = HOST_HOME / ".claude.json"
+CLAUDE_HOME = env_path("CLAUDE_CONFIG_DIR", DEFAULT_CLAUDE_HOME)
 CODEX_HOME = env_path("CODEX_HOME", HOST_HOME / ".codex")
 # Shared with host and other boxes that mount this same provider home.
 CODEX_REMOTE_LOCK = CODEX_HOME / ".agent-box-remote-control.lock"

@@ -191,6 +191,49 @@ class MountOverlapWithProjectRootTests(IsolatedRuntimeTest):
                 runtime.container_argv(workspace, [extra], project, ["codex"])
 
 
+class ClaudeHomeMountTests(IsolatedRuntimeTest):
+    def setUp(self):
+        super().setUp()
+        self.root = Path(self._state_tmp.name)
+        self.home = self.root / "home"
+        self.default = self.home / ".claude"
+        self.sidecar = self.home / ".claude.json"
+        self.default.mkdir(parents=True)
+        self.project = self.root / "project"
+        self.project.mkdir()
+
+    def mounts(self, claude_home):
+        with mock.patch.multiple(runtime, HOST_HOME=self.home, CLAUDE_HOME=claude_home,
+                                 DEFAULT_CLAUDE_HOME=self.default, DEFAULT_CLAUDE_SIDECAR=self.sidecar), \
+                mock.patch.object(runtime, "agent_tree_mounts", return_value=[]):
+            return runtime.build_mounts(Workspace(self.project, self.project), [], self.project, Config())
+
+    def test_default_home_keeps_its_existing_writable_sidecar(self):
+        """Default Claude preferences live outside its directory and need a separate bind."""
+        self.sidecar.write_text("default preferences")
+        self.assertIn(f"type=bind,src={self.sidecar},dst={self.sidecar}", self.mounts(self.default))
+        self.assertEqual(self.sidecar.read_text(), "default preferences")
+
+    def test_missing_default_sidecar_is_neither_mounted_nor_created(self):
+        self.assertFalse(any(f"dst={self.sidecar}" in arg for arg in self.mounts(self.default)))
+        self.assertFalse(self.sidecar.exists())
+
+    def test_relocated_home_exposes_its_tree_without_unrelated_sidecars(self):
+        """Relocation must not retain writable access to default or sibling preferences."""
+        relocated = self.root / "private/claude"
+        relocated.mkdir(parents=True)
+        own = relocated / ".claude.json"
+        sibling = relocated.parent / ".claude.json"
+        for path in (self.sidecar, sibling, own):
+            path.write_text(str(path))
+        mounts = self.mounts(relocated)
+        self.assertIn(f"type=bind,src={relocated},dst={relocated}", mounts)
+        for path in (self.sidecar, sibling):
+            self.assertFalse(any(f"dst={path}" in arg for arg in mounts), path)
+        for path in (self.sidecar, sibling, own):
+            self.assertEqual(path.read_text(), str(path))
+
+
 class CredentialSnapshotMountTests(IsolatedRuntimeTest):
     def test_workspace_mounts_exclude_other_workspace_and_host_snapshots(self):
         """Shared keep-id containers must not receive another workspace's session account."""
