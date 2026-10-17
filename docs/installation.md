@@ -4,7 +4,7 @@
 
 - Linux.
 - Python 3.11 or newer. The installed package has no runtime dependencies.
-- [uv](https://docs.astral.sh/uv/guides/tools/) or
+- For the PyPI/Git route, [uv](https://docs.astral.sh/uv/guides/tools/) or
   [pipx](https://pipx.pypa.io/stable/), which manages the isolated Python environment
   and the command on PATH.
 - Rootless Podman 5.0 or newer, with a subordinate UID/GID range for your user
@@ -77,6 +77,53 @@ use, which takes a few minutes once:
 cd ~/code/my-project
 agent-box claude          # or: agent-box codex
 ```
+
+## Arch Linux / AUR
+
+The stable AUR package is `agent-box`; its Python distribution is still
+`agent-box-tool`. Install it with an AUR helper, for example:
+
+```bash
+yay -S agent-box
+```
+
+Or review and build the recipe directly:
+
+```bash
+git clone https://aur.archlinux.org/agent-box.git
+cd agent-box
+makepkg -si
+```
+
+The package uses system Python and declares Podman and Git dependencies. pacman
+owns `/usr/bin/agent-box`; uv/pipx are not needed for this installation route.
+Rootless Podman still needs the user setup described under [Requirements](#requirements).
+Run `agent-box config` as your normal user to select integrations. Package
+installation/removal scripts never configure integrations or edit users' homes.
+
+To switch an existing uv/pipx installation to AUR, install the Arch package,
+then remove only the old tool environment and refresh your shell's command cache:
+
+```bash
+uv tool uninstall agent-box-tool  # or: pipx uninstall agent-box-tool
+hash -r
+command -v agent-box             # should print /usr/bin/agent-box
+```
+
+Do not run `agent-box uninstall` during this switch: you are retaining the
+application and its integrations. Saved settings and workspace data remain in
+place. If a shell alias or another installation still shadows `/usr/bin/agent-box`,
+resolve that before using the new installation.
+
+Update through your AUR helper (for example `yay -Syu`), or rebuild the updated
+recipe with `makepkg -si`. When Arch changes Python's minor version, rebuild the
+AUR package for the new system Python; see [Arch's Python guidance](https://wiki.archlinux.org/title/Python#Module_not_found_after_Python_version_update).
+The next host launch reconciles integrations automatically; active workspaces
+keep their saved runtime until explicitly stopped and relaunched.
+
+For removal, run `agent-box uninstall` as your normal user first if you want to
+remove its integrations, then `sudo pacman -R agent-box`. Configuration and
+state remain unless you explicitly choose `agent-box uninstall --purge`.
 
 ## Shell completion
 

@@ -19,8 +19,8 @@ an existing default incompatibly requires a major release.
 ## Direct upgrades
 
 Every public version can upgrade directly to any later release, including across
-major versions. Install the desired package with uv/pipx; intermediate packages
-are never required. The first host agent launch after an update migrates saved
+major versions. Use the installer that owns the package (uv/pipx or the Arch
+package manager); intermediate packages are never required. The first host agent launch after an update migrates saved
 data and refreshes already configured integrations automatically. `config apply`
 remains available for manual edits and retry. Concurrent first launches serialize
 application; success is recorded only after every application step completes.

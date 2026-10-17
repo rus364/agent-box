@@ -1,0 +1,29 @@
+# Maintainer: @MAINTAINER@
+pkgname=@PACKAGE@
+pkgver=@VERSION@
+pkgrel=@REVISION@
+pkgdesc='Run coding agents in rootless Podman workspace boxes'
+arch=('any')
+url='@REPOSITORY@'
+license=('MIT')
+depends=('python>=3.11' 'podman>=5' 'git')
+makedepends=('python-build' 'python-installer' 'python-setuptools' 'python-wheel')
+optdepends=('github-cli: forward GitHub authentication' 'tmux: detachable host sessions')
+source=("@ARCHIVE@::$url/releases/download/v$pkgver/@ARCHIVE@")
+sha256sums=('@SHA256@')
+
+build() {
+  cd "@DISTNAME@-$pkgver"
+  python -m build --wheel --no-isolation
+}
+
+check() {
+  cd "@DISTNAME@-$pkgver"
+  python tests/run_suite.py
+}
+
+package() {
+  cd "@DISTNAME@-$pkgver"
+  python -m installer --destdir="$pkgdir" dist/*.whl
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

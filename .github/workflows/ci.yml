@@ -66,3 +66,18 @@ jobs:
           python -m build
           python -m twine check --strict dist/*
           python tools/release.py artifacts --install
+
+  arch:
+    name: Arch package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build and test native packaging
+        run: |
+          mkdir -p "$RUNNER_TEMP/arch-result"
+          docker run --rm -v "$GITHUB_WORKSPACE:/repo:ro" -v "$RUNNER_TEMP/arch-result:/result" \
+            archlinux:base@sha256:363129b67b2bc6c5a634f8fb4961a7e2eba213a2ec075d159127b1260290a722 \
+            bash /repo/tools/check_arch.sh candidate /result

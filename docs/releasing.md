@@ -117,3 +117,56 @@ acceptance with the release task. AUR packaging is not a release gate.
   and launch again, or run `agent-box config apply`. The success marker advances
   only after reconciliation succeeds. Older active workspaces remain on their
   existing runtime until explicitly restarted.
+
+## Arch / AUR publication
+
+`packaging/aur/PKGBUILD.in` is the source recipe. The AUR name and public maintainer
+contact live in `[tool.agent-box.aur]` in `pyproject.toml`; version and repository
+identity reuse the existing release metadata. The template itself is licensed
+under `packaging/aur/LICENSE` (0BSD); the application remains MIT.
+
+CI builds a candidate source archive in a disposable Arch container, runs the
+package's tests, and verifies system installation, selftest outside the source
+tree, reinstallation and removal with retained user state. No host home or
+container socket is mounted into the build. The pinned Arch image is updated
+by changing its digest in the CI and AUR workflows and rerunning those checks.
+
+After GitHub Release publication, `release.yml` calls `aur.yml`. Its build job
+fetches the attached source archive and verifies its SHA-256 against the same
+version on PyPI, builds and tests the native package, then generates `.SRCINFO`
+with `makepkg --printsrcinfo`. Only the three checked AUR files are handed to
+the publishing job by immutable artifact ID. Build and test jobs receive no
+AUR credentials. This downstream update does not republish Python artifacts.
+
+For the first submission, or a packaging-only correction to an existing version,
+run the **AUR** workflow on `main` with the existing Python release version and
+Arch `revision` (`pkgrel`). Normal upstream releases start at `pkgrel=1`;
+packaging-only changes to the same version require a higher `pkgrel`.
+The workflow file must exist on the default branch for manual dispatch.
+
+Configure GitHub Environment `aur` to allow only the default branch and release
+tags. Add `AUR_SSH_PRIVATE_KEY` there, using a dedicated Ed25519 key whose public
+half is registered to the maintainer's AUR account. Never put the private key
+in this repository or a tracker comment. `packaging/aur/known_hosts` pins the
+server key verified against the fingerprints at [the AUR homepage](https://aur.archlinux.org/).
+If it changes, verify the new fingerprint independently before updating the pin.
+
+The publishing job receives the key only in its final step. It never builds or
+sources `PKGBUILD`: it verifies the checked recipe, compares the current AUR
+version/revision, commits metadata and pushes normally to `master`. A global
+publication concurrency group serializes our workflow writes. A newer AUR version,
+a changed recipe with the same version/revision, an unexpected existing package,
+or a concurrent external update refuses the push. An identical rerun is a no-op.
+An AUR failure leaves the existing PyPI/GitHub release intact; correct the cause
+and rerun the AUR workflow for that version, increasing `pkgrel` if needed.
+
+For a reviewed local first publication, run the same container check with
+`tools/check_arch.sh release /result VERSION PKGREL` (repository mounted read-only
+at `/repo`, disposable writable output at `/result`), then use
+`python tools/aur.py publish --directory RESULT/metadata` with the dedicated
+key and pinned known-hosts file configured through `GIT_SSH_COMMAND`. This is
+also a recovery route when the GitHub workflow is not yet on `main`.
+
+AUR maintenance also includes checking user reports and rebuilds after Arch
+Python updates. See [Arch Python packaging](https://wiki.archlinux.org/title/Python_package_guidelines)
+and [AUR submission guidelines](https://wiki.archlinux.org/title/AUR_submission_guidelines).

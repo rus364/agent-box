@@ -42,6 +42,7 @@ jobs:
     outputs:
       artifact-id: ${{ steps.upload.outputs.artifact-id }}
       notes-id: ${{ steps.notes.outputs.artifact-id }}
+      version: ${{ steps.identity.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -50,6 +51,9 @@ jobs:
         with:
           python-version: '3.11'
       - run: python tools/release.py tag
+      - name: Read release version
+        id: identity
+        run: python -c 'import tomllib; print("version=" + tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])' >> "$GITHUB_OUTPUT"
       - name: Install release tools
         run: python -m pip install build==1.6.1 twine==7.0.0 pipx==1.18.3 uv==0.13.1
       - name: Build and validate both distributions
@@ -183,3 +187,9 @@ jobs:
         run: >-
           gh release create "$RELEASE_TAG" dist/* --repo "$GITHUB_REPOSITORY"
           --verify-tag --title "$RELEASE_TAG" --notes-file release-notes.md
+
+  aur:
+    needs: [build, github-release]
+    uses: ./.github/workflows/aur.yml
+    with:
+      version: ${{ needs.build.outputs.version }}

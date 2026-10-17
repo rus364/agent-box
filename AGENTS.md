@@ -15,7 +15,7 @@ Complete subtasks only after validation and integration into the parent branch; 
 
 A launcher. `agent-box` runs Claude Code and Codex CLI inside rootless Podman
 workspace boxes. Python standard library at runtime, packaged as `agent-box-tool` with no
-runtime dependencies. Install editable for development; uv/pipx own the public
+runtime dependencies. Install editable for development; uv/pipx or pacman own the public
 `agent-box` command and package updates.
 
 ```text
@@ -71,8 +71,8 @@ On-demand Claude usage may renew and atomically save its OAuth credentials;
 this is authentication maintenance, not integration application. Status-line
 reads never renew tokens. Coordinate credential writes with Claude's locks.
 
-**Installation belongs to the installer.** uv/pipx own the command and shell
-PATH setup. agent-box never edits shell startup files or installer entry points.
+**Installation belongs to the installer.** uv/pipx or pacman own installed
+commands and package updates; uv/pipx also own their shell PATH setup. agent-box never edits shell startup files or installer entry points.
 After upgrading the package, the next host launch refreshes integrations;
 run `agent-box uninstall` before removing the package through its installer.
 

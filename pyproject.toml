@@ -44,3 +44,7 @@ Documentation = "{repository}/blob/{tag}/docs/README.md"
 Repository = "{repository}"
 Issues = "{repository}/issues"
 Changelog = "{repository}/blob/{tag}/CHANGELOG.md"
+
+[tool.agent-box.aur]
+name = "agent-box"
+maintainer = "rus364 <rus364@gmail.com>"
