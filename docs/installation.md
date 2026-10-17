@@ -97,6 +97,7 @@ makepkg -si
 
 The package uses system Python and declares Podman and Git dependencies. pacman
 owns `/usr/bin/agent-box`; uv/pipx are not needed for this installation route.
+The development test suite runs in release CI, not during AUR installation.
 Rootless Podman still needs the user setup described under [Requirements](#requirements).
 Run `agent-box config` as your normal user to select integrations. Package
 installation/removal scripts never configure integrations or edit users' homes.

@@ -28,6 +28,11 @@ args=(prepare --archive "${archives[0]}" --revision "$revision" --directory /wor
 python /work/repo/tools/aur.py "${args[@]}"
 chown -R builder:builder /work
 runuser -u builder -- bash -c 'cd /work/package && makepkg --cleanbuild --noconfirm && makepkg --printsrcinfo > .SRCINFO'
+# Development tests are a CI gate, never part of an AUR user's makepkg run.
+test_runners=(/work/package/src/*/tests/run_suite.py)
+[[ ${#test_runners[@]} == 1 ]]
+echo 'Running the source test suite in disposable Arch CI'
+runuser -u builder -- python "${test_runners[0]}"
 packages=(/work/package/*.pkg.tar.zst)
 [[ ${#packages[@]} == 1 ]]
 pacman -U --noconfirm "${packages[0]}"

@@ -2,9 +2,13 @@
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
+import subprocess
+import sys
 import tarfile
 import tempfile
+import tomllib
 import unittest
 from unittest.mock import patch
 
@@ -16,6 +20,50 @@ def metadata(version='1.0.1', revision='1', name='agent-box'):
 
 
 class AurTests(unittest.TestCase):
+    def test_recipe_build_is_quiet_but_failed_backend_diagnostics_survive(self):
+        """User builds cannot run the development suite or conceal a backend failure."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'agent_box_tool-1.0.1').mkdir()
+            recipe = root / 'PKGBUILD'
+            recipe.write_text(aur.render('1.0.1', '2', 'a' * 64))
+            executable = root / 'python'
+            executable.write_text('#!/bin/sh\necho backend-diagnostic\nexit "$BUILD_EXIT"\n')
+            executable.chmod(0o755)
+            env = dict(os.environ, PATH=str(root) + os.pathsep + os.defpath, srcdir=str(root))
+            for code in ('0', '7'):
+                with self.subTest(code=code):
+                    result = subprocess.run(['bash', '-ec', 'source "$1"; ! declare -F check; build',
+                                             'bash', str(recipe)], cwd=root,
+                                            env=dict(env, BUILD_EXIT=code), capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 0 if code == '0' else 1)
+                    self.assertEqual(result.stdout, '')
+                    self.assertEqual(result.stderr, '' if code == '0' else 'backend-diagnostic\n')
+                    self.assertEqual((root / 'build.log').read_text(), 'backend-diagnostic\n')
+
+    def test_recipe_prepare_retains_explicit_package_data_and_is_idempotent(self):
+        """Older sdists get the explicit resource policy without clobbering future settings."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / 'agent_box_tool-1.0.1'
+            source.mkdir()
+            recipe = root / 'PKGBUILD'
+            recipe.write_text(aur.render('1.0.1', '2', 'a' * 64))
+            (root / 'python').symlink_to(sys.executable)
+            env = dict(os.environ, PATH=str(root) + os.pathsep + os.defpath)
+            for explicit in (None, False, True):
+                with self.subTest(explicit=explicit):
+                    text = '[tool.setuptools.package-data]\nagent_box = ["skills/**/*"]\n'
+                    if explicit is not None:
+                        text = f'tool.setuptools.include-package-data = {str(explicit).lower()}\n' + text
+                    metadata = source / 'pyproject.toml'
+                    metadata.write_text(text)
+                    subprocess.run(['bash', '-ec', 'source "$1"; prepare; cd "$2"; prepare',
+                                    'bash', str(recipe), str(root)], cwd=root, env=env, check=True)
+                    settings = tomllib.loads(metadata.read_text())['tool']['setuptools']
+                    self.assertIs(settings['include-package-data'], explicit if explicit is not None else False)
+                    self.assertEqual(settings['package-data'], {'agent_box': ['skills/**/*']})
+
     def test_stable_versions_and_integer_package_revisions_are_required(self):
         """Release inputs cannot introduce prereleases or shell syntax into PKGBUILD."""
         self.assertLess(aur.version_key('1.9.0', 5), aur.version_key('1.10.0', 1))

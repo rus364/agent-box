@@ -125,11 +125,16 @@ contact live in `[tool.agent-box.aur]` in `pyproject.toml`; version and reposito
 identity reuse the existing release metadata. The template itself is licensed
 under `packaging/aur/LICENSE` (0BSD); the application remains MIT.
 
-CI builds a candidate source archive in a disposable Arch container, runs the
-package's tests, and verifies system installation, selftest outside the source
-tree, reinstallation and removal with retained user state. No host home or
+CI builds a candidate source archive in a disposable Arch container, explicitly
+runs the source test suite after makepkg, and verifies system installation,
+selftest outside the source tree, reinstallation and removal with retained user
+state. No host home or
 container socket is mounted into the build. The pinned Arch image is updated
 by changing its digest in the CI and AUR workflows and rerunning those checks.
+The published recipe does not run development tests during user installation.
+Successful builds keep backend progress in `src/build.log`; a failed build prints
+that log and stops. Explicit package-data patterns include skills and runtime assets;
+the recipe applies this policy to older source archives that lack the setting.
 
 After GitHub Release publication, `release.yml` calls `aur.yml`. Its build job
 fetches the attached source archive and verifies its SHA-256 against the same

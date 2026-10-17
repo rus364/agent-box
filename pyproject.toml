@@ -26,6 +26,9 @@ classifiers = [
 [project.scripts]
 agent-box = "agent_box.cli:main"
 
+[tool.setuptools]
+include-package-data = false
+
 [tool.setuptools.packages.find]
 include = ["agent_box*"]
 namespaces = false
