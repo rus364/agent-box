@@ -174,6 +174,13 @@ class PayloadTests(unittest.TestCase):
 
 
 class RenderTests(unittest.TestCase):
+    def setUp(self):
+        from agent_box.config import StatuslineConfig
+        patcher = mock.patch.object(usage, "configured_usage_blocks", return_value=StatuslineConfig(
+            claude_usage=True, codex_usage=True, custom_usage=True))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     PAYLOAD = json.dumps({
         "workspace": {"current_dir": "/srv/work/project"},
         "context_window": {

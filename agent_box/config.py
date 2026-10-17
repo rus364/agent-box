@@ -85,11 +85,11 @@ class StatuslineConfig:
     #: segments. Empty shows nothing extra; set, it runs wherever the line is
     #: drawn, which for Claude's status line is inside the workspace box.
     command: str = ""
-    #: On by default to preserve the existing aggregate usage display; these
-    #: switches use the already available login, without forwarding credentials.
-    claude_usage: bool = True
-    codex_usage: bool = True
-    custom_usage: bool = True
+    #: Usage collection is opt-in because provider reads use account credentials
+    #: and the custom command may contact an external API.
+    claude_usage: bool = False
+    codex_usage: bool = False
+    custom_usage: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {"enabled": self.enabled, "command": self.command,
@@ -99,9 +99,9 @@ class StatuslineConfig:
     @classmethod
     def from_dict(cls, data: Any) -> "StatuslineConfig":
         return cls(enabled=_bool(data, "enabled", True), command=_str(data, "command"),
-                   claude_usage=_bool(data, "claude_usage", True),
-                   codex_usage=_bool(data, "codex_usage", True),
-                   custom_usage=_bool(data, "custom_usage", True))
+                   claude_usage=_bool(data, "claude_usage", False),
+                   codex_usage=_bool(data, "codex_usage", False),
+                   custom_usage=_bool(data, "custom_usage", False))
 
 
 @dataclass

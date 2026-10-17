@@ -15,6 +15,16 @@ from agent_box.errors import AgentBoxError
 
 
 class UsageBlockTests(unittest.TestCase):
+    def test_defaults_collect_nothing_until_explicitly_enabled(self):
+        """A fresh or sparse config must not initiate usage requests or commands."""
+        for config in (Config(), Config.from_dict({'agents': {'claude': {'statusline': {'command': 'echo balance'}}}})):
+            with self.subTest(config=config), mock.patch('agent_box.config.effective_config', return_value=config), \
+                    mock.patch.object(usage, 'usage_snapshot') as snapshot, \
+                    mock.patch.object(usage, 'custom_usage') as custom:
+                self.assertEqual(usage.usage_segments(), [])
+                snapshot.assert_not_called()
+                custom.assert_not_called()
+
     def test_each_switch_gates_collection_in_both_displays(self):
         """All combinations keep enabled blocks and never touch disabled sources."""
         for flags in itertools.product((False, True), repeat=3):

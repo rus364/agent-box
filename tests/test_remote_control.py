@@ -34,7 +34,7 @@ class RemoteControlTests(unittest.TestCase):
             self.assertTrue(loaded.agents.codex.remote_control)
             self.assertEqual(loaded.agents.codex.native_agent_wait.interval_seconds, 28 * 60)
             self.assertEqual(data['agents']['claude'], {'remote_control': True, 'statusline': {
-                'command': '', 'claude_usage': True, 'codex_usage': True, 'custom_usage': True}})
+                'command': '', 'claude_usage': False, 'codex_usage': False, 'custom_usage': False}})
 
     def test_off_preserves_exact_native_command_for_both_launch_modes(self):
         """Disabled RC must not impose server limitations on profiles or arguments."""

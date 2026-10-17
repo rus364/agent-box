@@ -187,7 +187,7 @@ Telegram control and notifications have their own rules; see
 ## Usage limits and the status line
 
 ```bash
-agent-box usage                  # Claude and Codex
+agent-box usage                  # enabled usage blocks
 agent-box usage claude
 agent-box usage all --no-cache   # ask enabled providers
 agent-box usage codex --json
@@ -202,7 +202,7 @@ hue; single-provider output is plain. In `agent-box config`, open
 Agents → Claude → Status line to toggle Claude usage, Codex usage and Custom
 usage. These switches control both the status line and `usage all` (including
 `--json` and `--no-cache`): disabled blocks collect no data, make no API calls
-and do not run their custom command. All three start enabled; an empty custom
+and do not run their custom command. All three start disabled; an empty custom
 command adds no block. Explicit `usage claude` and `usage codex` still query the
 chosen provider. `--no-cache` requests live usage for the selected providers.
 Claude tokens are renewed on demand, only after expiry or HTTP 401 and at most

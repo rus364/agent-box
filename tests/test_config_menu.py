@@ -413,6 +413,9 @@ class ConfigMenuTests(unittest.TestCase):
         import curses
         config = Config()
         config.agents.claude.statusline.command = "echo balance"
+        config.agents.claude.statusline.claude_usage = True
+        config.agents.claude.statusline.codex_usage = True
+        config.agents.claude.statusline.custom_usage = True
         keys = [*select("agents"), "\n", *select("claude", ("agents",)), "\n",
                 *select("statusline", ("agents", "claude")), "\n"]
         for key in ("claude_usage", "codex_usage", "custom_usage"):

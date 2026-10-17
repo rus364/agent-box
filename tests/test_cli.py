@@ -211,6 +211,13 @@ class NotifyCodexDispatchTests(unittest.TestCase):
 
 class UsageCommandColorTests(unittest.TestCase):
     """Colour separates segments, so only the combined line carries it."""
+    def setUp(self):
+        from agent_box.config import StatuslineConfig
+        patcher = unittest.mock.patch.object(usage_module, "configured_usage_blocks", return_value=StatuslineConfig(
+            claude_usage=True, codex_usage=True, custom_usage=True))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
 
     def _run(self, args: list[str], custom: str = "") -> str:
         out = io.StringIO()
