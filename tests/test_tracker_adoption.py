@@ -19,6 +19,15 @@ def tasks(*items):
 
 
 class BoardRepairTests(unittest.TestCase):
+    def test_initializing_columns_leaves_an_unmapped_card_for_explicit_normalization(self):
+        """A To-Do card has no agreed lifecycle; creating Backlog cannot decide its state."""
+        instance, client = adapter(boards={1: board(10, 100, titles=("To-Do",))},
+                                   tasks={5: task(5, 1, 10, 100, description="Existing meaning.")})
+        instance.initialize_boards(["1"], apply=True)
+        self.assertEqual(instance.get("5").state, "Unknown")
+        self.assertEqual(client.tasks[5]["buckets"], [{"id": 100, "project_view_id": 10}])
+        self.assertIn("no-state", [row["code"] for row in task_problems(instance.get("5"), instance.get)])
+
     def test_a_missing_column_is_created_between_the_columns_it_belongs_between(self):
         """A lifecycle appended to the end of the board would not read as one."""
         boards = {1: board(10, 100, titles=("Backlog", "In progress", "Done"))}

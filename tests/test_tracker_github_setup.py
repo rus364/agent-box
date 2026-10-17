@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from agent_box.repo_binding import Binding
-from agent_box.tracker import cli
+from agent_box.tracker import adoption, cli
 from agent_box.tracker.core import TrackerError
 from github_fixtures import issue, project, writable
 
@@ -104,6 +104,26 @@ class BoardInitTests(unittest.TestCase):
 
 
 class SetupTests(unittest.TestCase):
+    def test_staging_adoption_is_refused_before_provider_io_or_local_writes(self):
+        """GitHub adoption is in place; preview and apply must never start a staging clone."""
+        tracker, client = writable(projects={2: project()})
+        for apply in (False, True):
+            with self.subTest(apply=apply), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                receipt = root / "receipt.json"
+                with patch.object(adoption, "make_adapter", return_value=tracker), \
+                        patch("agent_box.config.effective_config", return_value=Config()), \
+                        patch.object(cli, "repository_root", return_value=root), \
+                        patch.object(adoption, "in_container", return_value=False), \
+                        patch.object(tracker, "project", side_effect=AssertionError("provider IO")):
+                    argv = ["--provider", "github", "adopt", "clone", "--project", "octo/2",
+                            "--receipt", str(receipt), *(["--apply"] if apply else [])]
+                    with self.assertRaises(TrackerError) as caught:
+                        cli.dispatch(cli.parser().parse_args(argv))
+                self.assertEqual(caught.exception.category, "unsupported")
+                self.assertEqual(client.writes, [])
+                self.assertEqual(list(root.iterdir()), [])
+
     def setup(self, *argv, board=None):
         tracker, _ = writable(projects={2: board or project()})
         config = Config()

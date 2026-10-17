@@ -86,6 +86,10 @@ def run():
             assert mapping[second] in {t['id'] for t in copy['related_tasks']['related']}
             instance, binding, _ = adoption.staging_context(receipt, repository)
             instance.initialize_boards(instance.subtree(target, True), apply=True)
+            # Board initialization preserves existing columns; these staging fixtures need explicit decisions.
+            for ident, lifecycle in ((copied_first, 'Backlog'), (mapping[second], 'Done'),
+                                     (copied_third, 'Backlog')):
+                instance.set_state(instance.get(str(ident)), lifecycle)
             instance.update(instance.get(str(copied_first)), {
                 'title': 'Existing task, clarified',
                 'description': 'Goal\n\nOriginal meaning.\n\nAcceptance\n\nRequires ab-interview.'})
@@ -106,6 +110,7 @@ def run():
             except TrackerError as exc:
                 assert 'still has 1 tasks' in str(exc), exc
             client.patch(f'/tasks/{copied_third}', {'done': False})
+            instance.set_state(instance.get(str(copied_third)), 'Backlog')
             state = instance.get(str(copied_third)).state
             moved = staging('move', str(copied_third), '--project', target)
             assert [(row['project'], row['state']) for row in moved] == [(target, state)], moved

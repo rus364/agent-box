@@ -195,7 +195,8 @@ recursive.
 - **Priority** is the board's Priority field with the options Immediate,
   Urgent, High, Medium and Low, highest first. Tier and normalization markers
   are repository labels (`ab:tier:N`, `ab:normalized`).
-- `move` and `delete-project` do not apply.
+- `move`, `delete-project` and staging adoption (`adopt clone` / `cutover`)
+  do not apply. Existing projects are normalized in place, as described below.
 
 **Preparing the board.** Board init plans the Status options (Backlog, Ready,
 In progress, In review, Done) and the Priority options. It renames the Board
