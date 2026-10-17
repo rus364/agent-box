@@ -68,6 +68,16 @@ class WorkflowGitTests(unittest.TestCase):
             self.assertEqual((files, lines), (["agent_box/skills/ab-work/SKILL.md"], 1))
             self.assertIn("sensitive path agent_box/skills/ab-work/SKILL.md matches **/skills/**",
                           review_reasons(ignored, [task], files, lines))
+            for name in ('AGENTS.md', 'docs/AGENTS.md'):
+                (root / name).write_text('Instructions\n')
+            gw.git(root, 'add', '-A')
+            gw.git(root, 'commit', '-m', 'instructions')
+            files, lines = diff_stats(root, 'main', ignored)
+            self.assertCountEqual(files, ['AGENTS.md', 'docs/AGENTS.md', 'agent_box/skills/ab-work/SKILL.md'])
+            self.assertEqual(lines, 3)
+            for name in ('AGENTS.md', 'docs/AGENTS.md'):
+                self.assertIn(f'sensitive path {name} matches **/AGENTS.md',
+                              review_reasons(ignored, [task], files, lines))
 
     def test_ignored_paths_match_real_names_of_renames_and_non_ascii_paths(self):
         """Git's display field joins renames as `old => new` and quotes non-ASCII paths;

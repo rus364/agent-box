@@ -23,6 +23,19 @@ In `agent-box config`, open **Workspace box → k3s cluster** and turn on `enabl
 group, which is on by default; agent-box warns when the cluster is on and that
 group is off.
 
+Keep the global switch off when only some projects need a cluster. For one
+launch, with or without a project configuration file:
+
+```bash
+agent-box --k3s codex
+agent-box --no-k3s codex
+```
+
+These flags do not save settings. A running box keeps its cluster choice;
+an opposite explicit flag requires `agent-box stop` before relaunching.
+Both flags are refused with `--host`. Nested boxes still withhold k3s and
+report why, including when `--k3s` was explicit.
+
 ```bash
 agent-box build     # optional: fetches the k3s image (about 250 MB) ahead of time
 agent-box claude
@@ -38,6 +51,10 @@ helm install ...
 ```
 
 A project can switch it on for itself in `.agent-box.json`:
+
+Use **Project settings → Workspace box → k3s cluster** in `agent-box config`,
+or `agent-box config set --project box.k3s.enabled=true`. The file can also
+include the other cluster settings:
 
 ```json
 {"box": {"k3s": {"enabled": true, "traefik": true, "ports": ["8080:80"], "manifests": "deploy/k3s"}}}

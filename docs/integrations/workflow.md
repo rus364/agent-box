@@ -154,6 +154,11 @@ replaces the global one whole.
   `["**/*.md", "docs/**"]` needs no automatic review.
 - `always` — every subtask and the complete parent diff.
 
+Sensitive paths take precedence over ignores. The defaults include
+`**/AGENTS.md`, so instruction changes still trigger review when ordinary
+Markdown is ignored. A project's `sensitive_paths` replaces the default list;
+keep this pattern in a custom list when instruction changes need review.
+
 The same policy applies to subtasks and to the parent's complete diff.
 SKIPPED, INCONCLUSIVE and provider errors are not PASS.
 

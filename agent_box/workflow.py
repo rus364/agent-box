@@ -833,6 +833,8 @@ def inspect(root, binding, adapter, task, config, authors=None):
                                                    task.id, authors))}}
     from .plan_sync import describe
     result["plan_sync"] = describe(root, task, config)
+    from .external_config import model_warnings
+    result["warnings"] = model_warnings(config)
     if unavailable:
         if task.state == "Done" or parent.state == "Done":
             next_step = completed_step(task, parent)

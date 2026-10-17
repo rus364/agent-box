@@ -918,7 +918,7 @@ class ReviewConfig:
     max_rounds: int = 3
     sensitive_paths: list[str] = field(default_factory=lambda: [
         "**/auth/**", "**/security/**", "**/migrations/**", "**/skills/**",
-        "**/config*", ".github/**", "**/*schema*", "**/api/**"])
+        "**/config*", ".github/**", "**/*schema*", "**/api/**", "**/AGENTS.md"])
     ignored_paths: list[str] = field(default_factory=list)
     incremental: str = "off"
     label: str = "ab:review"

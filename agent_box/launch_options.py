@@ -59,6 +59,7 @@ OPTIONS = (
            form="pair", container=True),
     Option("kubeconfigs", ACCESS, "Kubeconfig files chosen in agent-box config", form="pair", container=True),
     Option("cloud-profiles", ACCESS, "Cloud CLI profiles chosen in agent-box config", form="pair", container=True),
+    Option("k3s", ACCESS, "This workspace's k3s cluster", form="pair", container=True),
     Option("links", ACCESS, "Host web-link broker and temporary localhost callback forwarding", form="pair", container=True),
     Option("api-keys", ACCESS, "Provider API key variables", form="pair", container=True),
     Option("browser", ACCESS, "Do not start the agent browser MCP server", form="negated", container=True),
@@ -203,6 +204,8 @@ def apply(config, overrides):
             config.credentials.kubernetes.enabled = value
         elif key == "cloud-profiles":
             config.credentials.cloud.enabled = value
+        elif key == "k3s":
+            config.box.k3s.enabled = value
         elif key == "links":
             config.box.links.enabled = value
         elif key == "api-keys":

@@ -13,6 +13,17 @@ from agent_box.launch_options import LaunchOptions, parse, parse_spec
 
 
 class LaunchOptionParsingTests(unittest.TestCase):
+    def test_k3s_is_a_paired_option_before_the_agent(self):
+        """Cluster selection is explicit without needing a project settings file."""
+        from agent_box.launch_options import help_text
+        from test_completion import words
+        for flag, enabled in (('--k3s', True), ('--no-k3s', False)):
+            options, rest = parse([flag, 'codex'])
+            self.assertEqual(options.overrides, {'k3s': enabled})
+            self.assertEqual(rest, ['codex'])
+            self.assertIn(flag, words('--')[1])
+        self.assertIn('--[no-]k3s', help_text())
+
     def test_agent_arguments_pass_through_untouched(self):
         """Everything after the agent is the agent's, even spellings agent-box also uses."""
         options, rest = parse(["claude", "--model", "opus", "--host", "--mount", "/x", "--review", "off"])
@@ -94,6 +105,8 @@ class LaunchOptionDispatchTests(unittest.TestCase):
     def test_options_that_cannot_apply_are_refused_instead_of_ignored(self):
         for argv, message in ((["--host", "--mount", "/x", "claude"], "--mount needs a container"),
                               (["--host", "--no-browser"], "--no-browser needs a container"),
+                              (["--host", "--k3s"], "--[no-]k3s needs a container"),
+                              (["--host", "--no-k3s"], "--[no-]k3s needs a container"),
                               (["--host", "--no-kvm", "codex"], "--no-kvm needs a container"),
                               (["--review", "always", "config", "show"], "not valid before config"),
                               (["--mount", "/x", "attach"], "not valid before attach")):

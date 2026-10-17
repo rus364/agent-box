@@ -135,6 +135,21 @@ class NestedLaunchTests(K3sRuntimeTest):
                 mock.patch("agent_box.project_config.load", return_value={}):
             self.assertFalse(effective_config().box.links.enabled)
 
+    def test_explicit_and_inherited_k3s_never_reenable_a_nested_cluster(self):
+        """Withholding must happen before admission and survive replay of the rendered launch flags."""
+        for explicit in (True, False):
+            config = Config()
+            config._launch = {'k3s': True}
+            options = LaunchOptions(overrides={'k3s': True} if explicit else {})
+            with self.subTest(explicit=explicit):
+                _, _, warnings, snapshot = self.launch(inside=True, config=config, options=options)
+                if explicit:
+                    self.assertFalse(runtime.existing_workspace_spec.call_args.args[1].overrides['k3s'])
+                self.assertTrue(any('gets no cluster' in warning for warning in warnings))
+                with mock.patch.dict(os.environ, {'AGENT_BOX_RUNTIME_CONFIG': str(snapshot)}), \
+                     mock.patch('agent_box.project_config.load', return_value={}):
+                    self.assertFalse(effective_config().box.k3s.enabled)
+
 
     def test_a_launch_reports_an_image_with_foreign_nested_podman_ranges(self):
         """Creating the box would succeed and leave Podman in it failing on newuidmap."""

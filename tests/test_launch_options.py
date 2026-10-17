@@ -49,6 +49,21 @@ class IsolatedLaunchTest(unittest.TestCase):
 
 
 class SessionPrecedenceTests(IsolatedLaunchTest):
+    def test_k3s_override_survives_project_changes_without_becoming_a_saved_setting(self):
+        """A one-launch cluster choice wins over the project and remains absent from its global baseline."""
+        for enabled in (True, False):
+            with self.subTest(enabled=enabled):
+                config = Config()
+                config.box.k3s.enabled = not enabled
+                project = {'box': {'k3s': {'enabled': not enabled}}}
+                launched, snapshot = self.launch(config, {'k3s': enabled}, project)
+                self.assertEqual(config.box.k3s.enabled, not enabled)
+                self.assertEqual(launched.box.k3s.enabled, enabled)
+                with patch.dict(os.environ, {'AGENT_BOX_RUNTIME_CONFIG': str(snapshot)}), \
+                     patch.object(project_config, 'load', return_value=project):
+                    self.assertEqual(effective_config().box.k3s.enabled, enabled)
+                    self.assertEqual(effective_config(include_project=False).box.k3s.enabled, not enabled)
+
     def test_session_options_win_over_project_inside_the_session_too(self):
         """The session re-applies the project, so the flags must be re-applied after it."""
         config = workflow_config()

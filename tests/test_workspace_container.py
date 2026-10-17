@@ -242,10 +242,13 @@ class WorkspaceContainerLifecycleTests(unittest.TestCase):
         enabled.credentials.kubernetes.files = ["one"]
         enabled.credentials.cloud.yc = ["one"]
         enabled.credentials.git.full_config = enabled.credentials.github.config = enabled.box.links.enabled = True
+        enabled.box.k3s.enabled = True
         for config, value in ((enabled, True), (runtime.Config(), False)):
-            container, _ = self._live_box(config)
-            for name in ("registries", "kubeconfigs", "cloud-profiles", "links", "git-config", "gh-config"):
+            with mock.patch.object(runtime.k3s, 'api_port', return_value=24443):
+                container, _ = self._live_box(config)
+            for name in ("registries", "kubeconfigs", "cloud-profiles", "links", "git-config", "gh-config", "k3s"):
                 with self.subTest(name=name, value=value), \
+                     mock.patch.object(runtime.k3s, "inspect", return_value={"State": {"Status": "running"}}), \
                      mock.patch.object(runtime, "inspect_workspace_container", return_value=container):
                     self.assertIsNotNone(runtime.existing_workspace_spec(self.workspace, LaunchOptions(overrides={name: value})))
                     with self.assertRaisesRegex(AgentBoxError, f"{name}.*agent-box stop"):

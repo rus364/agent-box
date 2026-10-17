@@ -232,3 +232,46 @@ class ExternalConfigTests(unittest.TestCase):
         edited, _ = menu_tests.ConfigMenuTests().edit(config, keys)
         self.assertEqual(edited.config.agents.external_apis['deepseek'].api_key, '')
         self.assertEqual(config.agents.external_apis['deepseek'].api_key, 'private-api-key')
+
+
+class ExternalModelWarningTests(unittest.TestCase):
+    def test_unlisted_workflow_model_warns_without_rejecting_or_disclosing_credentials(self):
+        """A typo can work at the API yet silently lose the catalog's context and tool settings."""
+        from agent_box.config import model_entry
+        from agent_box.external_config import model_warnings
+        from agent_box import external_launch
+        config = external_config()
+        config.workflow.review.models = [model_entry({'provider': 'codex', 'api_provider': 'deepseek',
+                                                       'model': 'manual-model'})]
+        warnings = model_warnings(config)
+        self.assertEqual(len(warnings), 1)
+        self.assertIn('workflow.review.models.0', warnings[0])
+        self.assertIn('codex@deepseek:manual-model', warnings[0])
+        self.assertIn('generic defaults', warnings[0])
+        self.assertNotIn('private-api-key', warnings[0])
+        self.assertEqual(validate_connections(config), [])
+        with tempfile.TemporaryDirectory() as tmp:
+            external_launch.prepare(['codex', '--model', 'manual-model'], 'deepseek', 'codex', config, tmp, {})
+        with patch.object(cli, 'effective_config', return_value=config), \
+             patch.object(cli, 'effective_config_source', return_value={'kind': 'host', 'path': '/config'}), \
+             contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as err:
+            cli.config_show()
+        self.assertIn(warnings[0], err.getvalue())
+        config.workflow.review.models[0]['model'] = 'external-small'
+        self.assertEqual(model_warnings(config), [])
+
+    def test_tier_and_session_candidates_are_diagnosed_and_claude_suffix_matches_catalog(self):
+        """Inactive tier lists are still editable configuration; a valid Claude context suffix is not a typo."""
+        from agent_box.config import model_entry
+        from agent_box.external_config import model_warnings
+        config = external_config()
+        candidate = model_entry({'provider': 'claude', 'api_provider': 'deepseek', 'model': 'external-small'})
+        candidate['model'] += '[1m]'
+        config.workflow.scout.models = [candidate]
+        self.assertEqual(model_warnings(config), [])
+        config.workflow.review.tiers['2'] = [{**candidate, 'model': 'missing'}]
+        config.workflow.pins = {'worker': [{**candidate, 'model': 'also-missing'}]}
+        warnings = model_warnings(config)
+        self.assertEqual(len(warnings), 2)
+        self.assertTrue(any('workflow.review.tiers.2.0' in line for line in warnings))
+        self.assertTrue(any('--worker.0' in line for line in warnings))

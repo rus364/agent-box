@@ -236,6 +236,13 @@ would otherwise look like an option or command.
 
 ## Workflow
 
+Workflow model IDs must match the provider's configured catalog to use its
+context, compaction and tool settings. `config show`, `config apply`, launch
+and `workflow inspect` warn when an external candidate has no matching entry.
+Correct the candidate ID or add that model under **External APIs → Models**.
+An explicit unlisted model remains allowed and uses generic defaults;
+agent-box never guesses an alias or copies another model's metadata.
+
 In each Codex/Claude candidate of a role's `models` or a worker/reviewer
 `tiers.N` list, open **Model**. The single list includes
 built-in models and configured models from enabled API connections, labeled

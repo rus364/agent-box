@@ -109,6 +109,11 @@ worktree root; commands from subdirectories use that root too. Outside Git the
 current directory is used for launch settings. Tracker and workflow commands
 need a complete tracker binding.
 
+The global `agent-box config` menu also has **Project settings**. It opens the
+project menu with saved global values. If the global draft has changes, choose
+to keep editing or explicitly discard them before switching; save first to
+keep those changes. Opening or cancelling the project menu saves nothing.
+
 ```json
 {
   "tracker": {
@@ -145,7 +150,7 @@ match the project URL; a project URL never redirects a global token, and
 enabling the tracker stays a global decision.
 
 In the project menu values are labelled **Inherited** or **Overridden**.
-**R: Reset to default** removes the selected override so the value follows the
+**R: Inherit global** removes the selected override so the value follows the
 global setting again; **G: Copy current global** pins the current global value
 as a project override. Credentials, environment, integration switches and host
 installation settings are **Global only** there. **Save project** writes only

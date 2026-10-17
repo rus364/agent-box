@@ -771,7 +771,8 @@ def config_show() -> None:
         note = notes.get(".".join(at), "")
         print(name + note if value is None else name.ljust(width + 2) + value + note)
     from . import runtime
-    for problem in runtime.k3s_warnings(config):
+    from .external_config import model_warnings
+    for problem in runtime.k3s_warnings(config) + model_warnings(config):
         print(f"agent-box: warning: {problem}", file=sys.stderr)
 
 
@@ -808,7 +809,7 @@ def config_check() -> None:
     print(f"Ready. The next 'agent-box claude' will pass --channels {CLAUDE_TELEGRAM_CHANNEL}")
 
 
-def config_interactive(project=False) -> None:
+def config_interactive(project=False, *, baseline=None) -> None:
     if not project and session_snapshot_only():
         die("refusing to edit the saved configuration: this session reads the rendered "
             f"configuration {effective_config_source()['path']} and does not mount the file; "
@@ -816,10 +817,13 @@ def config_interactive(project=False) -> None:
     from . import config_menu, runtime
     from . import project_config
     path = project_config.project_path() if project else None
-    result = (config_menu.edit(effective_config(include_project=False), project=project_config.load(path))
+    result = (config_menu.edit(baseline or effective_config(include_project=False), project=project_config.load(path))
               if project else config_menu.edit(load_config()))
     if result is None:
         print("Configuration unchanged.")
+        return
+    if result.open_project:
+        config_interactive(project=True, baseline=load_config())
         return
     if project:
         project_config.save(path, result.project)
@@ -855,7 +859,9 @@ def config_apply() -> None:
               "links are host-only and untouched")
     for line in runtime.apply_config(config, session=session):
         print(f"agent-box: {line}")
-    for problem in runtime.tracker_warnings(config) + runtime.audio_warnings(config) + runtime.k3s_warnings(config):
+    from .external_config import model_warnings
+    for problem in (runtime.tracker_warnings(config) + runtime.audio_warnings(config)
+                    + runtime.k3s_warnings(config) + model_warnings(config)):
         print(f"agent-box: warning: {problem}", file=sys.stderr)
 
 

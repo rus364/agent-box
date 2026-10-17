@@ -367,3 +367,16 @@ def validate_connections(config):
             if error:
                 errors.append(f'{path}: {error}')
     return errors
+
+
+def model_warnings(config):
+    """Unknown explicit IDs remain usable, but inherit no catalog metadata."""
+    warnings = []
+    for path, candidate in config.workflow.candidates():
+        api, model = candidate.get('api_provider'), candidate.get('model', '')
+        connection = config.agents.external_apis.get(api) if isinstance(api, str) else None
+        if connection and connection.enabled and model and model.removesuffix('[1m]') not in connection.models:
+            warnings.append(f'{path}: {candidate["provider"]}@{api}:{model} has no configured model settings; '
+                            'context, compaction and tool capabilities use generic defaults. '
+                            f'Match the model ID or add it under agents.external_apis.{api}.models.')
+    return warnings

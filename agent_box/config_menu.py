@@ -457,9 +457,10 @@ def validate(config):
 
 @dataclass
 class EditResult:
-    """Accepted global configuration or explicit project overrides."""
+    """A save, or an explicit navigation that must not save the global draft."""
     config: Config
     project: dict | None = None
+    open_project: bool = False
 
 
 def secret(path):
@@ -591,6 +592,7 @@ def edit(config, *, project=None):
         for target in (inherited, draft):
             target["tracker"].setdefault("project", "")
             target["tracker"].setdefault("recursive", False)
+    initial_draft = copy.deepcopy(draft)
 
     def explicit(path):
         value = overrides
@@ -1128,7 +1130,9 @@ def edit(config, *, project=None):
                                           'Replace the settings the provider list states (' + (", ".join(listed[rel[2]]) or "none")
                                           + ') with its current values; every other setting stays.'))
             if not path:
-                extras = [("Save and apply", "save", ACTION_HELP["save"]), ("Cancel", "cancel", ACTION_HELP["cancel"])]
+                extras = [("Project settings", "project", "Open this project's .agent-box.json using saved global values. "
+                           "Unsaved global edits require an explicit discard; save them first to keep them."),
+                          ("Save and apply", "save", ACTION_HELP["save"]), ("Cancel", "cancel", ACTION_HELP["cancel"])]
                 if project_mode:
                     extras = [("Save project", "save", "Save explicit project overrides without applying host integrations."), ("Cancel", "cancel", ACTION_HELP["cancel"])]
             labels = [label_for(key, path) for key in keys]
@@ -1165,7 +1169,7 @@ def edit(config, *, project=None):
                 hint, help_title = help_for(selected_path), ".".join(selected_path)
                 if project_mode:
                     hint = ("Global only. Edit in agent-box config. " if project_field(selected_path) is None
-                            else "R: Reset to default (remove override; inherit future global changes). "
+                            else "R: Inherit global (remove override; follow future global changes). "
                             + ("Copy current global unavailable: no global value for this project identity field. "
                                if default_value(selected_path, global_values) is None
                                else "G: Copy current global (copy and pin current effective global values). ")) + hint
@@ -1175,7 +1179,7 @@ def edit(config, *, project=None):
             else:
                 hint, help_title = extras[selected - len(keys)][2], extras[selected - len(keys)][0]
             title = ("agent-box config --project" if project_mode else "agent-box config") + (" / " + " / ".join(label_for(part, path[:index]) for index, part in enumerate(path)) if path else "")
-            controls = ("Enter R reset G copy " if project_mode else "Enter open R reset ") + "? help Esc back"
+            controls = ("Enter R inherit G copy " if project_mode else "Enter open R reset ") + "? help Esc back"
             headings = group_headings(keys, path)
             if headings and extras:
                 # Otherwise the actions would read as members of the last group.
@@ -1199,7 +1203,7 @@ def edit(config, *, project=None):
                     notice = "Global only"
                 elif project_mode and key in ("r", "R"):
                     data[keys[selected]] = remove_override(full)
-                    notice = "Reset to default: override removed; inheriting global values"
+                    notice = "Inherit global: override removed; following global values"
                 elif key in ("r", "R") or project_mode:
                     value = default_value(full, global_values if project_mode else defaults)
                     if value is None:
@@ -1222,6 +1226,12 @@ def edit(config, *, project=None):
             elif key in (" ", "\n", "\r", curses.KEY_RIGHT):
                 if selected >= len(keys):
                     _, action, _ = extras[selected - len(keys)]
+                    if action == "project":
+                        if draft != initial_draft and choose(
+                                screen, ["Keep editing global settings", "Discard global edits and open project"],
+                                "Unsaved global changes", 0) != 1:
+                            continue
+                        return EditResult(config, open_project=True)
                     if action == 'add_model':
                         model = input_value(screen, 'Model ID, for example deepseek-v4-pro or openai/gpt-5.6-luna; '
                                             'Claude derives [1m] from the context window', '', False)

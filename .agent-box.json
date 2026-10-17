@@ -13,6 +13,7 @@
     "review": {
       "sensitive_paths": [
         "**/skills/**",
+        "**/AGENTS.md",
         "**/config*",
         ".github/**",
         "agent_box/paths.py",

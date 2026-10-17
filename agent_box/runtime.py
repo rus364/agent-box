@@ -1819,27 +1819,30 @@ def withhold_from_nested_box(config: Config) -> list[str]:
     warnings = [message for name, message in NESTED_WITHHELD.items() if getattr(config.box, name).enabled]
     # Every layer, even where a project switched one off: the snapshot
     # renders from the layer beneath the project, and replays the session's
-    # launch flags, an inherited --links among them, over the box policy.
+    # launch flags over the box policy.
     for layer in (config, getattr(config, "_project_base", config)):
         policy = getattr(layer, "_box_policy", None)
         for name in NESTED_WITHHELD:
             setattr(layer.box, name, replace(getattr(layer.box, name), enabled=False))
             if policy is not None:
                 policy["box"][name]["enabled"] = False
-        if getattr(layer, "_launch", {}).get("links"):
-            layer._launch["links"] = False
+        for name in NESTED_WITHHELD:
+            if getattr(layer, "_launch", {}).get(name):
+                layer._launch[name] = False
     return warnings
 
 
 def nested_launch_options(options):
-    """``--links`` inside a box asks for a broker a nested box never gets.
+    """Host-only capabilities are withheld before nested box admission.
 
     Turned off before a running nested box is admitted, whose policy already
-    records links off and would otherwise refuse the flag as a conflict.
+    records these capabilities off and would otherwise refuse the flag as a conflict.
     """
-    if not (inside_box() and options.overrides.get("links")):
+    withheld = [name for name in NESTED_WITHHELD if options.overrides.get(name)] if inside_box() else []
+    if not withheld:
         return options, []
-    return replace(options, overrides={**options.overrides, "links": False}), [NESTED_WITHHELD["links"]]
+    return (replace(options, overrides={**options.overrides, **dict.fromkeys(withheld, False)}),
+            [NESTED_WITHHELD[name] for name in withheld])
 
 
 def k3s_warnings(config: Config) -> list[str]:
@@ -2155,6 +2158,7 @@ def existing_workspace_spec(workspace: Workspace, options: LaunchOptions, packag
             if (sidecar or {}).get("State", {}).get("Status") != "running":
                 raise AgentBoxError("running workspace box's k3s sidecar is unavailable; end it with agent-box stop and rerun")
         shared_flags = {"registries": shared.credentials.registries.enabled,
+                        "k3s": shared.box.k3s.enabled,
                         "kubeconfigs": shared.credentials.kubernetes.enabled,
                         "cloud-profiles": shared.credentials.cloud.enabled,
                         "links": shared.box.links.enabled,
@@ -3071,7 +3075,8 @@ def runtime_main(
             warn(problem)
     # Every launch, not only box creation: joining a running box with the
     # switch on and no socket leaves box identity unchanged and would say nothing.
-    for problem in audio_warnings(config) + nested + k3s_warnings(config) + tool_warnings(config):
+    from .external_config import model_warnings
+    for problem in audio_warnings(config) + nested + k3s_warnings(config) + tool_warnings(config) + model_warnings(config):
         warn(problem)
 
 
@@ -3501,6 +3506,9 @@ def host_main(
     options = options or LaunchOptions()
     workspace = resolved_workspace(options.workspace)
     config = launch_config(options)
+    from .external_config import model_warnings
+    for problem in model_warnings(config):
+        warn(problem)
     agent = agent or config.agents.default
     executable = shutil.which(agent)
     if not executable:

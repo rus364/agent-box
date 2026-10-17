@@ -816,7 +816,7 @@ class ProjectMenuTests(unittest.TestCase):
         screen = Screen(['\x1b'], sizes=[(8, 40)])
         self.edit(Config(), [], screen=screen, project={})
         visible = screen.frames[-1]
-        for control in ('R reset', 'G copy', '? help', 'Esc back'):
+        for control in ('R inherit', 'G copy', '? help', 'Esc back'):
             self.assertIn(control, visible)
 
     def test_identity_copy_is_unavailable_and_reset_removes_only_the_selected_identity(self):
@@ -928,3 +928,47 @@ class ProjectMenuTests(unittest.TestCase):
                         self.assertNotIn(private, '\n'.join(screen.drawn))
                     self.assertEqual(global_path.read_bytes(), original_global)
                     self.assertEqual(runtime_path.read_bytes(), original_runtime)
+
+
+class ProjectMenuEntryTests(unittest.TestCase):
+    def test_opening_project_settings_does_not_save_a_global_draft(self):
+        """Changing scope is navigation, and discarding global edits must be explicit."""
+        import curses
+        enter = [curses.KEY_END, curses.KEY_UP, curses.KEY_UP, '\n']
+        edit = ConfigMenuTests().edit
+        result, _ = edit(Config(), enter)
+        self.assertTrue(result.open_project)
+        dirty = [*select('box'), '\n', *select('audio', ('box',)), ' ', '\x1b']
+        kept, screen = edit(Config(), [*dirty, *enter, '\n', '\x1b'])
+        self.assertIsNone(kept)
+        self.assertIn('Unsaved global changes', '\n'.join(screen.drawn))
+        result, _ = edit(Config(), [*dirty, *enter, curses.KEY_DOWN, '\n'])
+        self.assertTrue(result.open_project)
+        self.assertFalse(result.config.box.audio)
+
+    def test_global_entry_uses_saved_globals_and_project_save_never_applies_them(self):
+        """An old agent snapshot must not become the inheritance source when opening from the host menu."""
+        from agent_box import cli, project_config
+        from contextlib import redirect_stdout
+        import io
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / '.agent-box.json'
+            saved = Config()
+            saved.box.k3s.enabled = True
+            entry = config_menu.EditResult(saved, open_project=True)
+            for result in (None, config_menu.EditResult(saved, project={'box': {'k3s': {'enabled': False}}})):
+                with self.subTest(save=result is not None), \
+                     patch.object(cli, 'session_snapshot_only', return_value=False), \
+                     patch.object(cli, 'load_config', return_value=saved), \
+                     patch.object(cli, 'effective_config', side_effect=AssertionError('stale snapshot')), \
+                     patch.object(project_config, 'project_path', return_value=path), \
+                     patch.object(config_menu, 'edit', side_effect=[entry, result]) as edit, \
+                     patch.object(cli, 'save_config', side_effect=AssertionError('global write')), \
+                     patch('agent_box.runtime.apply_config', side_effect=AssertionError('integration write')), \
+                     redirect_stdout(io.StringIO()):
+                    cli.config_interactive()
+                self.assertIs(edit.call_args.args[0], saved)
+                if result:
+                    self.assertEqual(project_config.load(path), result.project)
+                else:
+                    self.assertFalse(path.exists())
