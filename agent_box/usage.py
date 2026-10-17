@@ -266,6 +266,40 @@ def join_segments(*segments: str) -> str:
     return STATUSLINE_SEPARATOR.join(segment for segment in segments if segment)
 
 
+def configured_usage_blocks():
+    """Read the same display switches on the host and in a rendered session."""
+    from .config import StatuslineConfig, effective_config
+    try:
+        return effective_config(include_project=False).agents.claude.statusline
+    except AgentBoxError:
+        # A broken snapshot must not turn opted-out network requests back on.
+        return StatuslineConfig(claude_usage=False, codex_usage=False, custom_usage=False)
+
+
+def usage_segments(payload=None):
+    """Collect only enabled aggregate blocks, including payload/cache writes."""
+    config = configured_usage_blocks()
+    segments = []
+    for enabled, provider, color in (
+        (config.claude_usage, "claude", CLAUDE_COLOR),
+        (config.codex_usage, "codex", CODEX_COLOR),
+    ):
+        if not enabled:
+            continue
+        try:
+            if provider == "claude":
+                text = (claude_usage_from_payload(payload) or claude_usage(allow_refresh=False)
+                        if payload is not None else claude_usage())
+            else:
+                text = codex_usage()
+        except Exception:
+            text = PLACEHOLDER_USAGE
+        segments.append(colorize(text, color))
+    if config.custom_usage:
+        segments.append(colorize(custom_usage(), CUSTOM_COLOR))
+    return segments
+
+
 def configured_custom_command() -> str:
     """``agents.claude.statusline.command`` from the saved file, or from the session snapshot in a box."""
     from .config import effective_config

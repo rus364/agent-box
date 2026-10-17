@@ -408,6 +408,23 @@ class ConfigMenuTests(unittest.TestCase):
         self.assertFalse(result.config.agents.claude.statusline.enabled)
         self.assertTrue(config.agents.claude.statusline.enabled)
 
+    def test_usage_blocks_are_checkboxes_in_the_existing_statusline_submenu(self):
+        """Saving block opt-outs must retain the configured custom command."""
+        import curses
+        config = Config()
+        config.agents.claude.statusline.command = "echo balance"
+        keys = [*select("agents"), "\n", *select("claude", ("agents",)), "\n",
+                *select("statusline", ("agents", "claude")), "\n"]
+        for key in ("claude_usage", "codex_usage", "custom_usage"):
+            keys.extend([*select(key, ("agents", "claude", "statusline")), " "])
+        keys.extend(["\x1b", "\x1b", "\x1b", curses.KEY_END, curses.KEY_UP, "\n"])
+        result, _ = self.edit(config, keys)
+        blocks = result.config.agents.claude.statusline
+        self.assertFalse(blocks.claude_usage)
+        self.assertFalse(blocks.codex_usage)
+        self.assertFalse(blocks.custom_usage)
+        self.assertEqual(blocks.command, "echo balance")
+
     def test_saved_token_is_not_drawn_when_opening_its_connection(self):
         import curses
         config = Config()

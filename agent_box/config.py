@@ -70,8 +70,7 @@ def _is_env_name(name: str) -> bool:
 class StatuslineConfig:
     """Claude's status line: whether agent-box keeps the slot, and its extra segment.
 
-    Both describe the same line, so they share a section; the command also
-    feeds ``agent-box usage all``, which prints the same segments.
+    Usage switches and the command also feed ``agent-box usage all``.
     """
     #: Keep Claude's ``statusLine`` pointed at ``agent-box statusline``.
     #:
@@ -86,13 +85,23 @@ class StatuslineConfig:
     #: segments. Empty shows nothing extra; set, it runs wherever the line is
     #: drawn, which for Claude's status line is inside the workspace box.
     command: str = ""
+    #: On by default to preserve the existing aggregate usage display; these
+    #: switches use the already available login, without forwarding credentials.
+    claude_usage: bool = True
+    codex_usage: bool = True
+    custom_usage: bool = True
 
     def to_dict(self) -> dict[str, Any]:
-        return {"enabled": self.enabled, "command": self.command}
+        return {"enabled": self.enabled, "command": self.command,
+                "claude_usage": self.claude_usage, "codex_usage": self.codex_usage,
+                "custom_usage": self.custom_usage}
 
     @classmethod
     def from_dict(cls, data: Any) -> "StatuslineConfig":
-        return cls(enabled=_bool(data, "enabled", True), command=_str(data, "command"))
+        return cls(enabled=_bool(data, "enabled", True), command=_str(data, "command"),
+                   claude_usage=_bool(data, "claude_usage", True),
+                   codex_usage=_bool(data, "codex_usage", True),
+                   custom_usage=_bool(data, "custom_usage", True))
 
 
 @dataclass

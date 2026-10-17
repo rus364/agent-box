@@ -130,14 +130,6 @@ def render(payload: str, *, now: str | None = None) -> str:
     """Build the complete status line from one Claude Code payload."""
     obj = usage_module.parse_payload(payload)
     cwd = payload_cwd(obj)
-    try:
-        claude = usage_module.claude_usage_from_payload(obj) or usage_module.claude_usage(allow_refresh=False)
-    except Exception:
-        claude = usage_module.PLACEHOLDER_USAGE
-    try:
-        codex = usage_module.codex_usage()
-    except Exception:
-        codex = usage_module.PLACEHOLDER_USAGE
     return usage_module.join_segments(
         format_prompt(
             cwd,
@@ -146,7 +138,5 @@ def render(payload: str, *, now: str | None = None) -> str:
         ),
         usage_module.colorize(
             usage_module.format_context_window(obj), usage_module.CONTEXT_COLOR),
-        usage_module.colorize(claude, usage_module.CLAUDE_COLOR),
-        usage_module.colorize(codex, usage_module.CODEX_COLOR),
-        usage_module.colorize(usage_module.custom_usage(), usage_module.CUSTOM_COLOR),
+        *usage_module.usage_segments(obj),
     )

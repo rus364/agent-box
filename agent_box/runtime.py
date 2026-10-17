@@ -1050,7 +1050,8 @@ def sync_tracker_runtime(config: Config, directory: Path | None = None, *, polic
         # mounted; whether agent-box owns the host's statusLine slot stays host-only.
         "agents": {
             "claude": {"remote_control": config.agents.claude.remote_control,
-                       "statusline": {"command": config.agents.claude.statusline.command}},
+                       "statusline": {key: value for key, value in config.agents.claude.statusline.to_dict().items()
+                                      if key != "enabled"}},
             "codex": config.agents.codex.to_dict(),
             "external_apis": external,
         },

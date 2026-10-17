@@ -144,6 +144,9 @@ def usage_command(args: list[str]) -> None:
     if rest:
         import json
         providers = ("codex", "claude") if provider == "all" else (provider,)
+        if provider == "all":
+            blocks = usage_module.configured_usage_blocks()
+            providers = tuple(p for p in providers if getattr(blocks, f"{p}_usage"))
         snapshots = [usage_module.usage_snapshot(p, no_cache="--no-cache" in rest) for p in providers]
         if "--json" in rest:
             print(json.dumps(snapshots if provider == "all" else snapshots[0], indent=2))
@@ -160,22 +163,7 @@ def usage_command(args: list[str]) -> None:
     elif provider == "codex":
         print(usage_module.codex_usage())
     else:
-        try:
-            claude = usage_module.claude_usage()
-        except Exception:
-            claude = usage_module.PLACEHOLDER_USAGE
-        try:
-            codex = usage_module.codex_usage()
-        except Exception:
-            codex = usage_module.PLACEHOLDER_USAGE
-        # Only the combined line colours its segments: the hues are what
-        # tell Claude from Codex once the provider names are gone, which is a
-        # distinction a single-provider invocation does not have to make.
-        print(usage_module.join_segments(
-            usage_module.colorize(claude, usage_module.CLAUDE_COLOR),
-            usage_module.colorize(codex, usage_module.CODEX_COLOR),
-            usage_module.colorize(usage_module.custom_usage(), usage_module.CUSTOM_COLOR),
-        ))
+        print(usage_module.join_segments(*usage_module.usage_segments()))
 
 
 # -- notify ----------------------------------------------------------------
