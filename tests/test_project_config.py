@@ -302,6 +302,7 @@ class ProjectConfigTests(unittest.TestCase):
 
     def test_session_tracker_token_comes_only_from_the_named_shell_variable(self):
         """Environment lists and a blank export cannot stand in for the token --tracker reads by name."""
+        self.config.tracker.provider = 'vikunja'
         self.config.box.env.set = {'VIKUNJA_TOKEN': 'from-config'}
         for environment in ({}, {'VIKUNJA_TOKEN': ' '}):
             with self.subTest(environment=environment), patch.dict(os.environ, environment, clear=True), \
@@ -312,6 +313,7 @@ class ProjectConfigTests(unittest.TestCase):
 
     def test_host_session_snapshot_carries_the_session_tracker_account(self):
         """A host child reads the snapshot, so the --tracker token must be there and not in argv."""
+        self.config.tracker.provider = 'vikunja'
         from agent_box.workspace import Workspace
         with patch.dict(os.environ, {'VIKUNJA_TOKEN': 'session-secret'}, clear=True), \
              patch.object(runtime, 'load_config', return_value=self.config), \

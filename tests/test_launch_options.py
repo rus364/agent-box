@@ -132,6 +132,18 @@ class SessionPrecedenceTests(IsolatedLaunchTest):
             enabled.tracker.enabled = True
             self.launch(enabled, {"tracker": "https://tasks.example"}, {"tracker": {"provider": "jira"}})
 
+    def test_session_tracker_requires_explicit_vikunja_selection(self):
+        """A server URL does not silently restore the old default provider."""
+        config = Config()
+        config.tracker.enabled = True
+        with patch.dict(os.environ, {"VIKUNJA_TOKEN": "session-secret"}):
+            with self.assertRaisesRegex(AgentBoxError, "vikunja provider selected.*agent-box config"):
+                self.launch(config, {"tracker": "https://tasks.example"})
+            launched, _ = self.launch(config, {"tracker": "https://tasks.example"},
+                                      {"tracker": {"provider": "vikunja"}})
+        self.assertEqual(launched.tracker.provider, "vikunja")
+        self.assertEqual(launched.tracker.connection().token, "session-secret")
+
     def test_notify_inside_a_session_is_refused_for_what_it_is(self):
         """A snapshot carries no notification settings, so the host-side reason would be false there."""
         _, snapshot = self.launch(workflow_config(), {})

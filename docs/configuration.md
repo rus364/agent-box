@@ -170,7 +170,7 @@ export VIKUNJA_TOKEN=...
 agent-box --tracker https://tasks.example.org --project 12 codex
 ```
 
-`--tracker` supports only the Vikunja provider; `--project` alone works with
+`--tracker` requires Vikunja selected globally or in the project; `--project` alone works with
 either provider. Neither changes a configuration file.
 
 **Session snapshots.** Every launch renders an immutable snapshot of its

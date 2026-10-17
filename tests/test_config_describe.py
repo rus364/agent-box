@@ -92,6 +92,14 @@ class ConfigDescribeTests(unittest.TestCase):
         self.assertTrue(fields["workflow.scout.models"]["project_allowed"])
         self.assertEqual(fields["tracker.project"]["source"], "unset")
 
+    def test_tracker_choices_describe_no_default_and_only_planned_providers(self):
+        """Setup guidance must expose the empty selection and omit unplanned connection editors."""
+        _, fields = self.describe("tracker")
+        provider = fields["tracker.provider"]
+        self.assertEqual(provider["default"], "")
+        self.assertEqual(provider["choices"], ["", "vikunja", "jira", "github"])
+        self.assertFalse(any(path.startswith("tracker.connections.linear") for path in fields))
+
     def test_choices_are_the_menus_for_external_api_settings(self):
         """A value the configured API model rejects must not be offered as allowed."""
         config = rich_config()

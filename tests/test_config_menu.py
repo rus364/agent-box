@@ -270,9 +270,8 @@ class ConfigMenuTests(unittest.TestCase):
     def test_question_mark_shows_an_option_description_a_short_terminal_cut_together_with_the_field_help(self):
         """At 40x8 the bottom area holds two lines; the rest of the option's text must stay reachable."""
         import curses
-        from agent_box.config import TRACKER_PROVIDERS
         keys = [*select("tracker"), "\n", *select("provider", ("tracker",)), "\n",
-                curses.KEY_HOME, *[curses.KEY_DOWN] * TRACKER_PROVIDERS.index("jira"), "?", "\x1b", *["\x1b"] * 3]
+                curses.KEY_HOME, *[curses.KEY_DOWN] * config_menu.CHOICES["tracker.provider"].index("jira"), "?", "\x1b", *["\x1b"] * 3]
         screen = Screen(keys, sizes=[(8, 40)])
         self.edit(Config(), [], screen=screen)
         jira = config_menu.OPTION_HELP["tracker.provider"]["jira"]
@@ -408,6 +407,21 @@ class ConfigMenuTests(unittest.TestCase):
         self.assertFalse(result.config.agents.claude.statusline.enabled)
         self.assertTrue(config.agents.claude.statusline.enabled)
 
+    def test_tracker_provider_can_be_selected_and_cleared_without_changing_accounts(self):
+        """The empty choice must be visible and survive saving, not cycle back to Vikunja."""
+        import curses
+        config = Config()
+        config.tracker.connections["github"] = TrackerConnection("", "fixture")
+        enter = [*select("tracker"), "\n", *select("provider", ("tracker",)), "\n"]
+        save = ["\x1b", curses.KEY_END, curses.KEY_UP, "\n"]
+        selected, screen = self.edit(config, [*enter, curses.KEY_END, "\n", *save])
+        self.assertEqual(selected.config.tracker.provider, "github")
+        self.assertIn("Not selected", "\n".join(screen.drawn))
+        self.assertNotIn("Linear", "\n".join(screen.drawn))
+        cleared, _ = self.edit(selected.config, [*enter, curses.KEY_HOME, "\n", *save])
+        self.assertEqual(cleared.config.tracker.provider, "")
+        self.assertEqual(cleared.config.tracker.connections, config.tracker.connections)
+
     def test_usage_blocks_are_checkboxes_in_the_existing_statusline_submenu(self):
         """Saving block opt-outs must retain the configured custom command."""
         import curses
@@ -455,7 +469,7 @@ class ConfigMenuTests(unittest.TestCase):
     def test_every_generated_section_and_field_has_specific_help(self):
         data = Config().to_dict()
         data.pop("version")
-        for provider in ("vikunja", "jira", "linear", "github"):
+        for provider in ("vikunja", "jira", "github"):
             data["tracker"]["connections"].setdefault(provider, {"url": "", "token": ""})
 
         def check(value, path=()):
@@ -723,6 +737,7 @@ class ProjectMenuTests(unittest.TestCase):
         import curses
         from agent_box.config import TRACKER_PROVIDERS
         config = Config()
+        config.tracker.provider = "vikunja"
         config.tracker.enabled = True
         config.tracker.connections = {provider: TrackerConnection(f'https://{provider}.example', 'FAKE_SECRET')
                                       for provider in TRACKER_PROVIDERS}
@@ -743,7 +758,7 @@ class ProjectMenuTests(unittest.TestCase):
                 config.tracker.connections = connections
                 result, _ = self.edit(config, [*select("tracker"), 'g',
                                               curses.KEY_END, curses.KEY_UP, '\n'], project={})
-                self.assertEqual(result.project, {'tracker': {'provider': 'vikunja', 'connections': {
+                self.assertEqual(result.project, {'tracker': {'provider': '', 'connections': {
                     provider: {'url': connection.url} for provider, connection in connections.items()}}})
 
     def test_tracker_section_copy_removes_stale_project_account_from_draft_and_file(self):
@@ -789,6 +804,7 @@ class ProjectMenuTests(unittest.TestCase):
             config = Config()
             config.tracker.enabled = True
             config.tracker.connections['vikunja'] = TrackerConnection('https://global.example', 'GLOBAL_SECRET')
+            config.tracker.provider = 'vikunja'
             project = {'tracker': {'project': '12', 'connections': {'vikunja': {'url': 'https://temporary.example'}}}}
             environment = {'VIKUNJA_TOKEN': 'TEMPORARY_SECRET'}
             with patch.dict(os.environ, environment, clear=True), \
@@ -922,7 +938,7 @@ class ProjectMenuTests(unittest.TestCase):
                      patch('agent_box.runtime.apply_config', side_effect=AssertionError('global apply')):
                     cli.config_interactive(project=True)
                     self.assertEqual(json.loads(path.read_text()), {
-                        'tracker': {'provider': 'vikunja', 'connections': {'vikunja': {'url': expected}}}})
+                        'tracker': {'provider': '', 'connections': {'vikunja': {'url': expected}}}})
                     for private in ('https://temporary.example', 'GLOBAL_SECRET', 'RUNTIME_SECRET', 'TEMPORARY_SECRET'):
                         self.assertNotIn(private, path.read_text())
                         self.assertNotIn(private, '\n'.join(screen.drawn))

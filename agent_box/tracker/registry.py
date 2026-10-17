@@ -12,13 +12,16 @@ from .core import TrackerError
 def make_adapter(binding=None, provider=None, config=None):
     config = config or effective_config()
     provider = provider or (binding.provider if binding else config.tracker.provider)
+    if not config.tracker.enabled:
+        raise TrackerError("Tracker is disabled; enable it with agent-box config", "disabled")
+    if not provider:
+        raise TrackerError("No tracker provider selected; choose one with agent-box config, "
+                           "in the project configuration, or with tracker --provider", "configuration")
     if provider not in TRACKER_PROVIDERS:
         raise TrackerError(f"Unknown tracker provider {provider}; choose {', '.join(TRACKER_PROVIDERS)}")
     if provider not in IMPLEMENTED_TRACKERS:
         raise TrackerError(f"Tracker provider '{provider}' is not implemented; configure Vikunja or GitHub with agent-box config",
                            "unsupported")
-    if not config.tracker.enabled:
-        raise TrackerError("Tracker is disabled; enable it with agent-box config", "disabled")
     connection = session_account(config).connection(provider)
     if not connection.usable:
         raise TrackerError(f"Configure the {provider} server and token with agent-box config", "configuration")

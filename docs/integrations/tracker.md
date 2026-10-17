@@ -3,7 +3,7 @@
 The tracker integration gives agents one command, `agent-box tracker`, for
 reading and maintaining tasks in an external tracker, in host and container
 sessions alike. Two providers are implemented: **Vikunja** (API v2) and
-**GitHub Projects**. Jira and Linear are reserved names that fail with an
+**GitHub Projects**. Jira is a reserved name that fails with an
 explicit error.
 
 The tracker is the source of truth. Lifecycle comes from the board's own
@@ -12,6 +12,10 @@ copy of either, and comments are a human journal with nothing machine-readable
 in them. The [workflow](workflow.md) builds on this integration.
 
 ## Enabling it
+
+Tracker integration is off and no provider is selected by default. A saved
+connection does not select its provider. Choose a global default or let each
+repository select its own provider in `.agent-box.json`.
 
 1. In `agent-box config`, enable **Tracker**, choose the provider and fill its
    connection under **connections**: the server URL and a token. Credentials

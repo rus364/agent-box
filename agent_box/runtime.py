@@ -1207,11 +1207,14 @@ def tracker_warnings(config: Config) -> list[str]:
     problems = validate_connections(config)
     problems += config.workflow.validate() + config.agents.codex.validate() if config.workflow.enabled else []
     if config.tracker.enabled:
-        if not config.tracker.connection().usable:
-            problems.append("Tracker is enabled but its default connection needs a server URL and token")
-        if config.tracker.provider not in IMPLEMENTED_TRACKERS:
-            problems.append(f"Tracker provider {config.tracker.provider} is not implemented; choose "
-                            + " or ".join(name.title() for name in IMPLEMENTED_TRACKERS))
+        if not config.tracker.provider:
+            problems.append("No tracker provider selected; choose one with agent-box config or in the project configuration")
+        else:
+            if not config.tracker.connection().usable:
+                problems.append("Tracker is enabled but its default connection needs a server URL and token")
+            if config.tracker.provider not in IMPLEMENTED_TRACKERS:
+                problems.append(f"Tracker provider {config.tracker.provider} is not implemented; choose "
+                                + " or ".join(name.title() for name in IMPLEMENTED_TRACKERS))
     if config.workflow.enabled and not config.tracker.enabled:
         problems.append("Workflow needs an enabled tracker connection before tracked work")
     return problems

@@ -254,6 +254,8 @@ def bind_tracker_account(config, url, environ=None):
     launching shell, so its value never enters an argv.
     """
     environ = os.environ if environ is None else environ
+    if not config.tracker.provider:
+        raise AgentBoxError("--tracker needs the vikunja provider selected with agent-box config or in the project configuration")
     if config.tracker.provider != "vikunja":
         raise AgentBoxError(f"--tracker supports the vikunja tracker; this configuration selects {config.tracker.provider}")
     token = environ.get("VIKUNJA_TOKEN", "")

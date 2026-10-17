@@ -19,6 +19,7 @@ class SetupScopeTests(unittest.TestCase):
         self.root = Path(temp.name)
         self.path = self.root / ".agent-box.json"
         self.config = Config()
+        self.config.tracker.provider = "vikunja"
         self.config.tracker.connections["vikunja"] = TrackerConnection("https://tasks.example", "fixture")
         self.adapter = Mock()
         self.adapter.project.side_effect = lambda reference: {"id": int(reference)}

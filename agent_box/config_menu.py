@@ -17,7 +17,7 @@ from .model_catalog import load_model_catalogs
 
 CHOICES = {
     "agents.default": LAUNCH_AGENTS,
-    "tracker.provider": TRACKER_PROVIDERS,
+    "tracker.provider": ("", *TRACKER_PROVIDERS),
     "workflow.merge_mode": ("github", "local"),
     "workflow.sync.policy": ("off", "auto", "always"),
     "workflow.sync.scope": ("parent", "project"),
@@ -99,7 +99,7 @@ HELP = {
     "box.k3s.version": "rancher/k3s tag such as v1.33.5-k3s1; empty uses the release agent-box pins by digest. k3s cannot downgrade existing data: use `agent-box stop --cluster-data` first.",
     "tracker": "Expose configured task-tracker connections to agents. Connections remain unavailable while this integration is disabled.",
     "tracker.enabled": "Expose configured tracker connections to agents. Keep credentials out of repository files.",
-    "tracker.provider": "Default tracker for repositories without a more specific binding. Choose one of the supported adapters.",
+    "tracker.provider": "Default tracker for repositories without a more specific binding. Unselected by default; choose a provider here or in the project.",
     "tracker.project": "Project tracker identity: the tracker project ID this repository's tasks belong to. Project setting only; setup and adopt write it.",
     "tracker.recursive": "Project tracker identity: include every project under the bound project in the workflow. Project setting only.",
     "tracker.connections": "Provider URLs and tokens rendered into minimal runtime credential files only when tracker integration is enabled.",
@@ -190,9 +190,9 @@ OPTION_HELP = {
         "codex": "A bare `agent-box` starts Codex CLI.",
     },
     "tracker.provider": {
+        "": "No default tracker. Choose a provider here or in the project before using tracker commands.",
         "vikunja": "Vikunja: projects, subprojects, columns and task relations.",
         "jira": "Jira: reserved; its adapter is not implemented yet, so tracker commands refuse it.",
-        "linear": "Linear: reserved; its adapter is not implemented yet, so tracker commands refuse it.",
         "github": "GitHub Projects: a project's Status column and this repository's issues, with sub-issues and dependencies.",
     },
     "workflow.merge_mode": {
@@ -1374,7 +1374,9 @@ def edit(config, *, project=None):
                         data[name] = options[(options.index(value) + 1) % len(options)] if value in options else options[0]
                         accepted = True
                     else:
-                        picked = choose(screen, [option or ('First configured model' if name == 'default_model' else "Built-in API") for option in options], ".".join(full), options.index(value) if value in options else 0, help_for(full),
+                        empty_label = ("Not selected" if full == ("tracker", "provider") else
+                                       "First configured model" if name == "default_model" else "Built-in API")
+                        picked = choose(screen, [option or empty_label for option in options], ".".join(full), options.index(value) if value in options else 0, help_for(full),
                                         details=option_help(full, options))
                         if picked is not None:
                             data[name] = options[picked]

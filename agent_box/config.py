@@ -750,7 +750,7 @@ class ToolsConfig:
         return cls(groups={name: _bool(data, name, default) for name, default in TOOL_GROUPS.items()})
 
 
-TRACKER_PROVIDERS = ("vikunja", "jira", "linear", "github")
+TRACKER_PROVIDERS = ("vikunja", "jira", "github")
 #: Providers with an adapter; the rest are reserved names that tracker commands refuse.
 IMPLEMENTED_TRACKERS = ("vikunja", "github")
 AGENT_PROVIDERS = ("codex", "claude")
@@ -801,7 +801,7 @@ class TrackerConnection:
 class TrackerConfig:
     """Disabled until the user explicitly exposes configured tracker accounts."""
     enabled: bool = False
-    provider: str = "vikunja"
+    provider: str = ""
     connections: dict[str, TrackerConnection] = field(default_factory=dict)
 
     def connection(self, provider=None):
@@ -820,7 +820,7 @@ class TrackerConfig:
     @classmethod
     def from_dict(cls, data):
         data = _mapping(data)
-        return cls(_bool(data, "enabled", False), _str(data, "provider") or "vikunja",
+        return cls(_bool(data, "enabled", False), _str(data, "provider"),
                    {k: TrackerConnection.from_dict(v) for k, v in
                     _mapping(data.get("connections")).items() if k in TRACKER_PROVIDERS})
 

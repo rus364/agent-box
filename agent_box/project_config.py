@@ -113,7 +113,7 @@ def validate(data, path):
     credentials(data)
     fields(data, PROJECT_FIELDS)
     tracker = data.get('tracker', {})
-    if 'provider' in tracker and tracker['provider'] not in TRACKER_PROVIDERS:
+    if tracker.get('provider') and tracker['provider'] not in TRACKER_PROVIDERS:
         raise AgentBoxError(f"Invalid project configuration: {path}: tracker.provider is unsupported")
     if 'project' in tracker and not tracker['project']:
         raise AgentBoxError(f"Invalid project configuration: {path}: tracker.project must be nonempty")
