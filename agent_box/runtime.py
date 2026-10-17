@@ -592,7 +592,7 @@ def managed_skill_digest(target: Path) -> str | None:
     """The digest recorded in *target*'s marker, or ``None`` when unmanaged."""
     try:
         data = migrations.read(target / MANAGED_SKILL_MARKER, migrations.SKILL_MARKER)
-    except (OSError, ValueError):
+    except (FileNotFoundError, NotADirectoryError, ValueError):
         return None
     digest = data.get("digest") if isinstance(data, dict) else None
     return digest if isinstance(digest, str) else None
@@ -713,7 +713,7 @@ def claude_skill_links(config: Config) -> None:
             try:
                 if target.resolve(strict=True) == skill.resolve(strict=True):
                     continue
-            except OSError:
+            except FileNotFoundError:
                 pass
             warn(f"Claude skill '{skill.name}' already points elsewhere; keeping {target}")
         elif target.exists():

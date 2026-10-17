@@ -161,6 +161,17 @@ class ManagedSkillInstallTests(unittest.TestCase):
         runtime.remove_managed_skill("ab-tracker")
         self.assertFalse((self.installed / "ab-tracker").exists())
 
+    def test_temporary_marker_read_failure_is_not_an_ownership_decision(self):
+        """An unreadable owned marker must leave application incomplete for retry."""
+        _skill(self.shipped, "ab-tracker")
+        runtime.install_managed_skill("ab-tracker")
+        with mock.patch.object(runtime.migrations, "read", side_effect=PermissionError("denied")):
+            with self.assertRaises(PermissionError):
+                runtime.install_managed_skill("ab-tracker")
+        runtime.install_managed_skill("ab-tracker")
+        target = self.installed / "ab-tracker"
+        self.assertEqual(runtime.managed_skill_digest(target), runtime.skill_tree_digest(target))
+
     def test_a_skill_that_does_not_ship_warns_instead_of_failing(self):
         with mock.patch.object(runtime, "warn") as warn:
             runtime.install_managed_skill("nonesuch")
