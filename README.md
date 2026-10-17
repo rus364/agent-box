@@ -118,8 +118,9 @@ do not apply.
 
 **Configuration.** Built-in defaults, then your global
 `~/.config/agent-box/config.json`, then the repository's `.agent-box.json`.
-`agent-box config` edits settings and applies integrations; starting an agent
-never installs skills or rewrites your agent settings.
+`agent-box config` edits settings and applies integrations. The first host launch
+after a package update refreshes configured integrations automatically; unchanged
+launches leave them alone. See [compatibility and upgrades](docs/compatibility.md).
 
 ## Documentation
 
