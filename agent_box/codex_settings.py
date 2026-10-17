@@ -4,6 +4,7 @@ import tomllib
 from pathlib import Path
 
 from .atomicio import atomic_write_text
+from .errors import AgentBoxError
 
 NOTIFY_COMMAND = ["agent-box", "notify", "codex"]
 NOTIFY_MARKER = "# BEGIN AGENT-BOX NOTIFY"
@@ -46,6 +47,7 @@ def reconcile_notify(path: Path, enabled: bool) -> list[str]:
         return []
     try:
         atomic_write_text(path, result, mode)
-    except OSError:
-        return [f"warning: could not update Codex notify in {path}"]
+    except OSError as exc:
+        raise AgentBoxError(f"Cannot update Codex notify in {path}; fix file access and retry "
+                            "the launch or agent-box config apply") from exc
     return [f"{'installed' if enabled else 'removed'} agent-box notify in {path}"]

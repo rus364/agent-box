@@ -12,8 +12,9 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from agent_box import claude_settings, cli, config as config_module, runtime, upgrades
+from agent_box import claude_settings, codex_settings, cli, config as config_module, runtime, upgrades
 from agent_box.config import Config, TrackerConnection
+from agent_box.errors import AgentBoxError
 from agent_box.workspace import Workspace
 
 
@@ -82,6 +83,23 @@ class ApplyConfigTests(unittest.TestCase):
     def test_it_installs_the_skills_the_configuration_enables(self):
         runtime.apply_config(self._enabled())
         self.assertTrue((self.shared / "ab-tracker/SKILL.md").is_file())
+
+    def test_failed_codex_notification_write_does_not_complete_package_application(self):
+        """A transient integration write failure must retry on an unchanged package."""
+        saved = self._enabled()
+        saved.host.notifications.enabled = True
+        saved.host.notifications.telegram_token = "123456:fixture"
+        saved.host.notifications.telegram_chat_id = "42"
+        config_module.save_config(saved)
+        marker = upgrades.APPLIED_PACKAGE
+        with mock.patch.object(upgrades, "in_session", return_value=False):
+            with mock.patch.object(codex_settings, "atomic_write_text", side_effect=OSError("denied")):
+                with self.assertRaisesRegex(AgentBoxError, "Cannot update Codex notify"):
+                    upgrades.reconcile()
+            self.assertFalse(marker.exists())
+            upgrades.reconcile()
+            self.assertTrue(marker.exists())
+            self.assertTrue((runtime.CODEX_HOME / "config.toml").read_text().startswith(codex_settings.NOTIFY_BLOCK))
 
     def test_it_links_the_shared_tree_for_claude(self):
         runtime.apply_config(self._enabled())
