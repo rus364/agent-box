@@ -1249,9 +1249,9 @@ def browser_mcp_args(session_dir: Path) -> list[str]:
     cookies, localStorage and any credential a page hands out are gone when
     the MCP process exits and cannot leak into an unrelated later session.
 
-    ``--output-dir`` keeps generated artifacts (snapshots, screenshots,
-    traces, downloads) out of the mounted project: without it Playwright MCP
-    writes them relative to the working directory, which is the user's repo.
+    ``--output-dir`` keeps automatically named artifacts outside the project.
+    Playwright resolves explicit filenames against its workspace root instead;
+    changing cwd to redirect those would also change project file access.
 
     Neither ``--sandbox`` nor ``--no-sandbox`` is passed: Playwright already
     launches its own bundled Chromium with ``--no-sandbox``, and forcing

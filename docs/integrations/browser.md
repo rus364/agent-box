@@ -66,13 +66,20 @@ agent configuration to fake one.
 | Profile | Isolated and in-memory, new for every session |
 | Cookies / logins / localStorage | Discarded when the session ends |
 | Your own browser's profile and cookies | Never exposed — nothing from the host is mounted |
-| Screenshots, snapshots, traces | Written under `~/.local/share/agent-box/runtime/workspaces/<id>/browser/<session>/output`, never into your repository |
+| Automatically named artifacts | Written under `~/.local/share/agent-box/runtime/workspaces/<id>/browser/<session>/output` |
+| Explicit artifact filenames | Relative to the MCP workspace root; an explicit absolute path selects that location |
 | Concurrent sessions | Separate profile and output directory each |
 
 Because every session is isolated, an agent cannot reuse a login from an earlier
 session, and cannot reach a site that depends on your own browser's
 authentication. That is deliberate: a page the agent visits must not be able to
 act as you.
+
+Omit the screenshot filename to use the session output directory. As documented
+by [Playwright MCP](https://github.com/microsoft/playwright-mcp#configuration),
+`--output-dir` applies only to automatically named files; an explicit name such
+as `screenshot.png` can write into the project. The server keeps the project's
+workspace root so browser file operations continue to resolve project paths.
 
 ## Trust boundary
 
@@ -114,6 +121,17 @@ Disabled is a normal state, not an error:
 browser integration: disabled (turn on the browser tool group in 'agent-box config')
 ```
 
+From a source checkout, this optional local check exercises the real MCP server,
+navigation, a button click and both screenshot naming modes without a model or
+external website:
+
+```bash
+agent-box --no-tmux shell -c 'python3 tests/smoke_browser.py'
+```
+
+It requires an image containing the browser tool group and removes its temporary
+page and artifacts afterward.
+
 ## Troubleshooting
 
 **The agent says it has no browser tools.** Check `agent-box config show`:
@@ -133,11 +151,11 @@ exposed, so there is no session for the agent to reuse. Have the agent log in
 within its own session, or point it at something that does not require your
 credentials.
 
-**Screenshots are cluttering my repository.** They should not be: Playwright MCP
-is pointed at a per-session output directory under
-`~/.local/share/agent-box/runtime/workspaces/<id>/browser/`. An agent writing
-into the project is doing so with its ordinary file tools, not through the
-browser. `agent-box stop` clears that workspace's browser output.
+**Screenshots are cluttering my repository.** Ask the agent to omit the filename:
+automatically named screenshots use the session output directory. Explicit
+relative filenames use the MCP workspace root instead. `agent-box stop` clears
+the workspace's runtime browser output; it does not remove files explicitly
+saved into the project.
 
 ## Limitation
 
