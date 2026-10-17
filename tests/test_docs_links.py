@@ -14,49 +14,17 @@ import unittest
 from pathlib import Path
 from urllib.parse import unquote
 
-ROOT = Path(__file__).resolve().parent.parent
+from tools.markdown_links import (
+    QUOTE, CODE_SPAN, INLINE_LINK, REFERENCE_DEFINITION,
+    HEADING_LINK, HEADING, EXPLICIT_ANCHOR, SCHEME, prose,
+)
 
-QUOTE = re.compile(r"^(?: {0,3}> ?)*")
-FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
-# A code span closes only on a backtick run of exactly its opening length.
-CODE_SPAN = re.compile(r"(?<!`)(`+)(?!`)(.+?)(?<!`)\1(?!`)", re.DOTALL)
-TITLE = r"""(?:\s+(?:"[^"]*"|'[^']*'|\([^)]*\)))?"""
-# A destination in angle brackets may contain spaces; a bare one ends at whitespace.
-DESTINATION = r"(?:<([^<>\n]*)>|((?:[^<\s()]|\([^\s()]*\))(?:[^\s()]|\([^\s()]*\))*))"
-INLINE_LINK = re.compile(r"!?\[(?:[^\[\]]|\[[^\[\]]*\])*\]\(\s*" + DESTINATION + TITLE + r"\s*\)")
-REFERENCE_DEFINITION = re.compile(r"^ {0,3}\[[^\]]+\]:\s*" + DESTINATION + TITLE + r"\s*$", re.MULTILINE)
-HEADING_LINK = re.compile(r"!?\[((?:[^\[\]]|\[[^\[\]]*\])*)\](?:\(\s*" + DESTINATION + TITLE + r"\s*\)|\[[^\]]*\])")
-HEADING = re.compile(r"^ {0,3}(#{1,6})\s+(.*?)(?:\s+#+)?\s*$")
-EXPLICIT_ANCHOR = re.compile(r"""<a\s[^>]*?(?<![\w-])(?:id|name)\s*=\s*(?:"([^"]+)"|'([^']+)')""", re.IGNORECASE)
-SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
+ROOT = Path(__file__).resolve().parent.parent
 
 
 def documentation_files(root: Path) -> list[Path]:
-    files = [root / "README.md"] if (root / "README.md").is_file() else []
+    files = [root / name for name in ("README.md", "CHANGELOG.md") if (root / name).is_file()]
     return files + sorted((root / "docs").rglob("*.md"))
-
-
-def prose(text: str) -> str:
-    """Blank fenced blocks and code spans, keeping offsets and line numbers.
-
-    A link or heading shown as an example inside code is not one, and an
-    example of a broken link must not fail the suite.
-    """
-    lines = text.split("\n")
-    fence = None
-    for index, line in enumerate(lines):
-        match = FENCE.match(QUOTE.sub("", line, count=1))
-        if fence is None and match:
-            fence = match.group(1)
-            lines[index] = ""
-        elif fence is not None:
-            # Only a bare fence closes the block; a fence with an info string is content.
-            closes = match and not match.group(2).strip()
-            if closes and match.group(1)[0] == fence[0] and len(match.group(1)) >= len(fence):
-                fence = None
-            lines[index] = ""
-    blanked = "\n".join(lines)
-    return CODE_SPAN.sub(lambda m: re.sub(r"[^\n]", " ", m.group(0)), blanked)
 
 
 def slug(heading: str) -> str:

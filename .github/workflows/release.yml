@@ -34,13 +34,14 @@ jobs:
       - run: python tests/run_suite.py
       - run: |
           python -m pip install ruff==0.17.1
-          ruff check --select E4,E9,F agent_box/ tests/ tools/
+          ruff check --select E4,E9,F agent_box/ tests/ tools/ setup.py
 
   build:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     outputs:
       artifact-id: ${{ steps.upload.outputs.artifact-id }}
+      notes-id: ${{ steps.notes.outputs.artifact-id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -58,6 +59,7 @@ jobs:
           python -m build
           python -m twine check --strict dist/*
           python tools/release.py artifacts --install
+          python tools/release.py notes > release-notes.md
           sha256sum dist/*
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         id: upload
@@ -66,6 +68,13 @@ jobs:
           path: dist/*
           if-no-files-found: error
           compression-level: 0
+          retention-days: 30
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        id: notes
+        with:
+          name: release-notes
+          path: release-notes.md
+          if-no-files-found: error
           retention-days: 30
 
   publish-test:
@@ -147,3 +156,30 @@ jobs:
           digest-mismatch: error
       - run: python -m pip install pipx==1.18.3 uv==0.13.1
       - run: python tools/release.py index --index pypi
+
+  github-release:
+    needs: [build, verify]
+    if: github.repository == 'rus364/agent-box'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          artifact-ids: ${{ needs.build.outputs.artifact-id }}
+          path: dist
+          merge-multiple: true
+          digest-mismatch: error
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          artifact-ids: ${{ needs.build.outputs.notes-id }}
+          path: .
+          merge-multiple: true
+          digest-mismatch: error
+      - name: Publish the checked distributions and changelog entry
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh release create "$RELEASE_TAG" dist/* --repo "$GITHUB_REPOSITORY"
+          --verify-tag --title "$RELEASE_TAG" --notes-file release-notes.md

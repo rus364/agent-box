@@ -1,5 +1,19 @@
 # Release notes
 
+## 1.0.1
+
+- Fix documentation and license links in the PyPI description: use absolute
+  GitHub URLs pinned to the release tag.
+- Pin the Documentation and Changelog project links to the same release, so
+  they work before its changes reach the default branch.
+- Generate package links from the version and repository settings during the
+  build, keeping relative links in source documentation. Validate the built
+  description and project URLs before upload and after registry publication.
+- Create GitHub Releases automatically after PyPI verification, using the
+  matching changelog entry and the same checked distribution files.
+
+No runtime behavior or persisted data formats changed.
+
 ## 1.0.0
 
 First public release of **agent-box**, distributed on PyPI as `agent-box-tool`.

@@ -44,7 +44,7 @@ pipx ensurepath
 ```
 
 Reopen the shell after changing PATH. Running the installed command needs no
-source checkout. To install a particular release, use `agent-box-tool==1.0.0`.
+source checkout. For example, to install the first release, use `agent-box-tool==1.0.0`.
 
 Public Git installation is also supported, without a GitHub account:
 

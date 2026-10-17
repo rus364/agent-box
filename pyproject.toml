@@ -4,9 +4,9 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agent-box-tool"
-version = "1.0.0"
+version = "1.0.1"
 description = "Run coding agents in rootless Podman workspace boxes"
-readme = "README.md"
+dynamic = ["readme", "urls"]
 requires-python = ">=3.11"
 license = "MIT"
 license-files = ["LICENSE"]
@@ -23,13 +23,6 @@ classifiers = [
     "Programming Language :: Python :: 3.14",
 ]
 
-[project.urls]
-Homepage = "https://github.com/rus364/agent-box"
-Documentation = "https://github.com/rus364/agent-box/blob/main/docs/README.md"
-Repository = "https://github.com/rus364/agent-box"
-Issues = "https://github.com/rus364/agent-box/issues"
-Changelog = "https://github.com/rus364/agent-box/blob/main/CHANGELOG.md"
-
 [project.scripts]
 agent-box = "agent_box.cli:main"
 
@@ -39,3 +32,15 @@ namespaces = false
 
 [tool.setuptools.package-data]
 agent_box = ["Containerfile", ".containerignore", "container-launcher", "*.sh", "*.conf", "completion.*", "skills/**/*"]
+
+[tool.agent-box.release]
+repository = "https://github.com/rus364/agent-box"
+readme = "README.md"
+changelog = "CHANGELOG.md"
+
+[tool.agent-box.release.urls]
+Homepage = "{repository}"
+Documentation = "{repository}/blob/{tag}/docs/README.md"
+Repository = "{repository}"
+Issues = "{repository}/issues"
+Changelog = "{repository}/blob/{tag}/CHANGELOG.md"

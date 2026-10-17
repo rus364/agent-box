@@ -6,7 +6,7 @@ import tempfile
 import unittest
 import zipfile
 
-from tools import release
+from tools import release, package_metadata
 
 
 class ReleaseGuardTests(unittest.TestCase):
@@ -29,6 +29,20 @@ class ReleaseGuardTests(unittest.TestCase):
             (package / "__init__.py").write_bytes(b'')
             (package / "container-launcher").write_bytes(b'#!/bin/sh\n')
             (root / "pyproject.toml").write_text('[project]\nname="agent-box-tool"\nversion="1.0.0"\nrequires-python=">=3.11"\n')
+            with (root / "pyproject.toml").open("a") as config:
+                config.write('''[tool.agent-box.release]
+repository="https://github.com/example/repo"
+readme="README.md"
+[tool.agent-box.release.urls]
+Documentation="{repository}/blob/{tag}/docs/README.md"
+''')
+            (root / "README.md").write_text("[Guide](docs/README.md)\n")
+            metadata = package_metadata.distribution_metadata(root)
+            info_text = ('Name: agent-box-tool\nVersion: 1.0.0\nRequires-Python: >=3.11\n'
+                         'Description-Content-Type: text/markdown\n'
+                         + ''.join(f'Project-URL: {key}, {url}\n' for key, url in metadata['project_urls'].items())
+                         + '\n' + metadata['long_description'])
+            (root / "PKG-INFO").write_text(info_text)
             dist = root / "dist"
             dist.mkdir()
             wheel = dist / "agent_box_tool-1.0.0-py3-none-any.whl"
@@ -39,9 +53,9 @@ class ReleaseGuardTests(unittest.TestCase):
                     info.external_attr = 0o100755 << 16
                     archive.writestr(info, path.read_bytes())
                 archive.writestr('agent_box_tool-1.0.0.dist-info/METADATA',
-                                 'Name: agent-box-tool\nVersion: 1.0.0\nRequires-Python: >=3.11\n')
+                                 info_text)
             with tarfile.open(source, "w:gz") as archive:
-                for path in [root / "pyproject.toml", *package.iterdir()]:
+                for path in [root / "pyproject.toml", root / "PKG-INFO", *package.iterdir()]:
                     info = tarfile.TarInfo("agent_box_tool-1.0.0/" + str(path.relative_to(root)))
                     content = path.read_bytes()
                     info.size = len(content)

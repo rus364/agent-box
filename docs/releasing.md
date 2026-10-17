@@ -33,7 +33,8 @@ References: [PyPI Trusted Publishing](https://docs.pypi.org/trusted-publishers/)
 ## Prepare and publish
 
 1. Assess compatibility using the [migration checklist](compatibility.md#writing-a-migration).
-   Select the SemVer version, update `pyproject.toml` and `CHANGELOG.md`, and review
+   Select the SemVer version, update `project.version` in `pyproject.toml` and
+   add a matching `## MAJOR.MINOR.PATCH` entry in `CHANGELOG.md`, then review
    the complete release change. Keep prior public fixtures and migration steps.
 2. Run the full suite, selftest and lint. Build in a clean tree with release tools
    installed (`build`, `twine`, `uv`, `pipx`; the workflow pins tested versions):
@@ -42,21 +43,31 @@ References: [PyPI Trusted Publishing](https://docs.pypi.org/trusted-publishers/)
    python -m build
    python -m twine check --strict dist/*
    python tools/release.py artifacts --install
+   python tools/release.py notes
    ```
 
    `dist` must contain only this version's wheel and sdist. The helper compares
    every packaged runtime file with the source, then tests both distributions,
    uv tool and pipx outside the checkout using temporary integration paths.
+   Source documentation keeps relative links, checked against local files and
+   headings by the documentation tests. The standard PEP 517 build generates
+   absolute, release-tagged README links and project URLs from
+   `[tool.agent-box.release]` in `pyproject.toml`. Repository identity, document
+   paths and project URL templates live there; the version is not repeated in
+   links or scripts. Both wheel and sdist metadata must match this generated
+   content and contain no relative destinations. Twine checks rendering, which
+   alone does not prove that a link resolves from the PyPI page.
 3. For the first release, verify both publisher settings, repository visibility,
    environment restrictions and public-safe workflows before uploading. Disable
    any legacy workflow that still uses private runners until the reviewed hosted
    workflow reaches the default branch. Public contributions must not execute on
    persistent private runners. The Claude action is restricted to the owner.
-4. Tag the exact reviewed commit, then push that tag. For the first release:
+4. Tag the exact reviewed commit, then push that tag:
 
    ```bash
-   git tag -a v1.0.0 -m 'agent-box 1.0.0' REVIEWED_COMMIT
-   git push origin v1.0.0
+   version=$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
+   git tag -a "v$version" -m "agent-box $version" REVIEWED_COMMIT
+   git push origin "v$version"
    ```
 
    `.github/workflows/release.yml` requires a stable `vMAJOR.MINOR.PATCH` tag
@@ -66,12 +77,16 @@ References: [PyPI Trusted Publishing](https://docs.pypi.org/trusted-publishers/)
    clean uv/pipx installations → PyPI upload of the same files → repeat the
    download/install verification. Only the two publishing jobs receive
    `id-token: write`; they do not check out or build source. The PyPA action also
-   publishes provenance attestations. TestPyPI/PyPI success are distinct checks.
+   publishes provenance attestations. Registry verification also compares the
+   published description and project URLs to the checked wheel. TestPyPI/PyPI
+   success are distinct checks.
 6. Verify the published package can build the image, start a workspace and run a
    Claude session locally. Exercise an upgrade while a workspace is active:
    retain its old runtime and data, then explicitly stop/relaunch to use the new
    runtime. Keep these live checks distinct from unit tests and `selftest`.
-7. Publish the GitHub release for the same tag with the matching changelog entry.
+7. After production verification, the workflow creates the GitHub release using
+   the checked changelog entry and the same distributions. Only this final job
+   receives `contents: write`; it does not check out or build source.
    Complete the reviewed merge, restore any temporarily disabled workflows once
    their safe configuration is on the default branch, and verify public CI.
 
@@ -93,6 +108,9 @@ acceptance with the release task. AUR packaging is not a release gate.
   release if recovery cannot preserve the exact reviewed artifacts.
 - Expired/missing GitHub artifact: do not pretend a rebuild is the same upload;
   prepare a new reviewed release when any files were already published.
+- GitHub release creation failure: inspect the tag, attached files and notes
+  before retrying the failed job. Creation intentionally refuses to overwrite
+  an existing release; do not rebuild or replace published assets to retry it.
 - Post-publication defect: publish a new SemVer version. If needed, the maintainer
   may yank a broken release with an explanation; do not treat deletion as rollback.
 - Integration failure on upgrade: repair the reported access/configuration issue

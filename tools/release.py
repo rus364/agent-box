@@ -14,9 +14,13 @@ import time
 import tomllib
 import urllib.error
 import urllib.request
+from urllib.parse import urlsplit
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import package_metadata, markdown_links  # noqa: E402
+
 NAME = "agent-box-tool"
 INDEXES = {"pypi": "https://pypi.org", "testpypi": "https://test.pypi.org"}
 
@@ -52,6 +56,7 @@ def artifacts(dist, root=ROOT):
     if (info["Name"] != NAME or info["Version"] != version or info.get_all("Requires-Dist")
             or info["Requires-Python"] != metadata["requires-python"]):
         raise ValueError("Wheel metadata differs from the dependency-free release contract")
+    check_publication_metadata(info, root)
     prefix = f"agent_box_tool-{version}/"
     with tarfile.open(paths[1]) as source:
         package = {m.name.removeprefix(prefix): source.extractfile(m).read()
@@ -61,7 +66,24 @@ def artifacts(dist, root=ROOT):
         source_project = tomllib.loads(source.extractfile(prefix + "pyproject.toml").read().decode())["project"]
         if source_project != metadata:
             raise ValueError("sdist project metadata differs from the release")
+        check_publication_metadata(Parser().parsestr(source.extractfile(prefix + "PKG-INFO").read().decode()), root)
     return paths
+
+
+def project_urls(info):
+    return dict(value.split(", ", 1) for value in info.get_all("Project-URL", []))
+
+
+def check_publication_metadata(info, root):
+    expected = package_metadata.distribution_metadata(root)
+    if (info["Description-Content-Type"] != expected["long_description_content_type"]
+            or info.get_payload().strip() != expected["long_description"].strip()
+            or project_urls(info) != expected["project_urls"]):
+        raise ValueError("Built description or project URLs differ from the release metadata")
+    urls = [target for _, _, target, _ in markdown_links.destinations(info.get_payload())]
+    for url in urls + list(project_urls(info).values()):
+        if urlsplit(url).scheme not in {"https", "http", "mailto"}:
+            raise ValueError(f"Published metadata contains a relative URL: {url}")
 
 
 def isolated_environment(root):
@@ -137,18 +159,26 @@ def verify_index(index, paths, version):
             downloaded = hashlib.sha256(response.read()).hexdigest()
         if downloaded != digest:
             raise ValueError(f"Downloaded bytes differ from the checked build: {name}")
+    with zipfile.ZipFile(paths[0]) as wheel:
+        info = Parser().parsestr(wheel.read(f"agent_box_tool-{version}.dist-info/METADATA").decode())
+    if (release["info"]["description"].strip() != info.get_payload().strip()
+            or release["info"]["project_urls"] != project_urls(info)):
+        raise ValueError("Published description or project URLs differ from the checked wheel")
     install_tools(f"{NAME}=={version}", version, index)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=("tag", "artifacts", "index"))
+    parser.add_argument("operation", choices=("tag", "artifacts", "index", "notes"))
     parser.add_argument("--tag", default=os.environ.get("RELEASE_TAG", ""))
     parser.add_argument("--dist", type=Path, default=ROOT / "dist")
     parser.add_argument("--index", choices=INDEXES)
     parser.add_argument("--install", action="store_true")
     args = parser.parse_args()
     metadata = project()
+    if args.operation == "notes":
+        print(package_metadata.release_notes(ROOT), end="")
+        return
     if args.operation == "tag":
         check_tag(args.tag, metadata)
         return
