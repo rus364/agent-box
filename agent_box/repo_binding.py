@@ -98,11 +98,12 @@ class Binding:
 
 def binding_document(root, binding):
     from .project_config import load
+    from .migrations import PROJECT_CONFIG
     data = load(root / BINDING_FILE)
     tracker = data.setdefault("tracker", {})
     tracker.update(provider=binding.provider, project=binding.project, recursive=binding.recursive)
     tracker.setdefault("connections", {}).setdefault(binding.provider, {})["url"] = binding.server
-    return data
+    return PROJECT_CONFIG.prepare(data)
 
 
 def repository_root(cwd: Path | None = None, *, fallback=False):
@@ -213,8 +214,8 @@ def write_binding(root: Path, binding: Binding):
     path = root / BINDING_FILE
     if path.is_symlink() or (path.exists() and not path.is_file()):
         raise AgentBoxError(f"Refusing to replace {path}")
-    atomic_write_text(path, json.dumps(binding_document(root, binding), indent=2, ensure_ascii=False) + "\n",
-                      path.stat().st_mode & 0o777 if path.exists() else 0o644)
+    from .project_config import save
+    save(path, binding_document(root, binding))
 
 
 def write_setup(root: Path, binding: Binding, *, instructions_only=False):
@@ -229,7 +230,11 @@ def write_setup(root: Path, binding: Binding, *, instructions_only=False):
         for path, text in content.items():
             if originals[path] and originals[path][0] == text.encode():
                 continue
-            atomic_write_text(path, text, originals[path][1] if originals[path] else 0o644)
+            if path.name == BINDING_FILE:
+                from .project_config import save
+                save(path, json.loads(text))
+            else:
+                atomic_write_text(path, text, originals[path][1] if originals[path] else 0o644)
             written.append(path)
     except OSError:
         for path in reversed(written):

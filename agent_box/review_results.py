@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 
 from .atomicio import atomic_write_text
+from . import migrations
 from .errors import AgentBoxError
 
 MAX_FILES = 20
@@ -40,7 +41,7 @@ def read_file(path):
             raw = stream.read(MAX_BYTES + 1)
         if len(raw) > MAX_BYTES:
             raise ValueError("size limit exceeded")
-        value = json.loads(raw)
+        value = migrations.REVIEW_RECEIPT.prepare(json.loads(raw))
         if value.get("owner") != OWNER or value.get("id") != path.stem:
             raise ValueError("ownership marker differs")
         seal = {"sha256": hashlib.sha256(raw).hexdigest(), "inode": info.st_ino,
@@ -60,7 +61,8 @@ def seal_file(path, seal):
     This detects single-file replacement, not an owner rewriting the whole state.
     """
     target = path.with_suffix(".seal")
-    value = {"owner": OWNER, "id": path.stem, "receipt": {"id": path.stem, **seal}}
+    value = migrations.REVIEW_RECEIPT.prepare(
+        {"owner": OWNER, "id": path.stem, "receipt": {"id": path.stem, **seal}})
     if target.exists() or target.is_symlink():
         previous, _ = read_file(target)
         if previous != value:
@@ -83,7 +85,8 @@ def save(state, root, repository, value):
         seal_file(path, seal)
         return {"id": ident, **seal}
     now = time.time()
-    raw = json.dumps({**value, "owner": OWNER, "id": ident, "created_at": now},
+    raw = json.dumps(migrations.REVIEW_RECEIPT.prepare(
+        {**value, "owner": OWNER, "id": ident, "created_at": now}),
                      ensure_ascii=False, sort_keys=True) + "\n"
     size = len(raw.encode())
     if size > MAX_BYTES:

@@ -896,10 +896,10 @@ class ProjectMenuTests(unittest.TestCase):
                  patch('agent_box.runtime.apply_config', side_effect=AssertionError('global apply')), \
                  redirect_stdout(io.StringIO()):
                 cli.config_interactive(project=True)
-                self.assertEqual(json.loads(path.read_text()), result.project)
+                self.assertEqual(json.loads(path.read_text()), {"version": 1, **result.project})
                 with patch.object(config_menu, 'edit', return_value=None):
                     cli.config_interactive(project=True)
-                self.assertEqual(json.loads(path.read_text()), result.project)
+                self.assertEqual(json.loads(path.read_text()), {"version": 1, **result.project})
 
     def test_project_cli_copy_uses_available_global_source_without_process_account(self):
         """G must not pin a temporary account, and a session snapshot outranks the host file."""
@@ -937,7 +937,7 @@ class ProjectMenuTests(unittest.TestCase):
                      patch.object(cli, 'save_config', side_effect=AssertionError('global write')), \
                      patch('agent_box.runtime.apply_config', side_effect=AssertionError('global apply')):
                     cli.config_interactive(project=True)
-                    self.assertEqual(json.loads(path.read_text()), {
+                    self.assertEqual(json.loads(path.read_text()), {"version": 1,
                         'tracker': {'provider': '', 'connections': {'vikunja': {'url': expected}}}})
                     for private in ('https://temporary.example', 'GLOBAL_SECRET', 'RUNTIME_SECRET', 'TEMPORARY_SECRET'):
                         self.assertNotIn(private, path.read_text())

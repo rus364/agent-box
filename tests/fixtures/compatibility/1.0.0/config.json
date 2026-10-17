@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "agents": {"default": "codex"},
+  "box": {"tools": {"analysis": false}, "env": {"set": {"EMPTY": ""}}},
+  "credentials": {"github": {"token": false}},
+  "workflow": {"auto_push": true}
+}

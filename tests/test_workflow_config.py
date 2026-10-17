@@ -220,7 +220,7 @@ class WorkflowConfigTests(unittest.TestCase):
             self.assertEqual(data["workflow"][role]["tiers"], {tier: [] for tier in ("1", "2", "3")})
 
     def test_removed_routing_sections_are_dropped_on_load(self):
-        """Pre-release: the provider-share settings are gone, not migrated."""
+        """Unpublished routing keys cannot restore removed provider-share behavior."""
         data = {
             "tracker": {"enabled": True, "provider": "vikunja", "connections": {
                 "vikunja": {"url": "https://tasks.example", "token": "secret"}}},

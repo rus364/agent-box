@@ -19,7 +19,8 @@ Design rules this file exists to enforce:
 
 The workflow and tracker sections are opt-in. Provider connections hold
 credentials globally; project_config validates the explicit repository subset
-for launch and workflow policy alongside tracker identity. Version remains 1 during pre-release.
+for launch and workflow policy alongside tracker identity. Stored schema versions
+are independent of package SemVer; migrations run before parsing known fields.
 """
 from __future__ import annotations
 
@@ -30,11 +31,12 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from .atomicio import atomic_write_json, read_json
+from .atomicio import read_json
+from . import migrations
 from .paths import CONFIG_FILE
 from .external_config import API_EFFORTS, ExternalProvider, parse_connections, valid_name
 
-VERSION = 1
+VERSION = migrations.GLOBAL_CONFIG.version
 SECRET_MODE = stat.S_IRUSR | stat.S_IWUSR
 
 #: The one Telegram integration agent-box supports for controlling Claude.
@@ -1382,7 +1384,7 @@ def load_config(path: Path | None = None) -> Config:
     if not isinstance(data, dict):
         raise AgentBoxError(f"{path} is not a JSON object. Fix the file, or delete it "
                             "to start from defaults")
-    return Config.from_dict(data)
+    return Config.from_dict(migrations.GLOBAL_CONFIG.prepare(data))
 
 
 def save_config(config: Config, path: Path | None = None) -> None:
@@ -1397,7 +1399,20 @@ def save_config(config: Config, path: Path | None = None) -> None:
         return result
 
     data = overrides(config.to_dict(), Config().to_dict())
-    atomic_write_json(CONFIG_FILE if path is None else path, {"version": VERSION, **data}, SECRET_MODE)
+    migrations.write(CONFIG_FILE if path is None else path, {"version": VERSION, **data},
+                     migrations.GLOBAL_CONFIG, mode=SECRET_MODE)
+
+
+def migrate_config(path: Path | None = None) -> bool:
+    """Persist during explicit apply or the first launch of an updated package."""
+    def validate(data):
+        config = Config.from_dict(data)
+        errors = config.workflow.validate() + config.box.validate()
+        if errors:
+            from .errors import AgentBoxError
+            raise AgentBoxError(errors[0])
+    return migrations.upgrade(CONFIG_FILE if path is None else path,
+                              migrations.GLOBAL_CONFIG, validate=validate, mode=SECRET_MODE)
 
 
 def session_account(config):
@@ -1412,6 +1427,7 @@ def session_account(config):
 def apply_box_policy(config, policy):
     """A session's shared capabilities belong to its box, even after a project edit."""
     import copy
+    policy = migrations.BOX_POLICY.prepare(policy)
     shared = Config.from_dict(policy)
     config.box.tools.groups = copy.deepcopy(shared.box.tools.groups)
     config.box.k3s = shared.box.k3s

@@ -21,6 +21,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from contextlib import contextmanager
@@ -39,6 +40,7 @@ from . import host_podman, nested_podman, runtime_bundle
 from . import cloud, kubeconfigs, registries, links
 from .atomicio import atomic_write_bytes, atomic_write_json, atomic_write_text, read_json
 from .config import ENV_PREFIX, IMPLEMENTED_TRACKERS, WORKFLOW_SKILLS, Config, apply_box_policy, load_config, effective_config, session_account
+from . import migrations
 from .errors import AgentBoxError
 from .external_config import has_toml_spelling, toml_string
 from .identity import HostIdentity, detect_host_identity
@@ -589,7 +591,7 @@ def shipped_skill(name: str) -> Path | None:
 def managed_skill_digest(target: Path) -> str | None:
     """The digest recorded in *target*'s marker, or ``None`` when unmanaged."""
     try:
-        data = read_json(target / MANAGED_SKILL_MARKER)
+        data = migrations.read(target / MANAGED_SKILL_MARKER, migrations.SKILL_MARKER)
     except (OSError, ValueError):
         return None
     digest = data.get("digest") if isinstance(data, dict) else None
@@ -624,10 +626,17 @@ def install_managed_skill(name: str) -> None:
             return
         if recorded == digest:
             return
-        shutil.rmtree(target, ignore_errors=True)
     target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(source, target, ignore=shutil.ignore_patterns("__pycache__"))
-    atomic_write_json(target / MANAGED_SKILL_MARKER, {"skill": name, "digest": digest})
+    # Publish only a complete, marked tree. A failed copy must not leave an
+    # unmarked target that the next upgrade would mistake for user content.
+    with tempfile.TemporaryDirectory(prefix=".agent-box-stage-", dir=target.parent) as staging:
+        prepared = Path(staging) / name
+        shutil.copytree(source, prepared, ignore=shutil.ignore_patterns("__pycache__"))
+        atomic_write_json(prepared / MANAGED_SKILL_MARKER,
+                          migrations.SKILL_MARKER.prepare({"skill": name, "digest": digest}), 0o644)
+        if target.exists():
+            shutil.rmtree(target)
+        os.replace(prepared, target)
 
 
 def remove_managed_skill(name: str) -> None:
@@ -1748,7 +1757,7 @@ def last_box_config(runtime_state: WorkspaceRuntimeState, current: Config | None
         return config
     try:
         return apply_box_policy(copy.deepcopy(config), read_json(policies[-1]))
-    except (OSError, ValueError, TypeError, KeyError, AttributeError):
+    except (OSError, ValueError, TypeError, KeyError, AttributeError, AgentBoxError):
         return None
 
 
@@ -2378,7 +2387,8 @@ def ensure_workspace_container(spec: WorkspaceContainerSpec) -> None:
         spec.runtime_state.root.chmod(0o700)
         for old in spec.runtime_state.root.glob("box-*.json"):
             old.unlink()
-        atomic_write_json(spec.runtime_state.root / f"box-{spec.policy_id}.json", workspace_box_policy(spec), 0o600)
+        migrations.write(spec.runtime_state.root / f"box-{spec.policy_id}.json",
+                         workspace_box_policy(spec), migrations.BOX_POLICY)
         record_workspace_path(spec.workspace_id, spec.workspace_path)
         if spec.creation_config.box.tools.groups["podman"]:
             ensure_nested_podman_volume(spec.workspace_id, spec.workspace_path)
@@ -3083,9 +3093,8 @@ def runtime_main(
         warn(problem)
 
 
-    # Nothing here reconciles Claude's settings, installs a skill or writes a
-    # symlink: those belong to 'agent-box config' and 'agent-box config apply'
-    # (see apply_config). A launch reads the configuration; it does not apply it.
+    # CLI dispatch handles package-update reconciliation once, before this
+    # launch. This layer only reads the choices and prepares runtime state.
 
     # Decided before the channel is claimed, because the claim records it.
     runtime_state = workspace_runtime_state(workspace)
@@ -3299,12 +3308,9 @@ def apply_config(config: Config, *, session=False) -> list[str]:
     refreshed here too, but that part is also safe to redo at launch, because
     it is agent-box's to manage.
 
-    Launching an agent deliberately calls none of this. A command that starts
-    Claude should be safe to run without wondering what it will rewrite in
-    your home directory, and "when did that skill appear?" should have one
-    answer: when you asked for it. The cost is that a newer agent-box does not
-    refresh its shipped skills until this runs again, which is why
-    ``agent-box config apply`` must follow an installer upgrade.
+    Configuration commands call this explicitly. The CLI also reconciles once
+    on the first host launch after a package update, under the package-apply
+    lock; unchanged launches and rendered sessions never reapply host settings.
 
     ``session`` applies only what a rendered session snapshot describes --
     the shipped skills and the configured agent profiles. The host-only
@@ -3396,6 +3402,9 @@ def uninstall_main(args: list[str]) -> int:
             raise AgentBoxError(f"unexpected argument '{arg}'; expected --purge and/or --yes")
 
     done: list[str] = []
+
+    from . import upgrades
+    upgrades.forget()
 
     names = managed_container_names() if shutil.which("podman") else []
     for name in names:

@@ -35,10 +35,20 @@ tests/                 unittest, no plugins
 
 ## Rules that are not negotiable
 
-**Pre-release: no migrations.** There is no installed base. Never add a
-compatibility shim, a legacy fallback, a "read the old location if the new one
-is missing" branch, or migration prose. Reshape things in place and drop the old
-form. `config.py`'s `version` stays `1`.
+**Semantic Versioning from 1.0.0.** Use SemVer: PATCH fixes bugs compatibly,
+MINOR adds backward-compatible functionality, and breaking changes to the
+documented public contract require MAJOR. Describe breaking changes and their
+upgrade path in release notes. Package versions and persisted schema versions
+are separate; see `docs/compatibility.md` for the public surface and formats.
+
+**Every public version upgrades directly to every later version.** Keep forward
+migrations, including across major releases; users never install intermediate
+packages. Before changing a persisted format or owned integration layout, assess
+migration impact, retain published fixtures, add the required conversion and
+test skipped versions, failure/retry and data preservation. Reject future schemas
+before parsing or writing; preserve the original before migration commits. Do
+not invent migrations for unpublished layouts. Running workspace runtimes stay
+immutable; adopting a new runtime may require an explicit stop/relaunch.
 
 **Paths come from `paths.py`.** Use `HOST_HOME` (passwd-derived), never
 `Path.home()`, `os.path.expanduser`, or `$HOME`. A poisoned environment must not
@@ -48,11 +58,14 @@ be able to move a bind mount, a state directory or the container's home.
 can reach starts disabled. The exceptions are documented in the dataclass that
 defines them, with the reason.
 
-**Applying is not launching.** Only `agent-box config` (including `config
-apply`) and `agent-box uninstall` may write into
-`~/.claude` or `~/.agents`. Launching an
-agent reads configuration and changes nothing the user owns. `runtime.apply_config`
-is the single place that applies.
+**Apply once after a package update.** `runtime.apply_config` is the single
+integration writer. Configuration commands apply explicit changes; the first
+host launch after a package update automatically migrates data and refreshes
+already configured integrations under a lock, recording the package identity
+only after success. Unchanged launches and read-only commands do not reapply.
+Rendered sessions never infer or rewrite unavailable host settings. Preserve
+user-owned content and opt-ins; keep `config apply` for manual edits and retry,
+and `uninstall` for removing owned integrations.
 
 On-demand Claude usage may renew and atomically save its OAuth credentials;
 this is authentication maintenance, not integration application. Status-line
@@ -60,7 +73,7 @@ reads never renew tokens. Coordinate credential writes with Claude's locks.
 
 **Installation belongs to the installer.** uv/pipx own the command and shell
 PATH setup. agent-box never edits shell startup files or installer entry points.
-After upgrading the package, `agent-box config apply` refreshes integrations;
+After upgrading the package, the next host launch refreshes integrations;
 run `agent-box uninstall` before removing the package through its installer.
 
 **agent-box owns its integrations.** An integration configured somewhere else,

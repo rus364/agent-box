@@ -28,6 +28,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from .atomicio import atomic_write_text
+from . import migrations
 from .config import effective_config, effective_config_source
 from .delegation import bootstrap, delegate_prompt, render_handoff, review_language
 from .errors import AgentBoxError
@@ -188,8 +189,7 @@ DURABLE_EVIDENCE = ("child_start", "child_begin")
 
 def read_evidence(root, task):
     try:
-        value = json.loads(evidence_path(root, task).read_text())
-        return value if isinstance(value, dict) else {}
+        return migrations.read(evidence_path(root, task), migrations.WORKFLOW_EVIDENCE)
     except (OSError, ValueError):
         return {}
 
@@ -217,7 +217,7 @@ def evidence(root, task, fingerprint, base=None):
 def save_evidence(root, task, value):
     path = evidence_path(root, task)
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    atomic_write_text(path, json.dumps(value, indent=2) + "\n", 0o600)
+    migrations.write(path, value, migrations.WORKFLOW_EVIDENCE)
 
 
 def unmoved_child(saved, head, parent_id):
@@ -244,7 +244,7 @@ def review_budget_path(root, binding, task):
 def read_review_state(root, binding, task):
     path = review_budget_path(root, binding, task)
     try:
-        value = json.loads(path.read_text())
+        value = migrations.read(path, migrations.REVIEW_BUDGET)
         if (not isinstance(value, dict) or type(value.get("used")) is not int
                 or value["used"] < 0 or type(value.get("failures", 0)) is not int or value.get("failures", 0) < 0
                 or (value.get("pending") is not None
@@ -285,7 +285,7 @@ def review_budget_summary(value, configured_limit):
 def save_review_state(root, binding, task, value):
     path = review_budget_path(root, binding, task)
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    atomic_write_text(path, json.dumps(value) + "\n", 0o600)
+    migrations.write(path, value, migrations.REVIEW_BUDGET)
 
 
 def start_review(root, binding, task, limit, round_id, fingerprint, backend):

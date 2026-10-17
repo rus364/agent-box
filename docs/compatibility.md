@@ -1,0 +1,97 @@
+# Compatibility and upgrades
+
+## Semantic Versioning
+
+agent-box uses [Semantic Versioning 2.0.0](https://semver.org/) starting at
+1.0.0. PATCH releases fix defects without breaking the public contract; MINOR
+releases add backward-compatible functionality; incompatible public changes
+require a MAJOR release. Release notes describe changes and any user action.
+Released artifacts are immutable: a fix gets a new version.
+
+The public contract includes documented CLI commands/options, documented JSON
+output fields and meanings, saved global/project settings and their meanings,
+integration ownership rules, and stated platform requirements. Additive JSON
+fields are allowed; consumers must ignore fields they do not use. Human progress
+messages, internal Python functions and private workflow artifacts are not a
+stable programming API. Removing supported Python/platform versions or changing
+an existing default incompatibly requires a major release.
+
+## Direct upgrades
+
+Every public version can upgrade directly to any later release, including across
+major versions. Install the desired package with uv/pipx; intermediate packages
+are never required. The first host agent launch after an update migrates saved
+data and refreshes already configured integrations automatically. `config apply`
+remains available for manual edits and retry. Concurrent first launches serialize
+application; success is recorded only after every application step completes.
+Read-only commands do not apply integrations. A fresh install without a saved
+configuration still uses `agent-box config` to choose its settings.
+
+Package identity is recorded separately from data schema versions. A content
+digest covers installed resources and editable copies, so changes to skills can
+trigger application even when no data format changed. A session using a rendered
+snapshot never performs automatic host application: it cannot infer missing host
+settings, and its runtime may deliberately be older than the installed package.
+
+Running workspaces retain immutable runtime copies and are not interrupted by a
+package upgrade. To adopt a new runtime, stop and launch that workspace explicitly.
+Workspaces, source files, volumes and third-party application data are preserved;
+upgrading PostgreSQL, k3s, provider CLIs or workloads is not an agent-box data
+migration. Downgrades are not supported: a binary encountering a future schema
+refuses it without overwriting it. Restore a suitable backup with the matching
+package when a rollback is necessary.
+
+## Stored formats
+
+Schema numbers are independent per format and independent of package SemVer.
+The first public formats are version 1. An omitted version explicitly means 1,
+including hand-written configuration fragments; it never means the latest schema.
+Writers include the version. Migrations transform a copy before current parsers
+can discard renamed fields. Reading alone does not rewrite the file.
+
+| Data | Boundary |
+| --- | --- |
+| Global `config.json` and repository `.agent-box.json` | Independent `version`; global migration persists on package application or explicit config writes; project writes migrate through the project configuration writer |
+| Workflow evidence, review budget and Plan sync records | Independent `format_version`; retain ownership, scope, budgets and recovery state |
+| Tracker import mappings, move journals, adoption receipts | Independent `format_version`; retain external IDs and interrupted-operation recovery |
+| Global configuration proposals | `format_version`; preserve the existing explicit host confirmation boundary |
+| Workspace creation policies | `format_version`; unreadable/future cleanup policy retains data |
+| Managed skill markers | `format_version`; user-edited/unowned trees remain protected |
+| Review receipts and seals | `format_version`; preserve original bytes/seals while reading; existing bounded retention still applies |
+| Applied-package record | `format_version`; only successful reconciliation advances package identity |
+| Rendered session configuration, synchronized credentials, caches, build signals | Derived from saved choices or external authorities; regenerate for new sessions without rewriting live snapshots |
+
+Claude/Codex files belong to their providers or the user. agent-box reconciles only
+its owned entries, retaining unrelated content; their whole files are never passed
+through agent-box's schema converter. Container schema and runtime digest checks
+continue to enforce the explicit restart boundary.
+
+## Writing a migration
+
+1. Assess every persisted format and public behavior affected by the change.
+   Keep the version-1 fixtures under `tests/fixtures/compatibility/1.0.0` unchanged;
+   add fixtures for later published formats and meaningful user settings.
+2. For a changed stored representation, increment that format's `Schema.version`
+   and add the `N -> N+1` pure function to its `steps` in `agent_box/migrations.py`.
+   Retain all earlier steps. Additive fields can remain in the same schema only
+   if existing readers/writers and default semantics stay compatible.
+3. Preserve false, empty and explicit values. Account for historical omitted
+   defaults; a new default must not silently enable credential exposure. When an
+   old choice has no automatic equivalent, fail with an actionable explanation
+   instead of dropping it. Keep converters free of filesystem/network side effects.
+4. Validate before committing. Use the shared writer under the operation's own
+   read/modify/write lock. It refuses future formats, retains an exact private
+   original in the migration state directory before a schema-changing write, and
+   atomically replaces a single document. Multi-file changes require their own
+   resumable operation protocol; an atomic file rename is not a transaction over
+   integrations or external services.
+5. Test oldest-to-current and skipped releases, failure before/after backup,
+   repeated execution, future-version refusal, and user data/opt-in preservation.
+   Exercise actual load/save or operation entry points as well as pure conversion.
+   An integration-layout change needs ownership and interrupted-apply tests even
+   when no JSON schema changes. Package upgrades need active-workspace coverage.
+
+Backup names contain the original schema and content digest. Their contents may
+include credentials, so files are private and must not be logged or committed.
+They are retained for explicit recovery; do not delete them as part of an upgrade.
+No conversion for unpublished historical layouts is part of the public contract.

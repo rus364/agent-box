@@ -644,7 +644,7 @@ def _propose_global(assignments, resets, dry_run: bool) -> None:
 
 def config_proposal_command(args: list[str]) -> None:
     """Show, apply after the user's terminal confirmation, or discard this checkout's global proposal."""
-    from . import config_proposal, runtime
+    from . import config_proposal
     if args not in ([], ["apply"], ["discard"]):
         die(CONFIG_PROPOSAL_USAGE)
     file = config_proposal.proposal_path()
@@ -684,7 +684,8 @@ def config_proposal_command(args: list[str]) -> None:
         print("Declined: the proposal was discarded and nothing changed")
         return
     save_config(config)
-    for line in runtime.apply_config(config):
+    from . import upgrades
+    for line in upgrades.reconcile(force=True):
         print(line)
     config_proposal.discard(file)
     print("Saved and applied the global proposal")
@@ -814,7 +815,7 @@ def config_interactive(project=False, *, baseline=None) -> None:
         die("refusing to edit the saved configuration: this session reads the rendered "
             f"configuration {effective_config_source()['path']} and does not mount the file; "
             "run 'agent-box config' on the host")
-    from . import config_menu, runtime
+    from . import config_menu
     from . import project_config
     path = project_config.project_path() if project else None
     result = (config_menu.edit(baseline or effective_config(include_project=False), project=project_config.load(path))
@@ -831,7 +832,8 @@ def config_interactive(project=False, *, baseline=None) -> None:
         return
     config = result.config
     save_config(config)
-    for line in runtime.apply_config(config):
+    from . import upgrades
+    for line in upgrades.reconcile(force=True):
         print(line)
     config_show()
 
@@ -841,15 +843,15 @@ def config_apply() -> None:
 
     The interactive flow ends by calling exactly this, so a configuration
     answered in the UI and one edited by hand produce the same host state.
-    Run it after an installer upgrade to refresh the shipped integrations,
-    or after editing config.json by hand.
+    Run it after editing config.json by hand or to retry application. Installer
+    upgrades refresh configured integrations on the next host launch.
 
     Inside a workspace box the saved file is not mounted, so the command
     applies what the rendered session snapshot describes -- the shipped
     skills and the configured agent profiles -- and leaves the host-only
     sections alone; see :func:`agent_box.runtime.apply_config`.
     """
-    from . import runtime
+    from . import runtime, upgrades
     session = session_snapshot_only()
     config = effective_config() if session else load_config()
     if session:
@@ -857,7 +859,7 @@ def config_apply() -> None:
               f"{effective_config_source()['path']}: skills and profiles only; "
               "notifications, hooks, status line, credentials and Claude "
               "links are host-only and untouched")
-    for line in runtime.apply_config(config, session=session):
+    for line in (runtime.apply_config(config, session=True) if session else upgrades.reconcile(force=True)):
         print(f"agent-box: {line}")
     from .external_config import model_warnings
     for problem in (runtime.tracker_warnings(config) + runtime.audio_warnings(config)
@@ -1040,6 +1042,8 @@ def main() -> None:
             refused = unknown_command(rest, HOST_ONLY_AGENTS, f"agent-box ext {name}")
             if refused:
                 die(refused)
+            from .upgrades import before_launch
+            before_launch()
             if options.host:
                 raise SystemExit(runtime.host_main(*_agent_and_rest(rest), options, api_provider=name))
             runtime.runtime_main(rest, script_dir, options, api_provider=name)
@@ -1048,8 +1052,13 @@ def main() -> None:
             if args and args[0] in {"shell", "doctor"}:
                 die("--host runs claude or codex; shell/doctor are container-only")
             from . import runtime
+            from .upgrades import before_launch
+            before_launch()
             raise SystemExit(runtime.host_main(*_agent_and_rest(args), options))
         from . import runtime
+        if args[:1] != ["doctor"]:
+            from .upgrades import before_launch
+            before_launch()
         runtime.runtime_main(args, script_dir, options)
     except AgentBoxError as exc:
         die(str(exc))

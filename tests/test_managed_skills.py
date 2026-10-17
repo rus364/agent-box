@@ -85,6 +85,20 @@ class ManagedSkillInstallTests(unittest.TestCase):
         runtime.install_managed_skill("ab-tracker")
         self.assertFalse((self.installed / "ab-tracker/scripts/run.py").exists())
 
+    def test_failed_upgrade_copy_keeps_the_owned_tree_and_can_retry(self):
+        """Partial copies cannot become apparently user-owned and prevent recovery."""
+        _skill(self.shipped, "ab-tracker", body="# old\n")
+        runtime.install_managed_skill("ab-tracker")
+        (self.shipped / "ab-tracker/SKILL.md").write_text("# new\n")
+        with mock.patch.object(runtime.shutil, "copytree", side_effect=OSError("copy failed")):
+            with self.assertRaises(OSError):
+                runtime.install_managed_skill("ab-tracker")
+        target = self.installed / "ab-tracker"
+        self.assertEqual((target / "SKILL.md").read_text(), "# old\n")
+        self.assertEqual(runtime.managed_skill_digest(target), runtime.skill_tree_digest(target))
+        runtime.install_managed_skill("ab-tracker")
+        self.assertEqual((target / "SKILL.md").read_text(), "# new\n")
+
     def test_an_unmanaged_directory_is_never_overwritten(self):
         """It is the user's -- hand-written, or a checkout they are editing."""
         _skill(self.shipped, "ab-tracker", body="# shipped\n")

@@ -1,0 +1,5 @@
+{
+  "version": 1,
+  "workflow": {"auto_push": false, "review": {"ignored_paths": []}},
+  "tracker": {"provider": "github", "project": "example/1", "connections": {"github": {"url": "https://api.github.com"}}}
+}

@@ -13,7 +13,8 @@ read one copy.
 | `ab-config` | Never installed; `agent-box config ai` reads it from the installed package |
 
 Saving in `agent-box config` or running `agent-box config apply` installs or refreshes
-the skills and the native agent profiles; starting an agent never does.
+the skills and the native agent profiles. The first host launch after a package
+update also refreshes them automatically; unchanged launches do not reinstall them.
 
 **Your own skills are safe.** Installed skill directories carry a content
 fingerprint. agent-box updates or removes only intact copies it installed;

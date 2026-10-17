@@ -1,15 +1,7 @@
-"""Applying a configuration, and the fact that launching an agent does not.
+"""One integration writer preserves ownership for explicit and post-upgrade apply.
 
-Everything that changes the places agent-box does not own goes through one
-function -- ``agent-box config`` at the end of its questions, ``agent-box
-config apply`` on its own -- so a configuration answered interactively and one edited by hand
-produce the same host state.
-
-The negative half matters just as much. Starting Claude or Codex must not
-install a skill, write a symlink or rewrite ``settings.json`` on the way past:
-a command that runs an agent should be safe to run without wondering what it
-will change in your home directory, and "when did that appear?" should have
-exactly one answer.
+Low-level launches do not reapply settings. CLI package-update dispatch and its
+once-only/retry guarantees are exercised by test_upgrades.
 """
 import contextlib
 import io
@@ -20,7 +12,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from agent_box import claude_settings, cli, config as config_module, runtime
+from agent_box import claude_settings, cli, config as config_module, runtime, upgrades
 from agent_box.config import Config, TrackerConnection
 from agent_box.workspace import Workspace
 
@@ -64,6 +56,12 @@ class ApplyConfigTests(unittest.TestCase):
         )
         self.patches.start()
         self.addCleanup(self.patches.stop)
+        for module, name, value in ((config_module, "CONFIG_FILE", self.root / "config.json"),
+                                     (upgrades, "APPLIED_PACKAGE", self.root / "applied.json"),
+                                     (upgrades, "PACKAGE_APPLY_LOCK", self.root / "apply.lock")):
+            patcher = mock.patch.object(module, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
     def _enabled(self):
         config = Config()
@@ -132,8 +130,8 @@ class ApplyConfigTests(unittest.TestCase):
 
     def test_config_apply_applies_the_saved_configuration(self):
         """The one command for a config.json somebody edited by hand."""
-        with mock.patch.object(cli, "load_config", return_value=self._enabled()):
-            cli.config_apply()
+        config_module.save_config(self._enabled())
+        cli.config_apply()
         self.assertTrue((self.shared / "ab-tracker/SKILL.md").is_file())
 
     def test_config_apply_reports_an_incomplete_integration(self):
@@ -141,8 +139,8 @@ class ApplyConfigTests(unittest.TestCase):
         broken = Config()
         broken.tracker.enabled = True
         errors = io.StringIO()
-        with mock.patch.object(cli, "load_config", return_value=broken), \
-             contextlib.redirect_stderr(errors):
+        config_module.save_config(broken)
+        with contextlib.redirect_stderr(errors):
             cli.config_apply()
         self.assertIn("warning", errors.getvalue())
 

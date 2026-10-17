@@ -44,7 +44,7 @@ class ConfigSetTests(unittest.TestCase):
             output = self.run_set("--project", "workflow.review.max_files=5", 'workflow.review.sensitive_paths=["src/auth/**"]')
         self.assertIn('+      "max_files": 5', output)
         self.assertIn("Saved project configuration", output)
-        self.assertEqual(self.saved(), {**self.binding, "workflow": {"review": {"max_files": 5, "sensitive_paths": ["src/auth/**"]}}})
+        self.assertEqual(self.saved(), {"version": 1, **self.binding, "workflow": {"review": {"max_files": 5, "sensitive_paths": ["src/auth/**"]}}})
 
     def test_dry_run_prints_the_same_diff_and_writes_nothing(self):
         """Previewing is how the agent asks for consent, so it must not already have changed the file."""
@@ -67,7 +67,7 @@ class ConfigSetTests(unittest.TestCase):
         self.run_set("--project", "workflow.review.max_files=5", "box.tools.browser=false")
         output = self.run_set("--project", "--reset", "workflow.review.max_files")
         self.assertIn('-      "max_files": 5', output)
-        self.assertEqual(self.saved(), {**self.binding, "box": {"tools": {"browser": False}}})
+        self.assertEqual(self.saved(), {"version": 1, **self.binding, "box": {"tools": {"browser": False}}})
         self.assertIn("No changes", self.run_set("--project", "--reset", "workflow.review.max_lines"))
 
     def test_invalid_changes_leave_the_file_untouched_and_never_echo_the_value(self):

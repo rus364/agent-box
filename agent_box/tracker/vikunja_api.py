@@ -11,9 +11,7 @@ import hashlib
 import http.client
 import io
 import json
-import os
 import re
-import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -1015,7 +1013,8 @@ class ImportState:
         self.path = Path(path)
         self.source_digest = source_digest
         if self.path.exists():
-            self.data = json.loads(self.path.read_text(encoding="utf-8"))
+            from .. import migrations
+            self.data = migrations.read(self.path, migrations.IMPORT_STATE)
             if self.data.get("source_digest") != source_digest:
                 raise ImportConflict(
                     f"import source digest changed for {self.path}; use a new state file or restore the source"
@@ -1024,17 +1023,8 @@ class ImportState:
             self.data = {"source_digest": source_digest, "projects": {}, "tasks": {}, "relations": {}}
 
     def _save(self):
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        fd, temporary = tempfile.mkstemp(prefix=self.path.name + ".", dir=self.path.parent)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                handle.write(stable_json(self.data, pretty=True))
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temporary, self.path)
-        finally:
-            if os.path.exists(temporary):
-                os.unlink(temporary)
+        from .. import migrations
+        migrations.write(self.path, self.data, migrations.IMPORT_STATE)
 
     def record_project(self, path, project_id, disposition):
         self.data["projects"][path] = {"id": int(project_id), "disposition": disposition}

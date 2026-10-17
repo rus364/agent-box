@@ -1,12 +1,11 @@
 """A tracker-writing delegate reads its own sources; Git remains read-only."""
 import fnmatch
 import hashlib
-import json
 import re
 import subprocess
 from pathlib import Path
 
-from .atomicio import atomic_write_text
+from . import migrations
 from .errors import AgentBoxError
 from .tracker.core import root_task
 from .workflow_state import lock
@@ -31,8 +30,7 @@ def record_path(root, task):
 
 def last_result(root, task):
     try:
-        result = json.loads(record_path(root, task).read_text())
-        return result if isinstance(result, dict) else None
+        return migrations.read(record_path(root, task), migrations.PLAN_SYNC)
     except (OSError, ValueError):
         return None
 
@@ -40,7 +38,7 @@ def last_result(root, task):
 def save(root, task, result):
     path = record_path(root, task)
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    atomic_write_text(path, json.dumps(result, ensure_ascii=False, indent=2) + "\n", 0o600)
+    migrations.write(path, result, migrations.PLAN_SYNC)
 
 
 def managed_workflow_only(root, base, head):

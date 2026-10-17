@@ -162,7 +162,7 @@ class ConfigProposalTests(unittest.TestCase):
 
     def test_an_unwritable_git_directory_is_a_clear_refusal(self):
         """A sandboxed agent needs an explanation it can relay, not a traceback."""
-        with patch.object(config_proposal, "atomic_write_json", side_effect=PermissionError(13, "Permission denied")), \
+        with patch.object(config_proposal.migrations, "write", side_effect=PermissionError(13, "Permission denied")), \
                 self.assertRaisesRegex(AgentBoxError, "Cannot write the global proposal"):
             self.command("set", "--global", "workflow.review.max_files=9")
 

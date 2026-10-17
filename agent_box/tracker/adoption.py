@@ -7,7 +7,7 @@ there is no compensating deletion or tracker restoration.
 from dataclasses import asdict, replace
 from pathlib import Path
 
-from ..atomicio import atomic_write_json, read_json
+from .. import migrations
 from ..paths import WORKFLOW_STATE
 from ..repo_binding import (BINDING_FILE, Binding, server_identity, setup_content,
                             write_binding, write_setup)
@@ -50,13 +50,13 @@ def locate(root):
 def save(path, receipt):
     if path.is_symlink() or (path.exists() and not path.is_file()):
         raise TrackerError(f"Refusing receipt path {path}")
-    atomic_write_json(path, receipt, 0o600)
+    migrations.write(path, receipt, migrations.ADOPTION_RECEIPT)
 
 
 def load(path, root):
     if path.is_symlink():
         raise TrackerError(f"Refusing receipt symlink {path}")
-    receipt = read_json(path)
+    receipt = migrations.read(path, migrations.ADOPTION_RECEIPT)
     try:
         binding = Binding(**receipt["source"])
         binding.validate()

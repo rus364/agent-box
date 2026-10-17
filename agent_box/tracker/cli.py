@@ -8,7 +8,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from ..config import effective_config
-from ..atomicio import atomic_write_json, read_json
+from .. import migrations
 from ..errors import AgentBoxError
 from ..paths import WORKFLOW_STATE
 from ..repo_binding import BINDING_FILE, Binding, repository_root, server_identity, write_setup
@@ -183,7 +183,7 @@ def move(adapter, root, tasks, project, adoption=None):
             staging_locked(root, adoption)
             # Before the first write renumbers a task.
             freeze_tasks(root, adoption)
-        journal = read_json(path) if path.exists() else {"project": project, "tasks": {}}
+        journal = migrations.read(path, migrations.MOVE_JOURNAL) if path.exists() else {"project": project, "tasks": {}}
         if journal["project"] != project:
             raise TrackerError(f"An interrupted move of tasks {', '.join(journal['tasks'])} into project "
                                f"{journal['project']} is unfinished; rerun that move first. Only if it can "
@@ -191,7 +191,7 @@ def move(adapter, root, tasks, project, adoption=None):
 
         def checkpoint(pending):
             if pending:
-                atomic_write_json(path, {"project": project, "tasks": pending}, 0o600)
+                migrations.write(path, {"project": project, "tasks": pending}, migrations.MOVE_JOURNAL)
             else:
                 path.unlink(missing_ok=True)
 

@@ -119,7 +119,7 @@ class UnreadableFileTests(unittest.TestCase):
 
 class SectionedSchemaTests(unittest.TestCase):
     def test_keys_of_the_former_flat_layout_are_ignored(self):
-        """Pre-release: no migration reads an old key, so it must not switch anything on either."""
+        """Unpublished flat keys are not settings and must never enable credentials."""
         old = {"version": 1, "default_agent": "codex", "github": {"gh_token": True, "gh_config": True},
                "tools": {"browser": True, "k3s": {"enabled": True}}, "audio": {"enabled": True},
                "notifications": {"enabled": True, "telegram_token": "t", "telegram_chat_id": "1"},

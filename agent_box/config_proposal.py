@@ -4,7 +4,7 @@ from __future__ import annotations
 import copy
 from pathlib import Path
 
-from .atomicio import atomic_write_json, read_json
+from . import migrations
 from .config import SECRET_MODE, Config
 from .errors import AgentBoxError
 from .repo_binding import git_dir
@@ -25,7 +25,7 @@ def load(path: Path) -> dict:
     if not path.is_file():
         return {"set": {}, "reset": []}
     try:
-        data = read_json(path)
+        data = migrations.read(path, migrations.CONFIG_PROPOSAL)
     except (OSError, ValueError):
         data = None
     if not (isinstance(data, dict) and set(data) == {"set", "reset"} and isinstance(data["set"], dict)
@@ -72,7 +72,7 @@ def applied(data: dict, proposal: dict) -> dict:
 def save(path: Path, proposal: dict) -> None:
     # Credentials are refused before saving, but the file stays as private as config.json.
     try:
-        atomic_write_json(path, proposal, SECRET_MODE)
+        migrations.write(path, proposal, migrations.CONFIG_PROPOSAL, mode=SECRET_MODE)
     except OSError as exc:
         # A sandboxed agent may be unable to write the Git directory; explain instead of a traceback.
         raise AgentBoxError(f"Cannot write the global proposal {path}: {exc.strerror or exc}") from None

@@ -138,6 +138,9 @@ TOOLS_REFRESH_FILE = BUILD_STATE / "tools-refresh"
 
 # The one agent-box configuration file (see agent_box.config).
 CONFIG_FILE = CONFIG_ROOT / "config.json"
+MIGRATION_STATE = STATE_ROOT / "migrations"
+APPLIED_PACKAGE = CONFIG_ROOT / "applied-package.json"
+PACKAGE_APPLY_LOCK = CONFIG_ROOT / "package-apply.lock"
 NOTIFY_STATE_ROOT = _SHARED_STATE_ROOT / "notify"
 # The only credential the container ever sees for notifications: a generated
 # two-key file (bot token + chat id), written solely when notifications are

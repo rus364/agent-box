@@ -1,0 +1,7 @@
+{
+  "format_version": 1,
+  "source_digest": "fixture-source",
+  "projects": {"root": {"id": 12, "disposition": "created"}},
+  "tasks": {"example": {"id": 34, "disposition": "created"}},
+  "relations": {"example-related": {"disposition": "created"}}
+}

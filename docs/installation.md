@@ -84,15 +84,18 @@ script.
 
 ## Updating
 
-Use the installer that owns the package, then refresh the integrations:
+Use the installer that owns the package:
 
 ```bash
 uv tool upgrade agent-box-tool
-agent-box config apply
 ```
 
-With pipx, use `pipx upgrade agent-box-tool` followed by the same
-`agent-box config apply`. The installer retains the Git source selected at
+With pipx, use `pipx upgrade agent-box-tool`. The next host agent launch migrates
+saved data and refreshes configured integrations automatically. Unchanged launches
+do not reapply them. Use `agent-box config apply` for manual configuration edits
+or to retry a failed application. See [compatibility](compatibility.md).
+
+The installer retains the Git source selected at
 installation. An installation pinned to a tag or commit stays pinned; install
 from the new reference explicitly to change it.
 
@@ -134,6 +137,7 @@ agent-box selftest
 python3 tests/run_suite.py
 ```
 
-After changing shipped integrations, run `agent-box config apply` explicitly.
+The next host launch detects changed package contents and refreshes configured
+integrations. `agent-box config apply` can apply them explicitly during development.
 For development inside a box, use the separate environment described in
 [Developing agent-box inside agent-box](design/integrations.md#developing-agent-box-inside-agent-box).

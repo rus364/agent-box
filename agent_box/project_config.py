@@ -5,7 +5,7 @@ import copy
 import json
 from pathlib import Path
 
-from .atomicio import atomic_write_text
+from . import migrations
 from .config import Config, MODEL_ENTRY, TRACKER_PROVIDERS
 from .errors import AgentBoxError
 from .repo_binding import BINDING_FILE, repository_root, server_identity
@@ -81,6 +81,8 @@ def changed(data, assignments=(), resets=()):
 
 
 def validate(data, path):
+    data = migrations.PROJECT_CONFIG.prepare({"version": migrations.PROJECT_CONFIG.version, **data})
+    data.pop("version")
     def credentials(value, parts=()):
         if not isinstance(value, dict):
             return
@@ -156,7 +158,9 @@ def load(path=None):
         data = json.loads(path.read_text(), object_pairs_hook=_unique_object)
     except (OSError, ValueError):
         raise AgentBoxError(f"Invalid project configuration: {path}: cannot read JSON object") from None
+    data = migrations.PROJECT_CONFIG.prepare(data)
     validate(data, path)
+    data.pop("version")
     return data
 
 
@@ -164,8 +168,9 @@ def save(path, data):
     validate(data, path)
     if path.is_symlink():
         raise AgentBoxError(f"Refusing symlink: {path}")
-    atomic_write_text(path, json.dumps(data, indent=2, ensure_ascii=False) + '\n',
-                      path.stat().st_mode & 0o777 if path.exists() else 0o644)
+    migrations.write(path, data, migrations.PROJECT_CONFIG,
+                     validate=lambda value: validate(value, path),
+                     mode=path.stat().st_mode & 0o777 if path.exists() else 0o644)
 
 
 def apply(config, data):

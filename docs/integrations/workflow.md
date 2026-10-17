@@ -14,8 +14,8 @@ How the guarantees below are implemented is recorded in the
 
 1. Set up the [tracker](tracker.md) and bind the repository with `ab-setup`.
 2. Enable **Workflow** in `agent-box config`. Saving installs the skills and
-   native agent profiles; run `config apply` to refresh them after upgrading
-   the package through uv/pipx.
+   native agent profiles. After upgrading through uv/pipx, the next host launch
+   refreshes them automatically; `config apply` can explicitly retry application.
    The default GitHub merge mode also needs GitHub access for the session
    (**Credentials → GitHub**, token or configuration, see
    [Git and GitHub](git.md)) to push branches and open pull requests; the

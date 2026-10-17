@@ -25,6 +25,7 @@ what it exposes and what it costs.
 | [Nested Podman](../nested-podman.md) | off | Rootless Podman inside the box, for builds and containers |
 
 All of them are set in `agent-box config` and applied by it, or later by
-`agent-box config apply`; starting an agent applies nothing. The settings listed
+`agent-box config apply`. Package updates refresh configured integrations on the
+next host launch; unchanged launches do not reapply them. The settings listed
 under [project configuration](../configuration.md#project-configuration)
 can also be set per repository.

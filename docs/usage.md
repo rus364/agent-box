@@ -178,7 +178,7 @@ and non-interactive commands such as `claude -p` also start directly.
 | CLI permissions | The CLI's own settings and your arguments; agent-box adds no permission or sandbox bypass. |
 | Tracker, workflow, project settings | The same policy, through a per-session configuration snapshot. |
 | Environment, Git and `gh` | Inherited from your shell plus explicit `--env`; the container credential switches do not restrict host access. |
-| Skills and integrations | Applied by `agent-box config` / `config apply`; launching changes nothing. |
+| Skills and integrations | Applied by configuration commands and automatically on the first host launch after a package update. |
 | Image, mounts, browser, k3s, `shell`, `doctor` | Container only. |
 
 Telegram control and notifications have their own rules; see

@@ -1,0 +1,10 @@
+{
+  "format_version": 1,
+  "used": 4,
+  "failures": 1,
+  "pending": "fixture-round",
+  "pending_backend": "native",
+  "results": [],
+  "ceiling": 6,
+  "ceiling_reason": "User approved two additional rounds"
+}
