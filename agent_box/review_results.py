@@ -61,8 +61,8 @@ def seal_file(path, seal):
     This detects single-file replacement, not an owner rewriting the whole state.
     """
     target = path.with_suffix(".seal")
-    value = migrations.REVIEW_RECEIPT.prepare(
-        {"owner": OWNER, "id": path.stem, "receipt": {"id": path.stem, **seal}})
+    value = {"format_version": migrations.REVIEW_RECEIPT.version,
+             "owner": OWNER, "id": path.stem, "receipt": {"id": path.stem, **seal}}
     if target.exists() or target.is_symlink():
         previous, _ = read_file(target)
         if previous != value:
@@ -86,7 +86,8 @@ def save(state, root, repository, value):
         return {"id": ident, **seal}
     now = time.time()
     raw = json.dumps(migrations.REVIEW_RECEIPT.prepare(
-        {**value, "owner": OWNER, "id": ident, "created_at": now}),
+        {"format_version": migrations.REVIEW_RECEIPT.version,
+         **value, "owner": OWNER, "id": ident, "created_at": now}),
                      ensure_ascii=False, sort_keys=True) + "\n"
     size = len(raw.encode())
     if size > MAX_BYTES:

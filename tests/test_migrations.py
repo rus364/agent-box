@@ -162,6 +162,13 @@ class MigrationTests(unittest.TestCase):
             project_config.validate(data, self.path)
             project_config.save(self.path, data)
             self.assertEqual(project_config.load(self.path), {"workflow": {"auto_push": False}})
+            from agent_box import repo_binding
+            self.path.rename(self.root / repo_binding.BINDING_FILE)
+            binding = repo_binding.Binding("github", "https://github.com", "owner/2")
+            bound = repo_binding.binding_document(self.root, binding)
+            self.assertEqual(bound["workflow"], {"auto_push": False})
+            self.assertEqual(bound["version"], 2)
+            self.path = self.root / repo_binding.BINDING_FILE
         self.assertEqual(json.loads(self.path.read_text())["version"], 2)
 
     def test_durable_recovery_readers_refuse_future_state_instead_of_starting_over(self):
@@ -197,6 +204,27 @@ class MigrationTests(unittest.TestCase):
         with self.assertRaises(AgentBoxError):
             runtime.managed_skill_digest(target)
         self.assertEqual(content.read_text(), "user content")
+
+    def test_new_owned_markers_and_receipts_do_not_run_historical_converters(self):
+        """Fresh producers stamp their current format even after its schema advances."""
+        from agent_box import runtime, review_results
+        def old_only(data):
+            raise AssertionError("a new document is not historical data")
+        schema = migrations.Schema("fixture", 2, {1: old_only})
+        shipped = self.root / "shipped/fixture"
+        shipped.mkdir(parents=True)
+        (shipped / "SKILL.md").write_text("# fixture\n")
+        installed = self.root / "installed"
+        with patch.object(migrations, "SKILL_MARKER", schema), \
+                patch.object(runtime, "MANAGED_SKILLS_SOURCE", shipped.parent), \
+                patch.object(runtime, "AGENT_SKILLS_DIR", installed):
+            runtime.install_managed_skill("fixture")
+            self.assertTrue(runtime.managed_skill_digest(installed / "fixture"))
+        with patch.object(migrations, "REVIEW_RECEIPT", schema):
+            receipt = review_results.save(self.root / "state", self.root / "repo", "repository",
+                {"descriptor": {"binding": "binding", "task": "task", "delegation": "round"}})
+            value, _ = review_results.read(self.root / "state", "repository", receipt)
+            self.assertEqual(value["format_version"], 2)
 
     def test_public_recovery_fixtures_keep_ids_budgets_and_opaque_fields(self):
         """Frozen durable payloads ensure migration cannot silently reset external history."""

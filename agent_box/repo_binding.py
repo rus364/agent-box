@@ -103,7 +103,7 @@ def binding_document(root, binding):
     tracker = data.setdefault("tracker", {})
     tracker.update(provider=binding.provider, project=binding.project, recursive=binding.recursive)
     tracker.setdefault("connections", {}).setdefault(binding.provider, {})["url"] = binding.server
-    return PROJECT_CONFIG.prepare(data)
+    return {"version": PROJECT_CONFIG.version, **data}
 
 
 def repository_root(cwd: Path | None = None, *, fallback=False):

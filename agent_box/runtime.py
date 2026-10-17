@@ -633,7 +633,8 @@ def install_managed_skill(name: str) -> None:
         prepared = Path(staging) / name
         shutil.copytree(source, prepared, ignore=shutil.ignore_patterns("__pycache__"))
         atomic_write_json(prepared / MANAGED_SKILL_MARKER,
-                          migrations.SKILL_MARKER.prepare({"skill": name, "digest": digest}), 0o644)
+                          {"format_version": migrations.SKILL_MARKER.version,
+                           "skill": name, "digest": digest}, 0o644)
         if target.exists():
             shutil.rmtree(target)
         os.replace(prepared, target)

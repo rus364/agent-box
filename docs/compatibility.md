@@ -57,6 +57,7 @@ can discard renamed fields. Reading alone does not rewrite the file.
 | Global configuration proposals | `format_version`; preserve the existing explicit host confirmation boundary |
 | Workspace creation policies | `format_version`; unreadable/future cleanup policy retains data |
 | Managed skill markers | `format_version`; user-edited/unowned trees remain protected |
+| Native profile ownership sidecars | One SHA-256 line after commit; old/new hash pair during replacement, allowing retry before or after the content write; unknown shapes and edited content remain unowned |
 | Review receipts and seals | `format_version`; preserve original bytes/seals while reading; existing bounded retention still applies |
 | Applied-package record | `format_version`; only successful reconciliation advances package identity |
 | Rendered session configuration, synchronized credentials, caches, build signals | Derived from saved choices or external authorities; regenerate for new sessions without rewriting live snapshots |

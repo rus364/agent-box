@@ -1,6 +1,7 @@
 """Owned native-agent definitions; provider CLIs remain the portable fallback."""
 import hashlib
 import json
+import re
 from pathlib import Path
 
 from .atomicio import atomic_write_text
@@ -80,6 +81,17 @@ def profile_candidate(models, provider):
                 {"provider": provider, "model": "", "effort": "medium", "speed": "inherit", "api_provider": ""})
 
 
+def ownership_digests(marker):
+    """One committed hash, or the old/new pair prepared before replacing content."""
+    if not marker.is_file() or marker.is_symlink():
+        return []
+    try:
+        values = marker.read_text(encoding="ascii").splitlines()
+    except UnicodeError:
+        return []
+    return values if 1 <= len(values) <= 2 and all(re.fullmatch(r"[0-9a-f]{64}", v) for v in values) else []
+
+
 def sync(config, codex_home, claude_home):
     messages = []
     for provider, home in (("codex", codex_home), ("claude", claude_home)):
@@ -97,9 +109,12 @@ def sync(config, codex_home, claude_home):
             spec = profile_candidate(models, provider)
             path = directory / name
             marker = directory / (path.name + ".agent-box")
-            intact = False
-            if path.exists() and not path.is_symlink() and marker.is_file() and not marker.is_symlink():
-                intact = marker.read_text().strip() == hashlib.sha256(path.read_bytes()).hexdigest()
+            digests = ownership_digests(marker)
+            current = None
+            if path.is_file() and not path.is_symlink():
+                current = hashlib.sha256(path.read_bytes()).hexdigest()
+            # A marker without its file is an interrupted creation/removal.
+            intact = bool(digests) and (current in digests or not path.exists())
             if path.is_symlink() or marker.is_symlink() or (path.exists() or marker.exists()) and not intact:
                 messages.append(f"Preserved user-owned or edited agent profile: {path}")
                 continue
@@ -114,7 +129,7 @@ def sync(config, codex_home, claude_home):
                 enabled = False
             if not enabled:
                 if intact:
-                    path.unlink()
+                    path.unlink(missing_ok=True)
                     marker.unlink()
                 continue
             content = content_for(provider, role, tier, spec)
@@ -127,6 +142,11 @@ def sync(config, codex_home, claude_home):
                                 "native profile not installed")
                 continue
             directory.mkdir(parents=True, exist_ok=True)
+            digest = hashlib.sha256(content.encode()).hexdigest()
+            # Prepare ownership first: interruption at either later write
+            # leaves both the old and the new complete file recognizable.
+            prepared = [current, digest] if current and current != digest else [digest]
+            atomic_write_text(marker, "\n".join(prepared) + "\n", 0o644)
             atomic_write_text(path, content, 0o644)
-            atomic_write_text(marker, hashlib.sha256(content.encode()).hexdigest() + "\n", 0o644)
+            atomic_write_text(marker, digest + "\n", 0o644)
     return messages

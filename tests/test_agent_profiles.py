@@ -1,9 +1,11 @@
 """Native profile pins and local edits survive the apply/remove lifecycle."""
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 import tomllib
 from agent_box.agent_profiles import body, sync
+from agent_box import agent_profiles
 from agent_box.config import Config
 
 
@@ -12,6 +14,59 @@ def entry(provider, model, effort, **fields):
 
 
 class AgentProfileTests(unittest.TestCase):
+    def test_interrupted_profile_creation_or_upgrade_retries_with_ownership_intact(self):
+        """Every write boundary must preserve ownership through retry and later removal."""
+        for existing in (False, True):
+            for fail_at in (1, 2, 3):
+                with self.subTest(existing=existing, fail_at=fail_at), tempfile.TemporaryDirectory() as directory:
+                    codex, claude = Path(directory) / "codex", Path(directory) / "claude"
+                    config = Config()
+                    config.workflow.enabled = True
+                    config.workflow.scout.models = [entry("codex", "old-model", "high")]
+                    if existing:
+                        sync(config, codex, claude)
+                    config.workflow.scout.models = [entry("codex", "new-model", "high")]
+                    write = agent_profiles.atomic_write_text
+                    calls = 0
+                    def interrupted(*args):
+                        nonlocal calls
+                        calls += 1
+                        if calls == fail_at:
+                            raise OSError("interrupted profile publication")
+                        return write(*args)
+                    with mock.patch.object(agent_profiles, "atomic_write_text", side_effect=interrupted):
+                        with self.assertRaises(OSError):
+                            sync(config, codex, claude)
+                    self.assertEqual(sync(config, codex, claude), [])
+                    profile = codex / "agents/ab-scout.toml"
+                    self.assertEqual(tomllib.loads(profile.read_text())["model"], "new-model")
+                    config.workflow.enabled = False
+                    sync(config, codex, claude)
+                    self.assertFalse(profile.exists())
+                    self.assertFalse(profile.with_suffix(".toml.agent-box").exists())
+
+    def test_user_edit_during_interrupted_profile_upgrade_is_never_adopted(self):
+        """Prepared ownership authorizes only exact old/new content, never a later edit."""
+        with tempfile.TemporaryDirectory() as directory:
+            codex, claude = Path(directory) / "codex", Path(directory) / "claude"
+            config = Config()
+            config.workflow.enabled = True
+            config.workflow.scout.models = [entry("codex", "old-model", "high")]
+            sync(config, codex, claude)
+            config.workflow.scout.models = [entry("codex", "new-model", "high")]
+            write = agent_profiles.atomic_write_text
+            def interrupted(path, *args):
+                if path.suffix == ".toml":
+                    raise OSError("interrupted")
+                return write(path, *args)
+            with mock.patch.object(agent_profiles, "atomic_write_text", side_effect=interrupted):
+                with self.assertRaises(OSError):
+                    sync(config, codex, claude)
+            profile = codex / "agents/ab-scout.toml"
+            profile.write_text("# user's replacement\n")
+            self.assertTrue(sync(config, codex, claude))
+            self.assertEqual(profile.read_text(), "# user's replacement\n")
+
     def test_both_providers_keep_report_language_and_role_evidence_semantics(self):
         """An installed scout must not inherit the reviewer's findings contract, nor a worker its read-only rule."""
         for provider in ("codex", "claude"):
