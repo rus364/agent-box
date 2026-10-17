@@ -32,6 +32,23 @@ def rich_config():
 
 
 class ExternalModelTests(unittest.TestCase):
+    def test_custom_patch_tools_require_explicit_external_model_opt_in(self):
+        """Function-only APIs must not receive a custom tool just because Codex supports it."""
+        for metadata, expected in (({}, None), ({'apply_patch_tool_type': 'freeform'}, 'freeform'),
+                                   ({'apply_patch_tool_type': None}, None)):
+            with self.subTest(metadata=metadata), tempfile.TemporaryDirectory() as tmp:
+                data = rich_config().to_dict()
+                data['agents']['external_apis']['deepseek']['models']['v4-pro']['codex']['metadata'].update(metadata)
+                config = Config.from_dict(data)
+                save_config(config, Path(tmp) / 'config.json')
+                loaded = load_config(Path(tmp) / 'config.json')
+                ext.prepare(['codex'], 'deepseek', 'codex', loaded, Path(tmp) / 'launch', {})
+                rows = json.loads((Path(tmp) / 'launch/models.json').read_text())['models']
+                self.assertEqual(next(row for row in rows if row['slug'] == 'v4-pro')['apply_patch_tool_type'], expected)
+                ext.prepare(['codex', '--model', 'manual-model'], 'deepseek', 'codex', loaded, Path(tmp) / 'manual', {})
+                rows = json.loads((Path(tmp) / 'manual/models.json').read_text())['models']
+                self.assertIsNone(next(row for row in rows if row['slug'] == 'manual-model')['apply_patch_tool_type'])
+
     def test_invalid_effort_stops_host_and_container_before_launch_side_effects(self):
         """Known unsupported effort must not build a box or render session credentials."""
         config = rich_config()

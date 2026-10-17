@@ -253,7 +253,7 @@ def catalog(models):
         'shell_type': 'shell_command', 'visibility': 'list', 'supported_in_api': True, 'priority': i,
         'base_instructions': 'Follow the user request and repository instructions. Use tools when needed and verify changes.',
         'supports_reasoning_summaries': spec['supports_reasoning_summaries'], 'support_verbosity': False, 'default_verbosity': None,
-        'apply_patch_tool_type': 'freeform', 'web_search_tool_type': 'text',
+        'apply_patch_tool_type': None, 'web_search_tool_type': 'text',
         'truncation_policy': {'mode': 'tokens', 'limit': 10000},
         'supports_parallel_tool_calls': spec['supports_parallel_tool_calls'],
         'context_window': spec['context_window'] or None,

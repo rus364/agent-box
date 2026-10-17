@@ -134,6 +134,12 @@ The latter supplies additional native catalog fields, such as `base_instructions
 `support_verbosity`, `default_verbosity`, or `truncation_policy`. It cannot
 override fields owned by the typed editor. Use fields supported by your installed
 Codex; unknown native metadata is passed through, not interpreted by agent-box.
+External catalogs default `apply_patch_tool_type` to `null`: a provider that
+accepts function tools need not support Codex's custom freeform patch tool.
+For an endpoint that supports it, set `"apply_patch_tool_type": "freeform"`
+in the model's `codex.metadata` object. Explicit
+`null` keeps the conservative default. Other tool support still depends on
+the installed Codex and the API.
 Additional session config can use ordinary permitted Codex `-c` arguments;
 API/profile/catalog and Remote Control ownership remain with agent-box.
 
