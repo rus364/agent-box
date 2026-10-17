@@ -44,7 +44,9 @@ def passwd_home(uid: int | None = None) -> Path:
 
 # The real, passwd-derived home. ``$HOME`` never overrides this.
 HOST_HOME = passwd_home()
-CONTAINER_LAUNCHER_ROOT = HOST_HOME / ".local/lib/agent-box"
+# A home workspace can expose installer-owned symlinks and virtual environments.
+# Keep the container's executable and library outside that mount.
+CONTAINER_LAUNCHER_ROOT = Path("/usr/local/lib/agent-box")
 
 
 def env_path(name: str, default: Path) -> Path:
@@ -127,7 +129,7 @@ HOST_TMUX_CONFIG = Path(__file__).with_name("tmux.conf")
 HOST_SESSION_RUNNER = Path(__file__).with_name("host_session.py")
 PACKAGE_ROOT = Path(__file__).resolve().parent
 HOST_LAUNCHER = PACKAGE_ROOT / "__main__.py"
-CONTAINER_LAUNCHER = HOST_HOME / ".local/bin/agent-box"
+CONTAINER_LAUNCHER = Path("/usr/local/bin/agent-box")
 # Unix sockets need a short path; ignore caller-controlled TMPDIR.
 SESSION_TEMP_ROOT = Path("/tmp")
 

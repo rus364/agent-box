@@ -98,8 +98,8 @@ KEEPER_PATH = CONTAINER_LAUNCHER_ROOT / "agent_box/keeper.sh"
 #: script whose output belongs on the caller's stdout.
 TMUX_AGENTS = frozenset({"claude", "codex", "shell"})
 CONTAINER_RUNTIME_PATH = (
-    f"{HOST_HOME}/.local/share/mise/shims:{HOST_HOME}/.cargo/bin:{HOST_HOME}/.local/bin:"
-    "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    f"{HOST_HOME}/.local/share/mise/shims:{HOST_HOME}/.cargo/bin:/usr/local/bin:{HOST_HOME}/.local/bin:"
+    "/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin"
 )
 
 
@@ -1446,7 +1446,7 @@ def build_mounts(
         # Notification hook delivery state is intentionally host-global so
         # duplicate suppression and rate tracking work across agent sessions.
         (NOTIFY_STATE_ROOT, HOST_HOME / ".local/share/agent-box/notify", False),
-        (script_dir / "container-launcher", HOST_HOME / ".local/bin/agent-box", True),
+        (script_dir / "container-launcher", CONTAINER_LAUNCHER, True),
         (script_dir, CONTAINER_LAUNCHER_ROOT / "agent_box", True),
     ]
     if mount_workspace_runtime_state:

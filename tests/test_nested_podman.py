@@ -238,6 +238,53 @@ class NestedRuntimeTests(IsolatedRuntimeTest):
 
 
 class NestedLauncherBundleTests(IsolatedRuntimeTest):
+    def test_home_workspace_installer_symlink_cannot_replace_container_launcher(self):
+        """A home workspace exposes uv/pipx links whose interpreter belongs to the host."""
+        import os
+        import shutil
+        import subprocess
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+
+            def staged(path):
+                return root / Path(path).relative_to("/")
+
+            host_link = staged(runtime.HOST_HOME / ".local/bin/agent-box")
+            host_link.parent.mkdir(parents=True)
+            host_entry = staged(runtime.HOST_HOME / ".local/share/uv/tools/agent-box-tool/bin/agent-box")
+            host_entry.parent.mkdir(parents=True)
+            host_link.symlink_to(host_entry)
+            workspace = Workspace(runtime.HOST_HOME, runtime.HOST_HOME)
+            with mock.patch.object(runtime, "agent_tree_mounts", return_value=[]), \
+                 mock.patch.object(runtime, "tracker_mounts", return_value=[]):
+                mounts = runtime.build_mounts(workspace, [], runtime.PACKAGE_ROOT, Config())
+            for flag in mounts[1::2]:
+                fields = dict(part.split("=", 1) for part in flag.split(","))
+                target = Path(fields["dst"])
+                if target != runtime.CONTAINER_LAUNCHER and runtime.CONTAINER_LAUNCHER_ROOT not in target.parents:
+                    continue
+                destination = staged(target)
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                origin = Path(fields["src"])
+                if origin.is_dir():
+                    shutil.copytree(origin, destination, ignore=shutil.ignore_patterns("__pycache__"))
+                else:
+                    shutil.copy2(origin, destination)
+            env = {key: value for key, value in os.environ.items()
+                   if not key.startswith("AGENT_BOX_") and key != "PYTHONPATH"}
+            env["PATH"] = os.pathsep.join(str(staged(path)) for path in runtime.CONTAINER_RUNTIME_PATH.split(":")) + os.pathsep + os.defpath
+            # uv's private container state hides the target; a host pipx venv
+            # may remain visible. Neither may determine the box's executable.
+            for visible in (False, True):
+                with self.subTest(host_entry_visible=visible):
+                    if visible:
+                        host_entry.write_text("#!/bin/sh\necho WRONG_HOST_LAUNCHER\nexit 99\n")
+                        host_entry.chmod(0o755)
+                    result = subprocess.run(["bash", "-c", "agent-box selftest"], cwd=tmp,
+                                            env=env, text=True, capture_output=True)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertNotIn("WRONG_HOST_LAUNCHER", result.stdout)
+
     def test_path_bundle_is_a_complete_source_for_launch_and_further_nesting(self):
         """A working checkout hid missing files in the separately mounted PATH package."""
         import shutil
@@ -247,17 +294,19 @@ class NestedLauncherBundleTests(IsolatedRuntimeTest):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp) / "home"
             home.mkdir()
-            library = home / ".local/lib/agent-box"
+            library = Path(tmp) / "usr/local/lib/agent-box"
+            launcher = Path(tmp) / "usr/local/bin/agent-box"
             workspace = Workspace(Path(tmp), Path(tmp))
             with mock.patch.object(runtime, "HOST_HOME", home), \
                  mock.patch.object(runtime, "CONTAINER_LAUNCHER_ROOT", library), \
+                 mock.patch.object(runtime, "CONTAINER_LAUNCHER", launcher), \
                  mock.patch.object(runtime, "agent_tree_mounts", return_value=[]), \
                  mock.patch.object(runtime, "tracker_mounts", return_value=[]):
                 flags = runtime.build_mounts(workspace, [], source, Config())
             for flag in flags[1::2]:
                 fields = dict(part.split("=", 1) for part in flag.split(","))
                 destination = Path(fields["dst"])
-                if destination == home / ".local/bin/agent-box" or library in destination.parents:
+                if destination == launcher or library in destination.parents:
                     self.assertEqual(fields.get("ro"), "true")
                     destination.parent.mkdir(parents=True, exist_ok=True)
                     origin = Path(fields["src"])
@@ -282,14 +331,15 @@ with patch('agent_box.project_config.load', return_value={}), patch.object(runti
     except ReachedWorkspace:
         print('workspace resolution reached')
 '''
-            result = subprocess.run([sys.executable, "-c", code, str(home / ".local/bin/agent-box"),
+            result = subprocess.run([sys.executable, "-c", code, str(launcher),
                                      str(library)], cwd=tmp, text=True, capture_output=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("workspace resolution reached", result.stdout)
             with mock.patch.object(runtime, "HOST_HOME", home), \
                  mock.patch.object(runtime, "CONTAINER_LAUNCHER_ROOT", library), \
+                 mock.patch.object(runtime, "CONTAINER_LAUNCHER", launcher), \
                  mock.patch.object(runtime, "agent_tree_mounts", return_value=[]), \
                  mock.patch.object(runtime, "tracker_mounts", return_value=[]):
                 nested = runtime.build_mounts(workspace, [], library / "agent_box", Config())
-            self.assertIn(f"type=bind,src={library / 'agent_box/container-launcher'},dst={home / '.local/bin/agent-box'},ro=true", nested)
+            self.assertIn(f"type=bind,src={library / 'agent_box/container-launcher'},dst={launcher},ro=true", nested)
             self.assertIn(f"type=bind,src={library / 'agent_box'},dst={library / 'agent_box'},ro=true", nested)

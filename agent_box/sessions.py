@@ -11,11 +11,11 @@ import os
 from pathlib import Path
 
 from .errors import AgentBoxError
-from .paths import HOST_HOME, HOST_TMUX_CONFIG
+from .paths import CONTAINER_LAUNCHER_ROOT, HOST_TMUX_CONFIG
 
 #: Mounted read-only into every box beside keeper.sh, so editing it does not
 #: require rebuilding the image.
-TMUX_CONFIG_PATH = HOST_HOME / ".local/lib/agent-box/agent_box/tmux.conf"
+TMUX_CONFIG_PATH = CONTAINER_LAUNCHER_ROOT / "agent_box/tmux.conf"
 #: A private server socket, so a tmux the user starts by hand inside the box
 #: never shares a server with agent-box's own agent sessions.
 TMUX_SOCKET = "agent-box"
