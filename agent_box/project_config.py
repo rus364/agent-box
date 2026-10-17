@@ -81,6 +81,8 @@ def changed(data, assignments=(), resets=()):
 
 
 def validate(data, path):
+    if not isinstance(data, dict):
+        raise AgentBoxError(f"Invalid project configuration: {path}: expected a JSON object")
     data = migrations.PROJECT_CONFIG.prepare({"version": migrations.PROJECT_CONFIG.version, **data})
     data.pop("version")
     def credentials(value, parts=()):
