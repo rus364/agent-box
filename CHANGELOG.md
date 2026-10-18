@@ -1,6 +1,6 @@
 # Release notes
 
-## Unreleased
+## 1.1.0
 
 - Add opt-in workspace TCP/UDP publication, selected host-service forwarding
   through pasta, and explicit host networking. Configure them under
@@ -10,11 +10,6 @@
 - Extend `box.k3s.ports` with explicit IPv4/IPv6 bind addresses and UDP while
   preserving existing loopback TCP mappings. Move its editor to Network without
   changing its saved key. Projects can publish only on loopback.
-- This additive feature belongs in the next MINOR release. Missing network
-  fields retain safe defaults in published configuration and v1 box policies;
-  no format conversion or schema bump is needed. Runtime bundles remain
-  immutable: stop/relaunch an existing workspace to adopt the new runtime.
-  No package is published by this change.
 
 - Add `workflow pause` and `workflow resume` to preserve unfinished task work,
   return to the base and recover existing branches without guessing. Pause
@@ -22,8 +17,6 @@
   to defer/block work require the user's agreement.
 - Add off-by-default `workflow.pause_push` and per-pause `--push`/`--no-push`
   for verified remote checkpoints, independent of delivery `auto_push`.
-  These additive commands/settings belong in the next MINOR release. No new
-  persisted format or migration is required; omitted settings remain disabled.
 
 - Exclude moved Jira issues from project search and exact-title resolution
   after rereading stale Cloud search results.
@@ -32,8 +25,16 @@
   workflow transitions, links, comments, assignees and checklist revisions.
 - Keep existing URL/token accounts compatible; Jira Cloud adds an optional
   username field. Server/DC has local live validation; Cloud has isolated
-  contract tests and still awaits live acceptance. This additive feature
-  belongs in the next MINOR release; no package is published by this change.
+  contract tests and still awaits live acceptance.
+- Automate stable Arch/AUR publication after verified PyPI and GitHub releases.
+  Keep development tests in Arch CI rather than user installation, preserve
+  packaged runtime resources and show backend build output only on failure.
+
+This MINOR release adds compatible functionality without changing persisted
+schema versions. Direct upgrades from 1.0.0 and 1.0.1 retain saved settings;
+missing networking and pause-publication settings keep their safe defaults.
+Running workspaces retain their immutable runtime: explicitly stop/relaunch
+them to use the new runtime. Update through the installer that owns the package.
 
 ## 1.0.1
 
