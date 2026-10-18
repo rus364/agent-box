@@ -3125,10 +3125,10 @@ def runtime_main(
     options, requested = nested_launch_options(options)
     existing = existing_workspace_spec(workspace, options, script_dir)
     config = launch_config(options, box_policy=existing.creation_config._box_policy if existing else None)
+    nested = list(dict.fromkeys(requested + withhold_from_nested_box(config)))
     errors = config.box.validate()
     if errors:
         raise AgentBoxError(errors[0])
-    nested = list(dict.fromkeys(requested + withhold_from_nested_box(config)))
     agent, rest = config.agents.default, args
     if args and args[0] in {"claude", "codex", "shell", "doctor"}:
         agent, rest = args[0], args[1:]

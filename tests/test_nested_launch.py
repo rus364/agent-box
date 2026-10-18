@@ -94,6 +94,16 @@ class NestedLaunchTests(K3sRuntimeTest):
         self.assertFalse(any("gets no cluster of its own" in warning for warning in warnings))
         self.assertTrue(json.loads(snapshot.read_text())["box"]["k3s"]["enabled"])
 
+    def test_nested_publication_can_reuse_an_outer_k3s_host_port(self):
+        """An inner box has no sidecar and publishes in a different host namespace."""
+        config = k3s_config()
+        config.box.k3s.ports = ["8080:80"]
+        options = LaunchOptions(publish=["8080:3000"])
+        captured, ensure, _, snapshot = self.launch(inside=True, config=config, options=options)
+        ensure.assert_not_called()
+        self.assertIn("--publish=127.0.0.1:8080:3000", captured["argv"])
+        self.assertFalse(json.loads(snapshot.read_text())["box"]["k3s"]["enabled"])
+
     def test_doctor_names_the_nested_case(self):
         self.assertIn("none in a nested box", runtime.DOCTOR_SCRIPT)
 
