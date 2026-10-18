@@ -31,4 +31,5 @@ For contributors: decisions, evidence and provenance behind the implementation.
 - [Integration design notes](design/integrations.md) — credential copies, notifications, Remote Control, web links, external APIs, nested Podman, developing agent-box in a box.
 - [Workflow design references](design/workflow-references.md) — researched sources, reused libraries and adaptations.
 - [Native launch contract](design/native-launch.md) — evidence for native subagent and managed launches.
+- [Networking audit and proposal](design/networking.md) — measured traffic paths, publishing, host access and proposed network controls; not yet implemented.
 - [Third-party notices](design/third-party-notices.md) — licenses of adapted material.
