@@ -67,7 +67,7 @@ class ConfigMenuTests(unittest.TestCase):
             (): ['agents', 'box', 'credentials', 'tracker', 'workflow', 'host'],
             ('agents',): ['default', 'claude', 'codex', 'host_env', 'external_apis'],
             ('agents', 'codex'): ['native_agent_wait', 'remote_control'],
-            ('box',): ['tools', 'k3s', 'podman', 'audio', 'links', 'env'],
+            ('box',): ['tools', 'network', 'k3s', 'podman', 'audio', 'links', 'env'],
             ('credentials',): ['git', 'github', 'registries', 'kubernetes', 'cloud'],
             ('host',): ['notifications', 'claude_skill_links'],
             ('workflow',): ['enabled', 'merge_mode', 'auto_push', 'pause_push', 'cleanup_local_branches',
@@ -403,9 +403,22 @@ class ConfigMenuTests(unittest.TestCase):
         result, _ = self.edit(config, [*keys, "\x1b"])
         self.assertIsNone(result)
         self.assertTrue(config.agents.claude.statusline.enabled)
+
         result, _ = self.edit(config, [*keys, curses.KEY_END, curses.KEY_UP, "\n"])
         self.assertFalse(result.config.agents.claude.statusline.enabled)
         self.assertTrue(config.agents.claude.statusline.enabled)
+
+    def test_network_menu_edits_and_resets_the_original_k3s_port_list(self):
+        """The shared networking menu must write the sidecar key, never a disconnected duplicate."""
+        import curses
+        config = Config()
+        enter = [*select("box"), "\n", *select("network", ("box",)), "\n", curses.KEY_END, "\n"]
+        save = ["\x1b", "\x1b", curses.KEY_END, curses.KEY_UP, "\n"]
+        result, _ = self.edit(config, [*enter, "\n", "\x15", *'["8080:80"]', "\n", *save])
+        self.assertEqual(result.config.box.k3s.ports, ["8080:80"])
+        self.assertEqual(result.config.box.network.ports, [])
+        result, _ = self.edit(result.config, [*enter, curses.KEY_DOWN, "\n", *save])
+        self.assertEqual(result.config.box.k3s.ports, [])
 
     def test_tracker_provider_can_be_selected_and_cleared_without_changing_accounts(self):
         """The empty choice must be visible and survive saving, not cycle back to Vikunja."""

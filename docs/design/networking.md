@@ -2,12 +2,15 @@
 
 Task [#48](https://github.com/rus364/agent-box/issues/48), audited on
 2026-10-18 against `ed65554db71f524a67088a341f173db3b1feb84e`.
-This is a design record, not documentation of available new settings or flags.
+This preserves the pre-implementation audit and accepted design. Task
+[#50](https://github.com/rus364/agent-box/issues/50) implements the interface;
+[workspace networking](../networking.md) documents its current use. Sections
+labelled current topology below describe the audited baseline.
 The owner selected both directions of traffic, loopback publication by default,
 explicit user control of LAN exposure, and explicit reauthorization before joining
 a workspace created with a temporary host-network override. Convenience means
 describing the service and its destination rather than asking users to understand
-pasta options. Product implementation follows this audit separately.
+pasta options. Implementation and its validation are recorded separately in task #50.
 
 ## Current topology
 
@@ -56,7 +59,7 @@ product defects.
 
 ## Recommended configuration and commands
 
-The following names are proposed, not implemented. All networking settings
+The following names were accepted for implementation in task #50. All networking settings
 appear under **Workspace box → Network**. The k3s port editor edits its existing
 key; it must not maintain a second copy of the same list.
 
@@ -85,7 +88,7 @@ argument. Selected host forwarding requires pasta; diagnose an unsupported
 backend rather than silently replacing it or enabling host mode. Do not add a
 raw pasta-arguments setting.
 
-Proposed CLI examples:
+CLI examples:
 
 ```sh
 agent-box --publish 8080:3000 codex
@@ -287,3 +290,29 @@ seccomp-profile extension and capability/device set with a fresh storage volume.
 k3s used `k3s.ENTRYPOINT`/`server_args`, a dedicated network and storage volume,
 a BusyBox HTTP pod, NodePort 30080 and a Traefik Ingress. Wait for the service
 account and controller deployments as well as the node before probing them.
+
+## Implementation validation (task #50)
+
+The implementation was exercised through its parser, configuration merge,
+`runtime_main`, creation and running-box admission using isolated temporary
+state and provider directories. No real agent was launched. On the audited
+Linux/rootless Podman host, the new path passed:
+
+- TCP/UDP workspace publication and multiple simultaneous TCP/UDP host-service
+  forwards; correct host/workspace port translation and one pasta argument.
+- Loopback IPv4/IPv6, explicit wildcard publication reached via the host's LAN
+  address, and occupied-port refusal without choosing a replacement.
+- Repeated and concurrent joins, refusal of unrequested temporary access,
+  host localhost, renewed host authorization, and default networking after
+  the temporary host box ended.
+- Nested Podman publication through both layers and from an outer host-network
+  workspace; inner host networking shares the outer namespace.
+- Authenticated k3s `/readyz` together with selected host forwards, a real
+  BusyBox HTTP workload reached through a published NodePort, and the same API
+  and sidecar service after recreating the workspace in host mode.
+- Native `--host` refusal of all network flags. Containers, networks, volumes
+  and user-setting hashes matched their baselines after cleanup.
+
+This implementation evidence is separate from the earlier raw-Podman audit.
+A second LAN computer, other operating systems/backends, VPNs and proxies were
+not tested. Port reachability through a host firewall remains environment-specific.

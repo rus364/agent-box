@@ -212,3 +212,9 @@ you answer yes. `config ai` offers a pending proposal before the session and
 again when it ends or detaches. Credentials, tokens, API keys, environment and
 installation settings are never proposed this way; set them in
 `agent-box config`.
+
+## Networking
+
+**Workspace box → Network** groups workspace and k3s publications, selected
+host services and mode. The k3s list remains `box.k3s.ports`. See
+[workspace networking](networking.md) for settings, scopes and launch overrides.

@@ -32,7 +32,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .atomicio import read_json
-from . import migrations
+from . import migrations, networking
 from .paths import CONFIG_FILE
 from .external_config import API_EFFORTS, ExternalProvider, parse_connections, valid_name
 
@@ -653,15 +653,10 @@ class K3sConfig:
             errors.append("box.k3s.cpus must be empty or a positive number such as 2 or 1.5")
         if self.memory and not (re.fullmatch(r"\d+[bkmg]?", self.memory, re.I) and int(re.sub(r"\D", "", self.memory))):
             errors.append("box.k3s.memory must be empty or a size such as 4g or 512m")
-        hosts = []
-        for port in self.ports if isinstance(self.ports, list) else [None]:
-            match = re.fullmatch(r"(\d{1,5}):(\d{1,5})", port) if isinstance(port, str) else None
-            if not match or not all(1 <= int(n) <= 65535 for n in match.groups()):
-                errors.append("box.k3s.ports must be a list of HOST:CONTAINER port pairs such as 8080:80")
-                break
-            hosts.append(int(match.group(1)))
-        if len(hosts) != len(set(hosts)):
-            errors.append("box.k3s.ports publishes one host port twice")
+        try:
+            networking.ports(self.ports)
+        except ValueError as exc:
+            errors.append(f"box.k3s.ports: {exc}")
         manifests = PurePosixPath(self.manifests)
         if self.manifests and (manifests.is_absolute() or ".." in manifests.parts or "\\" in self.manifests):
             errors.append("box.k3s.manifests must be a path inside the project, without '..'")
@@ -1217,11 +1212,29 @@ class LinksConfig:
 
 
 @dataclass
+class NetworkConfig:
+    """Host access/publication is opt-in and belongs to the shared container."""
+    mode: str = "default"
+    ports: list = field(default_factory=list)
+    host_ports: list = field(default_factory=list)
+
+    def to_dict(self):
+        return {"mode": self.mode, "ports": list(self.ports), "host_ports": list(self.host_ports)}
+
+    @classmethod
+    def from_dict(cls, data):
+        data = _mapping(data)
+        return cls((_str(data, "mode") if "mode" in data else "default"), _copied(data, "ports", list),
+                   _copied(data, "host_ports", list))
+
+
+@dataclass
 class BoxConfig:
     """What the workspace box is built with and runs beside it."""
 
     tools: ToolsConfig = field(default_factory=ToolsConfig)
     k3s: K3sConfig = field(default_factory=K3sConfig)
+    network: NetworkConfig = field(default_factory=NetworkConfig)
     podman: PodmanConfig = field(default_factory=PodmanConfig)
     #: The host's sound server inside workspace boxes.
     #:
@@ -1241,18 +1254,19 @@ class BoxConfig:
     env: EnvConfig = field(default_factory=EnvConfig)
 
     def to_dict(self) -> dict[str, Any]:
-        return {"tools": self.tools.to_dict(), "k3s": self.k3s.to_dict(), "podman": self.podman.to_dict(),
+        return {"tools": self.tools.to_dict(), "k3s": self.k3s.to_dict(), "network": self.network.to_dict(), "podman": self.podman.to_dict(),
                 "audio": self.audio, "links": self.links.to_dict(), "env": self.env.to_dict()}
 
     @classmethod
     def from_dict(cls, data: Any) -> "BoxConfig":
         data = _mapping(data)
         return cls(tools=ToolsConfig.from_dict(data.get("tools")), k3s=K3sConfig.from_dict(data.get("k3s")),
+                   network=NetworkConfig.from_dict(data.get("network")),
                    podman=PodmanConfig.from_dict(data.get("podman")), audio=_bool(data, "audio", False), links=LinksConfig.from_dict(data.get("links")),
                    env=EnvConfig.from_dict(data.get("env")))
 
     def validate(self) -> list[str]:
-        return self.k3s.validate() + self.links.validate()
+        return self.k3s.validate() + self.links.validate() + networking.problems(self.network, self.k3s)
 
 
 @dataclass
@@ -1435,6 +1449,7 @@ def apply_box_policy(config, policy):
     shared = Config.from_dict(policy)
     config.box.tools.groups = copy.deepcopy(shared.box.tools.groups)
     config.box.k3s = shared.box.k3s
+    config.box.network = shared.box.network
     config.box.podman = shared.box.podman
     config.box.audio = shared.box.audio
     config.box.links = shared.box.links
@@ -1468,6 +1483,9 @@ def effective_config(base=None, *, include_project=True) -> Config:
             # checkout it no longer loads or validates although nothing the user saved is wrong.
             try:
                 base = Config.from_dict(rendered)
+                if "network" in rendered.get("box", {}):
+                    # A running namespace cannot follow later project edits.
+                    base._network_policy = NetworkConfig.from_dict(rendered["box"]["network"])
                 # Only agent-box's own messages are shown: other exceptions may quote values.
                 errors = base.workflow.validate() + base.agents.codex.validate()
             except AgentBoxError as exc:
@@ -1497,6 +1515,8 @@ def effective_config(base=None, *, include_project=True) -> Config:
         base._launch = launch
         return base
     result = project_config.apply(base, project_config.load())
+    if hasattr(base, "_network_policy"):
+        result.box.network = copy.deepcopy(base._network_policy)
     if box_policy is not None:
         apply_box_policy(result, box_policy)
     return launch_options.apply(result, launch) if launch else result

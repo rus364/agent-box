@@ -25,7 +25,7 @@ def _fields(value, parts=()):
 PROJECT_FIELDS = {
     "workflow": {key: _fields(value, ("workflow", key)) for key, value in Config().workflow.to_dict().items() if key != "enabled"},
     "box": {"tools": _fields(Config().box.tools.to_dict()), "k3s": _fields(Config().box.k3s.to_dict(), ("k3s",)),
-            "podman": _fields(Config().box.podman.to_dict())},
+            "podman": _fields(Config().box.podman.to_dict()), "network": {"ports": list}},
     "tracker": {"provider": str, "project": str, "recursive": bool,
                 "connections": {provider: {"url": str} for provider in TRACKER_PROVIDERS}},
 }
@@ -116,6 +116,16 @@ def validate(data, path):
             raise AgentBoxError(f"Invalid project configuration: {path}: {dotted} must contain strings")
     credentials(data)
     fields(data, PROJECT_FIELDS)
+    from . import networking
+    import ipaddress
+    for section in ("network", "k3s"):
+        for value in data.get("box", {}).get(section, {}).get("ports", []):
+            try:
+                port = networking.parse_port(value)
+            except ValueError as exc:
+                raise AgentBoxError(f"box.{section}.ports: {exc}") from None
+            if not ipaddress.ip_address(port.address).is_loopback:
+                raise AgentBoxError(f"box.{section}.ports: non-loopback bindings are global/CLI only")
     tracker = data.get('tracker', {})
     if tracker.get('provider') and tracker['provider'] not in TRACKER_PROVIDERS:
         raise AgentBoxError(f"Invalid project configuration: {path}: tracker.provider is unsupported")

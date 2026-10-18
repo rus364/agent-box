@@ -25,11 +25,15 @@ Rebuild if the outer host's subordinate ID allocation changes.
 ## Network and storage boundaries
 
 `slirp4netns` handles networking in userspace and connects it through a TAP
-interface. The outer workspace receives `/dev/net/tun`; no host network
-namespace is shared. A nested container's `-p` publishes into the **workspace**
+interface. The outer workspace receives `/dev/net/tun`; its default mode uses
+a separate network namespace. A nested container's `-p` publishes into the **workspace**
 network. For example, a service published at `127.0.0.1:8080` is reachable from
 a shell in that workspace. It is not automatically published on the physical
 host. `--network=host` on an inner container shares the workspace's network.
+To publish through both layers, use an inner bind such as
+`-p 0.0.0.0:18080:8080` and outer `agent-box --publish 8080:18080 ...`.
+If the outer workspace uses `agent-box --network=host`, inner publication
+lands on the physical host. See [workspace networking](networking.md).
 
 Bind mounts can use paths visible inside the workspace. Images, build cache,
 containers and named volumes live in a dedicated outer volume named

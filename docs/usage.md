@@ -62,6 +62,13 @@ alone, and `rm ID` removes one.
 How the workspace root is chosen and what the box can reach is described in
 [Workspace and security model](security.md).
 
+## Networking
+
+Publish workspace services with `--publish 8080:3000`, reach selected host
+services with `--host-port 5432:15432`, or explicitly share the host network
+with `--network=host`. See [workspace networking](networking.md) for direction,
+loopback defaults, k3s, nested containers and running-session rules.
+
 ## Session options
 
 Options before the agent change one launch and are never saved;

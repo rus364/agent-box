@@ -16,6 +16,7 @@ from .external_config import API_EFFORTS, EFFORTS, ExternalProvider, cli_models,
 from .model_catalog import load_model_catalogs
 
 CHOICES = {
+    "box.network.mode": ("default", "host"),
     "agents.default": LAUNCH_AGENTS,
     "tracker.provider": ("", *TRACKER_PROVIDERS),
     "workflow.merge_mode": ("github", "local"),
@@ -27,6 +28,10 @@ CHOICES = {
     "box.k3s.lifetime": K3S_LIFETIMES,
 }
 HELP = {
+    "box.network": "Publish workspace or k3s services, reach selected host services, or explicitly share the host network. Changes need a stopped workspace.",
+    "box.network.mode": "default keeps isolated networking. host shares host localhost and ports, including nested containers; wildcard listeners may reach the LAN. Global only; --network overrides one container lifetime. Not native --host execution.",
+    "box.network.ports": "JSON list of [IP:]HOST:CONTAINER[/tcp|udp] workspace publications. Default 127.0.0.1 and TCP. Use [::1] for IPv6. An explicit non-loopback IP makes the service accessible from other computers (global/CLI only). Applications must listen on the container interface, not only localhost. Example: [\"8080:3000\"].",
+    "box.network.host_ports": "JSON list of HOST:WORKSPACE[/tcp|udp] forwards into workspace localhost, such as [\"5432:15432\"]. Global only, off by default. Requires pasta. No host filesystem access; all processes in the workspace can use the selected host service.",
     "agents": "Which agent starts, how Claude and Codex run, and which provider APIs and host variables they may use.",
     "box": "What the workspace box is built with, the k3s cluster and nested Podman storage beside it, sound, and its environment.",
     "credentials": "Host identity and credentials the box's own tools may use. Everything that exposes a credential is off by default.",
@@ -91,7 +96,7 @@ HELP = {
     "box.k3s.network_policy": "Enforce NetworkPolicy with k3s's embedded controller. Recreates the sidecar on the same data.",
     "box.k3s.cpus": "CPU limit of the sidecar, such as 2 or 1.5; empty means no limit. Recreates the sidecar on the same data.",
     "box.k3s.memory": "Memory limit of the sidecar, such as 4g or 512m; empty means no limit. Pods beyond it are OOM-killed inside the cluster. Recreates the sidecar on the same data.",
-    "box.k3s.ports": "JSON list of HOST:CONTAINER pairs published on the host's 127.0.0.1 only, such as [\"8080:80\"] to open Traefik's ingress in your browser. Never exposed to the LAN. Recreates the sidecar on the same data.",
+    "box.k3s.ports": "JSON list of [IP:]HOST:CONTAINER[/tcp|udp] sidecar publications. Default host 127.0.0.1 and TCP. Non-loopback IPs are global/CLI only. Example [\"8080:80\"] reaches a configured ingress. Edited under Workspace box > Network. Recreates the sidecar on the same data.",
     "box.k3s.manifests": "Project-relative directory k3s applies at start and on every change (YAML and HelmChart resources), mounted read-only; empty mounts nothing. Must stay inside the project. Recreates the sidecar on the same data.",
     "box.k3s.registry_mirrors": "JSON object of registry name to mirror URLs, such as {\"docker.io\": [\"https://mirror.example\"]}, rendered into k3s's registries.yaml. No credentials: URLs with a user or password are refused. Recreates the sidecar on the same data.",
     "box.k3s.extra_args": "JSON list of extra `k3s server` flags, each starting with --, added after agent-box's own, such as [\"--cluster-cidr=10.60.0.0/16\"]. Recreates the sidecar on the same data.",
@@ -174,6 +179,8 @@ LABELS = {
 }
 #: Labels a bare key cannot carry because the same key means something else elsewhere.
 PATH_LABELS = {
+    "box.network": "Network", "box.network.mode": "Network mode",
+    "box.network.ports": "Workspace published ports", "box.network.host_ports": "Host services",
     "credentials.github.token": "Forward gh token", "credentials.github.config": "Copy gh config",
     # The image's kubernetes tool group keeps its own label.
     "credentials.kubernetes": "Kubernetes configs", "credentials.kubernetes.files": "Kubeconfig files",
@@ -186,6 +193,8 @@ PATH_LABELS = {
 #: help stays behind "?". One shared paragraph for every value made the reader map the
 #: prose back to the row themselves.
 OPTION_HELP = {
+    "box.network.mode": {"default": "Separate network namespace using the ordinary rootless backend.",
+                         "host": "Share host localhost and ports; all workspace processes gain host network access."},
     "agents.default": {
         "claude": "A bare `agent-box` starts Claude Code.",
         "codex": "A bare `agent-box` starts Codex CLI.",
@@ -278,7 +287,7 @@ MENU_GROUPS = {
     ),
     ("box",): (
         ("Image", ("tools",)),
-        ("Workspace resources", ("k3s", "podman")),
+        ("Workspace resources", ("network", "k3s", "podman")),
         ("Inside the box", ("audio", "links", "env")),
     ),
     ("credentials",): (
@@ -1106,7 +1115,12 @@ def edit(config, *, project=None):
         while True:
             notice = keep_tools(notice)
             keys = menu_keys(data, path)
+            if path == ("box", "k3s"):
+                keys = [key for key in keys if key != "ports"]
             extras = [("Review preset", "preset", ACTION_HELP["preset"])] if path == ("workflow", "review") else []
+            if path == ("box", "network"):
+                extras.append(("k3s published ports: " + json.dumps(draft["box"]["k3s"]["ports"]),
+                               "k3s_ports", HELP["box.k3s.ports"]))
             rel = external(path)
             listed = None
             if rel and not project_mode and rel[0] in draft["agents"]["external_apis"] and (
@@ -1186,6 +1200,16 @@ def edit(config, *, project=None):
                 hint = labels[selected] + "\n" + hint
             else:
                 hint, help_title = extras[selected - len(keys)][2], extras[selected - len(keys)][0]
+            if path == ("box", "network"):
+                target = ("k3s" if selected >= len(keys) else
+                          {"ports": "workspace", "host_ports": "host"}.get(keys[selected]))
+                if target:
+                    from .networking import port_summary
+                    values = draft["box"]["k3s"]["ports"] if target == "k3s" else data[keys[selected]]
+                    try:
+                        hint = "\n".join([*port_summary(values, target), hint])
+                    except ValueError:
+                        pass  # Invalid drafts still need their editing help.
             title = ("agent-box config --project" if project_mode else "agent-box config") + (" / " + " / ".join(label_for(part, path[:index]) for index, part in enumerate(path)) if path else "")
             controls = ("Enter R inherit G copy " if project_mode else "Enter open R reset ") + "? help Esc back"
             headings = group_headings(keys, path)
@@ -1234,6 +1258,25 @@ def edit(config, *, project=None):
             elif key in (" ", "\n", "\r", curses.KEY_RIGHT):
                 if selected >= len(keys):
                     _, action, _ = extras[selected - len(keys)]
+                    if action == "k3s_ports":
+                        full = ("box", "k3s", "ports")
+                        choices = ["Edit ports", "Inherit global" if project_mode else "Reset to default"]
+                        picked = choose(screen, choices, "k3s published ports", 0, explanation=help_for(full))
+                        if picked == 1:
+                            draft["box"]["k3s"]["ports"] = remove_override(full) if project_mode else []
+                        elif picked == 0:
+                            changed = input_value(screen, "k3s published ports", json.dumps(draft["box"]["k3s"]["ports"]), False)
+                            if changed is not None:
+                                try:
+                                    from .networking import ports
+                                    value = json.loads(changed)
+                                    ports(value)
+                                    draft["box"]["k3s"]["ports"] = value
+                                    if project_mode:
+                                        record(full, value)
+                                except (ValueError, json.JSONDecodeError) as exc:
+                                    notice = str(exc)
+                        continue
                     if action == "project":
                         if draft != initial_draft and choose(
                                 screen, ["Keep editing global settings", "Discard global edits and open project"],

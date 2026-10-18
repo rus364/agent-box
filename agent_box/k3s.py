@@ -28,6 +28,7 @@ from .atomicio import atomic_write_text
 from .config import K3sConfig
 from .errors import AgentBoxError
 from .host_podman import WORKSPACE_PATH_LABEL
+from . import networking
 
 IMAGE = "docker.io/rancher/k3s"
 #: The stable channel's release when last updated; pinned by its multi-arch
@@ -142,7 +143,7 @@ def container_args(workspace_id: str, k3s: K3sConfig, state_dir: Path, project_r
           if k3s.registry_mirrors else []),
         f"--publish=127.0.0.1::{API_PORT}",
         # Loopback only: an ingress for the user's browser, never for the LAN.
-        *[f"--publish=127.0.0.1:{port}" for port in k3s.ports],
+        *[f"--publish={networking.parse_port(port).publish()}" for port in k3s.ports],
         "--entrypoint=/bin/sh", image_ref(k3s), "-c", ENTRYPOINT, "k3s", *server_args(k3s),
     ]
 

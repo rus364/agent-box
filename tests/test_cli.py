@@ -107,6 +107,10 @@ class LaunchOptionDispatchTests(unittest.TestCase):
                               (["--host", "--no-browser"], "--no-browser needs a container"),
                               (["--host", "--k3s"], "--[no-]k3s needs a container"),
                               (["--host", "--no-k3s"], "--[no-]k3s needs a container"),
+                              (["--host", "--network=host"], "--network needs a container"),
+                              (["--host", "--publish=8080:80"], "--[no-]publish needs a container"),
+                              (["--host", "--host-port=5432:15432"], "--host-port needs a container"),
+                              (["--host", "--no-host-ports"], "--host-port needs a container"),
                               (["--host", "--no-kvm", "codex"], "--no-kvm needs a container"),
                               (["--review", "always", "config", "show"], "not valid before config"),
                               (["--mount", "/x", "attach"], "not valid before attach")):

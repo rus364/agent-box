@@ -40,7 +40,7 @@ from . import host_podman, nested_podman, runtime_bundle
 from . import cloud, kubeconfigs, registries, links
 from .atomicio import atomic_write_bytes, atomic_write_json, atomic_write_text, read_json
 from .config import ENV_PREFIX, IMPLEMENTED_TRACKERS, WORKFLOW_SKILLS, Config, apply_box_policy, load_config, effective_config, session_account
-from . import migrations
+from . import migrations, networking
 from .errors import AgentBoxError
 from .external_config import has_toml_spelling, toml_string
 from .identity import HostIdentity, detect_host_identity
@@ -1039,6 +1039,7 @@ def sync_tracker_runtime(config: Config, directory: Path | None = None, *, polic
     """Render only explicitly enabled capabilities; directory mounts see atomic updates."""
     launch = getattr(config, "_launch", {})
     browser_enabled = config.box.tools.browser()
+    network = config.box.network.to_dict()
     config = getattr(config, "_project_base", config)
     directory = TRACKER_RUNTIME_DIR if directory is None else directory
     if not policy and not (config.tracker.enabled or config.workflow.enabled):
@@ -1081,6 +1082,7 @@ def sync_tracker_runtime(config: Config, directory: Path | None = None, *, polic
                         "cloud": config.credentials.cloud.to_dict()},
         # A nested box inherits the outer box's sound socket at the same path.
         "box": {"tools": config.box.tools.to_dict(), "k3s": config.box.k3s.to_dict(),
+                "network": network,
                 "podman": config.box.podman.to_dict(),
                 "audio": config.box.audio, "links": config.box.links.to_dict()},
         "container": container,
@@ -1112,6 +1114,17 @@ def session_runtime(config, *, container=True, runtime_state=None):
     return path
 
 
+def requested_network(saved, options):
+    network = copy.deepcopy(saved)
+    if options.network is not None:
+        network.mode = options.network
+    if options.publish is not None:
+        network.ports = list(options.publish)
+    if options.host_ports is not None:
+        network.host_ports = list(options.host_ports)
+    return network
+
+
 def launch_config(options=None, *, box_policy=None):
     """Saved settings, then the project, then this launch's flags."""
     from . import launch_options
@@ -1132,6 +1145,10 @@ def launch_config(options=None, *, box_policy=None):
         apply_box_policy(config._project_base, box_policy)
         config.box.tools.browser_off = not browser_enabled
     launch_options.apply(config, overrides)
+    config.box.network = requested_network(config.box.network, options)
+    errors = config.box.validate()
+    if errors:
+        raise AgentBoxError(errors[0])
     # The snapshot renders from the layer beneath the project overlay. Only
     # --no-workflow's withdrawal of the tracker and the --tracker account belong
     # there; any other flag would reach a project copy made inside the session.
@@ -1677,6 +1694,27 @@ def k3s_state_dir(runtime_state: WorkspaceRuntimeState) -> Path:
     return runtime_state.root / "k3s"
 
 
+def network_arguments(config, api_port=None):
+    errors = networking.problems(config.box.network, config.box.k3s)
+    try:
+        if errors:
+            raise ValueError(errors[0])
+        return networking.arguments(config.box.network, api_port)
+    except ValueError as exc:
+        raise AgentBoxError(str(exc)) from None
+
+
+def prepare_network(config):
+    if config.box.network.host_ports:
+        try:
+            backend = nested_podman.host_info().get("rootlessNetworkCmd")
+        except ValueError as exc:
+            raise AgentBoxError(str(exc)) from None
+        if backend != "pasta":
+            raise AgentBoxError("selected host-service forwarding requires host Podman's pasta backend; "
+                                "clear --host-port with --no-host-ports or configure pasta")
+
+
 def k3s_box_args(
     config: Config, workspace: Workspace, runtime_state: WorkspaceRuntimeState | None,
 ) -> list[str]:
@@ -1689,10 +1727,10 @@ def k3s_box_args(
     recreated sidecar recreates the box too.
     """
     if not config.box.k3s.enabled:
-        return []
+        return network_arguments(config)
     runtime_state = runtime_state or workspace_runtime_state(workspace)
     port = k3s.api_port(workspace_identity(workspace))
-    return [f"--network=pasta:-T,{port}",
+    return [*network_arguments(config, int(port)),
             f"--env=KUBECONFIG={k3s.kubeconfig_path(k3s_state_dir(runtime_state))}"]
 
 
@@ -1804,7 +1842,8 @@ def confirm_k3s(spec: WorkspaceContainerSpec) -> None:
         return
     sidecar = k3s.inspect(spec.workspace_id)
     running = (sidecar or {}).get("State", {}).get("Status") == "running"
-    if not running or f"--network=pasta:-T,{k3s.api_port(spec.workspace_id)}" not in spec.create_argv:
+    expected = network_arguments(config, int(k3s.api_port(spec.workspace_id))) if running else []
+    if not running or any(arg not in spec.create_argv for arg in expected):
         raise AgentBoxError("the k3s cluster was stopped or recreated while this launch was starting; "
                             "run the command again")
 
@@ -2120,6 +2159,7 @@ def workspace_box_policy(spec: WorkspaceContainerSpec) -> dict:
     source, destination, read_only = tracker_mounts(config, spec.runtime_state)[0]
     return {
         "box": {"tools": tools, "k3s": config.box.k3s.to_dict(),
+                "network": config.box.network.to_dict(),
                 # Whichever session leaves last deletes or keeps the data by this.
                 "podman": config.box.podman.to_dict(),
                 "audio": any(arg.startswith("--env=PULSE_SERVER=") for arg in spec.create_argv),
@@ -2178,6 +2218,20 @@ def existing_workspace_spec(workspace: Workspace, options: LaunchOptions, packag
             sidecar = k3s.inspect(workspace_identity(workspace))
             if (sidecar or {}).get("State", {}).get("Status") != "running":
                 raise AgentBoxError("running workspace box's k3s sidecar is unavailable; end it with agent-box stop and rerun")
+        desired_network = requested_network(effective_config(runtime_config_base()).box.network, options)
+        try:
+            matches = networking.identity(desired_network) == networking.identity(shared.box.network)
+        except ValueError as exc:
+            raise AgentBoxError(f"invalid workspace network policy: {exc}") from None
+        if not matches:
+            raise AgentBoxError("requested network mode/ports differ from the running workspace "
+                                f"(running {shared.box.network.to_dict()}, requested {desired_network.to_dict()}); "
+                                "repeat its explicit network options or "
+                                "end it with agent-box stop and rerun")
+        api_port = int(k3s.api_port(workspace_identity(workspace))) if shared.box.k3s.enabled else None
+        problem = networking.inspection_problem(shared.box.network, current, api_port)
+        if problem:
+            raise AgentBoxError(f"running workspace network: {problem}; end it with agent-box stop and rerun")
         shared_flags = {"registries": shared.credentials.registries.enabled,
                         "k3s": shared.box.k3s.enabled,
                         "kubeconfigs": shared.credentials.kubernetes.enabled,
@@ -3095,6 +3149,10 @@ def runtime_main(
                  f" -- run 'agent-box build' to drop them")
         for problem in nested_podman_drift(config):
             warn(problem)
+    if (config.box.network.mode != "default" or config.box.network.ports or config.box.network.host_ports
+            or config.box.k3s.enabled and config.box.k3s.ports):
+        for line in networking.summary(config.box.network, config.box.k3s):
+            print("agent-box: " + line, file=sys.stderr)
     # Every launch, not only box creation: joining a running box with the
     # switch on and no socket leaves box identity unchanged and would say nothing.
     from .external_config import model_warnings
@@ -3154,6 +3212,7 @@ def runtime_main(
         elif remote_control_invocation(agent, rest):
             command = remote_control_command(command, agent, config, container=True)
         if existing is None:
+            prepare_network(config)
             prepare_k3s(config, workspace, runtime_state)
             bundle = runtime_bundle.prepare(script_dir, STATE_ROOT / "runtime/launcher")
             spec = workspace_container_spec(workspace, extra_mounts, bundle, config, options.kvm)

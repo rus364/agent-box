@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- Add opt-in workspace TCP/UDP publication, selected host-service forwarding
+  through pasta, and explicit host networking. Configure them under
+  **Workspace box → Network** or with `--publish`, `--host-port`, `--network`,
+  `--no-publish` and `--no-host-ports`. Running boxes require matching network
+  authorization; temporary host access is never silently inherited.
+- Extend `box.k3s.ports` with explicit IPv4/IPv6 bind addresses and UDP while
+  preserving existing loopback TCP mappings. Move its editor to Network without
+  changing its saved key. Projects can publish only on loopback.
+- This additive feature belongs in the next MINOR release. Missing network
+  fields retain safe defaults in published configuration and v1 box policies;
+  no format conversion or schema bump is needed. Runtime bundles remain
+  immutable: stop/relaunch an existing workspace to adopt the new runtime.
+  No package is published by this change.
+
 - Add `workflow pause` and `workflow resume` to preserve unfinished task work,
   return to the base and recover existing branches without guessing. Pause
   never changes lifecycle, ownership, priority or blocker relations; decisions
