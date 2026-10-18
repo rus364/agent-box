@@ -189,6 +189,12 @@ class JiraContractTests(unittest.TestCase):
         self.assertEqual(rows[0]["state"], "Done")
         self.assertEqual(fixture.journal[0]["body"], "Cancelled before implementation")
 
+    def test_cloud_search_hydrates_text_instead_of_flattening_enhanced_search_adf(self):
+        """Enhanced search may return rich text even in v2; the issue endpoint preserves wiki text."""
+        tracker, fixture = adapter(cloud=True)
+        fixture.search = Mock(return_value=[{"key": "TEST-1", "fields": {"description": {"type": "doc"}}}])
+        self.assertEqual(tracker.search("TEST", "Evidence")[0].description, "- [ ] Evidence")
+
     def test_username_uses_the_private_snapshot_and_disabled_trackers_render_no_accounts(self):
         """Cloud identity follows the token into private snapshots without exposing disabled integrations."""
         from agent_box import runtime

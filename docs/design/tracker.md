@@ -168,6 +168,9 @@ the contract is kept and why.
 
 The adapter uses REST v2 text fields on both deployments; Cloud's enhanced
 `/search/jql` uses cursor pagination, while Server/DC's `/search` uses offsets.
+Cloud search retrieves keys and hydrates issues through the v2 issue endpoint:
+enhanced search can return ADF even under v2, which must not be flattened into
+checklist text.
 Deployment type is read from `serverInfo`; user identities use Cloud account IDs
 or Server/DC usernames accordingly. The optional connection `username` selects
 email/API-token Basic authentication; its absence retains PAT Bearer auth.

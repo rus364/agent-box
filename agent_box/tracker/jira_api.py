@@ -62,8 +62,17 @@ class JiraClient:
                 status, payload = response.status, response.read()
         except urllib.error.HTTPError as exc:
             status = exc.code
+            try:
+                problem = json.loads(exc.read().decode())
+                detail = ("; ".join(str(item) for item in problem.get("errorMessages", [])) + " " +
+                          "; ".join(f"{key}: {value}" for key, value in problem.get("errors", {}).items())).strip()
+            except (OSError, http.client.HTTPException, ValueError, AttributeError, UnicodeError):
+                detail = ""
             exc.close()
-            raise self.error(status, write) from None
+            error = self.error(status, write)
+            if detail:
+                error = TrackerError(f"{error}: {self.redact(detail)[:1000]}", error.category, error.retryable)
+            raise error from None
         except (OSError, http.client.HTTPException):
             raise self.error(0, write) from None
         if not payload and status in (201, 204, 205):
@@ -76,9 +85,10 @@ class JiraClient:
     @property
     def cloud(self):
         if self._cloud is None:
-            self._cloud = self.request("GET", "/serverInfo").get("deploymentType", "").casefold() == "cloud"
-            if self._cloud and not self.username:
+            cloud = self.request("GET", "/serverInfo").get("deploymentType", "").casefold() == "cloud"
+            if cloud and not self.username:
                 raise TrackerError("Jira Cloud requires an email username and API token", "configuration")
+            self._cloud = cloud
         return self._cloud
 
     def pages(self, path, key, params=None):
@@ -99,7 +109,7 @@ class JiraClient:
             return self.pages("/search", "issues", {"jql": jql, "fields": "*all"})
         result, cursor, seen = [], None, set()
         for _ in range(10000):
-            params = {"jql": jql, "fields": "*all", "maxResults": 100}
+            params = {"jql": jql, "fields": "summary", "maxResults": 100}
             if cursor:
                 params["nextPageToken"] = cursor
             page = self.request("GET", "/search/jql", params=params)
