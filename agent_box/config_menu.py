@@ -119,6 +119,7 @@ HELP = {
     "workflow.scout.limit": "Maximum number of concurrent read-only scouts, from 1 through 16.",
     "workflow.scout.models": "Scout candidates in preference order; the first available one runs and the rest are fallbacks. Empty: the coordinator researches itself in its own session. Scouts have no tiers. A candidate of the other CLI than the coordinator's runs as a managed CLI process.",
     "workflow.auto_push": "Within the opt-in workflow, publish the parent task in GitHub mode or the accepted base after a local fast-forward. Turning this off keeps completion local.",
+    "workflow.pause_push": "On explicit workflow pause, publish and verify unfinished task branches in either merge mode. Off preserves locally only; --push/--no-push overrides one pause. Never changes task lifecycle.",
     "workflow.timeout_seconds": "Maximum delegated agent runtime in seconds, from 30 through 86400.",
     "workflow.worker": "The models managed workers run when the coordinator delegates with workflow delegate.",
     "workflow.worker.models": "Delegated worker candidates in preference order; the first available one runs and the rest are fallbacks. Empty: the coordinator implements in its own session. Used unless Use tiers is on and the task's tier has its own list. A candidate of the other CLI than the coordinator's runs as a managed CLI process.",
@@ -288,7 +289,7 @@ MENU_GROUPS = {
     ),
     ("workflow",): (
         ("Workflow", ("enabled",)),
-        ("Delivery", ("merge_mode", "auto_push", "cleanup_local_branches", "cleanup_remote_branches")),
+        ("Delivery", ("merge_mode", "auto_push", "pause_push", "cleanup_local_branches", "cleanup_remote_branches")),
         ("Project text", ("language",)),
         ("Roles", ("use_tiers", "worker", "scout", "review", "sync")),
         ("Delegation", ("timeout_seconds",)),

@@ -358,7 +358,7 @@ def remote_branch_head(root, branch):
     return state.branch_sha if state.branch_exists else None
 
 
-def switch_branch(root, branch, base, *, resume=False):
+def switch_branch(root, branch, base, *, resume=False, existing_only=False):
     git(root, "check-ref-format", "--branch", branch)
     git(root, "check-ref-format", "--branch", base)
     local = _run(["git", "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"], root).returncode == 0
@@ -369,6 +369,8 @@ def switch_branch(root, branch, base, *, resume=False):
         if remote and not _is_ancestor(root, f"refs/remotes/origin/{branch}", branch):
             raise AgentBoxError(f"Branch {branch} and origin/{branch} have diverged; reconcile them before continuing")
         git(root, "switch", branch)
+    elif existing_only:
+        raise AgentBoxError(f"Existing task branch {branch} disappeared; recover it before resuming")
     elif remote:
         # The work already exists on the remote; forking the base again would
         # start a second branch for the same task and abandon it.

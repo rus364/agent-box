@@ -996,6 +996,8 @@ class WorkflowConfig:
     use_tiers: bool = False
     scout: ScoutConfig = field(default_factory=ScoutConfig)
     auto_push: bool = True
+    #: Checkpoints can publish unfinished code in either delivery mode; explicit opt-in only.
+    pause_push: bool = False
     timeout_seconds: int = 3600
     review: ReviewConfig = field(default_factory=ReviewConfig)
     sync: PlanSyncConfig = field(default_factory=PlanSyncConfig)
@@ -1137,7 +1139,7 @@ class WorkflowConfig:
         result = cls()
         result.enabled = _bool(data, "enabled", False)
         result.merge_mode = _str(data, "merge_mode") or result.merge_mode
-        for key in ("use_tiers", "auto_push", "cleanup_local_branches", "cleanup_remote_branches"):
+        for key in ("use_tiers", "auto_push", "pause_push", "cleanup_local_branches", "cleanup_remote_branches"):
             setattr(result, key, _bool(data, key, getattr(result, key)))
         result.timeout_seconds = _number(data, "timeout_seconds", result.timeout_seconds)
         result.scout = ScoutConfig.from_dict(data.get("scout"))

@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Add `workflow pause` and `workflow resume` to preserve unfinished task work,
+  return to the base and recover existing branches without guessing. Pause
+  never changes lifecycle, ownership, priority or blocker relations; decisions
+  to defer/block work require the user's agreement.
+- Add off-by-default `workflow.pause_push` and per-pause `--push`/`--no-push`
+  for verified remote checkpoints, independent of delivery `auto_push`.
+  These additive commands/settings belong in the next MINOR release. No new
+  persisted format or migration is required; omitted settings remain disabled.
+
 - Exclude moved Jira issues from project search and exact-title resolution
   after rereading stale Cloud search results.
 - Add an opt-in Jira tracker adapter for Cloud email/API-token authentication

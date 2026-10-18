@@ -60,6 +60,11 @@ command, so a renamed or deleted column becomes an error rather than a misplaced
 card. A task whose state cannot be read — a broken board, a card outside every
 column — reads as `Unknown`, with `state_reason` saying why.
 
+Stopping work does not change lifecycle or create a blocker automatically.
+The coordinator asks you before deferring/blocking work or changing ownership
+or priority for that reason. [Workflow pause](workflow.md#stopping-and-resuming-work)
+preserves the work and returns to the base without altering these fields.
+
 ## Everyday commands
 
 Output is JSON. `get` accepts what a user would type: a visible number such as

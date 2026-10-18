@@ -70,7 +70,7 @@ class ConfigMenuTests(unittest.TestCase):
             ('box',): ['tools', 'k3s', 'podman', 'audio', 'links', 'env'],
             ('credentials',): ['git', 'github', 'registries', 'kubernetes', 'cloud'],
             ('host',): ['notifications', 'claude_skill_links'],
-            ('workflow',): ['enabled', 'merge_mode', 'auto_push', 'cleanup_local_branches',
+            ('workflow',): ['enabled', 'merge_mode', 'auto_push', 'pause_push', 'cleanup_local_branches',
                            'cleanup_remote_branches', 'language', 'use_tiers', 'worker', 'scout', 'review', 'sync', 'timeout_seconds'],
             ('workflow', 'worker'): ['models', 'tiers'],
             ('workflow', 'scout'): ['limit', 'models'],
