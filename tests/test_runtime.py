@@ -893,6 +893,19 @@ class ClaudeNotifyHookLifecycleTests(IsolatedRuntimeTest):
 
 class HostModeTests(IsolatedRuntimeTest):
 
+    def test_native_host_ignores_conflicting_container_network_settings(self):
+        """A host process creates no namespace or mappings and cannot clear them with container-only flags."""
+        config = Config()
+        config.box.network.mode = "host"
+        with tempfile.TemporaryDirectory() as tmp, \
+             mock.patch.object(runtime.shutil, "which", return_value="/usr/bin/codex"), \
+             mock.patch.object(runtime, "resolve_workspace", return_value=Workspace(Path(tmp), Path(tmp))), \
+             mock.patch.object(runtime, "runtime_config_base", return_value=config), \
+             mock.patch("agent_box.project_config.load", return_value={"box": {"network": {"ports": ["8080:3000"]}}}), \
+             mock.patch.object(runtime.subprocess, "call", return_value=0) as call:
+            self.assertEqual(runtime.host_main("codex", ["exec", "test"]), 0)
+            self.assertEqual(call.call_args.args[0], ["/usr/bin/codex", "exec", "test"])
+
     def test_bare_host_launch_uses_the_default_agent_like_a_box_launch(self):
         """--host must not answer 'which agent' differently from a box launch."""
         config = Config()

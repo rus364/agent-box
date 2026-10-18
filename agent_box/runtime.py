@@ -1149,9 +1149,6 @@ def launch_config(options=None, *, box_policy=None):
         config.box.tools.browser_off = not browser_enabled
     launch_options.apply(config, overrides)
     config.box.network = requested_network(config.box.network, options)
-    errors = config.box.validate()
-    if errors:
-        raise AgentBoxError(errors[0])
     # The snapshot renders from the layer beneath the project overlay. Only
     # --no-workflow's withdrawal of the tracker and the --tracker account belong
     # there; any other flag would reach a project copy made inside the session.
@@ -3128,6 +3125,9 @@ def runtime_main(
     options, requested = nested_launch_options(options)
     existing = existing_workspace_spec(workspace, options, script_dir)
     config = launch_config(options, box_policy=existing.creation_config._box_policy if existing else None)
+    errors = config.box.validate()
+    if errors:
+        raise AgentBoxError(errors[0])
     nested = list(dict.fromkeys(requested + withhold_from_nested_box(config)))
     agent, rest = config.agents.default, args
     if args and args[0] in {"claude", "codex", "shell", "doctor"}:
