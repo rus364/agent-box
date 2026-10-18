@@ -195,6 +195,55 @@ class JiraContractTests(unittest.TestCase):
         fixture.search = Mock(return_value=[{"key": "TEST-1", "fields": {"description": {"type": "doc"}}}])
         self.assertEqual(tracker.search("TEST", "Evidence")[0].description, "- [ ] Evidence")
 
+    def test_cloud_search_rechecks_project_after_hydrating_a_moved_issue(self):
+        """A stale search hit must not make an external issue a scoped title match."""
+        tracker, fixture = adapter(cloud=True)
+        fixture.issues["TEST-9"] = issue("OTHER-1", summary="Moved task")
+        fixture.search = Mock(return_value=[{"key": "TEST-1"}, {"key": "TEST-9"}])
+        self.assertEqual([task.id for task in tracker.search("TEST")], ["TEST-1"])
+        with self.assertRaises(TrackerError) as raised:
+            tracker.resolve("Moved task", "TEST", title=True)
+        self.assertEqual(raised.exception.category, "not-found")
+        self.assertEqual(tracker.resolve("OTHER-1", "TEST", canonical=True).id, "OTHER-1")
+
+    def test_relation_creation_direction_cycles_and_removal_match_jira(self):
+        """The POST endpoints produce opposite GET views, as verified on local Jira."""
+        for kind in ("blocks", "blocked-by"):
+            with self.subTest(kind=kind):
+                tracker, fixture = adapter()
+                original = fixture.request
+                link_type = {"id": "10000", "outward": "blocks", "inward": "is blocked by"}
+
+                def request(method, path, body=None, params=None):
+                    if path == "/issueLinkType":
+                        return {"issueLinkTypes": [link_type]}
+                    if path == "/issueLink" and method == "POST":
+                        fixture.writes.append((method, path, body))
+                        source, target = body["inwardIssue"]["key"], body["outwardIssue"]["key"]
+                        for key, side, other in ((source, "outwardIssue", target), (target, "inwardIssue", source)):
+                            fixture.issues[key]["fields"]["issuelinks"].append(
+                                {"id": "1", "type": link_type, side: {"key": other}})
+                        return None
+                    if path == "/issueLink/1" and method == "DELETE":
+                        fixture.writes.append((method, path, body))
+                        for raw in fixture.issues.values():
+                            raw["fields"]["issuelinks"] = []
+                        return None
+                    return original(method, path, body, params)
+
+                fixture.request = request
+                tracker.relate("TEST-1", kind, "TEST-2")
+                blocker, dependent = ("TEST-1", "TEST-2") if kind == "blocks" else ("TEST-2", "TEST-1")
+                self.assertEqual(tracker.get(blocker).blockers, [])
+                self.assertEqual(tracker.get(dependent).blockers, [blocker])
+                self.assertEqual(ready_tasks([tracker.get(dependent)], tracker.get), [])
+                with self.assertRaisesRegex(TrackerError, "cycle"):
+                    tracker.relate(dependent, "blocks", blocker)
+                self.assertEqual(len(fixture.writes), 1)
+                tracker.relate("TEST-1", kind, "TEST-2", remove=True)
+                self.assertEqual(tracker.get(dependent).blockers, [])
+                self.assertEqual([task.id for task in ready_tasks([tracker.get(dependent)], tracker.get)], [dependent])
+
     def test_username_uses_the_private_snapshot_and_disabled_trackers_render_no_accounts(self):
         """Cloud identity follows the token into private snapshots without exposing disabled integrations."""
         from agent_box import runtime

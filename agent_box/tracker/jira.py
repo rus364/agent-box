@@ -155,7 +155,8 @@ class JiraAdapter:
         # Enhanced Cloud search can return ADF even under /api/2; hydrate through
         # the issue text endpoint so checklists never depend on a lossy conversion.
         tasks = [self.get(raw["key"]) if self.client.cloud else self.normalize(raw) for raw in rows]
-        return [task for task in tasks if (not open_only or task.state != "Done") and
+        # The search index can still list an issue after it moves to another project.
+        return [task for task in tasks if task.project == project and (not open_only or task.state != "Done") and
                 query.casefold() in (task.title + "\n" + task.description).casefold()]
 
     def writable(self, task_id):

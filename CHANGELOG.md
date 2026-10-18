@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Exclude moved Jira issues from project search and exact-title resolution
+  after rereading stale Cloud search results.
 - Add an opt-in Jira tracker adapter for Cloud email/API-token authentication
   and Server/Data Center personal access tokens, with native issues, subtasks,
   workflow transitions, links, comments, assignees and checklist revisions.

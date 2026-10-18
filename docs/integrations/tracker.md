@@ -197,6 +197,12 @@ unique; issue URLs must belong to the configured site and project. Other
 projects stay readable by canonical key for dependency inspection, but writes
 require the bound project. Jira has no recursive project hierarchy.
 
+Cloud search is [eventually consistent](https://developer.atlassian.com/cloud/jira/platform/search-and-reconcile/).
+The adapter rereads each returned issue and excludes issues that have moved out
+of the selected project. New or moved-in issues may still be absent until the
+search index catches up; use their canonical keys when known. An empty search
+does not prove that an uncertain create failed.
+
 Lifecycle comes from **native workflow statuses**, rather than an agile board's
 columns. Every issue type in the project must expose the five lifecycle names
 above, ignoring case, with one status ID per name shared across issue types.
