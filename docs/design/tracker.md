@@ -164,6 +164,29 @@ the contract is kept and why.
 - Fields and options are read once per process and never persisted: an option
   ID kept in the repository would outlive the option.
 
+## Jira
+
+The adapter uses REST v2 text fields on both deployments; Cloud's enhanced
+`/search/jql` uses cursor pagination, while Server/DC's `/search` uses offsets.
+Deployment type is read from `serverInfo`; user identities use Cloud account IDs
+or Server/DC usernames accordingly. The optional connection `username` selects
+email/API-token Basic authentication; its absence retains PAT Bearer auth.
+This additive optional account field requires no format migration: old
+URL/token accounts retain their serialized shape and published fixtures.
+
+Lifecycle uses project workflow statuses from `/project/KEY/statuses`, checked
+for every issue type. Writes follow available transitions, never assume that
+a status ID is a transition ID. Parentage uses native subtasks; dependency
+links use the direction of the native outward description. Comments contribute
+to checklist revisions even when Jira leaves the issue timestamp unchanged.
+
+Existing MCP solutions were evaluated: Atlassian's official server targets
+Cloud, and `sooperset/mcp-atlassian` supports Cloud and Server/DC. Neither
+replaces the portable lifecycle, scope, revision or uncertain-write contract.
+Direct REST avoids an additional server process, MCP client transport and
+third-party runtime dependencies for the same adapter logic. Direct MCP access
+for agents can be considered separately from tracker workflow support.
+
 ## Live checks
 
 The offline suite never touches a real tracker. Two opt-in scripts create and

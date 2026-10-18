@@ -455,6 +455,7 @@ def dispatch(args):
             # was closed for is exactly what this command exists to avoid.
             if args.reason:
                 adapter.comment(found.id, args.reason)
+                found = adapter.get(found.id)
             # Compact rows: a batch answers with what moved, not with every body it read.
             changed.append(adapter.set_state(found, args.state, unimplemented=bool(args.reason)).to_dict(full=False))
         return changed

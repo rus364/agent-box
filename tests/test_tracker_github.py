@@ -275,7 +275,7 @@ class ConfigurationTests(unittest.TestCase):
 
     def test_launch_and_apply_do_not_call_github_unimplemented(self):
         from agent_box.runtime import tracker_warnings
-        for provider, warned in (("github", False), ("jira", True)):
+        for provider, warned in (("github", False), ("jira", False)):
             config = Config.from_dict({"tracker": {"enabled": True, "provider": provider,
                                                    "connections": {provider: {"url": "https://jira.example", "token": "t"}}}})
             with self.subTest(provider=provider):

@@ -2,9 +2,8 @@
 
 The tracker integration gives agents one command, `agent-box tracker`, for
 reading and maintaining tasks in an external tracker, in host and container
-sessions alike. Two providers are implemented: **Vikunja** (API v2) and
-**GitHub Projects**. Jira is a reserved name that fails with an
-explicit error.
+sessions alike. Providers are **Vikunja** (API v2), **GitHub Projects**, and
+**Jira Cloud / Server / Data Center** (REST v2).
 
 The tracker is the source of truth. Lifecycle comes from the board's own
 columns, branches and pull requests from Git and GitHub; agent-box stores no
@@ -168,6 +167,75 @@ the box; omit `--receipt` to keep the default.
 Pause other edits to the project while adopting; there is no incremental sync.
 Relations to tasks outside the tree are carried over where Vikunja allows it,
 and the report names every one that needs a human decision.
+
+## Jira
+
+Use the Jira site base URL, including its context path when present, without
+`/rest/api/2`. Choose `jira` and set its connection in `agent-box config`:
+
+- **Server/Data Center:** `url` and a personal access token in `token`; leave
+  `username` empty. Requests use Bearer authentication.
+- **Cloud:** `url`, the account email in `username`, and an unscoped/classic
+  API token in `token`. Requests use Basic authentication. Scoped gateway
+  tokens and OAuth are outside this adapter's scope.
+
+The token and email stay in the global account and private session snapshot;
+the repository contains only the URL and project key. Tracker exposure stays
+off by default. No MCP server or additional Python dependencies are needed.
+
+```bash
+agent-box tracker --provider jira projects
+agent-box tracker --provider jira setup --project PROJ
+agent-box tracker --provider jira setup --project PROJ --apply
+agent-box tracker get PROJ-123
+agent-box tracker get '#123'
+```
+
+Canonical IDs are native issue keys (`PROJ-123`), never Jira's numeric database
+IDs. A visible number resolves within the bound project. Exact titles must be
+unique; issue URLs must belong to the configured site and project. Other
+projects stay readable by canonical key for dependency inspection, but writes
+require the bound project. Jira has no recursive project hierarchy.
+
+Lifecycle comes from **native workflow statuses**, rather than an agile board's
+columns. Every issue type in the project must expose the five lifecycle names
+above, ignoring case, with one status ID per name shared across issue types.
+Additional statuses read as `Unknown`. Setup reports missing/ambiguous statuses;
+configure workflows in Jira administration before applying the binding. State
+changes require exactly one currently available transition to the requested
+status. Jira permissions, screens and validators still apply. Automatic workflow
+creation, status renaming and board provisioning are unsupported.
+
+Task creation selects the native `Task` type (or the sole non-subtask type).
+`create --parent PROJ-123` selects `Sub-task` (or the sole subtask type) and
+creates a native subtask. Existing issues cannot be reparented through this
+adapter. Extra required fields without defaults must be configured in Jira.
+One assignee is supported; Cloud uses `accountId`, Server/DC uses username.
+Descriptions and comments use REST v2 text; unexpected structured descriptions
+are refused instead of converted lossily. Checklists remain plain text.
+
+Links match Jira's outward descriptions: `blocks`, `relates to`, `duplicates`.
+`blocked-by` reverses `blocks`; incoming block links gate readiness. The link
+type must be unique. Duplicate links do not close issues. Tier/normalization
+use native labels. Priorities read `Lowest`/`Low` as 1, `Medium` as 2, `High`
+as 3, `Highest`/`Urgent` as 4 and `Immediate` as 5; unknown names read as 0.
+Writes select Low/Medium/High/Urgent/Immediate, with Highest as the fallback
+for Urgent. Creation with 0 keeps Jira's default; updating to 0 requests a
+cleared priority and may be rejected by Jira's field requirements.
+
+Project move/delete/adoption, imports, attachments and provider-specific bulk
+commands are unsupported. Optimistic rereads detect stale tasks and comments;
+they are not atomic compare-and-swap. Lost write replies are never retried
+automatically. A partially initialized create reports its issue key so it can
+be inspected before creating another issue.
+
+Server/DC was exercised on the authorized local Jira 10.7.4 test instance:
+project/task reads, parent/subtask creation, links and removal, tier/labels,
+comments, stale-update refusal, checklists, assignment and the full lifecycle
+including reopening. Cloud has isolated contract/transport tests against the
+official REST v2 interface, including enhanced cursor search; it has **not**
+been tested against a live Cloud account. This is not a claim of live Cloud
+acceptance. See `tests/test_tracker_jira.py` for offline checks.
 
 ## GitHub Projects
 

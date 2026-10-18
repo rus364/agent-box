@@ -1,5 +1,15 @@
 # Release notes
 
+## Unreleased
+
+- Add an opt-in Jira tracker adapter for Cloud email/API-token authentication
+  and Server/Data Center personal access tokens, with native issues, subtasks,
+  workflow transitions, links, comments, assignees and checklist revisions.
+- Keep existing URL/token accounts compatible; Jira Cloud adds an optional
+  username field. Server/DC has local live validation; Cloud has isolated
+  contract tests and still awaits live acceptance. This additive feature
+  belongs in the next MINOR release; no package is published by this change.
+
 ## 1.0.1
 
 - Fix documentation and license links in the PyPI description: use absolute

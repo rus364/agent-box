@@ -192,7 +192,7 @@ OPTION_HELP = {
     "tracker.provider": {
         "": "No default tracker. Choose a provider here or in the project before using tracker commands.",
         "vikunja": "Vikunja: projects, subprojects, columns and task relations.",
-        "jira": "Jira: reserved; its adapter is not implemented yet, so tracker commands refuse it.",
+        "jira": "Jira Cloud and Server/Data Center: native issues, workflow statuses and issue links.",
         "github": "GitHub Projects: a project's Status column and this repository's issues, with sub-issues and dependencies.",
     },
     "workflow.merge_mode": {
@@ -431,6 +431,8 @@ def help_for(path):
         return ("Classic token or `gh auth token` with scopes repo and project; fine-grained tokens cannot reach "
                 "projects of a personal account. It can also push code, so enabling the tracker gives the box that access.")
     if len(path) == 4 and path[:2] == ("tracker", "connections"):
+        if path[-1] == "username":
+            return "Jira Cloud account email for API-token authentication; leave empty for a Server/Data Center personal access token."
         if path[-1] == "url":
             return f"Base URL for the {path[-2]} tracker API. No network request is made while editing."
         return f"Access token for the {path[-2]} tracker. It is masked here and rendered only for enabled tracker integration."
@@ -588,6 +590,8 @@ def edit(config, *, project=None):
     for provider in TRACKER_PROVIDERS:
         inherited["tracker"]["connections"].setdefault(provider, TrackerConnection().to_dict())
         draft["tracker"]["connections"].setdefault(provider, TrackerConnection().to_dict())
+    for target in (inherited, draft):
+        target["tracker"]["connections"]["jira"].setdefault("username", "")
     if project_mode:
         for target in (inherited, draft):
             target["tracker"].setdefault("project", "")
@@ -626,6 +630,7 @@ def edit(config, *, project=None):
     defaults = Config().to_dict()
     for provider in TRACKER_PROVIDERS:
         defaults['tracker']['connections'][provider] = TrackerConnection().to_dict()
+    defaults['tracker']['connections']['jira']['username'] = ''
 
     def default_value(path, source):
         value = source
@@ -642,6 +647,8 @@ def edit(config, *, project=None):
                     break
                 if path[:2] == ('tracker', 'connections') and len(path) >= 3:
                     value = TrackerConnection().to_dict()
+                    if path[2] == 'jira':
+                        value['username'] = ''
                     for part in path[3:]:
                         value = value[part]
                     break

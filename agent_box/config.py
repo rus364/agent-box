@@ -754,7 +754,7 @@ class ToolsConfig:
 
 TRACKER_PROVIDERS = ("vikunja", "jira", "github")
 #: Providers with an adapter; the rest are reserved names that tracker commands refuse.
-IMPLEMENTED_TRACKERS = ("vikunja", "github")
+IMPLEMENTED_TRACKERS = ("vikunja", "jira", "github")
 AGENT_PROVIDERS = ("codex", "claude")
 AGENT_EFFORTS = {
     "codex": ("default", "low", "medium", "high", "xhigh", "max", "ultra"),
@@ -786,17 +786,19 @@ def _number(data, key, default):
 class TrackerConnection:
     url: str = ""
     token: str = ""
+    #: Jira Cloud uses email/API-token Basic auth; empty selects Server/DC PAT.
+    username: str = ""
 
     @property
     def usable(self):
         return bool(self.url and self.token)
 
     def to_dict(self):
-        return {"url": self.url, "token": self.token}
+        return {"url": self.url, "token": self.token, **({"username": self.username} if self.username else {})}
 
     @classmethod
     def from_dict(cls, data):
-        return cls(url=_str(data, "url"), token=_str(data, "token"))
+        return cls(url=_str(data, "url"), token=_str(data, "token"), username=_str(data, "username"))
 
 
 @dataclass

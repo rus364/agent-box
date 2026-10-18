@@ -42,5 +42,8 @@ def make_adapter(binding=None, provider=None, config=None):
     if provider == "github":
         from .github import GitHubAdapter
         return GitHubAdapter(url, connection.token, binding)
+    if provider == "jira":
+        from .jira import JiraAdapter
+        return JiraAdapter(url, connection.token, binding, username=connection.username)
     from .vikunja import VikunjaAdapter
     return VikunjaAdapter(url, connection.token, binding)
