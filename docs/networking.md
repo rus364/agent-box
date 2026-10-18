@@ -75,6 +75,11 @@ there is no separate workspace network to map. Use `--no-publish
 separate network, publications and authenticated API; the workspace reaches
 its loopback API directly, without pasta.
 
+With web-link integration enabled, a host-network callback already listens on
+host loopback, so the broker does not create a second listener. Remote tunnel
+instructions still apply; Coder's IPv4 endpoint retains a bridge for an explicit
+IPv6 callback.
+
 `--network=host` is different from native `--host`, which runs the agent
 outside a workspace container. Native `--host` refuses all these networking
 flags.
@@ -96,6 +101,7 @@ configuration. `--network=default` overrides even a saved host mode.
 A running box keeps its network. Matching effective settings can join it;
 different mode/mappings are refused without interrupting any session. The
 launcher verifies actual Podman mode and bindings against the creation policy.
+Changes to enabled k3s publications also require stopping the workspace.
 An ordinary launch after a temporary `--network=host` is refused: repeat the
 flag, or explicitly run `agent-box stop` and relaunch normally. The same rule
 prevents silently inheriting temporary publications or host forwards. A stopped

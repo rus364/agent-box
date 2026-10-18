@@ -135,7 +135,9 @@ def instructions(context: dict, target: tuple[str, int] | None) -> list[str]:
         return []
     host, port = target
     addresses = [origin(address) for address in loopback_hosts(host)]
-    lines = [f"Server loopback port {port} forwards to the box for {CALLBACK_TTL} seconds."]
+    direct = context.get("host_network") and not (context.get("coder") and ":" in host)
+    lines = ([f"Callback port {port} uses the box's shared host network; no relay is needed."] if direct else
+             [f"Server loopback port {port} forwards to the box for {CALLBACK_TTL} seconds."])
     if context.get("coder"):
         # Coder's implicit IPv6 bind is best-effort. An explicit callback
         # address must fail on collision instead of reporting IPv4 readiness.
@@ -381,11 +383,15 @@ class Broker:
                 relay.close()
                 del self.relays[key]
         listen_host = "127.0.0.1" if target and self.context.get("coder") and target[0] != "localhost" else None
-        if target in self.relays and self.relays[target].listen_hosts != loopback_hosts(listen_host or target[0]):
+        # Shared localhost already contains the CLI listener. Coder's IPv4-only
+        # server endpoint still needs a bridge for an explicit IPv6 callback.
+        relay_needed = target and (not self.context.get("host_network") or
+                                   listen_host is not None and ":" in target[0])
+        if target in self.relays and (not relay_needed or self.relays[target].listen_hosts != loopback_hosts(listen_host or target[0])):
             # Coder always targets server IPv4; switching transport must
             # prepare that listener before returning the new tunnel command.
             self.relays.pop(target).close()
-        if target and target not in self.relays:
+        if relay_needed and target not in self.relays:
             if len(self.relays) >= MAX_RELAYS:
                 raise ValueError("too many pending callback ports; wait for their expiry")
             try:
@@ -393,7 +399,7 @@ class Broker:
             except OSError:
                 raise ValueError(f"host loopback port {target[1]} is unavailable; "
                                  "close its listener or retry the CLI with another callback port") from None
-        elif target:
+        elif relay_needed:
             self.relays[target].deadline = time.monotonic() + CALLBACK_TTL
         lines = instructions(self.context, target)
         if self.open_browser and self.context.get("desktop"):
@@ -514,7 +520,7 @@ def stop(workspace_id: str) -> None:
             process.wait(timeout=2)
 
 
-def ensure(workspace_id: str, container: str, config) -> None:
+def ensure(workspace_id: str, container: str, config, *, host_network: bool = False) -> None:
     private_directory(LINKS_RUNTIME_DIR)
     path = endpoint(workspace_id)
     current = remote_context(config)
@@ -534,6 +540,7 @@ def ensure(workspace_id: str, container: str, config) -> None:
             current["ssh"], current["ssh_port"] = previous["ssh"], previous["ssh_port"]
             current["coder"] = previous["coder"]
     current["policy"] = config.to_dict()
+    current["host_network"] = host_network
     atomic_write_json(context_path, current, 0o600)
     if ping(path, container):
         return
@@ -579,7 +586,8 @@ def reattach(workspace_id: str, container: str) -> None:
     if "policy" not in context:
         raise ValueError("host link policy is missing; restart the workspace box")
     from .config import LinksConfig
-    ensure(workspace_id, container, LinksConfig.from_dict(context["policy"]))
+    ensure(workspace_id, container, LinksConfig.from_dict(context["policy"]),
+           host_network=context.get("host_network", False))
 
 
 def main(args: list[str] | None = None) -> int:

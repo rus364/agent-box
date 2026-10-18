@@ -116,6 +116,35 @@ class LinkRequestTests(unittest.TestCase):
 
 
 class BrokerTests(unittest.TestCase):
+    def test_host_network_callback_uses_the_existing_listener_without_a_relay(self):
+        """The callback listener already occupies the host port in a shared namespace."""
+        with socket.socket() as listener, mock.patch.object(links, "Relay") as relay:
+            listener.bind(("127.0.0.1", 0))
+            listener.listen(1)
+            broker = links.Broker("box", {"desktop": True, "host_network": True}, False)
+            result = broker.handle({"url": oauth(port=listener.getsockname()[1])})
+            self.assertTrue(result["ok"])
+            relay.assert_not_called()
+            self.assertIn("shared host network", " ".join(result["lines"]))
+
+    def test_host_mode_still_bridges_coders_ipv4_endpoint_to_an_ipv6_callback(self):
+        """Coder's server endpoint is IPv4 even when the host-network CLI listens on IPv6."""
+        with mock.patch.object(links, "Relay") as relay:
+            broker = links.Broker("box", {"coder": "workspace", "host_network": True}, False)
+            result = broker.handle({"url": oauth("::1")})
+            relay.assert_called_once_with("box", ("::1", 42121), "127.0.0.1")
+            self.assertIn("forwards to the box", " ".join(result["lines"]))
+
+    def test_reattach_preserves_the_shared_network_callback_route(self):
+        """Reopening a terminal must not reintroduce a second host listener."""
+        with tempfile.TemporaryDirectory() as tmp, \
+             mock.patch.object(links, "LINKS_RUNTIME_DIR", Path(tmp)), \
+             mock.patch.object(links, "ping", return_value=True):
+            links.prepare("ws")
+            links.ensure("ws", "box", LinksConfig(enabled=True), host_network=True)
+            links.reattach("ws", "box")
+            self.assertTrue(json.loads(links.context_file("ws").read_text())["host_network"])
+
     def test_ssh_coder_transition_rebinds_the_existing_ipv6_callback_route(self):
         """Coder reaches server IPv4 even when the callback URL uses IPv6."""
         with socket.socket(socket.AF_INET6) as probe:

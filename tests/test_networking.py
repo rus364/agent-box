@@ -148,6 +148,24 @@ class NetworkingTests(unittest.TestCase):
         self.assertIn("workspace:80/udp", line)
         self.assertIn("listen on [::]:80", line)
 
+    def test_inner_snapshot_replaces_inherited_outer_network_policy(self):
+        """An explicit isolated inner launch must never regain the outer box's host namespace choice."""
+        base = Config()
+        outer = {"format_version": 1, "workflow_mount": False,
+                 "box": {"network": {"mode": "host"}, "tools": {}}}
+        apply_box_policy(base, outer)
+        options, _ = launch_options.parse(["--network=default"])
+        with mock.patch.object(runtime, "runtime_config_base", return_value=base), \
+             mock.patch.object(project_config, "load", return_value={}):
+            inner = runtime.launch_config(options)
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            runtime.sync_tracker_runtime(inner, directory, policy=True)
+            with mock.patch.dict(os.environ, {"AGENT_BOX_RUNTIME_CONFIG": str(directory / "config.json")}), \
+                 mock.patch.object(project_config, "load", return_value={}):
+                self.assertEqual(effective_config().box.network.mode, "default")
+                self.assertEqual(runtime.launch_config().box.network.mode, "default")
+
     def test_menu_moves_the_k3s_editor_without_changing_its_storage_key(self):
         """A second saved publication list would drift from the actual sidecar settings."""
         config = Config()

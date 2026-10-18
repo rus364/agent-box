@@ -162,6 +162,23 @@ class WorkspaceContainerLifecycleTests(unittest.TestCase):
             with self.assertRaisesRegex(AgentBoxError, "network.*agent-box stop"):
                 runtime.existing_workspace_spec(self.workspace, LaunchOptions(network="default"))
 
+    def test_narrowed_k3s_publication_requires_stop_instead_of_retaining_lan_exposure(self):
+        """Shared sidecar mappings need renewed agreement just like workspace mappings."""
+        config = runtime.Config()
+        config.box.k3s.enabled = True
+        config.box.k3s.ports = ["0.0.0.0:8080:80"]
+        with mock.patch.object(runtime.k3s, "api_port", return_value=24443):
+            container, _ = self._live_box(config)
+        changed = runtime.Config.from_dict(config.to_dict())
+        changed.box.k3s.ports = ["8080:80"]
+        with mock.patch.object(runtime, "inspect_workspace_container", return_value=container), \
+             mock.patch.object(runtime, "runtime_config_base", return_value=changed), \
+             mock.patch.object(project_config, "load", return_value={}), \
+             mock.patch.object(runtime.k3s, "inspect", return_value={"State": {"Status": "running"}}), \
+             mock.patch.object(runtime.k3s, "api_port", return_value=24443):
+            with self.assertRaisesRegex(AgentBoxError, "k3s.*ports.*stop"):
+                runtime.existing_workspace_spec(self.workspace, LaunchOptions())
+
     def test_join_commands_use_box_access_and_new_process_policy_after_saved_config_changes(self):
         """A shell or new agent must not remove a neighbour's selected logins."""
         original = runtime.Config()

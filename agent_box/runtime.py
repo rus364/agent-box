@@ -1092,6 +1092,8 @@ def sync_tracker_runtime(config: Config, directory: Path | None = None, *, polic
     if hasattr(config, "_box_policy"):
         import copy
         rendered["box_policy"] = copy.deepcopy(config._box_policy)
+        # A nested launch may explicitly replace its inherited outer network.
+        rendered["box_policy"]["box"]["network"] = network
         # Installed Chromium is a box capability; wiring its MCP server is
         # the new process's choice, including a saved browser-off setting.
         rendered["box_policy"]["box"]["tools"]["browser"] = browser_enabled
@@ -2218,9 +2220,13 @@ def existing_workspace_spec(workspace: Workspace, options: LaunchOptions, packag
             sidecar = k3s.inspect(workspace_identity(workspace))
             if (sidecar or {}).get("State", {}).get("Status") != "running":
                 raise AgentBoxError("running workspace box's k3s sidecar is unavailable; end it with agent-box stop and rerun")
-        desired_network = requested_network(effective_config(runtime_config_base()).box.network, options)
+        desired = effective_config(runtime_config_base())
+        desired_network = requested_network(desired.box.network, options)
         try:
             matches = networking.identity(desired_network) == networking.identity(shared.box.network)
+            if shared.box.k3s.enabled and sorted(networking.ports(desired.box.k3s.ports)) != sorted(networking.ports(shared.box.k3s.ports)):
+                raise AgentBoxError("requested k3s published ports differ from the running workspace; "
+                                    "end it with agent-box stop and rerun")
         except ValueError as exc:
             raise AgentBoxError(f"invalid workspace network policy: {exc}") from None
         if not matches:
@@ -2730,7 +2736,8 @@ def launch_in_workspace_container(
                 raise AgentBoxError(str(exc)) from exc
         elif not spec.admitted_id and spec.creation_config.box.links.enabled:
             try:
-                links.ensure(spec.runtime_state.root.name, spec.name, spec.creation_config.box.links)
+                links.ensure(spec.runtime_state.root.name, spec.name, spec.creation_config.box.links,
+                             host_network=spec.creation_config.box.network.mode == "host")
             except (OSError, ValueError, subprocess.SubprocessError) as exc:
                 raise AgentBoxError(str(exc)) from exc
         # Only now does the box match this launch: a launch refused for
