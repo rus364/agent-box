@@ -22,6 +22,7 @@ from .external_config import toml_string
 from .paths import CODEX_REMOTE_LOCK, SESSION_TEMP_ROOT, expand_user
 
 START_TIMEOUT = 10
+CONNECT_TIMEOUT = 30
 MAX_REPLY = 8 * 1024 * 1024
 
 
@@ -347,6 +348,26 @@ def wait_for_client(command: list[str], server: subprocess.Popen | None = None) 
         stop(process)
 
 
+def connected_status(rpc: Rpc) -> dict:
+    """Enrollment retries can recover from errored; pairing needs a live transport."""
+    deadline = time.monotonic() + CONNECT_TIMEOUT
+    announced = False
+    while True:
+        status = rpc.call("remoteControl/status/read", {})
+        if status.get("status") == "connected":
+            return status
+        if status.get("status") not in {"connecting", "errored"}:
+            raise Unavailable("Codex Remote Control is unavailable for this account/configuration")
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise Unavailable("Codex Remote Control did not connect; phone access is unavailable; "
+                              "check network/VPN access to ChatGPT and retry a new session")
+        if not announced:
+            print("agent-box: waiting for Codex Remote Control to connect", file=sys.stderr)
+            announced = True
+        time.sleep(min(0.5, remaining))
+
+
 def paired_client(rpc: Rpc, status: dict) -> bool:
     environment = status.get("environmentId")
     if not isinstance(environment, str) or not environment:
@@ -399,9 +420,7 @@ def run_codex(command: list[str]) -> int:
                         connection.connect(str(endpoint))
                         rpc = UnixRpc(connection)
                         rpc.initialize()
-                        status = rpc.call("remoteControl/status/read", {})
-                        if status.get("status") not in {"connecting", "connected"}:
-                            raise Unavailable("Codex Remote Control is unavailable for this account/configuration")
+                        status = connected_status(rpc)
                         pairing_notice(rpc, status)
                     args, tail = options(client)
                     client = [client[0], *args, "--remote", f"unix://{endpoint}", *tail]

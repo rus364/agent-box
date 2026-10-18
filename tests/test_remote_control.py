@@ -166,6 +166,24 @@ class RemoteControlTests(unittest.TestCase):
                 rpc.call.assert_any_call('remoteControl/client/list', {'environmentId': 'env', 'limit': 1})
                 self.assertEqual(rpc.call.call_count, 1 if paired else 2)
 
+    def test_offline_transport_has_a_bounded_wait_and_actionable_diagnostic(self):
+        """A broken VPN must still allow local work without blaming account eligibility."""
+        rpc = mock.Mock()
+        rpc.call.return_value = {'status': 'errored'}
+        with mock.patch.object(rc.time, 'monotonic', side_effect=[0, 0, rc.CONNECT_TIMEOUT]), \
+             mock.patch.object(rc.time, 'sleep'), contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaisesRegex(rc.Unavailable, 'phone access is unavailable.*network/VPN'):
+                rc.connected_status(rpc)
+
+    def test_disabled_transport_does_not_wait_for_network_recovery(self):
+        """Disabled or unsupported RC states are not transient connection failures."""
+        rpc = mock.Mock()
+        rpc.call.return_value = {'status': 'disabled'}
+        with mock.patch.object(rc.time, 'sleep') as sleep:
+            with self.assertRaisesRegex(rc.Unavailable, 'account/configuration'):
+                rc.connected_status(rpc)
+            sleep.assert_not_called()
+
     def test_unknown_pairing_still_offers_a_separated_code(self):
         """An unavailable client list must not claim the phone is unpaired."""
         for status in ({'status': 'connecting'}, {'status': 'connected', 'environmentId': 'env'}):
@@ -184,19 +202,26 @@ import base64, hashlib, json, os, signal, socket, subprocess, sys, time
 from pathlib import Path
 home = Path(os.environ['CODEX_HOME'])
 args = sys.argv[1:]
+states = iter(os.environ.get('RC_TEST_STATUSES', 'connected').split(','))
+state = 'connected'
 def event(kind, **values):
     with (home / 'events').open('a') as stream:
         stream.write(json.dumps(dict(kind=kind, pid=os.getpid(), args=args, **values)) + '\n')
 def response(message):
+    global state
     method = message.get('method')
     if method == 'initialized': return None
     if method == 'initialize': result = {'userAgent':'fake'}
     elif method == 'config/read': result = {'config': {'model_provider':os.environ.get('RC_TEST_PROVIDER', 'openai')}}
     elif method == 'account/read': result = {'account': {'type':os.environ.get('RC_TEST_ACCOUNT', 'chatgpt')}}
-    elif method == 'remoteControl/status/read': result = {'status':'connected', 'environmentId':'test-env'}
+    elif method == 'remoteControl/status/read':
+        state = next(states, state)
+        result = {'status':state, 'environmentId':'test-env'}
     elif method == 'remoteControl/client/list':
+        if state != 'connected': return {'id':message['id'], 'error':{'message':'not connected'}}
         result = {'data': [{'clientId':'test-phone'}] if os.environ.get('RC_TEST_PAIRED') else []}
     elif method == 'remoteControl/pairing/start':
+        if state != 'connected': return {'id':message['id'], 'error':{'message':'not connected'}}
         if os.environ.get('RC_TEST_PAIR_FAIL'): return {'id':message['id'], 'error':{'message':'secret-not-for-output'}}
         result = {'manualPairingCode':'TEST-CODE'}
     else: return {'id':message['id'], 'error':{'message':'secret-not-for-output'}}
@@ -367,6 +392,13 @@ class CodexLifecycleTests(unittest.TestCase):
         output = process.stderr.read()
         self.assertIn(b'has a paired device', output)
         self.assertNotIn(b'Pairing code:', output)
+
+    def test_transient_connection_failure_recovers_before_pairing(self):
+        """A retrying transport must not lose phone access to premature pairing."""
+        process = self.launch(RC_TEST_STATUSES='connecting,errored,connected')
+        self.assertEqual(process.wait(timeout=10), 23)
+        self.assertTrue(self.wait_event('client')['remote'])
+        self.assertIn(b'Pairing code:', process.stderr.read())
 
     def test_server_death_ends_only_its_terminal_without_replaying_prompt(self):
         """Restarting the original command after a live server crash could duplicate work."""
