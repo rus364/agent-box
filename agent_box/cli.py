@@ -377,7 +377,7 @@ def config_description(prefix: str = "") -> dict:
     connections = known["tracker"]["connections"]
     # A session bound to another URL does not carry the global token, so its presence is unknown here.
     accounts = {
-        name: {"url": url, "token": connections[name]["token"]} if connections.get(name, {}).get("url") == url
+        name: dict(connections[name]) if connections.get(name, {}).get("url") == url
         else {"url": url} for name, url in global_urls.items()}
     known["tracker"]["connections"] = accounts
     resolved = actual
@@ -394,6 +394,7 @@ def config_description(prefix: str = "") -> dict:
         defaults["tracker"]["connections"].setdefault(name, TrackerConnection().to_dict())
         if "tracker" in known and name not in global_urls:
             known["tracker"]["connections"].setdefault(name, TrackerConnection().to_dict())
+    defaults["tracker"]["connections"]["jira"]["username"] = ""
     tree = project_config.merge(project_config.merge(defaults, known), project)
     tree.pop("version")
     tree["tracker"].setdefault("project", "")

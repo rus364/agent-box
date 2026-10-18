@@ -75,7 +75,7 @@ def parser():
                          else "Canonical task ID returned by resolve/get/search")
         if name == "get":
             cmd.add_argument("--comments", action=argparse.BooleanOptionalAction, default=True,
-                             help="Fetch the task journal (default); --no-comments reads the task without requesting history")
+                             help="Include the task journal in output (default); Jira also reads comments for revision checks with --no-comments")
         elif name == "claim":
             cmd.add_argument("--resume", action="store_true")
         elif name == "state":

@@ -228,6 +228,8 @@ commands are unsupported. Optimistic rereads detect stale tasks and comments;
 they are not atomic compare-and-swap. Lost write replies are never retried
 automatically. A partially initialized create reports its issue key so it can
 be inspected before creating another issue.
+`get --no-comments` omits the journal from output; Jira still reads comment
+pages to compute the task revision, including edits to older comments.
 
 Server/DC was exercised on the authorized local Jira 10.7.4 test instance:
 project/task reads, parent/subtask creation, links and removal, tier/labels,

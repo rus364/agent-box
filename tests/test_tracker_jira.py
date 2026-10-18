@@ -288,3 +288,13 @@ class JiraTransportTests(unittest.TestCase):
         with self.assertRaises(TrackerError) as raised:
             tracker.create("TEST", "Created but no key")
         self.assertEqual(raised.exception.category, "unknown-outcome")
+
+    def test_malformed_error_collections_preserve_uncertain_write_category(self):
+        """A null/list error collection must never turn an uncertain write into an uncaught exception."""
+        for payload in ({"errorMessages": None}, {"errorMessages": 7}, {"errors": []}, []):
+            error = urllib.error.HTTPError("url", 503, "error", {}, io.BytesIO(json.dumps(payload).encode()))
+            client = JiraClient("https://jira.example", "secret", opener=Mock(side_effect=error))
+            with self.assertRaises(TrackerError) as raised:
+                client.request("POST", "/issue", {})
+            self.assertEqual((raised.exception.category, raised.exception.retryable), ("unknown-outcome", False))
+            self.assertIn("Reread", str(raised.exception))

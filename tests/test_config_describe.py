@@ -110,6 +110,19 @@ class ConfigDescribeTests(unittest.TestCase):
         self.assertEqual(fields["agents.external_apis.deepseek.claude.default_model"]["choices"], ["", "v4-flash", "v4-pro"])
         self.assertNotIn(config.agents.external_apis["deepseek"].api_key, output)
 
+    def test_jira_cloud_username_is_discoverable_empty_and_configured(self):
+        """Cloud setup needs a discoverable account email while the token stays masked."""
+        _, fields = self.describe("tracker.connections.jira.username")
+        self.assertEqual(fields["tracker.connections.jira.username"]["default"], "")
+        config = Config()
+        config.tracker.connections["jira"] = TrackerConnection("https://jira.example", "jira-secret", "me@example.com")
+        save_config(config, self.global_file)
+        output, fields = self.describe("tracker.connections.jira")
+        username = fields["tracker.connections.jira.username"]
+        self.assertEqual((username["global"], username["effective"]), ("me@example.com", "me@example.com"))
+        self.assertFalse(username["project_allowed"])
+        self.assertNotIn("jira-secret", output)
+
     def test_secrets_are_reported_as_set_without_their_values(self):
         """Describe output lands in an agent transcript, so a credential must never appear in it."""
         config = Config()

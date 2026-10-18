@@ -66,7 +66,7 @@ class JiraClient:
                 problem = json.loads(exc.read().decode())
                 detail = ("; ".join(str(item) for item in problem.get("errorMessages", [])) + " " +
                           "; ".join(f"{key}: {value}" for key, value in problem.get("errors", {}).items())).strip()
-            except (OSError, http.client.HTTPException, ValueError, AttributeError, UnicodeError):
+            except (OSError, http.client.HTTPException, ValueError, TypeError, AttributeError, UnicodeError):
                 detail = ""
             exc.close()
             error = self.error(status, write)
