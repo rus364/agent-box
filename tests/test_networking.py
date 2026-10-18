@@ -1,5 +1,6 @@
 """Network choices must not silently widen access or change a neighbour's box."""
 import copy
+import json
 import os
 from pathlib import Path
 import tempfile
@@ -7,7 +8,7 @@ import unittest
 from unittest import mock
 
 from agent_box import config_menu, launch_options, networking, project_config, runtime
-from agent_box.config import Config, NetworkConfig, apply_box_policy, effective_config
+from agent_box.config import Config, NetworkConfig, TrackerConnection, apply_box_policy, effective_config
 from agent_box.errors import AgentBoxError
 
 
@@ -165,6 +166,29 @@ class NetworkingTests(unittest.TestCase):
                  mock.patch.object(project_config, "load", return_value={}):
                 self.assertEqual(effective_config().box.network.mode, "default")
                 self.assertEqual(runtime.launch_config().box.network.mode, "default")
+
+    def test_host_network_tracker_keeps_loopback_from_the_effective_launch_mode(self):
+        """A one-launch host override must not redirect local APIs through an isolated-box alias."""
+        config = Config()
+        config.tracker.enabled = True
+        config.tracker.connections["vikunja"] = TrackerConnection("http://127.0.0.1:3456", "test")
+        config._project_base = copy.deepcopy(config)
+        config.box.network.mode = "host"
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime.sync_tracker_runtime(config, Path(tmp), policy=True)
+            rendered = json.loads((Path(tmp) / "config.json").read_text())
+            self.assertEqual(rendered["tracker_urls"]["vikunja"], "http://127.0.0.1:3456")
+            from agent_box.tracker.registry import make_adapter
+            for url in ("http://127.0.0.1:3456", "http://localhost:7890"):
+                other = copy.deepcopy(config)
+                other._project_base.tracker.connections["vikunja"].url = url
+                other.tracker.connections["vikunja"].url = url
+                with mock.patch.dict(os.environ, {"AGENT_BOX_RUNTIME_CONFIG": str(Path(tmp) / "config.json")}):
+                    adapter = make_adapter(provider="vikunja", config=other)
+                    self.assertEqual(adapter.client.url, url)
+        with mock.patch.object(runtime, "is_host_local", return_value=True):
+            config.tracker.connections["vikunja"].url = "https://tracker.internal"
+            self.assertEqual(runtime.tracker_host_args(config), [])
 
     def test_menu_moves_the_k3s_editor_without_changing_its_storage_key(self):
         """A second saved publication list would drift from the actual sidecar settings."""

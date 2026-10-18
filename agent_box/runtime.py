@@ -1040,6 +1040,7 @@ def sync_tracker_runtime(config: Config, directory: Path | None = None, *, polic
     launch = getattr(config, "_launch", {})
     browser_enabled = config.box.tools.browser()
     network = config.box.network.to_dict()
+    isolated_network = container and config.box.network.mode != "host"
     config = getattr(config, "_project_base", config)
     directory = TRACKER_RUNTIME_DIR if directory is None else directory
     if not policy and not (config.tracker.enabled or config.workflow.enabled):
@@ -1055,13 +1056,13 @@ def sync_tracker_runtime(config: Config, directory: Path | None = None, *, polic
     if not config.tracker.enabled:
         tracker["connections"] = {}
     external = {name: spec.to_dict() for name, spec in config.agents.external_apis.items() if spec.enabled}
-    if container:
+    if isolated_network:
         for spec in external.values():
             for cli in ("codex", "claude"):
                 spec[cli]["url"] = container_tracker_url(spec[cli]["url"])
     rendered = {
         "tracker": tracker,
-        "tracker_urls": {name: container_tracker_url(connection.url)
+        "tracker_urls": {name: container_tracker_url(connection.url) if isolated_network else connection.url
                          for name, connection in config.tracker.connections.items()
                          if config.tracker.enabled},
         "global_tracker_urls": getattr(config, "_global_tracker_urls", {
@@ -1231,6 +1232,8 @@ def tracker_host_args(config: Config) -> list[str]:
     container lifetime as the mounts it addresses, and changing it therefore
     rebuilds the box rather than silently diverging from the running one.
     """
+    if config.box.network.mode == "host":
+        return []
     urls = [connection.url for connection in config.tracker.connections.values()] if config.tracker.enabled else []
     urls += [getattr(spec, cli).url for spec in config.agents.external_apis.values() if spec.enabled
              for cli in ("codex", "claude")]

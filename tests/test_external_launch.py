@@ -357,14 +357,15 @@ class ExternalRuntimeTests(IsolatedRuntimeTest):
         spec.codex.url = 'http://127.0.0.1:8123/v1'
         spec.claude.url = 'http://localhost:8124/anthropic'
         with tempfile.TemporaryDirectory() as tmp:
-            for container in (True, False):
+            for container, mode in ((True, 'default'), (True, 'host'), (False, 'default')):
+                config.box.network.mode = mode
                 runtime.sync_tracker_runtime(config, Path(tmp), policy=True, container=container)
                 data = json.loads((Path(tmp) / 'config.json').read_text())
                 loaded = Config.from_dict(data)
                 for cli in ('codex', 'claude'):
                     with tempfile.TemporaryDirectory() as invocation:
                         command, env = ext.prepare([cli], 'deepseek', cli, loaded, invocation, {})
-                        target = ('host.containers.internal' if container else
+                        target = ('host.containers.internal' if container and mode != 'host' else
                                   '127.0.0.1' if cli == 'codex' else 'localhost')
                         self.assertIn(target, str(command) if cli == 'codex' else env['ANTHROPIC_BASE_URL'])
         self.assertEqual(spec.codex.url, 'http://127.0.0.1:8123/v1')
@@ -372,5 +373,8 @@ class ExternalRuntimeTests(IsolatedRuntimeTest):
         spec.codex.url = 'https://api.internal/v1'
         spec.claude.url = ''
         with patch.object(runtime, 'is_host_local', return_value=True):
+            config.box.network.mode = 'default'
             self.assertEqual(runtime.tracker_host_args(config), ['--add-host=api.internal:host-gateway'])
             self.assertEqual(runtime.container_tracker_url(spec.codex.url), spec.codex.url)
+            config.box.network.mode = 'host'
+            self.assertEqual(runtime.tracker_host_args(config), [])
