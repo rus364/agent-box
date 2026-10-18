@@ -331,8 +331,11 @@ def preflight(server: list[str], cwd: Path, log) -> None:
 
 
 def wait_for_client(command: list[str], server: subprocess.Popen | None = None) -> int:
-    process = subprocess.Popen(command)
+    # Only the foreground client owns Ctrl-C; startup remains cancellable.
+    previous = signal.signal(signal.SIGINT, lambda *_: None)
+    process = None
     try:
+        process = subprocess.Popen(command)
         if server is None:
             return process.wait()
         while process.poll() is None:
@@ -345,7 +348,11 @@ def wait_for_client(command: list[str], server: subprocess.Popen | None = None) 
                 pass
         return process.returncode
     finally:
-        stop(process)
+        try:
+            if process is not None:
+                stop(process)
+        finally:
+            signal.signal(signal.SIGINT, previous)
 
 
 def connected_status(rpc: Rpc) -> dict:
@@ -442,11 +449,9 @@ def main(arguments: list[str]) -> int:
     provider, command = arguments[0], arguments[1:]
     previous = {}
     try:
-        # The child shares the foreground group and receives terminal Ctrl-C.
-        previous[signal.SIGINT] = signal.signal(signal.SIGINT, lambda *_: None)
         def interrupted(number, frame):
             raise Interrupted(number)
-        for signum in (signal.SIGTERM, signal.SIGHUP):
+        for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
             previous[signum] = signal.signal(signum, interrupted)
         if provider == "codex":
             return run_codex(command)

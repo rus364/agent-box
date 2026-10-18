@@ -216,6 +216,7 @@ def response(message):
     elif method == 'account/read': result = {'account': {'type':os.environ.get('RC_TEST_ACCOUNT', 'chatgpt')}}
     elif method == 'remoteControl/status/read':
         state = next(states, state)
+        event('status', state=state)
         result = {'status':state, 'environmentId':'test-env'}
     elif method == 'remoteControl/client/list':
         if state != 'connected': return {'id':message['id'], 'error':{'message':'not connected'}}
@@ -263,6 +264,8 @@ if 'app-server' in args:
                             connection.sendall(b'\x81'+length+payload)
 
 else:
+    if os.environ.get('RC_TEST_HANDLE_INT'):
+        signal.signal(signal.SIGINT, lambda *_: event('client_interrupt'))
     event('client', remote='--remote' in args)
     if os.environ.get('RC_TEST_WAIT') == '1':
         while True: time.sleep(.1)
@@ -399,6 +402,29 @@ class CodexLifecycleTests(unittest.TestCase):
         self.assertEqual(process.wait(timeout=10), 23)
         self.assertTrue(self.wait_event('client')['remote'])
         self.assertIn(b'Pairing code:', process.stderr.read())
+
+    def test_ctrl_c_during_connection_wait_cleans_server_without_starting_client(self):
+        """Cancelling startup must not wait for the VPN or launch a fallback session."""
+        process = self.launch(RC_TEST_STATUSES='connecting')
+        self.wait_event('status')
+        server = self.wait_event('server')
+        os.killpg(process.pid, signal.SIGINT)
+        self.assertEqual(process.wait(timeout=3), 128 + signal.SIGINT)
+        self.assert_gone(server['pid'])
+        self.assertFalse(any(e['kind'] == 'client' for e in self.events()))
+
+    def test_ctrl_c_in_running_client_does_not_stop_its_server(self):
+        """The TUI owns Ctrl-C once running; cancelling a turn must keep RC alive."""
+        process = self.launch(RC_TEST_WAIT='1', RC_TEST_HANDLE_INT='1')
+        self.wait_event('client')
+        server = self.wait_event('server')
+        os.killpg(process.pid, signal.SIGINT)
+        self.wait_event('client_interrupt')
+        self.assertIsNone(process.poll())
+        os.kill(server['pid'], 0)
+        process.terminate()
+        self.assertEqual(process.wait(timeout=10), 128 + signal.SIGTERM)
+        self.assert_gone(server['pid'])
 
     def test_server_death_ends_only_its_terminal_without_replaying_prompt(self):
         """Restarting the original command after a live server crash could duplicate work."""

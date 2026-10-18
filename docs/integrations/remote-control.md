@@ -34,7 +34,8 @@ Keep the session running while pairing, and restart it for a new code. No
 public port is opened and the shared Codex daemon is not touched.
 
 Before pairing, the launcher waits for the remote transport to connect, allowing
-transient failures to recover within a 30-second retry window. If it cannot connect,
+transient failures to recover within a 30-second retry window; Ctrl-C cancels startup.
+If it cannot connect,
 the notice identifies the local-only fallback: that session has no phone access.
 Check network/VPN access to ChatGPT, then start a new session. A working terminal
 alone does not prove Remote Control connected; host and container routes can both
