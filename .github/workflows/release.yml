@@ -191,5 +191,7 @@ jobs:
   aur:
     needs: [build, github-release]
     uses: ./.github/workflows/aur.yml
+    secrets:
+      AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
     with:
       version: ${{ needs.build.outputs.version }}

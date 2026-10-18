@@ -92,7 +92,10 @@ References: [PyPI Trusted Publishing](https://docs.pypi.org/trusted-publishers/)
 
 No line in this runbook is evidence that an upload or live check already ran.
 Record actual workflow URLs, artifact hashes, installation results and live
-acceptance with the release task. AUR packaging is not a release gate.
+acceptance with the release task. AUR failure makes the overall Release run fail
+after PyPI and GitHub publication; those published artifacts remain valid.
+Recover through the standalone AUR workflow below, without recreating the tag or
+republishing Python artifacts.
 
 ## Recovery
 
@@ -152,7 +155,12 @@ The workflow file must exist on the default branch for manual dispatch.
 Configure GitHub Environment `aur` to allow only the default branch and release
 tags. Add `AUR_SSH_PRIVATE_KEY` there, using a dedicated Ed25519 key whose public
 half is registered to the maintainer's AUR account. Never put the private key
-in this repository or a tracker comment. `packaging/aur/known_hosts` pins the
+in this repository or a tracker comment. The reusable caller must explicitly pass
+the named secret even when it exists only in the `aur` environment; the publish
+job receives that environment's value. The required `workflow_call` declaration
+checks the handoff, while the publish step also rejects an empty value. Standalone
+dispatch uses the same environment directly. No repository-level copy is needed.
+`packaging/aur/known_hosts` pins the
 server key verified against the fingerprints at [the AUR homepage](https://aur.archlinux.org/).
 If it changes, verify the new fingerprint independently before updating the pin.
 
