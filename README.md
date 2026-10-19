@@ -113,8 +113,8 @@ device only when you enable it.
 
 **Host mode.** `--host` runs your installed `claude` or `codex` directly, with
 your own environment and credentials. Tracker, workflow and model routing
-behave the same; container-only features such as mounts and the agent browser
-do not apply.
+behave the same. Extra workspace mounts remain container-only. The optional
+isolated browser uses a separate Podman container in either mode.
 
 **Configuration.** Built-in defaults, then your global
 `~/.config/agent-box/config.json`, then the repository's `.agent-box.json`.

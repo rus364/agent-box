@@ -67,7 +67,7 @@ class ConfigMenuTests(unittest.TestCase):
             (): ['agents', 'box', 'credentials', 'tracker', 'workflow', 'host'],
             ('agents',): ['default', 'claude', 'codex', 'host_env', 'external_apis'],
             ('agents', 'codex'): ['native_agent_wait', 'remote_control'],
-            ('box',): ['tools', 'network', 'k3s', 'podman', 'audio', 'links', 'env'],
+            ('box',): ['tools', 'network', 'browser', 'k3s', 'podman', 'audio', 'links', 'env'],
             ('credentials',): ['git', 'github', 'registries', 'kubernetes', 'cloud'],
             ('host',): ['notifications', 'claude_skill_links'],
             ('workflow',): ['enabled', 'merge_mode', 'auto_push', 'pause_push', 'cleanup_local_branches',
@@ -187,13 +187,13 @@ class ConfigMenuTests(unittest.TestCase):
         import curses
         from agent_box.config import save_config
         config = Config()
-        config.box.tools.groups['browser'] = True
+        config.box.browser.enabled = True
         config.workflow.auto_push = False
         config.workflow.review.max_lines = 31
-        browser = [*select("box"), '\n', *select("tools", ("box",)), '\n', *select("browser", ("box", "tools")), 'r', '\x1b', '\x1b']
+        browser = [*select("box"), '\n', *select("browser", ("box",)), '\n', *select("enabled", ("box", "browser")), 'r', '\x1b', '\x1b']
         cancelled, _ = self.edit(config, [*browser, '\x1b'])
         self.assertIsNone(cancelled)
-        self.assertTrue(config.box.tools.groups['browser'])
+        self.assertTrue(config.box.browser.enabled)
         result, screen = self.edit(config, [*browser, *select("workflow"), 'r',
                                            curses.KEY_END, curses.KEY_UP, '\n'])
         self.assertEqual(result.config.to_dict(), Config().to_dict())
@@ -201,7 +201,7 @@ class ConfigMenuTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / 'config.json'
             save_config(result.config, path)
-            self.assertEqual(json.loads(path.read_text()), {'version': 1})
+            self.assertEqual(json.loads(path.read_text()), {'version': 2})
 
 
     def test_cleanup_toggles_save_independently_without_enabling_the_other(self):
@@ -716,16 +716,16 @@ class ProjectMenuTests(unittest.TestCase):
         import curses
         from agent_box import project_config
         config = Config()
-        browser = [*select("box"), '\n', *select("tools", ("box",)), '\n', *select("browser", ("box", "tools"))]
+        browser = [*select("box"), '\n', *select("browser", ("box",)), '\n', *select("enabled", ("box", "browser"))]
         save = ['\x1b', '\x1b', curses.KEY_END, curses.KEY_UP, '\n']
         pinned, screen = self.edit(config, [*browser, 'g', *save], project={})
-        self.assertEqual(pinned.project, {'box': {'tools': {'browser': False}}})
+        self.assertEqual(pinned.project, {'box': {'browser': {'enabled': False}}})
         self.assertIn('copy and pin', '\n'.join(screen.drawn))
         reset, _ = self.edit(config, [*browser, 'r', *save], project=pinned.project)
         self.assertEqual(reset.project, {})
-        config.box.tools.groups['browser'] = True
-        self.assertFalse(project_config.apply(config, pinned.project).box.tools.browser())
-        self.assertTrue(project_config.apply(config, reset.project).box.tools.browser())
+        config.box.browser.enabled = True
+        self.assertFalse(project_config.apply(config, pinned.project).box.browser.active())
+        self.assertTrue(project_config.apply(config, reset.project).box.browser.active())
 
     def test_section_copy_filters_global_only_and_keeps_empty_explicit_values(self):
         """Section pinning must never serialize the global integration permission."""
@@ -883,10 +883,10 @@ class ProjectMenuTests(unittest.TestCase):
         """Explicit equality is a choice; reset removes the choice from the file."""
         import curses
         config = Config()
-        browser = [*select("box"), '\n', *select("tools", ("box",)), '\n', *select("browser", ("box", "tools"))]
+        browser = [*select("box"), '\n', *select("browser", ("box",)), '\n', *select("enabled", ("box", "browser"))]
         save = ['\x1b', '\x1b', curses.KEY_END, curses.KEY_UP, '\n']
         result, screen = self.edit(config, [*browser, ' ', ' ', *save], project={})
-        self.assertEqual(result.project, {'box': {'tools': {'browser': False}}})
+        self.assertEqual(result.project, {'box': {'browser': {'enabled': False}}})
         self.assertIn('Inherited', '\n'.join(screen.drawn))
         self.assertIn('Overridden', '\n'.join(screen.drawn))
         reset, _ = self.edit(config, [*browser, 'r', *save], project=result.project)
@@ -901,7 +901,7 @@ class ProjectMenuTests(unittest.TestCase):
         import io
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / '.agent-box.json'
-            result = config_menu.EditResult(Config(), project={'box': {'tools': {'browser': False}}})
+            result = config_menu.EditResult(Config(), project={'box': {'browser': {'enabled': False}}})
             with patch.object(project_config, 'project_path', return_value=path), \
                  patch.object(cli, 'effective_config', return_value=Config()), \
                  patch.object(config_menu, 'edit', return_value=result), \
@@ -909,10 +909,10 @@ class ProjectMenuTests(unittest.TestCase):
                  patch('agent_box.runtime.apply_config', side_effect=AssertionError('global apply')), \
                  redirect_stdout(io.StringIO()):
                 cli.config_interactive(project=True)
-                self.assertEqual(json.loads(path.read_text()), {"version": 1, **result.project})
+                self.assertEqual(json.loads(path.read_text()), {"version": 2, **result.project})
                 with patch.object(config_menu, 'edit', return_value=None):
                     cli.config_interactive(project=True)
-                self.assertEqual(json.loads(path.read_text()), {"version": 1, **result.project})
+                self.assertEqual(json.loads(path.read_text()), {"version": 2, **result.project})
 
     def test_project_cli_copy_uses_available_global_source_without_process_account(self):
         """G must not pin a temporary account, and a session snapshot outranks the host file."""
@@ -950,7 +950,7 @@ class ProjectMenuTests(unittest.TestCase):
                      patch.object(cli, 'save_config', side_effect=AssertionError('global write')), \
                      patch('agent_box.runtime.apply_config', side_effect=AssertionError('global apply')):
                     cli.config_interactive(project=True)
-                    self.assertEqual(json.loads(path.read_text()), {"version": 1,
+                    self.assertEqual(json.loads(path.read_text()), {"version": 2,
                         'tracker': {'provider': '', 'connections': {'vikunja': {'url': expected}}}})
                     for private in ('https://temporary.example', 'GLOBAL_SECRET', 'RUNTIME_SECRET', 'TEMPORARY_SECRET'):
                         self.assertNotIn(private, path.read_text())

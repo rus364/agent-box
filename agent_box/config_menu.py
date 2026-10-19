@@ -108,6 +108,8 @@ HELP = {
     "tracker.project": "Project tracker identity: the tracker project ID this repository's tasks belong to. Project setting only; setup and adopt write it.",
     "tracker.recursive": "Project tracker identity: include every project under the bound project in the workflow. Project setting only.",
     "tracker.connections": "Provider URLs and tokens rendered into minimal runtime credential files only when tracker integration is enabled.",
+    "box.browser": "Isolated Playwright MCP + Chromium in a separate container per agent session. Requires local rootless Podman in host and workspace modes; first use downloads the pinned image. No personal browser/profile access.",
+    "box.browser.enabled": "Start the isolated browser for Claude/Codex. Host sessions use host networking; workspace sessions share their workspace network. Project, explicit extra mounts and session outputs only; private workspace /tmp files are not shared. No workspace image rebuild needed.",
     "box.podman": "Where nested Podman's images, build cache, containers and volumes live: the host Podman volume agent-box-podman-<workspace id>. The tool group itself is under Image tools.",
     "box.podman.persistent_data": "Keep the volume after the box is gone, so pulls and build cache survive between sessions. Off deletes it whenever the box goes away, so each box starts empty. `agent-box stop --podman-data` deletes it on demand.",
     "box.audio": "Mount the host PulseAudio/PipeWire socket so agents can use the microphone and speakers, e.g. Claude Code /voice. Everything in the box gets both. Changing it recreates the box.",
@@ -186,6 +188,8 @@ PATH_LABELS = {
     "credentials.kubernetes": "Kubernetes configs", "credentials.kubernetes.files": "Kubeconfig files",
     "credentials.cloud": "Cloud CLI profiles", "credentials.cloud.yc": "Yandex Cloud (yc)",
     "credentials.cloud.yc.profiles": "yc profiles", "box.tools.yc": "Yandex Cloud CLI (yc)",
+    "box.browser": "Isolated Playwright MCP + Chromium in a separate container per agent session. Requires local rootless Podman in host and workspace modes; first use downloads the pinned image. No personal browser/profile access.",
+    "box.browser.enabled": "Start the isolated browser for Claude/Codex. Host sessions use host networking; workspace sessions share their workspace network. Project, explicit extra mounts and session outputs only; private workspace /tmp files are not shared. No workspace image rebuild needed.",
     "box.podman": "Nested Podman storage",
 }
 
@@ -287,7 +291,7 @@ MENU_GROUPS = {
     ),
     ("box",): (
         ("Image", ("tools",)),
-        ("Workspace resources", ("network", "k3s", "podman")),
+        ("Workspace resources", ("network", "browser", "k3s", "podman")),
         ("Inside the box", ("audio", "links", "env")),
     ),
     ("credentials",): (

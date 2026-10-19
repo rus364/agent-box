@@ -24,7 +24,7 @@ from pathlib import Path
 from unittest import mock
 
 from agent_box import cli as cli_module
-from agent_box import runtime
+from agent_box import runtime, browser
 from agent_box.config import Config, HostConfig, NotificationsConfig
 from agent_box.workspace import Workspace
 
@@ -34,7 +34,7 @@ from test_runtime import IsolatedRuntimeTest
 def browser_config(enabled: bool = True) -> Config:
     """A configuration with the browser tool group on or off."""
     config = Config()
-    config.box.tools.groups["browser"] = enabled
+    config.box.browser.enabled = enabled
     return config
 
 
@@ -59,7 +59,7 @@ class BrowserSessionStateTests(IsolatedRuntimeTest):
     def test_no_browser_session_option_creates_no_state(self):
         """``--no-browser`` keeps the MCP server out although the image has Chromium."""
         config = browser_config()
-        config.box.tools.browser_off = True
+        config.box.browser.off = True
         self.assertIsNone(self._session(config))
         self.assertFalse(runtime.browser_session_root(self.runtime_state).exists())
 
@@ -115,7 +115,9 @@ class BrowserSessionStateTests(IsolatedRuntimeTest):
     def test_stop_removes_every_browser_session(self):
         for name in ("claude-1", "codex-2"):
             (runtime.browser_session_root(self.runtime_state) / name / "output").mkdir(parents=True)
-        runtime.remove_browser_sessions(self.runtime_state)
+        with mock.patch.object(browser, "stop") as stop:
+            runtime.remove_browser_sessions(self.runtime_state)
+        stop.assert_called_once_with(self.runtime_state.root.name, "workspace")
         self.assertFalse(runtime.browser_session_root(self.runtime_state).exists())
 
     def test_unusable_state_warns_and_degrades_to_no_browser(self):
@@ -130,33 +132,11 @@ class BrowserSessionStateTests(IsolatedRuntimeTest):
 
 
 class BrowserMcpArgvTests(unittest.TestCase):
-    def test_headless_isolated_and_redirected_output(self):
+    def test_workspace_client_can_only_connect_to_its_session(self):
+        """The agent receives a byte relay, never arbitrary host Podman execution."""
         args = runtime.browser_mcp_args(Path("/state/browser/claude-1"))
-        self.assertEqual(args[0], "playwright-mcp")
-        self.assertIn("--headless", args)
-        # --isolated is what makes cookies/localStorage non-persistent.
-        self.assertIn("--isolated", args)
-        self.assertEqual(
-            args[args.index("--output-dir") + 1], "/state/browser/claude-1/output")
-
-    def test_bundled_chromium_is_selected_explicitly(self):
-        """Playwright MCP defaults to the branded Chrome channel, which the
-        image does not ship; the bundled Chromium must be named."""
-        args = runtime.browser_mcp_args(Path("/state/browser/claude-1"))
-        self.assertEqual(args[args.index("--browser") + 1], "chromium")
-
-    def test_no_sandbox_flag_is_forced_either_way(self):
-        """Playwright picks its own default for its bundled Chromium; agent-box
-        neither weakens it nor forces on a sandbox that cannot work under
-        --cap-drop=all."""
-        args = runtime.browser_mcp_args(Path("/state/b"))
-        self.assertNotIn("--no-sandbox", args)
-        self.assertNotIn("--sandbox", args)
-
-    def test_no_persistent_profile_directory_is_configured(self):
-        args = runtime.browser_mcp_args(Path("/state/b"))
-        self.assertNotIn("--user-data-dir", args)
-        self.assertNotIn("--storage-state", args)
+        self.assertEqual(args, ["python3", "/state/browser/claude-1/client.py",
+                                "/state/browser/claude-1/mcp.sock"])
 
 
 class CodexBrowserInjectionTests(IsolatedRuntimeTest):
@@ -180,10 +160,8 @@ class CodexBrowserInjectionTests(IsolatedRuntimeTest):
             ["exec", "hi"], browser_config(), Path("/state/browser/codex-7"))
         override = command[command.index("-c") + 1]
         self.assertTrue(override.startswith("mcp_servers.agent_box_browser={"))
-        self.assertIn('command="playwright-mcp"', override)
-        self.assertIn('"--headless"', override)
-        self.assertIn('"--isolated"', override)
-        self.assertIn('"/state/browser/codex-7/output"', override)
+        self.assertIn('command="python3"', override)
+        self.assertIn('"/state/browser/codex-7/mcp.sock"', override)
 
     def test_override_is_valid_toml_naming_a_stdio_server(self):
         import tomllib
@@ -192,7 +170,7 @@ class CodexBrowserInjectionTests(IsolatedRuntimeTest):
         key, _, value = override.partition("=")
         parsed = tomllib.loads(f"x = {value}")["x"]
         self.assertEqual(key, "mcp_servers.agent_box_browser")
-        self.assertEqual(parsed["command"], "playwright-mcp")
+        self.assertEqual(parsed["command"], "python3")
         self.assertEqual(parsed["args"], runtime.browser_mcp_args(Path("/state/browser/codex-7"))[1:])
 
     def test_composes_with_chatgpt_desktop_mcp_filtering(self):
@@ -221,7 +199,7 @@ class CodexBrowserInjectionTests(IsolatedRuntimeTest):
         config = Config(host=HostConfig(notifications=NotificationsConfig(
                 enabled=True, telegram_token="t", telegram_chat_id="c")),
         )
-        config.box.tools.groups["browser"] = True
+        config.box.browser.enabled = True
         command = runtime.codex_command(["exec", "hi"], config, Path("/state/b/codex-1"))
         overrides = [command[i + 1] for i, arg in enumerate(command) if arg == "-c"]
         self.assertFalse(any(o.startswith("notify=") for o in overrides))
@@ -240,9 +218,9 @@ class ClaudeBrowserInjectionTests(unittest.TestCase):
             self.assertEqual(args[0], "--mcp-config")
             written = json.loads(Path(args[1]).read_text())
         server = written["mcpServers"]["agent_box_browser"]
-        self.assertEqual(server["command"], "playwright-mcp")
-        self.assertIn("--headless", server["args"])
-        self.assertIn("--isolated", server["args"])
+        self.assertEqual(server["command"], "python3")
+        self.assertTrue(server["args"][-1].endswith("mcp.sock"))
+        self.assertTrue(server["args"][0].endswith("client.py"))
 
     def test_config_file_lives_in_the_workspace_runtime_state(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -357,32 +335,16 @@ class HostModeTests(IsolatedRuntimeTest):
             self.assertFalse(state.exists())
 
 
-class DoctorBrowserDiagnosticsTests(unittest.TestCase):
-    def test_disabled_is_reported_without_being_an_error(self):
-        script = runtime.DOCTOR_SCRIPT
-        self.assertIn("browser integration: disabled", script)
-        self.assertIn("browser integration: enabled", script)
+class DoctorBrowserDiagnosticsTests(IsolatedRuntimeTest):
+    def test_health_checks_run_in_the_managed_image_without_network_or_pull(self):
+        """Doctor checks real rendering but never installs a missing image."""
+        with mock.patch.object(browser.subprocess, "run", return_value=mock.Mock(returncode=0, stdout="123", stderr="")) as run:
+            self.assertIn("OK", browser.diagnose())
+        args = run.call_args_list[0].args[0]
+        self.assertIn("--network=none", args)
+        self.assertIn("--pull=never", args)
+        self.assertIn(browser.IMAGE, args)
 
-    def test_reports_the_playwright_mcp_version_either_way(self):
-        self.assertIn("playwright-mcp --version", runtime.DOCTOR_SCRIPT)
-
-    def test_smoke_test_is_bounded_and_offline(self):
-        script = runtime.DOCTOR_SCRIPT
-        self.assertIn("timeout 30 agent-box-browser-smoke", script)
-        # Nothing in the browser section may reach for a website.
-        section = script[script.index("playwright-mcp --version"):]
-        self.assertNotIn("http://", section)
-        self.assertNotIn("https://", section)
-
-    def test_an_image_without_browser_support_says_so_actionably(self):
-        self.assertIn("agent-box build", runtime.DOCTOR_SCRIPT)
-
-    def test_enablement_reaches_the_container_as_one_env_flag(self):
-        self.assertEqual(runtime.BROWSER_ENABLED_ENV, "AGENT_BOX_BROWSER")
-        self.assertIn("${AGENT_BOX_BROWSER:-0}", runtime.DOCTOR_SCRIPT)
-
-
-class DoctorLaunchTests(IsolatedRuntimeTest):
     def _doctor_env(self, config: Config) -> list[str]:
         captured = {}
 
@@ -434,7 +396,7 @@ class ConfigSurfaceTests(unittest.TestCase):
 
     def _browser_line(self, config: Config) -> str:
         from test_workflow_config import show_paths
-        return show_paths(self._show(config))["box.tools.browser"]
+        return show_paths(self._show(config))["box.browser.enabled"]
 
     def test_config_show_reports_the_switch_off(self):
         line = self._browser_line(browser_config(False))
@@ -443,7 +405,7 @@ class ConfigSurfaceTests(unittest.TestCase):
     def test_config_show_reports_the_switch_on_and_where_it_runs(self):
         line = self._browser_line(browser_config(True))
         self.assertTrue(line.startswith("on "))
-        self.assertIn("headless Chromium in the box", line)
+        self.assertIn("isolated browser container per session", line)
         self.assertIn("--host", line)
 
     @contextlib.contextmanager
@@ -458,7 +420,7 @@ class ConfigSurfaceTests(unittest.TestCase):
         from agent_box import config_menu
         changed = Config.from_dict(config.to_dict())
         if answer is not None:
-            changed.box.tools.groups["browser"] = answer
+            changed.box.browser.enabled = answer
         with mock.patch.object(cli_module, "load_config", return_value=config), \
              mock.patch.object(cli_module, "save_config") as save, \
              mock.patch.object(config_menu, "edit", return_value=config_menu.EditResult(changed)), \
@@ -473,22 +435,22 @@ class ConfigSurfaceTests(unittest.TestCase):
             return save.call_args.args[0]
 
     def test_interactive_config_can_turn_the_browser_on(self):
-        self.assertTrue(self._interactive(browser_config(False), True).box.tools.groups["browser"])
+        self.assertTrue(self._interactive(browser_config(False), True).box.browser.enabled)
 
     def test_interactive_config_can_turn_the_browser_off(self):
-        self.assertFalse(self._interactive(browser_config(True), False).box.tools.groups["browser"])
+        self.assertFalse(self._interactive(browser_config(True), False).box.browser.enabled)
 
     def test_pressing_enter_keeps_the_stored_answer(self):
-        self.assertFalse(self._interactive(browser_config(False), None).box.tools.groups["browser"])
-        self.assertTrue(self._interactive(browser_config(True), None).box.tools.groups["browser"])
+        self.assertFalse(self._interactive(browser_config(False), None).box.browser.enabled)
+        self.assertTrue(self._interactive(browser_config(True), None).box.browser.enabled)
 
     def test_menu_explains_the_browser_trust_boundary(self):
         from agent_box.config_menu import help_for
-        text = help_for(("box", "tools", "browser"))
-        self.assertIn("Chromium", text)
-        self.assertIn("in-memory", text)
-        self.assertIn("trust boundary", text)
-        self.assertIn("--host", text)
+        text = help_for(("box", "browser", "enabled"))
+        self.assertIn("browser", text)
+        self.assertIn("isolated browser", text)
+        self.assertIn("Project", text)
+        self.assertIn("Host sessions", text)
 
 
 if __name__ == "__main__":

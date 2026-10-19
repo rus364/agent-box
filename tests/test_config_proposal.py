@@ -66,13 +66,13 @@ class ConfigProposalTests(unittest.TestCase):
 
     def test_a_confirmed_proposal_is_saved_sparse_applied_and_removed(self):
         """Consent is the only way in; afterwards the file must hold the change and keep everything else."""
-        self.command("set", "--global", "workflow.review.max_files=9", "box.tools.browser=true")
+        self.command("set", "--global", "workflow.review.max_files=9", "box.browser.enabled=true")
         self.assertEqual(load_config().workflow.review.max_files, 3, "proposing must not write")
         output = self.command("proposal", "apply", answer="y")
         self.assertIn("- workflow.review.max_files = 3", output)
         self.assertNotIn("tg-secret-value", output)
         saved = json.loads(self.global_file.read_text())
-        self.assertEqual((saved["workflow"]["review"]["max_files"], saved["box"]["tools"]["browser"]), (9, True))
+        self.assertEqual((saved["workflow"]["review"]["max_files"], saved["box"]["browser"]["enabled"]), (9, True))
         self.assertEqual(load_config().host.notifications.telegram_token, "tg-secret-value")
         self.apply.assert_called_once()
         self.assertFalse(self.proposal.exists())
@@ -133,11 +133,11 @@ class ConfigProposalTests(unittest.TestCase):
         paths = [REAL_PROPOSAL_PATH(repo) for repo in repos]
         for repo, path in zip(repos, paths):
             self.assertIn(repo.resolve() / ".git", path.resolve().parents)
-        config_proposal.save(paths[0], {"set": {"box.tools.browser": True}, "reset": []})
+        config_proposal.save(paths[0], {"set": {"box.browser.enabled": True}, "reset": []})
         self.assertEqual(config_proposal.load(paths[1]), {"set": {}, "reset": []})
-        self.assertEqual(config_proposal.merged({"set": {"workflow.review.max_files": 9, "box.tools.browser": True}, "reset": []},
-                                                [(("workflow", "review", "max_files"), 4)], [("box", "tools", "browser")]),
-                         {"set": {"workflow.review.max_files": 4}, "reset": ["box.tools.browser"]})
+        self.assertEqual(config_proposal.merged({"set": {"workflow.review.max_files": 9, "box.browser.enabled": True}, "reset": []},
+                                                [(("workflow", "review", "max_files"), 4)], [("box", "browser", "enabled")]),
+                         {"set": {"workflow.review.max_files": 4}, "reset": ["box.browser.enabled"]})
 
     def test_apply_is_refused_inside_any_agent_session(self):
         """An agent must not answer the confirmation itself, in a box or in a --host session with a saved file."""
@@ -169,14 +169,14 @@ class ConfigProposalTests(unittest.TestCase):
     def test_reset_never_takes_a_flag_for_its_path(self):
         """`--reset --dry-run` reading --dry-run as a path would turn a preview into a write."""
         for scope in ("--project", "--global"):
-            for args in (("--reset",), ("--reset", "--dry-run", "box.tools.browser=true")):
+            for args in (("--reset",), ("--reset", "--dry-run", "box.browser.enabled=true")):
                 with self.subTest(scope=scope, args=args), self.assertRaisesRegex(AgentBoxError, "expected"):
                     self.command("set", scope, *args)
         self.assertFalse(self.proposal.exists())
 
     def test_the_scope_is_explicit_and_the_commands_are_documented(self):
         """A write without a scope must not guess one."""
-        for args in (("box.tools.browser=true",), ("--project", "--global", "box.tools.browser=true")):
+        for args in (("box.browser.enabled=true",), ("--project", "--global", "box.browser.enabled=true")):
             with self.subTest(args=args), self.assertRaisesRegex(AgentBoxError, "expected"):
                 self.command("set", *args)
         self.assertIn("No pending global proposal", self.command("proposal"))

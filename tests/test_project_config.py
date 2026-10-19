@@ -35,7 +35,7 @@ class ProjectConfigTests(unittest.TestCase):
     def test_partial_override_preserves_false_empty_list_and_global(self):
         self.config.workflow.review.models = [{"provider": "codex", "model": "global", "effort": "high", "speed": "inherit", "api_provider": ""}]
         original = self.config.to_dict()
-        data = {'box': {'tools': {'browser': True}},
+        data = {'box': {'browser': {'enabled': True}},
                 'workflow': {'review': {'sensitive_paths': [], 'ignored_paths': ['**/*.md'], 'tiers': {'2': []}},
                              'auto_push': False}}
         project_config.validate(data, self.path)
@@ -45,7 +45,7 @@ class ProjectConfigTests(unittest.TestCase):
         self.assertEqual(result.workflow.review.models, self.config.workflow.review.models)
         self.assertEqual(result.workflow.review.tiers['2'], [])
         self.assertFalse(result.workflow.auto_push)
-        self.assertTrue(result.box.tools.groups['browser'])
+        self.assertTrue(result.box.browser.enabled)
         self.assertTrue(result.box.tools.groups['analysis'])
         self.assertEqual(self.config.to_dict(), original)
 
@@ -103,7 +103,7 @@ class ProjectConfigTests(unittest.TestCase):
                 project_config.validate({'workflow': {'worker': bad}}, self.path)
 
     def test_unknown_forbidden_and_malformed_values_never_fall_back(self):
-        for data in ({'box': {'tools': {'browser': 1}}}, {'env': {}}, {'workflow': {'enabled': False}},
+        for data in ({'box': {'browser': {'enabled': 1}}}, {'env': {}}, {'workflow': {'enabled': False}},
                      {'agents': {'default': 'codex'}}, {'claude': {'statusline': {'command': 'echo'}}},
                      {'workflow': {'unknown': 1}}, {'workflow': {'merge_mode': ''}},
                      {'workflow': {'review': {'sensitive_paths': [None]}}},
@@ -155,19 +155,19 @@ class ProjectConfigTests(unittest.TestCase):
             self.assertIn(dotted, str(caught.exception))
 
     def test_binding_setup_and_cutover_preserve_project_overrides(self):
-        project_config.save(self.path, {'box': {'tools': {'browser': True}}, 'workflow': {'auto_push': False}})
+        project_config.save(self.path, {'box': {'browser': {'enabled': True}}, 'workflow': {'auto_push': False}})
         write_binding(self.root, self.binding)
         self.assertEqual(Binding.load(self.root), self.binding)
         data = json.loads(setup_content(self.root, Binding('vikunja', self.binding.server, '25'))[self.path])
-        self.assertTrue(data['box']['tools']['browser'])
+        self.assertTrue(data['box']['browser']['enabled'])
         self.assertFalse(data['workflow']['auto_push'])
         self.assertEqual(data['tracker']['project'], '25')
         self.assertNotIn('server', data)
 
     def test_launch_settings_need_no_binding_but_tracker_binding_does(self):
-        project_config.save(self.path, {'box': {'tools': {'browser': True}}})
+        project_config.save(self.path, {'box': {'browser': {'enabled': True}}})
         with patch.object(project_config, 'project_path', return_value=self.path):
-            self.assertTrue(effective_config(self.config).box.tools.browser())
+            self.assertTrue(effective_config(self.config).box.browser.active())
         with self.assertRaisesRegex(AgentBoxError, 'Incomplete repository binding'):
             Binding.load(self.root)
 
@@ -413,7 +413,7 @@ class ProjectConfigTests(unittest.TestCase):
         import io
         from agent_box import cli
         self.config.tracker.enabled = False
-        self.config.box.tools.groups['browser'] = True
+        self.config.box.browser.enabled = True
         self.config.box.tools.groups['virtualization'] = True
         self.config.box.env.set['PRIVATE_VALUE'] = 'not-for-the-box'
         data = {'workflow': {'auto_push': False}, 'box': {'tools': {'analysis': False}}}
@@ -435,9 +435,9 @@ class ProjectConfigTests(unittest.TestCase):
                  contextlib.redirect_stdout(io.StringIO()) as output:
                 cli.config_show()
                 effective = effective_config()
-            self.assertTrue(effective.box.tools.browser())
+            self.assertTrue(effective.box.browser.active())
             self.assertTrue(effective.box.tools.groups['virtualization'])
             self.assertFalse(effective.box.tools.groups['analysis'])
             self.assertFalse(effective.workflow.auto_push)
             from test_workflow_config import show_paths
-            self.assertEqual(show_paths(output.getvalue())['box.tools.browser'], 'on')
+            self.assertEqual(show_paths(output.getvalue())['box.browser.enabled'], 'on')

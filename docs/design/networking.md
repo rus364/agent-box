@@ -37,7 +37,7 @@ a route between them.
 | k3s | `k3s.container_args` gives the sidecar a dedicated named network and volume, a random host-loopback API publication and `box.k3s.ports` publications. `runtime.k3s_box_args` makes the API reachable at the same loopback port inside the workspace. The kubeconfig is mounted read-only. |
 | Cluster services | ClusterIP and service DNS belong to the cluster. API publication does not route the workspace into the pod/service network. `kubectl port-forward` is an additional API-mediated route, with its listener living wherever kubectl runs. |
 | Nested Podman | `Containerfile`, `nested_podman.CONTAINERS_CONF` and `runtime.nested_podman_args` configure rootless slirp4netns, a separate storage volume and limited extra permissions. Inner `-p` publishes into the workspace. Inner host mode shares the workspace network. No host Podman socket is passed. |
-| Browsers | The built-in isolated browser uses the workspace network. A desktop browser uses the host network. Opening a link does not publish its destination or attach authenticated desktop tabs; task #44 owns browser attachment. |
+| Browsers | The isolated browser sibling shares the workspace network in container mode and the host network in native host mode. A desktop browser uses the host network. Opening a link does not publish its destination or attach authenticated desktop tabs; task #57 owns personal-browser attachment. |
 
 `box.k3s.ports` is currently under **Workspace box → k3s cluster**, globally
 and per project. `K3sConfig.validate` accepts `HOST:CONTAINER` strings with

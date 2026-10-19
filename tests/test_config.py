@@ -53,7 +53,7 @@ class DefaultsAreSafeTests(unittest.TestCase):
         credential switch on just by omitting it."""
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "config.json"
-            path.write_text(json.dumps({"version": 1, "agents": {"claude": {"telegram_channel": True}}}))
+            path.write_text(json.dumps({"version": 2, "agents": {"claude": {"telegram_channel": True}}}))
             config = load_config(path)
             self.assertTrue(config.agents.claude.telegram_channel)
             self.assertFalse(config.credentials.github.token)
@@ -89,7 +89,7 @@ class UnreadableFileTests(unittest.TestCase):
     @unittest.skipIf(os.geteuid() == 0, "root reads a file whatever its mode")
     def test_a_file_without_read_permission_is_not_missing(self):
         with tempfile.TemporaryDirectory() as tmp:
-            path = self.broken_file(tmp, '{"version": 1}')
+            path = self.broken_file(tmp, '{"version": 2}')
             path.chmod(0)
             with self.assertRaisesRegex(AgentBoxError, "Permission denied"):
                 load_config(path)
@@ -120,8 +120,8 @@ class UnreadableFileTests(unittest.TestCase):
 class SectionedSchemaTests(unittest.TestCase):
     def test_keys_of_the_former_flat_layout_are_ignored(self):
         """Unpublished flat keys are not settings and must never enable credentials."""
-        old = {"version": 1, "default_agent": "codex", "github": {"gh_token": True, "gh_config": True},
-               "tools": {"browser": True, "k3s": {"enabled": True}}, "audio": {"enabled": True},
+        old = {"version": 2, "default_agent": "codex", "github": {"gh_token": True, "gh_config": True},
+               "browser": {"enabled": True, "k3s": {"enabled": True}}, "audio": {"enabled": True},
                "notifications": {"enabled": True, "telegram_token": "t", "telegram_chat_id": "1"},
                "providers": {"api_keys": True}, "git": {"full_config": True},
                "skills": {"claude_links": False}}
@@ -139,7 +139,7 @@ class RoundTripTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / 'config.json'
             save_config(Config(), path)
-            self.assertEqual(json.loads(path.read_text()), {'version': 1})
+            self.assertEqual(json.loads(path.read_text()), {'version': 2})
             self.assertEqual(load_config(path).to_dict(), Config().to_dict())
 
     def test_native_agent_wait_defaults_are_cache_aware_and_round_trip_custom_values(self):
@@ -154,7 +154,7 @@ class RoundTripTests(unittest.TestCase):
             path = Path(tmp) / 'config.json'
             save_config(config, path)
             self.assertEqual(json.loads(path.read_text()), {
-                'version': 1,
+                'version': 2,
                 'agents': {'codex': {'native_agent_wait': {'enabled': False, 'interval_seconds': 900}}},
             })
             loaded = load_config(path)
@@ -184,7 +184,7 @@ class RoundTripTests(unittest.TestCase):
             save_config(config, path)
             data = json.loads(path.read_text())
             self.assertEqual(data, {
-                'version': 1, 'box': {'tools': {'analysis': False}, 'env': {'set': {'CUSTOM': ''}}},
+                'version': 2, 'box': {'tools': {'analysis': False}, 'env': {'set': {'CUSTOM': ''}}},
                 'workflow': {'auto_push': False, 'review': {'sensitive_paths': [],
                     'models': [{'provider': 'codex', 'model': 'custom-model', 'effort': 'medium', 'speed': 'inherit', 'api_provider': ''}]}}})
             self.assertEqual(load_config(path).to_dict(), config.to_dict())
@@ -207,7 +207,7 @@ class RoundTripTests(unittest.TestCase):
             save_config(config, path)
             # The file holds a bot token, so it must not be world-readable.
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
-            self.assertEqual(json.loads(path.read_text())["version"], 1)
+            self.assertEqual(json.loads(path.read_text())["version"], 2)
             loaded = load_config(path)
         self.assertTrue(loaded.agents.claude.telegram_channel)
         self.assertEqual(loaded.host.notifications.telegram_token, "123:abc")
@@ -220,7 +220,7 @@ class RoundTripTests(unittest.TestCase):
     def test_unknown_keys_are_dropped_on_save(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "config.json"
-            path.write_text(json.dumps({"version": 1, "remote_control": {"enabled": True}}))
+            path.write_text(json.dumps({"version": 2, "remote_control": {"enabled": True}}))
             save_config(load_config(path), path)
             self.assertNotIn("remote_control", json.loads(path.read_text()))
 
@@ -233,32 +233,32 @@ class BrowserToolTests(unittest.TestCase):
     capability here: off until asked for, and never silently on."""
 
     def test_defaults_disabled(self):
-        self.assertFalse(Config().box.tools.groups["browser"])
-        self.assertFalse(Config().box.tools.browser())
+        self.assertFalse(Config().box.browser.enabled)
+        self.assertFalse(Config().box.browser.active())
 
     def test_round_trips(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "config.json"
             config = Config()
-            config.box.tools.groups["browser"] = True
+            config.box.browser.enabled = True
             save_config(config, path)
-            self.assertEqual(json.loads(path.read_text())["box"]["tools"], {"browser": True})
-            self.assertTrue(load_config(path).box.tools.browser())
+            self.assertEqual(json.loads(path.read_text())["box"]["browser"], {"enabled": True})
+            self.assertTrue(load_config(path).box.browser.active())
 
     def test_a_non_boolean_is_not_treated_as_enabled(self):
-        self.assertFalse(config_module.ToolsConfig.from_dict({"browser": "yes"}).groups["browser"])
-        self.assertFalse(config_module.ToolsConfig.from_dict("nonsense").groups["browser"])
+        self.assertFalse(config_module.BrowserConfig.from_dict({"enabled": "yes"}).enabled)
+        self.assertFalse(config_module.BrowserConfig.from_dict("nonsense").enabled)
 
     def test_a_session_opt_out_is_never_saved(self):
         """``--no-browser`` shapes one session; the saved group must stay on."""
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "config.json"
             config = Config()
-            config.box.tools.groups["browser"] = True
-            config.box.tools.browser_off = True
-            self.assertFalse(config.box.tools.browser())
+            config.box.browser.enabled = True
+            config.box.browser.off = True
+            self.assertFalse(config.box.browser.active())
             save_config(config, path)
-            self.assertTrue(load_config(path).box.tools.browser())
+            self.assertTrue(load_config(path).box.browser.active())
 
 
 class AudioConfigTests(unittest.TestCase):

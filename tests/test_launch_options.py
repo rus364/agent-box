@@ -174,10 +174,10 @@ class SessionPrecedenceTests(IsolatedLaunchTest):
     def test_no_browser_keeps_the_mcp_server_out_without_changing_the_image(self):
         """The session opts out; the build and drift check still see the group."""
         config = Config()
-        config.box.tools.groups["browser"] = True
+        config.box.browser.enabled = True
         result = launch_options.apply(config, {"browser": False})
-        self.assertFalse(result.box.tools.browser())
-        self.assertIn("browser", result.box.tools.enabled_groups())
+        self.assertFalse(result.box.browser.active())
+        self.assertNotIn("browser", result.box.tools.enabled_groups())
 
     def test_describe_spells_overrides_as_the_flags_that_set_them(self):
         self.assertEqual(launch_options.describe({"worker": "codex:gpt-5.5:high", "push": False, "gh-token": True,

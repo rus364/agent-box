@@ -124,7 +124,7 @@ keep those changes. Opening or cancelling the project menu saves nothing.
     "connections": {"github": {"url": "https://api.github.com"}}
   },
   "workflow": {"auto_push": false},
-  "box": {"tools": {"browser": true}}
+  "box": {"browser": {"enabled": true}}
 }
 ```
 

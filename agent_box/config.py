@@ -523,8 +523,6 @@ TOOL_GROUPS: dict[str, bool] = {
     "podman": False,
     # skopeo alone: registry work needs no namespace permissions, unlike Podman
     "skopeo": False,
-    # Playwright MCP + headless Chromium, wired into every box session
-    "browser": False,
     # Yandex Cloud CLI; what forwarded yc profiles and exec kubeconfigs run
     "yc": False,
 }
@@ -537,8 +535,6 @@ TOOL_GROUP_HELP: dict[str, str] = {
     "virtualization": "Virtualization (QEMU x86-64/arm64, KVM passthrough; large)",
     "podman": "Nested Podman (rootless builds/containers; extra namespace permissions)",
     "skopeo": "skopeo (inspect, copy and list tags in container registries without Podman)",
-    "browser": ("Agent browser (Playwright MCP + headless Chromium; large). Isolated in-memory "
-                "profile, same trust boundary as agents; unavailable in --host mode"),
     "yc": "Yandex Cloud CLI (yc)",
 }
 
@@ -703,41 +699,12 @@ class PodmanConfig:
 
 @dataclass
 class ToolsConfig:
-    """Which optional tool groups the workspace image is built with.
-
-    A property of the image rather than of a launch: changing a group means
-    rebuilding. ``browser`` also wires the Playwright MCP server into every
-    Claude and Codex session in the box. A separate switch for that server was
-    rejected: with Chromium in the box an agent can drive it through Playwright
-    from a shell anyway, so the switch isolated nothing.
-
-    The browser exposes no host state -- no host profile, cookie jar or
-    credential. Pages the agent opens land *inside the workspace box*, one
-    trust boundary with the agent, the mounted project and every other enabled
-    integration. Each MCP process gets an isolated, non-persistent profile and
-    a session-private output directory (``agent_box.runtime.browser_session``),
-    so there is nothing further for a user to configure.
-
-    Unknown group names are dropped on load rather than carried, so the file
-    can never ask the build for a group that no longer exists.
-
-    The k3s cluster is a sibling section of the box, not a group: it builds
-    nothing into the image, so it never reaches the build args, the image
-    label or the drift report.
-    """
+    """Optional workspace image tools; browser runtimes are managed separately."""
 
     groups: dict[str, bool] = field(default_factory=lambda: dict(TOOL_GROUPS))
-    #: ``--no-browser`` for one session: the image keeps Chromium, the session
-    #: gets no MCP server. Never saved; the launch snapshot re-applies it.
-    browser_off: bool = False
-
     def enabled_groups(self) -> list[str]:
         """The groups to build, in a stable order for the image label."""
         return sorted(name for name, on in self.groups.items() if on)
-
-    def browser(self) -> bool:
-        """Whether this session wires the browser MCP server."""
-        return self.groups["browser"] and not self.browser_off
 
     def to_dict(self) -> dict[str, Any]:
         return {name: bool(self.groups.get(name, default)) for name, default in TOOL_GROUPS.items()}
@@ -1229,10 +1196,29 @@ class NetworkConfig:
 
 
 @dataclass
+class BrowserConfig:
+    """Opt-in isolated browser containers; never grants personal-browser access."""
+
+    enabled: bool = False
+    off: bool = False  # Invocation-only --no-browser; never persisted.
+
+    def active(self) -> bool:
+        return self.enabled and not self.off
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"enabled": self.enabled}
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "BrowserConfig":
+        return cls(enabled=_bool(data, "enabled", False))
+
+
+@dataclass
 class BoxConfig:
     """What the workspace box is built with and runs beside it."""
 
     tools: ToolsConfig = field(default_factory=ToolsConfig)
+    browser: BrowserConfig = field(default_factory=lambda: BrowserConfig())
     k3s: K3sConfig = field(default_factory=K3sConfig)
     network: NetworkConfig = field(default_factory=NetworkConfig)
     podman: PodmanConfig = field(default_factory=PodmanConfig)
@@ -1254,13 +1240,15 @@ class BoxConfig:
     env: EnvConfig = field(default_factory=EnvConfig)
 
     def to_dict(self) -> dict[str, Any]:
-        return {"tools": self.tools.to_dict(), "k3s": self.k3s.to_dict(), "network": self.network.to_dict(), "podman": self.podman.to_dict(),
+        return {"tools": self.tools.to_dict(), "browser": self.browser.to_dict(), "k3s": self.k3s.to_dict(), "network": self.network.to_dict(), "podman": self.podman.to_dict(),
                 "audio": self.audio, "links": self.links.to_dict(), "env": self.env.to_dict()}
 
     @classmethod
     def from_dict(cls, data: Any) -> "BoxConfig":
         data = _mapping(data)
-        return cls(tools=ToolsConfig.from_dict(data.get("tools")), k3s=K3sConfig.from_dict(data.get("k3s")),
+        return cls(tools=ToolsConfig.from_dict(data.get("tools")),
+                   browser=BrowserConfig.from_dict(data.get("browser", {"enabled": _mapping(data.get("tools")).get("browser", False)})),
+                   k3s=K3sConfig.from_dict(data.get("k3s")),
                    network=NetworkConfig.from_dict(data.get("network")),
                    podman=PodmanConfig.from_dict(data.get("podman")), audio=_bool(data, "audio", False), links=LinksConfig.from_dict(data.get("links")),
                    env=EnvConfig.from_dict(data.get("env")))

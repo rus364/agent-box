@@ -69,7 +69,7 @@ OPTIONS = (
     Option("k3s", ACCESS, "This workspace's k3s cluster", form="pair", container=True),
     Option("links", ACCESS, "Host web-link broker and temporary localhost callback forwarding", form="pair", container=True),
     Option("api-keys", ACCESS, "Provider API key variables", form="pair", container=True),
-    Option("browser", ACCESS, "Do not start the agent browser MCP server", form="negated", container=True),
+    Option("browser", ACCESS, "Do not start the agent browser MCP server", form="negated"),
     Option("remote-control", ACCESS, "Remote control; the --no- form also keeps Claude off Telegram", form="pair"),
     Option("notify", ACCESS, "Telegram notifications; turning them on needs them set up in agent-box config",
            form="pair"),
@@ -242,7 +242,7 @@ def apply(config, overrides):
         elif key == "api-keys":
             config.agents.host_env.api_keys = value
         elif key == "browser":
-            config.box.tools.browser_off = True
+            config.box.browser.off = True
         elif key == "remote-control":
             config.agents.claude.remote_control = config.agents.codex.remote_control = value
             config.agents.claude.telegram_channel = config.agents.claude.telegram_channel and value

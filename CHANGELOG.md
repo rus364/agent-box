@@ -1,5 +1,19 @@
 # Release notes
 
+## Unreleased — next major version
+
+- Move the opt-in isolated browser to a pinned Playwright MCP/Chromium container
+  for both workspace and native `--host` sessions. Configure **Workspace box →
+  Browser**; `--no-browser` works in both modes. No native browser stack is installed.
+- Migrate global/project schema 1 directly to schema 2, preserving
+  `box.tools.browser` as `box.browser.enabled`, including explicit project false.
+  Running immutable workspaces need an explicit stop/relaunch to adopt the update.
+- **Breaking image contract:** new workspace images no longer provide
+  `playwright-mcp`, Chromium or `agent-box-browser-smoke`. Use the per-session
+  `agent_box_browser` MCP integration, or install direct browser scripting tools
+  in the project. Keep this change for a major release; no version/tag is
+  published by this implementation.
+
 ## 1.1.0
 
 - Add opt-in workspace TCP/UDP publication, selected host-service forwarding

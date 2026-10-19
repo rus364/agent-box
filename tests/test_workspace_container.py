@@ -390,7 +390,7 @@ class WorkspaceContainerLifecycleTests(unittest.TestCase):
         """An installed browser need not start MCP; a missing tool must not be advertised."""
         container, _ = self._live_box()
         changed = runtime.Config()
-        changed.box.tools.groups["browser"] = False
+        changed.box.browser.enabled = False
         changed.box.tools.groups["yc"] = True
         with mock.patch.object(runtime, "inspect_workspace_container", return_value=container), \
              mock.patch.object(runtime, "image_tool_groups", return_value=["browser", "kubernetes", "podman"]) as image:
@@ -399,14 +399,14 @@ class WorkspaceContainerLifecycleTests(unittest.TestCase):
         with mock.patch.object(runtime, "load_config", return_value=changed), \
              mock.patch.object(project_config, "load", return_value={}):
             config = runtime.launch_config(LaunchOptions(), box_policy=spec.creation_config._box_policy)
-            self.assertFalse(config.box.tools.browser())
+            self.assertFalse(config.box.browser.active())
             self.assertFalse(config.box.tools.groups["yc"])
             self.assertFalse(config.box.tools.groups["podman"])
             self.assertTrue(config.box.tools.groups["kubernetes"])
             path = runtime.session_runtime(config, runtime_state=spec.runtime_state)
             with mock.patch.dict(os.environ, {"AGENT_BOX_RUNTIME_CONFIG": str(path)}):
                 snapshot = effective_config()
-            self.assertFalse(snapshot.box.tools.browser())
+            self.assertFalse(snapshot.box.browser.active())
             self.assertTrue(snapshot.box.tools.groups["kubernetes"])
 
     def test_first_launch_creates_then_starts_one_workspace_container(self):

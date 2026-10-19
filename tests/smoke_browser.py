@@ -1,4 +1,4 @@
-"""Opt-in real MCP check inside the workspace image; no models or external sites."""
+"""Opt-in real MCP check of the managed host browser container; no models or external sites."""
 import json
 from pathlib import Path
 import selectors
@@ -10,7 +10,7 @@ import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from agent_box.runtime import browser_mcp_args  # noqa: E402
+from agent_box import browser  # noqa: E402
 
 
 class Page(BaseHTTPRequestHandler):
@@ -94,7 +94,9 @@ def main():
         thread.start()
         client = None
         try:
-            client = Client(browser_mcp_args(session), workspace, stderr)
+            browser.STATE_ROOT = root / "runtime"
+            command = browser.prepare(session, workspace, workspace, workspace="smoke-test")
+            client = Client(command, workspace, stderr)
             client.request('initialize', {'protocolVersion': '2024-11-05', 'capabilities': {},
                                          'clientInfo': {'name': 'agent-box-smoke', 'version': '1'}})
             client.send({'method': 'notifications/initialized'})

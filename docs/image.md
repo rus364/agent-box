@@ -20,7 +20,6 @@ chosen under **Workspace box → Image tools** in `agent-box config`
 | `virtualization` | off | QEMU x86-64 and aarch64, OVMF; also gates `/dev/kvm` passthrough |
 | `podman` | off | Nested rootless Podman, userspace networking and image builds; see [nested Podman](nested-podman.md) |
 | `skopeo` | off | Inspecting, copying and listing registry images without Podman's namespace permissions |
-| `browser` | off | Playwright MCP and headless Chromium for every box session; see [agent browser](integrations/browser.md) |
 | `yc` | off | Yandex Cloud CLI; selected for you when [cloud CLI profiles](integrations/cloud-profiles.md) are forwarded |
 
 **Workspace box → k3s cluster** is not an image group: it runs a per-project
@@ -43,7 +42,7 @@ agent-box rebuild    # pull the base image and rebuild without layer cache
 
 - `build` and `update` reuse the local base image. `update` refreshes Codex,
   Claude, Node.js 22 and npm, mise, uv, Bun and the enabled Kubernetes tools.
-- Pinned Playwright/Chromium and jscpd sit above the refresh boundary and are
+- Pinned jscpd sit above the refresh boundary and are
   reused while their inputs are unchanged.
 - Ubuntu packages, including security fixes, are refreshed only by `rebuild`.
 - APT archives and npm downloads use persistent builder cache mounts
@@ -57,3 +56,6 @@ them rebuild it on their own.
 The Python package includes the complete build context; no checkout is needed.
 An installer upgrade changes those inputs but does not rebuild an image or
 replace a running box.
+
+The [agent browser](integrations/browser.md) uses a separate managed image. Its
+setting does not participate in workspace build arguments or tool-group labels.
