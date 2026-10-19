@@ -2260,19 +2260,21 @@ def existing_workspace_spec(workspace: Workspace, options: LaunchOptions, packag
 
 
 def verified_browser_mounts(policy, container):
-    """Only the immutable explicit-mount selection may reach the sibling browser."""
+    """Saved sharing choices need a matching actual bind before reaching the sibling."""
     selected = []
     for path, read_only in policy.get("browser_mounts", []):
         target = Path(path)
         if not target.is_absolute() or type(read_only) is not bool:
             raise AgentBoxError("invalid saved browser mount; stop and relaunch the workspace")
+        selected.append(MountSpec(target, read_only))
+    for mount in [*selected, *host_tmp_mounts(Config.from_dict(policy).box.host_tmp)]:
+        target, read_only = mount.path, mount.read_only
         covering = [item for item in container.get("Mounts", [])
                     if target.is_relative_to(Path(item["Destination"]))]
         actual = max(covering, key=lambda item: len(Path(item["Destination"]).parts), default=None)
         if (actual is None or bool(actual.get("RW")) == read_only
                 or Path(actual["Source"]) / target.relative_to(actual["Destination"]) != target):
             raise AgentBoxError("saved browser mounts differ from the workspace; stop and relaunch it")
-        selected.append(MountSpec(target, read_only))
     expected = container.get("Config", {}).get("Labels", {}).get(WORKSPACE_CONTAINER_EXTRA_MOUNTS_LABEL)
     if explicit_mounts_hash(selected) != expected:
         raise AgentBoxError("saved browser mounts differ from the explicit workspace mounts; stop and relaunch it")

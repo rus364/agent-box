@@ -93,6 +93,8 @@ class HostTmpWorkspaceTests(unittest.TestCase):
                 created = config.Config()
                 created.box.host_tmp = enabled
                 container, policy = self._live_box(created)
+                if enabled:
+                    container['Mounts'].append({'Source': '/tmp', 'Destination': '/tmp', 'RW': True})
                 desired = config.Config()
                 desired.box.host_tmp = not enabled
                 with patch.object(runtime, 'inspect_workspace_container', return_value=container), \
@@ -127,6 +129,20 @@ class HostTmpWorkspaceTests(unittest.TestCase):
 
 
 class HostTmpBrowserTests(unittest.TestCase):
+    def test_edited_creation_policy_cannot_grant_absent_host_tmp_to_browser(self):
+        """A writable policy file cannot grant the sibling more than the actual workspace bind."""
+        container = {'Mounts': [], 'Config': {'Labels': {
+            runtime.WORKSPACE_CONTAINER_EXTRA_MOUNTS_LABEL: runtime.explicit_mounts_hash([])}}}
+        policy = {'box': {'host_tmp': True}}
+        for actual in ([], [{'Source': '/tmp', 'Destination': '/tmp', 'RW': False}],
+                       [{'Source': '/other', 'Destination': '/tmp', 'RW': True}]):
+            with self.subTest(actual=actual):
+                container['Mounts'] = actual
+                with self.assertRaisesRegex(AgentBoxError, 'browser mounts differ from the workspace'):
+                    runtime.verified_browser_mounts(policy, container)
+        container['Mounts'] = [{'Source': '/tmp', 'Destination': '/tmp', 'RW': True}]
+        self.assertEqual(runtime.verified_browser_mounts(policy, container), [])
+
     def test_both_launch_modes_share_only_when_selected_and_reject_read_only_overlap(self):
         """Browser uploads must see the same host paths without broadening defaults."""
         for container in ('', 'workspace'):
