@@ -62,7 +62,9 @@ The Python package includes the build inputs; no checkout is needed. Installer
 upgrades do not run Podman. The next new workspace launch handles changed inputs.
 Running workspaces keep their original image; stop and launch explicitly to adopt
 an updated runtime or image. Native `--host` sessions do not build workspace images.
-Read-only configuration/doctor checks can report tool-group drift but never build.
+`config show` can report tool-group drift without building. `doctor` runs in a
+workspace: joining an admitted running box does not build, but creating a new one
+performs the same image reconciliation as an ordinary workspace launch.
 
 Automatic reconciliation does not poll registries for a newer base or refresh
 unpinned tool versions when the recipe is unchanged. Use `update` for fresh tools
