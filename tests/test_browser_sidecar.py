@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
-from agent_box import browser, migrations, config, project_config, runtime
+from agent_box import browser, migrations, config, config_menu, project_config, runtime
 from agent_box.errors import AgentBoxError
 from agent_box.mounts import MountSpec
 from agent_box.workspace import Workspace
@@ -14,14 +14,32 @@ from test_runtime import IsolatedRuntimeTest
 
 class BrowserPolicyTests(unittest.TestCase):
     def test_edited_session_metadata_cannot_add_host_paths_to_browser(self):
-        """Only actual workspace binds can validate inherited extra browser mounts."""
-        container = {'Mounts': [{'Source': '/project', 'Destination': '/project', 'RW': True}]}
+        """An inherited mount needs both the user's selection and the actual bind."""
+        mounts = [MountSpec(Path('/project/assets'), False)]
+        container = {'Mounts': [{'Source': '/project', 'Destination': '/project', 'RW': True}],
+                     'Config': {'Labels': {runtime.WORKSPACE_CONTAINER_EXTRA_MOUNTS_LABEL:
+                                           runtime.explicit_mounts_hash(mounts)}}}
         policy = {'browser_mounts': [['/private', False]]}
         with self.assertRaisesRegex(AgentBoxError, 'differ from the workspace'):
             runtime.verified_browser_mounts(policy, container)
         policy['browser_mounts'] = [['/project/assets', False]]
         self.assertEqual(runtime.verified_browser_mounts(policy, container),
                          [MountSpec(Path('/project/assets'), False)])
+
+    def test_session_metadata_cannot_reclassify_credentials_as_explicit_mount(self):
+        """Credential binds already in the workspace must not leak to the browser."""
+        container = {'Mounts': [{'Source': '/user/.codex', 'Destination': '/user/.codex', 'RW': True}],
+                     'Config': {'Labels': {runtime.WORKSPACE_CONTAINER_EXTRA_MOUNTS_LABEL:
+                                           runtime.explicit_mounts_hash([])}}}
+        self.assertEqual(runtime.verified_browser_mounts({}, container), [])
+        with self.assertRaisesRegex(AgentBoxError, 'explicit workspace mounts'):
+            runtime.verified_browser_mounts({'browser_mounts': [['/user/.codex', False]]}, container)
+
+    def test_browser_menu_keeps_labels_short_and_dependencies_in_help(self):
+        """Users must see the documented controls before opening their explanations."""
+        self.assertEqual(config_menu.label_for('browser', ('box',)), 'Browser')
+        self.assertEqual(config_menu.label_for('enabled', ('box', 'browser')), 'Enabled')
+        self.assertIn('rootless Podman', config_menu.HELP['box.browser'])
 
     def test_workspace_follows_its_network_and_only_selected_files(self):
         """Moving out of the workspace must neither break localhost nor copy credentials."""

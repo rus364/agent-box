@@ -2019,6 +2019,12 @@ class WorkspaceContainerSpec:
     browser_mounts: list[MountSpec] = field(default_factory=list)
 
 
+def explicit_mounts_hash(mounts):
+    return hashlib.sha256(json.dumps([
+        (str(mount.path), mount.read_only) for mount in plan_mounts(mounts)
+    ], separators=(",", ":")).encode()).hexdigest()[:16]
+
+
 def workspace_container_spec(
     workspace: Workspace, extra_mounts: list[MountSpec], script_dir: Path, config: Config,
     kvm: bool = True,
@@ -2031,10 +2037,7 @@ def workspace_container_spec(
     base_lifetime = container_lifetime_args(
         workspace, [], script_dir, config, mount_notifications=False, runtime_state=runtime_state, kvm=kvm,
     )
-    extra_mounts_hash = hashlib.sha256(json.dumps([
-        (str(mount.path), mount.read_only)
-        for mount in plan_mounts(extra_mounts)
-    ], separators=(",", ":")).encode()).hexdigest()[:16]
+    extra_mounts_hash = explicit_mounts_hash(extra_mounts)
     # Extra binds are the only structural setting that an omitted later
     # --mount may deliberately inherit. Derive the base identity from an
     # independently rendered no-extra box rather than subtracting flags from
@@ -2237,7 +2240,7 @@ def existing_workspace_spec(workspace: Workspace, options: LaunchOptions, packag
 
 
 def verified_browser_mounts(policy, container):
-    """Writable session metadata cannot grant binds beyond the admitted workspace."""
+    """Only the immutable explicit-mount selection may reach the sibling browser."""
     selected = []
     for path, read_only in policy.get("browser_mounts", []):
         target = Path(path)
@@ -2250,6 +2253,9 @@ def verified_browser_mounts(policy, container):
                 or Path(actual["Source"]) / target.relative_to(actual["Destination"]) != target):
             raise AgentBoxError("saved browser mounts differ from the workspace; stop and relaunch it")
         selected.append(MountSpec(target, read_only))
+    expected = container.get("Config", {}).get("Labels", {}).get(WORKSPACE_CONTAINER_EXTRA_MOUNTS_LABEL)
+    if explicit_mounts_hash(selected) != expected:
+        raise AgentBoxError("saved browser mounts differ from the explicit workspace mounts; stop and relaunch it")
     return selected
 
 

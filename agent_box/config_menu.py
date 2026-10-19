@@ -188,8 +188,8 @@ PATH_LABELS = {
     "credentials.kubernetes": "Kubernetes configs", "credentials.kubernetes.files": "Kubeconfig files",
     "credentials.cloud": "Cloud CLI profiles", "credentials.cloud.yc": "Yandex Cloud (yc)",
     "credentials.cloud.yc.profiles": "yc profiles", "box.tools.yc": "Yandex Cloud CLI (yc)",
-    "box.browser": "Isolated Playwright MCP + Chromium in a separate container per agent session. Requires local rootless Podman in host and workspace modes; first use downloads the pinned image. No personal browser/profile access.",
-    "box.browser.enabled": "Start the isolated browser for Claude/Codex. Host sessions use host networking; workspace sessions share their workspace network. Project, explicit extra mounts and session outputs only; private workspace /tmp files are not shared. No workspace image rebuild needed.",
+    "box.browser": "Browser",
+    "box.browser.enabled": "Enabled",
     "box.podman": "Nested Podman storage",
 }
 
