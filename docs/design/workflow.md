@@ -33,6 +33,19 @@ reuse decisions in [workflow design references](workflow-references.md).
   the accepted head, base and current review policy. In GitHub mode auto-push
   publishes the current parent tip containing the accepted child before Done.
 
+## Pause and resume
+
+Pause and resume reuse Git namespaces and tracker ownership, with no persisted
+pause-state schema or machine-readable tracker comments. Pause deliberately
+does not change lifecycle: blocking/deferral requires a separate explicit user
+decision. Its optional checkpoint publication freezes the push URL and object
+IDs, uses non-force explicit refs, and verifies live remote heads before
+switching. Failures may leave a published checkpoint or a switched checkout;
+neither case erases task refs, and retries read current Git/tracker state.
+Resume fetches missing remote objects without applying ambient fetch mappings,
+creates only branches backed by verified existing commits, and invokes begin
+with existing-only branch switching. It never recreates lost work from base.
+
 ## Roles and delegation
 
 - The contract is the same for a native subagent and a managed `codex exec` /

@@ -82,7 +82,7 @@ class ConfigDescribeTests(unittest.TestCase):
                           "source": "global", "effective": config.workflow.review.max_files})
         self.assertEqual((fields["workflow.review.max_lines"]["project"], fields["workflow.review.max_lines"]["source"],
                           fields["workflow.review.max_lines"]["effective"]), (10, "project", 10))
-        self.assertEqual(fields["box.tools.browser"]["source"], "default")
+        self.assertEqual(fields["box.browser.enabled"]["source"], "default")
         self.assertTrue(fields["workflow.review.sensitive_paths"]["project_allowed"])
         self.assertFalse(fields["box.audio"]["project_allowed"])
         self.assertEqual(fields["workflow.merge_mode"]["choices"], ["github", "local"])

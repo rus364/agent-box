@@ -33,7 +33,8 @@ def make_adapter(binding=None, provider=None, config=None):
     if runtime_file:
         from ..runtime import container_tracker_url
         rendered = read_json(Path(runtime_file))
-        if rendered.get("container", True):
+        if (rendered.get("container", True)
+                and rendered.get("box", {}).get("network", {}).get("mode") != "host"):
             original = rendered.get("tracker", {}).get("connections", {}).get(provider, {}).get("url")
             if original and server_identity(original) == url:
                 url = rendered.get("tracker_urls", {}).get(provider, url)

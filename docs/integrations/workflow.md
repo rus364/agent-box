@@ -253,6 +253,7 @@ expected. A cleanup failure never undoes the merge or Done.
 | `workflow.enabled` | off | Install and allow the workflow (global only) |
 | `workflow.merge_mode` | `github` | `github` pull request or `local` fast-forward |
 | `workflow.auto_push` | on | Publish the parent (GitHub) or the landed base (local) |
+| `workflow.pause_push` | off | Publish and verify unfinished task branches on an explicit pause |
 | `workflow.cleanup_local_branches`, `cleanup_remote_branches` | off | Delete integrated task branches |
 | `workflow.use_tiers` | off | Let task tiers select model lists |
 | `workflow.language` | — | [Working language](../configuration.md#the-configuration-menu) of tracker, GitHub, commit and repository text |
@@ -271,6 +272,53 @@ All workflow settings except `enabled` can be overridden per project in
 `.agent-box.json`. Session options such as `--review`, `--rounds`, `--merge`
 and `--no-push` override them for one session; see
 [session options](../usage.md#session-options).
+
+## Stopping and resuming work
+
+Stopping work does not automatically defer or block a task. The coordinator
+must explain and obtain your agreement before changing its lifecycle,
+assignment, priority or blocker relations for that reason. A failed check or
+repeated difficulty is not permission. Existing agreement for the exact change
+does not need to be requested again. Accepted code can wait in **In review**
+while an external acceptance item remains open and prevents landing.
+
+Save intended changes as explicit commits first. Pause refuses tracked or
+untracked changes; it never stashes, resets, commits, merges or deletes work.
+
+```bash
+agent-box workflow pause 123 --reason "Waiting for a working test network" \
+  --resume-when "The owner can run phone pairing" --push
+agent-box workflow resume 123
+```
+
+Pause preserves the task's lifecycle, assignment and dependencies. It keeps the
+task branch (and the root parent's branch for a subtask), switches a clean
+checkout to origin's default base, verifies the saved heads, and journals the
+reason and resumption condition. Other task branches are untouched. It also
+works from the base to retry a partially completed pause. An occupied base
+worktree, foreign ownership or ambiguous/diverged branches require reconciliation.
+
+`workflow.pause_push` defaults **off**, independently of delivery `auto_push`.
+Use `--push` to publish unfinished branches for this pause, or `--no-push` to
+keep them local. Publication uses explicit non-force refs at origin's actual
+push destination and rereads their heads before reporting `remote-verified`.
+Without it, `local-only` does not protect against disk loss or manual deletion.
+An unavailable origin permits only local preservation of existing local refs,
+using the last known default base, and reports that origin was not verified.
+
+On failure, inspect the reported current branch, Git refs and tracker journal
+before retrying: a push or comment may have succeeded despite a lost response.
+Pause never rolls back saved work. It does not change the base's commit or pull
+new changes. Normal cleanup still requires integration proof for every ref;
+even an incorrect Done status cannot authorize deleting unmerged commits.
+
+Resume reads live origin and reuses existing local/remote branches, including
+in a fresh clone. It refuses missing work, stale-only tracking refs, diverged
+history and foreign ownership instead of recreating a branch from the base.
+It claims the task through the normal begin path; a task deliberately deferred
+to Backlog first needs your decision to return it to Ready. Read its journal
+and run `workflow inspect` afterwards: review and validation evidence remains
+valid only for its recorded scope. Handle any returned Plan sync request.
 
 ## When something goes wrong
 

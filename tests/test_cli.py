@@ -104,9 +104,12 @@ class LaunchOptionDispatchTests(unittest.TestCase):
 
     def test_options_that_cannot_apply_are_refused_instead_of_ignored(self):
         for argv, message in ((["--host", "--mount", "/x", "claude"], "--mount needs a container"),
-                              (["--host", "--no-browser"], "--no-browser needs a container"),
                               (["--host", "--k3s"], "--[no-]k3s needs a container"),
                               (["--host", "--no-k3s"], "--[no-]k3s needs a container"),
+                              (["--host", "--network=host"], "--network needs a container"),
+                              (["--host", "--publish=8080:80"], "--[no-]publish needs a container"),
+                              (["--host", "--host-port=5432:15432"], "--host-port needs a container"),
+                              (["--host", "--no-host-ports"], "--host-port needs a container"),
                               (["--host", "--no-kvm", "codex"], "--no-kvm needs a container"),
                               (["--review", "always", "config", "show"], "not valid before config"),
                               (["--mount", "/x", "attach"], "not valid before attach")):

@@ -32,7 +32,7 @@ class NestedLaunchTests(K3sRuntimeTest):
                 mock.patch.object(runtime.host_podman, "require"), \
                 mock.patch.object(runtime, "resolve_workspace", return_value=self.workspace), \
                 mock.patch.object(runtime, "load_config", return_value=config or k3s_config()), \
-                mock.patch.object(runtime, "image_exists", return_value=True), \
+                mock.patch.object(runtime, "ensure_workspace_image", return_value="sha256:test-image"), \
                 mock.patch.object(runtime, "image_tool_drift", return_value=([], [])), \
                 mock.patch.object(runtime, "inspect_workspace_container", return_value=None), \
                 mock.patch.multiple(runtime.k3s, ensure=mock.DEFAULT, api_port=mock.DEFAULT) as sidecar, \
@@ -94,6 +94,16 @@ class NestedLaunchTests(K3sRuntimeTest):
         self.assertFalse(any("gets no cluster of its own" in warning for warning in warnings))
         self.assertTrue(json.loads(snapshot.read_text())["box"]["k3s"]["enabled"])
 
+    def test_nested_publication_can_reuse_an_outer_k3s_host_port(self):
+        """An inner box has no sidecar and publishes in a different host namespace."""
+        config = k3s_config()
+        config.box.k3s.ports = ["8080:80"]
+        options = LaunchOptions(publish=["8080:3000"])
+        captured, ensure, _, snapshot = self.launch(inside=True, config=config, options=options)
+        ensure.assert_not_called()
+        self.assertIn("--publish=127.0.0.1:8080:3000", captured["argv"])
+        self.assertFalse(json.loads(snapshot.read_text())["box"]["k3s"]["enabled"])
+
     def test_doctor_names_the_nested_case(self):
         self.assertIn("none in a nested box", runtime.DOCTOR_SCRIPT)
 
@@ -151,12 +161,6 @@ class NestedLaunchTests(K3sRuntimeTest):
                     self.assertFalse(effective_config().box.k3s.enabled)
 
 
-    def test_a_launch_reports_an_image_with_foreign_nested_podman_ranges(self):
-        """Creating the box would succeed and leave Podman in it failing on newuidmap."""
-        with mock.patch.object(runtime, "nested_podman_drift", return_value=["ranges differ"]) as drift:
-            _, _, warnings, _ = self.launch(inside=True, config=Config())
-        drift.assert_called_once()
-        self.assertIn("ranges differ", warnings)
 
 
 class NestedLinksDirectoryTests(unittest.TestCase):

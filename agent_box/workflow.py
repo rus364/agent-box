@@ -706,7 +706,8 @@ def acceptance_reasons(root, review, tasks, saved, head, base_head=None, *, no_w
 
 def configuration_summary(config):
     return {"source": effective_config_source(), "merge_mode": config.workflow.merge_mode,
-            "auto_push": config.workflow.auto_push, "use_tiers": config.workflow.use_tiers,
+            "auto_push": config.workflow.auto_push, "pause_push": config.workflow.pause_push,
+            "use_tiers": config.workflow.use_tiers,
             "native_agent_wait": config.agents.codex.native_agent_wait.to_dict(),
             **scout_diagnostics(config),
             "cleanup_local_branches": config.workflow.cleanup_local_branches,
@@ -1226,11 +1227,13 @@ def reviewer_handoff(root, base, task, parent, tasks, brief, saved, review_conte
     return prompt
 
 
-def begin(root, adapter, task, resume):
+def begin(root, adapter, task, resume, *, existing_only=False):
     gw.require_clean(root)
     parent = root_task(task, adapter.get)
     base = gw.default_base(root)
     existing = gw.task_branch(root, parent)
+    if existing_only and (not existing or not gw.task_branch(root, task)):
+        raise AgentBoxError("Existing task branches are required; recover lost work before resuming")
     branch = existing or gw.branch_name(parent)
     if branch == base:
         raise AgentBoxError("Task branch cannot be the base branch")
@@ -1242,7 +1245,7 @@ def begin(root, adapter, task, resume):
             raise AgentBoxError("Parent must be In progress and assigned to the current user")
     # A parent branch already exists once its first subtask started; that is not
     # the interrupted-work case --resume is for.
-    gw.switch_branch(root, branch, base, resume=resume or bool(existing))
+    gw.switch_branch(root, branch, base, resume=resume or bool(existing), existing_only=existing_only)
     if task.id != parent.id:
         task, starting = claim(adapter, task.id, resume=resume)
         existing_child = gw.task_branch(root, task)
@@ -1269,7 +1272,7 @@ def begin(root, adapter, task, resume):
             saved["child_start"] = {**saved.pop("child_begin"), "work_observed": False}
             save_evidence(root, task, saved)
             created = True
-        gw.switch_branch(root, child, branch, resume=resume or created)
+        gw.switch_branch(root, child, branch, resume=resume or created, existing_only=existing_only)
         observe_child_head(root, task, gw.head_sha(root))
     return {"task": task.id, "parent": parent.id, "branch": gw.current_branch(root), "base": base}
 
@@ -1301,8 +1304,10 @@ class WorkflowParser(argparse.ArgumentParser):
 def parser():
     p = WorkflowParser(prog="agent-box workflow")
     sub = p.add_subparsers(dest="command", required=True)
-    for name in ("begin", "inspect", "approve", "delegate", "review", "review-result", "review-budget", "validate", "finish", "pr", "land", "sync"):
+    for name in ("begin", "pause", "resume", "inspect", "approve", "delegate", "review", "review-result", "review-budget", "validate", "finish", "pr", "land", "sync"):
         description = {
+            "pause": "Preserve committed task work and return to the base; lifecycle and dependencies stay unchanged",
+            "resume": "Resume existing task branches; refuse lost work instead of recreating it from the base",
             "sync": "Synchronize live tracker tasks with a separate agent; repository is read-only",
             "inspect": "Read branch, acceptance availability, review budget and next step; works before begin or with uncommitted files",
             "delegate": "Run a managed worker or scout on the role's first available candidate and print its Markdown answer; "
@@ -1331,6 +1336,11 @@ def parser():
                              help="Manual always runs; other events follow Workflow Plan sync settings")
         if name == "begin":
             cmd.add_argument("--resume", action="store_true")
+        if name == "pause":
+            cmd.add_argument("--reason", required=True, help="Why work is stopping; human journal only")
+            cmd.add_argument("--resume-when", required=True, help="Concrete condition for continuing work")
+            cmd.add_argument("--push", action=argparse.BooleanOptionalAction, default=None,
+                             help="Verify a remote checkpoint, overriding workflow.pause_push; --no-push preserves locally only")
         if name == "approve":
             cmd.add_argument("--reason", required=True, help="The user's explicit acceptance of the current head, recorded by the coordinator")
         if name == "delegate":
@@ -1772,6 +1782,19 @@ def dispatch(args):
             state["failures"] = 0
             save_review_state(root, binding, task, state)
             return {"task": task.id, "review_budget": review_budget_summary(state, config.workflow.review.max_rounds)}
+    if args.command in ("pause", "resume"):
+        from . import workflow_pause
+        with lock(root, "review-budget"), lock(root, "work"):
+            task = adapter.get(task.id)
+            if args.command == "pause":
+                return workflow_pause.pause(root, adapter, task,
+                                            push=config.workflow.pause_push if args.push is None else args.push,
+                                            reason=args.reason, resume_when=args.resume_when)
+            result = {**workflow_pause.resume(root, adapter, task), "configuration": configuration_summary(config)}
+        if config.workflow.sync.policy != "off":
+            from .plan_sync import schedule as sync
+            result["plan_sync"] = sync(root, binding, adapter, config, adapter.get(args.task), "before")
+        return result
     if args.command == "begin":
         with lock(root, "review-budget"), lock(root, "work"):
             result = {**begin(root, adapter, task, args.resume), "configuration": configuration_summary(config)}

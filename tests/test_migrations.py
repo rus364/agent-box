@@ -144,6 +144,8 @@ class MigrationTests(unittest.TestCase):
         self.assertEqual(saved.agents.default, "codex")
         self.assertFalse(saved.box.tools.groups["analysis"])
         self.assertFalse(saved.credentials.github.token)
+        self.assertEqual(saved.box.network, config.NetworkConfig())
+        self.assertEqual(saved.box.k3s.ports, [])
         project = project_config.load(fixtures / "project.json")
         merged = project_config.apply(saved, project)
         self.assertFalse(merged.workflow.auto_push)

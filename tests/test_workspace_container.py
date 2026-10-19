@@ -115,7 +115,8 @@ class WorkspaceContainerLifecycleTests(unittest.TestCase):
         runtime.atomic_write_json(spec.runtime_state.root / f"box-{spec.policy_id}.json", policy, 0o600)
         container = self._container(base_hash=spec.base_config_hash, extra_mounts_hash=spec.extra_mounts_hash)
         container["Config"]["Labels"][runtime.WORKSPACE_CONTAINER_POLICY_LABEL] = spec.policy_id
-        container.update(Id="live-container-id", Image="sha256:creation-image", HostConfig={"Devices": []})
+        container.update(Id="live-container-id", Image="sha256:creation-image", HostConfig={"Devices": [], "NetworkMode": "host" if config.box.network.mode == "host" else "pasta", "PortBindings": {}})
+        container["Config"]["CreateCommand"] = spec.create_argv
         source, destination, _ = policy["session_mount"]
         container["Mounts"] = [{"Source": source, "Destination": destination, "RW": False},
                                *[{"Source": str(m.path), "Destination": str(m.path), "RW": not m.read_only}
@@ -128,6 +129,54 @@ class WorkspaceContainerLifecycleTests(unittest.TestCase):
         container["Config"]["Labels"][runtime.WORKSPACE_RUNTIME_LABEL] = "old-runtime"
         with mock.patch.object(runtime, "inspect_workspace_container", return_value=container):
             with self.assertRaisesRegex(AgentBoxError, "different agent-box runtime.*agent-box stop"):
+                runtime.existing_workspace_spec(self.workspace, LaunchOptions())
+
+    def test_temporary_host_network_requires_explicit_authorization_on_every_join(self):
+        """An ordinary invocation must not inherit a previous session's wider localhost access."""
+        config = runtime.Config()
+        config.box.network.mode = "host"
+        container, _ = self._live_box(config)
+        with mock.patch.object(runtime, "inspect_workspace_container", return_value=container), \
+             mock.patch.object(runtime, "runtime_config_base", return_value=runtime.Config()), \
+             mock.patch.object(project_config, "load", return_value={}):
+            with self.assertRaisesRegex(AgentBoxError, "network.*agent-box stop"):
+                runtime.existing_workspace_spec(self.workspace, LaunchOptions())
+            first = runtime.existing_workspace_spec(self.workspace, LaunchOptions(network="host"))
+            second = runtime.existing_workspace_spec(self.workspace, LaunchOptions(network="host"))
+            self.assertEqual(first.admitted_id, second.admitted_id)
+            with self.assertRaises(AgentBoxError):
+                runtime.existing_workspace_spec(self.workspace, LaunchOptions(network="default"))
+            container["HostConfig"]["NetworkMode"] = "pasta"
+            with self.assertRaisesRegex(AgentBoxError, "expected host"):
+                runtime.existing_workspace_spec(self.workspace, LaunchOptions(network="host"))
+
+    def test_saved_host_network_authorizes_join_but_explicit_default_requires_restart(self):
+        """Saved user opt-in is sufficient; withdrawing it cannot alter other running sessions."""
+        config = runtime.Config()
+        config.box.network.mode = "host"
+        container, _ = self._live_box(config)
+        with mock.patch.object(runtime, "inspect_workspace_container", return_value=container), \
+             mock.patch.object(runtime, "runtime_config_base", return_value=config), \
+             mock.patch.object(project_config, "load", return_value={}):
+            self.assertIsNotNone(runtime.existing_workspace_spec(self.workspace, LaunchOptions()))
+            with self.assertRaisesRegex(AgentBoxError, "network.*agent-box stop"):
+                runtime.existing_workspace_spec(self.workspace, LaunchOptions(network="default"))
+
+    def test_narrowed_k3s_publication_requires_stop_instead_of_retaining_lan_exposure(self):
+        """Shared sidecar mappings need renewed agreement just like workspace mappings."""
+        config = runtime.Config()
+        config.box.k3s.enabled = True
+        config.box.k3s.ports = ["0.0.0.0:8080:80"]
+        with mock.patch.object(runtime.k3s, "api_port", return_value=24443):
+            container, _ = self._live_box(config)
+        changed = runtime.Config.from_dict(config.to_dict())
+        changed.box.k3s.ports = ["8080:80"]
+        with mock.patch.object(runtime, "inspect_workspace_container", return_value=container), \
+             mock.patch.object(runtime, "runtime_config_base", return_value=changed), \
+             mock.patch.object(project_config, "load", return_value={}), \
+             mock.patch.object(runtime.k3s, "inspect", return_value={"State": {"Status": "running"}}), \
+             mock.patch.object(runtime.k3s, "api_port", return_value=24443):
+            with self.assertRaisesRegex(AgentBoxError, "k3s.*ports.*stop"):
                 runtime.existing_workspace_spec(self.workspace, LaunchOptions())
 
     def test_join_commands_use_box_access_and_new_process_policy_after_saved_config_changes(self):
@@ -165,10 +214,11 @@ class WorkspaceContainerLifecycleTests(unittest.TestCase):
                  mock.patch.object(project_config, "load", return_value={}), \
                  mock.patch.object(runtime, "inspect_workspace_container", return_value=container), \
                  mock.patch.object(runtime.k3s, "inspect", return_value={"State": {"Status": "running"}}), \
+                 mock.patch.object(runtime.k3s, "api_port", return_value=12345), \
                  mock.patch("agent_box.external_launch.selected_model"), \
                  mock.patch.object(runtime, "external_command", side_effect=lambda command, *args, **kwargs: command), \
                  mock.patch.object(runtime, "prepare_k3s") as prepare, \
-                 mock.patch.object(runtime, "image_exists", side_effect=AssertionError("join queried image tag")), \
+                 mock.patch.object(runtime, "ensure_workspace_image", side_effect=AssertionError("join queried image tag")), \
                  mock.patch.object(runtime, "claude_channel_args", return_value=([], [])), \
                  mock.patch.object(runtime, "browser_session", return_value=None), \
                  mock.patch.object(runtime, "tmux_enabled", return_value=False), \
@@ -249,6 +299,7 @@ class WorkspaceContainerLifecycleTests(unittest.TestCase):
             for name in ("registries", "kubeconfigs", "cloud-profiles", "links", "git-config", "gh-config", "k3s"):
                 with self.subTest(name=name, value=value), \
                      mock.patch.object(runtime.k3s, "inspect", return_value={"State": {"Status": "running"}}), \
+                     mock.patch.object(runtime.k3s, "api_port", return_value=24443), \
                      mock.patch.object(runtime, "inspect_workspace_container", return_value=container):
                     self.assertIsNotNone(runtime.existing_workspace_spec(self.workspace, LaunchOptions(overrides={name: value})))
                     with self.assertRaisesRegex(AgentBoxError, f"{name}.*agent-box stop"):
@@ -339,7 +390,7 @@ class WorkspaceContainerLifecycleTests(unittest.TestCase):
         """An installed browser need not start MCP; a missing tool must not be advertised."""
         container, _ = self._live_box()
         changed = runtime.Config()
-        changed.box.tools.groups["browser"] = False
+        changed.box.browser.enabled = False
         changed.box.tools.groups["yc"] = True
         with mock.patch.object(runtime, "inspect_workspace_container", return_value=container), \
              mock.patch.object(runtime, "image_tool_groups", return_value=["browser", "kubernetes", "podman"]) as image:
@@ -348,14 +399,14 @@ class WorkspaceContainerLifecycleTests(unittest.TestCase):
         with mock.patch.object(runtime, "load_config", return_value=changed), \
              mock.patch.object(project_config, "load", return_value={}):
             config = runtime.launch_config(LaunchOptions(), box_policy=spec.creation_config._box_policy)
-            self.assertFalse(config.box.tools.browser())
+            self.assertFalse(config.box.browser.active())
             self.assertFalse(config.box.tools.groups["yc"])
             self.assertFalse(config.box.tools.groups["podman"])
             self.assertTrue(config.box.tools.groups["kubernetes"])
             path = runtime.session_runtime(config, runtime_state=spec.runtime_state)
             with mock.patch.dict(os.environ, {"AGENT_BOX_RUNTIME_CONFIG": str(path)}):
                 snapshot = effective_config()
-            self.assertFalse(snapshot.box.tools.browser())
+            self.assertFalse(snapshot.box.browser.active())
             self.assertTrue(snapshot.box.tools.groups["kubernetes"])
 
     def test_first_launch_creates_then_starts_one_workspace_container(self):

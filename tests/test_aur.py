@@ -20,6 +20,30 @@ def metadata(version='1.0.1', revision='1', name='agent-box'):
 
 
 class AurTests(unittest.TestCase):
+    def test_reusable_release_passes_only_the_required_aur_secret(self):
+        """Environment secrets resolve empty unless the reusable caller passes their names."""
+        workflows = Path(__file__).resolve().parents[1] / '.github/workflows'
+        release = (workflows / 'release.yml').read_text()
+        reusable = (workflows / 'aur.yml').read_text()
+        caller = release.split('\n  aur:\n', 1)[1]
+        contract = reusable.split('\n  workflow_call:\n', 1)[1].split('\npermissions:', 1)[0]
+        self.assertIn('    secrets:\n      AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}\n', caller)
+        self.assertIn('    secrets:\n      AUR_SSH_PRIVATE_KEY:\n        required: true\n', contract)
+        self.assertNotIn('secrets: inherit', release + reusable)
+
+    def test_aur_key_stays_in_environment_gated_publish_step(self):
+        """Builds stay credential-free and standalone recovery keeps the same environment gate."""
+        workflows = Path(__file__).resolve().parents[1] / '.github/workflows'
+        release = (workflows / 'release.yml').read_text()
+        reusable = (workflows / 'aur.yml').read_text()
+        build, publish = reusable.split('\njobs:\n', 1)[1].split('\n  publish:\n', 1)
+        self.assertIn('\n  workflow_dispatch:\n', reusable)
+        self.assertNotIn('secrets.', build)
+        self.assertNotIn('AUR_SSH_PRIVATE_KEY', release.split('\n  aur:\n', 1)[0])
+        self.assertIn('\n    environment: aur\n', publish)
+        self.assertEqual(publish.count('${{ secrets.AUR_SSH_PRIVATE_KEY }}'), 1)
+        self.assertIn('          test -n "$AUR_SSH_PRIVATE_KEY"\n', publish)
+
     def test_recipe_build_is_quiet_but_failed_backend_diagnostics_survive(self):
         """User builds cannot run the development suite or conceal a backend failure."""
         with tempfile.TemporaryDirectory() as directory:

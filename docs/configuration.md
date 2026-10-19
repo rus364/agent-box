@@ -124,7 +124,7 @@ keep those changes. Opening or cancelling the project menu saves nothing.
     "connections": {"github": {"url": "https://api.github.com"}}
   },
   "workflow": {"auto_push": false},
-  "box": {"tools": {"browser": true}}
+  "box": {"browser": {"enabled": true}}
 }
 ```
 
@@ -155,8 +155,9 @@ In the project menu values are labelled **Inherited** or **Overridden**.
 global setting again; **G: Copy current global** pins the current global value
 as a project override. Credentials, environment, integration switches and host
 installation settings are **Global only** there. **Save project** writes only
-explicit project values and applies nothing; image tool changes still need
-`agent-box build`.
+explicit project values and applies nothing immediately. Image tool changes trigger
+a cached build before the next new workspace; stop/relaunch existing workspaces
+explicitly, or run `agent-box build` to prepare the image ahead of time.
 
 ## Session tracker override
 
@@ -212,3 +213,9 @@ you answer yes. `config ai` offers a pending proposal before the session and
 again when it ends or detaches. Credentials, tokens, API keys, environment and
 installation settings are never proposed this way; set them in
 `agent-box config`.
+
+## Networking
+
+**Workspace box → Network** groups workspace and k3s publications, selected
+host services and mode. The k3s list remains `box.k3s.ports`. See
+[workspace networking](networking.md) for settings, scopes and launch overrides.

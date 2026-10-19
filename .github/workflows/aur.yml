@@ -12,6 +12,9 @@ on:
         default: '1'
         type: string
   workflow_call:
+    secrets:
+      AUR_SSH_PRIVATE_KEY:
+        required: true
     inputs:
       version:
         required: true

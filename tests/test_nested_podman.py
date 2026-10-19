@@ -177,9 +177,9 @@ class NestedRuntimeTests(IsolatedRuntimeTest):
         with mock.patch.dict(os.environ, {"AGENT_BOX_RUNTIME_CONFIG": str(snapshot)}), \
              mock.patch.object(project_config, "load", return_value={}), \
              mock.patch.object(nested_podman, "host_info", return_value=self.host), \
-             mock.patch.object(runtime.subprocess, "call", return_value=0) as call:
-            runtime.build_image(Path("/source"), refresh=False, no_cache=False)
-            self.assertIn("TOOLS_PODMAN=1", call.call_args.args[0])
+             mock.patch.object(runtime.image_build, "build", return_value=(0, "image-id")) as call:
+            runtime.build_image(runtime.PACKAGE_ROOT, refresh=False, no_cache=False)
+            self.assertIn("TOOLS_PODMAN=1", call.call_args.args[4])
             self.assertTrue(runtime.launch_config().box.tools.groups["podman"])
 
     def test_enabled_lifetime_preserves_nnp_and_only_adds_required_access(self):

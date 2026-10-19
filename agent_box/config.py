@@ -32,7 +32,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .atomicio import read_json
-from . import migrations
+from . import migrations, networking
 from .paths import CONFIG_FILE
 from .external_config import API_EFFORTS, ExternalProvider, parse_connections, valid_name
 
@@ -523,8 +523,6 @@ TOOL_GROUPS: dict[str, bool] = {
     "podman": False,
     # skopeo alone: registry work needs no namespace permissions, unlike Podman
     "skopeo": False,
-    # Playwright MCP + headless Chromium, wired into every box session
-    "browser": False,
     # Yandex Cloud CLI; what forwarded yc profiles and exec kubeconfigs run
     "yc": False,
 }
@@ -537,8 +535,6 @@ TOOL_GROUP_HELP: dict[str, str] = {
     "virtualization": "Virtualization (QEMU x86-64/arm64, KVM passthrough; large)",
     "podman": "Nested Podman (rootless builds/containers; extra namespace permissions)",
     "skopeo": "skopeo (inspect, copy and list tags in container registries without Podman)",
-    "browser": ("Agent browser (Playwright MCP + headless Chromium; large). Isolated in-memory "
-                "profile, same trust boundary as agents; unavailable in --host mode"),
     "yc": "Yandex Cloud CLI (yc)",
 }
 
@@ -653,15 +649,10 @@ class K3sConfig:
             errors.append("box.k3s.cpus must be empty or a positive number such as 2 or 1.5")
         if self.memory and not (re.fullmatch(r"\d+[bkmg]?", self.memory, re.I) and int(re.sub(r"\D", "", self.memory))):
             errors.append("box.k3s.memory must be empty or a size such as 4g or 512m")
-        hosts = []
-        for port in self.ports if isinstance(self.ports, list) else [None]:
-            match = re.fullmatch(r"(\d{1,5}):(\d{1,5})", port) if isinstance(port, str) else None
-            if not match or not all(1 <= int(n) <= 65535 for n in match.groups()):
-                errors.append("box.k3s.ports must be a list of HOST:CONTAINER port pairs such as 8080:80")
-                break
-            hosts.append(int(match.group(1)))
-        if len(hosts) != len(set(hosts)):
-            errors.append("box.k3s.ports publishes one host port twice")
+        try:
+            networking.ports(self.ports)
+        except ValueError as exc:
+            errors.append(f"box.k3s.ports: {exc}")
         manifests = PurePosixPath(self.manifests)
         if self.manifests and (manifests.is_absolute() or ".." in manifests.parts or "\\" in self.manifests):
             errors.append("box.k3s.manifests must be a path inside the project, without '..'")
@@ -708,41 +699,12 @@ class PodmanConfig:
 
 @dataclass
 class ToolsConfig:
-    """Which optional tool groups the workspace image is built with.
-
-    A property of the image rather than of a launch: changing a group means
-    rebuilding. ``browser`` also wires the Playwright MCP server into every
-    Claude and Codex session in the box. A separate switch for that server was
-    rejected: with Chromium in the box an agent can drive it through Playwright
-    from a shell anyway, so the switch isolated nothing.
-
-    The browser exposes no host state -- no host profile, cookie jar or
-    credential. Pages the agent opens land *inside the workspace box*, one
-    trust boundary with the agent, the mounted project and every other enabled
-    integration. Each MCP process gets an isolated, non-persistent profile and
-    a session-private output directory (``agent_box.runtime.browser_session``),
-    so there is nothing further for a user to configure.
-
-    Unknown group names are dropped on load rather than carried, so the file
-    can never ask the build for a group that no longer exists.
-
-    The k3s cluster is a sibling section of the box, not a group: it builds
-    nothing into the image, so it never reaches the build args, the image
-    label or the drift report.
-    """
+    """Optional workspace image tools; browser runtimes are managed separately."""
 
     groups: dict[str, bool] = field(default_factory=lambda: dict(TOOL_GROUPS))
-    #: ``--no-browser`` for one session: the image keeps Chromium, the session
-    #: gets no MCP server. Never saved; the launch snapshot re-applies it.
-    browser_off: bool = False
-
     def enabled_groups(self) -> list[str]:
         """The groups to build, in a stable order for the image label."""
         return sorted(name for name, on in self.groups.items() if on)
-
-    def browser(self) -> bool:
-        """Whether this session wires the browser MCP server."""
-        return self.groups["browser"] and not self.browser_off
 
     def to_dict(self) -> dict[str, Any]:
         return {name: bool(self.groups.get(name, default)) for name, default in TOOL_GROUPS.items()}
@@ -996,6 +958,8 @@ class WorkflowConfig:
     use_tiers: bool = False
     scout: ScoutConfig = field(default_factory=ScoutConfig)
     auto_push: bool = True
+    #: Checkpoints can publish unfinished code in either delivery mode; explicit opt-in only.
+    pause_push: bool = False
     timeout_seconds: int = 3600
     review: ReviewConfig = field(default_factory=ReviewConfig)
     sync: PlanSyncConfig = field(default_factory=PlanSyncConfig)
@@ -1137,7 +1101,7 @@ class WorkflowConfig:
         result = cls()
         result.enabled = _bool(data, "enabled", False)
         result.merge_mode = _str(data, "merge_mode") or result.merge_mode
-        for key in ("use_tiers", "auto_push", "cleanup_local_branches", "cleanup_remote_branches"):
+        for key in ("use_tiers", "auto_push", "pause_push", "cleanup_local_branches", "cleanup_remote_branches"):
             setattr(result, key, _bool(data, key, getattr(result, key)))
         result.timeout_seconds = _number(data, "timeout_seconds", result.timeout_seconds)
         result.scout = ScoutConfig.from_dict(data.get("scout"))
@@ -1215,11 +1179,48 @@ class LinksConfig:
 
 
 @dataclass
+class NetworkConfig:
+    """Host access/publication is opt-in and belongs to the shared container."""
+    mode: str = "default"
+    ports: list = field(default_factory=list)
+    host_ports: list = field(default_factory=list)
+
+    def to_dict(self):
+        return {"mode": self.mode, "ports": list(self.ports), "host_ports": list(self.host_ports)}
+
+    @classmethod
+    def from_dict(cls, data):
+        data = _mapping(data)
+        return cls((_str(data, "mode") if "mode" in data else "default"), _copied(data, "ports", list),
+                   _copied(data, "host_ports", list))
+
+
+@dataclass
+class BrowserConfig:
+    """Opt-in isolated browser containers; never grants personal-browser access."""
+
+    enabled: bool = False
+    off: bool = False  # Invocation-only --no-browser; never persisted.
+
+    def active(self) -> bool:
+        return self.enabled and not self.off
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"enabled": self.enabled}
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "BrowserConfig":
+        return cls(enabled=_bool(data, "enabled", False))
+
+
+@dataclass
 class BoxConfig:
     """What the workspace box is built with and runs beside it."""
 
     tools: ToolsConfig = field(default_factory=ToolsConfig)
+    browser: BrowserConfig = field(default_factory=lambda: BrowserConfig())
     k3s: K3sConfig = field(default_factory=K3sConfig)
+    network: NetworkConfig = field(default_factory=NetworkConfig)
     podman: PodmanConfig = field(default_factory=PodmanConfig)
     #: The host's sound server inside workspace boxes.
     #:
@@ -1239,18 +1240,21 @@ class BoxConfig:
     env: EnvConfig = field(default_factory=EnvConfig)
 
     def to_dict(self) -> dict[str, Any]:
-        return {"tools": self.tools.to_dict(), "k3s": self.k3s.to_dict(), "podman": self.podman.to_dict(),
+        return {"tools": self.tools.to_dict(), "browser": self.browser.to_dict(), "k3s": self.k3s.to_dict(), "network": self.network.to_dict(), "podman": self.podman.to_dict(),
                 "audio": self.audio, "links": self.links.to_dict(), "env": self.env.to_dict()}
 
     @classmethod
     def from_dict(cls, data: Any) -> "BoxConfig":
         data = _mapping(data)
-        return cls(tools=ToolsConfig.from_dict(data.get("tools")), k3s=K3sConfig.from_dict(data.get("k3s")),
+        return cls(tools=ToolsConfig.from_dict(data.get("tools")),
+                   browser=BrowserConfig.from_dict(data.get("browser", {"enabled": _mapping(data.get("tools")).get("browser", False)})),
+                   k3s=K3sConfig.from_dict(data.get("k3s")),
+                   network=NetworkConfig.from_dict(data.get("network")),
                    podman=PodmanConfig.from_dict(data.get("podman")), audio=_bool(data, "audio", False), links=LinksConfig.from_dict(data.get("links")),
                    env=EnvConfig.from_dict(data.get("env")))
 
     def validate(self) -> list[str]:
-        return self.k3s.validate() + self.links.validate()
+        return self.k3s.validate() + self.links.validate() + networking.problems(self.network, self.k3s)
 
 
 @dataclass
@@ -1433,6 +1437,7 @@ def apply_box_policy(config, policy):
     shared = Config.from_dict(policy)
     config.box.tools.groups = copy.deepcopy(shared.box.tools.groups)
     config.box.k3s = shared.box.k3s
+    config.box.network = shared.box.network
     config.box.podman = shared.box.podman
     config.box.audio = shared.box.audio
     config.box.links = shared.box.links
@@ -1466,6 +1471,9 @@ def effective_config(base=None, *, include_project=True) -> Config:
             # checkout it no longer loads or validates although nothing the user saved is wrong.
             try:
                 base = Config.from_dict(rendered)
+                if "network" in rendered.get("box", {}):
+                    # A running namespace cannot follow later project edits.
+                    base._network_policy = NetworkConfig.from_dict(rendered["box"]["network"])
                 # Only agent-box's own messages are shown: other exceptions may quote values.
                 errors = base.workflow.validate() + base.agents.codex.validate()
             except AgentBoxError as exc:
@@ -1495,6 +1503,8 @@ def effective_config(base=None, *, include_project=True) -> Config:
         base._launch = launch
         return base
     result = project_config.apply(base, project_config.load())
+    if hasattr(base, "_network_policy"):
+        result.box.network = copy.deepcopy(base._network_policy)
     if box_policy is not None:
         apply_box_policy(result, box_policy)
     return launch_options.apply(result, launch) if launch else result

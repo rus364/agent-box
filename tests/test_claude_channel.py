@@ -411,7 +411,7 @@ class ClaudeManagementArgvTests(unittest.TestCase):
              mock.patch.object(runtime, "ensure_state_dirs"), \
              mock.patch.object(runtime, "ensure_refresh_token"), \
              mock.patch.object(runtime, "load_config", return_value=self.config), \
-             mock.patch.object(runtime, "image_exists", return_value=True), \
+             mock.patch.object(runtime, "ensure_workspace_image", return_value="sha256:test-image"), \
              mock.patch.object(runtime, "sync_managed_skills"), \
              mock.patch.object(runtime, "claude_skill_links"), \
              mock.patch.object(runtime, "workspace_container_spec", return_value=mock.Mock()), \
@@ -552,7 +552,7 @@ class RuntimeNotificationSelectionTests(unittest.TestCase):
              mock.patch.object(runtime, "ensure_state_dirs"), \
              mock.patch.object(runtime, "ensure_refresh_token"), \
              mock.patch.object(runtime, "load_config", return_value=config), \
-             mock.patch.object(runtime, "image_exists", return_value=True), \
+             mock.patch.object(runtime, "ensure_workspace_image", return_value="sha256:test-image"), \
              mock.patch.object(runtime, "sync_managed_skills"), \
              mock.patch.object(runtime, "claude_skill_links"), \
              mock.patch.object(runtime, "claude_channel_args", return_value=(channel, [])), \

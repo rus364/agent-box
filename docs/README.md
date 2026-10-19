@@ -11,6 +11,7 @@ session.
 - [Compatibility and upgrades](compatibility.md) — SemVer, direct upgrades and migration requirements.
 - [The workspace image](image.md) — included tools, optional groups, `build`, `update`, `rebuild`.
 - [Workspace and security model](security.md) — what a box can reach and how it is hardened.
+- [Workspace networking](networking.md) — publish services, reach selected host ports and choose host networking.
 - [Nested rootless Podman](nested-podman.md) — run Podman inside the workspace box.
 - [Troubleshooting](troubleshooting.md) — diagnostics, common problems, known limitations.
 
@@ -31,4 +32,5 @@ For contributors: decisions, evidence and provenance behind the implementation.
 - [Integration design notes](design/integrations.md) — credential copies, notifications, Remote Control, web links, external APIs, nested Podman, developing agent-box in a box.
 - [Workflow design references](design/workflow-references.md) — researched sources, reused libraries and adaptations.
 - [Native launch contract](design/native-launch.md) — evidence for native subagent and managed launches.
+- [Networking design and evidence](design/networking.md) — original audit, design decisions and implementation validation.
 - [Third-party notices](design/third-party-notices.md) — licenses of adapted material.

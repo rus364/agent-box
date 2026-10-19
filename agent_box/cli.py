@@ -227,22 +227,17 @@ def _image_note(config) -> str:
     except Exception:
         return ""
     if missing:
-        return f" (image lacks {', '.join(missing)}; run 'agent-box build')"
+        return f" (image lacks {', '.join(missing)}; builds before next new workspace)"
     if extra:
-        return f" (image still has {', '.join(extra)}; run 'agent-box build')"
+        return f" (image still has {', '.join(extra)}; builds before next new workspace)"
     return ""
 
 
 def _browser_note(config) -> str:
-    """Name what the group actually starts, and where the pages land.
-
-    "on" alone would understate it: this is a real browser the agent drives,
-    and everything it loads is inside the workspace box with the agent, the
-    project and every other enabled integration.
-    """
-    if not config.box.tools.groups["browser"]:
+    """Host mode also needs Podman when the isolated browser is enabled."""
+    if not config.box.browser.enabled:
         return ""
-    return " (headless Chromium in the box; --host sessions unaffected)"
+    return " (isolated browser container per session; local Podman required, including --host)"
 
 
 def _k3s_note(config) -> str:
@@ -262,7 +257,7 @@ def _show_notes(config) -> dict[str, str]:
         # The status line's two settings print as one row, so the note qualifies the row.
         "agents.claude.statusline": _statusline_note(config),
         "box.tools": _image_note(config),
-        "box.tools.browser": _browser_note(config),
+        "box.browser.enabled": _browser_note(config),
         "box.k3s.enabled": _k3s_note(config),
         "workflow.auto_push": (" (accepted base after local merge)" if config.workflow.merge_mode == "local"
                                else " (parent task branch after subtask integration)"),
@@ -945,6 +940,9 @@ def _agent_and_rest(args: list[str]) -> tuple[str | None, list[str]]:
 
 
 def main() -> None:
+    if sys.argv[1:2] == ["_browser"]:
+        from . import browser
+        raise SystemExit(browser.main(sys.argv[2:]))
     if sys.argv[1:2] == ["_external"]:
         from . import external_launch
         try:

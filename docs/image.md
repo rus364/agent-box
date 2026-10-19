@@ -20,7 +20,6 @@ chosen under **Workspace box → Image tools** in `agent-box config`
 | `virtualization` | off | QEMU x86-64 and aarch64, OVMF; also gates `/dev/kvm` passthrough |
 | `podman` | off | Nested rootless Podman, userspace networking and image builds; see [nested Podman](nested-podman.md) |
 | `skopeo` | off | Inspecting, copying and listing registry images without Podman's namespace permissions |
-| `browser` | off | Playwright MCP and headless Chromium for every box session; see [agent browser](integrations/browser.md) |
 | `yc` | off | Yandex Cloud CLI; selected for you when [cloud CLI profiles](integrations/cloud-profiles.md) are forwarded |
 
 **Workspace box → k3s cluster** is not an image group: it runs a per-project
@@ -43,17 +42,34 @@ agent-box rebuild    # pull the base image and rebuild without layer cache
 
 - `build` and `update` reuse the local base image. `update` refreshes Codex,
   Claude, Node.js 22 and npm, mise, uv, Bun and the enabled Kubernetes tools.
-- Pinned Playwright/Chromium and jscpd sit above the refresh boundary and are
+- Pinned jscpd sit above the refresh boundary and are
   reused while their inputs are unchanged.
 - Ubuntu packages, including security fixes, are refreshed only by `rebuild`.
 - APT archives and npm downloads use persistent builder cache mounts
   (`agent-box-apt`, `agent-box-npm`) outside the image; `rebuild` keeps them.
 
-Changing a tool group takes effect on the next `agent-box build`. The image
-records what it was built with, so `agent-box config show`, `agent-box doctor`
-and every launch report when it no longer matches your configuration; none of
-them rebuild it on their own.
+Before creating a new workspace, agent-box compares the image's build-input
+fingerprint with the current recipe, copied assets, host identity and effective
+build arguments (including tool groups and the explicit tool-refresh token).
+Missing images, changed inputs and old images without this label trigger a cached
+build automatically. Unrelated launcher/skill changes do not rebuild the image.
+The build uses a private snapshot of those inputs, and its successful result is
+selected by immutable image ID. Concurrent automatic and explicit builds share a
+lock; a failed build retains the previous image and aborts the new launch with
+instructions to fix and retry. There is no silent stale-image fallback.
 
-The Python package includes the complete build context; no checkout is needed.
-An installer upgrade changes those inputs but does not rebuild an image or
-replace a running box.
+The Python package includes the build inputs; no checkout is needed. Installer
+upgrades do not run Podman. The next new workspace launch handles changed inputs.
+Running workspaces keep their original image; stop and launch explicitly to adopt
+an updated runtime or image. Native `--host` sessions do not build workspace images.
+`config show` can report tool-group drift without building. `doctor` runs in a
+workspace: joining an admitted running box does not build, but creating a new one
+performs the same image reconciliation as an ordinary workspace launch.
+
+Automatic reconciliation does not poll registries for a newer base or refresh
+unpinned tool versions when the recipe is unchanged. Use `update` for fresh tools
+and `rebuild` for base/OS updates as above; `build` can prepare the image ahead of a
+launch. Builds may require network access even with cached layers.
+
+The [agent browser](integrations/browser.md) uses a separate managed image. Its
+setting does not participate in workspace build arguments or tool-group labels.

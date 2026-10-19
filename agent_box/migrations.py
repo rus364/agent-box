@@ -65,8 +65,39 @@ class Schema:
         return result
 
 
-GLOBAL_CONFIG = Schema("global configuration", key="version")
-PROJECT_CONFIG = Schema("project configuration", key="version")
+def browser_sidecar(data):
+    """Keep explicit false project overrides as well as global browser opt-ins."""
+    box = data.get("box")
+    if isinstance(box, dict) and isinstance(box.get("tools"), dict):
+        tools = box["tools"]
+        if "browser" in tools:
+            enabled = tools.pop("browser")
+            browser = box.setdefault("browser", {})
+            if isinstance(browser, dict):
+                browser.setdefault("enabled", enabled)
+    return data
+
+
+def browser_proposal(data):
+    """Pending proposals keep their meaning without bypassing host confirmation."""
+    assignments = data.get("set", {})
+    if isinstance(assignments, dict):
+        if "box" in assignments and isinstance(assignments["box"], dict):
+            browser_sidecar({"box": assignments["box"]})
+        if isinstance(assignments.get("box.tools"), dict) and "browser" in assignments["box.tools"]:
+            assignments.setdefault("box.browser.enabled", assignments["box.tools"].pop("browser"))
+        if "box.tools.browser" in assignments:
+            assignments.setdefault("box.browser.enabled", assignments.pop("box.tools.browser"))
+    resets = data.get("reset", [])
+    if isinstance(resets, list):
+        data["reset"] = ["box.browser.enabled" if path == "box.tools.browser" else path for path in resets]
+        if "box.tools" in resets and "box.browser.enabled" not in data["reset"]:
+            data["reset"].append("box.browser.enabled")
+    return data
+
+
+GLOBAL_CONFIG = Schema("global configuration", 2, {1: browser_sidecar}, key="version")
+PROJECT_CONFIG = Schema("project configuration", 2, {1: browser_sidecar}, key="version")
 WORKFLOW_EVIDENCE = Schema("workflow evidence")
 REVIEW_BUDGET = Schema("review budget")
 PLAN_SYNC = Schema("Plan sync record")
@@ -76,7 +107,7 @@ ADOPTION_RECEIPT = Schema("tracker adoption receipt")
 BOX_POLICY = Schema("workspace creation policy")
 SKILL_MARKER = Schema("managed skill marker")
 REVIEW_RECEIPT = Schema("review receipt")
-CONFIG_PROPOSAL = Schema("global configuration proposal")
+CONFIG_PROPOSAL = Schema("global configuration proposal", 2, {1: browser_proposal})
 APPLIED_PACKAGE = Schema("applied package")
 
 

@@ -87,15 +87,13 @@ class BuildCacheTests(IsolatedRuntimeTest):
         from agent_box.identity import HostIdentity
 
         identity = HostIdentity(name="tester", uid=1234, gid=1234, home="/home/tester")
-        with mock.patch.object(runtime.subprocess, "call", return_value=0) as call:
+        with mock.patch.object(runtime.image_build, "build", return_value=(0, "image-id")) as call:
             tokens = []
             for refresh, no_cache in ((False, False), (True, False), (False, False), (True, True)):
-                self.assertEqual(runtime.build_image(Path("/source"), refresh, no_cache,
+                self.assertEqual(runtime.build_image(runtime.PACKAGE_ROOT, refresh, no_cache,
                                                     identity=identity, config=Config()), 0)
-                argv = call.call_args.args[0]
-                self.assertIn("--layers", argv)
-                self.assertIn("--pull=always" if no_cache else "--pull=missing", argv)
-                self.assertEqual("--no-cache" in argv, no_cache)
+                argv = call.call_args.args[4]
+                self.assertEqual(call.call_args.args[5], no_cache)
                 tokens.append(runtime.TOOLS_REFRESH_FILE.read_text().strip())
                 self.assertIn(f"TOOLS_REFRESH={tokens[-1]}", argv)
             self.assertNotEqual(tokens[0], tokens[1])
@@ -710,7 +708,7 @@ class CodexRuntimeOverridesTests(IsolatedRuntimeTest):
                  mock.patch.object(runtime, "ensure_state_dirs"), \
                  mock.patch.object(runtime, "ensure_refresh_token"), \
                  mock.patch.object(runtime, "load_config", return_value=Config()), \
-                 mock.patch.object(runtime, "image_exists", return_value=True), \
+                 mock.patch.object(runtime, "ensure_workspace_image", return_value="sha256:test-image"), \
                  mock.patch.object(runtime, "sync_managed_skills"), \
                  mock.patch.object(runtime, "claude_skill_links"), \
                  mock.patch.object(runtime, "claude_channel_args", return_value=([], [])), \
@@ -732,7 +730,7 @@ class CodexRuntimeOverridesTests(IsolatedRuntimeTest):
                  mock.patch.object(runtime, "ensure_state_dirs"), \
                  mock.patch.object(runtime, "ensure_refresh_token"), \
                  mock.patch.object(runtime, "load_config", return_value=config), \
-                 mock.patch.object(runtime, "image_exists", return_value=True), \
+                 mock.patch.object(runtime, "ensure_workspace_image", return_value="sha256:test-image"), \
                  mock.patch.object(runtime, "tmux_enabled", return_value=False), \
                  mock.patch.object(runtime, "claude_channel_args", return_value=([], [])), \
                  mock.patch.object(runtime, "codex_command", return_value=["codex"]), \
@@ -866,7 +864,7 @@ class ClaudeNotifyHookLifecycleTests(IsolatedRuntimeTest):
                 mock.patch.object(runtime, "ensure_state_dirs"),
                 mock.patch.object(runtime, "ensure_refresh_token"),
                 mock.patch.object(runtime, "load_config", return_value=self._notifying()),
-                mock.patch.object(runtime, "image_exists", return_value=True),
+                mock.patch.object(runtime, "ensure_workspace_image", return_value="sha256:test-image"),
                 mock.patch.object(runtime, "claude_channel_args", return_value=([], [])),
                 mock.patch.object(runtime, "launch_in_workspace_container", return_value=0),
                 mock.patch.object(runtime, "CLAUDE_HOME", root / "claude"),
@@ -892,6 +890,19 @@ class ClaudeNotifyHookLifecycleTests(IsolatedRuntimeTest):
 
 
 class HostModeTests(IsolatedRuntimeTest):
+
+    def test_native_host_ignores_conflicting_container_network_settings(self):
+        """A host process creates no namespace or mappings and cannot clear them with container-only flags."""
+        config = Config()
+        config.box.network.mode = "host"
+        with tempfile.TemporaryDirectory() as tmp, \
+             mock.patch.object(runtime.shutil, "which", return_value="/usr/bin/codex"), \
+             mock.patch.object(runtime, "resolve_workspace", return_value=Workspace(Path(tmp), Path(tmp))), \
+             mock.patch.object(runtime, "runtime_config_base", return_value=config), \
+             mock.patch("agent_box.project_config.load", return_value={"box": {"network": {"ports": ["8080:3000"]}}}), \
+             mock.patch.object(runtime.subprocess, "call", return_value=0) as call:
+            self.assertEqual(runtime.host_main("codex", ["exec", "test"]), 0)
+            self.assertEqual(call.call_args.args[0], ["/usr/bin/codex", "exec", "test"])
 
     def test_bare_host_launch_uses_the_default_agent_like_a_box_launch(self):
         """--host must not answer 'which agent' differently from a box launch."""

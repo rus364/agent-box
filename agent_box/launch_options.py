@@ -37,6 +37,13 @@ OPTIONS = (
     Option("host", LAUNCH, "Run the host's claude/codex, without a container", session=False),
     Option("workspace", LAUNCH, "Workspace root instead of the Git top level", "PATH", session=False),
     Option("mount", LAUNCH, "Also bind-mount a host directory; repeatable", "PATH[:ro]", container=True, session=False),
+    Option("network", LAUNCH, "Workspace network; host shares localhost and host ports", "default|host",
+           container=True, session=False, choices=("default", "host")),
+    Option("publish", LAUNCH, "Publish a workspace port; repeatable, replaces saved list", "[IP:]HOST:CONTAINER[/tcp|udp]",
+           form="pair", container=True, session=False),
+    Option("host-port", LAUNCH, "Forward a host service into workspace localhost; repeatable", "HOST:WORKSPACE[/tcp|udp]",
+           container=True, session=False),
+    Option("host-ports", LAUNCH, "Clear selected host-service forwards", form="negated", container=True, session=False),
     Option("env", LAUNCH, "Set NAME, or forward it from this shell by name; repeatable", "NAME[=VALUE]", session=False),
     Option("tmux", LAUNCH, "Start directly, without a detachable tmux session", form="negated", session=False),
     Option("kvm", LAUNCH, "Do not pass /dev/kvm through", form="negated", container=True, session=False),
@@ -62,7 +69,7 @@ OPTIONS = (
     Option("k3s", ACCESS, "This workspace's k3s cluster", form="pair", container=True),
     Option("links", ACCESS, "Host web-link broker and temporary localhost callback forwarding", form="pair", container=True),
     Option("api-keys", ACCESS, "Provider API key variables", form="pair", container=True),
-    Option("browser", ACCESS, "Do not start the agent browser MCP server", form="negated", container=True),
+    Option("browser", ACCESS, "Do not start the agent browser MCP server", form="negated"),
     Option("remote-control", ACCESS, "Remote control; the --no- form also keeps Claude off Telegram", form="pair"),
     Option("notify", ACCESS, "Telegram notifications; turning them on needs them set up in agent-box config",
            form="pair"),
@@ -83,12 +90,17 @@ class LaunchOptions:
     kvm: bool = True
     #: Session overrides by key; the snapshot stores exactly this mapping.
     overrides: dict[str, object] = field(default_factory=dict)
+    network: str | None = None
+    publish: list[str] | None = None
+    host_ports: list[str] | None = None
 
     def given(self):
         """The options used, for refusing those that cannot apply where they were given."""
         used = {"host": self.host, "workspace": self.workspace, "mount": self.mounts,
                 "env": self.env, "tmux": not self.tmux, "kvm": not self.kvm}
         names = [name for name, value in used.items() if value] + list(self.overrides)
+        names += [name for name, value in (("network", self.network), ("publish", self.publish),
+                                           ("host-port", self.host_ports)) if value is not None]
         return [BY_NAME[name] for name in dict.fromkeys(names)]
 
 
@@ -154,7 +166,26 @@ def parse(argv: list[str]) -> tuple[LaunchOptions, list[str]]:
                 raise AgentBoxError(f"{flag} requires {option.metavar}")
             value = convert(option, flag, text)
         index += 1
-        if option.name == "mount":
+        if option.name in ("publish", "host-port", "host-ports"):
+            attr = "publish" if option.name == "publish" else "host_ports"
+            previous = getattr(options, attr)
+            clear = not positive
+            if previous is not None and (clear or previous == []):
+                raise AgentBoxError(f"{flag} conflicts with an earlier network list option")
+            if clear:
+                setattr(options, attr, [])
+            else:
+                from .networking import parse_port
+                try:
+                    parse_port(value, forward=attr == "host_ports")
+                except ValueError as exc:
+                    raise AgentBoxError(f"{flag}: {exc}") from None
+                setattr(options, attr, [*(previous or []), value])
+        elif option.name == "network":
+            if options.network is not None:
+                raise AgentBoxError("--network is given twice")
+            options.network = value
+        elif option.name == "mount":
             options.mounts.append(value)
         elif option.name == "env":
             try:
@@ -211,7 +242,7 @@ def apply(config, overrides):
         elif key == "api-keys":
             config.agents.host_env.api_keys = value
         elif key == "browser":
-            config.box.tools.browser_off = True
+            config.box.browser.off = True
         elif key == "remote-control":
             config.agents.claude.remote_control = config.agents.codex.remote_control = value
             config.agents.claude.telegram_channel = config.agents.claude.telegram_channel and value

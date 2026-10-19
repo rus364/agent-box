@@ -25,7 +25,7 @@ class ToolsConfigSchemaTests(unittest.TestCase):
 
     def test_the_large_groups_are_off_until_asked_for(self):
         self.assertFalse(Config().box.tools.groups["virtualization"])
-        self.assertFalse(Config().box.tools.groups["browser"])
+        self.assertFalse(Config().box.browser.enabled)
 
     def test_narrow_groups_are_off_until_asked_for(self):
         """Registry work with skopeo is rare enough that nobody else should pay for it."""
@@ -49,7 +49,7 @@ class ToolsConfigSchemaTests(unittest.TestCase):
 
     def test_enabled_groups_are_ordered(self):
         """The label is compared as text, so its order cannot be incidental."""
-        config = _config(virtualization=True, browser=True)
+        config = _config(virtualization=True)
         self.assertEqual(config.box.tools.enabled_groups(), sorted(config.box.tools.enabled_groups()))
 
 
@@ -66,7 +66,7 @@ class BuildArgumentTests(unittest.TestCase):
         self.assertIn("TOOLS_ANALYSIS=1", flags)
         self.assertIn("TOOLS_KUBERNETES=1", flags)
         self.assertIn("TOOLS_VIRTUALIZATION=0", flags)
-        self.assertIn("TOOLS_BROWSER=0", flags)
+        self.assertFalse(any(flag.startswith("TOOLS_BROWSER=") for flag in flags))
 
     def test_the_label_value_matches_the_enabled_set(self):
         flags = [a for a in runtime.tool_build_args(_config(virtualization=True))

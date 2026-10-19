@@ -1,164 +1,123 @@
 # Agent browser
 
-Off by default. When enabled, containerized Claude and Codex sessions get an MCP
-server driving a real headless browser, so an agent can open a page, read it,
-follow links and fill forms on its own — useful for reading documentation,
-checking a locally served app, or reproducing something that only shows up in a
-browser.
+The optional `agent_box_browser` MCP server gives Claude and Codex an isolated
+headless Chromium. Playwright MCP and Chromium come together in one official
+image, pinned by digest. Each agent session gets its own browser container and
+in-memory profile, in both ordinary workspace mode and native `--host` mode.
 
-```text
-Claude / Codex
-      |
-      | stdio MCP
-      v
-Playwright MCP
-      |
-      v
-headless Chromium
-```
-
-All three run inside the workspace container that is already there. No browser
-sidecar, no Podman pod, no HTTP MCP service, no host browser integration, no
-X11/Wayland forwarding.
+The host launcher owns Podman. A workspace agent connects over a private Unix
+socket to a fixed MCP server; it receives no Podman socket or general host
+command endpoint. Native host agents use stdio directly. Browser control has no
+published TCP listener.
 
 ## Enabling it
 
-Turn on the **`browser` tool group** under **Workspace box → Image tools** in
-`agent-box config` (`box.tools.browser`, which a project may also set in
-`.agent-box.json`). Chromium and Playwright MCP are roughly 400 MB, so they are
-built only when asked for. The group both builds them into the image and wires
-the MCP server into every containerized Claude and Codex session; a separate
-switch for the server would isolate nothing, because an agent can drive the
-image's Chromium through Playwright from a shell anyway.
+Open `agent-box config`, then **Workspace box → Browser → Enabled**
+(`box.browser.enabled`). Projects may override the isolated-browser setting.
+It is off by default. First enabled launch downloads the pinned image; subsequent
+launches reuse it. Enabling it does not rebuild the workspace image.
 
 ```bash
-agent-box build     # once, to add the browser layers
-agent-box claude
+agent-box codex
+agent-box --host claude
+agent-box --no-browser codex
+agent-box --host --no-browser claude
 ```
 
-`agent-box config show` and every launch say when the image lacks a group the
-configuration asks for.
-
-`agent-box --no-browser claude` starts one session without the MCP server; the
-image keeps Chromium. The server is added per invocation, so this never
-rebuilds or destroys a running workspace box, and a session started earlier
-keeps what it started with.
-
-Both agents see the server under the same name:
-
-```text
-agent_box_browser
-```
-
-It is added for that invocation only. Your `~/.codex/config.toml` and your
-Claude MCP configuration are never rewritten, and the MCP servers you
-configured yourself keep working alongside it.
-
-`agent-box --host claude` and `agent-box --host codex` never get it: the browser
-is a capability of the workspace image, and agent-box does not rewrite your host
-agent configuration to fake one.
+The server is added only to this invocation. User-owned Claude/Codex configuration
+and other MCP servers remain intact. `--no-browser` does no browser image/start
+work. If setup fails, the launcher explains the error and starts without browsing.
 
 ## What it does and does not touch
 
-| | |
+| Resource | Behavior |
 | --- | --- |
-| Browser | Chromium, headless, from the image — installed at build time, never downloaded during a session |
-| Profile | Isolated and in-memory, new for every session |
-| Cookies / logins / localStorage | Discarded when the session ends |
-| Your own browser's profile and cookies | Never exposed — nothing from the host is mounted |
-| Automatically named artifacts | Written under `~/.local/share/agent-box/runtime/workspaces/<id>/browser/<session>/output` |
-| Explicit artifact filenames | Relative to the MCP workspace root; an explicit absolute path selects that location |
-| Concurrent sessions | Separate profile and output directory each |
+| Browser runtime | Official Playwright MCP image, acquired by host Podman |
+| Cookies/local storage | Isolated, non-persistent profile per MCP process |
+| Workspace networking | Same network namespace as that workspace, including its localhost |
+| Native host networking | Host networking; host localhost services are reachable |
+| Files | Project at its absolute path, explicitly selected extra mounts with their access modes, session output directory |
+| Credentials and desktop profiles | Not inherited from workspace credential mounts; no personal profile/cookie store mount |
+| Artifacts | Automatically named files go to the session output directory; explicit relative filenames follow the MCP workspace root |
+| Concurrency | Independent browser containers and profiles per agent session |
 
-Because every session is isolated, an agent cannot reuse a login from an earlier
-session, and cannot reach a site that depends on your own browser's
-authentication. That is deliberate: a page the agent visits must not be able to
-act as you.
+Workspace outputs live under the workspace runtime's `browser/<session>/output`;
+host outputs under the host-session runtime's `browser/<session>/output`. These
+roots follow agent-box's configured state location. Agent exit ends browser
+processes; tmux detach keeps them alive. Explicit workspace stop also cleans up
+owned browser containers left by an interrupted supervisor.
 
-Omit the screenshot filename to use the session output directory. As documented
-by [Playwright MCP](https://github.com/microsoft/playwright-mcp#configuration),
-`--output-dir` applies only to automatically named files; an explicit name such
-as `screenshot.png` can write into the project. The server keeps the project's
-workspace root so browser file operations continue to resolve project paths.
+A file created only inside the workspace's writable layer or private `/tmp` is
+not automatically visible to the sibling. Put uploads in the project or an
+explicit shared mount. `--mount /path:ro` retains read-only access. The separate
+host `/tmp` convenience proposal does not change browser defaults. Additional
+paths are not inferred from symlinks or copied from credential mounts. MCP file
+operations may use the selected binds outside the client cwd; the container
+mount set and read-only flags enforce host file access, rather than MCP roots.
 
 ## Trust boundary
 
-> [!IMPORTANT]
-> Browser automation is **not** a separate security boundary. The browser, the
-> Playwright MCP server, Claude/Codex, shell processes, the mounted project, and
-> every other enabled integration all live inside the same workspace box, as the
-> same Unix user. Content the browser loads is on the *inside* of that boundary,
-> and anything a page can persuade the agent to do, the agent can already do to
-> your project.
+Browser pages run in a separate rootless container with a smaller mount set than
+the agent workspace. Project files and network access are still real capabilities:
+read-write project mounts allow modification, and host mode can reach host
+services. Do not treat page content as trusted instructions.
 
-Treat enabling the browser the way you would treat handing the agent any other
-network-reading capability. The container still runs with `--cap-drop=all`,
-`--security-opt=no-new-privileges` and rootless `--userns=keep-id`, and none of
-that is relaxed for the browser. Chromium's own internal sandbox is unavailable
-under those flags — Playwright launches its bundled Chromium with `--no-sandbox`,
-as it does in any container — and agent-box does not weaken the Podman hardening
-to change that. The container, not Chromium, is the boundary.
+The runtime drops capabilities and uses `no-new-privileges`. The official image
+runs Chromium without its internal sandbox; the container is the isolation
+boundary. No host X11/Wayland socket, complete home, Podman socket, or personal
+browser profile is mounted by default. An explicitly broader extra mount grants
+the access its path and mode describe.
+
+This feature does **not** attach to the user's authenticated desktop browser.
+That is separate work with a separate opt-in. In particular, the Playwright
+extension's tab chooser is not a one-tab permission boundary: its consent grants
+browser-wide access. Isolated browsing never enables that extension or consent.
 
 ## Checking it
 
-```bash
-agent-box doctor
-```
+`agent-box doctor` performs a bounded offline Chromium render in the pinned
+browser image when browsing is enabled. It uses no network and never pulls a
+missing image. A missing image is diagnosed; enable browsing and start a session
+online once to fetch it. An OK result proves that Chromium starts and renders,
+not that any particular website or authenticated workflow succeeds.
 
-Enabled and healthy. The check actually starts a headless Chromium, renders an
-offline `data:` URL and exits; it needs no network and is bounded by a short
-timeout:
-
-```text
-playwright-mcp:      Version 0.0.80
-browser chromium:    OK (153.0.8010.12)
-browser integration: enabled
-```
-
-Disabled is a normal state, not an error:
-
-```text
-browser integration: disabled (turn on the browser tool group in 'agent-box config')
-```
-
-From a source checkout, this optional local check exercises the real MCP server,
-navigation, a button click and both screenshot naming modes without a model or
-external website:
-
-```bash
-agent-box --no-tmux shell -c 'python3 tests/smoke_browser.py'
-```
-
-It requires an image containing the browser tool group and removes its temporary
-page and artifacts afterward.
+Claude/Codex should show the `agent_box_browser` server for an enabled session.
+Ask the agent to navigate to a local test page and save a screenshot to verify
+the whole MCP path. A registration listing alone is not that functional test.
 
 ## Troubleshooting
 
-**The agent says it has no browser tools.** Check `agent-box config show`:
-`box.tools.browser` must be `on`, and `box.tools` must not say the image lacks it. The server
-is added per invocation, so a session started before you enabled it, or with
-`--no-browser`, keeps running without one — start a new session.
-
-**Chromium fails to start.** `agent-box doctor` prints the launch error.
-Chromium needs a writable `$HOME/.config` for its crash-reports database, which
-the image provides; an image built by hand without agent-box's build args can
-lack it. A `chrome_crashpad_handler: --database is required` message is that
-failure. Rebuild with `agent-box build`.
-
-**It cannot open a site that needs me to be logged in.** Expected. Each session
-gets an isolated, in-memory profile and your own browser's cookies are never
-exposed, so there is no session for the agent to reuse. Have the agent log in
-within its own session, or point it at something that does not require your
-credentials.
-
-**Screenshots are cluttering my repository.** Ask the agent to omit the filename:
-automatically named screenshots use the session output directory. Explicit
-relative filenames use the MCP workspace root instead. `agent-box stop` clears
-the workspace's runtime browser output; it does not remove files explicitly
-saved into the project.
+- **No Podman or unusable rootless setup:** install/configure local rootless
+  Podman as the launch diagnostic describes. Host agents require Podman only
+  when the browser capability is enabled.
+- **First-use download fails/offline:** retry online or use `--no-browser`.
+  The pinned image is reused once cached; no engine/backend fallback occurs.
+- **Workspace localhost:** it is the workspace's localhost. Host services need
+  the workspace's existing explicit network configuration.
+- **Upload not found:** move it into the project/shared mount. A workspace-only
+  `/tmp` path is not a host bind source.
+- **Broker unavailable:** restart the agent session; its private broker log is
+  beside its output directory. An agent cannot reconnect to another session's
+  browser by requesting an arbitrary host command.
+- **Package changed while a workspace is running:** finish/stop and relaunch to
+  adopt the new immutable runtime. Existing sessions are not rewritten.
 
 ## Limitation
 
-amd64 and arm64 only, because those are the architectures Playwright publishes
-Chromium builds for. On anything else the build fails with an explanation and
-tells you to turn the group off.
+Initial support is local Linux with local rootless Podman. Native host browsing
+is headless and does not require a graphical desktop. Remote/VM-backed Podman,
+SELinux relabeling requirements and architecture-specific image availability need
+separate validation; a local amd64 test does not establish those combinations.
+Proxy/custom-CA configuration inside the agent workspace is not automatically
+copied into the browser container. No personal-browser or remote-desktop fallback
+is attempted.
+
+## Upgrading
+
+Global and project schema 1 migrate `box.tools.browser` to
+`box.browser.enabled` in schema 2, retaining explicit true/false and project
+inheritance. Reading converts a copy; normal migration writes retain the original.
+The browser no longer belongs to the workspace image tool list. New images omit
+`playwright-mcp`, Chromium and the old browser smoke command; scripts that called
+those inside the workspace must use the MCP capability or install their own
+project tooling. Existing built images are not modified in place.

@@ -35,12 +35,12 @@ import urllib.parse
 from . import channel as channel_module
 from . import claude_settings
 from . import notify as notify_module
-from . import k3s
+from . import k3s, browser
 from . import host_podman, nested_podman, runtime_bundle
 from . import cloud, kubeconfigs, registries, links
 from .atomicio import atomic_write_bytes, atomic_write_json, atomic_write_text, read_json
 from .config import ENV_PREFIX, IMPLEMENTED_TRACKERS, WORKFLOW_SKILLS, Config, apply_box_policy, load_config, effective_config, session_account
-from . import migrations
+from . import image_build, migrations, networking
 from .errors import AgentBoxError
 from .external_config import has_toml_spelling, toml_string
 from .identity import HostIdentity, detect_host_identity
@@ -310,38 +310,53 @@ def runtime_config_base() -> Config:
     return load_config()
 
 
-def build_image(script_dir: Path, refresh: bool, no_cache: bool,
-                identity: HostIdentity | None = None,
-                config: Config | None = None) -> int:
-    ensure_state_dirs()
-    ensure_refresh_token()
-    identity = identity or detect_host_identity()
-    config = effective_config(runtime_config_base()) if config is None else config
-    if refresh:
-        now = datetime.now(timezone.utc)
-        token = now.strftime("%Y%m%dT%H%M%S.") + f"{time.time_ns() % 1_000_000_000:09d}Z\n"
-        atomic_write_text(TOOLS_REFRESH_FILE, token)
-    args = [
-        "podman", "build", "--format=oci",
-        "--pull=always" if no_cache else "--pull=missing", "--layers",
+def image_build_arguments(config: Config, identity: HostIdentity) -> list[str]:
+    return [
         "--build-arg", f"USER_NAME={identity.name}",
         "--build-arg", f"USER_UID={identity.uid}",
         "--build-arg", f"USER_GID={identity.gid}",
         "--build-arg", f"USER_HOME={identity.home}",
         "--build-arg", f"TOOLS_REFRESH={TOOLS_REFRESH_FILE.read_text().strip()}",
-        *tool_build_args(config),
-        *nested_podman_build_args(config, identity),
-        "--tag", IMAGE, "--file", str(script_dir / "Containerfile"),
+        *tool_build_args(config), *nested_podman_build_args(config, identity),
     ]
-    if no_cache:
-        args.append("--no-cache")
-    args.append(str(script_dir))
-    rc = subprocess.call(args)
+
+
+def build_image(script_dir: Path, refresh: bool, no_cache: bool,
+                identity: HostIdentity | None = None,
+                config: Config | None = None) -> int:
+    ensure_state_dirs()
+    identity = identity or detect_host_identity()
+    config = effective_config(runtime_config_base()) if config is None else config
+    with image_build.lock(BUILD_STATE):
+        ensure_refresh_token()
+        if refresh:
+            now = datetime.now(timezone.utc)
+            token = now.strftime("%Y%m%dT%H%M%S.") + f"{time.time_ns() % 1_000_000_000:09d}Z\n"
+            atomic_write_text(TOOLS_REFRESH_FILE, token)
+        arguments = image_build_arguments(config, identity)
+        with image_build.context(script_dir, BUILD_STATE, arguments) as (directory, fingerprint, iidfile):
+            rc, _ = image_build.build(IMAGE, directory, fingerprint, iidfile, arguments, no_cache)
     if rc == 0 and config.box.k3s.enabled and not inside_box():
-        # The sidecar's image is not part of this one; fetched here so the
-        # first launch does not stall on it.
         k3s.pull(config.box.k3s)
     return rc
+
+
+def ensure_workspace_image(script_dir: Path, config: Config) -> str:
+    """Recheck under the build lock; return an ID immune to later tag changes."""
+    with image_build.lock(BUILD_STATE):
+        ensure_refresh_token()
+        arguments = image_build_arguments(config, detect_host_identity())
+        with image_build.context(script_dir, BUILD_STATE, arguments) as (directory, fingerprint, iidfile):
+            current = image_build.current(IMAGE)
+            if current is not None and current[1] == fingerprint:
+                return current[0]
+            reason = "missing" if current is None else "older build inputs or no input label"
+            print(f"agent-box: workspace image {reason}; building with layer cache...", file=sys.stderr)
+            rc, identity = image_build.build(IMAGE, directory, fingerprint, iidfile, arguments, False)
+            if rc:
+                raise AgentBoxError("required workspace image build failed; previous image retained; "
+                                    "fix the build error and retry the launch or run agent-box build")
+            return identity
 
 
 def nested_podman_ranges(identity: HostIdentity) -> dict[str, list[tuple[int, int]]]:
@@ -1038,7 +1053,9 @@ def container_tracker_url(raw: str) -> str:
 def sync_tracker_runtime(config: Config, directory: Path | None = None, *, policy=False, container=True) -> None:
     """Render only explicitly enabled capabilities; directory mounts see atomic updates."""
     launch = getattr(config, "_launch", {})
-    browser_enabled = config.box.tools.browser()
+    browser_enabled = config.box.browser.active()
+    network = config.box.network.to_dict()
+    isolated_network = container and config.box.network.mode != "host"
     config = getattr(config, "_project_base", config)
     directory = TRACKER_RUNTIME_DIR if directory is None else directory
     if not policy and not (config.tracker.enabled or config.workflow.enabled):
@@ -1054,13 +1071,13 @@ def sync_tracker_runtime(config: Config, directory: Path | None = None, *, polic
     if not config.tracker.enabled:
         tracker["connections"] = {}
     external = {name: spec.to_dict() for name, spec in config.agents.external_apis.items() if spec.enabled}
-    if container:
+    if isolated_network:
         for spec in external.values():
             for cli in ("codex", "claude"):
                 spec[cli]["url"] = container_tracker_url(spec[cli]["url"])
     rendered = {
         "tracker": tracker,
-        "tracker_urls": {name: container_tracker_url(connection.url)
+        "tracker_urls": {name: container_tracker_url(connection.url) if isolated_network else connection.url
                          for name, connection in config.tracker.connections.items()
                          if config.tracker.enabled},
         "global_tracker_urls": getattr(config, "_global_tracker_urls", {
@@ -1080,7 +1097,8 @@ def sync_tracker_runtime(config: Config, directory: Path | None = None, *, polic
                         "kubernetes": config.credentials.kubernetes.to_dict(),
                         "cloud": config.credentials.cloud.to_dict()},
         # A nested box inherits the outer box's sound socket at the same path.
-        "box": {"tools": config.box.tools.to_dict(), "k3s": config.box.k3s.to_dict(),
+        "box": {"tools": config.box.tools.to_dict(), "browser": config.box.browser.to_dict(), "k3s": config.box.k3s.to_dict(),
+                "network": network,
                 "podman": config.box.podman.to_dict(),
                 "audio": config.box.audio, "links": config.box.links.to_dict()},
         "container": container,
@@ -1090,10 +1108,11 @@ def sync_tracker_runtime(config: Config, directory: Path | None = None, *, polic
     if hasattr(config, "_box_policy"):
         import copy
         rendered["box_policy"] = copy.deepcopy(config._box_policy)
-        # Installed Chromium is a box capability; wiring its MCP server is
-        # the new process's choice, including a saved browser-off setting.
-        rendered["box_policy"]["box"]["tools"]["browser"] = browser_enabled
-        rendered["box"]["tools"]["browser"] = browser_enabled
+        # A nested launch may explicitly replace its inherited outer network.
+        rendered["box_policy"]["box"]["network"] = network
+        # Browser containers are per-session capabilities, independent of the box image.
+        rendered["box_policy"]["box"]["browser"] = {"enabled": browser_enabled}
+        rendered["box"]["browser"] = {"enabled": browser_enabled}
     atomic_write_json(directory / "config.json", rendered, 0o600)
 
 
@@ -1112,6 +1131,17 @@ def session_runtime(config, *, container=True, runtime_state=None):
     return path
 
 
+def requested_network(saved, options):
+    network = copy.deepcopy(saved)
+    if options.network is not None:
+        network.mode = options.network
+    if options.publish is not None:
+        network.ports = list(options.publish)
+    if options.host_ports is not None:
+        network.host_ports = list(options.host_ports)
+    return network
+
+
 def launch_config(options=None, *, box_policy=None):
     """Saved settings, then the project, then this launch's flags."""
     from . import launch_options
@@ -1121,7 +1151,7 @@ def launch_config(options=None, *, box_policy=None):
     policy = base.box.env.overlay(options.env)
     config = effective_config(base)
     if box_policy is not None:
-        browser_enabled = config.box.tools.browser()
+        browser_enabled = config.box.browser.active()
         if not box_policy["workflow_mount"]:
             from .launch_options import WORKFLOW_KEYS
             required = next((key for key in overrides if key in WORKFLOW_KEYS | {"tracker", "project"}), None)
@@ -1130,8 +1160,9 @@ def launch_config(options=None, *, box_policy=None):
                                     "end it with agent-box stop and rerun")
         apply_box_policy(config, box_policy)
         apply_box_policy(config._project_base, box_policy)
-        config.box.tools.browser_off = not browser_enabled
+        config.box.browser.off = not browser_enabled
     launch_options.apply(config, overrides)
+    config.box.network = requested_network(config.box.network, options)
     # The snapshot renders from the layer beneath the project overlay. Only
     # --no-workflow's withdrawal of the tracker and the --tracker account belong
     # there; any other flag would reach a project copy made inside the session.
@@ -1212,6 +1243,8 @@ def tracker_host_args(config: Config) -> list[str]:
     container lifetime as the mounts it addresses, and changing it therefore
     rebuilds the box rather than silently diverging from the running one.
     """
+    if config.box.network.mode == "host":
+        return []
     urls = [connection.url for connection in config.tracker.connections.values()] if config.tracker.enabled else []
     urls += [getattr(spec, cli).url for spec in config.agents.external_apis.values() if spec.enabled
              for cli in ("codex", "claude")]
@@ -1239,16 +1272,8 @@ def tracker_warnings(config: Config) -> list[str]:
 
 
 def browser_session_id(agent: str) -> str:
-    """A name for this launch's browser state.
-
-    Same shape as :func:`tmux_session`'s name and for the same reason: the
-    launcher's PID is unique among one workspace's live launches. Derived
-    independently of tmux because a piped, non-terminal launch
-    (``claude -p ...``) gets no tmux session but still needs its own browser
-    profile and output directory -- two concurrent sessions in one box must
-    never share a writable Playwright profile.
-    """
-    return f"{agent}-{os.getpid()}"
+    """Do not reuse stale browser sockets/artifacts when the OS recycles a PID."""
+    return f"{agent}-{os.getpid()}-{uuid.uuid4().hex[:8]}"
 
 
 def browser_session_root(runtime_state: WorkspaceRuntimeState) -> Path:
@@ -1259,49 +1284,15 @@ def browser_session_root(runtime_state: WorkspaceRuntimeState) -> Path:
 BROWSER_MCP_SERVER_NAME = "agent_box_browser"
 CLAUDE_SKILL_LINKS_ENV = "AGENT_BOX_CLAUDE_SKILL_LINKS"
 IMAGE_TOOLS_ENV = "AGENT_BOX_TOOLS"
-BROWSER_MCP_EXECUTABLE = "playwright-mcp"
-BROWSER_MCP_BROWSER = "chromium"
 BROWSER_ENABLED_ENV = "AGENT_BOX_BROWSER"
 BROWSER_SESSION_GRACE_SECONDS = 60
 
 def browser_mcp_args(session_dir: Path) -> list[str]:
-    """The Playwright MCP argv shared by the Claude and Codex wiring.
-
-    ``--isolated`` is what keeps a session non-persistent: Playwright MCP
-    holds the browser profile in memory and never writes it to disk, so
-    cookies, localStorage and any credential a page hands out are gone when
-    the MCP process exits and cannot leak into an unrelated later session.
-
-    ``--output-dir`` keeps automatically named artifacts outside the project.
-    Playwright resolves explicit filenames against its workspace root instead;
-    changing cwd to redirect those would also change project file access.
-
-    Neither ``--sandbox`` nor ``--no-sandbox`` is passed: Playwright already
-    launches its own bundled Chromium with ``--no-sandbox``, and forcing
-    Chromium's internal sandbox back on with Playwright MCP's ``--sandbox``
-    simply fails inside an agent-box container -- it needs a nested user
-    namespace and privileges that ``--cap-drop=all``,
-    ``--security-opt=no-new-privileges`` and rootless ``--userns=keep-id``
-    deliberately do not grant. agent-box does not weaken any of those flags
-    to get it, because Chromium's own sandbox is not the boundary that
-    matters here: the container is (see the trust boundary in
-    docs/security.md). Nothing in this argv adds a Linux capability.
-
-    The one thing the environment does need is a writable ``$HOME/.config``
-    for Chromium's crash-reports database, which the image provides -- see
-    the Containerfile's browser layer. Without it Chromium dies at startup
-    with ``chrome_crashpad_handler: --database is required``.
-    """
-    return [
-        BROWSER_MCP_EXECUTABLE,
-        "--browser", BROWSER_MCP_BROWSER,
-        "--headless",
-        "--isolated",
-        "--output-dir", str(session_dir / "output"),
-    ]
+    """The workspace speaks MCP through a private host-owned stdio bridge."""
+    return ["python3", str(session_dir / "client.py"), str(session_dir / "mcp.sock")]
 
 
-def browser_codex_overrides(session_dir: Path | None) -> list[str]:
+def browser_codex_overrides(session_dir: Path | None, server_command: list[str] | None = None) -> list[str]:
     """``-c`` overrides registering the browser MCP for one Codex launch.
 
     An inline TOML table under ``mcp_servers.<name>``, which Codex merges into
@@ -1313,7 +1304,7 @@ def browser_codex_overrides(session_dir: Path | None) -> list[str]:
     """
     if session_dir is None:
         return []
-    command, *args = browser_mcp_args(session_dir)
+    command, *args = server_command or browser_mcp_args(session_dir)
     table = (
         f"command={toml_string(command)}, "
         f"args=[{', '.join(toml_string(arg) for arg in args)}]"
@@ -1321,7 +1312,7 @@ def browser_codex_overrides(session_dir: Path | None) -> list[str]:
     return [f"mcp_servers.{BROWSER_MCP_SERVER_NAME}={{{table}}}"]
 
 
-def browser_claude_args(session_dir: Path | None) -> list[str]:
+def browser_claude_args(session_dir: Path | None, server_command: list[str] | None = None) -> list[str]:
     """``--mcp-config`` for one Claude launch, after writing the file.
 
     Claude Code has no ``-c``-style inline override, but ``--mcp-config``
@@ -1336,7 +1327,7 @@ def browser_claude_args(session_dir: Path | None) -> list[str]:
     """
     if session_dir is None:
         return []
-    command, *args = browser_mcp_args(session_dir)
+    command, *args = server_command or browser_mcp_args(session_dir)
     config_path = session_dir / "mcp.json"
     atomic_write_json(config_path, {
         "mcpServers": {BROWSER_MCP_SERVER_NAME: {"command": command, "args": args}},
@@ -1354,7 +1345,9 @@ BROWSER_SESSION_GRACE_SECONDS = 60
 def remove_browser_sessions(runtime_state: WorkspaceRuntimeState) -> None:
     """Drop every browser session of one workspace. Callers must know the box
     is gone, which is what makes this unconditional."""
-    shutil.rmtree(browser_session_root(runtime_state), ignore_errors=True)
+    if browser_session_root(runtime_state).exists():
+        browser.stop(runtime_state.root.name, "workspace")
+        shutil.rmtree(browser_session_root(runtime_state), ignore_errors=True)
 
 
 def prune_stale_browser_sessions(runtime_state: WorkspaceRuntimeState, keep: str) -> None:
@@ -1399,7 +1392,7 @@ def browser_session(
     browser" rather than aborting: a browser is an extra capability, and
     losing it is not a reason to refuse to start the agent.
     """
-    if not config.box.tools.browser() or agent not in {"claude", "codex"}:
+    if not config.box.browser.active() or agent not in {"claude", "codex"}:
         return None
     session_id = browser_session_id(agent)
     try:
@@ -1677,6 +1670,27 @@ def k3s_state_dir(runtime_state: WorkspaceRuntimeState) -> Path:
     return runtime_state.root / "k3s"
 
 
+def network_arguments(config, api_port=None):
+    errors = networking.problems(config.box.network, config.box.k3s)
+    try:
+        if errors:
+            raise ValueError(errors[0])
+        return networking.arguments(config.box.network, api_port)
+    except ValueError as exc:
+        raise AgentBoxError(str(exc)) from None
+
+
+def prepare_network(config):
+    if config.box.network.host_ports:
+        try:
+            backend = nested_podman.host_info().get("rootlessNetworkCmd")
+        except ValueError as exc:
+            raise AgentBoxError(str(exc)) from None
+        if backend != "pasta":
+            raise AgentBoxError("selected host-service forwarding requires host Podman's pasta backend; "
+                                "clear --host-port with --no-host-ports or configure pasta")
+
+
 def k3s_box_args(
     config: Config, workspace: Workspace, runtime_state: WorkspaceRuntimeState | None,
 ) -> list[str]:
@@ -1689,10 +1703,10 @@ def k3s_box_args(
     recreated sidecar recreates the box too.
     """
     if not config.box.k3s.enabled:
-        return []
+        return network_arguments(config)
     runtime_state = runtime_state or workspace_runtime_state(workspace)
     port = k3s.api_port(workspace_identity(workspace))
-    return [f"--network=pasta:-T,{port}",
+    return [*network_arguments(config, int(port)),
             f"--env=KUBECONFIG={k3s.kubeconfig_path(k3s_state_dir(runtime_state))}"]
 
 
@@ -1804,7 +1818,8 @@ def confirm_k3s(spec: WorkspaceContainerSpec) -> None:
         return
     sidecar = k3s.inspect(spec.workspace_id)
     running = (sidecar or {}).get("State", {}).get("Status") == "running"
-    if not running or f"--network=pasta:-T,{k3s.api_port(spec.workspace_id)}" not in spec.create_argv:
+    expected = network_arguments(config, int(k3s.api_port(spec.workspace_id))) if running else []
+    if not running or any(arg not in spec.create_argv for arg in expected):
         raise AgentBoxError("the k3s cluster was stopped or recreated while this launch was starting; "
                             "run the command again")
 
@@ -2016,13 +2031,21 @@ class WorkspaceContainerSpec:
     admitted_id: str = ""
     image: str = ""
     workspace_path: str = ""
+    browser_mounts: list[MountSpec] = field(default_factory=list)
+
+
+def explicit_mounts_hash(mounts):
+    return hashlib.sha256(json.dumps([
+        (str(mount.path), mount.read_only) for mount in plan_mounts(mounts)
+    ], separators=(",", ":")).encode()).hexdigest()[:16]
 
 
 def workspace_container_spec(
     workspace: Workspace, extra_mounts: list[MountSpec], script_dir: Path, config: Config,
-    kvm: bool = True,
+    kvm: bool = True, *, image: str = "",
 ) -> WorkspaceContainerSpec:
     """The immutable box definition; deliberately excludes per-exec secrets/policy."""
+    image = image or IMAGE
     runtime_state = workspace_runtime_state(workspace)
     lifetime = container_lifetime_args(
         workspace, extra_mounts, script_dir, config, mount_notifications=False, runtime_state=runtime_state, kvm=kvm,
@@ -2030,10 +2053,7 @@ def workspace_container_spec(
     base_lifetime = container_lifetime_args(
         workspace, [], script_dir, config, mount_notifications=False, runtime_state=runtime_state, kvm=kvm,
     )
-    extra_mounts_hash = hashlib.sha256(json.dumps([
-        (str(mount.path), mount.read_only)
-        for mount in plan_mounts(extra_mounts)
-    ], separators=(",", ":")).encode()).hexdigest()[:16]
+    extra_mounts_hash = explicit_mounts_hash(extra_mounts)
     # Extra binds are the only structural setting that an omitted later
     # --mount may deliberately inherit. Derive the base identity from an
     # independently rendered no-extra box rather than subtracting flags from
@@ -2042,7 +2062,7 @@ def workspace_container_spec(
     base_structural = json.dumps({
         "schema": WORKSPACE_CONTAINER_SCHEMA,
         "workspace": str(workspace.host_root.resolve()),
-        "image": IMAGE,
+        "image": image,
         "args": base_lifetime,
     }, separators=(",", ":"), sort_keys=True).encode()
     base_config_hash = hashlib.sha256(base_structural).hexdigest()[:16]
@@ -2064,13 +2084,15 @@ def workspace_container_spec(
         base_config_hash=base_config_hash,
         extra_mounts_hash=extra_mounts_hash,
         mounts_explicit=bool(extra_mounts),
+        browser_mounts=plan_mounts(extra_mounts),
         create_argv=[
             "podman", "create", "--name", name, "--rm", "--init", *labels, *lifetime,
-            IMAGE, "bash", str(KEEPER_PATH), str(workspace_lock_path(workspace)),
+            image, "bash", str(KEEPER_PATH), str(workspace_lock_path(workspace)),
         ],
         creation_config=config,
         runtime_state=runtime_state,
         policy_id=policy_id,
+        image=image,
         workspace_path=str(workspace.host_root.resolve()),
     )
 
@@ -2120,6 +2142,7 @@ def workspace_box_policy(spec: WorkspaceContainerSpec) -> dict:
     source, destination, read_only = tracker_mounts(config, spec.runtime_state)[0]
     return {
         "box": {"tools": tools, "k3s": config.box.k3s.to_dict(),
+                "network": config.box.network.to_dict(),
                 # Whichever session leaves last deletes or keeps the data by this.
                 "podman": config.box.podman.to_dict(),
                 "audio": any(arg.startswith("--env=PULSE_SERVER=") for arg in spec.create_argv),
@@ -2131,6 +2154,7 @@ def workspace_box_policy(spec: WorkspaceContainerSpec) -> dict:
                         "cloud": config.credentials.cloud.to_dict()},
         "workflow_mount": config.tracker.enabled or config.workflow.enabled,
         "session_mount": [str(source), str(destination), read_only],
+        "browser_mounts": [[str(m.path), m.read_only] for m in spec.browser_mounts],
     }
 
 
@@ -2178,6 +2202,24 @@ def existing_workspace_spec(workspace: Workspace, options: LaunchOptions, packag
             sidecar = k3s.inspect(workspace_identity(workspace))
             if (sidecar or {}).get("State", {}).get("Status") != "running":
                 raise AgentBoxError("running workspace box's k3s sidecar is unavailable; end it with agent-box stop and rerun")
+        desired = effective_config(runtime_config_base())
+        desired_network = requested_network(desired.box.network, options)
+        try:
+            matches = networking.identity(desired_network) == networking.identity(shared.box.network)
+            if shared.box.k3s.enabled and sorted(networking.ports(desired.box.k3s.ports)) != sorted(networking.ports(shared.box.k3s.ports)):
+                raise AgentBoxError("requested k3s published ports differ from the running workspace; "
+                                    "end it with agent-box stop and rerun")
+        except ValueError as exc:
+            raise AgentBoxError(f"invalid workspace network policy: {exc}") from None
+        if not matches:
+            raise AgentBoxError("requested network mode/ports differ from the running workspace "
+                                f"(running {shared.box.network.to_dict()}, requested {desired_network.to_dict()}); "
+                                "repeat its explicit network options or "
+                                "end it with agent-box stop and rerun")
+        api_port = int(k3s.api_port(workspace_identity(workspace))) if shared.box.k3s.enabled else None
+        problem = networking.inspection_problem(shared.box.network, current, api_port)
+        if problem:
+            raise AgentBoxError(f"running workspace network: {problem}; end it with agent-box stop and rerun")
         shared_flags = {"registries": shared.credentials.registries.enabled,
                         "k3s": shared.box.k3s.enabled,
                         "kubeconfigs": shared.credentials.kubernetes.enabled,
@@ -2209,8 +2251,29 @@ def existing_workspace_spec(workspace: Workspace, options: LaunchOptions, packag
             name, workspace_identity(workspace), labels.get(WORKSPACE_CONTAINER_BASE_CONFIG_LABEL, ""),
             labels.get(WORKSPACE_CONTAINER_EXTRA_MOUNTS_LABEL, ""), bool(options.mounts), [], shared, state,
             policy_id, current["Id"], current["Image"],
+            browser_mounts=verified_browser_mounts(policy, current),
         )
         return spec
+
+
+def verified_browser_mounts(policy, container):
+    """Only the immutable explicit-mount selection may reach the sibling browser."""
+    selected = []
+    for path, read_only in policy.get("browser_mounts", []):
+        target = Path(path)
+        if not target.is_absolute() or type(read_only) is not bool:
+            raise AgentBoxError("invalid saved browser mount; stop and relaunch the workspace")
+        covering = [item for item in container.get("Mounts", [])
+                    if target.is_relative_to(Path(item["Destination"]))]
+        actual = max(covering, key=lambda item: len(Path(item["Destination"]).parts), default=None)
+        if (actual is None or bool(actual.get("RW")) == read_only
+                or Path(actual["Source"]) / target.relative_to(actual["Destination"]) != target):
+            raise AgentBoxError("saved browser mounts differ from the workspace; stop and relaunch it")
+        selected.append(MountSpec(target, read_only))
+    expected = container.get("Config", {}).get("Labels", {}).get(WORKSPACE_CONTAINER_EXTRA_MOUNTS_LABEL)
+    if explicit_mounts_hash(selected) != expected:
+        raise AgentBoxError("saved browser mounts differ from the explicit workspace mounts; stop and relaunch it")
+    return selected
 
 
 def workspace_container_exists(name: str) -> bool:
@@ -2276,6 +2339,9 @@ def inspect_workspace_container(name: str) -> dict | None:
 
 def remove_workspace_container_then_confirm_absent(name: str) -> None:
     """Remove a stale box and establish that its bind mounts are no longer live."""
+    workspace_id = name.rsplit("-", 1)[-1]
+    if re.fullmatch(r"[0-9a-f]{16}", workspace_id) and (workspace_state_root(workspace_id) / "browser").exists():
+        browser.stop(workspace_id, "workspace")
     command = ["podman", "rm", "-f", name]
     try:
         result = subprocess.run(command, text=True, capture_output=True)
@@ -2676,7 +2742,8 @@ def launch_in_workspace_container(
                 raise AgentBoxError(str(exc)) from exc
         elif not spec.admitted_id and spec.creation_config.box.links.enabled:
             try:
-                links.ensure(spec.runtime_state.root.name, spec.name, spec.creation_config.box.links)
+                links.ensure(spec.runtime_state.root.name, spec.name, spec.creation_config.box.links,
+                             host_network=spec.creation_config.box.network.mode == "host")
             except (OSError, ValueError, subprocess.SubprocessError) as exc:
                 raise AgentBoxError(str(exc)) from exc
         # Only now does the box match this launch: a launch refused for
@@ -2840,28 +2907,6 @@ if [[ -n "${AGENT_BOX_RUNTIME_CONFIG:-}" ]]; then
   agent-box tracker status || true
 else
   echo "tracker:             not exposed (enable it with 'agent-box config')"
-fi
-echo
-# The browser integration is off by default, so "disabled" is a normal answer
-# here rather than a fault. When it is on, the question worth answering is not
-# "is playwright-mcp on PATH" but "can a headless Chromium actually start",
-# which is what the smoke test proves -- bounded by its own 20s timeout and a
-# hard one here, and entirely offline (it renders a data: URL).
-if has_group browser; then
-  printf "%-20s %s\n" "playwright-mcp:" "$(playwright-mcp --version 2>/dev/null || echo MISSING)"
-fi
-if [[ "${AGENT_BOX_BROWSER:-0}" == "1" ]]; then
-  if ! command -v agent-box-browser-smoke >/dev/null 2>&1; then
-    echo "browser chromium:    MISSING (image built without it; run 'agent-box build')"
-  elif smoke="$(timeout 30 agent-box-browser-smoke 2>&1)"; then
-    printf "%-20s %s\n" "browser chromium:" "OK (${smoke})"
-  else
-    echo "browser chromium:    FAILED"
-    printf "  %s\n" "${smoke}"
-  fi
-  echo "browser integration: enabled"
-else
-  echo "browser integration: disabled (turn on the browser tool group in 'agent-box config')"
 fi
 echo
 # Checked from inside the box, through the same kubeconfig and loopback
@@ -3065,6 +3110,9 @@ def runtime_main(
     existing = existing_workspace_spec(workspace, options, script_dir)
     config = launch_config(options, box_policy=existing.creation_config._box_policy if existing else None)
     nested = list(dict.fromkeys(requested + withhold_from_nested_box(config)))
+    errors = config.box.validate()
+    if errors:
+        raise AgentBoxError(errors[0])
     agent, rest = config.agents.default, args
     if args and args[0] in {"claude", "codex", "shell", "doctor"}:
         agent, rest = args[0], args[1:]
@@ -3076,25 +3124,12 @@ def runtime_main(
         from .external_launch import selected_model
         selected_model(config, api_provider, agent, rest)
 
-    if existing is not None:
-        pass  # The live box keeps its image even if its tag was rebuilt or removed.
-    elif not image_exists():
-        print("agent-box: image not found; building it...", file=sys.stderr)
-        rc = build_image(script_dir, False, False, config=config)
-        if rc:
-            raise SystemExit(rc)
-    else:
-        # Reported, never acted on: a rebuild is slow, and choosing when to
-        # spend that time is the user's call, not a launch's.
-        missing, extra = image_tool_drift(config)
-        if missing:
-            warn(f"image lacks configured tool group(s): {', '.join(missing)}"
-                 f" -- run 'agent-box build'")
-        if extra:
-            warn(f"image still carries tool group(s) you turned off: {', '.join(extra)}"
-                 f" -- run 'agent-box build' to drop them")
-        for problem in nested_podman_drift(config):
-            warn(problem)
+    # Joining a running workspace never consults or replaces its image.
+    selected_image = existing.image if existing is not None else ensure_workspace_image(script_dir, config)
+    if (config.box.network.mode != "default" or config.box.network.ports or config.box.network.host_ports
+            or config.box.k3s.enabled and config.box.k3s.ports):
+        for line in networking.summary(config.box.network, config.box.k3s):
+            print("agent-box: " + line, file=sys.stderr)
     # Every launch, not only box creation: joining a running box with the
     # switch on and no socket leaves box identity unchanged and would say nothing.
     from .external_config import model_warnings
@@ -3108,10 +3143,17 @@ def runtime_main(
     # Decided before the channel is claimed, because the claim records it.
     runtime_state = workspace_runtime_state(workspace)
     session = tmux_session(agent, runtime_state) if tmux_enabled(agent, options.tmux) else None
-    # Invocation-scoped, and deliberately not part of the box's structural
-    # identity: everything it needs is already in the image and already
-    # mounted, so --no-browser never recreates a compatible box.
+    # The session directory is already mounted; browser choice is per invocation.
     browser_dir = browser_session(config, workspace, runtime_state, agent)
+    if browser_dir is not None:
+        try:
+            inherited = existing.browser_mounts if existing is not None else extra_mounts
+            browser.prepare(browser_dir, workspace.host_root, workspace.cwd, inherited,
+                            container=workspace_container_name(workspace), workspace=workspace_identity(workspace),
+                            session=session.name if session else "")
+        except (AgentBoxError, OSError) as exc:
+            warn(f"browser unavailable: {exc}; starting without it")
+            browser_dir = None
     channel, extra_env = claude_channel_args(agent, config, workspace, rest, session)
     if getattr(config, "_launch", {}).get("notify") is False:
         extra_env += [f"{notify_module.NOTIFY_OFF_ENV}=1"]
@@ -3127,11 +3169,13 @@ def runtime_main(
         if agent == "shell":
             command = ["bash", "--login", *rest]
         elif agent == "doctor":
+            print(browser.diagnose() if config.box.browser.active() else
+                  "browser: disabled (enable Workspace box > Browser in agent-box config)", flush=True)
             # The script runs inside the box and cannot read the host config,
             # so the one bit it needs is forwarded per-exec.
             extra_env = [
                 *extra_env,
-                f"{BROWSER_ENABLED_ENV}={'1' if config.box.tools.browser() else '0'}",
+                f"{BROWSER_ENABLED_ENV}={'1' if config.box.browser.active() else '0'}",
                 # A joined nested box already carries k3s off in its policy.
                 f"AGENT_BOX_K3S={'nested' if inside_box() else '1' if config.box.k3s.enabled else '0'}",
                 f"{CLAUDE_SKILL_LINKS_ENV}={'1' if config.host.claude_skill_links else '0'}",
@@ -3154,9 +3198,10 @@ def runtime_main(
         elif remote_control_invocation(agent, rest):
             command = remote_control_command(command, agent, config, container=True)
         if existing is None:
+            prepare_network(config)
             prepare_k3s(config, workspace, runtime_state)
             bundle = runtime_bundle.prepare(script_dir, STATE_ROOT / "runtime/launcher")
-            spec = workspace_container_spec(workspace, extra_mounts, bundle, config, options.kvm)
+            spec = workspace_container_spec(workspace, extra_mounts, bundle, config, options.kvm, image=selected_image)
         else:
             spec = existing
         invocation, process_env = invocation_env(config, agent)
@@ -3275,6 +3320,7 @@ def stop_main(args: list[str], workspace_root: str = "") -> int:
         current = inspect_workspace_container(name)
         if current is None:
             print("agent-box: no workspace container for this project", file=sys.stderr)
+            remove_browser_sessions(runtime_state)
         else:
             if current.get("State", {}).get("Status") == "running":
                 try:
@@ -3519,7 +3565,7 @@ def host_main(
     *, api_provider: str = "",
 ) -> int:
     """``agent-box --host [claude|codex]``: run the installed host executable
-    directly, no Podman.
+    directly. The optional isolated browser alone uses Podman.
 
     Workflow policy is read from the same global configuration as container mode.
     No agent means the default agent, resolved as in container mode.
@@ -3555,8 +3601,23 @@ def host_main(
     for key in [k for k in env if k.startswith(ENV_PREFIX)]:
         del env[key]
 
+    browser_dir = None
+    browser_command = None
+    if config.box.browser.active() and not any(arg in {"--version", "-V", "--help", "-h"} for arg in rest):
+        browser_dir = HOST_SESSIONS_ROOT / workspace_identity(workspace) / "browser" / uuid.uuid4().hex
+        try:
+            browser_command = browser.prepare(browser_dir, workspace.host_root, workspace.cwd,
+                                              workspace=workspace_identity(workspace))
+            record_workspace_path(workspace_identity(workspace), str(workspace.host_root.resolve()))
+        except (AgentBoxError, OSError) as exc:
+            warn(f"browser unavailable: {exc}; starting without it")
+            browser_dir = None
     workflow_overrides = codex_workflow_overrides(rest, config) if agent == "codex" else []
-    command = [executable, *(arg for override in workflow_overrides for arg in ("-c", override)), *rest]
+    if agent == "codex":
+        workflow_overrides += browser_codex_overrides(browser_dir, browser_command)
+    browser_args = browser_claude_args(browser_dir, browser_command) if agent == "claude" and is_claude_session_invocation(rest) else []
+    agent_args = claude_session_args(rest, [], browser_args) if agent == "claude" else rest
+    command = [executable, *(arg for override in workflow_overrides for arg in ("-c", override)), *agent_args]
     if api_provider:
         command = external_command(command, agent, api_provider, container=False)
     elif remote_control_invocation(agent, rest):
@@ -3670,6 +3731,8 @@ def host_tmux_launch(workspace: Workspace, agent: str, command: list[str],
 def stop_host_sessions(root: Path) -> list[str]:
     """End the host tmux server of one workspace's sessions; the sessions it held."""
     names = tmux_sessions(None, host_root=root)
+    if (root / "browser").exists():
+        browser.stop(root.name, "host")
     if not names:
         return []
     result = subprocess.run(tmux_argv("kill-server", host_root=root), capture_output=True, text=True,

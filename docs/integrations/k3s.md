@@ -71,7 +71,9 @@ there does not fetch the k3s image. The outer box keeps its own cluster.
 
 ## Settings
 
-Every field lives under **Workspace box → k3s cluster** (`box.k3s`); all of them may also be set per project.
+Settings live under **Workspace box → k3s cluster** (`box.k3s`), except the
+port editor under **Workspace box → Network**. All may be set per project;
+project port publications are restricted to loopback.
 
 | Setting | Default | Effect |
 | --- | --- | --- |
@@ -84,7 +86,7 @@ Every field lives under **Workspace box → k3s cluster** (`box.k3s`); all of th
 | `local_storage` | on | The `local-path` StorageClass for PVCs |
 | `network_policy` | on | NetworkPolicy enforcement |
 | `cpus`, `memory` | no limit | Limits for the whole sidecar, such as `2` and `4g` |
-| `ports` | none | `HOST:CONTAINER` pairs published on the host's `127.0.0.1` |
+| `ports` | none | `[IP:]HOST:CONTAINER[/tcp|udp]`; defaults to host `127.0.0.1` and TCP |
 | `manifests` | none | A project directory k3s applies itself (YAML and `HelmChart`), mounted read-only |
 | `registry_mirrors` | none | `{"docker.io": ["https://mirror.example"]}` rendered into k3s's `registries.yaml` |
 | `extra_args` | none | Extra `k3s server` flags, such as `["--cluster-cidr=10.60.0.0/16"]` |
@@ -99,7 +101,8 @@ first.
 
 **Opening the cluster from your browser.** With `traefik` on and
 `"ports": ["8080:80"]`, an Ingress answers at `http://127.0.0.1:8080`. Ports
-are published on host loopback only, never on the LAN. From inside the box use
+default to host loopback. Explicit non-loopback binds are available only in
+global settings. See [workspace networking](../networking.md). From inside the box use
 `kubectl port-forward` as with any cluster.
 
 **Bootstrapping a project.** `manifests` names a directory of the project, such

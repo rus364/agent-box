@@ -1,6 +1,40 @@
 # Release notes
 
-## Unreleased
+## Unreleased — next major version
+
+- Reconcile workspace images automatically before new launches using a fingerprint
+  of build inputs. Builds retain layer cache, serialize with explicit build commands
+  and preserve the previous image on failure. Running workspaces remain unchanged.
+
+- Move the opt-in isolated browser to a pinned Playwright MCP/Chromium container
+  for both workspace and native `--host` sessions. Configure **Workspace box →
+  Browser**; `--no-browser` works in both modes. No native browser stack is installed.
+- Migrate global/project schema 1 directly to schema 2, preserving
+  `box.tools.browser` as `box.browser.enabled`, including explicit project false.
+  Running immutable workspaces need an explicit stop/relaunch to adopt the update.
+- **Breaking image contract:** new workspace images no longer provide
+  `playwright-mcp`, Chromium or `agent-box-browser-smoke`. Use the per-session
+  `agent_box_browser` MCP integration, or install direct browser scripting tools
+  in the project. Keep this change for a major release; no version/tag is
+  published by this implementation.
+
+## 1.1.0
+
+- Add opt-in workspace TCP/UDP publication, selected host-service forwarding
+  through pasta, and explicit host networking. Configure them under
+  **Workspace box → Network** or with `--publish`, `--host-port`, `--network`,
+  `--no-publish` and `--no-host-ports`. Running boxes require matching network
+  authorization; temporary host access is never silently inherited.
+- Extend `box.k3s.ports` with explicit IPv4/IPv6 bind addresses and UDP while
+  preserving existing loopback TCP mappings. Move its editor to Network without
+  changing its saved key. Projects can publish only on loopback.
+
+- Add `workflow pause` and `workflow resume` to preserve unfinished task work,
+  return to the base and recover existing branches without guessing. Pause
+  never changes lifecycle, ownership, priority or blocker relations; decisions
+  to defer/block work require the user's agreement.
+- Add off-by-default `workflow.pause_push` and per-pause `--push`/`--no-push`
+  for verified remote checkpoints, independent of delivery `auto_push`.
 
 - Exclude moved Jira issues from project search and exact-title resolution
   after rereading stale Cloud search results.
@@ -9,8 +43,16 @@
   workflow transitions, links, comments, assignees and checklist revisions.
 - Keep existing URL/token accounts compatible; Jira Cloud adds an optional
   username field. Server/DC has local live validation; Cloud has isolated
-  contract tests and still awaits live acceptance. This additive feature
-  belongs in the next MINOR release; no package is published by this change.
+  contract tests and still awaits live acceptance.
+- Automate stable Arch/AUR publication after verified PyPI and GitHub releases.
+  Keep development tests in Arch CI rather than user installation, preserve
+  packaged runtime resources and show backend build output only on failure.
+
+This MINOR release adds compatible functionality without changing persisted
+schema versions. Direct upgrades from 1.0.0 and 1.0.1 retain saved settings;
+missing networking and pause-publication settings keep their safe defaults.
+Running workspaces retain their immutable runtime: explicitly stop/relaunch
+them to use the new runtime. Update through the installer that owns the package.
 
 ## 1.0.1
 
