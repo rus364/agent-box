@@ -48,14 +48,26 @@ agent-box rebuild    # pull the base image and rebuild without layer cache
 - APT archives and npm downloads use persistent builder cache mounts
   (`agent-box-apt`, `agent-box-npm`) outside the image; `rebuild` keeps them.
 
-Changing a tool group takes effect on the next `agent-box build`. The image
-records what it was built with, so `agent-box config show`, `agent-box doctor`
-and every launch report when it no longer matches your configuration; none of
-them rebuild it on their own.
+Before creating a new workspace, agent-box compares the image's build-input
+fingerprint with the current recipe, copied assets, host identity and effective
+build arguments (including tool groups and the explicit tool-refresh token).
+Missing images, changed inputs and old images without this label trigger a cached
+build automatically. Unrelated launcher/skill changes do not rebuild the image.
+The build uses a private snapshot of those inputs, and its successful result is
+selected by immutable image ID. Concurrent automatic and explicit builds share a
+lock; a failed build retains the previous image and aborts the new launch with
+instructions to fix and retry. There is no silent stale-image fallback.
 
-The Python package includes the complete build context; no checkout is needed.
-An installer upgrade changes those inputs but does not rebuild an image or
-replace a running box.
+The Python package includes the build inputs; no checkout is needed. Installer
+upgrades do not run Podman. The next new workspace launch handles changed inputs.
+Running workspaces keep their original image; stop and launch explicitly to adopt
+an updated runtime or image. Native `--host` sessions do not build workspace images.
+Read-only configuration/doctor checks can report tool-group drift but never build.
+
+Automatic reconciliation does not poll registries for a newer base or refresh
+unpinned tool versions when the recipe is unchanged. Use `update` for fresh tools
+and `rebuild` for base/OS updates as above; `build` can prepare the image ahead of a
+launch. Builds may require network access even with cached layers.
 
 The [agent browser](integrations/browser.md) uses a separate managed image. Its
 setting does not participate in workspace build arguments or tool-group labels.

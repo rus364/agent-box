@@ -227,9 +227,9 @@ def _image_note(config) -> str:
     except Exception:
         return ""
     if missing:
-        return f" (image lacks {', '.join(missing)}; run 'agent-box build')"
+        return f" (image lacks {', '.join(missing)}; builds before next new workspace)"
     if extra:
-        return f" (image still has {', '.join(extra)}; run 'agent-box build')"
+        return f" (image still has {', '.join(extra)}; builds before next new workspace)"
     return ""
 
 

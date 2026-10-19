@@ -30,8 +30,8 @@ directory that does not contain the current one. Change directory or pass
 another path.
 
 **A tool is missing from the box.** Check `agent-box config show`: its image
-group may be off. Enable it, then run `agent-box build`. Project-specific
-toolchains belong in the project, declared through `mise`.
+group may be off. Enable it, then stop/relaunch the workspace; the new launch
+automatically builds changed image inputs. Project-specific toolchains belong in the project, declared through `mise`.
 
 **A shared skill is missing or points somewhere unexpected.** Run
 `agent-box doctor`, then `agent-box config apply`. agent-box never overwrites

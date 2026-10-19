@@ -218,7 +218,7 @@ class WorkspaceContainerLifecycleTests(unittest.TestCase):
                  mock.patch("agent_box.external_launch.selected_model"), \
                  mock.patch.object(runtime, "external_command", side_effect=lambda command, *args, **kwargs: command), \
                  mock.patch.object(runtime, "prepare_k3s") as prepare, \
-                 mock.patch.object(runtime, "image_exists", side_effect=AssertionError("join queried image tag")), \
+                 mock.patch.object(runtime, "ensure_workspace_image", side_effect=AssertionError("join queried image tag")), \
                  mock.patch.object(runtime, "claude_channel_args", return_value=([], [])), \
                  mock.patch.object(runtime, "browser_session", return_value=None), \
                  mock.patch.object(runtime, "tmux_enabled", return_value=False), \

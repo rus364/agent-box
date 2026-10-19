@@ -358,7 +358,7 @@ class DoctorBrowserDiagnosticsTests(IsolatedRuntimeTest):
             with mock.patch.object(runtime.host_podman, "require"), \
                  mock.patch.object(runtime, "resolve_workspace", return_value=Workspace(root, root)), \
                  mock.patch.object(runtime, "load_config", return_value=config), \
-                 mock.patch.object(runtime, "image_exists", return_value=True), \
+                 mock.patch.object(runtime, "ensure_workspace_image", return_value="sha256:test-image"), \
                  mock.patch.object(runtime, "sync_managed_skills"), \
                  mock.patch.object(runtime, "claude_skill_links"), \
                  mock.patch.object(runtime, "workspace_container_spec"), \

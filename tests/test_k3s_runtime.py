@@ -234,11 +234,11 @@ class BuildAndWarningTests(K3sRuntimeTest):
         for config, inside, pulls in ((Config(), False, 0), (k3s_config(), False, 1), (k3s_config(), True, 0)):
             with self.subTest(pulls=pulls, inside=inside), \
                     mock.patch.object(runtime, "inside_box", return_value=inside), \
-                    mock.patch.object(runtime.subprocess, "call", return_value=0), \
+                    mock.patch.object(runtime.image_build, "build", return_value=(0, "image-id")), \
                     mock.patch.object(runtime, "detect_host_identity"), \
                     mock.patch.object(runtime, "nested_podman_build_args", return_value=[]), \
                     mock.patch.object(runtime.k3s, "pull") as pull:
-                self.assertEqual(runtime.build_image(Path.cwd(), False, False, config=config), 0)
+                self.assertEqual(runtime.build_image(runtime.PACKAGE_ROOT, False, False, config=config), 0)
             self.assertEqual(pull.call_count, pulls)
 
     def test_a_cluster_without_kubectl_in_the_image_is_reported(self):

@@ -72,9 +72,10 @@ class PasswdHomeTests(unittest.TestCase):
             token.write_text("tok\n")
             with mock.patch.dict(os.environ, {"HOME": POISON}), \
                  mock.patch.object(runtime, "TOOLS_REFRESH_FILE", token), \
-                 mock.patch.object(runtime.subprocess, "call", lambda argv: calls.append(argv) or 0), \
+                 mock.patch.object(runtime.image_build, "build", lambda *args: (calls.append(args[4]) or 0, "image-id")), \
+                 mock.patch.object(runtime, "BUILD_STATE", Path(tmp)), \
                  mock.patch.object(runtime, "ensure_state_dirs", lambda: None):
-                runtime.build_image(Path("/does/not/matter"), False, False,
+                runtime.build_image(runtime.PACKAGE_ROOT, False, False,
                                     identity=identity.detect_host_identity())
         self.assertIn(f"USER_HOME={real_home()}", calls[0])
         self.assertNotIn(POISON, " ".join(calls[0]))

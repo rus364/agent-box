@@ -436,7 +436,7 @@ def help_for(path):
         if text:
             return text
     if len(path) == 3 and path[:2] == ("box", "tools"):
-        return f"{TOOL_GROUP_HELP.get(path[-1], path[-1])}. Rebuild the workspace image to install or remove this group; browsing and saving this selection do not rebuild it."
+        return f"{TOOL_GROUP_HELP.get(path[-1], path[-1])}. A cached build applies this selection before the next new workspace. Stop/relaunch running workspaces explicitly; saving the selection does not interrupt them."
     if len(path) == 3 and path[:2] == ("tracker", "connections"):
         return f"Connection settings for the {path[-1]} tracker. It is exposed only when tracker integration is enabled."
     if path == ("tracker", "connections", "github", "url"):
@@ -1088,7 +1088,7 @@ def edit(config, *, project=None):
         if not kept:
             return notice
         return (f"Image tools: {', '.join(kept)} on for {', '.join(needed[group] for group in kept)}; "
-                "built by the next agent-box build and kept on while they are forwarded")
+                "built before the next new workspace and kept on while they are forwarded")
 
     published = {}
 

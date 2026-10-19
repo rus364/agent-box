@@ -2,6 +2,10 @@
 
 ## Unreleased — next major version
 
+- Reconcile workspace images automatically before new launches using a fingerprint
+  of build inputs. Builds retain layer cache, serialize with explicit build commands
+  and preserve the previous image on failure. Running workspaces remain unchanged.
+
 - Move the opt-in isolated browser to a pinned Playwright MCP/Chromium container
   for both workspace and native `--host` sessions. Configure **Workspace box →
   Browser**; `--no-browser` works in both modes. No native browser stack is installed.

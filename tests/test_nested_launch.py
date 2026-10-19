@@ -32,7 +32,7 @@ class NestedLaunchTests(K3sRuntimeTest):
                 mock.patch.object(runtime.host_podman, "require"), \
                 mock.patch.object(runtime, "resolve_workspace", return_value=self.workspace), \
                 mock.patch.object(runtime, "load_config", return_value=config or k3s_config()), \
-                mock.patch.object(runtime, "image_exists", return_value=True), \
+                mock.patch.object(runtime, "ensure_workspace_image", return_value="sha256:test-image"), \
                 mock.patch.object(runtime, "image_tool_drift", return_value=([], [])), \
                 mock.patch.object(runtime, "inspect_workspace_container", return_value=None), \
                 mock.patch.multiple(runtime.k3s, ensure=mock.DEFAULT, api_port=mock.DEFAULT) as sidecar, \
@@ -161,12 +161,6 @@ class NestedLaunchTests(K3sRuntimeTest):
                     self.assertFalse(effective_config().box.k3s.enabled)
 
 
-    def test_a_launch_reports_an_image_with_foreign_nested_podman_ranges(self):
-        """Creating the box would succeed and leave Podman in it failing on newuidmap."""
-        with mock.patch.object(runtime, "nested_podman_drift", return_value=["ranges differ"]) as drift:
-            _, _, warnings, _ = self.launch(inside=True, config=Config())
-        drift.assert_called_once()
-        self.assertIn("ranges differ", warnings)
 
 
 class NestedLinksDirectoryTests(unittest.TestCase):

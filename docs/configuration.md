@@ -155,8 +155,9 @@ In the project menu values are labelled **Inherited** or **Overridden**.
 global setting again; **G: Copy current global** pins the current global value
 as a project override. Credentials, environment, integration switches and host
 installation settings are **Global only** there. **Save project** writes only
-explicit project values and applies nothing; image tool changes still need
-`agent-box build`.
+explicit project values and applies nothing immediately. Image tool changes trigger
+a cached build before the next new workspace; stop/relaunch existing workspaces
+explicitly, or run `agent-box build` to prepare the image ahead of time.
 
 ## Session tracker override
 

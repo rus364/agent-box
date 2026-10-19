@@ -85,7 +85,7 @@ class AudioLaunchWarningTests(unittest.TestCase):
                  mock.patch.object(runtime, "POLICY_RUNTIME_DIR", root / "runtime/policy"), \
                  mock.patch.object(runtime, "ensure_refresh_token"), \
                  mock.patch.object(runtime, "load_config", return_value=audio_config()), \
-                 mock.patch.object(runtime, "image_exists", return_value=True), \
+                 mock.patch.object(runtime, "ensure_workspace_image", return_value="sha256:test-image"), \
                  mock.patch.object(runtime, "image_tool_drift", return_value=([], [])), \
                  mock.patch.object(runtime, "claude_channel_args", return_value=([], [])), \
                  mock.patch.object(runtime, "existing_workspace_spec", return_value=None), \

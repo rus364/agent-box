@@ -162,9 +162,12 @@ package is replaced. If a new invocation reports a different runtime, end that
 workspace's sessions with `agent-box stop` and launch again. Copies are retained
 in agent-box state until `agent-box uninstall --purge` removes that state.
 
-Updating the Python package does not rebuild the workspace image. Run
-`agent-box build` for changed build inputs, or `agent-box update` to refresh
-its tools; see [the image lifecycle](image.md#building-and-refreshing).
+Updating the Python package does not run an image build inside the installer.
+Before the next new workspace starts, agent-box automatically builds with cache
+if the build inputs changed (or the image predates input labels). Unchanged inputs
+reuse the image. A running workspace still needs an explicit stop/relaunch.
+Use `agent-box build` to prepare ahead of time, `agent-box update` for fresh tools,
+or `agent-box rebuild` for base/OS refresh; see [the image lifecycle](image.md#building-and-refreshing).
 
 ## Uninstalling
 

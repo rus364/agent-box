@@ -306,7 +306,7 @@ class ExternalRuntimeTests(IsolatedRuntimeTest):
                      patch.object(runtime, 'remote_control_invocation', return_value=True), \
                      patch.object(runtime, 'remote_control_command') as rc, \
                      patch.object(runtime, 'ensure_state_dirs'), patch.object(runtime, 'ensure_refresh_token'), \
-                     patch.object(runtime, 'image_exists', return_value=True), \
+                     patch.object(runtime, 'ensure_workspace_image', return_value='sha256:test-image'), \
                      patch.object(runtime, 'claude_channel_args', return_value=([], [])), \
                      patch.object(runtime, 'codex_runtime_overrides', return_value=[]), \
                      patch.object(runtime, 'is_host_local', return_value=False), \

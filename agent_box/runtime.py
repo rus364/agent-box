@@ -40,7 +40,7 @@ from . import host_podman, nested_podman, runtime_bundle
 from . import cloud, kubeconfigs, registries, links
 from .atomicio import atomic_write_bytes, atomic_write_json, atomic_write_text, read_json
 from .config import ENV_PREFIX, IMPLEMENTED_TRACKERS, WORKFLOW_SKILLS, Config, apply_box_policy, load_config, effective_config, session_account
-from . import migrations, networking
+from . import image_build, migrations, networking
 from .errors import AgentBoxError
 from .external_config import has_toml_spelling, toml_string
 from .identity import HostIdentity, detect_host_identity
@@ -310,38 +310,53 @@ def runtime_config_base() -> Config:
     return load_config()
 
 
-def build_image(script_dir: Path, refresh: bool, no_cache: bool,
-                identity: HostIdentity | None = None,
-                config: Config | None = None) -> int:
-    ensure_state_dirs()
-    ensure_refresh_token()
-    identity = identity or detect_host_identity()
-    config = effective_config(runtime_config_base()) if config is None else config
-    if refresh:
-        now = datetime.now(timezone.utc)
-        token = now.strftime("%Y%m%dT%H%M%S.") + f"{time.time_ns() % 1_000_000_000:09d}Z\n"
-        atomic_write_text(TOOLS_REFRESH_FILE, token)
-    args = [
-        "podman", "build", "--format=oci",
-        "--pull=always" if no_cache else "--pull=missing", "--layers",
+def image_build_arguments(config: Config, identity: HostIdentity) -> list[str]:
+    return [
         "--build-arg", f"USER_NAME={identity.name}",
         "--build-arg", f"USER_UID={identity.uid}",
         "--build-arg", f"USER_GID={identity.gid}",
         "--build-arg", f"USER_HOME={identity.home}",
         "--build-arg", f"TOOLS_REFRESH={TOOLS_REFRESH_FILE.read_text().strip()}",
-        *tool_build_args(config),
-        *nested_podman_build_args(config, identity),
-        "--tag", IMAGE, "--file", str(script_dir / "Containerfile"),
+        *tool_build_args(config), *nested_podman_build_args(config, identity),
     ]
-    if no_cache:
-        args.append("--no-cache")
-    args.append(str(script_dir))
-    rc = subprocess.call(args)
+
+
+def build_image(script_dir: Path, refresh: bool, no_cache: bool,
+                identity: HostIdentity | None = None,
+                config: Config | None = None) -> int:
+    ensure_state_dirs()
+    identity = identity or detect_host_identity()
+    config = effective_config(runtime_config_base()) if config is None else config
+    with image_build.lock(BUILD_STATE):
+        ensure_refresh_token()
+        if refresh:
+            now = datetime.now(timezone.utc)
+            token = now.strftime("%Y%m%dT%H%M%S.") + f"{time.time_ns() % 1_000_000_000:09d}Z\n"
+            atomic_write_text(TOOLS_REFRESH_FILE, token)
+        arguments = image_build_arguments(config, identity)
+        with image_build.context(script_dir, BUILD_STATE, arguments) as (directory, fingerprint, iidfile):
+            rc, _ = image_build.build(IMAGE, directory, fingerprint, iidfile, arguments, no_cache)
     if rc == 0 and config.box.k3s.enabled and not inside_box():
-        # The sidecar's image is not part of this one; fetched here so the
-        # first launch does not stall on it.
         k3s.pull(config.box.k3s)
     return rc
+
+
+def ensure_workspace_image(script_dir: Path, config: Config) -> str:
+    """Recheck under the build lock; return an ID immune to later tag changes."""
+    with image_build.lock(BUILD_STATE):
+        ensure_refresh_token()
+        arguments = image_build_arguments(config, detect_host_identity())
+        with image_build.context(script_dir, BUILD_STATE, arguments) as (directory, fingerprint, iidfile):
+            current = image_build.current(IMAGE)
+            if current is not None and current[1] == fingerprint:
+                return current[0]
+            reason = "missing" if current is None else "older build inputs or no input label"
+            print(f"agent-box: workspace image {reason}; building with layer cache...", file=sys.stderr)
+            rc, identity = image_build.build(IMAGE, directory, fingerprint, iidfile, arguments, False)
+            if rc:
+                raise AgentBoxError("required workspace image build failed; previous image retained; "
+                                    "fix the build error and retry the launch or run agent-box build")
+            return identity
 
 
 def nested_podman_ranges(identity: HostIdentity) -> dict[str, list[tuple[int, int]]]:
@@ -2027,9 +2042,10 @@ def explicit_mounts_hash(mounts):
 
 def workspace_container_spec(
     workspace: Workspace, extra_mounts: list[MountSpec], script_dir: Path, config: Config,
-    kvm: bool = True,
+    kvm: bool = True, *, image: str = "",
 ) -> WorkspaceContainerSpec:
     """The immutable box definition; deliberately excludes per-exec secrets/policy."""
+    image = image or IMAGE
     runtime_state = workspace_runtime_state(workspace)
     lifetime = container_lifetime_args(
         workspace, extra_mounts, script_dir, config, mount_notifications=False, runtime_state=runtime_state, kvm=kvm,
@@ -2046,7 +2062,7 @@ def workspace_container_spec(
     base_structural = json.dumps({
         "schema": WORKSPACE_CONTAINER_SCHEMA,
         "workspace": str(workspace.host_root.resolve()),
-        "image": IMAGE,
+        "image": image,
         "args": base_lifetime,
     }, separators=(",", ":"), sort_keys=True).encode()
     base_config_hash = hashlib.sha256(base_structural).hexdigest()[:16]
@@ -2071,11 +2087,12 @@ def workspace_container_spec(
         browser_mounts=plan_mounts(extra_mounts),
         create_argv=[
             "podman", "create", "--name", name, "--rm", "--init", *labels, *lifetime,
-            IMAGE, "bash", str(KEEPER_PATH), str(workspace_lock_path(workspace)),
+            image, "bash", str(KEEPER_PATH), str(workspace_lock_path(workspace)),
         ],
         creation_config=config,
         runtime_state=runtime_state,
         policy_id=policy_id,
+        image=image,
         workspace_path=str(workspace.host_root.resolve()),
     )
 
@@ -3107,25 +3124,8 @@ def runtime_main(
         from .external_launch import selected_model
         selected_model(config, api_provider, agent, rest)
 
-    if existing is not None:
-        pass  # The live box keeps its image even if its tag was rebuilt or removed.
-    elif not image_exists():
-        print("agent-box: image not found; building it...", file=sys.stderr)
-        rc = build_image(script_dir, False, False, config=config)
-        if rc:
-            raise SystemExit(rc)
-    else:
-        # Reported, never acted on: a rebuild is slow, and choosing when to
-        # spend that time is the user's call, not a launch's.
-        missing, extra = image_tool_drift(config)
-        if missing:
-            warn(f"image lacks configured tool group(s): {', '.join(missing)}"
-                 f" -- run 'agent-box build'")
-        if extra:
-            warn(f"image still carries tool group(s) you turned off: {', '.join(extra)}"
-                 f" -- run 'agent-box build' to drop them")
-        for problem in nested_podman_drift(config):
-            warn(problem)
+    # Joining a running workspace never consults or replaces its image.
+    selected_image = existing.image if existing is not None else ensure_workspace_image(script_dir, config)
     if (config.box.network.mode != "default" or config.box.network.ports or config.box.network.host_ports
             or config.box.k3s.enabled and config.box.k3s.ports):
         for line in networking.summary(config.box.network, config.box.k3s):
@@ -3201,7 +3201,7 @@ def runtime_main(
             prepare_network(config)
             prepare_k3s(config, workspace, runtime_state)
             bundle = runtime_bundle.prepare(script_dir, STATE_ROOT / "runtime/launcher")
-            spec = workspace_container_spec(workspace, extra_mounts, bundle, config, options.kvm)
+            spec = workspace_container_spec(workspace, extra_mounts, bundle, config, options.kvm, image=selected_image)
         else:
             spec = existing
         invocation, process_env = invocation_env(config, agent)

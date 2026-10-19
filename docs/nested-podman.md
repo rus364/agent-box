@@ -1,8 +1,9 @@
 # Nested rootless Podman
 
 Enable **Workspace box → Image tools → Podman** in `agent-box config`
-(`box.tools.podman`, which a project may also set in `.agent-box.json`), then
-run `agent-box build`. The group is off by default. Changing it changes
+(`box.tools.podman`, which a project may also set in `.agent-box.json`).
+The next new workspace automatically builds the changed image with cache.
+The group is off by default. Changing it changes
 the workspace definition. Finish active work and run `agent-box stop` before
 launching a workspace with the new permissions.
 
