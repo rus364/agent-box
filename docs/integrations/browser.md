@@ -50,7 +50,8 @@ owned browser containers left by an interrupted supervisor.
 A file created only inside the workspace's writable layer or private `/tmp` is
 not automatically visible to the sibling. Put uploads in the project or an
 explicit shared mount. `--mount /path:ro` retains read-only access. The separate
-host `/tmp` convenience proposal does not change browser defaults. Additional
+host `/tmp` opt-in (`box.host_tmp` / `--host-tmp`) also shares host `/tmp`;
+it is disabled by default. Additional
 paths are not inferred from symlinks or copied from credential mounts. MCP file
 operations may use the selected binds outside the client cwd; the container
 mount set and read-only flags enforce host file access, rather than MCP roots.

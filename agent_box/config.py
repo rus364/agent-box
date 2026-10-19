@@ -1236,12 +1236,16 @@ class BoxConfig:
     #: works with either server. Structural, because a bind mount is part of
     #: the box.
     audio: bool = False
+    #: Off by default: exposes the whole host /tmp, including accessible
+    #: files and Unix sockets, to workspace and browser/k3s containers.
+    #: Structural for a workspace; native host sessions use it for browsing.
+    host_tmp: bool = False
     links: LinksConfig = field(default_factory=LinksConfig)
     env: EnvConfig = field(default_factory=EnvConfig)
 
     def to_dict(self) -> dict[str, Any]:
         return {"tools": self.tools.to_dict(), "browser": self.browser.to_dict(), "k3s": self.k3s.to_dict(), "network": self.network.to_dict(), "podman": self.podman.to_dict(),
-                "audio": self.audio, "links": self.links.to_dict(), "env": self.env.to_dict()}
+                "audio": self.audio, "host_tmp": self.host_tmp, "links": self.links.to_dict(), "env": self.env.to_dict()}
 
     @classmethod
     def from_dict(cls, data: Any) -> "BoxConfig":
@@ -1251,7 +1255,7 @@ class BoxConfig:
                    k3s=K3sConfig.from_dict(data.get("k3s")),
                    network=NetworkConfig.from_dict(data.get("network")),
                    podman=PodmanConfig.from_dict(data.get("podman")), audio=_bool(data, "audio", False), links=LinksConfig.from_dict(data.get("links")),
-                   env=EnvConfig.from_dict(data.get("env")))
+                   host_tmp=_bool(data, "host_tmp", False), env=EnvConfig.from_dict(data.get("env")))
 
     def validate(self) -> list[str]:
         return self.k3s.validate() + self.links.validate() + networking.problems(self.network, self.k3s)
@@ -1440,6 +1444,7 @@ def apply_box_policy(config, policy):
     config.box.network = shared.box.network
     config.box.podman = shared.box.podman
     config.box.audio = shared.box.audio
+    config.box.host_tmp = shared.box.host_tmp
     config.box.links = shared.box.links
     config.credentials.git = shared.credentials.git
     config.credentials.github.config = shared.credentials.github.config

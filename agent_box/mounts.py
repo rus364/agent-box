@@ -17,7 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from .paths import expand_user
+from .paths import HOST_TMP_DIR, expand_user
 
 
 class MountError(ValueError):
@@ -70,6 +70,11 @@ def parse_mount_arg(raw: str) -> MountSpec:
 
 def _is_within(inner: Path, outer: Path) -> bool:
     return inner == outer or outer in inner.parents
+
+
+def host_tmp_mounts(enabled: bool) -> list[MountSpec]:
+    """Use the explicit-mount rules without consulting caller-controlled TMPDIR."""
+    return [parse_mount_arg(str(HOST_TMP_DIR))] if enabled else []
 
 
 def plan_mounts(specs: list[MountSpec]) -> list[MountSpec]:

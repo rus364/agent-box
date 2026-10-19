@@ -131,7 +131,8 @@ PACKAGE_ROOT = Path(__file__).resolve().parent
 HOST_LAUNCHER = PACKAGE_ROOT / "__main__.py"
 CONTAINER_LAUNCHER = Path("/usr/local/bin/agent-box")
 # Unix sockets need a short path; ignore caller-controlled TMPDIR.
-SESSION_TEMP_ROOT = Path("/tmp")
+HOST_TMP_DIR = Path("/tmp")
+SESSION_TEMP_ROOT = HOST_TMP_DIR
 
 BUILD_STATE = STATE_ROOT / "build"
 TOOLS_REFRESH_FILE = BUILD_STATE / "tools-refresh"

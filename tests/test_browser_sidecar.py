@@ -144,16 +144,18 @@ class HostBrowserTests(IsolatedRuntimeTest):
             with self.subTest(agent=agent):
                 cfg = config.Config()
                 cfg.box.browser.enabled = True
+                cfg.box.host_tmp = True
                 command = ['python3', '/immutable/agent_box/__main__.py', '_browser', 'run', '[]']
                 with patch.object(runtime, 'launch_config', return_value=cfg), \
                      patch.object(runtime, 'resolved_workspace', return_value=Workspace(self.root, self.root)), \
                      patch.object(runtime.shutil, 'which', return_value='/bin/'+agent), \
                      patch.object(runtime, 'HOST_SESSIONS_ROOT', self.root/'sessions'), \
-                     patch.object(browser, 'prepare', return_value=command), \
+                     patch.object(browser, 'prepare', return_value=command) as prepare, \
                      patch.object(runtime, 'tmux_enabled', return_value=False), \
                      patch.object(runtime, 'browser_claude_args', wraps=runtime.browser_claude_args), \
                      patch.object(runtime.subprocess, 'call', return_value=0) as call:
                     runtime.host_main(agent, ['sample prompt'])
+                self.assertTrue(prepare.call_args.kwargs['host_tmp'])
                 argv = call.call_args.args[0]
                 if agent == 'codex':
                     self.assertIn('mcp_servers.agent_box_browser=', ' '.join(argv))

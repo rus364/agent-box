@@ -133,6 +133,39 @@ agent-box --mount /mnt/data/specs:ro --mount /srv/generated codex
 Mounts keep their host absolute paths inside the container and are read-write
 unless you append `:ro`.
 
+To share the whole host `/tmp` read-write at `/tmp` in workspace containers
+and their browser/k3s sidecars, enable **Workspace box > Share host /tmp**
+in `agent-box config`, or select it for one launch:
+
+```bash
+agent-box --host-tmp codex
+agent-box --no-host-tmp claude
+agent-box --host --host-tmp codex   # also shares /tmp with this session's browser
+```
+
+`box.host_tmp` is off by default and is host policy: a repository cannot
+enable it. It never enables browsing or k3s. A running workspace keeps its
+creation choice, including for later browser sessions; conflicting explicit
+flags require `agent-box stop` and a new launch. Saved changes apply to new
+boxes. Host-mode browsers use their own session choice. A changed k3s
+sidecar is recreated on its retained data volume. Kubernetes pods, arbitrary
+nested containers, image builds and diagnostic probes get no automatic bind.
+
+This exposes unrelated accessible files and Unix sockets, with their existing
+permissions. The `/tmp` sticky bit restricts deleting other users' entries;
+it does not prevent reading permitted files or connecting to permitted sockets.
+agent-box never cleans host `/tmp`, changes its permissions or changes file
+ownership. Workspace/browser user mappings preserve host-user ownership;
+the privileged k3s sidecar has a different UID mapping, so its non-root
+processes may have different permissions and create subordinate-owned files.
+Use a dedicated directory with `--mount /path` when narrower access is enough.
+
+Existing `--mount /tmp:rw` and `--mount /tmp:ro` remain available for explicit
+workspace/browser mounts. Combining `--host-tmp` with a read-only `/tmp`
+mount or read-only child is an error; identical read-write requests collapse
+to one bind. `--no-host-tmp` disables the convenience setting, leaving any
+explicit mounts in effect.
+
 ## Extra environment variables
 
 ```bash

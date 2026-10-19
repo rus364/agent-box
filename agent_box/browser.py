@@ -15,7 +15,7 @@ import uuid
 
 from . import host_podman, runtime_bundle
 from .errors import AgentBoxError
-from .mounts import MountSpec, plan_mounts
+from .mounts import MountSpec, host_tmp_mounts, plan_mounts
 from .paths import PACKAGE_ROOT, STATE_ROOT
 
 
@@ -36,8 +36,8 @@ def ensure_image():
         raise AgentBoxError("browser image download failed; retry online or launch with --no-browser")
 
 
-def container_command(directory, project, cwd, mounts, *, container="", workspace=""):
-    """Only project/explicit mounts cross this boundary, never agent credentials."""
+def container_command(directory, project, cwd, mounts, *, container="", workspace="", host_tmp=False):
+    """Host /tmp crosses this boundary only through the independent opt-in."""
     name = "agent-box-browser-" + uuid.uuid4().hex[:20]
     argv = ["podman", "run", "--rm", "-i", "--pull=never", "--name", name,
             "--label", f"{LABEL}=true", "--label", f"io.agent-box.browser.workspace={workspace}",
@@ -46,7 +46,7 @@ def container_command(directory, project, cwd, mounts, *, container="", workspac
             "--userns=keep-id:uid=1000,gid=1000", "--user=1000:1000",
             "--cap-drop=all", "--security-opt=no-new-privileges", "--shm-size=256m",
             "--workdir", str(cwd)]
-    selected = plan_mounts([MountSpec(Path(project), False, "project"), *mounts,
+    selected = plan_mounts([MountSpec(Path(project), False, "project"), *mounts, *host_tmp_mounts(host_tmp),
                             MountSpec(Path(directory) / "output", False, "browser output")])
     for mount in selected:
         if "," in str(mount.path):
@@ -138,13 +138,13 @@ def serve(directory, argv, owner):
         (directory / "mcp.sock").unlink(missing_ok=True)
 
 
-def prepare(directory, project, cwd, mounts=(), *, container="", workspace="", session=""):
+def prepare(directory, project, cwd, mounts=(), *, container="", workspace="", session="", host_tmp=False):
     """Prepare one invocation; host stdio naturally follows the agent/tmux lifetime."""
     ensure_image()
     directory = Path(directory)
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     (directory / "output").mkdir(mode=0o700, exist_ok=True)
-    argv = container_command(directory, project, cwd, list(mounts), container=container, workspace=workspace)
+    argv = container_command(directory, project, cwd, list(mounts), container=container, workspace=workspace, host_tmp=host_tmp)
     bundle = runtime_bundle.prepare(PACKAGE_ROOT, STATE_ROOT / "runtime/browser-launcher")
     launcher = [sys.executable, "-m", "agent_box.browser"]
     if not container:

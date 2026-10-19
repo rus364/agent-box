@@ -113,6 +113,7 @@ HELP = {
     "box.podman": "Where nested Podman's images, build cache, containers and volumes live: the host Podman volume agent-box-podman-<workspace id>. The tool group itself is under Image tools.",
     "box.podman.persistent_data": "Keep the volume after the box is gone, so pulls and build cache survive between sessions. Off deletes it whenever the box goes away, so each box starts empty. `agent-box stop --podman-data` deletes it on demand.",
     "box.audio": "Mount the host PulseAudio/PipeWire socket so agents can use the microphone and speakers, e.g. Claude Code /voice. Everything in the box gets both. Changing it recreates the box.",
+    "box.host_tmp": "Share the whole host /tmp read-write at /tmp in workspace, browser (also --host) and k3s sidecar containers. Off by default; no integration is enabled by this switch. Exposes accessible unrelated files and Unix sockets; sticky bits restrict deletion, not reading or socket access. Permissions stay unchanged; k3s uses a different UID mapping. Stop/relaunch a workspace to change its mounts; host browsers use their session choice. Host files are never cleaned up. Conflicting read-only mounts are refused.",
     "box.links": "Web links and temporary localhost callback routes from the box to your workstation. Separate from the agent's Playwright browser.",
     "box.links.enabled": "Expose a host URL broker to the shared box, with temporary loopback forwarding for CLI login callbacks. Off by default; changing it recreates the box. Remote workstations also need the displayed SSH/Coder tunnel.",
     "box.links.open_browser": "Open links with the host's desktop browser after preparing callback forwarding. Off by default. SSH, Coder and headless launches always display instructions instead.",
@@ -166,6 +167,7 @@ ACTION_HELP = {
 LABELS = {
     "agents": "Agents", "box": "Workspace box", "credentials": "Credentials", "host": "Host",
     "language": "Working language",
+    "host_tmp": "Share host /tmp",
     "default": "Default agent", "statusline": "Status line",
     "claude": "Claude", "codex": "Codex", "github": "GitHub", "git": "Git",
     "claude_usage": "Claude usage", "codex_usage": "Codex usage", "custom_usage": "Custom usage",
@@ -292,7 +294,7 @@ MENU_GROUPS = {
     ("box",): (
         ("Image", ("tools",)),
         ("Workspace resources", ("network", "browser", "k3s", "podman")),
-        ("Inside the box", ("audio", "links", "env")),
+        ("Inside the box", ("host_tmp", "audio", "links", "env")),
     ),
     ("credentials",): (
         ("", ("git", "github", "registries", "kubernetes", "cloud")),

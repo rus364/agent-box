@@ -28,6 +28,7 @@ from .atomicio import atomic_write_text
 from .config import K3sConfig
 from .errors import AgentBoxError
 from .host_podman import WORKSPACE_PATH_LABEL
+from .mounts import host_tmp_mounts
 from . import networking
 
 IMAGE = "docker.io/rancher/k3s"
@@ -125,7 +126,7 @@ def manifests_dir(k3s: K3sConfig, project_root: Path) -> Path | None:
     return path
 
 
-def container_args(workspace_id: str, k3s: K3sConfig, state_dir: Path, project_root: Path) -> list[str]:
+def container_args(workspace_id: str, k3s: K3sConfig, state_dir: Path, project_root: Path, *, host_tmp=False) -> list[str]:
     """Everything that defines the sidecar; its hash decides recreation."""
     resource = name(workspace_id)
     manifests = manifests_dir(k3s, project_root)
@@ -135,6 +136,7 @@ def container_args(workspace_id: str, k3s: K3sConfig, state_dir: Path, project_r
     return [
         f"--hostname={resource}", f"--network={resource}",
         "--privileged", "--cgroupns=private", "--tmpfs=/run", "--tmpfs=/var/run",
+        *[f"--mount=type=bind,src={mount.path},dst={mount.path}" for mount in host_tmp_mounts(host_tmp)],
         *([f"--cpus={k3s.cpus}"] if k3s.cpus else []),
         *([f"--memory={k3s.memory}"] if k3s.memory else []),
         f"--mount=type=volume,source={resource},target={DATA_DIR}",
@@ -148,9 +150,9 @@ def container_args(workspace_id: str, k3s: K3sConfig, state_dir: Path, project_r
     ]
 
 
-def spec_hash(workspace_id: str, k3s: K3sConfig, state_dir: Path, project_root: Path) -> str:
+def spec_hash(workspace_id: str, k3s: K3sConfig, state_dir: Path, project_root: Path, *, host_tmp=False) -> str:
     """Covers the mounted registries.yaml's content, not only its path."""
-    text = json.dumps([container_args(workspace_id, k3s, state_dir, project_root), registries_yaml(k3s)],
+    text = json.dumps([container_args(workspace_id, k3s, state_dir, project_root, host_tmp=host_tmp), registries_yaml(k3s)],
                       separators=(",", ":"))
     return hashlib.sha256(text.encode()).hexdigest()[:16]
 
@@ -265,14 +267,14 @@ def _log_tail(workspace_id: str) -> str:
     return "\n".join(line[:300] for line in lines[-15:]) or "(no log output)"
 
 
-def is_outdated(workspace_id: str, k3s: K3sConfig, state_dir: Path, project_root: Path) -> bool:
+def is_outdated(workspace_id: str, k3s: K3sConfig, state_dir: Path, project_root: Path, *, host_tmp=False) -> bool:
     """Whether an existing sidecar was created from different settings."""
     container = inspect(workspace_id)
     labels = (container or {}).get("Config", {}).get("Labels") or {}
-    return container is not None and labels.get(SPEC_LABEL) != spec_hash(workspace_id, k3s, state_dir, project_root)
+    return container is not None and labels.get(SPEC_LABEL) != spec_hash(workspace_id, k3s, state_dir, project_root, host_tmp=host_tmp)
 
 
-def ensure(workspace_id: str, k3s: K3sConfig, state_dir: Path, project_root: Path) -> int:
+def ensure(workspace_id: str, k3s: K3sConfig, state_dir: Path, project_root: Path, *, host_tmp=False) -> int:
     """Bring the workspace's cluster up and ready; return its host API port.
 
     A container whose definition changed (version, components, limits,
@@ -284,7 +286,7 @@ def ensure(workspace_id: str, k3s: K3sConfig, state_dir: Path, project_root: Pat
     if problems:
         raise AgentBoxError("; ".join(problems))
     resource = name(workspace_id)
-    wanted = spec_hash(workspace_id, k3s, state_dir, project_root)
+    wanted = spec_hash(workspace_id, k3s, state_dir, project_root, host_tmp=host_tmp)
     container = inspect(workspace_id)
     labels = (container or {}).get("Config", {}).get("Labels") or {}
     if container is not None and labels.get(SPEC_LABEL) != wanted:
@@ -304,7 +306,7 @@ def ensure(workspace_id: str, k3s: K3sConfig, state_dir: Path, project_root: Pat
         if registries:
             atomic_write_text(state_dir / REGISTRIES_FILE, registries, 0o644)
         _checked("create", f"--name={resource}", f"--label={LABEL}={workspace_id}", path_label,
-                 f"--label={SPEC_LABEL}={wanted}", *container_args(workspace_id, k3s, state_dir, project_root))
+                 f"--label={SPEC_LABEL}={wanted}", *container_args(workspace_id, k3s, state_dir, project_root, host_tmp=host_tmp))
     if not _running(container):
         _say(f"starting the k3s cluster {resource}")
         _checked("start", resource)
