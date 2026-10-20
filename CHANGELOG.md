@@ -2,6 +2,11 @@
 
 ## Unreleased — next major version
 
+- Add separate off-by-default personal Chrome/Chromium access through the official
+  Playwright extension and the existing pinned container runtime. Configure
+  **Host → Personal browser** or use `--[no-]personal-browser` for one session.
+  Browser consent remains required; profiles and cookies are never copied.
+
 - Reconcile workspace images automatically before new launches using a fingerprint
   of build inputs. Builds retain layer cache, serialize with explicit build commands
   and preserve the previous image on failure. Running workspaces remain unchanged.

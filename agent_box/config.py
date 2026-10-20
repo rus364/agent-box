@@ -1299,21 +1299,40 @@ class CredentialsConfig:
 
 
 @dataclass
+class PersonalBrowserConfig:
+    """Host-owned desktop access; projects and isolated browsing cannot enable it."""
+
+    enabled: bool = False
+    browser: str = "auto"
+    profile: str = ""
+
+    def to_dict(self):
+        return {"enabled": self.enabled, "browser": self.browser, "profile": self.profile}
+
+    @classmethod
+    def from_dict(cls, data):
+        return cls(_bool(data, "enabled", False), (_str(data, "browser") or "auto"), _str(data, "profile"))
+
+
+@dataclass
 class HostConfig:
-    """What agent-box itself does on the host: notifications and skill links."""
+    """Host-owned notifications, desktop browser access and skill links."""
 
     notifications: NotificationsConfig = field(default_factory=NotificationsConfig)
     #: Link the shared skills into Claude's skill directory, so host Claude
     #: sessions see them as well.
     claude_skill_links: bool = True
+    personal_browser: PersonalBrowserConfig = field(default_factory=PersonalBrowserConfig)
     def to_dict(self) -> dict[str, Any]:
         return {"notifications": self.notifications.to_dict(),
+                "personal_browser": self.personal_browser.to_dict(),
                 "claude_skill_links": self.claude_skill_links}
 
     @classmethod
     def from_dict(cls, data: Any) -> "HostConfig":
         data = _mapping(data)
         return cls(notifications=NotificationsConfig.from_dict(data.get("notifications")),
+                   personal_browser=PersonalBrowserConfig.from_dict(data.get("personal_browser")),
                    claude_skill_links=_bool(data, "claude_skill_links", True))
 
 

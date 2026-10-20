@@ -69,7 +69,7 @@ class ConfigMenuTests(unittest.TestCase):
             ('agents', 'codex'): ['native_agent_wait', 'remote_control'],
             ('box',): ['tools', 'network', 'browser', 'k3s', 'podman', 'host_tmp', 'audio', 'links', 'env'],
             ('credentials',): ['git', 'github', 'registries', 'kubernetes', 'cloud'],
-            ('host',): ['notifications', 'claude_skill_links'],
+            ('host',): ['notifications', 'personal_browser', 'claude_skill_links'],
             ('workflow',): ['enabled', 'merge_mode', 'auto_push', 'pause_push', 'cleanup_local_branches',
                            'cleanup_remote_branches', 'language', 'use_tiers', 'worker', 'scout', 'review', 'sync', 'timeout_seconds'],
             ('workflow', 'worker'): ['models', 'tiers'],

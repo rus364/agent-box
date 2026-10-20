@@ -32,6 +32,7 @@ from pathlib import Path
 import tomllib
 import urllib.parse
 
+from . import personal_browser
 from . import channel as channel_module
 from . import claude_settings
 from . import notify as notify_module
@@ -1292,7 +1293,7 @@ def browser_mcp_args(session_dir: Path) -> list[str]:
     return ["python3", str(session_dir / "client.py"), str(session_dir / "mcp.sock")]
 
 
-def browser_codex_overrides(session_dir: Path | None, server_command: list[str] | None = None) -> list[str]:
+def browser_codex_overrides(session_dir: Path | None, server_command: list[str] | None = None, *, server_name=BROWSER_MCP_SERVER_NAME) -> list[str]:
     """``-c`` overrides registering the browser MCP for one Codex launch.
 
     An inline TOML table under ``mcp_servers.<name>``, which Codex merges into
@@ -1309,10 +1310,10 @@ def browser_codex_overrides(session_dir: Path | None, server_command: list[str] 
         f"command={toml_string(command)}, "
         f"args=[{', '.join(toml_string(arg) for arg in args)}]"
     )
-    return [f"mcp_servers.{BROWSER_MCP_SERVER_NAME}={{{table}}}"]
+    return [f"mcp_servers.{server_name}={{{table}}}"]
 
 
-def browser_claude_args(session_dir: Path | None, server_command: list[str] | None = None) -> list[str]:
+def browser_claude_args(session_dir: Path | None, server_command: list[str] | None = None, *, server_name=BROWSER_MCP_SERVER_NAME) -> list[str]:
     """``--mcp-config`` for one Claude launch, after writing the file.
 
     Claude Code has no ``-c``-style inline override, but ``--mcp-config``
@@ -1330,7 +1331,7 @@ def browser_claude_args(session_dir: Path | None, server_command: list[str] | No
     command, *args = server_command or browser_mcp_args(session_dir)
     config_path = session_dir / "mcp.json"
     atomic_write_json(config_path, {
-        "mcpServers": {BROWSER_MCP_SERVER_NAME: {"command": command, "args": args}},
+        "mcpServers": {server_name: {"command": command, "args": args}},
     })
     return ["--mcp-config", str(config_path)]
 
@@ -3163,6 +3164,18 @@ def runtime_main(
         except (AgentBoxError, OSError) as exc:
             warn(f"browser unavailable: {exc}; starting without it")
             browser_dir = None
+    personal_dir = None
+    if config.host.personal_browser.enabled and agent in {"claude", "codex"}:
+        try:
+            desktop = personal_browser.command(config.host.personal_browser)
+            personal_dir = browser_session_root(runtime_state) / browser_session_id(agent)
+            inherited = existing.browser_mounts if existing is not None else extra_mounts
+            browser.prepare(personal_dir, workspace.host_root, workspace.cwd, inherited,
+                            container=workspace_container_name(workspace), workspace=workspace_identity(workspace),
+                            session=session.name if session else "", desktop=desktop)
+        except (AgentBoxError, OSError) as exc:
+            warn(f"personal browser unavailable: {exc}")
+            personal_dir = None
     channel, extra_env = claude_channel_args(agent, config, workspace, rest, session)
     if getattr(config, "_launch", {}).get("notify") is False:
         extra_env += [f"{notify_module.NOTIFY_OFF_ENV}=1"]
@@ -3196,12 +3209,15 @@ def runtime_main(
             if is_claude_session_invocation(rest):
                 command = [
                     "claude", "--dangerously-skip-permissions",
-                    *claude_session_args(rest, channel, browser_claude_args(browser_dir)),
+                    *claude_session_args(rest, channel, [*browser_claude_args(browser_dir),
+                        *browser_claude_args(personal_dir, server_name=personal_browser.SERVER)]),
                 ]
             else:
                 command = ["claude", *rest]
         else:
             command = codex_command(rest, config, browser_dir)
+            command[1:1] = [arg for override in browser_codex_overrides(
+                personal_dir, server_name=personal_browser.SERVER) for arg in ("-c", override)]
         if api_provider:
             command = external_command(command, agent, api_provider, container=True)
         elif remote_control_invocation(agent, rest):
@@ -3574,7 +3590,7 @@ def host_main(
     *, api_provider: str = "",
 ) -> int:
     """``agent-box --host [claude|codex]``: run the installed host executable
-    directly. The optional isolated browser alone uses Podman.
+    directly. The optional browser integrations use Podman.
 
     Workflow policy is read from the same global configuration as container mode.
     No agent means the default agent, resolved as in container mode.
@@ -3621,10 +3637,25 @@ def host_main(
         except (AgentBoxError, OSError) as exc:
             warn(f"browser unavailable: {exc}; starting without it")
             browser_dir = None
+    personal_dir = None
+    personal_command = None
+    if config.host.personal_browser.enabled and not any(arg in {"--version", "-V", "--help", "-h"} for arg in rest):
+        try:
+            desktop = personal_browser.command(config.host.personal_browser)
+            personal_dir = HOST_SESSIONS_ROOT / workspace_identity(workspace) / "browser" / uuid.uuid4().hex
+            personal_command = browser.prepare(personal_dir, workspace.host_root, workspace.cwd,
+                                               workspace=workspace_identity(workspace), desktop=desktop)
+            record_workspace_path(workspace_identity(workspace), str(workspace.host_root.resolve()))
+        except (AgentBoxError, OSError) as exc:
+            warn(f"personal browser unavailable: {exc}")
+            personal_dir = None
     workflow_overrides = codex_workflow_overrides(rest, config) if agent == "codex" else []
     if agent == "codex":
         workflow_overrides += browser_codex_overrides(browser_dir, browser_command)
+        workflow_overrides += browser_codex_overrides(personal_dir, personal_command, server_name=personal_browser.SERVER)
     browser_args = browser_claude_args(browser_dir, browser_command) if agent == "claude" and is_claude_session_invocation(rest) else []
+    if agent == "claude" and is_claude_session_invocation(rest):
+        browser_args += browser_claude_args(personal_dir, personal_command, server_name=personal_browser.SERVER)
     agent_args = claude_session_args(rest, [], browser_args) if agent == "claude" else rest
     command = [executable, *(arg for override in workflow_overrides for arg in ("-c", override)), *agent_args]
     if api_provider:

@@ -16,6 +16,7 @@ from .external_config import API_EFFORTS, EFFORTS, ExternalProvider, cli_models,
 from .model_catalog import load_model_catalogs
 
 CHOICES = {
+    "host.personal_browser.browser": ("auto", "chrome", "chromium"),
     "box.network.mode": ("default", "host"),
     "agents.default": LAUNCH_AGENTS,
     "tracker.provider": ("", *TRACKER_PROVIDERS),
@@ -35,7 +36,7 @@ HELP = {
     "agents": "Which agent starts, how Claude and Codex run, and which provider APIs and host variables they may use.",
     "box": "What the workspace box is built with, the k3s cluster and nested Podman storage beside it, sound, and its environment.",
     "credentials": "Host identity and credentials the box's own tools may use. Everything that exposes a credential is off by default.",
-    "host": "What agent-box does on the host itself: notifications and Claude skill links. Global only.",
+    "host": "Host-owned notifications, personal desktop browser access and Claude skill links. Global only.",
     "workflow.language": ("Working language of project text, such as English or Deutsch: tracker tasks and comments, pull requests and "
                  "review replies, commit messages, code comments and documentation. Conversation with you stays in your "
                  "language; agent handoffs and agent-box output stay English. Empty keeps each text's current rule. "
@@ -83,6 +84,10 @@ HELP = {
     "box.env": "Additional per-launch environment policy. Forward secrets by variable name; literal values are stored in config and exposed in process arguments.",
     "box.env.forward": "JSON list of host variable names to forward without putting their values in process arguments. Use this form for secrets.",
     "box.env.set": "JSON object of literal environment values. These values are stored in config and appear in Podman arguments, so do not put secrets here.",
+    "host.personal_browser": "Personal Chrome/Chromium through the official Playwright extension. Off by default; --[no-]personal-browser overrides this for one session. Local Linux desktop and rootless Podman required. Browser-wide access to signed-in sessions requires browser consent; isolated browsing is separate.",
+    "host.personal_browser.enabled": "Register a separate personal-browser MCP server for Claude/Codex. Install the official Playwright extension in the chosen profile; it asks for consent when first used. Use its status page to disconnect. No profile copying or approval-bypass token.",
+    "host.personal_browser.browser": "Choose the installed desktop browser. Auto prefers Google Chrome, then Chromium. Snap/Flatpak and remote/headless desktops are unsupported.",
+    "host.personal_browser.profile": "Optional profile directory name, e.g. Default or Profile 2 (from Profile Path at chrome://version). Empty uses the browser's last-used profile. No profile files are read or mounted.",
     "host.claude_skill_links": "Link agent-box's managed shared skills into Claude's skill directory when applying configuration.",
     "box.tools": "Tool groups baked into the workspace image. Each group changes box identity and may make the image larger; a changed selection takes effect after the image is rebuilt.",
     "box.k3s": "Per-project k3s cluster in a sidecar container of the host's rootless Podman; the box gets kubectl access, never extra privileges. Not in the image and not available in --host mode.",
@@ -171,7 +176,7 @@ LABELS = {
     "default": "Default agent", "statusline": "Status line",
     "claude": "Claude", "codex": "Codex", "github": "GitHub", "git": "Git",
     "claude_usage": "Claude usage", "codex_usage": "Codex usage", "custom_usage": "Custom usage",
-    "command": "Custom command", "k3s": "k3s cluster", "links": "Web links", "claude_skill_links": "Claude skill links",
+    "command": "Custom command", "k3s": "k3s cluster", "links": "Web links", "claude_skill_links": "Claude skill links", "personal_browser": "Personal browser",
     "env": "Environment", "host_env": "Provider environment", "tools": "Image tools",
     "registries": "Container registries", "hosts": "Registry hosts", "helm_repositories": "Helm repositories",
     "url": "URL", "token": "Access token", "effort": "Reasoning effort",
@@ -199,6 +204,11 @@ PATH_LABELS = {
 #: help stays behind "?". One shared paragraph for every value made the reader map the
 #: prose back to the row themselves.
 OPTION_HELP = {
+    "host.personal_browser.browser": {
+        "auto": "Use installed Google Chrome, otherwise Chromium; never fall back to another browser after a connection failure.",
+        "chrome": "Use the native Google Chrome installation and its selected profile.",
+        "chromium": "Use the native Chromium installation and its selected profile.",
+    },
     "box.network.mode": {"default": "Separate network namespace using the ordinary rootless backend.",
                          "host": "Share host localhost and ports; all workspace processes gain host network access."},
     "agents.default": {
@@ -300,7 +310,7 @@ MENU_GROUPS = {
         ("", ("git", "github", "registries", "kubernetes", "cloud")),
     ),
     ("host",): (
-        ("", ("notifications", "claude_skill_links")),
+        ("", ("notifications", "personal_browser", "claude_skill_links")),
     ),
     ("workflow",): (
         ("Workflow", ("enabled",)),

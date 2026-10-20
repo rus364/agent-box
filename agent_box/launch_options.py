@@ -70,6 +70,7 @@ OPTIONS = (
     Option("links", ACCESS, "Host web-link broker and temporary localhost callback forwarding", form="pair", container=True),
     Option("host-tmp", ACCESS, "Share host /tmp read-write with workspace and browser/k3s sidecars", form="pair"),
     Option("api-keys", ACCESS, "Provider API key variables", form="pair", container=True),
+    Option("personal-browser", ACCESS, "Connect to the desktop browser through its Playwright extension", form="pair"),
     Option("browser", ACCESS, "Do not start the agent browser MCP server", form="negated"),
     Option("remote-control", ACCESS, "Remote control; the --no- form also keeps Claude off Telegram", form="pair"),
     Option("notify", ACCESS, "Telegram notifications; turning them on needs them set up in agent-box config",
@@ -244,6 +245,8 @@ def apply(config, overrides):
             config.box.host_tmp = value
         elif key == "api-keys":
             config.agents.host_env.api_keys = value
+        elif key == "personal-browser":
+            config.host.personal_browser.enabled = value
         elif key == "browser":
             config.box.browser.off = True
         elif key == "remote-control":

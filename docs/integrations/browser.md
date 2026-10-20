@@ -70,7 +70,7 @@ browser profile is mounted by default. An explicitly broader extra mount grants
 the access its path and mode describe.
 
 This feature does **not** attach to the user's authenticated desktop browser.
-That is separate work with a separate opt-in. In particular, the Playwright
+Use the separate opt-in described under Personal desktop browser below. In particular, the Playwright
 extension's tab chooser is not a one-tab permission boundary: its consent grants
 browser-wide access. Isolated browsing never enables that extension or consent.
 
@@ -122,3 +122,57 @@ The browser no longer belongs to the workspace image tool list. New images omit
 `playwright-mcp`, Chromium and the old browser smoke command; scripts that called
 those inside the workspace must use the MCP capability or install their own
 project tooling. Existing built images are not modified in place.
+
+## Personal desktop browser
+
+**Host → Personal browser → Enabled** adds `agent_box_personal_browser` alongside
+any isolated browser. It is off by default and cannot be enabled by project
+configuration. Like other integration switches, `--personal-browser` and
+`--no-personal-browser` override the saved checkbox for one launch:
+
+```bash
+agent-box --personal-browser codex
+agent-box --host --personal-browser claude
+agent-box --no-personal-browser codex
+```
+
+Choose Chrome or Chromium in the same menu (Auto prefers Chrome). Install the
+[official Playwright extension](https://chromewebstore.google.com/detail/playwright-extension/mmlmfjhmonkocbjadbfplnigmagldckm)
+in the intended profile. Optional **Profile** is its directory name, such as
+`Default` or `Profile 2`, shown at `chrome://version` under Profile Path. Empty
+uses the browser's last-used profile. No profile is copied or mounted.
+
+The first browser tool opens the extension's consent page in that browser.
+Approve there and select the tab. This grants access to signed-in browser state;
+tab groups are a convenience, not a per-tab security boundary. Use the extension
+icon/status page to see connections and Disconnect a client. Agent-box never
+configures the extension's approval-bypass token. If you configured a token
+elsewhere, regenerate it in the extension and restart the browser to revoke it.
+
+The existing pinned Playwright container supplies the MCP runtime. For personal
+access its extension relay uses host loopback in both launch modes, because the
+desktop browser runs on the host. A private host-owned opener carries only the
+official extension connection URL; it cannot execute workspace commands or open
+arbitrary URLs. The transient URL is passed to the browser normally, as in the
+upstream extension flow, but is not saved in config or logged by agent-box.
+Processes with access to your desktop account are not isolated from one another.
+The workspace receives only its per-session MCP Unix socket, never the opener
+socket, a browser profile or Podman control.
+
+Each MCP process has its own relay and extension connection. A tab can belong
+to one extension client at a time; other sessions should select other tabs.
+Exiting the MCP process stops its container/relay, while tmux detach keeps the
+session alive. Disconnect or a browser restart interrupts browser operations. The next tool
+request can open a fresh consent page; it waits for approval before proceeding.
+Exit/stop the agent session to prevent further connection requests.
+Turning the checkbox off applies to future launches; disconnect existing clients
+or stop their sessions to end current access. User tabs, profiles and installed
+extensions are preserved.
+
+Initial support is a native Chrome/Chromium installation on a local Linux
+graphical desktop with local rootless Podman. SSH/Coder, nested/headless sessions,
+Snap/Flatpak browsers and policies that prevent extension/debugger access are
+unsupported. There is no fallback to another profile or remote debugging mode.
+If the consent page cannot load, check the selected browser/profile and extension
+installation; if policy blocks it, use isolated browsing. No host Node.js or
+Playwright installation, manual MCP JSON, debug port or token is required.
