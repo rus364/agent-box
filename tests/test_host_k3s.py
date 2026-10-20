@@ -153,6 +153,43 @@ class SharedPolicyTests(K3sRuntimeTest):
         k3s.stop.assert_not_called()
         self.assertEqual(k3s.ensure.call_count, 1)
 
+    def test_unsupported_stop_preserves_live_owners_without_signaling_them(self):
+        """Changing Podman endpoint must fail before ending local consumers or marking stop."""
+        self.reserve()
+        original = (self.root / host_k3s.FILE).read_bytes()
+        with mock.patch.object(host_k3s, "local_podman", side_effect=AgentBoxError("unsupported endpoint")), \
+             mock.patch.object(signal, "pidfd_send_signal") as send, \
+             self.assertRaisesRegex(AgentBoxError, "unsupported endpoint"):
+            host_k3s.stop(self.root)
+        send.assert_not_called()
+        k3s.stop.assert_not_called()
+        self.assertEqual((self.root / host_k3s.FILE).read_bytes(), original)
+        self.assertTrue(host_k3s.has_owners(self.root))
+
+    def test_automatic_host_cleanup_cannot_use_an_unsupported_endpoint(self):
+        """A session environment override must never redirect local-cluster cleanup remotely."""
+        self.reserve(k3s_config(lifetime="box"))
+        data = host_k3s.load(self.root)
+        data["owners"] = {}
+        with mock.patch.object(host_k3s, "local_podman", side_effect=AgentBoxError("unsupported endpoint")), \
+             self.assertRaisesRegex(AgentBoxError, "unsupported endpoint"):
+            host_k3s.cleanup(self.root, data)
+        k3s.stop.assert_not_called()
+
+    def test_container_cleanup_of_an_idle_host_environment_rejects_remote_podman(self):
+        """The ordinary stop/attach routes must not bypass a host-created cluster's topology."""
+        self.reserve(k3s_config(lifetime="box"))
+        data = host_k3s.load(self.root)
+        data["owners"] = {}
+        host_k3s.save(self.root, data)
+        for action in (lambda: host_k3s.refuse_owners(self.root),
+                       lambda: runtime.release_k3s(self.workspace)):
+            with self.subTest(action=action), \
+                 mock.patch.object(host_k3s, "local_podman", side_effect=AgentBoxError("unsupported endpoint")), \
+                 self.assertRaisesRegex(AgentBoxError, "unsupported endpoint"):
+                action()
+        k3s.stop.assert_not_called()
+
     def test_future_ownership_format_is_not_rewritten(self):
         """An older launcher cannot erase newer consumers or their cleanup policy."""
         self.root.mkdir(parents=True)

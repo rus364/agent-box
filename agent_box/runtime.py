@@ -1779,6 +1779,8 @@ def release_k3s(workspace: Workspace, config: Config | None = None,
     if not settings.enabled:
         # Switching the cluster off is not asking for its data to go.
         settings = replace(settings, persistent_data=True)
+    if retained and retained["box"]["k3s"]["enabled"]:
+        host_k3s.local_podman()
     # An exited box, as a reboot leaves one despite --rm, uses no cluster.
     box = inspect_workspace_container(workspace_container_name(workspace))
     if (box or {}).get("State", {}).get("Status") == "running":

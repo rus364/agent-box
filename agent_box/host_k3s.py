@@ -99,9 +99,13 @@ def has_owners(root):
 
 
 def refuse_owners(root):
-    if has_owners(root):
+    """Guard destructive workspace commands before their first mutation."""
+    data = load(root)
+    if data and data["owners"]:
         raise AgentBoxError("host sessions still use this project's environment; "
                             "end them with agent-box --host stop before stopping or removing the workspace")
+    if data and data["box"]["k3s"]["enabled"]:
+        local_podman()
 
 
 def box_policy(root, workspace):
@@ -290,6 +294,7 @@ def cleanup(root, data, *, explicit=False):
     config = Config.from_dict({"box": data["box"]})
     if not config.box.k3s.enabled or not (root / "k3s").is_dir():
         return
+    local_podman()
     workspace = Workspace(Path(data["project"]), Path(data["project"]))
     box = runtime.inspect_workspace_container(runtime.workspace_container_name(workspace))
     if (box or {}).get("State", {}).get("Status") == "running":
@@ -393,6 +398,8 @@ def stop(root):
         data = load(root)
         if not data:
             return []
+        if data["box"]["k3s"]["enabled"]:
+            local_podman()
         tokens = list(data["owners"])
         data["stopping"] = True
         save(root, data)
