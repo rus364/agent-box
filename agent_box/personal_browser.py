@@ -13,7 +13,7 @@ import threading
 from urllib.parse import parse_qs, urlsplit
 
 from .errors import AgentBoxError
-from .paths import STATE_ROOT
+from .paths import STATE_ROOT, browser_user_data_dir
 
 SERVER = "agent_box_personal_browser"
 EXTENSION = "mmlmfjhmonkocbjadbfplnigmagldckm"
@@ -55,6 +55,75 @@ def command(config):
                            any(c in config.profile for c in "/\\\0\n\r")):
         raise AgentBoxError("personal browser profile must be a directory name such as Default or Profile 2")
     return [str(path), *([f"--profile-directory={config.profile}"] if config.profile else [])]
+
+
+def extension_status(profile):
+    """Inspect registration, not runtime readiness; split prefs can hold either copy."""
+    records = []
+    settings_seen = False
+    for filename in ("Preferences", "Secure Preferences"):
+        try:
+            data = json.loads((profile / filename).read_text())
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError):
+            return "unknown"
+        if not isinstance(data, dict) or not isinstance(data.get("extensions", {}), dict):
+            return "unknown"
+        extensions = data.get("extensions", {})
+        settings = extensions.get("settings", {})
+        if not isinstance(settings, dict):
+            return "unknown"
+        settings_seen |= "settings" in extensions
+        if EXTENSION in settings:
+            records.append(settings[EXTENSION])
+    if not records:
+        return "missing" if settings_seen else "unknown"
+    if any(record != records[0] for record in records):
+        return "unknown"
+    entry = records[0]
+    if not isinstance(entry, dict) or not entry:
+        return "unknown"
+    if entry.get("state") == 0 or entry.get("disable_reasons"):
+        return "disabled"
+    return "registered"
+
+
+def prepare(config):
+    """Keep profile metadata and installation UI on the host in both launch modes."""
+    if not config.enabled:
+        return [], ""
+    desktop = command(config)
+    root = browser_user_data_dir(desktop[0])
+    profile = config.profile
+    if root is not None and not profile:
+        try:
+            profile = json.loads((root / "Local State").read_text())["profile"]["last_used"]
+        except (OSError, ValueError, KeyError, TypeError):
+            profile = ""
+        if (not isinstance(profile, str) or profile in {".", ".."} or
+                any(c in profile for c in "/\\\0\n\r")):
+            profile = ""
+        if profile:
+            # Freeze the resolved last-used choice for this launch, not in saved config.
+            desktop.append(f"--profile-directory={profile}")
+    status = extension_status(root / profile) if root is not None and profile else "unknown"
+    if status == "missing":
+        try:
+            subprocess.Popen([*desktop, STORE], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, start_new_session=True)
+            action = "opened its installation page"
+        except OSError:
+            action = "could not open its installation page"
+        raise AgentBoxError(f"Playwright extension is not registered in profile {profile!r}; {action}. "
+                            f"Install it there, then start a new agent-box session: {STORE}")
+    if status == "disabled":
+        raise AgentBoxError(f"Playwright extension is disabled in profile {profile!r}; "
+                            "enable it at chrome://extensions, then start a new agent-box session")
+    if status == "unknown":
+        return desktop, ("could not verify extension registration; install/enable Playwright Extension "
+                         f"in the selected profile: {STORE}. Approve access when its consent page opens")
+    return desktop, "Playwright Extension is registered; approve access when its consent page opens"
 
 
 def connection_url(value):

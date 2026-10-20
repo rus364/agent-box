@@ -1,5 +1,8 @@
 """Personal desktop access must require its own host choice and browser consent."""
 import json
+from contextlib import ExitStack
+import io
+from itertools import product
 import os
 from pathlib import Path
 import tempfile
@@ -9,7 +12,7 @@ import unittest
 from unittest.mock import patch
 from urllib.parse import urlencode
 
-from agent_box import browser, personal_browser, project_config, runtime
+from agent_box import browser, paths, personal_browser, project_config, runtime
 from agent_box.config import Config, PersonalBrowserConfig
 from agent_box.errors import AgentBoxError
 from agent_box.launch_options import apply as apply_overrides
@@ -143,7 +146,170 @@ class PersonalBrowserTests(unittest.TestCase):
                                  ["/browser", "--profile-directory=Profile 2", consent_url()])
 
 
+class ExtensionPreflightTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.profile = self.root / "Default"
+        self.profile.mkdir()
+
+    def prefs(self, entries, filename="Preferences"):
+        (self.profile / filename).write_text(json.dumps({"extensions": {"settings": entries}}))
+
+    def test_split_registration_and_disabled_extensions_are_not_missing(self):
+        """The secure preference store and unpacked installs must not trigger reinstallation."""
+        self.prefs({})
+        self.assertEqual(personal_browser.extension_status(self.profile), "missing")
+        for entry, expected in (({"state": 1, "path": "/unpacked"}, "registered"),
+                                ({"state": 0}, "disabled"),
+                                ({"state": 1, "disable_reasons": [1]}, "disabled")):
+            with self.subTest(entry=entry):
+                self.prefs({personal_browser.EXTENSION: entry}, "Secure Preferences")
+                self.assertEqual(personal_browser.extension_status(self.profile), expected)
+        self.prefs({personal_browser.EXTENSION: {"state": 1}})
+        self.assertEqual(personal_browser.extension_status(self.profile), "unknown")
+
+    def test_missing_unreadable_and_malformed_metadata_do_not_prove_absence(self):
+        """Unknown metadata must not open an installation page or masquerade as detection."""
+        self.assertEqual(personal_browser.extension_status(self.profile), "unknown")
+        for value in ("{}", "[]", "{", '{"extensions":{"settings":[]}}'):
+            with self.subTest(value=value):
+                (self.profile / "Preferences").write_text(value)
+                self.assertEqual(personal_browser.extension_status(self.profile), "unknown")
+        self.prefs({})
+        with patch.object(Path, "read_text", side_effect=PermissionError):
+            self.assertEqual(personal_browser.extension_status(self.profile), "unknown")
+        (self.profile / "Secure Preferences").write_text("{")
+        self.assertEqual(personal_browser.extension_status(self.profile), "unknown")
+
+    def test_missing_registration_opens_store_in_selected_profile_without_mutation(self):
+        """Installation must stay in the user's selected browser and require their interaction."""
+        self.prefs({})
+        before = (self.profile / "Preferences").read_bytes()
+        desktop = ["/usr/bin/chromium", "--profile-directory=Default"]
+        with patch.object(personal_browser, "command", return_value=desktop), \
+                patch.object(personal_browser, "browser_user_data_dir", return_value=self.root), \
+                patch.object(personal_browser.subprocess, "Popen") as opened, \
+                self.assertRaisesRegex(AgentBoxError, "Install it there, then start a new"):
+            personal_browser.prepare(PersonalBrowserConfig(True, "chromium", "Default"))
+        self.assertEqual(opened.call_args.args[0], [*desktop, personal_browser.STORE])
+        self.assertEqual((self.profile / "Preferences").read_bytes(), before)
+        self.assertEqual(sorted(p.name for p in self.root.iterdir()), ["Default"])
+
+    def test_last_used_profile_is_resolved_and_pinned_for_this_launch_only(self):
+        """A profile switch between detection and opening must not target another profile."""
+        (self.root / "Local State").write_text(json.dumps({"profile": {"last_used": "Default"}}))
+        self.prefs({personal_browser.EXTENSION: {"state": 1}})
+        config = PersonalBrowserConfig(True, "chrome")
+        with patch.object(personal_browser, "command", return_value=["/usr/bin/google-chrome"]), \
+                patch.object(personal_browser, "browser_user_data_dir", return_value=self.root), \
+                patch.object(personal_browser.subprocess, "Popen") as opened:
+            desktop, notice = personal_browser.prepare(config)
+        opened.assert_not_called()
+        self.assertEqual(desktop, ["/usr/bin/google-chrome", "--profile-directory=Default"])
+        self.assertIn("approve", notice)
+        self.assertEqual(config.profile, "")
+
+    def test_unknown_registration_guides_installation_without_claiming_absence(self):
+        """Custom or unreadable profiles still get the normal consent flow and a visible link."""
+        with patch.object(personal_browser, "command", return_value=["/custom-browser"]), \
+                patch.object(personal_browser, "browser_user_data_dir", return_value=None), \
+                patch.object(personal_browser.subprocess, "Popen") as opened:
+            desktop, notice = personal_browser.prepare(PersonalBrowserConfig(True))
+        opened.assert_not_called()
+        self.assertEqual(desktop, ["/custom-browser"])
+        self.assertIn("could not verify", notice)
+        self.assertIn(personal_browser.STORE, notice)
+
+    def test_disabled_integration_performs_no_discovery_or_opening(self):
+        """Default-off and a negative session override cannot inspect personal profile metadata."""
+        with patch.object(personal_browser, "command") as command, \
+                patch.object(personal_browser, "browser_user_data_dir") as directory, \
+                patch.object(personal_browser.subprocess, "Popen") as opened:
+            self.assertEqual(personal_browser.prepare(PersonalBrowserConfig()), ([], ""))
+        command.assert_not_called()
+        directory.assert_not_called()
+        opened.assert_not_called()
+
+    def test_disabled_extension_guides_enablement_without_opening_store(self):
+        """Registration with a disabled state requires enablement, not another install."""
+        self.prefs({personal_browser.EXTENSION: {"state": 0}})
+        with patch.object(personal_browser, "command", return_value=["/usr/bin/chromium"]), \
+                patch.object(personal_browser, "browser_user_data_dir", return_value=self.root), \
+                patch.object(personal_browser.subprocess, "Popen") as opened, \
+                self.assertRaisesRegex(AgentBoxError, "enable it at chrome://extensions"):
+            personal_browser.prepare(PersonalBrowserConfig(True, profile="Default"))
+        opened.assert_not_called()
+
+    def test_browser_paths_match_native_environment_precedence_without_trusting_home(self):
+        """Inspection must follow the same selected data directory, never another browser's."""
+        with patch.dict(os.environ, {}, clear=True), patch.object(paths, "HOST_HOME", self.root):
+            self.assertEqual(paths.browser_user_data_dir("/opt/google/chrome/google-chrome"),
+                             self.root / ".config/google-chrome")
+            self.assertEqual(paths.browser_user_data_dir("/usr/bin/chromium"),
+                             self.root / ".config/chromium")
+            os.environ["XDG_CONFIG_HOME"] = "/xdg"
+            self.assertEqual(paths.browser_user_data_dir("chromium"), Path("/xdg/chromium"))
+            os.environ["CHROME_CONFIG_HOME"] = "/chrome-config"
+            self.assertEqual(paths.browser_user_data_dir("chromium"), Path("/chrome-config/chromium"))
+            os.environ["CHROME_USER_DATA_DIR"] = "/custom"
+            self.assertEqual(paths.browser_user_data_dir("chromium"), Path("/custom"))
+            os.environ["CHROME_USER_DATA_DIR"] = "relative"
+            self.assertIsNone(paths.browser_user_data_dir("chromium"))
+        with patch.dict(os.environ, {"HOME": "/poisoned"}, clear=True):
+            self.assertIsNone(paths.browser_user_data_dir("chromium"))
+            self.assertIsNone(paths.browser_user_data_dir("unknown-wrapper"))
+
+
 class PersonalHostLaunchTests(IsolatedRuntimeTest):
+    def test_missing_extension_guidance_runs_on_host_for_both_launch_modes(self):
+        """A workspace launch must open installation on the desktop without preparing broken MCP."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            profile = root / "Default"
+            profile.mkdir()
+            (profile / "Preferences").write_text('{"extensions":{"settings":{}}}')
+            for host, request in product((False, True), ("missing", "disabled", "version")):
+                config = Config()
+                config.host.personal_browser = PersonalBrowserConfig(request != "disabled", "chromium", "Default")
+                rest = ["--version"] if request == "version" else ["exec", "hello"]
+                with self.subTest(host=host, request=request), ExitStack() as stack:
+                    for name, value in (
+                        ("launch_config", config), ("resolved_workspace", Workspace(root, root)),
+                        ("session_runtime", root / "snapshot.json"),
+                        ("tracker_mounts", [(root, root, False)]),
+                        ("ensure_workspace_image", "sha256:test"), ("tmux_enabled", False),
+                        ("launch_in_workspace_container", 0),
+                    ):
+                        stack.enter_context(patch.object(runtime, name, return_value=value))
+                    for name in ("sync_managed_skills", "claude_skill_links", "prepare_network",
+                                 "prepare_k3s", "workspace_container_spec"):
+                        stack.enter_context(patch.object(runtime, name))
+                    stack.enter_context(patch.object(runtime.host_podman, "require"))
+                    stack.enter_context(patch.object(runtime.shutil, "which", return_value="/usr/bin/codex"))
+                    selected = stack.enter_context(patch.object(personal_browser, "command", return_value=[
+                        "/usr/bin/chromium", "--profile-directory=Default"]))
+                    stack.enter_context(patch.object(personal_browser, "browser_user_data_dir", return_value=root))
+                    opened = stack.enter_context(patch.object(personal_browser.subprocess, "Popen"))
+                    stack.enter_context(patch.object(runtime.subprocess, "call", return_value=0))
+                    prepared = stack.enter_context(patch.object(browser, "prepare"))
+                    stderr = stack.enter_context(patch("sys.stderr", new_callable=io.StringIO))
+                    if host:
+                        runtime.host_main("codex", rest, LaunchOptions(tmux=False))
+                    else:
+                        with self.assertRaises(SystemExit) as exited:
+                            runtime.runtime_main(["codex", *rest], runtime.PACKAGE_ROOT)
+                        self.assertEqual(exited.exception.code, 0)
+                    prepared.assert_not_called()
+                    if request == "missing":
+                        self.assertEqual(opened.call_args.args[0], [
+                            "/usr/bin/chromium", "--profile-directory=Default", personal_browser.STORE])
+                        self.assertIn("Install it there, then start a new", stderr.getvalue())
+                    else:
+                        selected.assert_not_called()
+                        opened.assert_not_called()
+
     def test_host_tmp_selection_reaches_personal_browser_in_both_launch_modes(self):
         """Personal-browser uploads must honor the same explicit sharing as isolated browsing."""
         with tempfile.TemporaryDirectory() as temporary:

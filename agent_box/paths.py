@@ -89,6 +89,28 @@ XDG_STATE_HOME = env_path("XDG_STATE_HOME", HOST_HOME / ".local/state")
 # for the same reason HOST_HOME ignores $HOME: its sockets become bind mounts.
 HOST_RUNTIME_DIR = Path("/run/user") / str(os.getuid())
 
+def browser_user_data_dir(executable: str) -> Path | None:
+    """Match native Linux Chrome/Chromium lookup without guessing other wrappers."""
+    name = Path(executable).name
+    if name in {"google-chrome", "google-chrome-stable", "chrome"}:
+        product = "google-chrome"
+    elif name in {"chromium", "chromium-browser"}:
+        product = "chromium"
+    else:
+        return None
+    override = os.environ.get("CHROME_USER_DATA_DIR")
+    if override:
+        path = Path(override)
+        return path if path.is_absolute() else None
+    config = os.environ.get("CHROME_CONFIG_HOME") or os.environ.get("XDG_CONFIG_HOME")
+    if config:
+        path = Path(config)
+        return path / product if path.is_absolute() else None
+    # Chrome may use HOME, while agent-box must never derive paths from it.
+    if os.environ.get("HOME", str(HOST_HOME)) != str(HOST_HOME):
+        return None
+    return HOST_HOME / ".config" / product
+
 
 def links_runtime_root() -> Path:
     """Coder/headless hosts may have no login-created /run/user directory; a

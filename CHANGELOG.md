@@ -6,6 +6,9 @@
   Playwright extension and the existing pinned container runtime. Configure
   **Host → Personal browser** or use `--[no-]personal-browser` for one session.
   Browser consent remains required; profiles and cookies are never copied.
+  Enabled host and workspace launches now check extension registration and open
+  its store page in the selected profile when absent, with installation/relaunch
+  guidance. Disabled or unverifiable registrations get distinct diagnostics.
 
 - Reconcile workspace images automatically before new launches using a fingerprint
   of build inputs. Builds retain layer cache, serialize with explicit build commands

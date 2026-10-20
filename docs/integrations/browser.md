@@ -142,6 +142,22 @@ in the intended profile. Optional **Profile** is its directory name, such as
 `Default` or `Profile 2`, shown at `chrome://version` under Profile Path. Empty
 uses the browser's last-used profile. No profile is copied or mounted.
 
+On enabled launches, both native `--host` and workspace-container mode check
+extension registration on the host. If it is absent from the selected profile's
+saved metadata, agent-box opens the official store page in that browser/profile.
+Install the extension there, then start a new agent-box session. That launch
+continues without the personal-browser MCP server. A disabled registration gets
+an instruction to enable it at `chrome://extensions` instead.
+
+Only profile-selection and extension-registration metadata (`Local State`,
+`Preferences`, `Secure Preferences`) is read on the host; none is copied to the
+workspace. Empty Profile is resolved from last-used metadata when available and
+pinned for that launch. Unknown/custom layouts, missing or unreadable metadata
+and conflicting records produce an explicit installation link and retain the
+normal consent flow. A saved registration does not prove the extension is loaded
+or allowed by browser policy; recently changed browser state may not yet be
+saved. This is a metadata check, not a timeout-based connection test.
+
 The first browser tool opens the extension's consent page in that browser.
 Approve there and select the tab. This grants access to signed-in browser state;
 tab groups are a convenience, not a per-tab security boundary. Use the extension

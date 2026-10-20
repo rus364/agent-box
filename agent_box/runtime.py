@@ -3165,9 +3165,11 @@ def runtime_main(
             warn(f"browser unavailable: {exc}; starting without it")
             browser_dir = None
     personal_dir = None
-    if config.host.personal_browser.enabled and agent in {"claude", "codex"}:
+    if (config.host.personal_browser.enabled and agent in {"claude", "codex"}
+            and not any(arg in {"--version", "-V", "--help", "-h"} for arg in rest)):
         try:
-            desktop = personal_browser.command(config.host.personal_browser)
+            desktop, notice = personal_browser.prepare(config.host.personal_browser)
+            print(f"agent-box: personal browser: {notice}", file=sys.stderr)
             personal_dir = browser_session_root(runtime_state) / browser_session_id(agent)
             inherited = existing.browser_mounts if existing is not None else extra_mounts
             browser.prepare(personal_dir, workspace.host_root, workspace.cwd, inherited,
@@ -3641,7 +3643,8 @@ def host_main(
     personal_command = None
     if config.host.personal_browser.enabled and not any(arg in {"--version", "-V", "--help", "-h"} for arg in rest):
         try:
-            desktop = personal_browser.command(config.host.personal_browser)
+            desktop, notice = personal_browser.prepare(config.host.personal_browser)
+            print(f"agent-box: personal browser: {notice}", file=sys.stderr)
             personal_dir = HOST_SESSIONS_ROOT / workspace_identity(workspace) / "browser" / uuid.uuid4().hex
             personal_command = browser.prepare(personal_dir, workspace.host_root, workspace.cwd,
                                                workspace=workspace_identity(workspace),
