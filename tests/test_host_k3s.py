@@ -2,6 +2,8 @@
 import copy
 import json
 import os
+from pathlib import Path
+import shutil
 import signal
 import subprocess
 import sys
@@ -135,6 +137,22 @@ class SharedPolicyTests(K3sRuntimeTest):
         self.reserve()
         self.assertTrue(host_k3s.has_owners(self.root))
 
+    def test_unsupported_topology_cannot_clean_up_or_replace_a_stale_policy(self):
+        """A failed host launch must not erase old data through another Podman endpoint."""
+        self.reserve(k3s_config(lifetime="box", persistent_data=False))
+        data = host_k3s.load(self.root)
+        data["owners"] = {}
+        host_k3s.save(self.root, data)
+        original = (self.root / host_k3s.FILE).read_bytes()
+        for enabled in (True, False):
+            with self.subTest(enabled=enabled), \
+                 mock.patch.object(host_k3s, "local_podman", side_effect=AgentBoxError("unsupported endpoint")), \
+                 self.assertRaisesRegex(AgentBoxError, "unsupported endpoint"):
+                self.reserve(k3s_config() if enabled else Config())
+            self.assertEqual((self.root / host_k3s.FILE).read_bytes(), original)
+        k3s.stop.assert_not_called()
+        self.assertEqual(k3s.ensure.call_count, 1)
+
     def test_future_ownership_format_is_not_rewritten(self):
         """An older launcher cannot erase newer consumers or their cleanup policy."""
         self.root.mkdir(parents=True)
@@ -234,6 +252,66 @@ class SharedPolicyTests(K3sRuntimeTest):
 
 
 class RealOwnerTests(K3sRuntimeTest):
+    def test_surviving_external_and_remote_agents_keep_ownership_when_their_wrapper_dies(self):
+        """Owned wrappers are not the agent; their death must not hide surviving consumers."""
+        from test_external_config import external_config
+        from agent_box.external_launch import BASELINE_ENV
+        root = self.state.parent
+        executable = self.workspace.host_root / "agent-probe"
+        marker = self.workspace.host_root / "agent.json"
+        executable.write_text(
+            f"#!{sys.executable}\n"
+            "import json, os, pathlib, time\n"
+            f"assert {host_k3s.CHILD_ENV!r} not in os.environ\n"
+            f"assert {host_k3s.ENV!r} not in os.environ\n"
+            f"pathlib.Path({str(marker.with_suffix('.tmp'))!r}).write_text(json.dumps("
+            f"{{'pid':os.getpid(), 'baseline':os.environ.get({BASELINE_ENV!r})}}))\n"
+            f"pathlib.Path({str(marker.with_suffix('.tmp'))!r}).replace({str(marker)!r})\n"
+            "time.sleep(60)\n")
+        executable.chmod(0o700)
+        for mode in ("external", "remote"):
+            with self.subTest(mode=mode):
+                marker.unlink(missing_ok=True)
+                with mock.patch.object(host_k3s, "box_policy", return_value=None):
+                    reservation = host_k3s.reserve(Config(), LaunchOptions(), self.workspace)
+                env = dict(os.environ)
+                env[host_k3s.ENV] = json.dumps([str(root), reservation[1]])
+                env["AGENT_BOX_RUNTIME_CONFIG"] = str(runtime.session_runtime(external_config(), container=False))
+                args = (["_external", "deepseek", "codex", str(executable), "--model", "external-small"]
+                        if mode == "external" else ["_session", "claude", str(executable), "--remote-control"])
+                runner = subprocess.Popen([sys.executable, str(runtime.HOST_SESSION_RUNNER), "--direct",
+                                           sys.executable, str(runtime.HOST_LAUNCHER), *args],
+                                          env=env, stderr=subprocess.PIPE, text=True)
+                payload = None
+                owner = None
+                try:
+                    deadline = time.monotonic() + 10
+                    while not marker.exists() and runner.poll() is None and time.monotonic() < deadline:
+                        time.sleep(.01)
+                    self.assertTrue(marker.exists())
+                    payload = json.loads(marker.read_text())
+                    with runtime.workspace_transition_lock(self.workspace):
+                        owner = host_k3s.load(root)["owners"][reservation[1]]
+                    self.assertIn(payload["pid"], [p["pid"] for p in owner["descendants"]])
+                    os.kill(owner["child"]["pid"], signal.SIGKILL)
+                    runner.wait(timeout=5)
+                    self.assertTrue(host_k3s.has_owners(root))
+                    with self.assertRaisesRegex(AgentBoxError, "host sessions"):
+                        host_k3s.refuse_owners(root)
+                    host_k3s.stop(root)
+                    self.assertFalse(host_k3s.has_owners(root))
+                finally:
+                    if runner.poll() is None:
+                        runner.kill()
+                        runner.wait(timeout=5)
+                    if owner:
+                        for child in host_k3s.children(owner):
+                            if host_k3s.alive(child):
+                                os.kill(child["pid"], signal.SIGTERM)
+                    runner.communicate(timeout=5)
+                    if payload and payload["baseline"]:
+                        shutil.rmtree(Path(payload["baseline"]).parent)
+
     def test_sigkill_before_child_registration_never_executes_the_agent(self):
         """An interrupted ownership handoff must leave no untracked agent using the API."""
         root = self.state.parent

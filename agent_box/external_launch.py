@@ -362,10 +362,11 @@ def main(args):
         raise AgentBoxError('Invalid internal external launch')
     name, cli, *command = args
     from .config import effective_config
+    from . import host_k3s
     config = effective_config(include_project=False)
     with tempfile.TemporaryDirectory(prefix='ab-api-', dir=SESSION_TEMP_ROOT) as temp:
         command, env = prepare(command, name, cli, config, temp, os.environ)
-        process = subprocess.Popen(command, env=env)
+        process = host_k3s.popen(command, env=env)
         previous = {}
         def forward(signum, frame):
             process.send_signal(signum)

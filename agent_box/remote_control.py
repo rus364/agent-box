@@ -18,6 +18,7 @@ import time
 from pathlib import Path
 
 from .errors import AgentBoxError
+from . import host_k3s
 from .external_config import toml_string
 from .paths import CODEX_REMOTE_LOCK, SESSION_TEMP_ROOT, expand_user
 
@@ -299,7 +300,7 @@ class UnixRpc(Rpc):
 def preflight(server: list[str], cwd: Path, log) -> None:
     """Ask Codex for effective layered config/auth without enrolling in RC."""
     env = dict(os.environ, CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED="1")
-    process = subprocess.Popen([*server, "--stdio"], cwd=cwd, env=env,
+    process = host_k3s.popen([*server, "--stdio"], cwd=cwd, env=env,
                                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log,
                                start_new_session=True)
     try:
@@ -335,7 +336,7 @@ def wait_for_client(command: list[str], server: subprocess.Popen | None = None) 
     previous = signal.signal(signal.SIGINT, lambda *_: None)
     process = None
     try:
-        process = subprocess.Popen(command)
+        process = host_k3s.popen(command)
         if server is None:
             return process.wait()
         while process.poll() is None:
@@ -413,7 +414,7 @@ def run_codex(command: list[str]) -> int:
             with (directory / "server.log").open("w+b") as log:
                 preflight(server, cwd, log)
                 endpoint = directory / "server.sock"
-                process = subprocess.Popen([*server, "--listen", f"unix://{endpoint}", "--remote-control"],
+                process = host_k3s.popen([*server, "--listen", f"unix://{endpoint}", "--remote-control"],
                                            cwd=cwd, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
                                            start_new_session=True, pass_fds=(lock,))
                 try:

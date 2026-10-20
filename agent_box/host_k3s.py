@@ -26,6 +26,7 @@ from .workspace import Workspace
 
 FILE = "host-cluster.json"
 ENV = "AGENT_BOX_HOST_CLUSTER"
+CHILD_ENV = "AGENT_BOX_HOST_CLUSTER_CHILD"
 SCHEMA = migrations.Schema("host cluster ownership")
 
 
@@ -52,6 +53,14 @@ def pane_alive(owner):
     return False
 
 
+def children(owner):
+    return [owner.get("child", {}), *owner.get("descendants", [])]
+
+
+def children_alive(owner):
+    return any(alive(process) for process in children(owner))
+
+
 def load(root):
     path = root / FILE
     if not path.exists():
@@ -69,8 +78,11 @@ def load(root):
                 raise ValueError()
             if "child" in owner and not isinstance(owner["child"], dict):
                 raise ValueError()
+            if (not isinstance(owner.get("descendants", []), list)
+                    or any(not isinstance(child, dict) for child in owner.get("descendants", []))):
+                raise ValueError()
         data["owners"] = {key: owner for key, owner in data["owners"].items()
-                          if alive(owner["process"]) or alive(owner.get("child", {})) or pane_alive(owner)}
+                          if alive(owner["process"]) or children_alive(owner) or pane_alive(owner)}
         return data
     except (OSError, ValueError, TypeError, KeyError) as exc:
         raise AgentBoxError(f"cannot read host cluster ownership at {path}; preserve it and repair before retrying") from exc
@@ -194,6 +206,13 @@ def _reserve(config, options, workspace):
         policy = box_policy(root, workspace)
         if policy is not None:
             apply(config, options, policy)
+        # Both starting and cleaning up a previous cluster use this endpoint.
+        # Reject unsupported topology before changing its resources or policy.
+        if config.box.k3s.enabled or data and data["box"]["k3s"]["enabled"]:
+            local_podman()
+        if config.box.k3s.enabled and not runtime.shutil.which("kubectl"):
+            raise AgentBoxError("host k3s requires kubectl on the host; install it before launching")
+        if policy is not None:
             verify(config, root)
         elif data and not data["owners"]:
             if not config.box.k3s.enabled and data["box"]["k3s"]["enabled"]:
@@ -214,9 +233,6 @@ def _reserve(config, options, workspace):
             # A failed readiness check must retain the creation-time cleanup policy.
             save(root, data)
         if config.box.k3s.enabled:
-            local_podman()
-            if not runtime.shutil.which("kubectl"):
-                raise AgentBoxError("host k3s requires kubectl on the host; install it before launching")
             sidecar = k3s.inspect(root.name)
             if policy is not None or data and data["owners"]:
                 wanted = k3s.spec_hash(root.name, config.box.k3s, root / "k3s",
@@ -250,7 +266,7 @@ def release(root, token, *, pending=False):
         owner = data["owners"].get(token)
         if owner and (not pending or owner.get("pending")):
             # A killed supervisor may leave its child alive; never drop that owner.
-            if not alive(owner.get("child", {})) and not pane_alive(owner):
+            if not children_alive(owner) and not pane_alive(owner):
                 data["owners"].pop(token, None)
         save(root, data)
         if not data["owners"]:
@@ -291,12 +307,64 @@ def record_box(config, root):
         save(root, data)
 
 
+def _spawn(root, token, data, command, environment, *, descendant=False, **kwargs):
+    """Under the workspace lock, make ownership durable before allowing exec."""
+    from . import runtime
+    process = None
+    read_fd, write_fd = os.pipe()
+    try:
+        process = subprocess.Popen(
+            [sys.executable, str(runtime.HOST_SESSION_RUNNER), "--gate", str(read_fd), *command],
+            env=environment, pass_fds=(*kwargs.pop("pass_fds", ()), read_fd), **kwargs)
+        os.close(read_fd)
+        read_fd = None
+        owner = data["owners"][token]
+        if descendant:
+            owner.setdefault("descendants", []).append(identity(process.pid))
+        else:
+            owner["child"] = identity(process.pid)
+        save(root, data)
+        os.write(write_fd, b"1")
+        return process
+    except BaseException:
+        if process is not None:
+            process.kill()
+            process.wait()
+        raise
+    finally:
+        if read_fd is not None:
+            os.close(read_fd)
+        os.close(write_fd)
+
+
+def popen(command, *, env=None, **kwargs):
+    """Internal supervisors register their actual agents before starting them."""
+    from . import runtime
+    environment = dict(os.environ if env is None else env)
+    reservation = environment.pop(CHILD_ENV, None)
+    if reservation is None:
+        return subprocess.Popen(command, **({"env": env} if env is not None else {}), **kwargs)
+    root_text, token = json.loads(reservation)
+    root = Path(root_text)
+    with runtime.transition_lock_at(root / runtime.WORKSPACE_LOCK_FILE):
+        data = load(root)
+        if not data or token not in data["owners"] or data.get("stopping"):
+            raise AgentBoxError("host session reservation expired; relaunch")
+        return _spawn(root, token, data, command, environment, descendant=True, **kwargs)
+
+
 def run(command, environment):
     """The actual pane/direct runner owns the child, not the attaching client."""
     from . import runtime
     root_text, token = json.loads(environment.pop(ENV))
     root = Path(root_text)
     process = None
+    # Only agent-box's own supervisors receive the child-registration token.
+    # Ordinary agents and their tools must not adopt that internal capability.
+    environment.pop(CHILD_ENV, None)
+    if (len(command) > 2 and command[1] == str(runtime.HOST_LAUNCHER)
+            and command[2] in {"_external", "_session"}):
+        environment[CHILD_ENV] = json.dumps([root_text, token])
 
     def forward(signum, frame):
         if process is not None and process.poll() is None:
@@ -310,27 +378,7 @@ def run(command, environment):
                 raise AgentBoxError("host session reservation expired; relaunch")
             data["owners"][token] = {"process": identity()}
             save(root, data)
-            # The child cannot execute the agent until its identity is durable.
-            # A SIGKILL before that handoff closes the pipe and aborts the child.
-            read_fd, write_fd = os.pipe()
-            try:
-                process = subprocess.Popen(
-                    [sys.executable, str(runtime.HOST_SESSION_RUNNER), "--gate", str(read_fd), *command],
-                    env=environment, pass_fds=(read_fd,))
-                os.close(read_fd)
-                read_fd = None
-                data["owners"][token]["child"] = identity(process.pid)
-                save(root, data)
-                os.write(write_fd, b"1")
-            except BaseException:
-                if process is not None:
-                    process.kill()
-                    process.wait()
-                raise
-            finally:
-                if read_fd is not None:
-                    os.close(read_fd)
-                os.close(write_fd)
+            process = _spawn(root, token, data, command, environment)
         return process.wait()
     finally:
         for sig, handler in previous.items():
@@ -354,7 +402,7 @@ def stop(root):
                 subprocess.run(tmux_argv("kill-session", "-t", "=" + owner["session"],
                                         host_root=Path(owner["host_root"])),
                                capture_output=True)
-            for process in (owner.get("child", {}), owner["process"]):
+            for process in [*children(owner), owner["process"]]:
                 if not alive(process):
                     continue
                 # pidfd pins identity between checking /proc and delivering a signal.
