@@ -1,5 +1,6 @@
 include AGENTS.md CHANGELOG.md README.md setup.py
 include .github/workflows/aur.yml .github/workflows/release.yml
+include .github/workflows/aur-build.yml .github/workflows/aur-publish.yml
 recursive-include docs *.md
 recursive-include tests *.py *.json
 recursive-include tools *.py
