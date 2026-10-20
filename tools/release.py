@@ -129,31 +129,31 @@ def install_tools(spec, version, index=None):
         env = isolated_environment(root)
         uv_args = ["--default-index", index + "/simple/"] if index else ["--no-index"]
         pipx_args = ["--index-url", index + "/simple/"] if index else []
-        run(["uv", "tool", "install", "--no-config", "--python", sys.executable, *uv_args, spec], root, env)
+        command = ["uv", "tool", "install", "--no-config", "--python", sys.executable, *uv_args, spec]
+        if index:
+            install_from_index(command, spec, root, env)
+        else:
+            run(command, root, env)
         installed_checks(root / "uv-tools/agent-box-tool/bin/python", root / "uv-bin/agent-box", version, root, env)
         run([sys.executable, "-m", "pipx", "install", "--python", sys.executable,
              "--pip-args=--no-deps", *pipx_args, spec], root, env)
         installed_checks(root / "pipx/venvs/agent-box-tool/bin/python", root / "pipx-bin/agent-box", version, root, env)
 
 
-def wait_for_simple_index(index, expected):
-    # Release metadata can precede the index that uv/pip actually resolve against.
-    request = urllib.request.Request(f"{index}/simple/{NAME}/",
-                                     headers={"Accept": "application/vnd.pypi.simple.v1+json"})
+def install_from_index(command, spec, root, env):
+    # A separate readiness request need not see the installer's cached response.
     for attempt in range(20):
-        try:
-            with urllib.request.urlopen(request, timeout=30) as response:
-                published = {file["filename"]: file for file in json.load(response)["files"]}
-            for name in expected.keys() & published.keys():
-                if published[name]["hashes"].get("sha256") != expected[name]:
-                    raise ValueError(f"Simple index digest differs from the checked build: {name}")
-            if expected.keys() <= published.keys():
-                return
-        except (urllib.error.URLError, TimeoutError):
-            pass
-        if attempt == 19:
-            raise ValueError("The complete release did not appear in the Simple index")
-        print(f"Waiting for installer index visibility ({attempt + 1}/20): {index}", flush=True)
+        result = subprocess.run(command + (["--refresh"] if attempt else []),
+                                cwd=root, env=env, stderr=subprocess.PIPE, text=True)
+        sys.stderr.write(result.stderr)
+        if result.returncode == 0:
+            return
+        unavailable = (result.returncode == 1
+                       and "No solution found when resolving dependencies" in result.stderr
+                       and f"Because there is no version of {spec} and you require {spec}," in result.stderr)
+        if not unavailable or attempt == 19:
+            result.check_returncode()
+        print(f"Waiting for uv to resolve {spec} ({attempt + 1}/20); refreshing index metadata", flush=True)
         time.sleep(3)
 
 
@@ -185,7 +185,6 @@ def verify_index(index, paths, version):
     if (release["info"]["description"].strip() != info.get_payload().strip()
             or release["info"]["project_urls"] != project_urls(info)):
         raise ValueError("Published description or project URLs differ from the checked wheel")
-    wait_for_simple_index(index, expected)
     install_tools(f"{NAME}=={version}", version, index)
 
 

@@ -8,7 +8,6 @@ import tarfile
 import tempfile
 import unittest
 from unittest import mock
-import urllib.error
 import zipfile
 
 from tools import release, package_metadata
@@ -84,83 +83,117 @@ Documentation="{repository}/blob/{tag}/docs/README.md"
 
 
 class IndexVisibilityTests(unittest.TestCase):
-    def test_installers_wait_for_simple_index_after_release_metadata_is_visible(self):
-        """Metadata success alone must not send installers to a still-stale index."""
-        with tempfile.TemporaryDirectory() as directory:
-            wheel = Path(directory) / "agent_box_tool-1.0.0-py3-none-any.whl"
-            with zipfile.ZipFile(wheel, "w") as archive:
-                archive.writestr("agent_box_tool-1.0.0.dist-info/METADATA",
-                                 "Project-URL: Source, https://example.org\n\nDescription")
-            source = Path(directory) / "agent_box_tool-1.0.0.tar.gz"
-            source.write_bytes(b"source")
-            paths = [wheel, source]
-            files = [{"filename": p.name, "url": f"https://files.example/{p.name}",
-                      "digests": {"sha256": hashlib.sha256(p.read_bytes()).hexdigest()}}
-                     for p in paths]
-            simple_files = [{"filename": f["filename"], "hashes": f["digests"]} for f in files]
-            simple_reads = []
+    spec = "agent-box-tool==1.0.0"
+    missing = ("error: No solution found when resolving dependencies\n"
+               "  cause: Because there is no version of agent-box-tool==1.0.0 and you require "
+               "agent-box-tool==1.0.0, we can conclude that your requirements are unsatisfiable.\n")
 
-            def response(request, timeout):
-                url = request.full_url if hasattr(request, "full_url") else request
-                if "/simple/" in url:
-                    simple_reads.append(url)
-                    self.assertEqual(request.get_header("Accept"), "application/vnd.pypi.simple.v1+json")
-                    visible = simple_files[:1] if len(simple_reads) == 1 else simple_files
-                    return io.BytesIO(json.dumps({"files": visible}).encode())
-                if "/pypi/" in url:
-                    return io.BytesIO(json.dumps({"urls": files, "info": {
-                        "description": "Description", "project_urls": {"Source": "https://example.org"},
-                    }}).encode())
-                return io.BytesIO(next(p.read_bytes() for p in paths if url.endswith(p.name)))
+    def result(self, code=0, stderr=""):
+        return subprocess.CompletedProcess(["uv"], code, stderr=stderr)
 
-            def install(*args):
-                self.assertEqual(len(simple_reads), 2, "wait for both files before installing")
-                # An actual installer/selftest failure must not become a visibility retry.
-                raise subprocess.CalledProcessError(1, "agent-box selftest")
+    def test_actual_installer_retries_missing_version_with_fresh_metadata(self):
+        """JSON readiness cannot substitute for the installer's negotiated index view."""
+        with mock.patch.object(release.subprocess, "run", side_effect=[
+                self.result(1, self.missing), self.result()]) as install, \
+                mock.patch.object(release.time, "sleep") as sleep, \
+                mock.patch.object(release, "installed_checks") as checks, \
+                mock.patch.object(release, "run") as pipx:
+            release.install_tools(self.spec, "1.0.0", "https://test.example")
+            self.assertEqual(install.call_count, 2)
+            self.assertNotIn("--refresh", install.call_args_list[0].args[0])
+            self.assertIn("--refresh", install.call_args_list[1].args[0])
+            sleep.assert_called_once_with(3)
+            self.assertEqual(checks.call_count, 2)
+            pipx.assert_called_once()
 
-            with mock.patch.object(release.urllib.request, "urlopen", side_effect=response), \
-                    mock.patch.object(release.time, "sleep") as sleep, \
-                    mock.patch.object(release, "install_tools", side_effect=install) as installers:
+    def test_healthy_install_needs_no_wait_or_cache_refresh(self):
+        """Normal releases should not pay a fixed propagation delay."""
+        with mock.patch.object(release.subprocess, "run", return_value=self.result()) as install, \
+                mock.patch.object(release.time, "sleep") as sleep:
+            release.install_from_index(["uv", "tool", "install", self.spec], self.spec, Path("/tmp"), {})
+            install.assert_called_once()
+            self.assertNotIn("--refresh", install.call_args.args[0])
+            sleep.assert_not_called()
+
+    def test_missing_version_has_a_bounded_wait_and_preserves_error(self):
+        """A permanently missing version must fail instead of looping forever."""
+        with mock.patch.object(release.subprocess, "run", return_value=self.result(1, self.missing)) as install, \
+                mock.patch.object(release.time, "sleep") as sleep, \
+                mock.patch.object(release.sys, "stderr", io.StringIO()), mock.patch("builtins.print"):
+            with self.assertRaises(subprocess.CalledProcessError) as failure:
+                release.install_from_index(["uv"], self.spec, Path("/tmp"), {})
+            self.assertEqual(failure.exception.stderr, self.missing)
+            self.assertEqual(install.call_count, 20)
+            self.assertEqual(sleep.call_count, 19)
+
+    def test_other_installer_errors_fail_immediately(self):
+        """Authentication, hash, compatibility and unrelated resolution failures are not lag."""
+        for error in ("401 Unauthorized", "Hash mismatch", "Requires-Python mismatch",
+                      self.missing.replace(self.spec, "another-package==1.0.0")):
+            with self.subTest(error=error), \
+                    mock.patch.object(release.subprocess, "run", return_value=self.result(1, error)) as install, \
+                    mock.patch.object(release.time, "sleep") as sleep:
                 with self.assertRaises(subprocess.CalledProcessError):
-                    release.verify_index("https://test.example", paths, "1.0.0")
-                sleep.assert_called_once_with(3)
-                installers.assert_called_once_with("agent-box-tool==1.0.0", "1.0.0", "https://test.example")
+                    release.install_from_index(["uv"], self.spec, Path("/tmp"), {})
+                install.assert_called_once()
+                sleep.assert_not_called()
 
-    def test_visible_simple_index_adds_no_sleep(self):
-        """Already published releases should not pay a fixed propagation delay."""
-        content = {"files": [{"filename": "new.whl", "hashes": {"sha256": "checked"}},
-                             {"filename": "old.whl", "hashes": {"sha256": "old"}}]}
-        with mock.patch.object(release.urllib.request, "urlopen",
-                               return_value=io.BytesIO(json.dumps(content).encode())) as fetch, \
+    def test_installed_selftest_failure_does_not_retry_installation(self):
+        """An installed but broken release must not be mistaken for propagation lag."""
+        with mock.patch.object(release.subprocess, "run", return_value=self.result()) as install, \
+                mock.patch.object(release, "installed_checks", side_effect=subprocess.CalledProcessError(1, "selftest")), \
                 mock.patch.object(release.time, "sleep") as sleep:
-            release.wait_for_simple_index("https://test.example", {"new.whl": "checked"})
-            fetch.assert_called_once()
+            with self.assertRaises(subprocess.CalledProcessError):
+                release.install_tools(self.spec, "1.0.0", "https://test.example")
+            install.assert_called_once()
             sleep.assert_not_called()
 
-    def test_simple_index_digest_mismatch_fails_without_retry(self):
-        """A collision is an integrity error, not eventual publication visibility."""
-        content = {"files": [{"filename": "new.whl", "hashes": {"sha256": "different"}}]}
-        with mock.patch.object(release.urllib.request, "urlopen",
-                               return_value=io.BytesIO(json.dumps(content).encode())) as fetch, \
-                mock.patch.object(release.time, "sleep") as sleep:
-            with self.assertRaisesRegex(ValueError, "Simple index digest differs"):
-                release.wait_for_simple_index("https://test.example", {"new.whl": "checked"})
-            fetch.assert_called_once()
-            sleep.assert_not_called()
+    def test_local_artifact_failure_is_never_an_index_retry(self):
+        """The local artifact gate has no remote propagation to wait for."""
+        with mock.patch.object(release, "run", side_effect=subprocess.CalledProcessError(1, "uv")) as install, \
+                mock.patch.object(release, "install_from_index") as retry:
+            with self.assertRaises(subprocess.CalledProcessError):
+                release.install_tools("/tmp/release.whl", "1.0.0")
+            install.assert_called_once()
+            retry.assert_not_called()
 
-    def test_missing_or_unreachable_simple_index_has_a_bounded_wait(self):
-        """A missing release or unavailable service must eventually fail the gate."""
-        for unavailable in (False, True):
-            with self.subTest(unavailable=unavailable):
-                def response(*args, **kwargs):
-                    if unavailable:
-                        raise urllib.error.URLError("unavailable")
-                    return io.BytesIO(b'{"files": []}')
+    def test_verified_downloads_precede_installer_acceptance(self):
+        """Installer retries cannot bypass published hashes, bytes or package metadata."""
+        for mismatch in (None, "digest", "bytes", "metadata"):
+            with self.subTest(mismatch=mismatch), tempfile.TemporaryDirectory() as directory:
+                wheel = Path(directory) / "agent_box_tool-1.0.0-py3-none-any.whl"
+                with zipfile.ZipFile(wheel, "w") as archive:
+                    archive.writestr("agent_box_tool-1.0.0.dist-info/METADATA",
+                                     "Project-URL: Source, https://example.org\n\nDescription")
+                source = Path(directory) / "agent_box_tool-1.0.0.tar.gz"
+                source.write_bytes(b"source")
+                paths = [wheel, source]
+                files = [{"filename": p.name, "url": f"https://files.example/{p.name}",
+                          "digests": {"sha256": hashlib.sha256(p.read_bytes()).hexdigest()}}
+                         for p in paths]
+                if mismatch == "digest":
+                    files[0]["digests"]["sha256"] = "different"
+                downloads = []
 
-                with mock.patch.object(release.urllib.request, "urlopen", side_effect=response) as fetch, \
-                        mock.patch.object(release.time, "sleep") as sleep, \
-                        mock.patch("builtins.print"):
-                    with self.assertRaisesRegex(ValueError, "did not appear in the Simple index"):
-                        release.wait_for_simple_index("https://test.example", {"new.whl": "checked"})
-                    self.assertEqual(fetch.call_count, 20)
-                    self.assertEqual(sleep.call_count, 19)
+                def response(url, timeout):
+                    if "/pypi/" in url:
+                        return io.BytesIO(json.dumps({"urls": files, "info": {
+                            "description": "Different" if mismatch == "metadata" else "Description",
+                            "project_urls": {"Source": "https://example.org"},
+                        }}).encode())
+                    downloads.append(url)
+                    content = next(p.read_bytes() for p in paths if url.endswith(p.name))
+                    return io.BytesIO(b"different" if mismatch == "bytes" else content)
+
+                with mock.patch.object(release.urllib.request, "urlopen", side_effect=response), \
+                        mock.patch.object(release, "install_tools") as installers, \
+                        mock.patch.object(release.time, "sleep") as sleep:
+                    if mismatch:
+                        with self.assertRaises(ValueError):
+                            release.verify_index("https://test.example", paths, "1.0.0")
+                        installers.assert_not_called()
+                    else:
+                        release.verify_index("https://test.example", paths, "1.0.0")
+                        self.assertEqual(len(downloads), 2)
+                        installers.assert_called_once_with(self.spec, "1.0.0", "https://test.example")
+                    sleep.assert_not_called()

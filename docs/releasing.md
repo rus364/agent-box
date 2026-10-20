@@ -86,10 +86,11 @@ update their pins together.
    `id-token: write`; they do not check out or build source. The PyPA action also
    publishes provenance attestations. Registry verification also compares the
    published description and project URLs to the checked wheel. TestPyPI/PyPI
-   success are distinct checks. Verification waits for both release metadata and
-   the installer's Simple index to expose the checked files before running
-   uv/pipx. Index visibility retries are bounded; digest mismatches and failed
-   installation/selftests still fail the job.
+   success are distinct checks. After release metadata and downloaded hashes pass,
+   verification retries uv's exact-version-not-found resolution failure up to
+   20 attempts, three seconds apart, refreshing its index cache on retries.
+   Healthy installs incur no delay. Other installer failures, digest mismatches
+   and installed metadata/selftest failures stop immediately.
 6. Verify the published package can build the image, start a workspace and run a
    Claude session locally. Exercise an upgrade while a workspace is active:
    retain its old runtime and data, then explicitly stop/relaunch to use the new
