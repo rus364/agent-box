@@ -93,7 +93,11 @@ in the menu, or explicitly restore the previous container behavior with:
 
 ```bash
 agent-box config set --global agents.claude.bypass_permissions=true agents.codex.bypass_permissions=true
+agent-box config proposal apply
 ```
+
+The first command only stages a proposal. Run the second in your own host
+terminal, review the changes and confirm to save and apply them.
 
 Codex's remote `/resume` rejects explicit permission overrides, including its
 bypass flag. Leave this setting off when resuming through Remote Control, and
