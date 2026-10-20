@@ -204,28 +204,27 @@ def admission_lock(*, exclusive=False):
 
 def _reserve(config, options, workspace):
     from . import runtime
-    root = runtime.workspace_runtime_state(workspace).root
+    state = runtime.workspace_runtime_state(workspace)
+    root = state.root
     with runtime.workspace_transition_lock(workspace):
         data = inherit(config, options, root)
         policy = box_policy(root, workspace)
         if policy is not None:
             apply(config, options, policy)
+        needs_cleanup = policy is None and (not data or not data["owners"])
         # Both starting and cleaning up a previous cluster use this endpoint.
         # Reject unsupported topology before changing its resources or policy.
-        if config.box.k3s.enabled or data and data["box"]["k3s"]["enabled"]:
+        if (config.box.k3s.enabled or needs_cleanup and
+                (data and data["box"]["k3s"]["enabled"] or (root / "k3s").is_dir())):
             local_podman()
         if config.box.k3s.enabled and not runtime.shutil.which("kubectl"):
             raise AgentBoxError("host k3s requires kubectl on the host; install it before launching")
         if policy is not None:
             verify(config, root)
-        elif data and not data["owners"]:
-            if not config.box.k3s.enabled and data["box"]["k3s"]["enabled"]:
-                # Withdrawing access is not permission to erase prior data.
-                retained = copy.deepcopy(data)
-                retained["box"]["k3s"]["persistent_data"] = True
-                cleanup(root, retained, explicit=True)
-            else:
-                cleanup(root, data)
+        elif needs_cleanup:
+            # A detached box may have ended without a launcher to clean up.
+            # Both modes must apply its recorded policy before creating a new one.
+            runtime.release_k3s(workspace, config, state)
         if not data or not data["owners"]:
             if not data:
                 host_root = runtime.HOST_SESSIONS_ROOT / root.name

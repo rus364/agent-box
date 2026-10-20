@@ -97,6 +97,34 @@ class SharedPolicyTests(K3sRuntimeTest):
             self.assertTrue(joined.box.k3s.enabled)
         self.assertEqual(k3s.ensure.call_count, 1)
 
+    def test_first_host_launch_cleans_up_a_gone_box_by_its_creation_policy(self):
+        """A detached box's disposable cluster must not leak into the next host environment."""
+        created = k3s_config(lifetime="box", persistent_data=False)
+        self.record_box(created)
+        self.ensure(self.root.name, created.box.k3s, self.state, self.workspace.host_root)
+        events = []
+        ensure = self.ensure
+
+        def start(*args, **kwargs):
+            events.append("start")
+            return ensure(*args, **kwargs)
+
+        with mock.patch.object(k3s, "stop", side_effect=lambda *args: events.append("stop")) as stop, \
+             mock.patch.object(k3s, "ensure", side_effect=start):
+            self.reserve(k3s_config(lifetime="persistent", persistent_data=True))
+        self.assertEqual(events, ["stop", "start"])
+        self.assertFalse(stop.call_args.args[1].persistent_data)
+
+    def test_disabled_first_host_launch_stops_a_gone_boxes_cluster_but_retains_data(self):
+        """Withdrawing access after a container session must stop its sidecar without erasure."""
+        created = k3s_config(lifetime="box", persistent_data=False)
+        self.record_box(created)
+        self.ensure(self.root.name, created.box.k3s, self.state, self.workspace.host_root)
+        self.reserve(Config())
+        k3s.stop.assert_called_once()
+        self.assertTrue(k3s.stop.call_args.args[1].persistent_data)
+        k3s.ensure.assert_not_called()
+
     def test_last_consumer_controls_box_lifetime_and_retention(self):
         """One exit cannot stop another consumer or use changed data-retention defaults."""
         first = self.reserve(k3s_config(lifetime="box", persistent_data=False))
@@ -259,6 +287,9 @@ class SharedPolicyTests(K3sRuntimeTest):
         self.reserve(Config())
         k3s.stop.assert_called_once()
         self.assertTrue(k3s.stop.call_args.args[1].persistent_data)
+        host_k3s.local_podman.reset_mock()
+        self.reserve(Config())
+        host_k3s.local_podman.assert_not_called()
 
     def test_stale_host_cleanup_uses_creation_policy_instead_of_changed_defaults(self):
         """An attach after both processes died cannot discard previously retained data."""
