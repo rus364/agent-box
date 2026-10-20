@@ -13,6 +13,47 @@ from test_runtime import IsolatedRuntimeTest
 
 
 class BrowserPolicyTests(unittest.TestCase):
+    def test_reused_native_command_cannot_remove_a_neighbours_container_on_failure(self):
+        """Codex resume can overlap two launches of the same prepared MCP command."""
+        for personal in (False, True):
+            with self.subTest(personal=personal):
+                prepared = browser.container_command('/state/session', '/project', '/project', [],
+                                                     personal=personal)
+                original = list(prepared)
+                active = set()
+                started = []
+                removed = []
+
+                def name(argv):
+                    return argv[argv.index('--name') + 1]
+
+                def remove(argv):
+                    removed.append(name(argv))
+                    active.discard(name(argv))
+
+                def launch(argv):
+                    started.append(list(argv))
+                    if len(started) == 2:
+                        raise OSError('second process failed to start')
+                    active.add(name(argv))
+                    with self.assertRaisesRegex(OSError, 'second process failed'):
+                        browser.run(prepared)
+                    self.assertIn(name(argv), active, 'failed neighbour removed the live browser')
+                    return 0
+
+                with patch.object(browser.signal, 'signal'), \
+                        patch.object(browser.subprocess, 'call', side_effect=launch), \
+                        patch.object(browser, 'remove_container', side_effect=remove):
+                    self.assertEqual(browser.run(prepared), 0)
+                self.assertEqual(prepared, original)
+                self.assertNotEqual(name(started[0]), name(started[1]))
+                self.assertEqual(removed, [name(started[1]), name(started[0])])
+                self.assertFalse(active)
+                for argv in started:
+                    unchanged = list(argv)
+                    unchanged[unchanged.index('--name') + 1] = name(original)
+                    self.assertEqual(unchanged, original)
+
     def test_edited_session_metadata_cannot_add_host_paths_to_browser(self):
         """An inherited mount needs both the user's selection and the actual bind."""
         mounts = [MountSpec(Path('/project/assets'), False)]

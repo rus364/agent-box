@@ -2,6 +2,10 @@
 
 ## Unreleased — next major version
 
+- Give each native browser MCP process its own container identity. Overlapping
+  Codex thread starts/resumes no longer collide or remove each other's browser.
+  Restart the agent-box launcher to adopt the fix in existing sessions.
+
 - Add separate off-by-default personal Chrome/Chromium access through the official
   Playwright extension and the existing pinned container runtime. Configure
   **Host → Personal browser** or use `--[no-]personal-browser` for one session.

@@ -177,6 +177,10 @@ socket, a browser profile or Podman control.
 
 Each MCP process has its own relay and extension connection. A tab can belong
 to one extension client at a time; other sessions should select other tabs.
+Native MCP starts receive distinct container identities even when Codex resumes
+another thread with the same prepared command. Exiting one cannot remove the
+other's container. Existing launcher sessions keep their immutable runtime;
+restart agent-box to adopt this lifecycle fix, then resume the conversation.
 Exiting the MCP process stops its container/relay, while tmux detach keeps the
 session alive. Disconnect or a browser restart interrupts browser operations. The next tool
 request can open a fresh consent page; it waits for approval before proceeding.

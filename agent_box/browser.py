@@ -172,6 +172,11 @@ def prepare(directory, project, cwd, mounts=(), *, container="", workspace="", s
 
 
 def run(argv, desktop=()):
+    # Codex may reuse one MCP command across overlapping resumed threads.
+    # Identity and cleanup must belong to this process, not the prepared command.
+    argv = list(argv)
+    argv[argv.index("--name") + 1] = "agent-box-browser-" + uuid.uuid4().hex[:20]
+
     def stop(_signum, _frame):
         raise SystemExit(0)
 
