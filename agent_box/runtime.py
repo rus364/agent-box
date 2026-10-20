@@ -3172,7 +3172,7 @@ def runtime_main(
             inherited = existing.browser_mounts if existing is not None else extra_mounts
             browser.prepare(personal_dir, workspace.host_root, workspace.cwd, inherited,
                             container=workspace_container_name(workspace), workspace=workspace_identity(workspace),
-                            session=session.name if session else "", desktop=desktop)
+                            session=session.name if session else "", host_tmp=config.box.host_tmp, desktop=desktop)
         except (AgentBoxError, OSError) as exc:
             warn(f"personal browser unavailable: {exc}")
             personal_dir = None
@@ -3644,7 +3644,8 @@ def host_main(
             desktop = personal_browser.command(config.host.personal_browser)
             personal_dir = HOST_SESSIONS_ROOT / workspace_identity(workspace) / "browser" / uuid.uuid4().hex
             personal_command = browser.prepare(personal_dir, workspace.host_root, workspace.cwd,
-                                               workspace=workspace_identity(workspace), desktop=desktop)
+                                               workspace=workspace_identity(workspace),
+                                               host_tmp=config.box.host_tmp, desktop=desktop)
             record_workspace_path(workspace_identity(workspace), str(workspace.host_root.resolve()))
         except (AgentBoxError, OSError) as exc:
             warn(f"personal browser unavailable: {exc}")
