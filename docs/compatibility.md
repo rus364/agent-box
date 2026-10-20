@@ -59,6 +59,7 @@ can discard renamed fields. Reading alone does not rewrite the file.
 | Tracker import mappings, move journals, adoption receipts | Independent `format_version`; retain external IDs and interrupted-operation recovery |
 | Global configuration proposals | `format_version`; preserve the existing explicit host confirmation boundary |
 | Workspace creation policies | `format_version`; unreadable/future cleanup policy retains data |
+| Native host cluster ownership | New `format_version: 1`; records enabled and disabled creation policy plus process identities; future/unreadable records refuse admission and cleanup. No older format needs conversion; active sessions from an older runtime require stop/relaunch |
 | Managed skill markers | `format_version`; user-edited/unowned trees remain protected |
 | Native profile ownership sidecars | One SHA-256 line after commit; old/new hash pair during replacement, allowing retry before or after the content write; unknown shapes and edited content remain unowned |
 | Review receipts and seals | `format_version`; preserve original bytes/seals while reading; existing bounded retention still applies |

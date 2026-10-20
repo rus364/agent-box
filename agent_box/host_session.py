@@ -6,6 +6,15 @@ import sys
 
 
 def main():
+    if sys.argv[1] == "--gate":
+        fd = int(sys.argv[2])
+        try:
+            admitted = os.read(fd, 1) == b"1"
+        finally:
+            os.close(fd)
+        if admitted:
+            os.execvpe(sys.argv[3], sys.argv[3:], os.environ)
+        return
     if sys.argv[1] == "--direct":
         environment = dict(os.environ)
     else:

@@ -7,11 +7,13 @@ an abruptly killed launcher cannot make a surviving agent lose its cluster.
 from __future__ import annotations
 
 import copy
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
 import signal
 import subprocess
+import sys
 import time
 import uuid
 
@@ -19,7 +21,7 @@ from . import channel, k3s, migrations, runtime_bundle
 from .atomicio import atomic_write_json
 from .config import Config
 from .errors import AgentBoxError
-from .paths import PACKAGE_ROOT
+from .paths import PACKAGE_ROOT, host_admission_lock
 from .workspace import Workspace
 
 FILE = "host-cluster.json"
@@ -172,6 +174,19 @@ def local_podman():
 
 
 def reserve(config, options, workspace):
+    with admission_lock():
+        return _reserve(config, options, workspace)
+
+
+@contextmanager
+def admission_lock(*, exclusive=False):
+    """Uninstall excludes new owners; unrelated workspace starts can overlap."""
+    from . import runtime
+    with runtime.transition_lock_at(host_admission_lock(runtime.STATE_ROOT), shared=not exclusive):
+        yield
+
+
+def _reserve(config, options, workspace):
     from . import runtime
     root = runtime.workspace_runtime_state(workspace).root
     with runtime.workspace_transition_lock(workspace):
@@ -295,15 +310,27 @@ def run(command, environment):
                 raise AgentBoxError("host session reservation expired; relaunch")
             data["owners"][token] = {"process": identity()}
             save(root, data)
-            process = subprocess.Popen(command, env=environment)
+            # The child cannot execute the agent until its identity is durable.
+            # A SIGKILL before that handoff closes the pipe and aborts the child.
+            read_fd, write_fd = os.pipe()
             try:
+                process = subprocess.Popen(
+                    [sys.executable, str(runtime.HOST_SESSION_RUNNER), "--gate", str(read_fd), *command],
+                    env=environment, pass_fds=(read_fd,))
+                os.close(read_fd)
+                read_fd = None
                 data["owners"][token]["child"] = identity(process.pid)
                 save(root, data)
+                os.write(write_fd, b"1")
             except BaseException:
-                # Never release the cluster beneath a child whose handoff failed.
-                process.kill()
-                process.wait()
+                if process is not None:
+                    process.kill()
+                    process.wait()
                 raise
+            finally:
+                if read_fd is not None:
+                    os.close(read_fd)
+                os.close(write_fd)
         return process.wait()
     finally:
         for sig, handler in previous.items():

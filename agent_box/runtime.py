@@ -1762,9 +1762,15 @@ def release_k3s(workspace: Workspace, config: Config | None = None,
     # nor Podman need be asked.
     if not state_dir.is_dir():
         return
-    if host_k3s.has_owners(runtime_state.root):
+    retained = host_k3s.load(runtime_state.root)
+    if retained and retained["owners"]:
         return
-    settings = (config or effective_config(runtime_config_base())).box.k3s
+    settings = (Config.from_dict({"box": retained["box"]}) if retained else
+                config or effective_config(runtime_config_base())).box.k3s
+    if retained and config is not None and not config.box.k3s.enabled:
+        # Only an explicit new disabled environment withdraws access. An
+        # attach/cleanup command's changed defaults cannot erase retained data.
+        settings = replace(settings, enabled=False)
     if settings.enabled and settings.lifetime != "box":
         return
     if not settings.enabled:
@@ -2125,12 +2131,12 @@ def workspace_transition_lock(workspace: Workspace):
 
 
 @contextmanager
-def transition_lock_at(lock_path: Path):
+def transition_lock_at(lock_path: Path, *, shared: bool = False):
     """The transition lock by its file, for a workspace known only by its id."""
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        fcntl.flock(fd, fcntl.LOCK_SH if shared else fcntl.LOCK_EX)
         yield
     finally:
         fcntl.flock(fd, fcntl.LOCK_UN)
@@ -3502,6 +3508,12 @@ def uninstall_main(args: list[str]) -> int:
         else:
             raise AgentBoxError(f"unexpected argument '{arg}'; expected --purge and/or --yes")
 
+    with host_k3s.admission_lock(exclusive=True):
+        return _uninstall(purge, assume_yes)
+
+
+def _uninstall(purge: bool, assume_yes: bool) -> int:
+    """Hold admission closed from the owner preflight through the final purge."""
     for root in (STATE_ROOT / "runtime/workspaces").glob("*"):
         if root.is_dir():
             host_k3s.refuse_owners(root)

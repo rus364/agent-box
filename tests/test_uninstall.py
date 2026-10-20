@@ -12,12 +12,15 @@ file, which is where the Telegram and Vikunja tokens live.
 """
 import io
 import json
+import subprocess
+import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
 
-from agent_box import claude_settings, cloud, kubeconfigs, registries, runtime
+from agent_box import claude_settings, cloud, host_k3s, kubeconfigs, registries, runtime, upgrades
 from agent_box.config import Config
 
 
@@ -109,6 +112,76 @@ class UninstallTestCase(unittest.TestCase):
             return runtime.uninstall_main(list(args))
 
 class UninstallTests(UninstallTestCase):
+    def test_host_admission_waits_until_uninstall_and_purge_finish(self):
+        """A host cannot join after preflight and lose its cluster or record to uninstall."""
+        self._installed_state()
+        project = self.root / "project"
+        project.mkdir()
+        waiting = self.root / "waiting"
+        admitted = self.root / "admitted"
+        code = """
+import fcntl, sys
+from pathlib import Path
+from unittest import mock
+from agent_box import host_k3s, runtime
+from agent_box.config import Config
+from agent_box.launch_options import LaunchOptions
+from agent_box.paths import host_admission_lock
+from agent_box.workspace import Workspace
+runtime.STATE_ROOT = Path(sys.argv[1])
+lock = host_admission_lock(runtime.STATE_ROOT)
+with lock.open('r') as fd:
+    try:
+        fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+    except BlockingIOError:
+        Path(sys.argv[3]).write_text(str(lock.stat().st_ino))
+    else:
+        raise SystemExit('uninstall did not exclude new host owners')
+project = Path(sys.argv[2])
+with mock.patch.object(host_k3s, 'box_policy', return_value=None):
+    root, token = host_k3s.reserve(Config(), LaunchOptions(), Workspace(project, project))
+Path(sys.argv[4]).write_text(str(root))
+"""
+        child = None
+        real_rmtree = runtime.shutil.rmtree
+
+        def launch_after_preflight():
+            nonlocal child
+            child = subprocess.Popen([sys.executable, "-c", code, str(self.state), str(project),
+                                      str(waiting), str(admitted)], stderr=subprocess.PIPE, text=True)
+            deadline = time.monotonic() + 5
+            while not waiting.exists() and child.poll() is None and time.monotonic() < deadline:
+                time.sleep(.01)
+            self.assertTrue(waiting.exists())
+
+        def guarded_remove(*args, **kwargs):
+            self.assertFalse(admitted.exists())
+
+        def guarded_purge(path, **kwargs):
+            if path == self.state:
+                self.assertFalse(admitted.exists())
+            result = real_rmtree(path, **kwargs)
+            if path == self.state:
+                from agent_box.paths import host_admission_lock
+                self.assertEqual(str(host_admission_lock(self.state).stat().st_ino), waiting.read_text())
+            return result
+
+        try:
+            with mock.patch.object(upgrades, "forget", side_effect=launch_after_preflight), \
+                 mock.patch.object(runtime, "managed_container_names", return_value=[]), \
+                 mock.patch.object(runtime.k3s, "all_workspaces", return_value=["test-workspace"]), \
+                 mock.patch.object(runtime.k3s, "remove", side_effect=guarded_remove) as remove, \
+                 mock.patch.object(runtime.shutil, "rmtree", side_effect=guarded_purge):
+                self.assertEqual(self._uninstall("--purge", "--yes", podman="/usr/bin/podman"), 0)
+            _, stderr = child.communicate(timeout=10)
+            self.assertEqual(child.returncode, 0, stderr)
+            self.assertTrue((Path(admitted.read_text()) / host_k3s.FILE).is_file())
+            self.assertEqual(remove.call_count, 2)
+        finally:
+            if child is not None and child.poll() is None:
+                child.kill()
+                child.communicate(timeout=5)
+
     def test_cleanup_leaves_installer_entry_point_and_shell_startup_untouched(self):
         """Even purge owns integrations and state, never the installer's files."""
         command = self.root / "bin/agent-box"

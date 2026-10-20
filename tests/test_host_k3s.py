@@ -205,8 +205,80 @@ class SharedPolicyTests(K3sRuntimeTest):
         k3s.stop.assert_called_once()
         self.assertTrue(k3s.stop.call_args.args[1].persistent_data)
 
+    def test_stale_host_cleanup_uses_creation_policy_instead_of_changed_defaults(self):
+        """An attach after both processes died cannot discard previously retained data."""
+        self.reserve(k3s_config(lifetime="persistent", persistent_data=True))
+        data = host_k3s.load(self.root)
+        next(iter(data["owners"].values()))["process"]["pid_start"] = "previous process"
+        host_k3s.save(self.root, data)
+        with mock.patch.object(runtime, "effective_config",
+                               return_value=k3s_config(lifetime="box", persistent_data=False)):
+            runtime.release_k3s(self.workspace)
+        k3s.stop.assert_not_called()
+
+        data["box"]["k3s"]["lifetime"] = "box"
+        host_k3s.save(self.root, data)
+        runtime.release_k3s(self.workspace, k3s_config(lifetime="box", persistent_data=False))
+        k3s.stop.assert_called_once()
+        self.assertTrue(k3s.stop.call_args.args[1].persistent_data)
+
+    def test_disabled_container_creation_stops_idle_host_cluster_without_erasing_data(self):
+        """A new disabled box withdraws access but never converts that into data removal."""
+        self.reserve(k3s_config(lifetime="persistent", persistent_data=False))
+        data = host_k3s.load(self.root)
+        data["owners"] = {}
+        host_k3s.save(self.root, data)
+        runtime.prepare_k3s(Config(), self.workspace, runtime.workspace_runtime_state(self.workspace))
+        k3s.stop.assert_called_once()
+        self.assertTrue(k3s.stop.call_args.args[1].persistent_data)
+
 
 class RealOwnerTests(K3sRuntimeTest):
+    def test_sigkill_before_child_registration_never_executes_the_agent(self):
+        """An interrupted ownership handoff must leave no untracked agent using the API."""
+        root = self.state.parent
+        with mock.patch.object(host_k3s, "box_policy", return_value=None):
+            reservation = host_k3s.reserve(Config(), LaunchOptions(), self.workspace)
+        marker = self.workspace.host_root / "agent-started"
+        child_record = self.workspace.host_root / "child.json"
+        env = dict(os.environ)
+        env[host_k3s.ENV] = json.dumps([str(root), reservation[1]])
+        code = """
+import json, os, signal, sys, time
+from pathlib import Path
+from agent_box import host_k3s
+save = host_k3s.save
+def interrupted_save(root, data):
+    child = next(iter(data['owners'].values())).get('child')
+    if child:
+        Path(sys.argv[2]).write_text(json.dumps(child))
+        deadline = time.monotonic() + .3
+        while not Path(sys.argv[1]).exists() and time.monotonic() < deadline:
+            time.sleep(.01)
+        os.kill(os.getpid(), signal.SIGKILL)
+    save(root, data)
+host_k3s.save = interrupted_save
+child_code = "from pathlib import Path; import time; Path(%r).write_text('started'); time.sleep(60)" % sys.argv[1]
+host_k3s.run([sys.executable, '-c', child_code], dict(os.environ))
+"""
+        runner = subprocess.Popen([sys.executable, "-c", code, str(marker), str(child_record)], env=env)
+        child = None
+        try:
+            self.assertEqual(runner.wait(timeout=10), -signal.SIGKILL)
+            child = json.loads(child_record.read_text())
+            deadline = time.monotonic() + 5
+            while host_k3s.alive(child) and time.monotonic() < deadline:
+                time.sleep(.01)
+            self.assertFalse(marker.exists(), "the agent executed before durable ownership")
+            self.assertFalse(host_k3s.alive(child), "an untracked child survived the failed handoff")
+            self.assertFalse(host_k3s.has_owners(root))
+        finally:
+            if runner.poll() is None:
+                runner.kill()
+                runner.wait(timeout=5)
+            if child and host_k3s.alive(child):
+                os.kill(child["pid"], signal.SIGTERM)
+
     def test_unsupported_topology_fails_before_podman_prerequisite_work(self):
         """Remote and nested requests cannot silently create a cluster elsewhere."""
         for nested, environment in ((True, {}), (False, {"CONTAINER_HOST": "ssh://test"}),
