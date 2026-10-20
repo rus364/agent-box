@@ -1,6 +1,6 @@
 # Release notes
 
-## Unreleased — next major version
+## 2.0.0
 
 - **Breaking:** `box.k3s.enabled` now also selects the managed project cluster
   in native `--host` sessions. Both modes share one rootless-Podman sidecar,
@@ -39,8 +39,28 @@
 - **Breaking image contract:** new workspace images no longer provide
   `playwright-mcp`, Chromium or `agent-box-browser-smoke`. Use the per-session
   `agent_box_browser` MCP integration, or install direct browser scripting tools
-  in the project. Keep this change for a major release; no version/tag is
-  published by this implementation.
+  in the project.
+
+- Add off-by-default host `/tmp` sharing through `box.host_tmp` for workspaces
+  and their sidecars, with checks against the actual creation-time mount.
+  This broadens host access and must be selected explicitly in host settings.
+- Add the optional AWS CLI v2 image group and selected AWS profile forwarding
+  under **Credentials → Cloud CLI profiles → Amazon Web Services (aws)**.
+  Preserve profile names, role-source chains and referenced SSO/login caches;
+  diagnose unsupported or missing dependencies. No profile is selected on upgrade.
+- Wait for the Codex Remote Control transport before showing pairing readiness;
+  allow Ctrl-C to cancel startup. Transport readiness does not prove phone pairing.
+- Fix the reusable AUR workflow secret handoff and include workflow contract
+  fixtures in source archives.
+
+Upgrade directly from any 1.x release through the installer that owns the package.
+Global and project configuration migrate from schema 1 to 2 while preserving
+saved settings and explicit disabled choices. Browser tooling in custom scripts
+needs the replacement described above. Stop/relaunch existing sessions to adopt
+the new immutable runtime and browser/k3s policy; active runtimes and workspace
+volumes are retained. New personal-browser, host-tmp and AWS access stay opt-in.
+Automated release checks cover packages and migrations; successful cloud login,
+personal-browser consent and phone pairing require their own live acceptance.
 
 ## 1.1.0
 
