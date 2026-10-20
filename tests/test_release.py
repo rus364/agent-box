@@ -1,9 +1,14 @@
 """Release guards stop wrong tags and incomplete or altered distribution payloads."""
 import io
+import hashlib
+import json
 from pathlib import Path
+import subprocess
 import tarfile
 import tempfile
 import unittest
+from unittest import mock
+import urllib.error
 import zipfile
 
 from tools import release, package_metadata
@@ -76,3 +81,86 @@ Documentation="{repository}/blob/{tag}/docs/README.md"
             (dist / "old.whl").write_text("leftover")
             with self.assertRaisesRegex(ValueError, "exactly"):
                 release.artifacts(dist)
+
+
+class IndexVisibilityTests(unittest.TestCase):
+    def test_installers_wait_for_simple_index_after_release_metadata_is_visible(self):
+        """Metadata success alone must not send installers to a still-stale index."""
+        with tempfile.TemporaryDirectory() as directory:
+            wheel = Path(directory) / "agent_box_tool-1.0.0-py3-none-any.whl"
+            with zipfile.ZipFile(wheel, "w") as archive:
+                archive.writestr("agent_box_tool-1.0.0.dist-info/METADATA",
+                                 "Project-URL: Source, https://example.org\n\nDescription")
+            source = Path(directory) / "agent_box_tool-1.0.0.tar.gz"
+            source.write_bytes(b"source")
+            paths = [wheel, source]
+            files = [{"filename": p.name, "url": f"https://files.example/{p.name}",
+                      "digests": {"sha256": hashlib.sha256(p.read_bytes()).hexdigest()}}
+                     for p in paths]
+            simple_files = [{"filename": f["filename"], "hashes": f["digests"]} for f in files]
+            simple_reads = []
+
+            def response(request, timeout):
+                url = request.full_url if hasattr(request, "full_url") else request
+                if "/simple/" in url:
+                    simple_reads.append(url)
+                    self.assertEqual(request.get_header("Accept"), "application/vnd.pypi.simple.v1+json")
+                    visible = simple_files[:1] if len(simple_reads) == 1 else simple_files
+                    return io.BytesIO(json.dumps({"files": visible}).encode())
+                if "/pypi/" in url:
+                    return io.BytesIO(json.dumps({"urls": files, "info": {
+                        "description": "Description", "project_urls": {"Source": "https://example.org"},
+                    }}).encode())
+                return io.BytesIO(next(p.read_bytes() for p in paths if url.endswith(p.name)))
+
+            def install(*args):
+                self.assertEqual(len(simple_reads), 2, "wait for both files before installing")
+                # An actual installer/selftest failure must not become a visibility retry.
+                raise subprocess.CalledProcessError(1, "agent-box selftest")
+
+            with mock.patch.object(release.urllib.request, "urlopen", side_effect=response), \
+                    mock.patch.object(release.time, "sleep") as sleep, \
+                    mock.patch.object(release, "install_tools", side_effect=install) as installers:
+                with self.assertRaises(subprocess.CalledProcessError):
+                    release.verify_index("https://test.example", paths, "1.0.0")
+                sleep.assert_called_once_with(3)
+                installers.assert_called_once_with("agent-box-tool==1.0.0", "1.0.0", "https://test.example")
+
+    def test_visible_simple_index_adds_no_sleep(self):
+        """Already published releases should not pay a fixed propagation delay."""
+        content = {"files": [{"filename": "new.whl", "hashes": {"sha256": "checked"}},
+                             {"filename": "old.whl", "hashes": {"sha256": "old"}}]}
+        with mock.patch.object(release.urllib.request, "urlopen",
+                               return_value=io.BytesIO(json.dumps(content).encode())) as fetch, \
+                mock.patch.object(release.time, "sleep") as sleep:
+            release.wait_for_simple_index("https://test.example", {"new.whl": "checked"})
+            fetch.assert_called_once()
+            sleep.assert_not_called()
+
+    def test_simple_index_digest_mismatch_fails_without_retry(self):
+        """A collision is an integrity error, not eventual publication visibility."""
+        content = {"files": [{"filename": "new.whl", "hashes": {"sha256": "different"}}]}
+        with mock.patch.object(release.urllib.request, "urlopen",
+                               return_value=io.BytesIO(json.dumps(content).encode())) as fetch, \
+                mock.patch.object(release.time, "sleep") as sleep:
+            with self.assertRaisesRegex(ValueError, "Simple index digest differs"):
+                release.wait_for_simple_index("https://test.example", {"new.whl": "checked"})
+            fetch.assert_called_once()
+            sleep.assert_not_called()
+
+    def test_missing_or_unreachable_simple_index_has_a_bounded_wait(self):
+        """A missing release or unavailable service must eventually fail the gate."""
+        for unavailable in (False, True):
+            with self.subTest(unavailable=unavailable):
+                def response(*args, **kwargs):
+                    if unavailable:
+                        raise urllib.error.URLError("unavailable")
+                    return io.BytesIO(b'{"files": []}')
+
+                with mock.patch.object(release.urllib.request, "urlopen", side_effect=response) as fetch, \
+                        mock.patch.object(release.time, "sleep") as sleep, \
+                        mock.patch("builtins.print"):
+                    with self.assertRaisesRegex(ValueError, "did not appear in the Simple index"):
+                        release.wait_for_simple_index("https://test.example", {"new.whl": "checked"})
+                    self.assertEqual(fetch.call_count, 20)
+                    self.assertEqual(sleep.call_count, 19)

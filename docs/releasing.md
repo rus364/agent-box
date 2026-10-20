@@ -32,6 +32,13 @@ References: [PyPI Trusted Publishing](https://docs.pypi.org/trusted-publishers/)
 
 ## Prepare and publish
 
+CI runs on pushes to `main`, pull requests and manual dispatches. For a branch
+without a PR, use `gh workflow run ci.yml --ref BRANCH` when hosted validation is
+needed. Release tags run only Release, which owns the release test matrix and
+runs lint once in its build job. CI keeps build/install checks on each supported
+Python version and native Arch packaging checks. Both workflows use Ruff 0.17.1;
+update their pins together.
+
 1. Assess compatibility using the [migration checklist](compatibility.md#writing-a-migration).
    Select the SemVer version, update `project.version` in `pyproject.toml` and
    add a matching `## MAJOR.MINOR.PATCH` entry in `CHANGELOG.md`, then review
@@ -79,7 +86,10 @@ References: [PyPI Trusted Publishing](https://docs.pypi.org/trusted-publishers/)
    `id-token: write`; they do not check out or build source. The PyPA action also
    publishes provenance attestations. Registry verification also compares the
    published description and project URLs to the checked wheel. TestPyPI/PyPI
-   success are distinct checks.
+   success are distinct checks. Verification waits for both release metadata and
+   the installer's Simple index to expose the checked files before running
+   uv/pipx. Index visibility retries are bounded; digest mismatches and failed
+   installation/selftests still fail the job.
 6. Verify the published package can build the image, start a workspace and run a
    Claude session locally. Exercise an upgrade while a workspace is active:
    retain its old runtime and data, then explicitly stop/relaunch to use the new

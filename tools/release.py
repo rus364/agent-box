@@ -136,6 +136,27 @@ def install_tools(spec, version, index=None):
         installed_checks(root / "pipx/venvs/agent-box-tool/bin/python", root / "pipx-bin/agent-box", version, root, env)
 
 
+def wait_for_simple_index(index, expected):
+    # Release metadata can precede the index that uv/pip actually resolve against.
+    request = urllib.request.Request(f"{index}/simple/{NAME}/",
+                                     headers={"Accept": "application/vnd.pypi.simple.v1+json"})
+    for attempt in range(20):
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                published = {file["filename"]: file for file in json.load(response)["files"]}
+            for name in expected.keys() & published.keys():
+                if published[name]["hashes"].get("sha256") != expected[name]:
+                    raise ValueError(f"Simple index digest differs from the checked build: {name}")
+            if expected.keys() <= published.keys():
+                return
+        except (urllib.error.URLError, TimeoutError):
+            pass
+        if attempt == 19:
+            raise ValueError("The complete release did not appear in the Simple index")
+        print(f"Waiting for installer index visibility ({attempt + 1}/20): {index}", flush=True)
+        time.sleep(3)
+
+
 def verify_index(index, paths, version):
     expected = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in paths}
     # Uploads and index propagation are separate; tolerate bounded publication lag.
@@ -164,6 +185,7 @@ def verify_index(index, paths, version):
     if (release["info"]["description"].strip() != info.get_payload().strip()
             or release["info"]["project_urls"] != project_urls(info)):
         raise ValueError("Published description or project URLs differ from the checked wheel")
+    wait_for_simple_index(index, expected)
     install_tools(f"{NAME}=={version}", version, index)
 
 
