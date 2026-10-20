@@ -39,6 +39,14 @@ class K3sRuntimeTest(IsolatedRuntimeTest):
         self.workspace = Workspace(root, root)
         self.state = runtime.k3s_state_dir(runtime.workspace_runtime_state(self.workspace))
 
+    def record_box(self, config):
+        """Use the actual persisted policy produced for a newly created workspace box."""
+        with mock.patch.object(runtime.k3s, "api_port", return_value=41234):
+            spec = runtime.workspace_container_spec(self.workspace, [], Path.cwd(), config)
+        spec.runtime_state.root.mkdir(parents=True, exist_ok=True)
+        runtime.atomic_write_json(spec.runtime_state.root / f"box-{spec.policy_id}.json",
+                                  runtime.workspace_box_policy(spec), 0o600)
+
 
 class BoxIdentityTests(K3sRuntimeTest):
     def spec(self, config, port=41234):
@@ -142,6 +150,20 @@ class ReleaseTests(K3sRuntimeTest):
                 redirect_stderr(io.StringIO()):
             runtime.release_k3s(self.workspace, config)
 
+    def test_gone_container_uses_recorded_lifetime_and_retention_without_host_history(self):
+        """Attach cleanup must protect container-first data after saved defaults change."""
+        self.state.mkdir(parents=True)
+        self.record_box(k3s_config(lifetime="persistent", persistent_data=True))
+        self.release(k3s_config(lifetime="box", persistent_data=False))
+        runtime.k3s.stop.assert_not_called()
+
+    def test_unreadable_container_policy_cannot_authorize_automatic_disposal(self):
+        """Damaged or future records preserve data until the owner repairs or removes it."""
+        self.state.mkdir(parents=True)
+        (self.state.parent / "box-test.json").write_text('{"format_version":999}')
+        self.release(k3s_config(lifetime="box", persistent_data=False))
+        runtime.k3s.stop.assert_not_called()
+
     def started_once(self):
         self.state.mkdir(parents=True)
         (self.state / "kubeconfig").write_text("x")
@@ -212,6 +234,28 @@ class StopCommandTests(K3sRuntimeTest):
         runtime.k3s.stop.assert_called_once()
         runtime.k3s.remove.assert_not_called()
         self.assertIn("stopped the k3s cluster", output)
+
+    def test_stop_uses_container_creation_retention_without_host_history(self):
+        """Changing defaults cannot change what ordinary stop keeps or discards."""
+        self.state.mkdir(parents=True)
+        for keep in (True, False):
+            with self.subTest(keep=keep):
+                for policy in self.state.parent.glob("box-*.json"):
+                    policy.unlink()
+                self.record_box(k3s_config(persistent_data=keep))
+                with mock.patch.object(runtime, "inspect_workspace_container",
+                                       return_value={"State": {"Status": "running"}}), \
+                     mock.patch.object(runtime, "tmux_sessions", return_value=[]), \
+                     mock.patch.object(runtime, "remove_workspace_container_then_confirm_absent"):
+                    self.stop(config=k3s_config(persistent_data=not keep))
+                self.assertEqual(runtime.k3s.stop.call_args.args[1].persistent_data, keep)
+
+    def test_stop_preserves_data_when_container_creation_policy_is_unreadable(self):
+        """Explicit stop may stop an idle cluster, but a broken policy cannot delete its data."""
+        self.state.mkdir(parents=True)
+        (self.state.parent / "box-test.json").write_text('{"format_version":999}')
+        self.stop(config=k3s_config(persistent_data=False))
+        self.assertTrue(runtime.k3s.stop.call_args.args[1].persistent_data)
 
     def test_a_workspace_that_never_ran_a_cluster_asks_podman_nothing_about_one(self):
         self.stop()

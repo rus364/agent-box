@@ -1765,9 +1765,12 @@ def release_k3s(workspace: Workspace, config: Config | None = None,
     retained = host_k3s.load(runtime_state.root)
     if retained and retained["owners"]:
         return
-    settings = (Config.from_dict({"box": retained["box"]}) if retained else
-                config or effective_config(runtime_config_base())).box.k3s
-    if retained and config is not None and not config.box.k3s.enabled:
+    recorded = (Config.from_dict({"box": retained["box"]}) if retained else
+                last_box_config(runtime_state, config))
+    if recorded is None:
+        return
+    settings = recorded.box.k3s
+    if config is not None and not config.box.k3s.enabled:
         # Only an explicit new disabled environment withdraws access. An
         # attach/cleanup command's changed defaults cannot erase retained data.
         settings = replace(settings, enabled=False)
@@ -3367,8 +3370,14 @@ def stop_main(args: list[str], workspace_root: str = "") -> int:
     with workspace_transition_lock(workspace):
         host_k3s.refuse_owners(runtime_state.root)
         retained = host_k3s.load(runtime_state.root)
+        box_config = last_box_config(runtime_state, config)
         if retained:
             config.box.k3s = Config.from_dict({"box": retained["box"]}).box.k3s
+        elif box_config is not None:
+            config.box.k3s = box_config.box.k3s
+        else:
+            # An unreadable creation policy cannot authorize deleting data.
+            config.box.k3s = replace(config.box.k3s, persistent_data=True)
         current = inspect_workspace_container(name)
         if current is None:
             print("agent-box: no workspace container for this project", file=sys.stderr)
@@ -3398,7 +3407,6 @@ def stop_main(args: list[str], workspace_root: str = "") -> int:
                                                                k3s_state_dir(runtime_state)):
             kept = "" if config.box.k3s.persistent_data else " and deleted its data"
             print(f"agent-box: stopped the k3s cluster {sidecar}{kept}", file=sys.stderr)
-        box_config = last_box_config(runtime_state)
         disposable = box_config is not None and not box_config.box.podman.persistent_data
         if (podman_data or disposable) and remove_nested_podman_volume(workspace_id):
             print(f"agent-box: deleted the nested Podman data {nested_podman_volume(workspace_id)}", file=sys.stderr)
