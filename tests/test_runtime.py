@@ -625,7 +625,6 @@ class CodexRuntimeOverridesTests(IsolatedRuntimeTest):
         self.assertEqual(command, [
             "codex",
             "-c", "mcp_servers.node_repl.enabled=false",
-            "--dangerously-bypass-approvals-and-sandbox",
             "exec", "hello",
         ])
 

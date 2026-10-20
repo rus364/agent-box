@@ -89,11 +89,14 @@ host stays the source of truth; changes made in the box disappear with it.
   server past the graceful timeout. A forced supervisor kill can leave the
   server holding the slot until it exits; no other session kills it. Natively
   managed Remote Control daemons do not take part in the lock.
-- Codex 0.154.0 rejects `/resume` of a remote thread when the TUI has explicit
-  permission overrides, including agent-box's container permission flag.
-  Dropping the flag would change new-thread permissions, because the TUI sends
-  its own settings over the server defaults, so agent-box keeps it and the
-  phone-created-thread resume stays unsupported.
+- Codex rejects `/resume` of a remote thread when the TUI has explicit
+  permission overrides (observed in 0.154.0; the diagnostic remains in 0.163.0).
+  Container permission bypass is now opt-in for both agents, independently of
+  Remote Control. Disabled adds no permission override. Enabled and explicit
+  user flags remain on both Codex clients: dropping them only from the TUI would
+  silently change new-thread permissions, because its thread/start settings
+  override server defaults. Command construction alone does not establish
+  authenticated remote resume or phone acceptance.
 
 ## Web links
 

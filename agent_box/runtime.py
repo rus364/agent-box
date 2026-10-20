@@ -265,7 +265,9 @@ def codex_command(
         command += ["-c", override]
     for override in codex_workflow_overrides(rest, config):
         command += ["-c", override]
-    return [*command, "--dangerously-bypass-approvals-and-sandbox", *rest]
+    if config.agents.codex.bypass_permissions:
+        command.append("--dangerously-bypass-approvals-and-sandbox")
+    return [*command, *rest]
 
 
 def ensure_state_dirs() -> None:
@@ -1091,6 +1093,7 @@ def sync_tracker_runtime(config: Config, directory: Path | None = None, *, polic
         # mounted; whether agent-box owns the host's statusLine slot stays host-only.
         "agents": {
             "claude": {"remote_control": config.agents.claude.remote_control,
+                       "bypass_permissions": config.agents.claude.bypass_permissions,
                        "statusline": {key: value for key, value in config.agents.claude.statusline.to_dict().items()
                                       if key != "enabled"}},
             "codex": config.agents.codex.to_dict(),
@@ -3239,7 +3242,7 @@ def runtime_main(
         elif agent == "claude":
             if is_claude_session_invocation(rest):
                 command = [
-                    "claude", "--dangerously-skip-permissions",
+                    "claude", *(["--dangerously-skip-permissions"] if config.agents.claude.bypass_permissions else []),
                     *claude_session_args(rest, channel, [*browser_claude_args(browser_dir),
                         *browser_claude_args(personal_dir, server_name=personal_browser.SERVER)]),
                 ]

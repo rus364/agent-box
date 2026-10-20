@@ -43,8 +43,11 @@ be affected by a router's selective VPN rules or TLS handling.
 
 - **Use the same conversation.** Send the first message in the terminal, then
   open that conversation on the phone. A conversation started on the phone is a
-  separate thread, and resuming it in the terminal is not supported with
-  agent-box's permission settings.
+  separate thread. Codex rejects remote `/resume` when the terminal has explicit
+  permission overrides, including **Bypass permissions (container)** or user
+  sandbox/approval arguments. Bypass is off by default; leave it off for this
+  path. Removing the override does not by itself prove authenticated remote
+  resume or phone acceptance for your installed Codex version.
 - **One session per Codex home.** Only one agent-box Codex Remote Control
   session may run per shared `CODEX_HOME`, across boxes and host mode; another
   launch starts normally with a notice. Detaching keeps the slot, exiting

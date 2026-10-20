@@ -110,18 +110,22 @@ class StatuslineConfig:
 class ClaudeConfig:
     #: Remote access is opt-in and applies to new interactive launches only.
     remote_control: bool = False
+    #: Container isolation does not imply consent to bypass CLI permissions.
+    bypass_permissions: bool = False
     #: Start `agent-box claude` with --channels plugin:telegram@claude-plugins-official.
     telegram_channel: bool = False
     statusline: StatuslineConfig = field(default_factory=StatuslineConfig)
 
     def to_dict(self) -> dict[str, Any]:
         return {"telegram_channel": self.telegram_channel, "remote_control": self.remote_control,
+                "bypass_permissions": self.bypass_permissions,
                 "statusline": self.statusline.to_dict()}
 
     @classmethod
     def from_dict(cls, data: Any) -> "ClaudeConfig":
         return cls(
             remote_control=_bool(data, "remote_control", False),
+            bypass_permissions=_bool(data, "bypass_permissions", False),
             telegram_channel=_bool(data, "telegram_channel", False),
             statusline=StatuslineConfig.from_dict(_mapping(data).get("statusline")),
         )
@@ -155,16 +159,20 @@ class NativeAgentWaitConfig:
 class CodexConfig:
     #: Remote access is opt-in; a session never switches the shared daemon.
     remote_control: bool = False
+    #: Keep native sandbox/approval choices unless container bypass is requested.
+    bypass_permissions: bool = False
     native_agent_wait: NativeAgentWaitConfig = field(default_factory=NativeAgentWaitConfig)
 
     def to_dict(self) -> dict[str, Any]:
         return {"remote_control": self.remote_control,
+                "bypass_permissions": self.bypass_permissions,
                 "native_agent_wait": self.native_agent_wait.to_dict()}
 
     @classmethod
     def from_dict(cls, data: Any) -> "CodexConfig":
         return cls(
             remote_control=_bool(data, "remote_control", False),
+            bypass_permissions=_bool(data, "bypass_permissions", False),
             native_agent_wait=NativeAgentWaitConfig.from_dict(_mapping(data).get("native_agent_wait")),
         )
 

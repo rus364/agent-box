@@ -1,5 +1,19 @@
 # Release notes
 
+## Unreleased — requires 3.0.0
+
+- **Breaking:** container Claude and Codex no longer bypass CLI permissions
+  automatically. In **Agents → Claude/Codex**, **Bypass permissions (container)**
+  controls `agents.claude.bypass_permissions` and
+  `agents.codex.bypass_permissions` independently, both off by default even for
+  older configurations. Enable either explicitly to restore its former flag.
+  Provider-native settings and explicit user CLI arguments still apply;
+  `--host` and managed workflow role policy are unchanged. Keeping Codex bypass
+  off removes agent-box's explicit-permission conflict with remote `/resume`;
+  authenticated remote resume and phone acceptance need their own verification.
+  The global JSON schema stays at 2; no saved data conversion is needed.
+  Stop/relaunch running immutable workspaces to adopt the new runtime.
+
 ## 2.0.0
 
 - **Breaking:** `box.k3s.enabled` now also selects the managed project cluster

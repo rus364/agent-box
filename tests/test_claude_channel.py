@@ -395,6 +395,7 @@ class ClaudeManagementArgvTests(unittest.TestCase):
         self.workspace = Workspace(self.root, self.root)
         self.config = Config()
         self.config.agents.claude.telegram_channel = True
+        self.config.agents.claude.bypass_permissions = True
 
     def _launch(self, rest):
         home = claude_home(str(self.root / "claude"), plugin=True, token=True)
@@ -425,7 +426,13 @@ class ClaudeManagementArgvTests(unittest.TestCase):
                 runtime.runtime_main(["claude", *rest], runtime.PACKAGE_ROOT)
         return captured[0], extra_env
 
-    def test_bare_session_gets_the_container_bypass_and_telegram_channel(self):
+    def test_channel_does_not_require_permission_bypass(self):
+        """Telegram opt-in must not imply permission bypass for the container session."""
+        self.config.agents.claude.bypass_permissions = False
+        argv, _ = self._launch([])
+        self.assertEqual(argv, ["claude", "--channels", CLAUDE_TELEGRAM_CHANNEL])
+
+    def test_bare_session_gets_the_opted_in_container_bypass_and_telegram_channel(self):
         argv, extra_env = self._launch([])
         self.assertEqual(argv[-4:], [
             "claude", "--dangerously-skip-permissions", "--channels", CLAUDE_TELEGRAM_CHANNEL,

@@ -66,7 +66,8 @@ class ConfigMenuTests(unittest.TestCase):
         expected = {
             (): ['agents', 'box', 'credentials', 'tracker', 'workflow', 'host'],
             ('agents',): ['default', 'claude', 'codex', 'host_env', 'external_apis'],
-            ('agents', 'codex'): ['native_agent_wait', 'remote_control'],
+            ('agents', 'codex'): ['native_agent_wait', 'remote_control', 'bypass_permissions'],
+            ('agents', 'claude'): ['remote_control', 'telegram_channel', 'bypass_permissions', 'statusline'],
             ('box',): ['tools', 'network', 'browser', 'k3s', 'podman', 'host_tmp', 'audio', 'links', 'env'],
             ('credentials',): ['git', 'github', 'registries', 'kubernetes', 'cloud'],
             ('host',): ['notifications', 'personal_browser', 'claude_skill_links'],

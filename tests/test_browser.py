@@ -153,7 +153,7 @@ class CodexBrowserInjectionTests(IsolatedRuntimeTest):
     def test_disabled_adds_no_mcp_configuration(self):
         command = runtime.codex_command(["exec", "hi"], browser_config(False), None)
         self.assertEqual(command, [
-            "codex", "--dangerously-bypass-approvals-and-sandbox", "exec", "hi"])
+            "codex", "exec", "hi"])
 
     def test_enabled_registers_the_agent_box_browser_server(self):
         command = runtime.codex_command(

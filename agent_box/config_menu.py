@@ -45,6 +45,7 @@ HELP = {
     "agents.claude": "Claude session settings, including --host, and its status line. Global only.",
     "agents.claude.telegram_channel": "Start Claude with Anthropic's official Telegram channel plugin. This requires its host-side setup and exposes the session through that channel.",
     "agents.claude.remote_control": "Request Remote Control for new interactive Claude sessions, including --host. Off preserves native behavior. Resume and explicit settings use the ordinary launch. Requires eligible Claude login.",
+    "agents.claude.bypass_permissions": "Add --dangerously-skip-permissions to Claude container sessions. Off by default; leaves the CLI's own permissions and your explicit arguments effective. Global only; never adds bypass in --host mode or changes managed workflow role policy.",
     "agents.claude.statusline": "Claude's status line and usage blocks shared with `agent-box usage all`. Global only; changes apply after Save and apply.",
     "agents.claude.statusline.enabled": "Keep Claude's status line pointed at agent-box. An existing user-owned status line is never overwritten.",
     "agents.claude.statusline.claude_usage": "Show Claude usage in the status line and `agent-box usage all`. Off skips Claude usage collection, API calls and token refresh for these displays. Explicit `usage claude` still works.",
@@ -53,6 +54,7 @@ HELP = {
     "agents.claude.statusline.command": "Extra segment in Claude's status line and `agent-box usage all`: shell command whose first output line is shown after Codex usage; empty shows nothing. Runs where the line is drawn (Claude's status line runs inside the box), cached 60s, 5s timeout, failures show —. Pass keys via environment, not in the command.",
     "agents.codex": "Codex interactive session settings, including --host.",
     "agents.codex.remote_control": "Request Remote Control through a private app-server; one agent-box RC session per CODEX_HOME. Unsupported launches keep the ordinary CLI. Off leaves native behavior unchanged.",
+    "agents.codex.bypass_permissions": "Add --dangerously-bypass-approvals-and-sandbox to Codex container launches. Off by default; leaves the CLI's own sandbox, approvals and your explicit arguments effective. On can prevent remote /resume. Global only; never adds bypass in --host mode or changes managed workflow role policy.",
     "agents.codex.native_agent_wait": "Cache-aware waiting for native Codex subagents in tracked workflow sessions. Global only.",
     "agents.codex.native_agent_wait.enabled": "Set the root coordinator's default wait interval for native subagents. Off leaves Codex's native wait default unchanged.",
     "agents.codex.native_agent_wait.interval_seconds": "Seconds between coordinator turns while native subagents are still running, from 10 through 3600. Default 1680 keeps each turn inside the 30-minute prompt-cache guarantee.",
@@ -172,6 +174,7 @@ ACTION_HELP = {
     "preset": "Set file and line thresholds together from a named review preset; all review fields remain editable.",
 }
 LABELS = {
+    "bypass_permissions": "Bypass permissions (container)",
     "agents": "Agents", "box": "Workspace box", "credentials": "Credentials", "host": "Host",
     "language": "Working language",
     "host_tmp": "Share host /tmp",
@@ -327,6 +330,12 @@ MENU_GROUPS = {
     ("agents", "codex"): (
         ("Native agents", ("native_agent_wait",)),
         ("Remote access", ("remote_control",)),
+        ("Permissions", ("bypass_permissions",)),
+    ),
+    ("agents", "claude"): (
+        ("Remote access", ("remote_control", "telegram_channel")),
+        ("Permissions", ("bypass_permissions",)),
+        ("Display", ("statusline",)),
     ),
     ("workflow", "worker"): (
         ("Models", ("models", "tiers")),

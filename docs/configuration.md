@@ -77,9 +77,33 @@ alone. The interactive menu refuses in a box.
 
 ## Defaults
 
+**Container permissions.** Under **Agents → Claude** and **Agents → Codex**,
+**Bypass permissions (container)** sits near Remote Control. Both
+`agents.claude.bypass_permissions` and `agents.codex.bypass_permissions`
+default to `false`, including when absent from older configuration files.
+These global settings apply to new container launches, including external API
+sessions. They leave native `--host` permissions and managed workflow role
+policy unchanged.
+
+Off leaves the provider's own configuration and your explicit CLI arguments in
+effect; it does not select a specific sandbox or approval mode. On adds
+`--dangerously-skip-permissions` for Claude sessions, or
+`--dangerously-bypass-approvals-and-sandbox` for Codex. Enable either separately
+in the menu, or explicitly restore the previous container behavior with:
+
+```bash
+agent-box config set --global agents.claude.bypass_permissions=true agents.codex.bypass_permissions=true
+```
+
+Codex's remote `/resume` rejects explicit permission overrides, including its
+bypass flag. Leave this setting off when resuming through Remote Control, and
+avoid explicit permission overrides in the CLI arguments. See
+[Remote Control](integrations/remote-control.md#codex) for remaining limits.
+
 | Setting | Default | Purpose |
 | --- | --- | --- |
 | Default agent | `claude` | What a bare `agent-box` starts |
+| Container permission bypass | off for both agents | Keep provider-native permissions unless explicitly enabled |
 | Claude status line | on | Workspace, Git state, context and provider usage in one line |
 | Git identity | on | `user.name` / `user.email` for commit attribution |
 | Provider transport settings | on | Base URL, proxies and CA bundle, so a box behind a proxy reaches the network |

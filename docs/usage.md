@@ -19,6 +19,12 @@ a command is refused rather than sent as a prompt.
 Everything after the agent name reaches the agent unchanged; `--` ends
 agent-box options early.
 
+Container launches keep the CLI's own permission settings by default. To
+explicitly bypass them, enable **Bypass permissions (container)** separately
+under **Agents → Claude** or **Agents → Codex**. See
+[container permissions](configuration.md#defaults) for the flags and upgrade
+path. Native `--host` launches always retain their own permission settings.
+
 ## The workspace box
 
 The first command in a project creates its box from the current settings and
