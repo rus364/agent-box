@@ -16,14 +16,14 @@ messages, internal Python functions and private workflow artifacts are not a
 stable programming API. Removing supported Python/platform versions or changing
 an existing default incompatibly requires a major release.
 
-The next major release changes container permission bypass from unconditional
+Release 3.0.0 changes container permission bypass from unconditional
 to opt-in for both agents. Missing `agents.claude.bypass_permissions` and
 `agents.codex.bypass_permissions` now mean `false`, including on direct upgrade
 from 1.x or 2.x. Enable either explicitly to restore its former behavior; see
 [container permissions](configuration.md#defaults). The new boolean fields are
 additive within global schema 2: no saved field is renamed or reinterpreted,
-and no conversion is needed. This launch-default change requires package
-version 3.0.0, independently of the unchanged JSON format. Running immutable
+and no conversion is needed. The package major version changes independently
+of the unchanged JSON format. Running immutable
 runtimes require explicit stop/relaunch to adopt it.
 
 ## Direct upgrades

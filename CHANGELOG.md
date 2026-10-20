@@ -1,6 +1,6 @@
 # Release notes
 
-## Unreleased — requires 3.0.0
+## 3.0.0
 
 - **Breaking:** container Claude and Codex no longer bypass CLI permissions
   automatically. In **Agents → Claude/Codex**, **Bypass permissions (container)**
@@ -13,6 +13,16 @@
   authenticated remote resume and phone acceptance need their own verification.
   The global JSON schema stays at 2; no saved data conversion is needed.
   Stop/relaunch running immutable workspaces to adopt the new runtime.
+
+Upgrade directly from any 1.x or 2.x release through the installer that owns
+the package. Missing bypass settings now mean off; no saved configuration is
+migrated into full permissions. To restore the previous behavior, enable
+**Bypass permissions (container)** separately for each agent in the host
+configuration menu and save/apply. Existing native provider settings and explicit
+CLI permission arguments still apply. Running sessions keep their immutable
+runtime until explicitly stopped and relaunched; workspace data is retained.
+The local remote-TUI check and isolated tests do not prove phone pairing or
+authenticated Remote Control acceptance.
 
 ## 2.0.0
 
