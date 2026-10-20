@@ -1,5 +1,18 @@
 # Release notes
 
+## 3.0.1
+
+- Wait for checked release files to appear in the installer-facing Simple index
+  before verifying uv/pipx installs. This tolerates publication lag after release
+  metadata becomes visible, while retaining hash checks and bounded failures.
+- Avoid duplicate CI on release tags and PR branch pushes. Keep automatic checks
+  on `main` and pull requests, with manual dispatch for other branches. Pin CI
+  actions and use the same Ruff version in CI and Release, running release lint
+  once instead of once per Python version.
+
+This patch updates release tooling and CI; application runtime and stored formats
+are unchanged from 3.0.0. Direct upgrades retain the existing compatibility rules.
+
 ## 3.0.0
 
 - **Breaking:** container Claude and Codex no longer bypass CLI permissions
