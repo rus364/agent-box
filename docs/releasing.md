@@ -43,27 +43,41 @@ update their pins together.
    Select the SemVer version, update `project.version` in `pyproject.toml` and
    add a matching `## MAJOR.MINOR.PATCH` entry in `CHANGELOG.md`, then review
    the complete release change. Keep prior public fixtures and migration steps.
-2. Run the full suite, selftest and lint. Build in a clean tree with release tools
-   installed (`build`, `twine`, `uv`, `pipx`; the workflow pins tested versions):
+2. Validate the changes being released. For a version-and-changelog-only commit
+   on top of already accepted code, run the metadata/documentation tests and
+   check the intended tag and release notes:
+
+   ```bash
+   python tests/run_suite.py discover -s tests -p test_package_metadata.py
+   python tests/run_suite.py discover -s tests -p test_docs_links.py
+   version=$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
+   python tools/release.py tag --tag "v$version"
+   python tools/release.py notes
+   ```
+
+   Use this sequence as the release task's `workflow validate` command. Changes
+   to implementation, migrations or packaging also need their relevant checks;
+   select them for the actual diff. Do not repeat the local full suite, build
+   and installer checks solely to prepare a version bump. Release CI runs the
+   full Python matrix and validates one immutable build before any upload.
+   A prior CI result on another commit never replaces those release gates.
+
+   For local packaging diagnosis, the same checks remain available with the
+   workflow's pinned `build`, `twine`, `uv` and `pipx` tools:
 
    ```bash
    python -m build
    python -m twine check --strict dist/*
    python tools/release.py artifacts --install
-   python tools/release.py notes
    ```
 
    `dist` must contain only this version's wheel and sdist. The helper compares
    every packaged runtime file with the source, then tests both distributions,
-   uv tool and pipx outside the checkout using temporary integration paths.
-   Source documentation keeps relative links, checked against local files and
-   headings by the documentation tests. The standard PEP 517 build generates
+   uv tool and pipx using temporary integration paths. The PEP 517 build derives
    absolute, release-tagged README links and project URLs from
-   `[tool.agent-box.release]` in `pyproject.toml`. Repository identity, document
-   paths and project URL templates live there; the version is not repeated in
-   links or scripts. Both wheel and sdist metadata must match this generated
-   content and contain no relative destinations. Twine checks rendering, which
-   alone does not prove that a link resolves from the PyPI page.
+   `[tool.agent-box.release]` in `pyproject.toml`; documentation tests check local
+   link destinations, and wheel/sdist metadata must match the generated content.
+   Twine checks rendering, which alone does not prove a public link resolves.
 3. For the first release, verify both publisher settings, repository visibility,
    environment restrictions and public-safe workflows before uploading. Disable
    any legacy workflow that still uses private runners until the reviewed hosted
@@ -91,20 +105,34 @@ update their pins together.
    20 attempts, three seconds apart, refreshing its index cache on retries.
    Healthy installs incur no delay. Other installer failures, digest mismatches
    and installed metadata/selftest failures stop immediately.
-6. Verify the published package can build the image, start a workspace and run a
-   Claude session locally. Exercise an upgrade while a workspace is active:
-   retain its old runtime and data, then explicitly stop/relaunch to use the new
-   runtime. Keep these live checks distinct from unit tests and `selftest`.
-7. After production verification, the workflow creates the GitHub release using
-   the checked changelog entry and the same distributions. Only this final job
-   receives `contents: write`; it does not check out or build source.
-   Complete the reviewed merge, restore any temporarily disabled workflows once
-   their safe configuration is on the default branch, and verify public CI.
+6. Actions creates the GitHub release automatically after production verification,
+   using the checked changelog entry and the same distributions. Only that job
+   receives `contents: write`; it does not check out or build source. Native Arch
+   checks start as soon as the distribution artifact is ready, in parallel with
+   Python tests and publication. AUR publication waits for both the checked Arch
+   metadata and GitHub Release; it does not gate Python publication.
+7. Record the workflow result and any required post-publication live acceptance.
+   For changes affecting runtime, installation or migration, verify the published
+   package can build the image, start a workspace and run a Claude session
+   locally; exercise an upgrade with an active workspace, preserving its runtime
+   and data before explicit stop/relaunch. These are operator checks, not an
+   unimplemented Actions gate. A release limited to CI/docs may reuse applicable
+   prior runtime evidence; state that no new live runtime check ran.
+   Complete the reviewed merge and verify public CI. Restore any temporarily
+   disabled workflows only once their safe configuration is on the default branch.
+
+Publication belongs to Actions. The coordinator prepares/reviews the commit,
+pushes its tag, watches the run, and investigates failures. A successful run
+already checks registry metadata, downloaded hashes and isolated uv/pipx installs;
+do not repeat those downloads/installs manually without a failure or a specific
+acceptance need. Record the run URL and its artifact hashes. When recovery is
+needed, inspect the failure and rerun only failed/dependent jobs; never rerun
+successful uploads just to wait for an index.
 
 No line in this runbook is evidence that an upload or live check already ran.
 Record actual workflow URLs, artifact hashes, installation results and live
-acceptance with the release task. AUR failure makes the overall Release run fail
-after PyPI and GitHub publication; those published artifacts remain valid.
+acceptance with the release task. AUR failure makes the overall Release run fail without blocking the independent
+PyPI/GitHub publication path; any published artifacts remain valid.
 Recover through the standalone AUR workflow below, without recreating the tag or
 republishing Python artifacts.
 
@@ -144,18 +172,26 @@ runs the source test suite after makepkg, and verifies system installation,
 selftest outside the source tree, reinstallation and removal with retained user
 state. No host home or
 container socket is mounted into the build. The pinned Arch image is updated
-by changing its digest in the CI and AUR workflows and rerunning those checks.
+by changing its digest in the CI and reusable Arch build workflows and rerunning
+those checks.
 The published recipe does not run development tests during user installation.
 Successful builds keep backend progress in `src/build.log`; a failed build prints
 that log and stops. Explicit package-data patterns include skills and runtime assets;
 the recipe applies this policy to older source archives that lack the setting.
 
-After GitHub Release publication, `release.yml` calls `aur.yml`. Its build job
-fetches the attached source archive and verifies its SHA-256 against the same
-version on PyPI, builds and tests the native package, then generates `.SRCINFO`
-with `makepkg --printsrcinfo`. Only the three checked AUR files are handed to
-the publishing job by immutable artifact ID. Build and test jobs receive no
-AUR credentials. This downstream update does not republish Python artifacts.
+Release calls `aur-build.yml` with the checked distribution artifact ID, so Arch
+builds the exact sdist without waiting for public assets. Artifact downloads fail
+on digest mismatches. The native build runs the source suite, package installation,
+selftest, reinstallation and removal checks, then generates `.SRCINFO` with
+`makepkg --printsrcinfo`. Only the three checked AUR files are handed off by
+immutable artifact ID. After GitHub Release succeeds, `aur-publish.yml` verifies
+that metadata against the published PyPI sdist hash before pushing to AUR. Build
+and test jobs receive no AUR credentials.
+
+The standalone `aur.yml` recovery workflow uses the same reusable build and
+publish jobs. Without a distribution artifact input, the build fetches the
+existing GitHub Release source and checks its hash against PyPI. Neither path
+republishes Python artifacts.
 
 For the first submission, or a packaging-only correction to an existing version,
 run the **AUR** workflow on `main` with the existing Python release version and

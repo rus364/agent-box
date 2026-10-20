@@ -83,9 +83,18 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.11'
+      - name: Prepare source archive
+        run: |
+          python -m pip install build==1.6.1
+          python -m build --sdist
       - name: Build and test native packaging
         run: |
           mkdir -p "$RUNNER_TEMP/arch-result"
+          archives=(dist/*.tar.gz)
+          [[ ${#archives[@]} == 1 && -f "${archives[0]}" ]]
           docker run --rm -v "$GITHUB_WORKSPACE:/repo:ro" -v "$RUNNER_TEMP/arch-result:/result" \
             archlinux:base@sha256:363129b67b2bc6c5a634f8fb4961a7e2eba213a2ec075d159127b1260290a722 \
-            bash /repo/tools/check_arch.sh candidate /result
+            bash /repo/tools/check_arch.sh artifact /result "" 1 "/repo/${archives[0]}"

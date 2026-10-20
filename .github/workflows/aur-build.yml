@@ -1,0 +1,64 @@
+name: Build Arch package
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+      revision:
+        default: '1'
+        type: string
+      distributions-id:
+        description: 'Checked distribution artifact from this run; empty fetches an existing release'
+        default: ''
+        type: string
+    outputs:
+      artifact-id:
+        value: ${{ jobs.build.outputs.artifact-id }}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    if: github.repository == 'rus364/agent-box'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: inputs.distributions-id != ''
+        with:
+          artifact-ids: ${{ inputs.distributions-id }}
+          path: dist
+          merge-multiple: true
+          digest-mismatch: error
+      - name: Build and verify source in Arch
+        env:
+          DISTRIBUTIONS_ID: ${{ inputs.distributions-id }}
+          PACKAGE_VERSION: ${{ inputs.version }}
+          PACKAGE_REVISION: ${{ inputs.revision }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/arch-result"
+          args=(release /result "$PACKAGE_VERSION" "$PACKAGE_REVISION")
+          if [[ -n "$DISTRIBUTIONS_ID" ]]; then
+            archives=(dist/*.tar.gz)
+            [[ ${#archives[@]} == 1 && -f "${archives[0]}" ]]
+            args=(artifact /result "$PACKAGE_VERSION" "$PACKAGE_REVISION" "/repo/${archives[0]}")
+          fi
+          docker run --rm -v "$GITHUB_WORKSPACE:/repo:ro" -v "$RUNNER_TEMP/arch-result:/result" \
+            archlinux:base@sha256:363129b67b2bc6c5a634f8fb4961a7e2eba213a2ec075d159127b1260290a722 \
+            bash /repo/tools/check_arch.sh "${args[@]}"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        id: upload
+        with:
+          name: aur-metadata
+          path: ${{ runner.temp }}/arch-result/metadata/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30

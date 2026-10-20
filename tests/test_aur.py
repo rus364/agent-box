@@ -21,28 +21,45 @@ def metadata(version='1.0.1', revision='1', name='agent-box'):
 
 class AurTests(unittest.TestCase):
     def test_reusable_release_passes_only_the_required_aur_secret(self):
-        """Environment secrets resolve empty unless the reusable caller passes their names."""
+        """Both callers must explicitly pass the key to the gated publishing workflow."""
         workflows = Path(__file__).resolve().parents[1] / '.github/workflows'
-        release = (workflows / 'release.yml').read_text()
-        reusable = (workflows / 'aur.yml').read_text()
-        caller = release.split('\n  aur:\n', 1)[1]
-        contract = reusable.split('\n  workflow_call:\n', 1)[1].split('\npermissions:', 1)[0]
-        self.assertIn('    secrets:\n      AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}\n', caller)
+        publish = (workflows / 'aur-publish.yml').read_text()
+        contract = publish.split('\n  workflow_call:\n', 1)[1].split('\npermissions:', 1)[0]
         self.assertIn('    secrets:\n      AUR_SSH_PRIVATE_KEY:\n        required: true\n', contract)
-        self.assertNotIn('secrets: inherit', release + reusable)
+        for name, job in (('release.yml', 'aur'), ('aur.yml', 'publish')):
+            caller = (workflows / name).read_text().split(f'\n  {job}:\n', 1)[1]
+            self.assertIn('    uses: ./.github/workflows/aur-publish.yml\n', caller)
+            self.assertIn('    secrets:\n      AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}\n', caller)
+            self.assertNotIn('secrets: inherit', caller)
 
     def test_aur_key_stays_in_environment_gated_publish_step(self):
-        """Builds stay credential-free and standalone recovery keeps the same environment gate."""
+        """Early native builds stay credential-free; recovery keeps the same environment gate."""
         workflows = Path(__file__).resolve().parents[1] / '.github/workflows'
         release = (workflows / 'release.yml').read_text()
-        reusable = (workflows / 'aur.yml').read_text()
-        build, publish = reusable.split('\njobs:\n', 1)[1].split('\n  publish:\n', 1)
-        self.assertIn('\n  workflow_dispatch:\n', reusable)
+        build = (workflows / 'aur-build.yml').read_text()
+        publish = (workflows / 'aur-publish.yml').read_text().split('\njobs:\n', 1)[1]
+        self.assertIn('\n  workflow_dispatch:\n', (workflows / 'aur.yml').read_text())
         self.assertNotIn('secrets.', build)
         self.assertNotIn('AUR_SSH_PRIVATE_KEY', release.split('\n  aur:\n', 1)[0])
         self.assertIn('\n    environment: aur\n', publish)
         self.assertEqual(publish.count('${{ secrets.AUR_SSH_PRIVATE_KEY }}'), 1)
         self.assertIn('          test -n "$AUR_SSH_PRIVATE_KEY"\n', publish)
+
+    def test_arch_overlaps_python_release_but_aur_waits_for_both_outputs(self):
+        """Native failures must not block Python publication or permit unchecked AUR pushes."""
+        workflows = Path(__file__).resolve().parents[1] / '.github/workflows'
+        release = (workflows / 'release.yml').read_text()
+        python_jobs, native_jobs = release.split('\n  arch:\n', 1)
+        arch, aur_job = native_jobs.split('\n  aur:\n', 1)
+        self.assertIn('    needs: build\n', arch)
+        self.assertIn('distributions-id: ${{ needs.build.outputs.artifact-id }}', arch)
+        self.assertNotIn('arch', python_jobs)
+        self.assertIn('    needs: [arch, github-release]\n', aur_job)
+        self.assertIn('artifact-id: ${{ needs.arch.outputs.artifact-id }}', aur_job)
+        for name, artifact in (('aur-build.yml', 'distributions-id'), ('aur-publish.yml', 'artifact-id')):
+            content = (workflows / name).read_text()
+            self.assertIn('artifact-ids: ${{ inputs.' + artifact + ' }}', content)
+            self.assertIn('digest-mismatch: error', content)
 
     def test_recipe_build_is_quiet_but_failed_backend_diagnostics_survive(self):
         """User builds cannot run the development suite or conceal a backend failure."""

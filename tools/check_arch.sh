@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Run only inside a disposable Arch container; never mount the user's home.
 set -euo pipefail
-mode=${1:?usage: check_arch.sh candidate|release OUTPUT [VERSION] [PKGREL]}
+mode=${1:?usage: check_arch.sh candidate|release|artifact OUTPUT [VERSION] [PKGREL] [ARCHIVE]}
 output=${2:?output directory required}
 version=${3:-}
 revision=${4:-1}
-case "$mode" in candidate|release) ;; *) exit 2 ;; esac
+case "$mode" in candidate|release|artifact) ;; *) exit 2 ;; esac
 if [[ $(id -u) != 0 || ! -e /run/.containerenv && ! -e /.dockerenv ]]; then
   echo 'Run this check inside a disposable Arch container' >&2
   exit 1
@@ -18,6 +18,9 @@ mkdir -p /work/repo "$output"
   tar --null -T - -cf -) | tar -xf - -C /work/repo
 if [[ "$mode" == candidate ]]; then
   (cd /work/repo && python -m build --sdist --no-isolation --outdir /work/dist)
+elif [[ "$mode" == artifact ]]; then
+  mkdir -p /work/dist
+  cp -- "${5:?checked source archive required}" /work/dist/
 else
   python /work/repo/tools/aur.py fetch --version "$version" --directory /work/dist
 fi

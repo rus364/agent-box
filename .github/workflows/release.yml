@@ -187,10 +187,17 @@ jobs:
           gh release create "$RELEASE_TAG" dist/* --repo "$GITHUB_REPOSITORY"
           --verify-tag --title "$RELEASE_TAG" --notes-file release-notes.md
 
+  arch:
+    needs: build
+    uses: ./.github/workflows/aur-build.yml
+    with:
+      version: ${{ needs.build.outputs.version }}
+      distributions-id: ${{ needs.build.outputs.artifact-id }}
+
   aur:
-    needs: [build, github-release]
-    uses: ./.github/workflows/aur.yml
+    needs: [arch, github-release]
+    uses: ./.github/workflows/aur-publish.yml
     secrets:
       AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
     with:
-      version: ${{ needs.build.outputs.version }}
+      artifact-id: ${{ needs.arch.outputs.artifact-id }}
