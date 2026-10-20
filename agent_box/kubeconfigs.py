@@ -31,6 +31,7 @@ _LINE = re.compile(r"^(\s*)(-\s+)?([A-Za-z][\w-]*):(?:\s+(.*?))?\s*$")
 _ITEM = re.compile(r"^\s*-\s+(.*?)\s*$")
 #: The yc commands the image's yc group answers to; any other path to a yc is the host's alone.
 BOX_YC_COMMANDS = ("yc", "/usr/local/bin/yc", str(YC_INSTALLER_BIN))
+BOX_AWS_COMMANDS = ("aws", "/usr/local/bin/aws", "/usr/bin/aws")
 #: Keys whose value is a path to another file the kubeconfig needs.
 _FILE_KEYS = ("certificate-authority", "client-certificate", "client-key", "tokenFile")
 
@@ -55,23 +56,37 @@ def _block(lines: list[str], start: int, column: int) -> list[str]:
     return nested
 
 
-def _exec(block: list[str]) -> tuple[str, str]:
+def _exec(block: list[str]) -> tuple[str, str, list[str], dict[str, str]]:
     """The exec command as written and its ``--profile``, never its other arguments."""
-    command, args, in_args = "", [], False
+    command, args, section, env, entry = "", [], "", {}, {}
     for line in block:
         key = _LINE.match(line)
         if key and not key.group(2):
-            in_args = key.group(3) == "args"
+            if section == "env" and key.group(3) in ("name", "value"):
+                entry[key.group(3)] = _scalar(key.group(4))
+                continue
+            if section == "env" and entry.get("name"):
+                env[entry["name"]] = entry.get("value", "")
+            section = key.group(3)
             if key.group(3) == "command":
                 command = _scalar(key.group(4))
             continue
+        if section == "env" and key and key.group(2):
+            if entry.get("name"):
+                env[entry["name"]] = entry.get("value", "")
+            entry = {key.group(3): _scalar(key.group(4))}
+            continue
         item = _ITEM.match(line)
-        if in_args and item:
+        if section == "args" and item:
             args.append(_scalar(item.group(1)))
+    if section == "env" and entry.get("name"):
+        env[entry["name"]] = entry.get("value", "")
     profile = next((arg.split("=", 1)[1] for arg in args if arg.startswith("--profile=")), "")
     if not profile and "--profile" in args[:-1]:
         profile = args[args.index("--profile") + 1]
-    return command, profile
+    if Path(command).name == "aws" and not profile:
+        profile = env.get("AWS_PROFILE") or env.get("AWS_DEFAULT_PROFILE") or "default"
+    return command, profile, args, env
 
 
 def _exec_label(command: str, profile: str) -> str:
@@ -92,6 +107,7 @@ class Summary:
     #: The yc profiles its users sign in with, "" for yc's current one. yc runs in the box when
     #: its profile is forwarded, so whether that is a problem depends on the launch.
     yc_profiles: list[str] = field(default_factory=list)
+    aws_profiles: list[str] = field(default_factory=list)
 
 
 def describe(text: str) -> Summary:
@@ -119,13 +135,27 @@ def describe(text: str) -> Summary:
             # Flow style ({exec: ...}) hides keys from a line scanner; unread must not pass for safe.
             unread = unread or value[:1] in ("{", "[")
             if key == "exec":
-                command, profile = _exec(_block(lines, index, indent))
+                command, profile, args, env = _exec(_block(lines, index, indent))
                 label = _exec_label(command, profile)
                 if command in BOX_YC_COMMANDS:
                     summary.yc_profiles.append(profile)
                 elif Path(command).name == "yc":
                     summary.warnings.append(f"{label} runs {command}, which the box does not have: its yc is "
                                             f"yc on PATH or {YC_INSTALLER_BIN}")
+                elif Path(command).name == "aws":
+                    if command not in BOX_AWS_COMMANDS:
+                        summary.warnings.append(f"{label} uses an unsupported executable path; "
+                                                "the box has aws on PATH, /usr/bin/aws and /usr/local/bin/aws")
+                    elif not any(args[i:i + 2] == ["eks", "get-token"] for i in range(len(args) - 1)):
+                        summary.warnings.append(f"{label}: only aws eks get-token authentication is supported")
+                    else:
+                        summary.aws_profiles.append(profile)
+                    overrides = sorted(k for k in env if k.startswith("AWS_")
+                                       and k not in ("AWS_PROFILE", "AWS_DEFAULT_PROFILE", "AWS_REGION", "AWS_DEFAULT_REGION",
+                                                     "AWS_STS_REGIONAL_ENDPOINTS"))
+                    if overrides:
+                        summary.warnings.append(f"{label}: exec environment overrides AWS settings "
+                                                f"({', '.join(overrides)}); selected-profile authentication is not assured")
                 else:
                     summary.warnings.append(f"{label} does not run inside the box, so this user cannot authenticate there")
             elif key == "auth-provider":
@@ -200,7 +230,10 @@ def choices(chosen: list[str]) -> tuple[list[str], list[str], list[str], list[st
                                   f"Authentication: {auth}", *summary.warnings,
                                   *[f"{_exec_label('yc', profile)} works in the box once yc profile "
                                     f"{profile or '(the current one)'} is forwarded in Cloud CLI profiles"
-                                    for profile in dict.fromkeys(summary.yc_profiles)]]))
+                                    for profile in dict.fromkeys(summary.yc_profiles)],
+                                  *[f"{_exec_label('aws', profile)} needs the aws tool group and forwarded AWS profile "
+                                    f"{profile}, with its full account access"
+                                    for profile in dict.fromkeys(summary.aws_profiles)]]))
         marks.append(auth)
     return options, details, marks, found.problems
 
@@ -215,6 +248,22 @@ def _yc_warnings(config, summary: Summary) -> list[str]:
             "(Cloud CLI profiles in agent-box config)"
             for profile in dict.fromkeys(summary.yc_profiles)
             if (profile not in forwarded if profile else not forwarded)]
+
+
+def _aws_warnings(config, summary: Summary) -> list[str]:
+    if not summary.aws_profiles:
+        return []
+    from . import aws_cloud
+    selected = config.credentials.cloud.aws if config.credentials.cloud.active else []
+    forwarded, _ = aws_cloud.closure(aws_cloud.read(), selected) if selected else ([], [])
+    warnings = []
+    if not config.box.tools.groups["aws"]:
+        warnings.append("exec: aws needs the aws tool group, which is off")
+    for profile in dict.fromkeys(summary.aws_profiles):
+        if profile not in forwarded:
+            warnings.append(f"exec: aws cannot sign in: AWS profile {profile} is not forwarded or has unsupported "
+                            "credentials (Cloud CLI profiles in agent-box config)")
+    return warnings
 
 
 def runtime_dir(workspace_id: str) -> Path:
@@ -261,7 +310,8 @@ def sync(config, workspace_id: str) -> list[str]:
             continue
         atomic_write_bytes(directory / name, data, 0o600)
         summary = describe(data.decode("utf-8", "replace"))
-        problems += [f"Kubeconfig {name}: {warning}" for warning in [*summary.warnings, *_yc_warnings(config, summary)]]
+        problems += [f"Kubeconfig {name}: {warning}" for warning in
+                     [*summary.warnings, *_yc_warnings(config, summary), *_aws_warnings(config, summary)]]
     for path in directory.iterdir():
         if path.name not in chosen.files:
             path.unlink(missing_ok=True)

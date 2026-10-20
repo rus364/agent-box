@@ -42,6 +42,7 @@ ARG TOOLS_VIRTUALIZATION=0
 ARG TOOLS_PODMAN=0
 ARG TOOLS_SKOPEO=0
 ARG TOOLS_YC=0
+ARG TOOLS_AWS=0
 ARG PODMAN_UID_RANGES=[]
 ARG PODMAN_GID_RANGES=[]
 # The canonical, comma-separated set the flags above add up to. Passed
@@ -570,6 +571,20 @@ RUN set -eux; \
         "/tmp/linux-${arch}"
 
 #
+# AWS CLI v2 (group: aws)
+#
+# AWS's installer verifies the archive signature with its published key and
+# supports x86_64/aarch64. System paths avoid a per-user updater/home install.
+
+RUN set -eux; \
+    if [ "${TOOLS_AWS}" != "1" ]; then echo "agent-box: aws skipped"; exit 0; fi; \
+    curl -fsSL https://awscli.amazonaws.com/v2/install.sh -o /tmp/aws-install.sh; \
+    AWS_CLI_INSTALL_SKIP_SIGNATURE_VERIFICATION=false bash /tmp/aws-install.sh --system --quiet; \
+    ln -s /usr/local/bin/aws /usr/bin/aws; \
+    rm /tmp/aws-install.sh; \
+    aws --version
+
+#
 # Yandex Cloud CLI (group: yc)
 #
 # The release binary itself, not the installer, which would also edit rc
@@ -650,6 +665,11 @@ RUN set -eux; \
 RUN set -eux; \
     if [ "${TOOLS_SKOPEO}" != "1" ]; then exit 0; fi; \
     skopeo --version
+
+RUN set -eux; \
+    if [ "${TOOLS_AWS}" != "1" ]; then exit 0; fi; \
+    aws --version; \
+    /usr/bin/aws --version
 
 RUN set -eux; \
     if [ "${TOOLS_YC}" != "1" ]; then exit 0; fi; \

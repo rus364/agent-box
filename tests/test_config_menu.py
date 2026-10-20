@@ -361,6 +361,26 @@ class ConfigMenuTests(unittest.TestCase):
         self.assertTrue(any("Image tools: yc on for" in " ".join(frame.split()) for frame in screen.frames))
         self.assertFalse(any("SECRET" in frame for frame in screen.frames))
 
+    def test_aws_profile_selection_shows_auth_and_enables_its_tool_group(self):
+        """The existing credentials menu must grant AWS access only after a deliberate profile choice."""
+        import curses
+        from agent_box import aws_cloud
+        with tempfile.TemporaryDirectory() as temp:
+            aws = Path(temp)
+            (aws / "credentials").write_text("[dev]\naws_access_key_id = SECRET-KEY\naws_secret_access_key = SECRET-ACCESS\n")
+            config = Config()
+            config.credentials.cloud.enabled = True
+            keys = [*select("credentials"), "\n", *select("cloud", ("credentials",)), "\n",
+                    *select("aws", ("credentials", "cloud")), "\n", *select("profiles", ("credentials", "cloud", "aws")),
+                    "\n", curses.KEY_HOME, " ", "\n", "\x1b", "\x1b", "\x1b", curses.KEY_END, curses.KEY_UP, "\n"]
+            with patch.object(aws_cloud, "AWS_CONFIG_DIR", aws):
+                result, screen = self.edit(config, keys)
+        self.assertEqual(result.config.credentials.cloud.aws, ["dev"])
+        self.assertTrue(result.config.box.tools.groups["aws"])
+        self.assertFalse(result.config.box.tools.groups["yc"])
+        self.assertTrue(any("static keys" in frame for frame in screen.frames))
+        self.assertFalse(any("SECRET" in frame for frame in screen.frames))
+
     def test_a_tool_group_stays_ticked_while_configuration_needing_it_is_forwarded(self):
         """Unticking kubectl or yc under forwarded configuration would build a box with configs
         and no tool to read them. Every way to the tick counts: the toggle, a reset of the row

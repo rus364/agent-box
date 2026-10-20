@@ -69,11 +69,13 @@ HELP = {
     "credentials.registries.helm_repositories": "Helm repositories found in the host's repositories.yaml, forwarded with their credentials. The box keeps its own index cache; refresh it with helm repo update.",
     "credentials.kubernetes": "Forward the kubeconfig files you choose from the host's ~/.kube into the box's ~/.kube, each whole, unmerged and under its own name; the box's ~/.kube is then read-only. KUBECONFIG is left to k3s. Copies are re-rendered at every launch. Off by default; --[no-]kubeconfigs overrides it for one session.",
     "credentials.kubernetes.enabled": "Forward the chosen kubeconfigs into workspace boxes, read-only. Disabled by default because a kubeconfig reaches a real cluster. Turning it on with files chosen also ticks the kubernetes tool group. Changing it recreates the box.",
-    "credentials.kubernetes.files": "Kubeconfigs found in the host's ~/.kube, symlinks included, each marked with how it authenticates. exec: yc works once its yc profile is forwarded in Cloud CLI profiles; other exec plugins do not run inside the box. A chosen config is kubectl's default cluster unless k3s is on, which keeps its own as the default.",
+    "credentials.kubernetes.files": "Kubeconfigs found in the host's ~/.kube, symlinks included, each marked with how it authenticates. exec: yc and aws eks get-token need their matching profiles and tool groups in Cloud CLI profiles; other exec plugins do not run inside the box. A chosen config is kubectl's default cluster unless k3s is on, which keeps its own as the default.",
     "credentials.cloud": "Forward the cloud CLI profiles you choose from the host into the box, each with its sign-in: the agent can then do everything those accounts may do in the cloud, not only reach one cluster. Re-rendered at every launch; nothing runs or changes on the host. Off by default; --[no-]cloud-profiles overrides it for one session.",
     "credentials.cloud.enabled": "Forward the chosen profiles into workspace boxes. Disabled by default because a profile reaches a whole cloud account. Turning it on with profiles chosen also ticks their tool group. Changing it recreates the box.",
     "credentials.cloud.yc": "Yandex Cloud CLI profiles from the host's ~/.config/yandex-cloud. The box gets a config.yaml with only these profiles and their credentials as its writable ~/.config/yandex-cloud; history and logs stay on the host.",
     "credentials.cloud.yc.profiles": "Profiles found in the host's yc config, each marked with how it signs in. A federated profile's refresh token is forwarded too, so yc in the box renews IAM tokens for up to 31 days; after that, sign in again with yc on the host. Choosing one ticks the yc tool group.",
+    "credentials.cloud.aws": "AWS profiles from the host's ~/.aws/config and credentials. Only selected profiles, their role sources and referenced SSO/login caches reach the writable workspace copy.",
+    "credentials.cloud.aws.profiles": "Choosing a profile also exposes its role source profiles and all access granted by a shared SSO or login session, including refresh tokens and login DPoP keys. Read the row details before selection. Choosing one ticks the aws tool group.",
     "credentials.git": "Configure how much host Git configuration is copied into workspace boxes.",
     "credentials.git.identity": "Copy only user.name and user.email for commit attribution. This exposes no Git credential settings.",
     "credentials.git.full_config": "Copy the complete host Git configuration, which may include credential helpers, headers, URL rewrites, and included files.",
@@ -195,6 +197,8 @@ PATH_LABELS = {
     "credentials.kubernetes": "Kubernetes configs", "credentials.kubernetes.files": "Kubeconfig files",
     "credentials.cloud": "Cloud CLI profiles", "credentials.cloud.yc": "Yandex Cloud (yc)",
     "credentials.cloud.yc.profiles": "yc profiles", "box.tools.yc": "Yandex Cloud CLI (yc)",
+    "credentials.cloud.aws": "Amazon Web Services (aws)", "credentials.cloud.aws.profiles": "AWS profiles",
+    "box.tools.aws": "AWS CLI v2 (aws)",
     "box.browser": "Browser",
     "box.browser.enabled": "Enabled",
     "box.podman": "Nested Podman storage",
@@ -289,7 +293,8 @@ MULTI_CHOICES = {
 }
 #: Lists ticked from what the host holds, found when the field is opened.
 HOST_CHOICES = {("credentials", "registries", "hosts"), ("credentials", "registries", "helm_repositories"),
-                ("credentials", "kubernetes", "files"), ("credentials", "cloud", "yc", "profiles")}
+                ("credentials", "kubernetes", "files"), ("credentials", "cloud", "yc", "profiles"),
+                ("credentials", "cloud", "aws", "profiles")}
 
 # Presentation follows the user's decisions, not dataclass serialization order.
 MENU_GROUPS = {
@@ -1414,6 +1419,10 @@ def edit(config, *, project=None):
                         from . import kubeconfigs
                         options, details, marks, problems = kubeconfigs.choices(value)
                         empty = f"No kubeconfig found in {kubeconfigs.KUBECONFIG_DIR}"
+                    elif full == ("credentials", "cloud", "aws", "profiles"):
+                        from . import aws_cloud
+                        options, details, marks, problems = aws_cloud.choices(value)
+                        empty = f"No AWS profile found in {aws_cloud.AWS_CONFIG_DIR}"
                     elif name == "profiles":
                         from . import cloud
                         options, details, marks, problems = cloud.choices(value)

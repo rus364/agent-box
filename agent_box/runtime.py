@@ -2880,6 +2880,9 @@ fi
 if has_group skopeo; then
   printf "%-20s %s\n" "skopeo:" "$(skopeo --version)"
 fi
+if has_group aws; then
+  printf "%-20s %s\n" "aws:" "$(aws --version)"
+fi
 echo
 if has_group virtualization; then
   printf "%-20s %s\n" "qemu-x86:" "$(qemu-system-x86_64 --version | head -1)"

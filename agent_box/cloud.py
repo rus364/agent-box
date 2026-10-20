@@ -139,9 +139,13 @@ def runtime_dir(workspace_id: str) -> Path:
 
 def mounts(config, workspace_id: str) -> list[tuple[Path, Path, bool]]:
     """Writable: yc keeps its renewed tokens, history and logs beside its config."""
+    from . import aws_cloud
     if not config.credentials.cloud.active:
         return []
-    return [(runtime_dir(workspace_id), YC_CONFIG_DIR, False)]
+    pairs = [(runtime_dir(workspace_id), YC_CONFIG_DIR, False)] if config.credentials.cloud.yc else []
+    if config.credentials.cloud.aws:
+        pairs.append((aws_cloud.runtime_dir(workspace_id), aws_cloud.AWS_CONFIG_DIR, False))
+    return pairs
 
 
 def _remove(dir_fd: int, name: str) -> None:
@@ -196,7 +200,7 @@ def _is_directory(dir_fd: int, name: str) -> bool:
         return False
 
 
-def sync(config, workspace_id: str) -> list[str]:
+def _sync_yc(config, workspace_id: str) -> list[str]:
     """Render the chosen profiles for one workspace, or remove them; return what was not forwarded.
 
     The box writes into the rendered directory, so everything under it is
@@ -206,7 +210,7 @@ def sync(config, workspace_id: str) -> list[str]:
     and never follows a link the box could have planted.
     """
     cloud, directory = config.credentials.cloud, runtime_dir(workspace_id)
-    if not cloud.active:
+    if not cloud.active or not cloud.yc:
         shutil.rmtree(directory, ignore_errors=True)
         return []
     found, problems = _read()
@@ -246,3 +250,9 @@ def sync(config, workspace_id: str) -> list[str]:
     finally:
         os.close(root)
     return problems
+
+
+def sync(config, workspace_id: str) -> list[str]:
+    """Both providers share the creation-time selection, never the host credential directories."""
+    from . import aws_cloud
+    return [*_sync_yc(config, workspace_id), *aws_cloud.sync(config, workspace_id)]

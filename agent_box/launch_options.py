@@ -269,8 +269,8 @@ def apply(config, overrides):
     if overrides.get("kubeconfigs") and not config.credentials.kubernetes.files:
         raise AgentBoxError("--kubeconfigs has nothing to forward; choose kubeconfig files "
                             "in agent-box config (Credentials > Kubernetes configs)")
-    if overrides.get("cloud-profiles") and not config.credentials.cloud.yc:
-        raise AgentBoxError("--cloud-profiles has nothing to forward; choose yc profiles "
+    if overrides.get("cloud-profiles") and not config.credentials.cloud.active:
+        raise AgentBoxError("--cloud-profiles has nothing to forward; choose cloud profiles "
                             "in agent-box config (Credentials > Cloud CLI profiles)")
     for role, models in workflow.pins.items():
         api = models[0]["api_provider"]

@@ -66,6 +66,16 @@ The launch warns about these and still starts:
   is missing. Forwarding it gives the agent that whole cloud account, not one
   cluster. The command must be one the box has: `yc` on `PATH` or
   `~/yandex-cloud/bin/yc`; any other path is named in the warning.
+- **`exec: aws eks get-token` without AWS access.** Enable the `aws` tool
+  group and forward the matching AWS profile in Cloud CLI profiles. A
+  `--profile NAME` or `--profile=NAME` argument wins over exec environment
+  `AWS_PROFILE`, then `AWS_DEFAULT_PROFILE`; with none, the name is `default`.
+  The box provides `aws`, `/usr/bin/aws` and `/usr/local/bin/aws`; other
+  executable paths are unsupported. Missing/unsupported profile credentials
+  are diagnosed. Other `AWS_*` exec environment overrides are warned about
+  without printing their values, since they can change the credential source
+  or endpoint. The kubeconfig itself is still copied unchanged.
+  A successful offline profile check does not prove EKS authorization.
 - **Other exec plugins** (`kubectl-helper-*`, other cloud CLIs) and
   **auth-providers**. They run a program with the host's own login, and the
   box has neither the program nor that login.

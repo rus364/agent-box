@@ -78,7 +78,7 @@ class ConfigTests(unittest.TestCase):
         loaded = Config.from_dict({"credentials": {"cloud": {"enabled": True,
                                                              "yc": {"profiles": ["gb", "../../.ssh/id_rsa", "..", "gb"]}}}})
         self.assertEqual(loaded.credentials.cloud.yc, ["gb"])
-        self.assertEqual(loaded.to_dict()["credentials"]["cloud"], {"enabled": True, "yc": {"profiles": ["gb"]}})
+        self.assertEqual(loaded.to_dict()["credentials"]["cloud"], {"enabled": True, "yc": {"profiles": ["gb"]}, "aws": {"profiles": []}})
 
 
 class ProfileTests(IsolatedYc):

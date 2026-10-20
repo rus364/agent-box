@@ -343,17 +343,20 @@ class CloudConfig:
     enabled: bool = False
     #: Profile names in the host's yc ``config.yaml``.
     yc: list[str] = field(default_factory=list)
+    #: Names in the standard AWS config and shared credentials files; never selected on upgrade.
+    aws: list[str] = field(default_factory=list)
 
     @property
     def active(self) -> bool:
-        return self.enabled and bool(self.yc)
+        return self.enabled and bool(self.yc or self.aws)
 
     def to_dict(self) -> dict[str, Any]:
-        return {"enabled": self.enabled, "yc": {"profiles": list(self.yc)}}
+        return {"enabled": self.enabled, "yc": {"profiles": list(self.yc)}, "aws": {"profiles": list(self.aws)}}
 
     @classmethod
     def from_dict(cls, data: Any) -> "CloudConfig":
-        return cls(enabled=_bool(data, "enabled", False), yc=_profile_names(_mapping(data).get("yc"), "profiles"))
+        return cls(enabled=_bool(data, "enabled", False), yc=_profile_names(_mapping(data).get("yc"), "profiles"),
+                   aws=_profile_names(_mapping(data).get("aws"), "profiles"))
 
 
 @dataclass
@@ -525,6 +528,7 @@ TOOL_GROUPS: dict[str, bool] = {
     "skopeo": False,
     # Yandex Cloud CLI; what forwarded yc profiles and exec kubeconfigs run
     "yc": False,
+    "aws": False,
 }
 
 
@@ -536,6 +540,7 @@ TOOL_GROUP_HELP: dict[str, str] = {
     "podman": "Nested Podman (rootless builds/containers; extra namespace permissions)",
     "skopeo": "skopeo (inspect, copy and list tags in container registries without Podman)",
     "yc": "Yandex Cloud CLI (yc)",
+    "aws": "AWS CLI v2 (aws)",
 }
 
 
@@ -1286,8 +1291,10 @@ class CredentialsConfig:
         needed = {}
         if self.kubernetes.active:
             needed["kubernetes"] = "Kubernetes configs"
-        if self.cloud.active:
+        if self.cloud.active and self.cloud.yc:
             needed["yc"] = "Cloud CLI profiles (Yandex Cloud)"
+        if self.cloud.active and self.cloud.aws:
+            needed["aws"] = "Cloud CLI profiles (AWS)"
         return needed
 
     @classmethod

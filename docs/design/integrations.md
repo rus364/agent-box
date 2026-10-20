@@ -12,7 +12,7 @@ host stays the source of truth; changes made in the box disappear with it.
 
 - Copies are rendered into private per-workspace directories (mode 0700, files
   0600) and mounted read-only where the tool allows it (registries,
-  kubeconfigs) or writable where it must refresh tokens (`yc`). Variables
+  kubeconfigs) or writable where it must refresh tokens (`yc`, `aws`). Variables
   carry paths only, so no credential appears in Podman's argv. Turning a
   forwarding off or emptying its list removes the copies and the mount.
 - A box keeps its creation-time switches and selections. Registry logins,
@@ -46,6 +46,16 @@ host stays the source of truth; changes made in the box disappear with it.
   copied line for line; `current` stays the host's when chosen, else the first
   chosen. Federated profiles bring `credentials/<profile>` with IAM and refresh
   tokens. agent-box never runs `yc` on the host or writes the host's directory.
+- **AWS profiles.** Standard-library INI parsing preserves selected settings
+  and follows role sources, SSO sessions and service sections. Token filenames
+  follow AWS CLI v2's `SSOTokenLoader` (SHA-1 of session name or legacy start
+  URL) and `generate_login_cache_key` (SHA-256 of `login_session`). These
+  upstream cache formats are private conventions, tested against AWS CLI
+  2.38.2 with synthetic credentials and networking disabled; changes require
+  revalidation. Login refresh needs the cached DPoP key as well as the token.
+  Directory-descriptor writes reuse the cloud renderer's no-follow and atomic
+  replacement helpers, including cache cleanup. Live SSO, login refresh,
+  role assumption and EKS authorization require a separately authorized check.
 
 ## Notifications
 

@@ -189,9 +189,11 @@ class WorkspaceContainerLifecycleTests(unittest.TestCase):
         original.credentials.kubernetes.files = ["original.yaml"]
         original.credentials.cloud.enabled = True
         original.credentials.cloud.yc = ["original"]
+        original.credentials.cloud.aws = ["aws-original"]
         original.credentials.git.full_config = original.credentials.github.config = True
         original.box.links.enabled = True
         original.box.tools.groups["yc"] = True
+        original.box.tools.groups["aws"] = True
         original.box.k3s.enabled = True
         original.box.k3s.lifetime = "box"
         with mock.patch.object(runtime.k3s, "api_port", return_value=12345):
@@ -203,6 +205,7 @@ class WorkspaceContainerLifecycleTests(unittest.TestCase):
         changed.box.k3s.lifetime = "persistent"
         changed.credentials.kubernetes.files = ["different.yaml"]
         changed.credentials.cloud.yc = ["different"]
+        changed.credentials.cloud.aws = ["aws-different"]
         commands = ((["shell", "-c", "true"], ""), (["doctor"], ""), (["claude", "--version"], ""),
                     (["codex", "--version"], ""), ([], ""), (["claude", "--version"], "synthetic"),
                     (["codex", "--version"], "synthetic"))
@@ -240,6 +243,7 @@ class WorkspaceContainerLifecycleTests(unittest.TestCase):
             self.assertEqual(snapshot.credentials.registries.hosts, ["original.example"])
             self.assertEqual(snapshot.credentials.kubernetes.files, ["original.yaml"])
             self.assertEqual(snapshot.credentials.cloud.yc, ["original"])
+            self.assertEqual(snapshot.credentials.cloud.aws, ["aws-original"])
             self.assertTrue(snapshot.credentials.git.full_config)
             self.assertTrue(snapshot.credentials.github.config)
             self.assertTrue(snapshot.box.links.enabled)

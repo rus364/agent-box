@@ -21,6 +21,7 @@ chosen under **Workspace box → Image tools** in `agent-box config`
 | `podman` | off | Nested rootless Podman, userspace networking and image builds; see [nested Podman](nested-podman.md) |
 | `skopeo` | off | Inspecting, copying and listing registry images without Podman's namespace permissions |
 | `yc` | off | Yandex Cloud CLI; selected for you when [cloud CLI profiles](integrations/cloud-profiles.md) are forwarded |
+| `aws` | off | AWS CLI v2 for x86_64/aarch64; selected when AWS [cloud CLI profiles](integrations/cloud-profiles.md#aws-cli-v2) are forwarded |
 
 **Workspace box → k3s cluster** is not an image group: it runs a per-project
 [k3s cluster](integrations/k3s.md) in a sidecar container beside the box
