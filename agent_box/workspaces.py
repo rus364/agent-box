@@ -163,6 +163,7 @@ def remove(item: Entry, podman: bool = True, *, only_vanished: bool = False) -> 
     with runtime.transition_lock_at(root / runtime.WORKSPACE_LOCK_FILE):
         if only_vanished and not item.vanished:
             return None
+        runtime.host_k3s.refuse_owners(root)
         if podman:
             for box in _podman_json("ps", "--all",
                                     f"--filter=label={runtime.WORKSPACE_CONTAINER_WORKSPACE_LABEL}={item.id}"):

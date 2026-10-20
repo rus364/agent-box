@@ -36,7 +36,7 @@ from . import personal_browser
 from . import channel as channel_module
 from . import claude_settings
 from . import notify as notify_module
-from . import k3s, browser
+from . import k3s, browser, host_k3s
 from . import host_podman, nested_podman, runtime_bundle
 from . import cloud, kubeconfigs, registries, links
 from .atomicio import atomic_write_bytes, atomic_write_json, atomic_write_text, read_json
@@ -1054,6 +1054,9 @@ def container_tracker_url(raw: str) -> str:
 def sync_tracker_runtime(config: Config, directory: Path | None = None, *, policy=False, container=True) -> None:
     """Render only explicitly enabled capabilities; directory mounts see atomic updates."""
     launch = getattr(config, "_launch", {})
+    cluster_policy = getattr(config, "_cluster_policy", None)
+    if cluster_policy is not None:
+        launch = {key: value for key, value in launch.items() if key != "k3s"}
     browser_enabled = config.box.browser.active()
     network = config.box.network.to_dict()
     isolated_network = container and config.box.network.mode != "host"
@@ -1107,13 +1110,14 @@ def sync_tracker_runtime(config: Config, directory: Path | None = None, *, polic
         "launch": launch,
     }
     if hasattr(config, "_box_policy"):
-        import copy
         rendered["box_policy"] = copy.deepcopy(config._box_policy)
         # A nested launch may explicitly replace its inherited outer network.
         rendered["box_policy"]["box"]["network"] = network
         # Browser containers are per-session capabilities, independent of the box image.
         rendered["box_policy"]["box"]["browser"] = {"enabled": browser_enabled}
         rendered["box"]["browser"] = {"enabled": browser_enabled}
+    if cluster_policy is not None:
+        rendered["cluster_policy"] = copy.deepcopy(cluster_policy)
     atomic_write_json(directory / "config.json", rendered, 0o600)
 
 
@@ -1720,6 +1724,7 @@ def prepare_k3s(config: Config, workspace: Workspace, runtime_state: WorkspaceRu
     do not create the sidecar twice.
     """
     with workspace_transition_lock(workspace):
+        host_k3s.verify(config, runtime_state.root)
         if config.box.k3s.enabled:
             workspace_id, state_dir = workspace_identity(workspace), k3s_state_dir(runtime_state)
             box = inspect_workspace_container(workspace_container_name(workspace))
@@ -1731,7 +1736,11 @@ def prepare_k3s(config: Config, workspace: Workspace, runtime_state: WorkspaceRu
             if not box_running:
                 # A box-bound cluster whose box ended on its own is noticed
                 # only now, and the new box must not inherit it.
-                release_k3s(workspace, config, runtime_state)
+                retained = host_k3s.load(runtime_state.root)
+                if retained and not retained["owners"]:
+                    host_k3s.cleanup(runtime_state.root, retained)
+                else:
+                    release_k3s(workspace, config, runtime_state)
             k3s.ensure(workspace_id, config.box.k3s, state_dir, workspace.host_root, host_tmp=config.box.host_tmp)
         else:
             release_k3s(workspace, config, runtime_state)
@@ -1752,6 +1761,8 @@ def release_k3s(workspace: Workspace, config: Config | None = None,
     # it: without one no sidecar exists here, and neither the configuration
     # nor Podman need be asked.
     if not state_dir.is_dir():
+        return
+    if host_k3s.has_owners(runtime_state.root):
         return
     settings = (config or effective_config(runtime_config_base())).box.k3s
     if settings.enabled and settings.lifetime != "box":
@@ -2738,9 +2749,11 @@ def launch_in_workspace_container(
 ) -> int:
     """Start one exec under the transition lock, then clean up after it exits."""
     with workspace_transition_lock(workspace):
+        host_k3s.verify(spec.creation_config, spec.runtime_state.root)
         if not spec.admitted_id:
             confirm_k3s(spec)
         ensure_workspace_container(spec)
+        host_k3s.record_box(spec.creation_config, spec.runtime_state.root)
         if spec.admitted_id and spec.creation_config.box.links.enabled:
             try:
                 links.reattach(spec.runtime_state.root.name, spec.name)
@@ -3115,6 +3128,8 @@ def runtime_main(
     options, requested = nested_launch_options(options)
     existing = existing_workspace_spec(workspace, options, script_dir)
     config = launch_config(options, box_policy=existing.creation_config._box_policy if existing else None)
+    with workspace_transition_lock(workspace):
+        host_k3s.inherit(config, options, workspace_runtime_state(workspace).root)
     nested = list(dict.fromkeys(requested + withhold_from_nested_box(config)))
     errors = config.box.validate()
     if errors:
@@ -3344,6 +3359,10 @@ def stop_main(args: list[str], workspace_root: str = "") -> int:
     runtime_state = workspace_runtime_state(workspace)
     config = effective_config(runtime_config_base())
     with workspace_transition_lock(workspace):
+        host_k3s.refuse_owners(runtime_state.root)
+        retained = host_k3s.load(runtime_state.root)
+        if retained:
+            config.box.k3s = Config.from_dict({"box": retained["box"]}).box.k3s
         current = inspect_workspace_container(name)
         if current is None:
             print("agent-box: no workspace container for this project", file=sys.stderr)
@@ -3483,6 +3502,9 @@ def uninstall_main(args: list[str]) -> int:
         else:
             raise AgentBoxError(f"unexpected argument '{arg}'; expected --purge and/or --yes")
 
+    for root in (STATE_ROOT / "runtime/workspaces").glob("*"):
+        if root.is_dir():
+            host_k3s.refuse_owners(root)
     done: list[str] = []
 
     from . import upgrades
@@ -3610,68 +3632,81 @@ def host_main(
     from .external_launch import builtin_environment, selected_model
     if api_provider:
         selected_model(config, api_provider, agent, rest)
-    # As in container mode: a launch applies nothing to the user's own files.
-    env = builtin_environment(os.environ)
-    env[PRESSURE_REAP_OPT_OUT] = "1"
-    # ``box.env.set`` states what a session should have; a host session is still a
-    # session. ``box.env.forward`` has nothing to do here -- host mode already
-    # runs in the very shell those names would have been forwarded from, so
-    # the values are present already.
-    env.update(config.box.env.set)
-    if config.box.k3s.enabled:
-        print("agent-box: box.k3s is on; --host sessions get no cluster", file=sys.stderr)
-    # Owned metadata describes this launch, even when box.env.set names these keys.
-    env["AGENT_BOX_RUNTIME_CONFIG"] = str(session_runtime(config, container=False))
-    if getattr(config, "_launch", {}).get("notify") is False:
-        env[notify_module.NOTIFY_OFF_ENV] = "1"
-    # agent-box's own request channel is not part of the session it describes.
-    for key in [k for k in env if k.startswith(ENV_PREFIX)]:
-        del env[key]
+    reservation = None
+    if host_interactive_invocation(agent, rest, batch=True):
+        reservation = host_k3s.reserve(config, options, workspace)
+    try:
+        # As in container mode: a launch applies nothing to the user's own files.
+        env = builtin_environment(os.environ)
+        env[PRESSURE_REAP_OPT_OUT] = "1"
+        # ``box.env.set`` states what a session should have; a host session is still a
+        # session. ``box.env.forward`` has nothing to do here -- host mode already
+        # runs in the very shell those names would have been forwarded from, so
+        # the values are present already.
+        env.update(config.box.env.set)
+        # Owned metadata describes this launch, even when box.env.set names these keys.
+        env["AGENT_BOX_RUNTIME_CONFIG"] = str(session_runtime(config, container=False))
+        if getattr(config, "_launch", {}).get("notify") is False:
+            env[notify_module.NOTIFY_OFF_ENV] = "1"
+        # agent-box's own request channel is not part of the session it describes.
+        for key in [k for k in env if k.startswith(ENV_PREFIX)]:
+            del env[key]
 
-    browser_dir = None
-    browser_command = None
-    if config.box.browser.active() and not any(arg in {"--version", "-V", "--help", "-h"} for arg in rest):
-        browser_dir = HOST_SESSIONS_ROOT / workspace_identity(workspace) / "browser" / uuid.uuid4().hex
-        try:
-            browser_command = browser.prepare(browser_dir, workspace.host_root, workspace.cwd,
-                                              workspace=workspace_identity(workspace), host_tmp=config.box.host_tmp)
-            record_workspace_path(workspace_identity(workspace), str(workspace.host_root.resolve()))
-        except (AgentBoxError, OSError) as exc:
-            warn(f"browser unavailable: {exc}; starting without it")
-            browser_dir = None
-    personal_dir = None
-    personal_command = None
-    if config.host.personal_browser.enabled and not any(arg in {"--version", "-V", "--help", "-h"} for arg in rest):
-        try:
-            desktop, notice = personal_browser.prepare(config.host.personal_browser)
-            print(f"agent-box: personal browser: {notice}", file=sys.stderr)
-            personal_dir = HOST_SESSIONS_ROOT / workspace_identity(workspace) / "browser" / uuid.uuid4().hex
-            personal_command = browser.prepare(personal_dir, workspace.host_root, workspace.cwd,
-                                               workspace=workspace_identity(workspace),
-                                               host_tmp=config.box.host_tmp, desktop=desktop)
-            record_workspace_path(workspace_identity(workspace), str(workspace.host_root.resolve()))
-        except (AgentBoxError, OSError) as exc:
-            warn(f"personal browser unavailable: {exc}")
-            personal_dir = None
-    workflow_overrides = codex_workflow_overrides(rest, config) if agent == "codex" else []
-    if agent == "codex":
-        workflow_overrides += browser_codex_overrides(browser_dir, browser_command)
-        workflow_overrides += browser_codex_overrides(personal_dir, personal_command, server_name=personal_browser.SERVER)
-    browser_args = browser_claude_args(browser_dir, browser_command) if agent == "claude" and is_claude_session_invocation(rest) else []
-    if agent == "claude" and is_claude_session_invocation(rest):
-        browser_args += browser_claude_args(personal_dir, personal_command, server_name=personal_browser.SERVER)
-    agent_args = claude_session_args(rest, [], browser_args) if agent == "claude" else rest
-    command = [executable, *(arg for override in workflow_overrides for arg in ("-c", override)), *agent_args]
-    if api_provider:
-        command = external_command(command, agent, api_provider, container=False)
-    elif remote_control_invocation(agent, rest):
-        command = remote_control_command(command, agent, config, container=False)
-    if tmux_enabled(agent, options.tmux) and host_interactive_invocation(agent, rest):
-        tmux = shutil.which("tmux")
-        if tmux is not None:
-            return host_tmux_launch(workspace, agent, command, env, tmux)
-        warn("tmux not found; starting directly without detach/attach support")
-    return subprocess.call(command, cwd=str(workspace.cwd), env=env)
+        if reservation:
+            env[host_k3s.ENV] = json.dumps([str(reservation[0]), reservation[1]])
+            if config.box.k3s.enabled:
+                env["KUBECONFIG"] = str(k3s.kubeconfig_path(reservation[0] / "k3s"))
+
+        browser_dir = None
+        browser_command = None
+        if config.box.browser.active() and not any(arg in {"--version", "-V", "--help", "-h"} for arg in rest):
+            browser_dir = HOST_SESSIONS_ROOT / workspace_identity(workspace) / "browser" / uuid.uuid4().hex
+            try:
+                browser_command = browser.prepare(browser_dir, workspace.host_root, workspace.cwd,
+                                                  workspace=workspace_identity(workspace), host_tmp=config.box.host_tmp)
+                record_workspace_path(workspace_identity(workspace), str(workspace.host_root.resolve()))
+            except (AgentBoxError, OSError) as exc:
+                warn(f"browser unavailable: {exc}; starting without it")
+                browser_dir = None
+        personal_dir = None
+        personal_command = None
+        if config.host.personal_browser.enabled and not any(arg in {"--version", "-V", "--help", "-h"} for arg in rest):
+            try:
+                desktop, notice = personal_browser.prepare(config.host.personal_browser)
+                print(f"agent-box: personal browser: {notice}", file=sys.stderr)
+                personal_dir = HOST_SESSIONS_ROOT / workspace_identity(workspace) / "browser" / uuid.uuid4().hex
+                personal_command = browser.prepare(personal_dir, workspace.host_root, workspace.cwd,
+                                                   workspace=workspace_identity(workspace),
+                                                   host_tmp=config.box.host_tmp, desktop=desktop)
+                record_workspace_path(workspace_identity(workspace), str(workspace.host_root.resolve()))
+            except (AgentBoxError, OSError) as exc:
+                warn(f"personal browser unavailable: {exc}")
+                personal_dir = None
+        workflow_overrides = codex_workflow_overrides(rest, config) if agent == "codex" else []
+        if agent == "codex":
+            workflow_overrides += browser_codex_overrides(browser_dir, browser_command)
+            workflow_overrides += browser_codex_overrides(personal_dir, personal_command, server_name=personal_browser.SERVER)
+        browser_args = browser_claude_args(browser_dir, browser_command) if agent == "claude" and is_claude_session_invocation(rest) else []
+        if agent == "claude" and is_claude_session_invocation(rest):
+            browser_args += browser_claude_args(personal_dir, personal_command, server_name=personal_browser.SERVER)
+        agent_args = claude_session_args(rest, [], browser_args) if agent == "claude" else rest
+        command = [executable, *(arg for override in workflow_overrides for arg in ("-c", override)), *agent_args]
+        if api_provider:
+            command = external_command(command, agent, api_provider, container=False)
+        elif remote_control_invocation(agent, rest):
+            command = remote_control_command(command, agent, config, container=False)
+        if tmux_enabled(agent, options.tmux) and host_interactive_invocation(agent, rest):
+            tmux = shutil.which("tmux")
+            if tmux is not None:
+                return host_tmux_launch(workspace, agent, command, env, tmux)
+            warn("tmux not found; starting directly without detach/attach support")
+        if reservation:
+            command = [sys.executable, str(HOST_SESSION_RUNNER), "--direct", *command]
+        return subprocess.call(command, cwd=str(workspace.cwd), env=env)
+
+    finally:
+        if reservation:
+            host_k3s.release(*reservation, pending=True)
 
 
 def external_command(command: list[str], agent: str, name: str, *, container: bool) -> list[str]:
@@ -3695,7 +3730,7 @@ def remote_control_invocation(agent: str, rest: list[str]) -> bool:
     return host_interactive_invocation(agent, rest)
 
 
-def host_interactive_invocation(agent: str, rest: list[str]) -> bool:
+def host_interactive_invocation(agent: str, rest: list[str], *, batch=False) -> bool:
     """Keep batch and management commands direct even at a real terminal."""
     flags = rest[:rest.index("--")] if "--" in rest else rest
     if agent == "claude":
@@ -3707,9 +3742,9 @@ def host_interactive_invocation(agent: str, rest: list[str]) -> bool:
             command = command[1:]
         if command[:1] == ["import"]:
             return False
-        return is_claude_session_invocation(rest) and not any(
+        return is_claude_session_invocation(rest) and (batch or not any(
             arg in {"-p", "--print", "--dry-run", "--yes"} or
-            arg.startswith(("--print=", "--yes=")) for arg in flags)
+            arg.startswith(("--print=", "--yes=")) for arg in flags))
     if any(arg in {"--help", "-h", "--version", "-V"} for arg in flags):
         return False
     # Skip option values so a model/profile named 'exec' remains interactive.
@@ -3721,6 +3756,8 @@ def host_interactive_invocation(agent: str, rest: list[str]) -> bool:
                 "app-server", "remote-control", "completion", "update", "doctor", "sandbox",
                 "debug", "apply", "a", "queue", "archive", "delete", "migrate-rollouts",
                 "unarchive", "cloud", "exec-server", "features", "help"}
+    if batch:
+        commands -= {"exec", "e", "review"}
     skip = False
     for arg in flags:
         if skip:
@@ -3749,6 +3786,8 @@ def host_tmux_launch(workspace: Workspace, agent: str, command: list[str],
     name = f"{agent}-{uuid.uuid4().hex[:12]}"
     session = TmuxSession(name, root / f"{name}.status")
     env_path = root / f"{session.name}.env.json"
+    if host_k3s.ENV in environment:
+        host_k3s.register_tmux(environment[host_k3s.ENV], session.name, root)
     # POSIX environment bytes may be represented by surrogate escapes.
     atomic_write_text(env_path, json.dumps(environment, ensure_ascii=True), 0o600)
     wrapped = session.wrap([sys.executable, str(HOST_SESSION_RUNNER), str(env_path), *command],
@@ -3794,13 +3833,16 @@ def host_session_main(args: list[str], *, stop: bool = False, workspace_root: st
     command = "stop" if stop else "attach"
     if (stop and args) or len(args) > 1:
         raise AgentBoxError(f"usage: agent-box --host {command}" + ("" if stop else " [session]"))
-    if not shutil.which("tmux"):
+    if not stop and not shutil.which("tmux"):
         raise AgentBoxError("tmux not found on the host")
     if not stop and not (sys.stdin.isatty() and sys.stdout.isatty()):
         raise AgentBoxError("agent-box --host attach needs a terminal")
     root = HOST_SESSIONS_ROOT / workspace_identity(resolved_workspace(workspace_root))
     if stop:
-        names = stop_host_sessions(root)
+        workspace = resolved_workspace(workspace_root)
+        owned = host_k3s.stop(workspace_runtime_state(workspace).root)
+        names = stop_host_sessions(root) if shutil.which("tmux") else []
+        names = list(dict.fromkeys([*names, *owned]))
         if not names:
             print("agent-box: no host sessions for this project", file=sys.stderr)
             return 0

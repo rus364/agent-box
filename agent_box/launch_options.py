@@ -66,7 +66,7 @@ OPTIONS = (
            form="pair", container=True),
     Option("kubeconfigs", ACCESS, "Kubeconfig files chosen in agent-box config", form="pair", container=True),
     Option("cloud-profiles", ACCESS, "Cloud CLI profiles chosen in agent-box config", form="pair", container=True),
-    Option("k3s", ACCESS, "This workspace's k3s cluster", form="pair", container=True),
+    Option("k3s", ACCESS, "This project's shared k3s cluster (host or container)", form="pair"),
     Option("links", ACCESS, "Host web-link broker and temporary localhost callback forwarding", form="pair", container=True),
     Option("host-tmp", ACCESS, "Share host /tmp read-write with workspace and browser/k3s sidecars", form="pair"),
     Option("api-keys", ACCESS, "Provider API key variables", form="pair", container=True),

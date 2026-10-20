@@ -243,7 +243,7 @@ def _browser_note(config) -> str:
 def _k3s_note(config) -> str:
     if not config.box.k3s.enabled:
         return ""
-    return " (sidecar cluster per project; --host sessions get none)"
+    return " (shared sidecar cluster per project; host and container sessions)"
 
 
 def _show_notes(config) -> dict[str, str]:

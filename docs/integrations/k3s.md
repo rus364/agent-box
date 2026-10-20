@@ -33,7 +33,9 @@ agent-box --no-k3s codex
 
 These flags do not save settings. A running box keeps its cluster choice;
 an opposite explicit flag requires `agent-box stop` before relaunching.
-Both flags are refused with `--host`. Nested boxes still withhold k3s and
+Both flags also work with `--host`. Host and container joins inherit the
+active project choice, including when it is disabled; an explicit conflicting
+flag requires stopping the project sessions and relaunching. Nested boxes still withhold k3s and
 report why, including when `--k3s` was explicit.
 
 ```bash
@@ -60,9 +62,29 @@ include the other cluster settings:
 {"box": {"k3s": {"enabled": true, "traefik": true, "ports": ["8080:80"], "manifests": "deploy/k3s"}}}
 ```
 
-`agent-box --host` sessions get no cluster. A host agent works in your own
-environment with your own kube contexts, and agent-box does not redirect its
-`kubectl` to another cluster behind your back.
+`agent-box --host` uses the same `box.k3s.enabled` setting and cluster recipe.
+With k3s enabled it starts or reuses the project's rootless-Podman sidecar,
+waits for a Ready node and checks `/readyz` from the host before starting the
+agent. Install `kubectl` on the host; install `helm` there if your work needs it.
+Failure stops the launch instead of falling back to another Kubernetes context.
+
+Both modes use the existing managed kubeconfig under
+`~/.local/share/agent-box/runtime/workspaces/<id>/k3s/kubeconfig` (mode `0600`).
+The host agent receives its path through its own `KUBECONFIG` environment;
+there is no per-session copy or merge with your kubeconfig. Your shell's
+variable and `~/.kube/config` stay unchanged. Disabled host sessions retain
+ordinary host Kubernetes access; host mode is not a credential sandbox.
+
+The first active session chooses the project policy. Later host/container
+sessions inherit it even if saved enablement changes. A host-only project
+created without k3s cannot gain it through another session's flag. End all
+sessions before changing that choice. Running containers with an older runtime
+must be explicitly stopped/relaunched before a host session can share them.
+
+Native support requires local Linux/rootless Podman. Remote Podman and nested
+host-k3s launches are refused. Over SSH, the API loopback belongs to the Linux
+host executing agent-box, not your workstation; no tunnel or LAN publication
+is added.
 
 A box started inside a workspace box, through the `podman` tool group, gets
 no cluster either: k3s cannot start in nested Podman. The launch says so,
@@ -77,8 +99,8 @@ project port publications are restricted to loopback.
 
 | Setting | Default | Effect |
 | --- | --- | --- |
-| `enabled` | off | Run the cluster and give the box its kubeconfig |
-| `lifetime` | `persistent` | `persistent`: runs until `agent-box stop`, so deployments survive between sessions. `box`: stops when agent-box removes the box |
+| `enabled` | off | Run the shared cluster and select its kubeconfig in both launch modes |
+| `lifetime` | `persistent` | `persistent`: runs until `agent-box stop`, so deployments survive between sessions. `box`: stops after the box and last host session end |
 | `persistent_data` | on | Off deletes the cluster's data at every stop: each start is a clean cluster |
 | `traefik` | off | k3s's ingress controller |
 | `servicelb` | on | Addresses for LoadBalancer services, Traefik's included |
@@ -122,7 +144,9 @@ container can hold.
 | Event | Cluster | Data |
 | --- | --- | --- |
 | The box ends (`lifetime: persistent`) | keeps running | kept |
-| The box ends (`lifetime: box`) | stopped by agent-box | kept |
+| Last box/host consumer ends (`lifetime: box`) | stopped by agent-box | kept unless `persistent_data` is off |
+| A host session detaches | keeps running | kept |
+| `agent-box --host stop` | stops after host sessions end, unless a box still uses it | follows creation-time retention policy |
 | `agent-box stop` | stopped | kept, unless `persistent_data` is off |
 | `agent-box stop --cluster-data` | removed | deleted |
 | `agent-box workspaces rm` / `prune` | removed | deleted after you confirm |
@@ -130,8 +154,14 @@ container can hold.
 | `agent-box uninstall` | removed | kept |
 | `agent-box uninstall --purge` | removed | deleted after you confirm |
 
+Ordinary `agent-box stop` refuses before changing anything while native host
+sessions remain. End them with `agent-box --host stop` first. Workspace removal,
+prune and uninstall likewise refuse to remove resources beneath tracked host
+sessions. An exit of one session never stops a cluster used by another.
+
 With `lifetime: box`, a box that ends on its own (its last detached session
-finished) is noticed at the next agent-box command for the project. Until
+finished) is noticed at the next agent-box command for the project. An abruptly killed host runner is likewise recovered by the next project
+command; its surviving agent still counts as a consumer. Until
 then the idle cluster uses about 500 MB of memory and a few percent of a core.
 
 The data lives in the Podman volume `agent-box-k3s-<workspace id>`; the

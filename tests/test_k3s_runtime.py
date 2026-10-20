@@ -258,8 +258,8 @@ class BuildAndWarningTests(K3sRuntimeTest):
 
 
 class HostModeTests(K3sRuntimeTest):
-    def test_host_sessions_never_start_or_wire_the_cluster(self):
-        """A host agent keeps the user's own kube contexts; nothing may redirect it.
+    def test_version_queries_preserve_the_host_environment_without_a_cluster(self):
+        """A version query is not an agent session and needs no cluster.
 
         The user's KUBECONFIG, or its absence, reaches the agent unchanged; the
         suite may itself run inside a box whose session sets one.
@@ -282,7 +282,7 @@ class HostModeTests(K3sRuntimeTest):
             self.assertEqual([m.call_count for m in sidecar.values()], [0, 0, 0])
             # Compare the one variable: the whole environment would print its secrets on failure.
             self.assertEqual(call.call_args.kwargs["env"].get("KUBECONFIG"), kubeconfig)
-            self.assertIn("--host sessions get no cluster", err.getvalue())
+            self.assertEqual(err.getvalue(), "")
 
 
 if __name__ == "__main__":

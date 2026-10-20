@@ -890,6 +890,10 @@ class ClaudeNotifyHookLifecycleTests(IsolatedRuntimeTest):
 
 
 class HostModeTests(IsolatedRuntimeTest):
+    def agent_command(self, call):
+        argv = call.call_args.args[0]
+        return argv[3:] if argv[1:3] == [str(runtime.HOST_SESSION_RUNNER), "--direct"] else argv
+
 
     def test_native_host_ignores_conflicting_container_network_settings(self):
         """A host process creates no namespace or mappings and cannot clear them with container-only flags."""
@@ -902,7 +906,7 @@ class HostModeTests(IsolatedRuntimeTest):
              mock.patch("agent_box.project_config.load", return_value={"box": {"network": {"ports": ["8080:3000"]}}}), \
              mock.patch.object(runtime.subprocess, "call", return_value=0) as call:
             self.assertEqual(runtime.host_main("codex", ["exec", "test"]), 0)
-            self.assertEqual(call.call_args.args[0], ["/usr/bin/codex", "exec", "test"])
+            self.assertEqual(self.agent_command(call), ["/usr/bin/codex", "exec", "test"])
 
     def test_bare_host_launch_uses_the_default_agent_like_a_box_launch(self):
         """--host must not answer 'which agent' differently from a box launch."""
@@ -916,7 +920,7 @@ class HostModeTests(IsolatedRuntimeTest):
                  mock.patch.object(runtime, "tmux_enabled", return_value=False), \
                  mock.patch.object(runtime.subprocess, "call", return_value=0) as call:
                 self.assertEqual(runtime.host_main(agent, ["--model", "x"]), 0)
-            self.assertEqual(call.call_args.args[0], [f"/usr/bin/{expected}", "--model", "x"])
+            self.assertEqual(self.agent_command(call), [f"/usr/bin/{expected}", "--model", "x"])
 
     def test_host_codex_gets_the_same_interactive_workflow_policy(self):
         """Host coordinators share workflow behavior without affecting host batch commands."""
@@ -930,7 +934,7 @@ class HostModeTests(IsolatedRuntimeTest):
              mock.patch.object(runtime, "tmux_enabled", return_value=False), \
              mock.patch.object(runtime.subprocess, "call", return_value=0) as call:
             self.assertEqual(runtime.host_main("codex", []), 0)
-            self.assertEqual(call.call_args.args[0], [
+            self.assertEqual(self.agent_command(call), [
                 "/usr/bin/codex", "-c",
                 "agents.max_concurrent_threads_per_session=6", "-c",
                 "features.multi_agent_v2.max_concurrent_threads_per_session=7", "-c",
@@ -953,9 +957,9 @@ class HostModeTests(IsolatedRuntimeTest):
                     runtime.host_main(agent, ["--model", "example"])
                     command = [f"/usr/bin/{agent}", "--model", "example"]
                     if enabled:
-                        self.assertEqual(call.call_args.args[0][2:], ["_session", agent, *command])
+                        self.assertEqual(self.agent_command(call)[2:], ["_session", agent, *command])
                     else:
-                        self.assertEqual(call.call_args.args[0], command)
+                        self.assertEqual(self.agent_command(call), command)
 
     def test_host_session_metadata_wins_over_user_assignments_without_dropping_custom_env(self):
         """The child must read the generated session snapshot, not an env.set substitute."""
@@ -987,7 +991,7 @@ class HostModeTests(IsolatedRuntimeTest):
                 rc = runtime.host_main("claude", ["--model", "opus"])
             self.assertEqual(rc, 0)
             call.assert_called_once()
-            argv = call.call_args.args[0]
+            argv = self.agent_command(call)
             self.assertEqual(argv, ["/usr/local/bin/claude", "--model", "opus"])
 
     def test_host_claude_never_adds_the_container_permission_bypass(self):
@@ -999,7 +1003,7 @@ class HostModeTests(IsolatedRuntimeTest):
                  mock.patch.object(runtime.subprocess, "call", return_value=0) as call:
                 runtime.host_main("claude", ["import", "codex"])
             self.assertEqual(
-                call.call_args.args[0], ["/usr/local/bin/claude", "import", "codex"]
+                self.agent_command(call), ["/usr/local/bin/claude", "import", "codex"]
             )
 
     def test_host_codex_selects_host_codex_executable(self):
@@ -1010,7 +1014,7 @@ class HostModeTests(IsolatedRuntimeTest):
                  mock.patch.object(runtime, "load_config", return_value=Config()), \
                  mock.patch.object(runtime.subprocess, "call", return_value=0) as call:
                 runtime.host_main("codex", ["exec", "hello"])
-            argv = call.call_args.args[0]
+            argv = self.agent_command(call)
             self.assertEqual(argv, ["/usr/local/bin/codex", "exec", "hello"])
 
     def test_passthrough_args_preserved(self):
@@ -1022,7 +1026,7 @@ class HostModeTests(IsolatedRuntimeTest):
                  mock.patch.object(runtime.subprocess, "call", return_value=0) as call:
                 runtime.host_main("claude", ["-p", "do a thing", "--model", "opus"])
             self.assertEqual(
-                call.call_args.args[0],
+                self.agent_command(call),
                 ["/usr/local/bin/claude", "-p", "do a thing", "--model", "opus"],
             )
 
@@ -1036,7 +1040,7 @@ class HostModeTests(IsolatedRuntimeTest):
                  mock.patch.object(runtime.os, "execvp") as execvp:
                 runtime.host_main("claude", [])
             execvp.assert_not_called()
-            for arg in call.call_args.args[0]:
+            for arg in self.agent_command(call):
                 self.assertNotEqual(arg, "podman")
 
 

@@ -2,6 +2,18 @@
 
 ## Unreleased — next major version
 
+- **Breaking:** `box.k3s.enabled` now also selects the managed project cluster
+  in native `--host` sessions. Both modes share one rootless-Podman sidecar,
+  kubeconfig and creation policy. Host use requires local Podman and kubectl;
+  remote Podman and nested host-k3s are unsupported. User kubeconfig files stay
+  unchanged. To retain ordinary host Kubernetes access, stop project sessions
+  and recreate with `--no-k3s` or disable the saved setting. Joining sessions
+  cannot choose a conflicting cluster policy. Stop/relaunch old runtimes before
+  sharing; no existing volume is migrated or deleted by upgrading. Host owners
+  have an independent version-1 runtime record; future schemas are refused.
+  Container stop, workspace removal and uninstall refuse while native sessions
+  remain; end them with `agent-box --host stop` first.
+
 - Give each native browser MCP process its own container identity. Overlapping
   Codex thread starts/resumes no longer collide or remove each other's browser.
   Restart the agent-box launcher to adopt the fix in existing sessions.

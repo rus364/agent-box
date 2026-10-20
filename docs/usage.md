@@ -96,7 +96,7 @@ or `claude@deepseek:deepseek-v4`. `--worker`, `--reviewer`, `--scout` and
 choose no other. `--[no-]tiers` decides whether a task's tier selects the
 worker, Plan sync and reviewer lists. Workflow options need the workflow
 enabled in `agent-box config`. Options that only a container can honour
-(mounts, KVM, k3s, credentials) are refused with `--host` rather than
+(mounts, KVM, credential forwarding) are refused with `--host` rather than
 ignored.
 
 ## Detach and reattach
@@ -202,7 +202,8 @@ agent-box --host stop         # end this project's agent-box host sessions
 and credentials. Tracker commands, workflow and model routing are shared with
 container mode. The optional [agent browser](integrations/browser.md) requires
 local Podman and runs in a separate container; disabled host browsing needs no
-Podman. The [k3s cluster](integrations/k3s.md) remains workspace-only.
+Podman. The [k3s cluster](integrations/k3s.md) uses the same enabled setting and managed
+kubeconfig in both modes; host use requires local rootless Podman and kubectl.
 
 Interactive host sessions run under your installed `tmux` and `bash`, with
 agent-box's own configuration and one private tmux server per project. They
@@ -218,7 +219,8 @@ and non-interactive commands such as `claude -p` also start directly.
 | Tracker, workflow, project settings | The same policy, through a per-session configuration snapshot. |
 | Environment, Git and `gh` | Inherited from your shell plus explicit `--env`; the container credential switches do not restrict host access. |
 | Skills and integrations | Applied by configuration commands and automatically on the first host launch after a package update. |
-| Workspace image, extra mounts, k3s, `shell`, `doctor` | Container only. |
+| Workspace image, extra mounts, `shell`, `doctor` | Container only. |
+| k3s | Shared project cluster and kubeconfig; inherit the active project choice. |
 | Isolated browser | Separate managed container in both modes; opt-in and local Podman required. |
 
 Telegram control and notifications have their own rules; see

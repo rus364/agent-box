@@ -83,7 +83,7 @@ class HostLaunchDecisionTests(IsolatedRuntimeTest):
              mock.patch.object(runtime.subprocess, 'call', return_value=7) as call, \
              mock.patch.object(runtime, 'warn') as warn:
             self.assertEqual(runtime.host_main('codex', ['hello']), 7)
-        self.assertEqual(call.call_args.args[0], ['/bin/codex', 'hello'])
+        self.assertEqual(call.call_args.args[0][-2:], ['/bin/codex', 'hello'])
         self.assertIn('starting directly', warn.call_args.args[0])
 
     def test_tmux_error_never_retries_the_agent_directly(self):

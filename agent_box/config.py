@@ -563,7 +563,7 @@ def _k3s_url_problem(url: Any) -> str:
 
 @dataclass
 class K3sConfig:
-    """A per-workspace k3s cluster in a sidecar next to the workspace box.
+    """A shared workspace k3s sidecar for native host and container sessions.
 
     Not an image group: the cluster runs in its own ``rancher/k3s`` container
     in the host's rootless Podman, so the box itself gains no privilege. The
@@ -576,7 +576,8 @@ class K3sConfig:
     wider kernel surface than an unprivileged box.
 
     ``lifetime`` ``persistent`` keeps the cluster until ``agent-box stop`` so
-    deployments survive between sessions; ``box`` stops it with the box.
+    deployments survive between sessions; ``box`` stops it after the box and
+    last native host session end. Both modes use this same enabled setting.
     ``persistent_data`` false deletes the cluster's volume whenever the sidecar
     stops. An empty ``version`` is the release agent-box pins by digest.
 
@@ -1482,6 +1483,7 @@ def effective_config(base=None, *, include_project=True) -> Config:
     runtime_file = os.environ.get("AGENT_BOX_RUNTIME_CONFIG")
     launch = {}
     box_policy = getattr(base, "_box_policy", None)
+    cluster_policy = getattr(base, "_cluster_policy", None)
     if base is None:
         if not runtime_file:
             base = load_config()
@@ -1513,6 +1515,10 @@ def effective_config(base=None, *, include_project=True) -> Config:
                 base._global_tracker_urls = rendered["global_tracker_urls"]
             launch = rendered.get("launch") if isinstance(rendered.get("launch"), dict) else {}
             box_policy = rendered.get("box_policy")
+            cluster_policy = rendered.get("cluster_policy")
+            if cluster_policy is not None:
+                base.box.k3s = K3sConfig.from_dict(cluster_policy)
+                base._cluster_policy = cluster_policy
             if box_policy is not None:
                 apply_box_policy(base, box_policy)
     import copy
@@ -1531,6 +1537,9 @@ def effective_config(base=None, *, include_project=True) -> Config:
         result.box.network = copy.deepcopy(base._network_policy)
     if box_policy is not None:
         apply_box_policy(result, box_policy)
+    if cluster_policy is not None:
+        result.box.k3s = K3sConfig.from_dict(cluster_policy)
+        result._cluster_policy = cluster_policy
     return launch_options.apply(result, launch) if launch else result
 
 
