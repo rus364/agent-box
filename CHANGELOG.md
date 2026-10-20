@@ -1,5 +1,22 @@
 # Release notes
 
+## 3.0.2
+
+- Retry uv's exact-version-not-found resolution failure with refreshed index
+  metadata instead of relying on a separate JSON readiness request. Retries are
+  bounded, healthy installs incur no wait, and integrity or selftest failures
+  still stop publication.
+- Start native Arch checks from the checked source artifact in parallel with
+  Python release checks and publication. AUR publication waits for both checked
+  metadata and GitHub Release; standalone recovery reuses the same jobs.
+- Shorten version-only release preparation by relying on Release CI for the full
+  test matrix, build and installer checks. Clarify automatic publication and
+  scoped post-publication runtime acceptance. Include the reusable workflows in
+  source archives so native packaging tests can validate their contracts.
+
+This patch changes release tooling, CI and documentation. Application runtime and
+stored formats are unchanged from 3.0.1; no new migration or user action is needed.
+
 ## 3.0.1
 
 - Wait for checked release files to appear in the installer-facing Simple index
