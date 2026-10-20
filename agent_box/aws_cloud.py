@@ -102,6 +102,9 @@ def closure(found: Profiles, selected: list[str]) -> tuple[list[str], list[str]]
         if name in trail:
             raise ValueError('source_profile cycle')
         values = found.values(name)
+        # Rendering preserves referenced sections even when static credentials take precedence.
+        if 'sso_session' in values and f"sso-session {values['sso_session']}" not in found.sections:
+            raise ValueError(f'profile {name} has missing SSO session settings')
         unsupported = [k for k in _UNSUPPORTED if k in values]
         if unsupported:
             raise ValueError(f'profile {name} uses unsupported ' + ', '.join(unsupported))

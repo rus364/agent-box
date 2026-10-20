@@ -356,7 +356,7 @@ class CloudConfig:
     @classmethod
     def from_dict(cls, data: Any) -> "CloudConfig":
         return cls(enabled=_bool(data, "enabled", False), yc=_profile_names(_mapping(data).get("yc"), "profiles"),
-                   aws=_profile_names(_mapping(data).get("aws"), "profiles"))
+                   aws=_names(_mapping(data).get("aws"), "profiles", exact=True))
 
 
 @dataclass

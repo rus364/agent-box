@@ -171,6 +171,24 @@ class AwsTests(unittest.TestCase):
         self.assertIn("[sso-session 'work team']", self.box('config').read_text())
         self.assertEqual([p.name for p in self.box('sso/cache').iterdir()], [token.name])
 
+    def test_profile_names_with_slashes_survive_selection_and_rendering(self):
+        """AWS names are INI keys, not yc credential filenames; a listed choice must stay selected."""
+        (self.host / 'credentials').write_text('[org/dev]\naws_access_key_id = KEY\naws_secret_access_key = SECRET\n')
+        self.assertIn('org/dev', aws_cloud.choices([])[0])
+        chosen = Config.from_dict(config('org/dev').to_dict())
+        self.assertEqual(chosen.credentials.cloud.aws, ['org/dev'])
+        self.assertEqual(cloud.sync(chosen, 'ws'), [])
+        self.assertIn('[org/dev]', self.box('credentials').read_text())
+
+    def test_missing_sso_dependency_with_static_keys_is_diagnosed_and_cleared(self):
+        """Mixed authentication must not bypass dependency validation and crash refresh with stale keys left."""
+        self.assertEqual(cloud.sync(config('base'), 'ws'), [])
+        (self.host / 'config').write_text(CONFIG.replace('[profile base]', '[profile base]\nsso_session = retired'))
+        warnings = cloud.sync(config('base'), 'ws')
+        self.assertIn('missing SSO session', str(warnings))
+        self.assertEqual(self.box('credentials').read_text(), '')
+        self.assertEqual(self.box('config').read_text(), '')
+
     def test_credentials_file_wins_and_default_settings_do_not_leak(self):
         """The shared credentials file has AWS precedence; named profiles never inherit default secrets."""
         (self.host / 'config').write_text(CONFIG.replace('[profile base]\n',
