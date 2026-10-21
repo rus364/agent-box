@@ -156,6 +156,25 @@ class WorkflowTextDeliveryTests(WorkflowCase):
                 plan_sync.save(self.root, self.task, result)
             self.assertEqual(self.run_workflow("inspect", "1")["plan_sync"]["last_result"]["report"], report)
 
+    def test_sync_reference_pages_reconciliation_without_changing_saved_evidence(self):
+        """Recovery evidence needs the same bounded transport as an executor's original report."""
+        original = "Provider stopped after partial task writes.\nSync: ERROR\n"
+        recovery = "Reread affected tasks. " * 2700 + "\nSync: UPDATED\n"
+        self.report.write_text(recovery)
+        with patch.object(workflow, "run", return_value=original):
+            self.run_workflow("sync", "1")
+        with patch.object(workflow, "run") as run, contextlib.redirect_stdout(io.StringIO()) as stdout:
+            code = workflow.main(["sync", "1", "--reconcile", str(self.report), "--output", "reference"])
+        self.assertEqual(code, 0)
+        run.assert_not_called()
+        result = json.loads(stdout.getvalue())
+        self.assertEqual(result["report"], original)
+        self.assertLess(len(stdout.getvalue().encode()), text_delivery.PAGE_BYTES)
+        self.assertEqual(delivered_bytes(result["reconciliation"]["report_text"]), recovery.encode())
+        saved = plan_sync.last_result(self.root, self.task)
+        self.assertEqual((saved["report"], saved["reconciliation"]["report"]), (original, recovery))
+        self.assertNotIn("report_text", saved["reconciliation"])
+
     def test_large_diff_is_never_injected_into_any_native_or_managed_role_assignment(self):
         """Agents choose source/diff ranges themselves; even an enormous diff needs only compact context."""
         marker = "DIFF_CONTENT_MUST_STAY_OUT_OF_ASSIGNMENTS"
@@ -310,6 +329,25 @@ class WorkflowTextDeliveryTests(WorkflowCase):
                 with self.assertRaisesRegex(AgentBoxError, "TEXT_SUMMARY_FAILED"):
                     text_summary.compact(source, self.config, self.root, label="fixture", protected=["Sync: UPDATED"])
                 run.assert_called_once()
+
+    def test_worker_and_scout_summaries_preserve_exact_findings_before_delivery(self):
+        """A short summary may neither hide a real finding nor invent or change its identity."""
+        finding = "- [MEDIUM] change.py:7 — Preserve this finding and its evidence."
+        verdict = "Verdict: NEEDS_WORK"
+        report = verdict + "\n" + finding + "\n" + "x" * 70000
+        for role in ("worker", "scout"):
+            args = ("delegate", "1", "--role", role, "--brief", str(self.review_brief), "--output", "reference")
+            for summary in (verdict, verdict + "\n" + finding.replace(":7", ":8"),
+                            verdict + "\n" + finding + "\n- [LOW] extra.py:1 — Invented.", finding):
+                with self.subTest(role=role, summary=summary), patch.object(workflow, "run", side_effect=[report, summary]) as run:
+                    with self.assertRaisesRegex(AgentBoxError, "TEXT_SUMMARY_FAILED"):
+                        self.run_workflow(*args)
+                self.assertEqual(run.call_count, 2)
+            with patch.object(workflow, "run", side_effect=[report, verdict + "\n" + finding + "\nEvidence retained."]) as run:
+                result = self.run_workflow(*args)
+            self.assertEqual(run.call_count, 2)
+            self.assertIn(finding, result["response"])
+            self.assertEqual(Path(result["response_path"]).read_text(), report)
 
     def test_exhausted_review_budget_never_spends_a_scout_call_on_preparation(self):
         """Preparing a summary cannot spend provider budget when the target round is already forbidden."""

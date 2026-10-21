@@ -2066,13 +2066,13 @@ def main(argv):
             from . import text_delivery
             from .plan_sync import checked_result, native_result
             config = effective_config()
-            report = result["report"]
             result = checked_result(result, config)
-            report = result["report"]
-            if (not native_result(result) and args.output == "reference"
-                    and len(report.encode("utf-8")) > text_delivery.PAGE_BYTES):
-                artifact = text_delivery.publish(report, config)
-                result = {**result, "report": text_delivery.message(artifact), "report_text": artifact}
+            if not native_result(result) and args.output == "reference":
+                for target in (result, result.get("reconciliation", {})):
+                    report = target.get("report", "")
+                    if len(report.encode("utf-8")) > text_delivery.PAGE_BYTES:
+                        artifact = text_delivery.publish(report, config)
+                        target.update(report=text_delivery.message(artifact), report_text=artifact)
         if args.command == "delegate" and not args.native:
             # The answer is the output; its route and saved copy go beside it.
             print(result.pop("response"))

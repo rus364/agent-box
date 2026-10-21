@@ -1,6 +1,7 @@
 """One configured scout may reduce supplemental text; authoritative inputs stay exact."""
 import hashlib
 from pathlib import Path
+import re
 import tempfile
 
 from .atomicio import atomic_write_bytes
@@ -17,11 +18,17 @@ def compact(text, config, root, *, label, budget=None, protected=()):
     final consumer's text obey the normal limit; no recursive summary is attempted.
     """
     from . import workflow
-    from .provider_runner import RESPONSE_LIMIT
+    from .provider_runner import FINDING, RESPONSE_LIMIT, VERDICT_LINE
     limit = config.workflow.text_max_bytes if budget is None else min(budget, config.workflow.text_max_bytes)
     raw = text.encode("utf-8")
     if len(raw) <= limit:
         return text, None
+    findings = [line for line in text.splitlines() if FINDING.match(line)]
+    def outcome_lines(value):
+        return [line for line in value.splitlines() if VERDICT_LINE.match(line)
+                or re.fullmatch(r"(?:\*\*)?Sync: \w+(?:\*\*)?[ \t]*", line)]
+    outcomes = outcome_lines(text)
+    protected = tuple(dict.fromkeys((*protected, *findings, *outcomes)))
     context = (f"{label}: {len(raw)} source UTF-8 bytes; delivery budget={limit}; "
                f"workflow.text_max_bytes={config.workflow.text_max_bytes}")
     _, models = config.workflow.models_for("scout", None)
@@ -66,7 +73,9 @@ def compact(text, config, root, *, label, budget=None, protected=()):
         raise AgentBoxError(f"TEXT_SUMMARY_FAILED: {context}; scout returned no text. Original retained; tell the user.")
     summary = prefix + answer
     if (not answer.strip() or len(summary.encode("utf-8")) > limit
-            or any(line not in answer.splitlines() for line in protected)):
+            or any(line not in answer.splitlines() for line in protected)
+            or [line for line in answer.splitlines() if FINDING.match(line)] != findings
+            or outcome_lines(answer) != outcomes):
         raise AgentBoxError(f"TEXT_SUMMARY_FAILED: {context}; scout output ({len(summary.encode('utf-8'))} bytes) "
                             "is empty, too large or loses a required "
                             "outcome/finding. Original retained. Stop and tell the user; do not retry recursively.")
