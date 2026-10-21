@@ -30,6 +30,7 @@ class InspectTests(unittest.TestCase):
         self.adapter.resolve.side_effect = lambda reference, *args, **kwargs: self.adapter.get(reference)
         self.adapter.identity.return_value = {"id": 1}
         self.config = Config()
+        self.config._session_container = False
         self.config.workflow.enabled = True
         self.config.workflow.merge_mode = "local"
         self.config.workflow.auto_push = False

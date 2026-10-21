@@ -5,7 +5,7 @@ description: Bring a reviewed parent through its configured GitHub or local merg
 
 # ab-land
 
-Before coordinating work, read `agent-box workflow behavior`; follow its effective instructions and startup guidance notice. Assigned delegates use the behavior in their assignment.
+Before coordinating work, read `agent-box workflow behavior --role coordinator`; follow its effective instructions and startup guidance notice. Assigned delegates use the behavior in their assignment.
 
 An accepted task lands by its configured route without asking: merge it, and open its pull request where the route calls for one. Ask the user only about a blocker or disputed scope. Unattended runs return needs-human. Never bypass branch protection or force-push.
 

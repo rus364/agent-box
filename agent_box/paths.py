@@ -213,6 +213,7 @@ CONTAINER_POLICY_RUNTIME_DIR = HOST_HOME / ".local/share/agent-box/runtime/polic
 TRACKER_RUNTIME_DIR = STATE_ROOT / "runtime/tracker"
 CONTAINER_TRACKER_RUNTIME_DIR = HOST_HOME / ".local/share/agent-box/runtime/tracker"
 CONTAINER_WORKFLOW_STATE = HOST_HOME / ".local/share/agent-box/workflow"
+WORKFLOW_TEXTS = WORKFLOW_STATE / "texts"
 
 # Registry and Helm logins, read where podman and Helm read them: their own
 # variables first, so a user who moved a file is followed and a nested launch

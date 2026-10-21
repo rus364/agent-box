@@ -142,7 +142,9 @@ class GeneratedPromptTests(WorkflowCase):
         after = self.sync_prompt()
         self.assertTrue(after.startswith(before))
         self.assertIn("Working language: English\n", after)
-        self.assertIn("Working language: English\n", self.run_workflow("sync", "1", "--native")["message"])
+        from test_text_delivery import delivered_bytes
+        self.assertIn("Working language: English\n",
+                      delivered_bytes(self.run_workflow("sync", "1", "--native")["input"]).decode())
 
     def test_native_profiles_carry_the_rule_so_their_message_only_names_the_value(self):
         """A profile is a higher-priority instruction than its message; a fixed language rule there would win."""
@@ -159,7 +161,7 @@ class GeneratedPromptTests(WorkflowCase):
         after = self.worker_prompt()
         self.assertIn("Working language: Français\n", after)
         self.assertEqual(after.replace("Working language: Français\n", ""), before)
-        scout = delegation.delegate_prompt("scout", self.task, "Brief.", "", "Français")
+        scout = delegation.delegate_prompt("scout", self.task, "Brief.", "", "Français", behavior_version="v2")
         self.assertNotIn("Working language:", scout)
 
     def test_native_and_managed_reviewers_learn_the_working_language(self):

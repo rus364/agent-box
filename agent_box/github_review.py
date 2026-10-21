@@ -91,7 +91,7 @@ def quoted(text):
     return MENTION.sub("@<!-- -->", text.strip())
 
 
-def request_body(provider, head, base, descriptions, review_context="", brief=None, language="", behavior_version="v2"):
+def request_body(provider, head, base, descriptions, review_context="", brief=None, language="", *, behavior_version):
     """The request names both commits of the scope it asks about, because that is the
     only place a published request can record which diff the answer will describe.
 
@@ -453,7 +453,7 @@ def _round(root, binding, adapter, config, task, parent, tasks, fingerprint, ide
     request = find_request(comments, [*published_requests(root, task, provider, head, base_head),
                                       request_body(provider, head, base_head, descriptions,
                                                    review_context, brief, config.workflow.language,
-                                                   config.workflow.behavior_version)])
+                                                   behavior_version=config.workflow.behavior_version)])
     if descriptor is not None:
         round_id = descriptor["delegation"]
         report, url, note = None, None, None
@@ -504,7 +504,7 @@ def _round(root, binding, adapter, config, task, parent, tasks, fingerprint, ide
             f"Ask the user before rerunning workflow review {task.id} or reviewing this head another way")
     body = (request["body"] if request is not None
             else request_body(provider, head, base_head, descriptions, review_context, brief,
-                              config.workflow.language, config.workflow.behavior_version))
+                              config.workflow.language, behavior_version=config.workflow.behavior_version))
     if request is None and len(body) > COMMENT_LIMIT:
         raise AgentBoxError(
             f"The request for {head[:12]} is {len(body)} characters and GitHub accepts {COMMENT_LIMIT}; "

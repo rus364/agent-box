@@ -197,7 +197,7 @@ class DelegateCommandTests(WorkflowCase):
             with self.subTest(use_tiers=use_tiers):
                 execution = self.run_workflow("inspect", "1")["execution"]
                 self.assertEqual(execution["worker"], {
-                    **worker, "managed": "agent-box workflow delegate 1 --role worker --brief FILE"})
+                    **worker, "managed": "agent-box workflow delegate 1 --role worker --brief FILE --output reference"})
                 self.assertEqual(execution["scout"], {"mode": "self", "models": "workflow.scout.models"})
         self.config.workflow.use_tiers = False
         self.config.workflow.worker.models = [{**candidate("claude", "worker-model", "high"), "api_provider": "deepseek"}]
@@ -292,7 +292,7 @@ class DelegateContractTests(unittest.TestCase):
         for role in ("worker", "scout"):
             with self.subTest(role=role):
                 profile = body("claude", role, 1, {"speed": "inherit", "model": "m", "effort": "high"})
-                prompt = delegation.delegate_prompt(role, Task("1", "1", "Task"), "Brief.", "")
+                prompt = delegation.delegate_prompt(role, Task("1", "1", "Task"), "Brief.", "", behavior_version="v2")
                 self.assertIn(delegation.delegate_rules(role), profile)
                 self.assertIn(delegation.delegate_rules(role), prompt)
                 self.assertIn("never write to any of them", profile)

@@ -8,6 +8,7 @@ parser has to survive. The one addition is Claude's `Reviewed-Base` line: the
 request asks for it now, and the probe answers predate that request form.
 """
 import datetime
+import json
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -161,7 +162,7 @@ class CloudReviewTests(LandingCase):
     def request_comment(self, created=None, provider="claude"):
         created = created or when(60)
         body = github_review.request_body(provider, self.head, gw.base_commit(self.root, "main"),
-                                          workflow.review_descriptions(self.parent, self.parent, [self.parent]))
+                                          workflow.review_descriptions(self.parent, self.parent, [self.parent]), behavior_version="v2")
         return {"id": 100, "user": {"login": "rus364", "type": "User"}, "created_at": created,
                 "updated_at": created, "body": body,
                 "html_url": "https://github.com/o/r/pull/9#issuecomment-100"}
@@ -170,11 +171,39 @@ class CloudReviewTests(LandingCase):
         """The bot judges repository text as a local reviewer does, so it must learn the same language."""
         descriptions = workflow.review_descriptions(self.parent, self.parent, [self.parent])
         base = gw.base_commit(self.root, "main")
-        self.assertEqual(github_review.request_body("claude", self.head, base, descriptions, language=""),
-                         github_review.request_body("claude", self.head, base, descriptions))
+        self.assertEqual(github_review.request_body("claude", self.head, base, descriptions, language="", behavior_version="v2"),
+                         github_review.request_body("claude", self.head, base, descriptions, behavior_version="v2"))
         self.config.workflow.language = "Français"
         self.review()
         self.assertIn("Working language: Français. New or changed code comments", self.published())
+
+    def test_cloud_requests_receive_the_effective_project_behavior_for_both_bots(self):
+        """A cloud reviewer must not inherit the global coordinator policy or another project."""
+        from agent_box import project_config
+        original = self.config
+        original.workflow.review.max_rounds = 4
+        for provider in ("codex", "claude"):
+            for version in ("v1", "v2"):
+                original.workflow.behavior_version = "v2" if version == "v1" else "v1"
+                original.workflow.review.github_provider = provider
+                path = self.root / ".agent-box.json"
+                path.write_text(json.dumps({"workflow": {"behavior_version": version}}))
+                gw.git(self.root, "add", ".agent-box.json")
+                gw.git(self.root, "commit", "-m", f"project choice {provider} {version}")
+                self.commit_action(f"# {provider} {version}\nuses: anthropics/claude-code-action@v1\n")
+                self.config = project_config.apply(original, project_config.load(path))
+                self.review()
+                body = self.published()
+                self.assertIn(f"Workflow behavior: {version} (reviewer)", body)
+                self.assertNotIn(f"Workflow behavior: {version} (coordinator)", body)
+                self.comments.append({**self.request_comment(provider=provider), "body": body})
+                if provider == "claude":
+                    self.answer(CLAUDE_PASS)
+                else:
+                    self.answer(CODEX_SUMMARY, login="chatgpt-codex-connector[bot]")
+                    self.answer(CODEX_NO_FINDINGS, login="chatgpt-codex-connector[bot]")
+                self.assertEqual(self.review()["verdict"], "PASS")
+        self.config = original
 
     def test_the_first_run_publishes_one_request_and_later_runs_publish_none(self):
         """A rerun is how the answer is read, so it must never ask a second time."""

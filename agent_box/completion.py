@@ -73,6 +73,11 @@ def workflow_parser():
     return parser()
 
 
+def text_parser():
+    from .text_delivery import parser
+    return parser()
+
+
 def external_command(args):
     """``ext API [claude|codex] [AGENT ARGS...]``; API names are the enabled external providers."""
     if len(args) == 1:
@@ -114,6 +119,7 @@ COMMANDS = {
     "build": fixed(), "update": fixed(), "rebuild": fixed(),
     "uninstall": fixed("--purge", "--yes"),
     "tracker": argparse_command(tracker_parser), "workflow": argparse_command(workflow_parser),
+    "text": argparse_command(text_parser),
     "completion": fixed(*SHELLS), "selftest": fixed(), "help": fixed(),
 }
 #: Hook entry points and help spellings: dispatched, but not something a person types.

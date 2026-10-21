@@ -31,6 +31,8 @@ CHOICES = {
 }
 HELP = {
     "workflow.behavior_version": "Engineering guidance: v1 preserves previous instructions; v2 (default) adds proportionate impact analysis, reuse and evidence-based disagreement. Projects may override it. New assignments use the selected version; existing agents keep their context.",
+    "workflow.text_max_bytes": "Maximum UTF-8 bytes in a complete delivered text (default 65536). Pages do not reset the limit. Overflow stops delivery and must be reported to the user. Global only; this is not a token or session spending budget.",
+    "workflow.text_retention_days": "Keep temporary text pages for this many days (default 7). New entries keep their creation-time expiry; setting changes affect new entries. Writes/preparation silently clean expired owned entries. Reads do not delete files. Global only.",
     "box.network": "Publish workspace or k3s services, reach selected host services, or explicitly share the host network. Changes need a stopped workspace.",
     "box.network.mode": "default keeps isolated networking. host shares host localhost and ports, including nested containers; wildcard listeners may reach the LAN. Global only; --network overrides one container lifetime. Not native --host execution.",
     "box.network.ports": "JSON list of [IP:]HOST:CONTAINER[/tcp|udp] workspace publications. Default 127.0.0.1 and TCP. Use [::1] for IPv6. An explicit non-loopback IP makes the service accessible from other computers (global/CLI only). Applications must listen on the container interface, not only localhost. Example: [\"8080:3000\"].",
@@ -332,7 +334,7 @@ MENU_GROUPS = {
         ("Delivery", ("merge_mode", "auto_push", "pause_push", "cleanup_local_branches", "cleanup_remote_branches")),
         ("Project text", ("language",)),
         ("Roles", ("use_tiers", "worker", "scout", "review", "sync")),
-        ("Delegation", ("timeout_seconds",)),
+        ("Delegation", ("timeout_seconds", "text_max_bytes", "text_retention_days")),
     ),
     ("agents", "codex"): (
         ("Native agents", ("native_agent_wait",)),

@@ -419,6 +419,10 @@ def review_result(root, binding, adapter, task, config, round_id=None, *, reconc
             value, path = review_results.read(WORKFLOW_STATE, repository_key(root), record["receipt"])
         else:
             raise AgentBoxError("No saved review result for this round")
+        if value.get("backend") == "managed":
+            from .text_delivery import check_size
+            check_size(len(value["output"]["report"]["text"].encode("utf-8")), config.workflow,
+                       "reviewer report (original saved)")
         if state is None:
             record.update(status="error", reason="Review budget read failed; restore access before reconciliation")
             return review_result_summary(task, config, state, record, value, path, root)
@@ -510,6 +514,11 @@ def review_result_summary(task, config, state, record, value, path, root):
                                 if state is not None else None)}
     if output.get("failures"):
         result["failures"] = output["failures"]
+    if value.get("backend") == "managed":
+        from . import text_delivery
+        report = output["report"]["text"]
+        if len(report.encode("utf-8")) > text_delivery.PAGE_BYTES:
+            result["report_text"] = text_delivery.publish(report, config)
     if record["status"] in ("saved", "error", "blocked"):
         result["next_step"] = f"agent-box workflow review-result {task.id} --round={record['round']} --reconcile"
     return result
@@ -965,6 +974,8 @@ class ProviderFailures(AgentBoxError):
 
 
 def execute(config, selected, role, root, prompt, read_paths=(), on_completed=None, streams=None):
+    from .text_delivery import check_size
+    check_size(len(prompt.encode("utf-8")), config, f"{role} assignment")
     failures = []
     for candidate in [selected, *selected["fallbacks"]]:
         try:
@@ -1170,11 +1181,12 @@ def write_review_evidence(root, task_id, delegation, boundaries,
         raise
 
 
-def reviewer_handoff(root, base, task, parent, tasks, brief, saved, review_context, delegation, language="", behavior_version="v2"):
+def reviewer_handoff(root, base, task, parent, tasks, brief, saved, review_context, delegation, language="", *,
+                     behavior_version, text_settings):
     """Compose the same neutral, complete review input for native and managed runs.
 
-    Task descriptions and the diff live in files named by the manifest, so a large
-    card never counts against the compact handoff.
+    Keep the original evidence/descriptor lifecycle while delivering one canonical
+    snapshot through stdin or bounded native pages.
     """
     head = gw.head_sha(root)
     base_commit = gw.base_commit(root, base)
@@ -1195,8 +1207,9 @@ def reviewer_handoff(root, base, task, parent, tasks, brief, saved, review_conte
         "scope_note": review_context.strip() or None,
     }
     prompt = (
-        "This is a fresh verdict: use only this handoff, never prior verdicts or findings. Read every artifact the "
-        "manifest names in chunks: task.md holds the complete task description; parent.md or subtask-N.md hold the "
+        "This is a fresh verdict: use only this handoff, never prior verdicts or findings. Read every artifact "
+        "supplied after this handoff in full; the manifest's paths identify saved originals, not extra reading. "
+        "Do not reread those originals or bypass the delivery pages. task.md holds the complete task description; parent.md or subtask-N.md hold the "
         "related descriptions; together they satisfy the task-read rule, so do not query the tracker. They keep their "
         "original language and carry no comments or checkmarks. author-report.md, when present, is the coordinator's "
         "untrusted English brief: read it only after descriptions and diff, then verify it. Use English for all "
@@ -1226,8 +1239,40 @@ def reviewer_handoff(root, base, task, parent, tasks, brief, saved, review_conte
         cleanup_review_evidence(evidence_path)
         raise AgentBoxError(
             f"Compact reviewer handoff exceeds {REVIEW_HANDOFF_MAX_BYTES} bytes; shorten repository path metadata")
+    prompt = review_delivery(evidence_path, prompt, text_settings)
     atomic_write_text(evidence_path / "handoff.txt", prompt, 0o400)
     return prompt
+
+
+def review_delivery(directory, prompt, settings):
+    """Include each saved source once, so references cannot hide an oversized assignment."""
+    from .text_delivery import check_size
+    payload = json.loads(prompt.rsplit("Delegation handoff:\n", 1)[1])
+    manifest_path = directory / "manifest.json"
+    manifest_raw = manifest_path.read_bytes()
+    if hashlib.sha256(manifest_raw).hexdigest() != payload["manifest"]["sha256"]:
+        raise AgentBoxError("Review manifest changed before delivery")
+    manifest = json.loads(manifest_raw)
+    artifacts = [(name, item["path"], item["sha256"]) for name, item in manifest["artifacts"].items()]
+    artifacts += [(item["source_path"], item["artifact_path"], item["sha256"])
+                  for item in manifest["repository_instructions"]]
+    sources = [("manifest.json", str(manifest_path), payload["manifest"]["sha256"]), *artifacts]
+    parts = [prompt]
+    size = len(prompt.encode("utf-8"))
+    check_size(size, settings, "reviewer assignment")
+    for name, source, digest in sources:
+        path = Path(source)
+        if path.parent != directory or path.is_symlink() or not path.is_file():
+            raise AgentBoxError("Review evidence is outside its package or missing")
+        with path.open("rb") as stream:
+            raw = stream.read(settings.text_max_bytes + 1)
+        header = f"\n----- Saved evidence: {name} ({len(raw)} UTF-8 bytes) -----\n"
+        size += len(header.encode("utf-8")) + len(raw)
+        check_size(size, settings, "reviewer assignment including evidence", lower_bound=len(raw) > settings.text_max_bytes)
+        if hashlib.sha256(raw).hexdigest() != digest:
+            raise AgentBoxError(f"Review evidence changed before delivery: {name}")
+        parts.append(header + raw.decode("utf-8"))
+    return "".join(parts)
 
 
 def begin(root, adapter, task, resume, *, existing_only=False):
@@ -1309,7 +1354,8 @@ def parser():
     sub = p.add_subparsers(dest="command", required=True)
     from .workflow_behavior import ROLES
     behavior = sub.add_parser("behavior", help="Read effective engineering guidance without a task or tracker access")
-    behavior.add_argument("--role", choices=ROLES, default="coordinator")
+    behavior.add_argument("--role", choices=ROLES, required=True,
+                          help="Required: coordinator, worker, reviewer, scout, or sync; never inferred")
     for name in ("begin", "pause", "resume", "inspect", "approve", "delegate", "review", "review-result", "review-budget", "validate", "finish", "pr", "land", "sync"):
         description = {
             "pause": "Preserve committed task work and return to the base; lifecycle and dependencies stay unchanged",
@@ -1340,6 +1386,8 @@ def parser():
             mode.add_argument("--reconcile", metavar="FILE", help="After executor stops and live-task checks, record recovery evidence ending Sync: UPDATED|UNCHANGED|BLOCKED|ERROR|REQUIRED; no model call")
             cmd.add_argument("--event", choices=("manual", "before", "after", "plan"), default="manual",
                              help="Manual always runs; other events follow Workflow Plan sync settings")
+            cmd.add_argument("--output", choices=("inline", "reference"), default="inline",
+                             help="Report output: inline (default), or generated pages when longer than 4 KiB")
         if name == "begin":
             cmd.add_argument("--resume", action="store_true")
         if name == "pause":
@@ -1351,6 +1399,10 @@ def parser():
             cmd.add_argument("--reason", required=True, help="The user's explicit acceptance of the current head, recorded by the coordinator")
         if name == "delegate":
             cmd.add_argument("--role", choices=("worker", "scout"), required=True)
+            cmd.add_argument("--native", action="store_true",
+                             help="Prepare the same assignment as generated file pages for the configured native profile")
+            cmd.add_argument("--output", choices=("inline", "reference"), default="inline",
+                             help="Managed answer: inline (default), or generated pages when longer than 4 KiB")
         if name in ("review", "delegate"):
             cmd.add_argument("--brief", required=name == "delegate", help=(
                 "UTF-8 English assignment: goal, scope, relevant paths, decisions and limitations. Keep briefs outside the working tree"
@@ -1539,8 +1591,8 @@ def execution(config, role, tier, task_id, authors=None):
     return {"mode": "delegate", "models": path, "native": native,
             **({"native_limitation": limitation} if limitation else {}),
             "managed": (f"agent-box workflow review {task_id}{named}" if role == "reviewer" else
-                        f"agent-box workflow sync {task_id}" if role == "sync" else
-                        f"agent-box workflow delegate {task_id} --role {role} --brief FILE")}
+                        f"agent-box workflow sync {task_id} --output reference" if role == "sync" else
+                        f"agent-box workflow delegate {task_id} --role {role} --brief FILE --output reference")}
 
 
 def scout_diagnostics(config):
@@ -1572,9 +1624,19 @@ def delegate(args, root, adapter, config):
     if not models:
         raise AgentBoxError(f"{path} is empty, so the coordinator does this {args.role} work itself in its own "
                             f"session; configure candidates there to delegate it")
-    selected = candidates(config, args.role, tier)
     prompt = delegate_prompt(args.role, task, brief, repository_instructions(root), config.workflow.language,
-                             config.workflow.behavior_version)
+                             behavior_version=config.workflow.behavior_version)
+    from . import text_delivery
+    text_delivery.check_size(len(prompt.encode("utf-8")), config.workflow, f"{args.role} assignment")
+    text_delivery.prepare(config)
+    if args.native:
+        route = execution(config, args.role, tier, task.id)
+        if not route.get("native"):
+            raise AgentBoxError("No configured native profile; use the managed delegation command")
+        artifact = text_delivery.publish(prompt, config)
+        return {"task": task.id, "role": args.role, "route": route, "input": artifact,
+                "message": bootstrap(args.role, artifact)}
+    selected = candidates(config, args.role, tier)
     # A worker shares the working tree with validation; scouts only read, up to their limit.
     slot = lock(root, "work") if args.role == "worker" else scout_slot(root, config.workflow.scout.limit)
     try:
@@ -1585,7 +1647,12 @@ def delegate(args, root, adapter, config):
         raise
     reference = save_private("delegate-responses", ".md",
                              lambda target, _: atomic_write_text(target, output["report"], 0o600))
-    return {"response": output["report"], "route": output["route"],
+    report = output["report"]
+    size = len(report.encode("utf-8"))
+    text_delivery.check_size(size, config.workflow, f"{args.role} report (original saved)")
+    artifact = text_delivery.publish(report, config) if args.output == "reference" and size > text_delivery.PAGE_BYTES else None
+    return {"response": text_delivery.message(artifact) if artifact else report,
+            **({"response_text": artifact} if artifact else {}), "route": output["route"],
             "failures": [diagnostic_path(item) for item in output["failures"]],
             "usage": output["diagnostics"]["usage"], "response_path": str(private_path(reference))}
 
@@ -1616,17 +1683,26 @@ def review(args, root, binding, adapter, config, task, parent, tasks, base, fing
             save_evidence(root, task, saved)
         return {**saved, "review_budget": read_review_budget(root, binding, task, config.workflow.review.max_rounds)}
     brief = read_brief(args.brief) if args.brief else None
+    from .text_delivery import prepare
+    prepare(config)
     limit = config.workflow.review.max_rounds
     round_id = secrets.token_urlsafe(18)
     if args.native:
-        budget = start_review(root, binding, task, limit, round_id, fingerprint, "native")
         saved = evidence(root, task, fingerprint, base)
-        prompt = reviewer_handoff(root, base, task, parent, tasks, brief, saved, review_context, round_id,
-                                  config.workflow.language, config.workflow.behavior_version)
-        descriptor = review_descriptor(identity, task, fingerprint, round_id)
-        bind_delegation_input(root, descriptor, prompt)
+        try:
+            prompt = reviewer_handoff(root, base, task, parent, tasks, brief, saved, review_context, round_id,
+                                      config.workflow.language, behavior_version=config.workflow.behavior_version,
+                                      text_settings=config.workflow)
+            descriptor = review_descriptor(identity, task, fingerprint, round_id)
+            bind_delegation_input(root, descriptor, prompt)
+            from .text_delivery import publish
+            artifact = publish(prompt, config)
+            budget = start_review(root, binding, task, limit, round_id, fingerprint, "native")
+        except BaseException:
+            cleanup_review_evidence(review_evidence_path(root, task.id, round_id))
+            raise
         return {"task": task.id, "round": round_id, "scope": fingerprint, "review_budget": budget,
-                "message": bootstrap("reviewer", descriptor["input"]),
+                "message": bootstrap("reviewer", artifact), "input": artifact,
                 "instructions": "Start a new read-only reviewer in fresh context without the parent's history and pass "
                                 "message as its whole initial prompt. Save its final message unchanged to a file outside "
                                 "the working tree and record it with result_command, naming the provider and model "
@@ -1647,7 +1723,6 @@ def review(args, root, binding, adapter, config, task, parent, tasks, base, fing
                             f"rerun workflow review {task.id} {AUTHOR_FORM}")
     selected, preflight_failures = managed_review_route(candidates(config, "reviewer", tier, authors=authors or ()))
     output = None
-    started = False
     repository = repository_key(root)
 
     def completed(value):
@@ -1662,15 +1737,16 @@ def review(args, root, binding, adapter, config, task, parent, tasks, base, fing
         with lock(root, "review"):
             if scope(root, base) != fingerprint:
                 raise AgentBoxError("Code or base changed before review; start a review of the current head")
-            start_review(root, binding, task, limit, round_id, fingerprint, "managed")
-            started = True
             saved = evidence(root, task, fingerprint, base)
             prompt = reviewer_handoff(root, base, task, parent, tasks, brief, saved, review_context, round_id,
-                                      config.workflow.language, config.workflow.behavior_version)
+                                      config.workflow.language, behavior_version=config.workflow.behavior_version,
+                                      text_settings=config.workflow)
             descriptor = review_descriptor(identity, task, fingerprint, round_id)
             bind_delegation_input(root, descriptor, prompt)
+            delivered = read_delegation_input(root, descriptor)
+            start_review(root, binding, task, limit, round_id, fingerprint, "managed")
             try:
-                completed(execute(config.workflow, selected, "reviewer", root, read_delegation_input(root, descriptor),
+                completed(execute(config.workflow, selected, "reviewer", root, delivered,
                         read_paths=[review_evidence_path(root, task.id, round_id)], on_completed=completed,
                         streams=lambda: review_results.stream_run(WORKFLOW_STATE, repository, task.id, round_id)))
             except ProviderFailures as exc:
@@ -1680,7 +1756,7 @@ def review(args, root, binding, adapter, config, task, parent, tasks, base, fing
                     f"{review_results.stream_path(WORKFLOW_STATE, repository, task.id, round_id)}",
                     [diagnostic_path(item) for item in exc.failures]) from None
     finally:
-        if started and output is None:
+        if output is None:
             cleanup_review_evidence(review_evidence_path(root, task.id, round_id))
     return review_result(root, binding, adapter, task, config, round_id, reconcile=True)
 
@@ -1864,7 +1940,16 @@ def main(argv):
     try:
         args = parser().parse_args(argv)
         result = dispatch(args)
-        if args.command == "delegate":
+        if args.command == "sync" and isinstance(result.get("report"), str):
+            from . import text_delivery
+            from .plan_sync import checked_result
+            config = effective_config()
+            report = result["report"]
+            checked_result(result, config)
+            if args.output == "reference" and len(report.encode("utf-8")) > text_delivery.PAGE_BYTES:
+                artifact = text_delivery.publish(report, config)
+                result = {**result, "report": text_delivery.message(artifact), "report_text": artifact}
+        if args.command == "delegate" and not args.native:
             # The answer is the output; its route and saved copy go beside it.
             print(result.pop("response"))
             print(json.dumps(result, ensure_ascii=False), file=sys.stderr)

@@ -969,6 +969,10 @@ class WorkflowConfig:
     merge_mode: str = "github"
     #: Engineering guidance only; permissions and review/model policy are independent.
     behavior_version: str = "v2"
+    #: Global: a whole delivered text, independent of page size or provider tokens.
+    text_max_bytes: int = 65536
+    #: Global: each temporary text keeps the expiry chosen when it was created.
+    text_retention_days: int = 7
     #: Off by default: each role runs its own list regardless of the task tier.
     #: The tiers stay configured and labelled.
     use_tiers: bool = False
@@ -1041,6 +1045,10 @@ class WorkflowConfig:
             errors.append("workflow.merge_mode must be github or local")
         if self.behavior_version not in ("v1", "v2"):
             errors.append("workflow.behavior_version must be v1 or v2")
+        for name in ("text_max_bytes", "text_retention_days"):
+            value = getattr(self, name)
+            if type(value) is not int or value < 1:
+                errors.append(f"workflow.{name} must be a positive integer")
         errors += language_problems(self.language)
         value = self.timeout_seconds
         if not isinstance(value, int) or not math.isfinite(value) or not 30 <= value <= 86400:
@@ -1120,6 +1128,8 @@ class WorkflowConfig:
         result.enabled = _bool(data, "enabled", False)
         result.merge_mode = _str(data, "merge_mode") or result.merge_mode
         result.behavior_version = data.get("behavior_version", result.behavior_version)
+        for name in ("text_max_bytes", "text_retention_days"):
+            setattr(result, name, data.get(name, getattr(result, name)))
         for key in ("use_tiers", "auto_push", "pause_push", "cleanup_local_branches", "cleanup_remote_branches"):
             setattr(result, key, _bool(data, key, getattr(result, key)))
         result.timeout_seconds = _number(data, "timeout_seconds", result.timeout_seconds)
@@ -1517,6 +1527,7 @@ def effective_config(base=None, *, include_project=True) -> Config:
             # checkout it no longer loads or validates although nothing the user saved is wrong.
             try:
                 base = Config.from_dict(rendered)
+                base._session_container = bool(rendered.get("container", False))
                 if isinstance(rendered.get("workflow_guidance"), dict):
                     base._workflow_guidance = rendered["workflow_guidance"]
                 if "network" in rendered.get("box", {}):

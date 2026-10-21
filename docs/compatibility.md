@@ -28,6 +28,24 @@ runtimes require explicit stop/relaunch to adopt it.
 
 ## Direct upgrades
 
+The unreleased text-delivery guard changes published workflow behavior: assignments
+and captured managed reports above 65,536 UTF-8 bytes now fail before consumption.
+It therefore requires the next **major** package release, even though the new
+settings and commands are additive. Before upgrading a workflow that needs larger
+deliveries, deliberately set a positive global `workflow.text_max_bytes`, or reduce
+the assignment's scope. Missing settings adopt 65,536 bytes and
+`workflow.text_retention_days=7`. Both remain global-only; explicit values survive
+direct upgrades from every published configuration. No saved representation changes,
+intermediate release or schema migration is needed. Temporary texts use a new private
+versioned format; unknown formats survive cleanup and are refused for lookup.
+Successful default output fields retain their meanings; `--output reference` is an
+explicit output mode. Running immutable sessions require stop/relaunch to use the
+new helper and shared mount. See [text delivery](integrations/workflow.md#text-delivery).
+
+`workflow behavior` was introduced after published v3.0.2. Its now-required `--role`
+corrects an unpublished interface; it is not the reason for the major-release
+requirement above. No behavior snapshot contents or role permissions changed.
+
 Workflow behavior versions are independent of package and persisted schema
 versions. The additive `workflow.behavior_version` field uses `v2` when absent,
 including on upgrades from published configurations; explicit `v1` preserves the

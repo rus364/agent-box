@@ -306,7 +306,7 @@ class LandingFreshnessTests(LandingCase):
             if native:
                 opened = self.dispatch(["review", "7", "--native", "--brief", str(brief)])
                 prompt = (workflow.review_evidence_path(self.root, "7", opened["round"]) / "handoff.txt").read_text()
-                handoff = json.loads(prompt.split("Delegation handoff:\n", 1)[1])
+                handoff = json.JSONDecoder().raw_decode(prompt.split("Delegation handoff:\n", 1)[1])[0]
                 self.assertIn("review the complete implementation", handoff["scope_note"])
                 self.assertEqual(handoff["change_summary"], "")
                 output = Path(self.temporary.name) / "review.md"

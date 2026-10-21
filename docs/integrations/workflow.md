@@ -259,6 +259,8 @@ expected. A cleanup failure never undoes the merge or Done.
 | `workflow.use_tiers` | off | Let task tiers select model lists |
 | `workflow.language` | — | [Working language](../configuration.md#the-configuration-menu) of tracker, GitHub, commit and repository text |
 | `workflow.timeout_seconds` | 3600 | Limit for each managed run |
+| `workflow.text_max_bytes` | 65536 | Total UTF-8 bytes per complete delivery (global only) |
+| `workflow.text_retention_days` | 7 | Creation-time expiry of temporary texts (global only) |
 | `workflow.scout.limit` | 3 | Parallel scouts |
 | `workflow.review.policy` | `auto` | `off`, `auto`, `always` |
 | `workflow.review.max_files`, `max_lines` | 5, 200 | Auto-review thresholds (inclusive) |
@@ -269,14 +271,96 @@ expected. A cleanup failure never undoes the merge or Done.
 | `workflow.review.github_provider` | `auto` | `auto`, `local`, `codex` or `claude` |
 | `workflow.review.wait_seconds` | 3600 | How long to wait for a cloud reviewer |
 
-All workflow settings except `enabled` can be overridden per project in
+All workflow settings except `enabled`, `text_max_bytes` and `text_retention_days` can be overridden per project in
 `.agent-box.json`. Session options such as `--review`, `--rounds`, `--merge`
 and `--no-push` override them for one session; see
 [session options](../usage.md#session-options).
 
+## Text delivery
+
+`workflow delegate TASK --role worker|scout --brief FILE --native` prepares the
+same full task requirements, separate assignment scope, repository guidance and
+effective role behavior as managed execution. Pass its returned `message` unchanged
+to the configured fresh native profile. Native review and Plan sync use the same
+file bootstrap. Restricted Claude readers keep Read/Grep/Glob; no shell permission
+is added. Managed processes still receive the canonical text directly on stdin;
+native final answers still return through the provider's native transport.
+
+```bash
+agent-box text write < input.txt          # UTF-8 stdin; generated ID and first path
+agent-box text locate ID                 # checked locator; no content or writes
+agent-box text write --page-bytes 1024 < input.txt
+agent-box workflow delegate TASK --role scout --brief brief.md --output reference
+agent-box workflow sync TASK --output reference
+```
+
+Callers choose no storage path. Records live under the existing shared workflow
+state directory in `texts/`, with atomic publication and collision-checked IDs.
+Container use requires the existing workflow/tracker bind mount; an old or unmounted
+session fails explicitly rather than storing a hidden local copy. `text locate`
+checks integrity, expiry and the current limit without cleanup or write privileges.
+There is no dedicated read command: use the file tool available to the recipient.
+
+Each page contains at most 4,096 source bytes plus at most 2,048 metadata bytes,
+identifies the byte range/total and gives the next sibling path or `END OF TEXT`.
+Resolve sibling paths in the current page's directory, so shared pages also work
+when the host and container mount paths differ. Read one
+page per tool call through that final marker. Smaller pages are available for tighter
+output budgets. UTF-8 boundaries, CRLF, long lines and an unterminated last line are
+preserved. Never combine all pages into one tool output, infer completeness from
+line counts or reopen an unbounded original. Missing, changed or truncated content
+requires an explicit incomplete-delivery report. Markers and hashes cannot prove
+that a model complied with these instructions.
+
+`--output reference` keeps reports of at most 4,096 bytes inline. For larger reports
+within the total limit it replaces the `response` (delegate) or `report` (sync) text
+with a reading instruction and adds `response_text` or `report_text` locator metadata.
+The default `inline` mode and other successful fields retain their meanings.
+Delegate CLI stdout remains the answer/instruction; metadata stays on stderr.
+Managed stdout/final-file capture and the saved original are unchanged. Managed
+review results also add `report_text` pages above 4,096 bytes; `result_path` keeps
+its original receipt meaning. Read the pages for the report instead of the raw receipt.
+
+**Total-size refusal.** Workflow → Delegation has positive global-only settings
+`text_max_bytes` (65,536) and `text_retention_days` (7). The byte limit covers each
+complete agent-box-controlled logical delivery: stored text, assembled assignment
+including mandatory referenced review evidence, or captured managed report. Pages,
+references and provider fallback do not reset it. Input is checked before native
+publication or managed launch; captured output is checked before offering it to its
+consumer and retained privately on refusal. Streaming writes read at most limit+1
+bytes; their error can report a lower bound. GitHub review has its existing separate
+remote size refusal and never receives local paths.
+
+`TEXT_LIMIT_EXCEEDED` names the route, observed bytes, configured limit and setting.
+Stop that delivery and tell the coordinator, who must notify the user in their
+language. Continuing requires the user's deliberate choice to raise the limit or
+reduce scope. Never truncate, silently increase the setting or split one refused
+text across IDs to feed it anyway. The new default refusal requires a major release;
+see [upgrade guidance](../compatibility.md#direct-upgrades).
+
+**Retention and limits of enforcement.** Expiry is fixed at publication; setting
+changes affect new records. Writes and coordinator preparation silently prune expired
+owned records. Reads never prune; unrelated files, unknown formats, symlinks and
+review evidence/receipts survive. Expired records cannot produce new locators, but
+issued paths remain physically readable until cleanup. Lowering the limit does not
+revoke old paths. Ordinary repository exploration, live tracker queries, arbitrary
+native final replies, repeated reads/messages and full-session context or cost are
+outside this guard. It cannot recover tokens spent generating a refused report.
+Byte counts are exact UTF-8 sizes, not token or monetary estimates.
+
+The optional [local CLI transport fixture](../../tools/text_transport_fixture.py)
+records actual requests to a dummy local API; it does not call paid models. On
+Codex 0.163.0 and Claude 2.1.304, direct stdin/native input and native return preserved
+approximately 64 KiB; large shell output was shortened and Claude Read refused a
+300,000-byte file. Bounded 4 KiB reads succeeded. These are transport observations,
+not universal limits or live semantic acceptance; rerun the fixture after CLI updates.
+
 ## Engineering guidance
 
-Skills load `agent-box workflow behavior` before coordinating work. Native and
+Coordinator skills load `agent-box workflow behavior --role coordinator` before work.
+The role is required; omission or an unknown role fails and lists accepted roles.
+Delegates use the behavior in their assignment, or explicitly request their own
+role with `--role worker|reviewer|scout|sync`, never coordinator behavior. Native and
 managed assignments carry the chosen role's instructions, including GitHub review
 requests. Shared installed profiles do not store a project's version. v1 retains
 the earlier local review safeguards; v2 extends the common reasoning policy across
@@ -295,7 +379,7 @@ inspect and commit alongside project work.
 Edited, malformed, duplicated or symlinked guidance is preserved with a diagnostic;
 reconcile it explicitly before using `ab-setup`. A failed write is also reported.
 The launch snapshot carries the result, exposed as `startup_guidance` by
-`workflow behavior`, so the agent knows why its instructions changed or could not
+`workflow behavior --role coordinator`, so the coordinator knows why instructions changed or could not
 be refreshed. Help, diagnostics, shell launches and read-only workflow commands do
 not repair files. Existing rendered sessions never replace host guidance using
 their older immutable runtime; stop/relaunch to adopt a new runtime.

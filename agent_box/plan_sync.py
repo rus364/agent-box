@@ -80,12 +80,22 @@ def decision(root, task, settings, event):
     return bool(matched), "changed path matched" if matched else "no changed path matched"
 
 
+def checked_result(result, config):
+    """Status and recovery commands must not redisclose a previously refused report."""
+    if result and isinstance(result.get("report"), str):
+        from .text_delivery import check_size
+        size = len(result["report"].encode("utf-8"))
+        size += len(result.get("reconciliation", {}).get("report", "").encode("utf-8"))
+        check_size(size, config.workflow, "sync report (original saved)")
+    return result
+
+
 def describe(root, task, config):
     from .workflow import execution
     result = {"policy": config.workflow.sync.policy, "events": config.workflow.sync.events,
               "scope": config.workflow.sync.scope, "references": config.workflow.sync.references,
               "execution": execution(config, "sync", config.workflow.effective_tier(task.tier), task.id),
-              "command": f"agent-box workflow sync {task.id}", "last_result": last_result(root, task)}
+              "command": f"agent-box workflow sync {task.id}", "last_result": checked_result(last_result(root, task), config)}
     prior = result["last_result"] or {}
     if prior.get("status") == "REQUIRED":
         result["next_step"] = (f"Run Plan sync through ab-sync: agent-box workflow sync {task.id} "
@@ -109,10 +119,10 @@ def schedule(root, binding, adapter, config, task, event):
         prior = last_result(root, task)
         if (event == "after" and prior and prior.get("event") == event and prior.get("head") == result["head"]
                 and prior.get("status") in ("UPDATED", "UNCHANGED")):
-            return prior
+            return checked_result(prior, config)
         # Do not hide an interrupted run behind a new automatic request.
         if prior and prior.get("status") in PENDING:
-            return prior
+            return checked_result(prior, config)
         save(root, task, result)
     return result
 
@@ -129,7 +139,8 @@ def outcome(report, *, reconciliation=False):
 
 
 def complete(root, task, result, report):
-    result.update(status=outcome(report), report=report)
+    result["report"] = report
+    result["status"] = outcome(report)
     save(root, task, result)
     return result
 
@@ -169,7 +180,7 @@ def run(root, binding, adapter, config, task, event="manual", *, native=False, r
         raise AgentBoxError("Plan sync source is outside the repository binding")
     target = (f"parent tree {parent.id}" if settings.scope == "parent" else
               f"project {binding.project}; recursive={str(binding.recursive).lower()}")
-    prompt = (f"Assigned role: sync executor\nSource: {task.id}\nRead: agent-box tracker get {task.url or task.id} --no-comments\nEvent: {event}\nScope: {target}\n"
+    prompt = (RULES + f"\nAssigned role: sync executor\nSource: {task.id}\nRead: agent-box tracker get {task.url or task.id} --no-comments\nEvent: {event}\nScope: {target}\n"
               f"References: {str(settings.references).lower()}\n")
     from .workflow_behavior import instructions
     prompt += instructions(config.workflow.behavior_version, "sync")
@@ -179,6 +190,9 @@ def run(root, binding, adapter, config, task, event="manual", *, native=False, r
     saved = workflow.read_evidence(root, task)
     if saved.get("base_head") and saved.get("head"):
         prompt += f"Source commits: {saved['base_head']}..{saved['head']} (verify integration before propagation).\n"
+    from . import text_delivery
+    text_delivery.check_size(len(prompt.encode("utf-8")), config.workflow, "sync assignment")
+    text_delivery.prepare(config)
     with lock(root, "work"):
         prior = last_result(root, task)
         if prior and prior.get("status") in PENDING:
@@ -189,16 +203,19 @@ def run(root, binding, adapter, config, task, event="manual", *, native=False, r
             route = workflow.execution(config, "sync", tier, task.id)
             if not route.get("native"):
                 raise AgentBoxError("No configured native Plan sync profile; use the managed command")
+            artifact = text_delivery.publish(prompt, config)
             result.update(status="NATIVE", route=route)
             save(root, task, result)
-            return {**result, "message": prompt}
+            from .delegation import bootstrap
+            return {**result, "message": bootstrap("sync", artifact), "input": artifact}
         selected = workflow.candidates(config, "sync", tier)
         save(root, task, result)
         try:
-            output = workflow.execute(config.workflow, selected, "sync", root, RULES + "\n" + prompt)
+            output = workflow.execute(config.workflow, selected, "sync", root, prompt)
             report = output["report"]
             result.update(route=output["route"], usage=output["diagnostics"]["usage"])
             complete(root, task, result, report)
+            text_delivery.check_size(len(report.encode("utf-8")), config.workflow, "sync report (original saved)")
         except (AgentBoxError, OSError) as exc:
             result.update(status="ERROR", reason=str(exc))
             save(root, task, result)

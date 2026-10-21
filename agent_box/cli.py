@@ -45,7 +45,7 @@ def usage_text() -> None:
   agent-box build | update | rebuild
   agent-box uninstall [--purge] [--yes]
   agent-box completion bash|zsh
-  agent-box tracker COMMAND | workflow COMMAND
+  agent-box tracker COMMAND | workflow COMMAND | text COMMAND
   agent-box selftest | help
 
 Options go before the agent; everything after it reaches the agent unchanged,
@@ -97,6 +97,7 @@ Installation:
 
 Other:
   tracker, workflow       Task tracker and workflow; see their --help
+  text                    Temporary UTF-8 page delivery; see text --help
   selftest                Fast checks without Podman
   statusline, notify claude|codex
                           Entry points for Claude and Codex hooks
@@ -911,7 +912,7 @@ def selftest() -> None:
 
 NON_RUNTIME = {
     "usage", "statusline", "notify", "config", "selftest", "help", "-h", "--help",
-    "build", "update", "rebuild", "tracker", "workflow", "attach", "stop", "uninstall",
+    "build", "update", "rebuild", "tracker", "workflow", "text", "attach", "stop", "uninstall",
     "completion", "links", "workspaces",
 }
 #: --host only makes sense for a real agent launch, never for these.
@@ -1017,6 +1018,9 @@ def main() -> None:
         if args and args[0] == "workflow":
             from . import workflow
             raise SystemExit(workflow.main(args[1:]))
+        if args and args[0] == "text":
+            from . import text_delivery
+            raise SystemExit(text_delivery.main(args[1:]))
         if args and args[0] == "uninstall":
             from . import runtime
             raise SystemExit(runtime.uninstall_main(args[1:]))

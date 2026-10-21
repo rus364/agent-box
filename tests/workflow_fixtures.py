@@ -15,6 +15,7 @@ from agent_box import git_workflow as gw
 from agent_box import provider_runner
 from agent_box import workflow
 from agent_box import workflow_state
+from agent_box import text_delivery
 from agent_box.config import Config
 from agent_box.repo_binding import Binding
 from agent_box.tracker.core import Task
@@ -120,6 +121,7 @@ class WorkflowCase(unittest.TestCase):
         self.task = Task("1", "1", "Task", description="## Acceptance\n- [ ] requirement",
                          state="In progress", assignees=["1"], labels=["ab:tier:1"])
         self.config = Config()
+        self.config._session_container = False
         self.config.workflow.enabled = True
         # The task is labelled tier 1; with tiers on, its reviewer routes at that tier.
         self.config.workflow.use_tiers = True
@@ -147,6 +149,7 @@ class WorkflowCase(unittest.TestCase):
             patch.object(workflow, "WORKFLOW_STATE", Path(self.directory.name) / "state"),
             patch.object(workflow_state, "WORKFLOW_STATE", Path(self.directory.name) / "state"),
             patch.object(provider_runner, "WORKFLOW_STATE", Path(self.directory.name) / "state"),
+            patch.object(text_delivery, "WORKFLOW_TEXTS", Path(self.directory.name) / "state/texts"),
         ]
         for item in self.patches:
             item.start()
@@ -188,6 +191,9 @@ class LandingCase(unittest.TestCase):
                                       Path(self.temporary.name) / "state")
         evidence_patch.start()
         self.addCleanup(evidence_patch.stop)
+        text_patch = patch.object(text_delivery, "WORKFLOW_TEXTS", Path(self.temporary.name) / "state/texts")
+        text_patch.start()
+        self.addCleanup(text_patch.stop)
         gw.git(self.root, "switch", "-c", "ab/7-parent")
         (self.root / "change.py").write_text("value = 1\n")
         gw.git(self.root, "add", "change.py")
@@ -199,6 +205,7 @@ class LandingCase(unittest.TestCase):
         self.adapter.get.side_effect = lambda ident: {"7": self.parent}[ident]
         self.adapter.resolve.side_effect = lambda reference, *args, **kwargs: self.adapter.get(reference)
         self.config = Config()
+        self.config._session_container = False
         self.config.workflow.enabled = True
         self.config.workflow.merge_mode = "local"
         self.config.workflow.auto_push = False

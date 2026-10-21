@@ -359,8 +359,10 @@ class PlanSyncTests(WorkflowCase):
         self.config = apply(self.config, {"workflow": {"sync": {"scope": "parent", "references": False}}})
         # dispatch's config mock holds the original object, so exercise the shared helper directly.
         opened = plan_sync.run(self.root, self.binding, self.adapter, self.config, self.task, native=True)
-        self.assertIn("Scope: parent tree 1", opened["message"])
-        self.assertIn("References: false", opened["message"])
+        from test_text_delivery import delivered_bytes
+        prepared = delivered_bytes(opened["input"]).decode()
+        self.assertIn("Scope: parent tree 1", prepared)
+        self.assertIn("References: false", prepared)
         self.config.workflow.pins["sync"] = [candidate("claude", "pinned", "high")]
         route = workflow.execution(self.config, "sync", None, "1")
         self.assertEqual(route["models"], "--sync")

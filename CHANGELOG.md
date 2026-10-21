@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- **Breaking; requires the next major release:** workflow assignments and captured
+  managed reports now refuse delivery above `workflow.text_max_bytes` (65,536
+  UTF-8 bytes by default). This includes mandatory review evidence behind references.
+  On upgrade, choose a deliberate higher global limit if your existing assignments
+  need it, or reduce their scope. Refusals preserve captured originals and require
+  user notification; they never truncate or automatically increase the limit.
+- Add temporary `text write`/`text locate` storage, 4 KiB pages and seven-day default
+  retention in the existing shared workflow directory. Native roles receive generated
+  file paths; managed input and native final answers keep their direct transport.
+  `workflow delegate --native` uses the same assignment builder as managed execution;
+  `delegate` and `sync --output reference` can deliver large captured reports as pages.
+- Require an explicit `workflow behavior --role coordinator|worker|reviewer|scout|sync`.
+  This command first appeared after published v3.0.2; correcting its unpublished
+  default does not itself require a major release or stored-data migration.
 - Add Workflow behavior versions: v2 defaults to proportionate impact analysis,
   reuse and evidence-based disagreement; select v1 to retain prior guidance.
   The choice follows project overrides and reaches local, managed and GitHub

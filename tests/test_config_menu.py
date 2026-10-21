@@ -72,7 +72,7 @@ class ConfigMenuTests(unittest.TestCase):
             ('credentials',): ['git', 'github', 'registries', 'kubernetes', 'cloud'],
             ('host',): ['notifications', 'personal_browser', 'claude_skill_links'],
             ('workflow',): ['enabled', 'behavior_version', 'merge_mode', 'auto_push', 'pause_push', 'cleanup_local_branches',
-                           'cleanup_remote_branches', 'language', 'use_tiers', 'worker', 'scout', 'review', 'sync', 'timeout_seconds'],
+                           'cleanup_remote_branches', 'language', 'use_tiers', 'worker', 'scout', 'review', 'sync', 'timeout_seconds', 'text_max_bytes', 'text_retention_days'],
             ('workflow', 'worker'): ['models', 'tiers'],
             ('workflow', 'scout'): ['limit', 'models'],
             ('workflow', 'sync'): ['policy', 'events', 'paths', 'scope', 'references', 'models', 'tiers'],
@@ -233,7 +233,7 @@ class ConfigMenuTests(unittest.TestCase):
         screen = Screen([*select("workflow"), "\n", curses.KEY_HOME, curses.KEY_DOWN, curses.KEY_END, "\x1b", "\x1b"],
                         sizes=[(8, 40)])
         self.edit(Config(), [], screen=screen)
-        for row, heading in (("Behavior version", "Behavior"), ("Timeout seconds", "Delegation")):
+        for row, heading in (("Behavior version", "Behavior"), ("Text retention days", "Delegation")):
             with self.subTest(row=row):
                 frame = next(frame for frame in screen.frames if row in frame)
                 self.assertIn(heading, frame)
@@ -759,7 +759,8 @@ class ProjectMenuTests(unittest.TestCase):
         save = [curses.KEY_END, curses.KEY_UP, '\n']
         pinned, _ = self.edit(config, [*workflow, 'g', *save], project={})
         expected = config.workflow.to_dict()
-        del expected['enabled']
+        for key in ('enabled', 'text_max_bytes', 'text_retention_days'):
+            del expected[key]
         self.assertEqual(pinned.project, {'workflow': expected})
         self.assertEqual(pinned.project['workflow']['review']['models'], [])
         reset, _ = self.edit(config, [*workflow, 'r', *save], project=pinned.project)

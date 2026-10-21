@@ -71,8 +71,8 @@ def delegate_rules(role):
                    "unverified or blocked.")
 
 
-def delegate_prompt(role, task, brief, repository_instructions, language="", behavior_version="v2"):
-    """A managed worker or scout starts from the brief alone, never the coordinator's history.
+def delegate_prompt(role, task, brief, repository_instructions, language="", *, behavior_version):
+    """Both routes receive authoritative requirements and bounded scope, never parent history.
 
     The rule for the working language lives in delegate_rules, which native
     profiles install once for every repository; only the value is this
@@ -80,7 +80,11 @@ def delegate_prompt(role, task, brief, repository_instructions, language="", beh
     """
     named = f"Working language: {language}\n" if language and role == "worker" else ""
     return (delegate_rules(role) + "\n" + behavior_instructions(behavior_version, role)
-            + f"\n\nTask {task.id}: {task.title}\n{named}\n----- Assignment -----\n{brief}\n"
+            + f"\n\nTask {task.id}: {task.title}\n{named}"
+            + f"\n----- Task requirements -----\n{task.description}\n"
+            + f"\n----- Assignment scope and supplemental notes -----\n{brief}\n"
+            + "The assignment bounds your work; it does not replace the task requirements. "
+              "Report conflicts to the coordinator before acting.\n"
             + (f"\n----- Repository instructions -----\n{repository_instructions}\n" if repository_instructions else ""))
 
 
@@ -106,13 +110,9 @@ def render_handoff(role, payload, instructions=""):
 
 
 def bootstrap(role, artifact):
-    """Native messages locate the canonical input without copying its contents."""
-    return (
-        f"Assigned role: {role}. Read the complete UTF-8 delegation input at "
-        f"{json.dumps(artifact['path'], ensure_ascii=False)} in chunks without truncation. "
-        f"Verify SHA-256 {artifact['sha256']} before acting. Follow that input's role, "
-        "scope, repository instructions, evidence policy and report format. Do not load "
-        "parent conversation, tracker comments or previous-agent history. If the file is "
-        "missing, unreadable, truncated or its digest differs, stop and report blocked "
-        "with the concrete limitation; never reconstruct the assignment."
-    )
+    """The helper verified the input; restricted readers need no shell/hash command."""
+    from .text_delivery import message
+    return (f"Assigned role: {role}. " + message(artifact)
+            + " Follow the supplied role, behavior version, scope and report format. "
+              "Do not load parent conversation, tracker comments or previous-agent history. "
+              "Never reconstruct a missing assignment or substitute another role's behavior.")

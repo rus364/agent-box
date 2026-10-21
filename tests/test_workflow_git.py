@@ -125,6 +125,7 @@ class WorkflowGitTests(unittest.TestCase):
                 subprocess.run(["git", *args], cwd=root, check=True, capture_output=True)
             task = Task("1", "1", "Task", description="## Acceptance\n- [ ] requirement", state="In progress", assignees=["1"], labels=["ab:tier:1"])
             config = Config()
+            config._session_container = False
             config.workflow.enabled = True
             config.workflow.review.policy = "always"
             config.workflow.use_tiers = True

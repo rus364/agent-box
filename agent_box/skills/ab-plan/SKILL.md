@@ -5,7 +5,7 @@ description: Plan a tracked deliverable into a useful checklist or sequential pa
 
 # ab-plan
 
-Before coordinating work, read `agent-box workflow behavior`; follow its effective instructions and startup guidance notice. Assigned delegates use the behavior in their assignment.
+Before coordinating work, read `agent-box workflow behavior --role coordinator`; follow its effective instructions and startup guidance notice. Assigned delegates use the behavior in their assignment.
 
 1. Read the current task, applicable repository guidance, dependencies and relevant decisions. Search other tasks per ab-tracker when overlap or missing context is plausible; use `--include-done` for past decisions or completed work. Use ab-interview only for material unanswered choices.
 2. Inspect existing code and reuse suitable implementations. Research current maintained libraries and stable versions from official sources only when the work presents a material dependency choice; record the choice, version/date and constraints. Do not perform dependency research for an exact task with no dependency decision.

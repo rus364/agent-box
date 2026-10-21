@@ -5,7 +5,7 @@ description: Bind a repository to its tracker project and safely install compact
 
 # ab-setup
 
-Before coordinating work, read `agent-box workflow behavior`; follow its effective instructions and startup guidance notice. Assigned delegates use the behavior in their assignment.
+Before coordinating work, read `agent-box workflow behavior --role coordinator`; follow its effective instructions and startup guidance notice. Assigned delegates use the behavior in their assignment.
 
 1. Read repository instructions and `agent-box tracker status`. Resolve the user's provider, server and project. Credentials and integration permissions belong in global `agent-box config`; `config --project` edits allowed project policy. Never put secrets in Git.
 2. Inspect `tracker projects` and `tracker setup --project ID [--recursive|--no-recursive]`. Omitting the scope flag preserves the saved scope for the same provider/server/project; a new binding defaults to root only. The preview reports, per project, the kanban view it resolved and the lifecycle columns it recognized. All five states are mandatory: Backlog, Ready, In progress, In review, Done. Vikunja: each project needs exactly one kanban view with manually managed buckets; Done follows the view's own done bucket when it has one. GitHub Projects: `--project` takes owner/number or the project URL, there are no subprojects, states are the Status field's options, and the global token is a classic one with scopes `repo` and `project`.

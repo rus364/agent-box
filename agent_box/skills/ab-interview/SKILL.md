@@ -5,7 +5,7 @@ description: Resolve material ambiguity in a tracked task and save implementatio
 
 # ab-interview
 
-Before coordinating work, read `agent-box workflow behavior`; follow its effective instructions and startup guidance notice. Assigned delegates use the behavior in their assignment.
+Before coordinating work, read `agent-box workflow behavior --role coordinator`; follow its effective instructions and startup guidance notice. Assigned delegates use the behavior in their assignment.
 
 Read the task, relevant comments/relations and repository code first. Search older decisions with `tracker search QUERY --include-done`, or libraries, only when they can answer a current uncertainty; follow ab-tracker for focused reads.
 

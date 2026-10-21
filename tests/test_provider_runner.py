@@ -211,7 +211,7 @@ class FailureDiagnosticsTests(unittest.TestCase):
                                              result=self.text.encode() if provider == "codex" else None)
 
                 with patch.object(workflow, "run", side_effect=runner):
-                    result = workflow.execute(SimpleNamespace(timeout_seconds=1), route, "reviewer", self.root, "prompt")
+                    result = workflow.execute(SimpleNamespace(timeout_seconds=1, text_max_bytes=65536), route, "reviewer", self.root, "prompt")
                 self.assertEqual(result["report"], self.report)
                 metadata = result["diagnostics"]
                 self.assertEqual(metadata["usage"]["input_tokens"], 17)
@@ -483,7 +483,7 @@ class FailureDiagnosticsTests(unittest.TestCase):
         selected = {**self.route, "fallbacks": [{**self.route, "provider": "codex"}]}
         with patch.object(workflow, "run", side_effect=[first, second]):
             with self.assertRaises(workflow.AgentBoxError) as caught:
-                workflow.execute(SimpleNamespace(timeout_seconds=1), selected, "reviewer", self.root, "prompt")
+                workflow.execute(SimpleNamespace(timeout_seconds=1, text_max_bytes=65536), selected, "reviewer", self.root, "prompt")
         public = str(caught.exception)
         self.assertIn(first.diagnostic["artifact"], public)
         self.assertIn(second.diagnostic["artifact"], public)

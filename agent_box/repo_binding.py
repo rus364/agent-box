@@ -176,7 +176,7 @@ def update_block(original: str, body: str, name: str, path: Path):
 
 
 AGENT_RULES = """Read the tracked task before work; .agent-box.json binds this repository to its tracker project.
-Before planning or implementation, read `agent-box workflow behavior` and follow its effective instructions and startup guidance notice. Delegates follow the behavior supplied in their assignment.
+Coordinators: before planning or implementation, read `agent-box workflow behavior --role coordinator` and follow its effective instructions and startup guidance notice. Delegates follow their own role's behavior supplied in the assignment; never load coordinator behavior.
 Use agent-box tracker for task state, progress and dependencies; read related history when context is missing.
 Use ab-interview, ab-plan, ab-work, ab-sync, ab-review, ab-pr, and ab-land as needed. ab-setup maintains this binding and ab-adopt brings an existing project in line with the workflow; ab-normalize processes unmarked tasks in a bound project.
 The coordinator owns branches, commits, lifecycle, dependencies, and GitHub actions. Delegate implementation sequentially and research to scouts, which may run in parallel, when their model lists are configured; with an empty list the coordinator does that work itself.

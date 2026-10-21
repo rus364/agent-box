@@ -54,6 +54,22 @@ class ManagedSkillInstallTests(unittest.TestCase):
         self.assertTrue((self.installed / "ab-tracker/SKILL.md").is_file())
         self.assertTrue((self.installed / "ab-tracker/scripts/run.py").is_file())
 
+    def test_owned_workflow_skills_adopt_explicit_coordinator_roles(self):
+        """Package application replaces old owned instructions with the actual shipped contract."""
+        source = Path(runtime.__file__).parent / "skills"
+        for skill in source.glob("ab-*/SKILL.md"):
+            if "workflow behavior" not in skill.read_text():
+                continue
+            name = skill.parent.name
+            _skill(self.shipped, name, body="Read `agent-box workflow behavior`.\n")
+            runtime.install_managed_skill(name)
+            (self.shipped / name / "SKILL.md").write_bytes(skill.read_bytes())
+            runtime.install_managed_skill(name)
+            installed = (self.installed / name / "SKILL.md").read_text()
+            self.assertIn("workflow behavior --role coordinator", installed)
+            self.assertNotIn("workflow behavior`", installed)
+            self.assertIn("Assigned delegates use the behavior in their assignment", installed)
+
     def test_an_installed_skill_is_marked_as_agent_box_owned(self):
         _skill(self.shipped, "ab-tracker")
         runtime.install_managed_skill("ab-tracker")

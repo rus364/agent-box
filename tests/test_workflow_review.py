@@ -11,6 +11,7 @@ from agent_box import git_workflow as gw
 from agent_box import provider_runner
 from agent_box import workflow
 from agent_box import workflow_state
+from agent_box.config import WorkflowConfig
 from agent_box.errors import AgentBoxError
 from agent_box.repo_binding import Binding
 from agent_box.tracker.core import Task
@@ -27,7 +28,7 @@ def package(payload):
 
 
 def payload_of(prompt):
-    return json.loads(prompt.split("Delegation handoff:\n", 1)[1])
+    return json.JSONDecoder().raw_decode(prompt.split("Delegation handoff:\n", 1)[1])[0]
 
 
 def timeout(*args, **kwargs):
@@ -47,8 +48,8 @@ class ReviewWorkflowTests(WorkflowCase):
         """The coordinator's word names the reviewer; no descriptor, model check or context flag stands in for it."""
         opened = self.native_round()
         handoff = self.delegation_input(opened)
-        self.assertIn(str(handoff), opened["message"])
-        self.assertIn(hashlib.sha256(handoff.read_bytes()).hexdigest(), opened["message"])
+        self.assertIn(opened["input"]["path"], opened["message"])
+        self.assertEqual(hashlib.sha256(handoff.read_bytes()).hexdigest(), opened["input"]["sha256"])
         self.assertIn("fresh context without the parent's history", opened["instructions"])
         self.assertNotIn("fork_turns", json.dumps(opened))
         self.assertEqual(self.budget()["used"], 0)
@@ -272,9 +273,10 @@ class ReviewWorkflowTests(WorkflowCase):
         self.assertEqual(Path(payload["task_description"]).read_text(),
                          "# Task (id 1): Task\n\n" + self.task.description.strip() + "\n")
         self.assertIn("Changes and reasons", Path(manifest["artifacts"]["author-report.md"]["path"]).read_text())
-        for absent in ("Current goal", "Previous verdict", finding, "Changes and reasons", "diff --git",
-                       "+value = 2", "report_schema"):
+        for absent in (finding, "report_schema"):
             self.assertNotIn(absent, prompt)
+        for included in ("Current goal", "Previous verdict", "Changes and reasons", "diff --git", "+value = 2"):
+            self.assertIn(included, prompt)
         for present in (gw.head_sha(self.root), "diff_range", "untrusted English brief", "counterexamples",
                         'ask "then what?"', "discard the finding", "Prefer leaving correct code unchanged.",
                         "Verdict: PASS", "[SEVERITY] path:line", "CRITICAL —", "LOW —",
@@ -473,15 +475,14 @@ class ReviewWorkflowTests(WorkflowCase):
                 workflow.start_review(self.root, BINDING, self.task, 1, "round", "scope", "managed")
 
     def test_failed_budget_write_cannot_dispatch_an_unaccounted_review(self):
-        """A failed round start never publishes a handoff or reaches a provider."""
+        """Preflight may prepare input, but a failed round start never returns it or reaches a provider."""
         for flags in ((), ("--native",)):
             with self.subTest(flags=flags), \
                  patch.object(workflow, "save_review_state", side_effect=OSError("disk failure")), \
-                 patch.object(workflow, "reviewer_handoff") as handoff, \
+                 patch.object(workflow, "reviewer_handoff", wraps=workflow.reviewer_handoff), \
                  patch.object(workflow, "run") as provider, \
                  self.assertRaisesRegex(OSError, "disk failure"):
                 self.run_workflow("review", "1", *flags)
-            handoff.assert_not_called()
             provider.assert_not_called()
 
     def test_budget_decision_is_absolute_idempotent_and_preserves_acceptance(self):
@@ -565,7 +566,7 @@ class ReviewWorkflowTests(WorkflowCase):
             children = [Task("8", "1", "First", description="First acceptance", parent="7"),
                         Task("9", "1", "Second", description="Second acceptance", parent="7")]
             workflow.reviewer_handoff(root, "main", parent, parent, [children[1], parent, children[0]],
-                                      None, {}, "", "parent")
+                                      None, {}, "", "parent", behavior_version="v2", text_settings=WorkflowConfig(text_max_bytes=1048576))
             path = workflow.review_evidence_path(root, "7", "parent")
             self.assertEqual(sorted(item.name for item in path.iterdir()),
                              ["changed-paths.txt", "full.diff", "handoff.txt", "manifest.json",
@@ -637,10 +638,11 @@ class ReviewerInputTests(unittest.TestCase):
             with patch.object(Path, "read_text", new=fail_instruction_read), \
                  self.assertRaisesRegex(AgentBoxError, "Cannot read repository instruction AGENTS.md"):
                 workflow.reviewer_handoff(root, "main", task, task, [task], "Validation: not run.", {}, "",
-                                          "unreadable-instruction")
+                                          "unreadable-instruction", behavior_version="v2", text_settings=WorkflowConfig(text_max_bytes=1048576))
             self.assertFalse(evidence_path.exists())
 
-    def test_reviewer_handoff_points_at_checkout_evidence_without_copying_large_bodies(self):
+    def test_reviewer_handoff_preserves_original_evidence_and_delivers_one_complete_snapshot(self):
+        """Native pages and managed stdin carry the same sources; originals remain for review acceptance."""
         with tempfile.TemporaryDirectory() as directory:
             root = repository(directory)
             gw.git(root, "switch", "-c", "ab/1-review")
@@ -654,7 +656,7 @@ class ReviewerInputTests(unittest.TestCase):
             task = Task("1", "1", "Review", description="## Goal\nReview it.\n")
             brief = "Changes and reasons: fixture. Validation: not run. Limitations: synthetic."
 
-            small = workflow.reviewer_handoff(root, "main", task, task, [task], brief, {}, "", "small")
+            small = workflow.reviewer_handoff(root, "main", task, task, [task], brief, {}, "", "small", behavior_version="v2", text_settings=WorkflowConfig(text_max_bytes=1048576))
             small_payload = payload_of(small)
             manifest, _ = package(small_payload)
             self.assertEqual([item["source_path"] for item in manifest["repository_instructions"]],
@@ -676,15 +678,15 @@ class ReviewerInputTests(unittest.TestCase):
             self.assertEqual(small_payload["boundaries"]["head_commit"], gw.head_sha(root))
             self.assertIn("large.py", (manifest_path.parent / "changed-paths.txt").read_text())
             self.assertRegex(small_payload["change_summary"], "files? changed")
-            for absent in (instruction_marker, diff_marker, "diff --git"):
-                self.assertNotIn(absent, small)
+            for included in (instruction_marker, diff_marker, "diff --git"):
+                self.assertIn(included, small)
 
             (root / "large.py").write_text((diff_marker + "\n") * 12000)
             gw.git(root, "add", "large.py")
             gw.git(root, "commit", "-m", "large review fixture")
-            large = workflow.reviewer_handoff(root, "main", task, task, [task], brief, {}, "", "large")
-            self.assertNotIn(diff_marker, large)
-            self.assertLess(abs(len(large) - len(small)), 100)
+            large = workflow.reviewer_handoff(root, "main", task, task, [task], brief, {}, "", "large", behavior_version="v2", text_settings=WorkflowConfig(text_max_bytes=1048576))
+            self.assertIn(diff_marker, large)
+            self.assertGreater(len(large) - len(small), 100000)
             large_manifest, _ = package(payload_of(large))
             large_path = Path(large_manifest["artifacts"]["full.diff"]["path"])
             self.assertGreater(len(large_path.read_text()), 100000)
@@ -692,7 +694,8 @@ class ReviewerInputTests(unittest.TestCase):
             workflow.cleanup_review_evidence(manifest_path.parent)
             self.assertFalse(large_path.exists())
 
-    def test_reviewer_prompt_is_bounded_with_many_paths_and_oversized_required_content(self):
+    def test_explicit_larger_limit_keeps_all_required_content_and_compact_metadata_still_has_its_own_bound(self):
+        """A deliberate larger budget preserves requirements; a tiny metadata budget still fails early."""
         with tempfile.TemporaryDirectory() as directory:
             root = repository(directory)
             gw.git(root, "switch", "-c", "ab/1-large-review")
@@ -704,12 +707,12 @@ class ReviewerInputTests(unittest.TestCase):
             author_marker = "UNTRUSTED_AUTHOR_CLAIM_" * 8000
             task = Task("task-" + "i" * 1000, "1", "Title " + "t" * 1000,
                         description="## Goal\n" + requirement_marker + "\n")
-            prompt = workflow.reviewer_handoff(root, "main", task, task, [task], author_marker, {}, "", "bounded")
+            prompt = workflow.reviewer_handoff(root, "main", task, task, [task], author_marker, {}, "", "bounded", behavior_version="v2", text_settings=WorkflowConfig(text_max_bytes=1048576))
             payload = payload_of(prompt)
             manifest, _ = package(payload)
-            self.assertLessEqual(len(prompt.encode()), workflow.REVIEW_HANDOFF_MAX_BYTES)
-            for absent in (requirement_marker, author_marker, "changed-042.txt"):
-                self.assertNotIn(absent, prompt)
+            self.assertLessEqual(len(prompt.encode()), 1048576)
+            for included in (requirement_marker, author_marker, "changed-042.txt"):
+                self.assertIn(included, prompt)
             self.assertIn(requirement_marker, Path(manifest["artifacts"]["task.md"]["path"]).read_text())
             self.assertEqual(Path(manifest["artifacts"]["author-report.md"]["path"]).read_text(), author_marker)
             self.assertEqual(len(Path(manifest["artifacts"]["changed-paths.txt"]["path"]).read_text().splitlines()), 250)
@@ -718,7 +721,7 @@ class ReviewerInputTests(unittest.TestCase):
             rejected_path = workflow.review_evidence_path(root, task.id, "rejected")
             with patch.object(workflow, "REVIEW_HANDOFF_MAX_BYTES", 1), \
                  self.assertRaisesRegex(AgentBoxError, "Compact reviewer handoff exceeds"):
-                workflow.reviewer_handoff(root, "main", task, task, [task], author_marker, {}, "", "rejected")
+                workflow.reviewer_handoff(root, "main", task, task, [task], author_marker, {}, "", "rejected", behavior_version="v2", text_settings=WorkflowConfig(text_max_bytes=1048576))
             self.assertFalse(rejected_path.exists())
 
 

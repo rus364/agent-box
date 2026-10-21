@@ -60,9 +60,15 @@ not availability checks.
 appropriate reuse, maintainability, evidence-based disagreement and investigation
 proportionate to risk and effort. Projects may override the global choice.
 This setting does not change models, permissions, review frequency or budgets.
-`agent-box workflow behavior [--role coordinator|worker|reviewer|scout|sync]`
+`agent-box workflow behavior --role coordinator|worker|reviewer|scout|sync`
 reads the effective instructions without a task or tracker connection. New
 assignments receive the selected version; existing agent contexts do not reload it.
+
+**Text delivery.** Workflow → Delegation exposes the positive global-only
+`workflow.text_max_bytes` (65,536 UTF-8 bytes) and `workflow.text_retention_days`
+(7 days). The first limits one complete delivery; the second fixes each new
+record's expiry. See [text delivery](integrations/workflow.md#text-delivery) for
+refusal, paging and session-context boundaries.
 
 **Working language.** `workflow.language` names the language of project text, such as
 `English` or `Deutsch`: tracker tasks and comments, pull requests and review
@@ -167,7 +173,7 @@ keep those changes. Opening or cancelling the project menu saves nothing.
 
 A project may set:
 
-- `workflow`, except its top-level `enabled` switch — including each role's
+- `workflow`, except global-only `enabled`, `text_max_bytes` and `text_retention_days` — including each role's
   candidate lists (`models`, and `tiers.N` for workers, Plan sync and
   reviewers), `use_tiers` and the working `language`;
 - `box.tools`, `box.k3s` and `box.podman`;
