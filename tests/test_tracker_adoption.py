@@ -1,11 +1,4 @@
-"""Adopting a project that existed before agent-box did.
-
-Two mechanisms are protected here. Board repair may only add the lifecycle
-columns a board lacks, because renaming or removing a column the user put there
-is a decision, not a repair. The audit may only report mechanical facts, because
-everything it lists is what a coordinator then fixes by hand, and a re-run is the
-only record of what is left - adoption deliberately stores no progress anywhere.
-"""
+"""Adoption reports native task facts without inventing requirements or meaning."""
 import unittest
 
 from agent_box.tracker.audit import audit, task_problems
@@ -16,82 +9,6 @@ from tracker_fixtures import adapter, board, task
 def tasks(*items):
     index = {item.id: item for item in items}
     return list(items), (lambda task_id: index[task_id])
-
-
-class BoardRepairTests(unittest.TestCase):
-    def test_initializing_columns_leaves_an_unmapped_card_for_explicit_normalization(self):
-        """A To-Do card has no agreed lifecycle; creating Backlog cannot decide its state."""
-        instance, client = adapter(boards={1: board(10, 100, titles=("To-Do",))},
-                                   tasks={5: task(5, 1, 10, 100, description="Existing meaning.")})
-        instance.initialize_boards(["1"], apply=True)
-        self.assertEqual(instance.get("5").state, "Unknown")
-        self.assertEqual(client.tasks[5]["buckets"], [{"id": 100, "project_view_id": 10}])
-        self.assertIn("no-state", [row["code"] for row in task_problems(instance.get("5"), instance.get)])
-
-    def test_a_missing_column_is_created_between_the_columns_it_belongs_between(self):
-        """A lifecycle appended to the end of the board would not read as one."""
-        boards = {1: board(10, 100, titles=("Backlog", "In progress", "Done"))}
-        instance, client = adapter(boards=boards)
-        planned, = instance.initialize_boards(["1"])
-        self.assertEqual([(column["title"], column["position"]) for column in planned["create"]],
-                         [("Ready", 150.0), ("In review", 250.0)])
-        self.assertEqual(client.writes, [])
-        applied, = instance.initialize_boards(["1"], apply=True)
-        self.assertEqual(applied["problems"], [])
-        self.assertEqual(sorted(applied["states"]), ["Backlog", "Done", "In progress", "In review", "Ready"])
-        self.assertEqual([bucket["title"] for bucket in instance.lifecycle("1")["buckets"]],
-                         ["Backlog", "Ready", "In progress", "In review", "Done"])
-
-    def test_a_complete_board_is_left_alone(self):
-        instance, client = adapter(boards={1: board(10, 100, done_bucket=104)})
-        planned, = instance.initialize_boards(["1"], apply=True)
-        self.assertEqual((planned["create"], planned["applied"]), ([], False))
-        self.assertEqual(client.writes, [])
-
-    def test_an_ambiguous_board_is_reported_instead_of_being_extended(self):
-        """Which of two columns means In progress is the user's answer, not a repair."""
-        boards = {1: board(10, 100, titles=("Backlog", "Ready", "In progress", "In review", "Done"))}
-        boards[1]["buckets"][10].append({"id": 106, "title": "In progress", "position": 600})
-        instance, client = adapter(boards=boards)
-        planned, = instance.initialize_boards(["1"], apply=True)
-        self.assertEqual(planned["blocked"], ["several columns match In progress"])
-        self.assertFalse(planned["applied"])
-        self.assertEqual(client.writes, [])
-
-    def test_a_filter_built_board_is_refused_rather_than_given_a_column(self):
-        boards = {1: board(10, 100, titles=("Backlog", "In progress", "Done"))}
-        boards[1]["views"][0]["bucket_configuration_mode"] = "filter"
-        instance, client = adapter(boards=boards)
-        planned, = instance.initialize_boards(["1"], apply=True)
-        self.assertIn("board builds its columns from filters instead of manual buckets",
-                      planned["blocked"])
-        self.assertEqual(client.writes, [])
-
-    def test_the_view_gains_a_done_column_only_when_it_names_none(self):
-        """Vikunja's own done bucket is what marks a card finished, so it must exist."""
-        boards = {1: board(10, 100, titles=("Backlog", "Ready", "In progress", "In review", "Done"))}
-        instance, client = adapter(boards=boards)
-        instance.initialize_boards(["1"], apply=True)
-        self.assertEqual([body for path, body in client.writes if path == "/projects/1/views/10"],
-                         [{"done_bucket_id": 104}])
-        instance, client = adapter(boards={1: board(10, 100, done_bucket=104)})
-        instance.initialize_boards(["1"], apply=True)
-        self.assertEqual(client.writes, [])
-
-    def test_a_project_whose_board_cannot_be_read_stops_only_itself(self):
-        """Planning the whole subtree first is what keeps a repair from ending halfway."""
-        second = {"id": 21, "title": "Other", "view_kind": "kanban",
-                  "bucket_configuration_mode": "manual"}
-        boards = {1: board(10, 100, done_bucket=104, titles=("Backlog", "In progress", "Done")),
-                  2: board(20, 200, extra_views=(second,))}
-        instance, client = adapter(boards=boards)
-        first, other = instance.initialize_boards(["1", "2"], apply=True)
-        self.assertTrue(first["applied"])
-        self.assertEqual([column["title"] for column in first["create"]], ["Ready", "In review"])
-        self.assertFalse(other["applied"])
-        self.assertEqual((other["view"], other["create"]), (None, []))
-        self.assertIn("several kanban views", other["blocked"][0])
-        self.assertEqual({path for path, _ in client.writes}, {"/projects/1/views/10/buckets"})
 
 
 class DescriptionRewriteTests(unittest.TestCase):

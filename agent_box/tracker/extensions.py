@@ -21,14 +21,18 @@ def parser():
     cmd.add_argument("file", type=Path)
     cmd.add_argument("--apply", action="store_true")
     cmd = sub.add_parser("board")
-    cmd.add_argument("operation", choices=("show", "buckets", "move", "init"))
+    cmd.add_argument("operation", choices=("show", "buckets", "move", "init", "sample"))
     cmd.add_argument("project")
     cmd.add_argument("--view")
     cmd.add_argument("--recursive", action="store_true",
                      help="Include every project under this one")
-    cmd.add_argument("--apply", action="store_true", help="Create the missing lifecycle columns")
+    cmd.add_argument("--apply", action="store_true", help="Apply the saved, user-confirmed --plan")
+    cmd.add_argument("--mapping", type=Path, help="Build a plan from JSON: each lifecycle state maps to a bucket ID or null")
+    cmd.add_argument("--plan", type=Path, help="Preview a saved board plan; add --apply after user confirmation")
     cmd.add_argument("--task")
     cmd.add_argument("--bucket")
+    cmd.add_argument("--limit", type=int, choices=range(1, 11), default=3,
+                     help="sample: maximum tasks in one explicitly requested page (default 3)")
     cmd = sub.add_parser("projects")
     cmd.add_argument("operation", choices=("tree", "children", "create", "update", "delete"))
     cmd.add_argument("project", nargs="?")
@@ -76,7 +80,19 @@ def run(adapter, arguments):
         return {**api.summarize_actions(actions), "dry_run": not args.apply, "applied": len(actions) if args.apply else 0}
     if args.command == "board":
         if operation == "init":
-            return adapter.initialize_boards(adapter.subtree(args.project, args.recursive), args.apply)
+            from . import vikunja_board
+            if args.view or args.task or args.bucket:
+                raise TrackerError("Board init resolves one kanban view per project; do not pass --view, --task or --bucket")
+            return vikunja_board.run(adapter, adapter.subtree(args.project, args.recursive),
+                                     mapping=args.mapping, plan=args.plan, apply=args.apply)
+        if args.mapping or args.plan or args.apply:
+            raise TrackerError("--mapping, --plan and --apply belong to board init")
+        if operation == "sample":
+            from . import vikunja_board
+            if not args.bucket or args.view or args.task or args.recursive:
+                raise TrackerError("Board sample requires --bucket ID on one unambiguous board")
+            project = adapter.project(args.project)
+            return vikunja_board.sample_bucket(adapter, project["id"], args.bucket, args.limit)
         project = adapter.project(args.project)
         view = api.resolve_kanban_view(client, project["id"], args.view)
         if operation == "show":

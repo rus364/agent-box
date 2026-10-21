@@ -28,6 +28,16 @@ runtimes require explicit stop/relaunch to adopt it.
 
 ## Direct upgrades
 
+The planned major release replaces Vikunja's additive `board init --apply` and
+`adopt boards --apply` behavior. Without input these commands now return metadata;
+bare `--apply` refuses. Supply an explicit five-state `--mapping FILE` to create a
+temporary reviewed plan, then apply that same file with `--plan FILE --apply`.
+This is a breaking command/agent-guidance change, not a binding or native-tracker
+data migration. Existing boards and cards remain untouched on upgrade. Temporary
+board plans use `format_version: 1`; unknown versions are refused before payload
+interpretation, and reads do not rewrite their files. No older published board-plan
+format exists. Relaunch immutable workspace runtimes to use the new commands.
+
 The unreleased text-delivery guard changes published workflow behavior: assignments
 and managed report deliveries default to 65,536 UTF-8 bytes. Oversized supplemental
 notes/reports add one managed run on the configured scout route and return a labelled
@@ -101,6 +111,7 @@ can discard renamed fields. Reading alone does not rewrite the file.
 | Global `config.json` and repository `.agent-box.json` | Independent `version`; global migration persists on package application or explicit config writes; project writes migrate through the project configuration writer |
 | Workflow evidence, review budget and Plan sync records | Independent `format_version`; retain ownership, scope, budgets and recovery state |
 | Tracker import mappings, move journals, adoption receipts | Independent `format_version`; retain external IDs and interrupted-operation recovery |
+| Temporary Vikunja board plans | `format_version: 1`; bind reviewed intent to instance/project/view and a board snapshot; future formats are refused without changing the file |
 | Global configuration proposals | `format_version`; preserve the existing explicit host confirmation boundary |
 | Workspace creation policies | `format_version`; unreadable/future cleanup policy retains data |
 | Native host cluster ownership | New `format_version: 1`; records enabled and disabled creation policy plus process identities; future/unreadable records refuse admission and cleanup. No older format needs conversion; active sessions from an older runtime require stop/relaunch |

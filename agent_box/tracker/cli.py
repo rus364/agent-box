@@ -129,11 +129,15 @@ def parser():
     cmd.add_argument("--apply", action="store_true", help="Save binding and managed repository instructions")
     cmd = sub.add_parser("adopt", help="Clone, normalize or activate a staging project tree")
     cmd.add_argument("operation", choices=("clone", "boards", "cutover"))
-    cmd.add_argument("--project", help="Exact source project for clone")
+    cmd.add_argument("--project", help="Source project for clone; for boards, select one staging project ID")
     cmd.add_argument("--receipt", type=Path,
                      help="Default in workflow state: clone uses <repository key>/<source ID>.json; "
                           "boards and cutover use the repository's only receipt")
     cmd.add_argument("--apply", action="store_true")
+    cmd.add_argument("--mapping", type=Path, help="boards: build one staging board plan from a lifecycle mapping JSON")
+    cmd.add_argument("--plan", type=Path, help="boards: preview a saved staging board plan; write with --apply")
+    cmd.add_argument("--sample", help="boards: explicitly read one small sample from this staging bucket ID")
+    cmd.add_argument("--limit", type=int, choices=range(1, 11), default=3, help="boards --sample: maximum tasks (default 3)")
     cmd = sub.add_parser("provider", help="Run an explicitly provider-specific command")
     cmd.add_argument("provider", choices=("vikunja", "github"))
     cmd.add_argument("arguments", nargs=argparse.REMAINDER)
@@ -252,6 +256,8 @@ def dispatch(args):
                            "and deletes emptied staging subprojects")
     if args.command == "adopt":
         from . import adoption
+        if args.operation != "boards" and (args.mapping or args.plan or args.sample):
+            raise TrackerError("--mapping, --plan and --sample belong to adopt boards")
         root = repository_root()
         receipt = args.receipt and adoption.check_receipt(args.receipt)
         if args.operation == "clone":
@@ -266,7 +272,14 @@ def dispatch(args):
         if args.operation == "cutover":
             return adoption.cutover(root, args.receipt, args.apply)
         adapter, binding, _ = adoption.staging_context(args.receipt, root)
-        return adapter.initialize_boards(adapter.subtree(binding.project, True), args.apply)
+        from . import vikunja_board
+        projects = adapter.subtree(binding.project, True)
+        if args.project:
+            if args.project not in projects:
+                raise TrackerError("Board project is outside staging", "conflict")
+            projects = [args.project]
+        return vikunja_board.run(adapter, projects, mapping=args.mapping, plan=args.plan,
+                                 sample=args.sample, limit=args.limit, apply=args.apply)
     if args.command == "provider":
         if args.provider == "github":
             from .github_extensions import run

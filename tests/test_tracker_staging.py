@@ -37,6 +37,52 @@ class StagingTests(unittest.TestCase):
     def clone(self):
         return adoption.start(self.root, '1', self.receipt, apply=True)
 
+    def test_board_plans_are_scoped_to_one_staging_project_without_card_discovery(self):
+        """The shared planner must not provide a source-write shortcut through adopt boards."""
+        from agent_box.tracker import vikunja_board
+        from agent_box.tracker.core import STATES
+        cloned = self.clone()
+        target = cloned['project']
+        source_boards = copy.deepcopy(self.client.boards[1])
+        tasks = copy.deepcopy(self.client.tasks)
+        self.client.writes.clear()
+        self.client.reads.clear()
+        mapping_path = self.root / 'mapping.json'
+        plan_path = self.root / 'board-plan.json'
+        mapping_path.write_text(json.dumps(dict(zip(STATES, range(int(target) * 100, int(target) * 100 + 5)))))
+
+        def boards(*flags):
+            with patch.object(cli, 'repository_root', return_value=self.root):
+                return cli.dispatch(cli.parser().parse_args(['adopt', 'boards', '--receipt', str(self.receipt), *flags]))
+
+        observed = boards()
+        self.assertEqual({row['project'] for row in observed}, set(cloned['projects'].values()))
+        plan = boards('--project', target, '--mapping', str(mapping_path))
+        plan_path.write_text(json.dumps(plan))
+        self.assertEqual(boards('--project', target, '--plan', str(plan_path))['status'], 'preview')
+        self.assertEqual(self.client.writes, [])
+        self.assertFalse(any('/tasks' in path for path in self.client.reads))
+        with self.assertRaisesRegex(TrackerError, 'outside staging'):
+            boards('--project', '1', '--plan', str(plan_path), '--apply')
+        source_plan = vikunja_board.build(self.make(), '1', dict(zip(STATES, range(100, 105))))
+        plan_path.write_text(json.dumps(source_plan))
+        with self.assertRaisesRegex(TrackerError, 'another provider, server or project'):
+            boards('--project', target, '--plan', str(plan_path), '--apply')
+        with self.assertRaises(TrackerError):
+            boards('--apply')
+        self.assertEqual(self.client.writes, [])
+        plan_path.write_text(json.dumps(plan))
+        self.assertTrue(boards('--project', target, '--plan', str(plan_path), '--apply')['applied'])
+        self.assertEqual(self.client.boards[1], source_boards)
+        self.assertEqual(self.client.tasks, tasks)
+        self.assertFalse((self.root / BINDING_FILE).exists())
+
+        bucket = plan['mapping']['Backlog']
+        sample = boards('--project', target, '--sample', bucket, '--limit', '1')
+        self.assertLessEqual(len(sample['tasks']), 1)
+        with self.assertRaisesRegex(TrackerError, 'outside the selected board'):
+            boards('--project', target, '--sample', '100')
+
     def test_launch_only_project_config_survives_public_adoption_and_cutover(self):
         """Adoption can bind a launch-configured repository without discarding its policy."""
         path = self.root / BINDING_FILE

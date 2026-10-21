@@ -45,10 +45,9 @@ class VikunjaAdapter:
         Vikunja already knows which bucket means done, so that one is taken from
         the view rather than guessed from a title. The remaining states are
         matched by their exact title, ignoring case; anything ambiguous is
-        reported, never resolved. Synonyms such as Vikunja's default To-Do and
-        Doing are not accepted: a second vocabulary, or a per-repository override
-        table, would be one more mapping to keep correct, so a board that does not
-        say what its columns mean is fixed in the tracker.
+        reported, never resolved. Board preparation can rename arbitrary titles
+        through a user-approved plan, rather than retaining an alias table whose
+        meaning would drift away from the tracker.
 
         A project with no kanban view, or several, is reported the same way. It
         used to raise, which made every read of every task in that project fail,
@@ -94,48 +93,6 @@ class VikunjaAdapter:
             self._boards[key] = {"view": selected, "buckets": buckets, "states": states,
                                  "missing": missing, "problems": problems}
         return self._boards[key]
-
-    def board_plan(self, project):
-        """What repairing one board would add, without touching it."""
-        project = str(project)
-        resolved = self.lifecycle(project)
-        plan = api.plan_board_init(resolved, STATES)
-        return {"project": project, "view": resolved["view"]["id"] if resolved["view"] else None,
-                "create": plan["create"], "done_bucket": plan["done_bucket"],
-                "blocked": plan["blocked"], "applied": False,
-                "states": resolved["states"], "problems": resolved["problems"]}
-
-    def initialize_boards(self, projects, apply=False):
-        """Add the lifecycle columns each board lacks; never rename or remove one.
-
-        Setup can only refuse a board it does not understand, which leaves the
-        user adding the same two columns by hand to every project in a subtree.
-        Creating the missing ones is mechanical; everything that needs a decision
-        stays reported and untouched.
-
-        The whole subtree is planned before anything is written, so a project the
-        repair cannot describe is reported next to the others instead of aborting
-        the run halfway through and leaving the subtree half repaired.
-        """
-        plans = [self.board_plan(project) for project in projects]
-        if not apply:
-            return plans
-        return [self.apply_board_plan(plan) for plan in plans]
-
-    def apply_board_plan(self, plan):
-        """Create one board's planned columns and point the view at its done column."""
-        if plan["blocked"] or not (plan["create"] or plan["done_bucket"]):
-            return plan
-        project = plan["project"]
-        resolved = self.lifecycle(project)
-        for column in plan["create"]:
-            api.create_bucket(self.client, project, resolved["view"], column["title"], column["position"])
-        resolved = self.refresh_lifecycle(project)
-        if plan["done_bucket"] and "Done" in resolved["states"]:
-            api.set_done_bucket(self.client, project, resolved["view"], resolved["states"]["Done"])
-            resolved = self.refresh_lifecycle(project)
-        return {**plan, "applied": True, "states": resolved["states"],
-                "problems": resolved["problems"]}
 
     def refresh_lifecycle(self, project):
         """Re-read a board after changing it; a cached view would report the old one."""

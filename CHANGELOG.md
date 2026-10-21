@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Breaking; planned major release:** Vikunja `board init` and `adopt boards`
+  now inspect metadata by default. Replace bare `--apply` with an explicit
+  lifecycle `--mapping FILE`, review the saved plan, then use `--plan FILE --apply`.
+  Renames keep column/card IDs; plans set order and default/done buckets and reject
+  changed boards. Setup/adopt propose meanings from names without reading cards;
+  separately requested inexpensive-scout samples read one bounded bucket page.
+  The previous automatic additive initializer is removed. Repository bindings
+  and existing native boards need no stored-data migration.
+
 - **Breaking; requires the next major release:** workflow deliveries now default
   to 65,536 UTF-8 bytes (`workflow.text_max_bytes`). Oversized supplemental notes
   and managed reports use the configured scout for one labelled summary, retaining

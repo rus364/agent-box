@@ -890,44 +890,12 @@ def create_bucket(client, project_id, view, title, position=None):
     )
 
 
-def set_done_bucket(client, project_id, view, bucket_id):
-    """Point the view's own done bucket at a column, leaving its other fields alone."""
-    return client.patch(
-        f"/projects/{int(project_id)}/views/{int(view['id'])}",
-        {"done_bucket_id": int(bucket_id)},
+def update_bucket(client, project_id, view, bucket, title, position):
+    # API v2 replaces these three fields with PUT; omitting limit would clear it.
+    return client.put(
+        f"/projects/{int(project_id)}/views/{int(view['id'])}/buckets/{int(bucket['id'])}",
+        {"title": title, "position": position, "limit": bucket.get("limit") or 0},
     )
-
-
-def plan_board_init(resolved, states):
-    """The lifecycle columns a board still lacks, and where each one belongs.
-
-    Only additive: a column that exists keeps its title and its cards, and a
-    board whose columns are ambiguous is left to the user, because choosing
-    which of two candidates means In progress is a decision and not a repair. New
-    columns are positioned between the neighbours they belong between, so the
-    board reads in lifecycle order instead of growing a tail.
-    """
-    blocked = [problem for problem in resolved["problems"]
-               if not problem.startswith("no column for")]
-    if not resolved["view"]:
-        # A board that cannot be identified has nothing to plan against; the
-        # reason is already the blocking problem.
-        return {"create": [], "done_bucket": False, "blocked": blocked}
-    positions = {}
-    for bucket in resolved["buckets"]:
-        positions[str(bucket["id"])] = bucket.get("position") or 0
-    known = {state: positions.get(ident, 0) for state, ident in resolved["states"].items()}
-    create, previous = [], 0
-    for index, state in enumerate(states):
-        if state in known:
-            previous = known[state]
-            continue
-        following = [known[later] for later in states[index + 1:] if later in known]
-        position = (previous + following[0]) / 2 if following else previous + 100
-        create.append({"state": state, "title": state, "position": position})
-        known[state] = previous = position
-    return {"create": create, "done_bucket": not resolved["view"].get("done_bucket_id"),
-            "blocked": blocked}
 
 
 def task_bucket_in_view(task, view_id):

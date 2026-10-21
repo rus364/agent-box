@@ -85,7 +85,12 @@ def run():
             assert copied_third in {t['id'] for t in copy['related_tasks']['blocking']}
             assert mapping[second] in {t['id'] for t in copy['related_tasks']['related']}
             instance, binding, _ = adoption.staging_context(receipt, repository)
-            instance.initialize_boards(instance.subtree(target, True), apply=True)
+            from agent_box.tracker import vikunja_board
+            from agent_box.tracker.core import STATES
+            for project in instance.subtree(target, True):
+                states = instance.lifecycle(project)["states"]
+                plan = vikunja_board.build(instance, project, {state: states.get(state) for state in STATES})
+                vikunja_board.execute(instance, project, plan, apply=True)
             # Board initialization preserves existing columns; these staging fixtures need explicit decisions.
             for ident, lifecycle in ((copied_first, 'Backlog'), (mapping[second], 'Done'),
                                      (copied_third, 'Backlog')):

@@ -52,10 +52,18 @@ class FakeClient:
     def get(self, path):
         self.reads.append(path)
         parts = path.split("?")[0].strip("/").split("/")
+        if parts[0] == "projects" and len(parts) == 2:
+            return dict(next(project for project in self.projects if project["id"] == int(parts[1])))
         if parts[0] == "projects" and parts[-1] == "views":
             return {"items": self.boards[int(parts[1])]["views"]}
         if parts[0] == "projects" and parts[-1] == "buckets":
             return {"items": self.boards[int(parts[1])]["buckets"][int(parts[3])]}
+        if parts[0] == "projects" and len(parts) == 5 and parts[-1] == "tasks":
+            query = parse_qs(urlsplit(path).query)
+            bucket = int(query['filter'][0].split(' = ')[1])
+            rows = [row for row in self.tasks.values() if row['project_id'] == int(parts[1])
+                    and {'id': bucket, 'project_view_id': int(parts[3])} in row.get('buckets', [])]
+            return {"items": rows[:int(query['per_page'][0])]}
         if parts[0] == "tasks":
             return dict(self.tasks[int(parts[1])])
         raise AssertionError(path)
@@ -65,7 +73,7 @@ class FakeClient:
         parts = path.split("?")[0].strip("/").split("/")
         if parts[0] == "projects" and parts[-1] == "buckets":
             buckets = self.boards[int(parts[1])]["buckets"][int(parts[3])]
-            created = {"id": max(bucket["id"] for bucket in buckets) + 1,
+            created = {"id": max((bucket["id"] for bucket in buckets), default=0) + 1,
                        "title": body["title"], "position": body.get("position")}
             buckets.append(created)
             buckets.sort(key=lambda bucket: bucket["position"])
@@ -87,6 +95,12 @@ class FakeClient:
     def put(self, path, body):
         self.writes.append((path, body))
         parts = path.strip("/").split("/")
+        if len(parts) == 6 and parts[0] == "projects" and parts[4] == "buckets":
+            buckets = self.boards[int(parts[1])]["buckets"][int(parts[3])]
+            bucket = next(row for row in buckets if row["id"] == int(parts[5]))
+            bucket.update(body)
+            buckets.sort(key=lambda row: row["position"])
+            return dict(bucket)
         self.tasks[int(body["task_id"])]["buckets"] = [
             {"id": int(parts[5]), "project_view_id": int(parts[3])}]
         return {}

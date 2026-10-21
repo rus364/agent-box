@@ -124,17 +124,47 @@ scope. With `--recursive` the projects are searched
 together and each resolves its own board. Projects outside the subtree stay
 readable and are never changed. Each project needs exactly one Kanban view with
 manually managed buckets named after the five states; the view's done bucket is
-Done. Vikunja's default `To-Do` and `Doing` are not recognized, so add the
-missing columns:
+Done. Prepare columns through `ab-setup` or `ab-adopt`: the agent first reads
+names, order, default/done settings and available counts, then proposes meanings
+and a concrete plan for you to confirm or correct. It does not read cards merely
+because a title is uncertain. No hardcoded template aliases determine meaning.
+
+`board init` without a mapping or plan returns metadata only. For one project,
+write a mapping JSON with exactly the five state names, each mapped to an existing
+bucket ID or `null` to create a column. For example, **after choosing these IDs**:
 
 ```bash
-agent-box tracker provider vikunja board init 12 --recursive          # dry run
-agent-box tracker provider vikunja board init 12 --recursive --apply
+agent-box tracker provider vikunja board init 12 --recursive
+# mapping.json: {"Backlog":101,"Ready":null,"In progress":102,"In review":null,"Done":103}
+agent-box tracker provider vikunja board init 12 --mapping mapping.json > plan.json
+agent-box tracker provider vikunja board init 12 --plan plan.json       # read-only preview
+# After the user confirms this exact plan:
+agent-box tracker provider vikunja board init 12 --plan plan.json --apply
 ```
 
-Board init only adds columns and sets the done bucket; a column it cannot
-recognize, an ambiguous name or a filter-built board stays reported for you to
-fix in Vikunja.
+The plan shows reuse, rename, create, positions and default/done changes. Lifecycle
+columns come first in the agreed order; retained columns follow in their previous
+relative order. Renames retain IDs, cards and WIP limits. No columns are deleted,
+merged or recreated, and no cards are moved. A mapping that leaves another column
+with the same canonical title is refused. Filter-built or unresolved views need
+an explicit decision before planning. Changing the done bucket does not reconcile
+existing task done flags; subsequent moves use the new designation.
+
+Apply checks the plan's instance, project, view and board snapshot before writes;
+it does not infer a different plan from live names. Changed metadata or counts
+requires a new proposal. A fully achieved plan is a no-op. A partial failure or
+unknown write outcome requires inspection and a fresh plan, never a blind retry.
+The check is optimistic: it cannot close the race with a concurrent remote writer;
+use a quiet editing window. Save temporary plans outside the repository, never as
+column overrides in `.agent-box.json`.
+
+Only a separate request to investigate meanings enables a configured inexpensive
+scout with a small sample of disputed columns. `board sample 12 --bucket 101 --limit 3`
+reads one filtered page, up to ten tasks, without comments/expansions or the
+unpaginated whole-board endpoint. It is never part of initial discovery. If no
+supported scout route is available, the skill asks you to clarify rather than
+silently using the coordinator or another model. Standalone board preparation does
+not require staging adoption.
 
 **Moving and cleanup.** `tracker move TASK... --project P` moves tasks, each
 with its whole subtree, into another project of the binding; IDs stay and
@@ -159,15 +189,25 @@ own, and ordinary tracker commands work on the staging copy with
 `--adoption RECEIPT`:
 
 ```bash
-agent-box tracker audit --project 12 --recursive
+agent-box tracker provider vikunja board init 12 --recursive   # metadata first
 agent-box tracker adopt clone --project 12 --apply     # reports the receipt path
-agent-box tracker adopt boards --apply
+agent-box tracker adopt boards --receipt RECEIPT      # staging metadata
+agent-box tracker adopt boards --receipt RECEIPT --project STAGING_ID --mapping mapping.json > plan.json
+agent-box tracker adopt boards --receipt RECEIPT --project STAGING_ID --plan plan.json
+# After confirming the concrete plan; repeat for each staging project:
+agent-box tracker adopt boards --receipt RECEIPT --project STAGING_ID --plan plan.json --apply
 agent-box tracker --adoption RECEIPT audit
 agent-box tracker adopt cutover --apply
 ```
 
 Inside a workspace box the receipt must stay in workflow state, which outlives
 the box; omit `--receipt` to keep the default.
+
+Do not reuse source IDs in a staging plan. `adopt boards --project STAGING_ID`
+selects only a project from the verified staging tree and uses the same planner
+as setup. An explicitly requested scout sample uses `--sample BUCKET_ID --limit 3`
+on this command, retaining the staging boundary. Adoption audits and task
+normalization read card content for their own purpose after board preparation.
 
 Pause other edits to the project while adopting; there is no incremental sync.
 Relations to tasks outside the tree are carried over where Vikunja allows it,
