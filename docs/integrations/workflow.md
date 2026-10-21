@@ -259,7 +259,7 @@ expected. A cleanup failure never undoes the merge or Done.
 | `workflow.use_tiers` | off | Let task tiers select model lists |
 | `workflow.language` | — | [Working language](../configuration.md#the-configuration-menu) of tracker, GitHub, commit and repository text |
 | `workflow.timeout_seconds` | 3600 | Limit for each managed run |
-| `workflow.text_max_bytes` | 65536 | Total UTF-8 bytes per complete delivery (global only) |
+| `workflow.text_max_bytes` | 262144 | Total UTF-8 bytes per complete delivery (global only) |
 | `workflow.text_retention_days` | 7 | Creation-time expiry of temporary texts (global only) |
 | `workflow.scout.limit` | 3 | Parallel scouts |
 | `workflow.review.policy` | `auto` | `off`, `auto`, `always` |
@@ -322,7 +322,7 @@ review results also add `report_text` pages above 4,096 bytes; `result_path` kee
 its original receipt meaning. Read the pages for the report instead of the raw receipt.
 
 **Total-size refusal.** Workflow → Delegation has positive global-only settings
-`text_max_bytes` (65,536) and `text_retention_days` (7). The byte limit covers each
+`text_max_bytes` (262,144) and `text_retention_days` (7). The byte limit covers each
 complete agent-box-controlled logical delivery: stored text, assembled assignment
 including mandatory referenced review evidence, or captured managed report. Pages,
 references and provider fallback do not reset it. Input is checked before native

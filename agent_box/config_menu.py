@@ -31,7 +31,7 @@ CHOICES = {
 }
 HELP = {
     "workflow.behavior_version": "Engineering guidance: v1 preserves previous instructions; v2 (default) adds proportionate impact analysis, reuse and evidence-based disagreement. Projects may override it. New assignments use the selected version; existing agents keep their context.",
-    "workflow.text_max_bytes": "Maximum UTF-8 bytes in a complete delivered text (default 65536). Pages do not reset the limit. Overflow stops delivery and must be reported to the user. Global only; this is not a token or session spending budget.",
+    "workflow.text_max_bytes": "Maximum UTF-8 bytes in a complete delivered text (default 262144). Pages do not reset the limit. Overflow stops delivery and must be reported to the user. Global only; this is not a token or session spending budget.",
     "workflow.text_retention_days": "Keep temporary text pages for this many days (default 7). New entries keep their creation-time expiry; setting changes affect new entries. Writes/preparation silently clean expired owned entries. Reads do not delete files. Global only.",
     "box.network": "Publish workspace or k3s services, reach selected host services, or explicitly share the host network. Changes need a stopped workspace.",
     "box.network.mode": "default keeps isolated networking. host shares host localhost and ports, including nested containers; wildcard listeners may reach the LAN. Global only; --network overrides one container lifetime. Not native --host execution.",

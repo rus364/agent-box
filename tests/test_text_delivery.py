@@ -242,7 +242,7 @@ class TextSettingsTests(unittest.TestCase):
             root = Path(tmp)
             for container in (False, True):
                 settings = config.Config()
-                self.assertEqual((settings.workflow.text_max_bytes, settings.workflow.text_retention_days), (65536, 7))
+                self.assertEqual((settings.workflow.text_max_bytes, settings.workflow.text_retention_days), (262144, 7))
                 settings.workflow.enabled = True
                 settings.workflow.text_max_bytes = 32768
                 settings.workflow.text_retention_days = 14
@@ -266,5 +266,5 @@ class TextSettingsTests(unittest.TestCase):
                      fixtures / "2.0.0/permission-config.json"):
             before = path.read_bytes()
             loaded = config.load_config(path)
-            self.assertEqual((loaded.workflow.text_max_bytes, loaded.workflow.text_retention_days), (65536, 7))
+            self.assertEqual((loaded.workflow.text_max_bytes, loaded.workflow.text_retention_days), (262144, 7))
             self.assertEqual(path.read_bytes(), before)

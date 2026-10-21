@@ -65,7 +65,7 @@ reads the effective instructions without a task or tracker connection. New
 assignments receive the selected version; existing agent contexts do not reload it.
 
 **Text delivery.** Workflow → Delegation exposes the positive global-only
-`workflow.text_max_bytes` (65,536 UTF-8 bytes) and `workflow.text_retention_days`
+`workflow.text_max_bytes` (262,144 UTF-8 bytes) and `workflow.text_retention_days`
 (7 days). The first limits one complete delivery; the second fixes each new
 record's expiry. See [text delivery](integrations/workflow.md#text-delivery) for
 refusal, paging and session-context boundaries.

@@ -3,7 +3,7 @@
 ## Unreleased
 
 - **Breaking; requires the next major release:** workflow assignments and captured
-  managed reports now refuse delivery above `workflow.text_max_bytes` (65,536
+  managed reports now refuse delivery above `workflow.text_max_bytes` (262,144
   UTF-8 bytes by default). This includes mandatory review evidence behind references.
   On upgrade, choose a deliberate higher global limit if your existing assignments
   need it, or reduce their scope. Refusals preserve captured originals and require

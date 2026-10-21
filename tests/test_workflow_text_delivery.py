@@ -14,6 +14,8 @@ from workflow_fixtures import BINDING, WorkflowCase, answer, candidate
 class WorkflowTextDeliveryTests(WorkflowCase):
     def setUp(self):
         super().setUp()
+        # A smaller explicit user limit must remain effective when package defaults grow.
+        self.config.workflow.text_max_bytes = 65536
         for role in ("worker", "scout", "sync"):
             self.config.workflow.role(role).models = [candidate("codex", "fixture", "high")]
         self.config.workflow.review.policy = "always"
