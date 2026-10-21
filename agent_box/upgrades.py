@@ -64,6 +64,26 @@ def before_launch():
         print(f"agent-box: {line}", file=sys.stderr)
 
 
+def repository_guidance(settings, root):
+    """Repositories adopt package guidance lazily, including those opened after global apply.
+
+    The block hash is its revision: another per-package registry would repeat
+    that fact and miss projects restored from older branches. Rendered sessions
+    must not replace newer host guidance with their immutable older package.
+    """
+    if not settings.workflow.enabled or in_session():
+        return None
+    from .repo_binding import Binding, refresh_guidance
+    try:
+        if Binding.session(root) is None:
+            return None
+        return refresh_guidance(root)
+    except (AgentBoxError, OSError, UnicodeError) as exc:
+        return {"status": "warning", "path": str(root / "AGENTS.md"),
+                "message": f"Workflow guidance was preserved: {exc}. Reconcile the file and run ab-setup; "
+                           "do not overwrite user edits or assume the managed instructions are current."}
+
+
 def forget():
     """Reinstalling the same package after uninstall must restore its integrations."""
     with apply_lock():

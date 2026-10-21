@@ -251,6 +251,7 @@ expected. A cleanup failure never undoes the merge or Done.
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `workflow.enabled` | off | Install and allow the workflow (global only) |
+| `workflow.behavior_version` | `v2` | Engineering guidance: `v1` preserves previous rules; `v2` adds consistent impact analysis, reuse and evidence-based disagreement |
 | `workflow.merge_mode` | `github` | `github` pull request or `local` fast-forward |
 | `workflow.auto_push` | on | Publish the parent (GitHub) or the landed base (local) |
 | `workflow.pause_push` | off | Publish and verify unfinished task branches on an explicit pause |
@@ -272,6 +273,36 @@ All workflow settings except `enabled` can be overridden per project in
 `.agent-box.json`. Session options such as `--review`, `--rounds`, `--merge`
 and `--no-push` override them for one session; see
 [session options](../usage.md#session-options).
+
+## Engineering guidance
+
+Skills load `agent-box workflow behavior` before coordinating work. Native and
+managed assignments carry the chosen role's instructions, including GitHub review
+requests. Shared installed profiles do not store a project's version. v1 retains
+the earlier local review safeguards; v2 extends the common reasoning policy across
+roles without changing ownership or requiring speculative refactors. Read-only
+reviewers describe necessary executable checks for the coordinator to perform.
+
+After a package update, the first host launch applies shared integrations. Each
+bound repository adopts changed workflow guidance when next opened with workflow
+enabled, in either host or container mode. The launcher checks the managed
+`AGENTS.md` block's hash, refreshes an intact outdated block or restores a missing
+one, and preserves surrounding text. A current block is not rewritten. The block
+itself records its revision; no separate per-repository package registry is needed.
+This can leave an intentional `AGENTS.md` change in Git for the coordinator to
+inspect and commit alongside project work.
+
+Edited, malformed, duplicated or symlinked guidance is preserved with a diagnostic;
+reconcile it explicitly before using `ab-setup`. A failed write is also reported.
+The launch snapshot carries the result, exposed as `startup_guidance` by
+`workflow behavior`, so the agent knows why its instructions changed or could not
+be refreshed. Help, diagnostics, shell launches and read-only workflow commands do
+not repair files. Existing rendered sessions never replace host guidance using
+their older immutable runtime; stop/relaunch to adopt a new runtime.
+
+Instruction-delivery tests verify which rules are supplied. They do not establish
+that every model always follows them; bounded scenario checks provide separate
+behavioral evidence.
 
 ## Stopping and resuming work
 

@@ -5,6 +5,8 @@ description: Open one GitHub PR for a validated parent task whose configured rou
 
 # ab-pr
 
+Before coordinating work, read `agent-box workflow behavior`; follow its effective instructions and startup guidance notice. Assigned delegates use the behavior in their assignment.
+
 Open the pull request the configured route calls for without asking; ask the user only about a blocker or disputed scope. Read the parent task and subtasks; confirm work is integrated, accepted and In review. Inspect the actual complete diff and validation/review evidence. Do not create a PR per microtask.
 
 Use this skill only when `workflow.merge_mode` is `github`. Local mode rejects PR creation without contacting GitHub and lands through ab-land instead.

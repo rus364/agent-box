@@ -176,6 +176,7 @@ def update_block(original: str, body: str, name: str, path: Path):
 
 
 AGENT_RULES = """Read the tracked task before work; .agent-box.json binds this repository to its tracker project.
+Before planning or implementation, read `agent-box workflow behavior` and follow its effective instructions and startup guidance notice. Delegates follow the behavior supplied in their assignment.
 Use agent-box tracker for task state, progress and dependencies; read related history when context is missing.
 Use ab-interview, ab-plan, ab-work, ab-sync, ab-review, ab-pr, and ab-land as needed. ab-setup maintains this binding and ab-adopt brings an existing project in line with the workflow; ab-normalize processes unmarked tasks in a bound project.
 The coordinator owns branches, commits, lifecycle, dependencies, and GitHub actions. Delegate implementation sequentially and research to scouts, which may run in parallel, when their model lists are configured; with an empty list the coordinator does that work itself.
@@ -184,6 +185,28 @@ Tracker comments are a human journal. Branch, base branch, and pull request come
 Use the user's language for all coordinator messages to them: progress updates, questions, option explanations and final answers. Literal project labels may stay quoted in the project language. Write tracker text, GitHub text, commit messages, code comments and documentation in the `language` that `agent-box tracker status` and `workflow inspect` report; when it is null, use the task's language in the tracker and English for implementation. Agent-to-agent handoffs and reports stay English; agent-box CLI output, errors and help stay English.
 Complete subtasks only after validation and integration into the parent branch; complete parents only after merge into the base branch.
 """
+
+
+def refresh_guidance(root: Path):
+    """Refresh only hash-verified owned guidance; project text is not a package asset."""
+    path = root / "AGENTS.md"
+    if path.is_symlink() or (path.exists() and not path.is_file()):
+        raise AgentBoxError(f"Refusing to replace {path}; reconcile the workflow guidance explicitly")
+    original = path.read_bytes() if path.exists() else None
+    text = original.decode("utf-8") if original is not None else ""
+    updated = update_block(text, AGENT_RULES, "workflow", path)
+    if original == updated.encode("utf-8"):
+        return {"status": "current", "path": str(path)}
+    mode = path.stat().st_mode & 0o777 if original is not None else 0o644
+    if path.is_symlink() or (path.read_bytes() if path.exists() else None) != original:
+        raise AgentBoxError(f"{path} changed during guidance refresh; retry after reconciling edits")
+    atomic_write_text(path, updated, mode)
+    restored = "<!-- BEGIN AGENT-BOX workflow" not in text
+    return {"status": "restored" if restored else "updated", "path": str(path),
+            "message": ("agent-box restored missing workflow guidance" if restored else
+                        "agent-box updated outdated workflow guidance to the installed package")
+                       + "; only its owned AGENTS.md block changed. Preserve this refresh alongside project work; "
+                         "it is a launcher integration update, not a user edit."}
 
 
 def setup_content(root: Path, binding: Binding):

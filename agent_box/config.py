@@ -967,6 +967,8 @@ class WorkflowConfig:
     """
     enabled: bool = False
     merge_mode: str = "github"
+    #: Engineering guidance only; permissions and review/model policy are independent.
+    behavior_version: str = "v2"
     #: Off by default: each role runs its own list regardless of the task tier.
     #: The tiers stay configured and labelled.
     use_tiers: bool = False
@@ -1037,6 +1039,8 @@ class WorkflowConfig:
         errors = []
         if self.merge_mode not in ("github", "local"):
             errors.append("workflow.merge_mode must be github or local")
+        if self.behavior_version not in ("v1", "v2"):
+            errors.append("workflow.behavior_version must be v1 or v2")
         errors += language_problems(self.language)
         value = self.timeout_seconds
         if not isinstance(value, int) or not math.isfinite(value) or not 30 <= value <= 86400:
@@ -1115,6 +1119,7 @@ class WorkflowConfig:
         result = cls()
         result.enabled = _bool(data, "enabled", False)
         result.merge_mode = _str(data, "merge_mode") or result.merge_mode
+        result.behavior_version = data.get("behavior_version", result.behavior_version)
         for key in ("use_tiers", "auto_push", "pause_push", "cleanup_local_branches", "cleanup_remote_branches"):
             setattr(result, key, _bool(data, key, getattr(result, key)))
         result.timeout_seconds = _number(data, "timeout_seconds", result.timeout_seconds)
@@ -1512,6 +1517,8 @@ def effective_config(base=None, *, include_project=True) -> Config:
             # checkout it no longer loads or validates although nothing the user saved is wrong.
             try:
                 base = Config.from_dict(rendered)
+                if isinstance(rendered.get("workflow_guidance"), dict):
+                    base._workflow_guidance = rendered["workflow_guidance"]
                 if "network" in rendered.get("box", {}):
                     # A running namespace cannot follow later project edits.
                     base._network_policy = NetworkConfig.from_dict(rendered["box"]["network"])

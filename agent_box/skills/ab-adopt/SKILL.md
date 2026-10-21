@@ -5,6 +5,8 @@ description: Normalize a native staging copy of an existing tracker project tree
 
 # ab-adopt
 
+Before coordinating work, read `agent-box workflow behavior`; follow its effective instructions and startup guidance notice. Assigned delegates use the behavior in their assignment.
+
 GitHub Projects has no staging copy: bind it with ab-setup, run its board init, then ab-normalize the existing issues in place. The steps below are Vikunja's.
 
 1. Resolve the source by exact project ID or full path. Read `agent-box tracker audit --project ID --recursive`, existing task text, comments and relations. Explain the notes in the user's language. Agree on a quiet editing window: neither source nor staging should change concurrently. Use ab-tracker for reads and `search QUERY --include-done` when inspecting history or relations. Adoption preserves meaning; never implement, investigate implementation, design solutions, merge tasks, or create subtasks because work looks large.

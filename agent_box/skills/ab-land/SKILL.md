@@ -5,6 +5,8 @@ description: Bring a reviewed parent through its configured GitHub or local merg
 
 # ab-land
 
+Before coordinating work, read `agent-box workflow behavior`; follow its effective instructions and startup guidance notice. Assigned delegates use the behavior in their assignment.
+
 An accepted task lands by its configured route without asking: merge it, and open its pull request where the route calls for one. Ask the user only about a blocker or disputed scope. Unattended runs return needs-human. Never bypass branch protection or force-push.
 
 1. Read the parent task and `workflow inspect PARENT` on its branch for the effective configuration source, merge mode, scope and review triggers; never choose the route from host/default config inside a container. Then use `workflow land PARENT inspect`. In GitHub mode it finds the PR by parent branch and base; several matches stop instead of guessing. Confirm PR identity and head, inspect CI, unresolved threads and comments. In local mode it reports the exact local task/base refs, ancestry and completion blockers; GitHub is not contacted. Use read-only scouts only when useful. No parallel implementation.

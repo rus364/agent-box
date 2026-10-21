@@ -171,6 +171,8 @@ def run(root, binding, adapter, config, task, event="manual", *, native=False, r
               f"project {binding.project}; recursive={str(binding.recursive).lower()}")
     prompt = (f"Assigned role: sync executor\nSource: {task.id}\nRead: agent-box tracker get {task.url or task.id} --no-comments\nEvent: {event}\nScope: {target}\n"
               f"References: {str(settings.references).lower()}\n")
+    from .workflow_behavior import instructions
+    prompt += instructions(config.workflow.behavior_version, "sync")
     if config.workflow.language:
         # The rules are also the native profile shared by every repository; only the value is this one's.
         prompt += f"Working language: {config.workflow.language}\n"

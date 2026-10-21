@@ -91,7 +91,7 @@ def quoted(text):
     return MENTION.sub("@<!-- -->", text.strip())
 
 
-def request_body(provider, head, base, descriptions, review_context="", brief=None, language=""):
+def request_body(provider, head, base, descriptions, review_context="", brief=None, language="", behavior_version="v2"):
     """The request names both commits of the scope it asks about, because that is the
     only place a published request can record which diff the answer will describe.
 
@@ -106,9 +106,10 @@ def request_body(provider, head, base, descriptions, review_context="", brief=No
     context = f"\n\n{quoted(review_context)}" if review_context else ""
     note = f"\n\nContext from the coordinator:\n\n{quoted(brief)}" if brief else ""
     cards = "\n\n---\n\n".join(quoted(text) for text in descriptions.values())
+    from .workflow_behavior import instructions
     return REQUEST_FORM.format(provider=provider, head=head, base=base, context=context,
                                brief=note, cards=cards, scope=REVIEW_SCOPE.strip(),
-                               language=review_language(language))
+                               language=review_language(language) + instructions(behavior_version, "reviewer"))
 
 
 def paginate(root, repo, path):
@@ -451,7 +452,8 @@ def _round(root, binding, adapter, config, task, parent, tasks, fingerprint, ide
     # ours; anything else is a stranger's question, and this run publishes its own.
     request = find_request(comments, [*published_requests(root, task, provider, head, base_head),
                                       request_body(provider, head, base_head, descriptions,
-                                                   review_context, brief, config.workflow.language)])
+                                                   review_context, brief, config.workflow.language,
+                                                   config.workflow.behavior_version)])
     if descriptor is not None:
         round_id = descriptor["delegation"]
         report, url, note = None, None, None
@@ -502,7 +504,7 @@ def _round(root, binding, adapter, config, task, parent, tasks, fingerprint, ide
             f"Ask the user before rerunning workflow review {task.id} or reviewing this head another way")
     body = (request["body"] if request is not None
             else request_body(provider, head, base_head, descriptions, review_context, brief,
-                              config.workflow.language))
+                              config.workflow.language, config.workflow.behavior_version))
     if request is None and len(body) > COMMENT_LIMIT:
         raise AgentBoxError(
             f"The request for {head[:12]} is {len(body)} characters and GitHub accepts {COMMENT_LIMIT}; "

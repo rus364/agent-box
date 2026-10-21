@@ -71,7 +71,7 @@ class ConfigMenuTests(unittest.TestCase):
             ('box',): ['tools', 'network', 'browser', 'k3s', 'podman', 'host_tmp', 'audio', 'links', 'env'],
             ('credentials',): ['git', 'github', 'registries', 'kubernetes', 'cloud'],
             ('host',): ['notifications', 'personal_browser', 'claude_skill_links'],
-            ('workflow',): ['enabled', 'merge_mode', 'auto_push', 'pause_push', 'cleanup_local_branches',
+            ('workflow',): ['enabled', 'behavior_version', 'merge_mode', 'auto_push', 'pause_push', 'cleanup_local_branches',
                            'cleanup_remote_branches', 'language', 'use_tiers', 'worker', 'scout', 'review', 'sync', 'timeout_seconds'],
             ('workflow', 'worker'): ['models', 'tiers'],
             ('workflow', 'scout'): ['limit', 'models'],
@@ -228,12 +228,12 @@ class ConfigMenuTests(unittest.TestCase):
         lines = [line.split("|")[0].strip() for line in frame.splitlines()]
         self.assertLess(lines.index("Delivery"), next(i for i, line in enumerate(lines) if line.startswith("Merge mode")))
         self.assertIn(f"1/{len(keys)}", frame)
-        self.assertEqual(result.config.workflow.merge_mode, "local")
+        self.assertEqual(result.config.workflow.behavior_version, "v1")
         # At the supported minimum the list holds one row; its group's heading stays above it.
         screen = Screen([*select("workflow"), "\n", curses.KEY_HOME, curses.KEY_DOWN, curses.KEY_END, "\x1b", "\x1b"],
                         sizes=[(8, 40)])
         self.edit(Config(), [], screen=screen)
-        for row, heading in (("Merge mode", "Delivery"), ("Timeout seconds", "Delegation")):
+        for row, heading in (("Behavior version", "Behavior"), ("Timeout seconds", "Delegation")):
             with self.subTest(row=row):
                 frame = next(frame for frame in screen.frames if row in frame)
                 self.assertIn(heading, frame)

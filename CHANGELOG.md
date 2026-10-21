@@ -1,5 +1,16 @@
 # Release notes
 
+## Unreleased
+
+- Add Workflow behavior versions: v2 defaults to proportionate impact analysis,
+  reuse and evidence-based disagreement; select v1 to retain prior guidance.
+  The choice follows project overrides and reaches local, managed and GitHub
+  review assignments without changing permissions, models or review budgets.
+- Refresh intact managed AGENTS.md guidance lazily when a bound project is opened
+  with an updated package. Preserve user edits and expose refresh diagnostics to
+  the agent through its session. Existing immutable runtimes require relaunch.
+  Stored configuration schemas are unchanged; omitted behavior selection uses v2.
+
 ## 3.0.2
 
 - Retry uv's exact-version-not-found resolution failure with refreshed index

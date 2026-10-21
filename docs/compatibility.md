@@ -28,6 +28,17 @@ runtimes require explicit stop/relaunch to adopt it.
 
 ## Direct upgrades
 
+Workflow behavior versions are independent of package and persisted schema
+versions. The additive `workflow.behavior_version` field uses `v2` when absent,
+including on upgrades from published configurations; explicit `v1` preserves the
+previous engineering guidance. It changes agent guidance, not existing workflow
+permissions, lifecycle or review gates. No stored representation conversion is
+needed; global/project schema numbers stay unchanged. New assignments use the
+effective selection, while already running agent contexts and immutable workspace
+runtimes retain their existing execution boundary. Repository guidance refresh is
+lazy per opened project and preserves user-owned text; see
+[engineering guidance](integrations/workflow.md#engineering-guidance).
+
 Every public version can upgrade directly to any later release, including across
 major versions. Use the installer that owns the package (uv/pipx or the Arch
 package manager); intermediate packages are never required. The first host agent launch after an update migrates saved

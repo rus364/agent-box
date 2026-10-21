@@ -5,6 +5,8 @@ description: Coordinate Plan sync launches and recovery; for the coordinator, no
 
 # ab-sync
 
+Before coordinating work, read `agent-box workflow behavior`; follow its effective instructions and startup guidance notice. Assigned delegates use the behavior in their assignment.
+
 Coordinator only. The assigned sync executor follows its role instructions and uses `agent-box tracker` directly; it never runs this skill or workflow commands.
 
 1. Read `workflow inspect ID` `plan_sync` for settings, execution and the last result. SKIPPED/UPDATED/UNCHANGED need no run; REQUIRED launches its recorded event. Pending/failed runs require step 4. Manual runs use `workflow sync ID`; automatic requests preserve `--event before|after|plan`. Review policy does not control sync. Never assemble task texts/diffs or apply the agent's edits yourself.

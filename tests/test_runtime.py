@@ -1072,6 +1072,31 @@ class ContainerHostParityTests(IsolatedRuntimeTest):
     """Container and host mode must resolve the same Flow-Next policy through
     the same shared helper, so they cannot drift."""
 
+    def test_both_launch_routes_prepare_project_guidance_before_starting_the_agent(self):
+        """A helper tested alone would not detect a launch path forgetting to call it."""
+        from contextlib import nullcontext
+        root = Path(self._state_tmp.name)
+        workspace = Workspace(root, root)
+        settings = Config()
+        settings.workflow.enabled = True
+        for host in (False, True):
+            with self.subTest(host=host), \
+                    mock.patch.object(runtime, "resolved_workspace", return_value=workspace), \
+                    mock.patch.object(runtime, "launch_config", return_value=settings), \
+                    mock.patch.object(runtime.host_podman, "require"), \
+                    mock.patch.object(runtime, "ensure_state_dirs"), \
+                    mock.patch.object(runtime, "ensure_refresh_token"), \
+                    mock.patch.object(runtime, "workspace_transition_lock", return_value=nullcontext()), \
+                    mock.patch.object(runtime.host_k3s, "inherit"), \
+                    mock.patch.object(runtime.shutil, "which", return_value="/fixture/codex"), \
+                    mock.patch.object(runtime, "prepare_repository_guidance", side_effect=RuntimeError("launch checkpoint")) as prepare:
+                with self.assertRaisesRegex(RuntimeError, "launch checkpoint"):
+                    if host:
+                        runtime.host_main("codex", [])
+                    else:
+                        runtime.runtime_main(["codex"], runtime.PACKAGE_ROOT)
+                prepare.assert_called_once_with(settings, workspace, "codex", [])
+
 
 
 

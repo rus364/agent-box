@@ -1,5 +1,6 @@
 """Instructions for delegated agents; provider settings describe a separate choice."""
 import json
+from .workflow_behavior import instructions as behavior_instructions
 
 # Workers and scouts answer in these sections; nothing parses them, so a
 # different shape costs the coordinator a reread, never a paid run.
@@ -70,7 +71,7 @@ def delegate_rules(role):
                    "unverified or blocked.")
 
 
-def delegate_prompt(role, task, brief, repository_instructions, language=""):
+def delegate_prompt(role, task, brief, repository_instructions, language="", behavior_version="v2"):
     """A managed worker or scout starts from the brief alone, never the coordinator's history.
 
     The rule for the working language lives in delegate_rules, which native
@@ -78,7 +79,8 @@ def delegate_prompt(role, task, brief, repository_instructions, language=""):
     repository's, so it travels with the run. Only a worker writes project text.
     """
     named = f"Working language: {language}\n" if language and role == "worker" else ""
-    return (delegate_rules(role) + f"\n\nTask {task.id}: {task.title}\n{named}\n----- Assignment -----\n{brief}\n"
+    return (delegate_rules(role) + "\n" + behavior_instructions(behavior_version, role)
+            + f"\n\nTask {task.id}: {task.title}\n{named}\n----- Assignment -----\n{brief}\n"
             + (f"\n----- Repository instructions -----\n{repository_instructions}\n" if repository_instructions else ""))
 
 
@@ -92,7 +94,8 @@ def profile_instructions(role):
                 "Use English for reports. " + COORDINATOR_OWNS + "Do not load parent conversation, tracker comments "
                 "or previous-agent history. Read all instructions and report missing, unreadable or truncated "
                 "instructions. Read only. " + REPORT_FORMAT)
-    return delegate_rules(role)
+    return (delegate_rules(role) + f" Follow the assignment's Workflow behavior. If absent, read "
+            f"`agent-box workflow behavior --role {role}` before work; do not infer a version from another project.")
 
 
 def render_handoff(role, payload, instructions=""):

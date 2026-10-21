@@ -55,6 +55,15 @@ The picker offers Codex, Claude and enabled
 model IDs, since any CLI's model may serve any role. The suggestions are hints,
 not availability checks.
 
+**Behavior version.** Workflow → Behavior selects `workflow.behavior_version`:
+`v1` preserves earlier engineering guidance; `v2` (default) adds impact analysis,
+appropriate reuse, maintainability, evidence-based disagreement and investigation
+proportionate to risk and effort. Projects may override the global choice.
+This setting does not change models, permissions, review frequency or budgets.
+`agent-box workflow behavior [--role coordinator|worker|reviewer|scout|sync]`
+reads the effective instructions without a task or tracker connection. New
+assignments receive the selected version; existing agent contexts do not reload it.
+
 **Working language.** `workflow.language` names the language of project text, such as
 `English` or `Deutsch`: tracker tasks and comments, pull requests and review
 replies, commit messages, code comments and documentation. Agents still talk

@@ -16,6 +16,7 @@ from .external_config import API_EFFORTS, EFFORTS, ExternalProvider, cli_models,
 from .model_catalog import load_model_catalogs
 
 CHOICES = {
+    "workflow.behavior_version": ("v1", "v2"),
     "host.personal_browser.browser": ("auto", "chrome", "chromium"),
     "box.network.mode": ("default", "host"),
     "agents.default": LAUNCH_AGENTS,
@@ -29,6 +30,7 @@ CHOICES = {
     "box.k3s.lifetime": K3S_LIFETIMES,
 }
 HELP = {
+    "workflow.behavior_version": "Engineering guidance: v1 preserves previous instructions; v2 (default) adds proportionate impact analysis, reuse and evidence-based disagreement. Projects may override it. New assignments use the selected version; existing agents keep their context.",
     "box.network": "Publish workspace or k3s services, reach selected host services, or explicitly share the host network. Changes need a stopped workspace.",
     "box.network.mode": "default keeps isolated networking. host shares host localhost and ports, including nested containers; wildcard listeners may reach the LAN. Global only; --network overrides one container lifetime. Not native --host execution.",
     "box.network.ports": "JSON list of [IP:]HOST:CONTAINER[/tcp|udp] workspace publications. Default 127.0.0.1 and TCP. Use [::1] for IPv6. An explicit non-loopback IP makes the service accessible from other computers (global/CLI only). Applications must listen on the container interface, not only localhost. Example: [\"8080:3000\"].",
@@ -211,6 +213,10 @@ PATH_LABELS = {
 #: help stays behind "?". One shared paragraph for every value made the reader map the
 #: prose back to the row themselves.
 OPTION_HELP = {
+    "workflow.behavior_version": {
+        "v1": "Preserve previous engineering guidance, including existing local review safeguards.",
+        "v2": "Trace affected contracts, reuse suitable code and question costly or harmful approaches with evidence; keep effort proportionate.",
+    },
     "host.personal_browser.browser": {
         "auto": "Use installed Google Chrome, otherwise Chromium; never fall back to another browser after a connection failure.",
         "chrome": "Use the native Google Chrome installation and its selected profile.",
@@ -322,6 +328,7 @@ MENU_GROUPS = {
     ),
     ("workflow",): (
         ("Workflow", ("enabled",)),
+        ("Behavior", ("behavior_version",)),
         ("Delivery", ("merge_mode", "auto_push", "pause_push", "cleanup_local_branches", "cleanup_remote_branches")),
         ("Project text", ("language",)),
         ("Roles", ("use_tiers", "worker", "scout", "review", "sync")),

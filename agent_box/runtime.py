@@ -1055,6 +1055,7 @@ def container_tracker_url(raw: str) -> str:
 
 def sync_tracker_runtime(config: Config, directory: Path | None = None, *, policy=False, container=True) -> None:
     """Render only explicitly enabled capabilities; directory mounts see atomic updates."""
+    guidance = getattr(config, "_workflow_guidance", None)
     launch = getattr(config, "_launch", {})
     cluster_policy = getattr(config, "_cluster_policy", None)
     if cluster_policy is not None:
@@ -1082,6 +1083,7 @@ def sync_tracker_runtime(config: Config, directory: Path | None = None, *, polic
             for cli in ("codex", "claude"):
                 spec[cli]["url"] = container_tracker_url(spec[cli]["url"])
     rendered = {
+        **({"workflow_guidance": guidance} if guidance else {}),
         "tracker": tracker,
         "tracker_urls": {name: container_tracker_url(connection.url) if isolated_network else connection.url
                          for name, connection in config.tracker.connections.items()
@@ -3160,6 +3162,7 @@ def runtime_main(
         agent, rest = args[0], args[1:]
     if agent not in {"claude", "codex", "shell", "doctor"}:
         raise AgentBoxError(f"unsupported agent '{agent}'; expected claude or codex")
+    prepare_repository_guidance(config, workspace, agent, rest)
     if api_provider:
         if agent not in {"claude", "codex"}:
             raise AgentBoxError(f"ext {api_provider} runs claude or codex, not {agent}")
@@ -3637,6 +3640,20 @@ def _uninstall(purge: bool, assume_yes: bool) -> int:
     return 0
 
 
+def prepare_repository_guidance(config, workspace, agent, rest):
+    """Carry per-project upgrade diagnostics to the session as well as the terminal."""
+    if (not config.workflow.enabled or agent not in {"claude", "codex"}
+            or not host_interactive_invocation(agent, rest, batch=True)):
+        return
+    from . import upgrades
+    from .repo_binding import repository_root
+    report = upgrades.repository_guidance(config, repository_root(workspace.cwd, fallback=True))
+    if report:
+        config._workflow_guidance = report
+        if report.get("message"):
+            warn(report["message"])
+
+
 def host_main(
     agent: str | None, rest: list[str], options: LaunchOptions | None = None,
     *, api_provider: str = "",
@@ -3657,6 +3674,7 @@ def host_main(
     executable = shutil.which(agent)
     if not executable:
         raise AgentBoxError(f"'{agent}' not found on PATH; install it on the host to use --host")
+    prepare_repository_guidance(config, workspace, agent, rest)
     from .external_launch import builtin_environment, selected_model
     if api_provider:
         selected_model(config, api_provider, agent, rest)
@@ -3664,7 +3682,7 @@ def host_main(
     if host_interactive_invocation(agent, rest, batch=True):
         reservation = host_k3s.reserve(config, options, workspace)
     try:
-        # As in container mode: a launch applies nothing to the user's own files.
+        # Global integrations were applied by the package hook; only launch state follows.
         env = builtin_environment(os.environ)
         env[PRESSURE_REAP_OPT_OUT] = "1"
         # ``box.env.set`` states what a session should have; a host session is still a
