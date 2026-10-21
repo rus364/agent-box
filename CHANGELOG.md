@@ -2,12 +2,15 @@
 
 ## Unreleased
 
-- **Breaking; requires the next major release:** workflow assignments and captured
-  managed reports now refuse delivery above `workflow.text_max_bytes` (262,144
-  UTF-8 bytes by default). This includes mandatory review evidence behind references.
-  On upgrade, choose a deliberate higher global limit if your existing assignments
-  need it, or reduce their scope. Refusals preserve captured originals and require
-  user notification; they never truncate or automatically increase the limit.
+- **Breaking; requires the next major release:** workflow deliveries now default
+  to 65,536 UTF-8 bytes (`workflow.text_max_bytes`). Oversized supplemental notes
+  and managed reports use the configured scout for one labelled summary, retaining
+  originals and outcome/finding identity. This may add a managed scout call; an
+  unavailable scout, invalid summary or oversized authoritative input stops delivery
+  and requires user notification. Limits never rise automatically.
+- Keep diffs out of every role's initial assignment. Supply change boundaries,
+  changed paths and separately saved evidence for source/diff inspection on demand.
+  Mandatory repository instruction imports count toward the initial input budget.
 - Add temporary `text write`/`text locate` storage, 4 KiB pages and seven-day default
   retention in the existing shared workflow directory. Native roles receive generated
   file paths; managed input and native final answers keep their direct transport.

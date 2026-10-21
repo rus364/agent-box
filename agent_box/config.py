@@ -970,7 +970,7 @@ class WorkflowConfig:
     #: Engineering guidance only; permissions and review/model policy are independent.
     behavior_version: str = "v2"
     #: Global: a whole delivered text, independent of page size or provider tokens.
-    text_max_bytes: int = 262144
+    text_max_bytes: int = 65536
     #: Global: each temporary text keeps the expiry chosen when it was created.
     text_retention_days: int = 7
     #: Off by default: each role runs its own list regardless of the task tier.

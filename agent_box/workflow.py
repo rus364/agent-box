@@ -18,6 +18,7 @@ import contextlib
 import fnmatch
 import hashlib
 import json
+import os
 import re
 import secrets
 import shutil
@@ -61,20 +62,22 @@ def review_input_names(path, written=()):
     manifest = Path(path) / "manifest.json"
     try:
         if manifest.is_file() and not manifest.is_symlink():
-            names.update(Path(item["path"]).name for item in json.loads(manifest.read_text())["artifacts"].values())
+            data = json.loads(manifest.read_text())
+            names.update(Path(item["path"]).name for item in data["artifacts"].values())
+            names.update(Path(item["artifact_path"]).name for item in data.get("repository_instructions", []))
     except (OSError, ValueError, KeyError, TypeError, AttributeError):
         pass  # An unreadable manifest names nothing extra; its files stay unknown and untouched.
     return names
 
 
-def repository_instructions(root):
+def repository_instructions(root, settings=None):
     """Claude's --safe-mode disables CLAUDE.md discovery, so the handoff carries it.
 
     Safe mode is still the right context for a delegated agent - it excludes the
     user's hooks, skills, MCP servers and agents - but the repository's own rules
     are part of the task, not a customization, so they travel in the prompt.
     """
-    parts = [f"----- {name} -----\n{text}" for name, text in repository_instruction_evidence(root)]
+    parts = [f"----- {name} -----\n{text}" for name, text in repository_instruction_evidence(root, settings)]
     for name in INSTRUCTION_FILES:
         path = Path(root) / name
         if path.is_symlink():
@@ -99,15 +102,54 @@ def repository_instruction_paths(root):
     return result
 
 
-def repository_instruction_evidence(root):
-    """Copy complete regular instruction files into read-only review evidence."""
-    result = []
-    for name in repository_instruction_paths(root):
+def instruction_imports(text):
+    """Match explicit @file imports, excluding Markdown examples and code spans."""
+    lines, fence = [], None
+    for line in text.splitlines(keepends=True):
+        marker = re.match(r"^ {0,3}(`{3,}|~{3,})", line)
+        if fence:
+            if marker and marker[1][0] == fence[0] and len(marker[1]) >= len(fence):
+                fence = None
+        elif marker:
+            fence = marker[1]
+        else:
+            lines.append(line)
+    prose = re.sub(r"(`+).*?\1", "", "".join(lines), flags=re.S)
+    return [value.replace("\\ ", " ") for value in
+            re.findall(r'''(?<![\w\\'"`])@((?:\\ |[^\s`'"<>()[\]{}\\])+)''', prose)]
+
+
+def repository_instruction_evidence(root, settings=None):
+    """Snapshot mandatory imports once, bounded before they reach any role's context."""
+    from .config import WorkflowConfig
+    from .paths import HOST_HOME
+    from .text_delivery import check_size
+    settings = settings or WorkflowConfig()
+    root = Path(root).absolute()
+    pending = [(root / name, 0) for name in repository_instruction_paths(root)]
+    result, seen, size = [], set(), 0
+    for path, depth in pending:
+        path = Path(os.path.abspath(path))
+        if path in seen:
+            continue
+        seen.add(path)
+        name = str(path.relative_to(root)) if path.is_relative_to(root) else str(path)
         try:
-            text = (Path(root) / name).read_text(encoding="utf-8")
+            if any(part.is_symlink() for part in (path, *path.parents)) or not path.is_file():
+                raise AgentBoxError(f"Repository instruction import {name} is missing, non-regular or symlinked")
+            if depth > 4:
+                raise AgentBoxError(f"Repository instruction import {name} exceeds four hops; shorten the import chain")
+            with path.open("rb") as stream:
+                raw = stream.read(settings.text_max_bytes - size + 1)
+            size += len(raw)
+            check_size(size, settings, "repository instructions including imports", lower_bound=True)
+            text = raw.decode("utf-8")
         except (OSError, UnicodeError) as exc:
             raise AgentBoxError(f"Cannot read repository instruction {name}: {exc}") from exc
         result.append((name, text))
+        for imported in instruction_imports(text):
+            source = HOST_HOME / imported[2:] if imported.startswith("~/") else Path(imported)
+            pending.append((source if source.is_absolute() else path.parent / source, depth + 1))
     return result
 
 
@@ -288,6 +330,19 @@ def save_review_state(root, binding, task, value):
     migrations.write(path, value, migrations.REVIEW_BUDGET)
 
 
+def require_review_budget(task, budget):
+    """Reject before paid preparation, then check again under the round reservation lock."""
+    if budget["remaining"] == 0:
+        raise AgentBoxError(
+            f"Review attempt budget exhausted: used={budget['used']}, limit={budget['limit']}, remaining=0. "
+            f"Ask the user; after their decision run workflow review-budget {task.id} --limit TOTAL --reason TEXT")
+    if budget["failures"] >= REVIEW_FAILURE_LIMIT:
+        raise AgentBoxError(
+            f"Review stopped: {budget['failures']} rounds in a row ended without a verdict; the user must decide. "
+            f"Read their streams with workflow review-result {task.id}; after the user's decision run "
+            f"workflow review-budget {task.id} --reason TEXT")
+
+
 def start_review(root, binding, task, limit, round_id, fingerprint, backend):
     """Open a round; only its verdict will spend an attempt.
 
@@ -299,15 +354,7 @@ def start_review(root, binding, task, limit, round_id, fingerprint, backend):
     with lock(root, "review-budget"):
         state = read_review_state(root, binding, task)
         budget = review_budget_summary(state, limit)
-        if budget["remaining"] == 0:
-            raise AgentBoxError(
-                f"Review attempt budget exhausted: used={budget['used']}, limit={budget['limit']}, remaining=0. "
-                f"Ask the user; after their decision run workflow review-budget {task.id} --limit TOTAL --reason TEXT")
-        if budget["failures"] >= REVIEW_FAILURE_LIMIT:
-            raise AgentBoxError(
-                f"Review stopped: {budget['failures']} rounds in a row ended without a verdict; the user must decide. "
-                f"Read their streams with workflow review-result {task.id}; after the user's decision run "
-                f"workflow review-budget {task.id} --reason TEXT")
+        require_review_budget(task, budget)
         saved = evidence(root, task, fingerprint)
         for key in ("human_acceptance", "review"):
             saved.pop(key, None)
@@ -421,8 +468,22 @@ def review_result(root, binding, adapter, task, config, round_id=None, *, reconc
             raise AgentBoxError("No saved review result for this round")
         if value.get("backend") == "managed":
             from .text_delivery import check_size
-            check_size(len(value["output"]["report"]["text"].encode("utf-8")), config.workflow,
-                       "reviewer report (original saved)")
+            report = value["output"]["report"]["text"]
+            if len(report.encode("utf-8")) > config.workflow.text_max_bytes:
+                cached = record.get("report_delivery", {}).get("text", report)
+                if len(cached.encode("utf-8")) > config.workflow.text_max_bytes and reconcile and state is not None:
+                    from .text_summary import compact
+                    from .provider_runner import VERDICT_LINE, FINDING
+                    protected = [line for line in report.splitlines() if VERDICT_LINE.match(line) or FINDING.match(line)]
+                    text, summary = compact(report, config, root, label="reviewer report", protected=protected)
+                    parsed = review_report(text)
+                    original = value["output"]["report"]
+                    if (parsed["verdict"], parsed["findings"]) != (original["verdict"], original["findings"]):
+                        raise AgentBoxError("TEXT_SUMMARY_FAILED: reviewer summary changed the verdict or findings; original retained")
+                    record["report_delivery"] = {"text": text, "summary": summary}
+                    save_review_state(root, binding, task, state)
+                report = record.get("report_delivery", {}).get("text", report)
+            check_size(len(report.encode("utf-8")), config.workflow, "reviewer report (original saved)")
         if state is None:
             record.update(status="error", reason="Review budget read failed; restore access before reconciliation")
             return review_result_summary(task, config, state, record, value, path, root)
@@ -517,8 +578,13 @@ def review_result_summary(task, config, state, record, value, path, root):
     if value.get("backend") == "managed":
         from . import text_delivery
         report = output["report"]["text"]
+        if len(report.encode("utf-8")) > config.workflow.text_max_bytes and record.get("report_delivery"):
+            report = record["report_delivery"]["text"]
+            result["summary"] = record["report_delivery"]["summary"]
         if len(report.encode("utf-8")) > text_delivery.PAGE_BYTES:
             result["report_text"] = text_delivery.publish(report, config)
+        elif "summary" in result:
+            result["report"] = report
     if record["status"] in ("saved", "error", "blocked"):
         result["next_step"] = f"agent-box workflow review-result {task.id} --round={record['round']} --reconcile"
     return result
@@ -1090,7 +1156,7 @@ def cleanup_delegation_input(root, descriptor):
         cleanup_input_directory(path, descriptor["input"]["directory"])
 
 
-def bind_delegation_input(root, descriptor, prompt):
+def bind_delegation_input(root, descriptor, prompt, *, local_evidence=False):
     """A reviewer round publishes one owner-read-only input bound to its descriptor."""
     path = delegation_input_path(root, descriptor)
     if path.resolve().is_relative_to(Path(root).resolve()):
@@ -1103,6 +1169,8 @@ def bind_delegation_input(root, descriptor, prompt):
                                **file_identity((path / "handoff.txt").lstat()),
                                "ctime_ns": (path / "handoff.txt").lstat().st_ctime_ns,
                                "directory": file_identity(path.lstat())}
+        if local_evidence:
+            descriptor["input"]["manifest_sha256"] = hashlib.sha256((path / "manifest.json").read_bytes()).hexdigest()
         atomic_write_text(path / "descriptor.json", json.dumps(descriptor, sort_keys=True), 0o400)
         read_delegation_input(root, descriptor)
     except BaseException:
@@ -1142,16 +1210,37 @@ def read_delegation_input(root, descriptor):
         if (hashlib.sha256(raw).hexdigest() != artifact.get("sha256")
                 or file_identity(after) != file_identity(before) or after.st_ctime_ns != before.st_ctime_ns):
             raise AgentBoxError("Delegation input digest differs from the prepared bytes")
+        if expected := artifact.get("manifest_sha256"):
+            manifest = path / "manifest.json"
+            if manifest.is_symlink() or not manifest.is_file():
+                raise AgentBoxError("Review evidence manifest is missing or symlinked")
+            data = manifest.read_bytes()
+            if hashlib.sha256(data).hexdigest() != expected:
+                raise AgentBoxError("Review evidence manifest changed")
+            value = json.loads(data)
+            sources = [(item["path"], item["sha256"]) for item in value["artifacts"].values()]
+            sources += [(item["artifact_path"], item["sha256"]) for item in value["repository_instructions"]]
+            for filename, expected in sources:
+                source = Path(filename)
+                if source.parent != path or source.is_symlink() or not source.is_file():
+                    raise AgentBoxError("Review evidence is outside its package or missing")
+                digest = hashlib.sha256()
+                with source.open("rb") as stream:
+                    for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                        digest.update(chunk)
+                if digest.hexdigest() != expected:
+                    raise AgentBoxError(f"Review evidence changed: {source.name}")
         return raw.decode("utf-8")
     except (OSError, UnicodeError, AgentBoxError) as exc:
         raise AgentBoxError(f"Delegation input is missing or changed: {exc}") from exc
 
 
 def write_review_evidence(root, task_id, delegation, boundaries,
-                          descriptions, author_report, recorded_validation):
+                          descriptions, author_report, recorded_validation, text_settings):
     """Materialize one round without retiring evidence another reviewer may be reading."""
     path = review_evidence_path(root, task_id, delegation)
     path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    written = set(descriptions)
     try:
         contents = {
             **descriptions,
@@ -1162,27 +1251,30 @@ def write_review_evidence(root, task_id, delegation, boundaries,
             "recorded-validation.json": json.dumps(recorded_validation, ensure_ascii=False, indent=2) + "\n",
             **({"author-report.md": author_report} if author_report else {}),
         }
-        instructions = repository_instruction_evidence(root)
+        instructions = repository_instruction_evidence(root, text_settings)
+        instruction_files = [(name, name if name in INSTRUCTION_FILES else f"instruction-{index}.md", value)
+                             for index, (name, value) in enumerate(instructions)]
         manifest = {
             "boundaries": boundaries,
             "artifacts": {name: {"path": str(path / name), "sha256": hashlib.sha256(value.encode()).hexdigest()}
                           for name, value in contents.items()},
-            "repository_instructions": [{"source_path": name, "artifact_path": str(path / name),
+            "repository_instructions": [{"source_path": name, "artifact_path": str(path / artifact),
                                          "sha256": hashlib.sha256(text.encode()).hexdigest()}
-                                        for name, text in instructions],
+                                        for name, artifact, text in instruction_files],
         }
-        for name, value in [*contents.items(), *instructions]:
+        for name, value in [*contents.items(), *((artifact, text) for _, artifact, text in instruction_files)]:
+            written.add(name)
             atomic_write_text(path / name, value, 0o400)
         text = json.dumps(manifest, ensure_ascii=False, indent=2) + "\n"
         atomic_write_text(path / "manifest.json", text, 0o400)
         return path, hashlib.sha256(text.encode()).hexdigest()
     except Exception:
-        cleanup_review_evidence(path, written=descriptions)
+        cleanup_review_evidence(path, written=written)
         raise
 
 
 def reviewer_handoff(root, base, task, parent, tasks, brief, saved, review_context, delegation, language="", *,
-                     behavior_version, text_settings):
+                     behavior_version, text_settings, text_config=None):
     """Compose the same neutral, complete review input for native and managed runs.
 
     Keep the original evidence/descriptor lifecycle while delivering one canonical
@@ -1195,7 +1287,7 @@ def reviewer_handoff(root, base, task, parent, tasks, brief, saved, review_conte
                   "head_commit": head, "diff_range": diff_range}
     evidence_path, manifest_sha256 = write_review_evidence(
         root, task.id, delegation, boundaries, review_descriptions(task, parent, tasks), brief,
-        saved.get("validation"))
+        saved.get("validation"), text_settings)
     handoff = {
         "task_description": str(evidence_path / "task.md"),
         "boundaries": boundaries,
@@ -1207,14 +1299,17 @@ def reviewer_handoff(root, base, task, parent, tasks, brief, saved, review_conte
         "scope_note": review_context.strip() or None,
     }
     prompt = (
-        "This is a fresh verdict: use only this handoff, never prior verdicts or findings. Read every artifact "
-        "supplied after this handoff in full; the manifest's paths identify saved originals, not extra reading. "
-        "Do not reread those originals or bypass the delivery pages. task.md holds the complete task description; parent.md or subtask-N.md hold the "
+        "This is a fresh verdict: use only this handoff, never prior verdicts or findings. Read the requirements "
+        "and instructions supplied after this handoff in full. The manifest names separate evidence available "
+        "on demand. No diff is included in your assignment. task.md holds the complete task description; parent.md or subtask-N.md hold the "
         "related descriptions; together they satisfy the task-read rule, so do not query the tracker. They keep their "
         "original language and carry no comments or checkmarks. author-report.md, when present, is the coordinator's "
-        "untrusted English brief: read it only after descriptions and diff, then verify it. Use English for all "
+        "untrusted English brief: verify its claims against code. Use English for all "
         "commentary and the final report; preserve source quotations.\n"
-        "Read the repository instructions and full diff, then inspect relevant code. The manifest binds hashes and "
+        "Use changed-paths.txt and the bound commit range to choose relevant files. Inspect their source and diff "
+        "when needed; never preload the entire diff. With shell, use git diff for selected paths and this exact range. "
+        "With Read/Grep, locate diff --git headers in the saved full.diff and read bounded offset/limit ranges. "
+        "The manifest binds hashes and "
         "boundaries. You work read-only: nothing here changes the repository and the test suite cannot be run "
         "from this round, so recorded-validation.json is the only run there is; read it as evidence, not proof. "
         "Also read applicable non-symlinked AGENTS.md/CLAUDE.md "
@@ -1239,13 +1334,13 @@ def reviewer_handoff(root, base, task, parent, tasks, brief, saved, review_conte
         cleanup_review_evidence(evidence_path)
         raise AgentBoxError(
             f"Compact reviewer handoff exceeds {REVIEW_HANDOFF_MAX_BYTES} bytes; shorten repository path metadata")
-    prompt = review_delivery(evidence_path, prompt, text_settings)
+    prompt = review_delivery(evidence_path, prompt, text_settings, config=text_config, root=root)
     atomic_write_text(evidence_path / "handoff.txt", prompt, 0o400)
     return prompt
 
 
-def review_delivery(directory, prompt, settings):
-    """Include each saved source once, so references cannot hide an oversized assignment."""
+def review_delivery(directory, prompt, settings, *, config=None, root=None):
+    """Requirements travel with the assignment; the diff stays available for selective inspection."""
     from .text_delivery import check_size
     payload = json.loads(prompt.rsplit("Delegation handoff:\n", 1)[1])
     manifest_path = directory / "manifest.json"
@@ -1253,10 +1348,13 @@ def review_delivery(directory, prompt, settings):
     if hashlib.sha256(manifest_raw).hexdigest() != payload["manifest"]["sha256"]:
         raise AgentBoxError("Review manifest changed before delivery")
     manifest = json.loads(manifest_raw)
-    artifacts = [(name, item["path"], item["sha256"]) for name, item in manifest["artifacts"].items()]
+    artifacts = [(name, item["path"], item["sha256"]) for name, item in manifest["artifacts"].items()
+                 if name != "full.diff"]
     artifacts += [(item["source_path"], item["artifact_path"], item["sha256"])
                   for item in manifest["repository_instructions"]]
-    sources = [("manifest.json", str(manifest_path), payload["manifest"]["sha256"]), *artifacts]
+    sources = [("manifest.json", str(manifest_path), payload["manifest"]["sha256"]),
+               *(item for item in artifacts if item[0] != "author-report.md"),
+               *(item for item in artifacts if item[0] == "author-report.md")]
     parts = [prompt]
     size = len(prompt.encode("utf-8"))
     check_size(size, settings, "reviewer assignment")
@@ -1264,9 +1362,22 @@ def review_delivery(directory, prompt, settings):
         path = Path(source)
         if path.parent != directory or path.is_symlink() or not path.is_file():
             raise AgentBoxError("Review evidence is outside its package or missing")
+        supplemental = name == "author-report.md" and config is not None
+        from .provider_runner import RESPONSE_LIMIT
         with path.open("rb") as stream:
-            raw = stream.read(settings.text_max_bytes + 1)
-        header = f"\n----- Saved evidence: {name} ({len(raw)} UTF-8 bytes) -----\n"
+            raw = stream.read((RESPONSE_LIMIT if supplemental else settings.text_max_bytes) + 1)
+        header = (f"\n----- Supplemental notes: {name} (original {len(raw)} UTF-8 bytes) -----\n" if supplemental else
+                  f"\n----- Saved evidence: {name} ({len(raw)} UTF-8 bytes) -----\n")
+        if supplemental:
+            from .text_summary import compact
+            text, summary = compact(raw.decode("utf-8"), config, root, label="review notes",
+                                    budget=settings.text_max_bytes - size - len(header.encode("utf-8")))
+            if summary:
+                if hashlib.sha256(raw).hexdigest() != digest:
+                    raise AgentBoxError(f"Review evidence changed before delivery: {name}")
+                parts.append(header + text)
+                size += len((header + text).encode("utf-8"))
+                continue
         size += len(header.encode("utf-8")) + len(raw)
         check_size(size, settings, "reviewer assignment including evidence", lower_bound=len(raw) > settings.text_max_bytes)
         if hashlib.sha256(raw).hexdigest() != digest:
@@ -1624,9 +1735,16 @@ def delegate(args, root, adapter, config):
     if not models:
         raise AgentBoxError(f"{path} is empty, so the coordinator does this {args.role} work itself in its own "
                             f"session; configure candidates there to delegate it")
-    prompt = delegate_prompt(args.role, task, brief, repository_instructions(root), config.workflow.language,
-                             behavior_version=config.workflow.behavior_version)
+    guidance = repository_instructions(root, config.workflow)
+    fixed = delegate_prompt(args.role, task, "", guidance, config.workflow.language,
+                            behavior_version=config.workflow.behavior_version)
     from . import text_delivery
+    text_delivery.check_size(len(fixed.encode("utf-8")), config.workflow, f"{args.role} mandatory assignment")
+    from .text_summary import compact
+    brief, brief_summary = compact(brief, config, root, label="assignment notes",
+                                   budget=config.workflow.text_max_bytes - len(fixed.encode("utf-8")))
+    prompt = delegate_prompt(args.role, task, brief, guidance, config.workflow.language,
+                             behavior_version=config.workflow.behavior_version)
     text_delivery.check_size(len(prompt.encode("utf-8")), config.workflow, f"{args.role} assignment")
     text_delivery.prepare(config)
     if args.native:
@@ -1635,7 +1753,7 @@ def delegate(args, root, adapter, config):
             raise AgentBoxError("No configured native profile; use the managed delegation command")
         artifact = text_delivery.publish(prompt, config)
         return {"task": task.id, "role": args.role, "route": route, "input": artifact,
-                "message": bootstrap(args.role, artifact)}
+                "message": bootstrap(args.role, artifact), **({"summary": brief_summary} if brief_summary else {})}
     selected = candidates(config, args.role, tier)
     # A worker shares the working tree with validation; scouts only read, up to their limit.
     slot = lock(root, "work") if args.role == "worker" else scout_slot(root, config.workflow.scout.limit)
@@ -1647,14 +1765,16 @@ def delegate(args, root, adapter, config):
         raise
     reference = save_private("delegate-responses", ".md",
                              lambda target, _: atomic_write_text(target, output["report"], 0o600))
-    report = output["report"]
+    report, report_summary = compact(output["report"], config, root, label=f"{args.role} report")
     size = len(report.encode("utf-8"))
     text_delivery.check_size(size, config.workflow, f"{args.role} report (original saved)")
     artifact = text_delivery.publish(report, config) if args.output == "reference" and size > text_delivery.PAGE_BYTES else None
     return {"response": text_delivery.message(artifact) if artifact else report,
             **({"response_text": artifact} if artifact else {}), "route": output["route"],
             "failures": [diagnostic_path(item) for item in output["failures"]],
-            "usage": output["diagnostics"]["usage"], "response_path": str(private_path(reference))}
+            "usage": output["diagnostics"]["usage"], "response_path": str(private_path(reference)),
+            **({"summary": report_summary} if report_summary else {}),
+            **({"assignment_summary": brief_summary} if brief_summary else {})}
 
 
 def review(args, root, binding, adapter, config, task, parent, tasks, base, fingerprint, identity):
@@ -1688,13 +1808,14 @@ def review(args, root, binding, adapter, config, task, parent, tasks, base, fing
     limit = config.workflow.review.max_rounds
     round_id = secrets.token_urlsafe(18)
     if args.native:
+        require_review_budget(task, read_review_budget(root, binding, task, limit))
         saved = evidence(root, task, fingerprint, base)
         try:
             prompt = reviewer_handoff(root, base, task, parent, tasks, brief, saved, review_context, round_id,
                                       config.workflow.language, behavior_version=config.workflow.behavior_version,
-                                      text_settings=config.workflow)
+                                      text_settings=config.workflow, text_config=config)
             descriptor = review_descriptor(identity, task, fingerprint, round_id)
-            bind_delegation_input(root, descriptor, prompt)
+            bind_delegation_input(root, descriptor, prompt, local_evidence=True)
             from .text_delivery import publish
             artifact = publish(prompt, config)
             budget = start_review(root, binding, task, limit, round_id, fingerprint, "native")
@@ -1721,6 +1842,7 @@ def review(args, root, binding, adapter, config, task, parent, tasks, base, fing
     if authors_missing(config, authors):
         raise AgentBoxError(f"workflow.review.other_vendor_first orders reviewers by the code's authors; "
                             f"rerun workflow review {task.id} {AUTHOR_FORM}")
+    require_review_budget(task, read_review_budget(root, binding, task, limit))
     selected, preflight_failures = managed_review_route(candidates(config, "reviewer", tier, authors=authors or ()))
     output = None
     repository = repository_key(root)
@@ -1740,9 +1862,9 @@ def review(args, root, binding, adapter, config, task, parent, tasks, base, fing
             saved = evidence(root, task, fingerprint, base)
             prompt = reviewer_handoff(root, base, task, parent, tasks, brief, saved, review_context, round_id,
                                       config.workflow.language, behavior_version=config.workflow.behavior_version,
-                                      text_settings=config.workflow)
+                                      text_settings=config.workflow, text_config=config)
             descriptor = review_descriptor(identity, task, fingerprint, round_id)
-            bind_delegation_input(root, descriptor, prompt)
+            bind_delegation_input(root, descriptor, prompt, local_evidence=True)
             delivered = read_delegation_input(root, descriptor)
             start_review(root, binding, task, limit, round_id, fingerprint, "managed")
             try:
@@ -1942,11 +2064,13 @@ def main(argv):
         result = dispatch(args)
         if args.command == "sync" and isinstance(result.get("report"), str):
             from . import text_delivery
-            from .plan_sync import checked_result
+            from .plan_sync import checked_result, native_result
             config = effective_config()
             report = result["report"]
-            checked_result(result, config)
-            if args.output == "reference" and len(report.encode("utf-8")) > text_delivery.PAGE_BYTES:
+            result = checked_result(result, config)
+            report = result["report"]
+            if (not native_result(result) and args.output == "reference"
+                    and len(report.encode("utf-8")) > text_delivery.PAGE_BYTES):
                 artifact = text_delivery.publish(report, config)
                 result = {**result, "report": text_delivery.message(artifact), "report_text": artifact}
         if args.command == "delegate" and not args.native:

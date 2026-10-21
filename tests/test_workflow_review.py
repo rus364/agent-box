@@ -275,8 +275,10 @@ class ReviewWorkflowTests(WorkflowCase):
         self.assertIn("Changes and reasons", Path(manifest["artifacts"]["author-report.md"]["path"]).read_text())
         for absent in (finding, "report_schema"):
             self.assertNotIn(absent, prompt)
-        for included in ("Current goal", "Previous verdict", "Changes and reasons", "diff --git", "+value = 2"):
+        for included in ("Current goal", "Previous verdict", "Changes and reasons"):
             self.assertIn(included, prompt)
+        self.assertNotIn("+value = 2", prompt)
+        self.assertIn("+value = 2", Path(manifest["artifacts"]["full.diff"]["path"]).read_text())
         for present in (gw.head_sha(self.root), "diff_range", "untrusted English brief", "counterexamples",
                         'ask "then what?"', "discard the finding", "Prefer leaving correct code unchanged.",
                         "Verdict: PASS", "[SEVERITY] path:line", "CRITICAL —", "LOW —",
@@ -628,21 +630,21 @@ class ReviewerInputTests(unittest.TestCase):
             (root / "AGENTS.md").write_text("Mandatory review rule.\n")
             task = Task("1", "1", "Review", description="## Goal\nReview it.\n")
             evidence_path = workflow.review_evidence_path(root, task.id, "unreadable-instruction")
-            original_read_text = Path.read_text
+            original_open = Path.open
 
             def fail_instruction_read(path, *args, **kwargs):
                 if path == root / "AGENTS.md":
                     raise OSError("synthetic read failure")
-                return original_read_text(path, *args, **kwargs)
+                return original_open(path, *args, **kwargs)
 
-            with patch.object(Path, "read_text", new=fail_instruction_read), \
+            with patch.object(Path, "open", new=fail_instruction_read), \
                  self.assertRaisesRegex(AgentBoxError, "Cannot read repository instruction AGENTS.md"):
                 workflow.reviewer_handoff(root, "main", task, task, [task], "Validation: not run.", {}, "",
                                           "unreadable-instruction", behavior_version="v2", text_settings=WorkflowConfig(text_max_bytes=1048576))
             self.assertFalse(evidence_path.exists())
 
-    def test_reviewer_handoff_preserves_original_evidence_and_delivers_one_complete_snapshot(self):
-        """Native pages and managed stdin carry the same sources; originals remain for review acceptance."""
+    def test_reviewer_handoff_carries_requirements_and_keeps_diff_available_on_demand(self):
+        """A growing diff must not inflate every reviewer's initial context."""
         with tempfile.TemporaryDirectory() as directory:
             root = repository(directory)
             gw.git(root, "switch", "-c", "ab/1-review")
@@ -678,15 +680,15 @@ class ReviewerInputTests(unittest.TestCase):
             self.assertEqual(small_payload["boundaries"]["head_commit"], gw.head_sha(root))
             self.assertIn("large.py", (manifest_path.parent / "changed-paths.txt").read_text())
             self.assertRegex(small_payload["change_summary"], "files? changed")
-            for included in (instruction_marker, diff_marker, "diff --git"):
-                self.assertIn(included, small)
+            self.assertIn(instruction_marker, small)
+            self.assertNotIn(diff_marker, small)
 
             (root / "large.py").write_text((diff_marker + "\n") * 12000)
             gw.git(root, "add", "large.py")
             gw.git(root, "commit", "-m", "large review fixture")
             large = workflow.reviewer_handoff(root, "main", task, task, [task], brief, {}, "", "large", behavior_version="v2", text_settings=WorkflowConfig(text_max_bytes=1048576))
-            self.assertIn(diff_marker, large)
-            self.assertGreater(len(large) - len(small), 100000)
+            self.assertNotIn(diff_marker, large)
+            self.assertLess(abs(len(large) - len(small)), 1000)
             large_manifest, _ = package(payload_of(large))
             large_path = Path(large_manifest["artifacts"]["full.diff"]["path"])
             self.assertGreater(len(large_path.read_text()), 100000)

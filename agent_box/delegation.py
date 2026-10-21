@@ -17,6 +17,7 @@ def reviewer_instructions():
         "tracker comments or previous-agent history. The supplied task descriptions satisfy the "
         "repository instruction to read the tracked task; do not query its history. "
         "Read AGENTS.md or CLAUDE.md in directories you touch and files they import with @path. "
+        "Supplied instruction snapshots satisfy those reads; load additional scoped instructions when needed. "
         "Read every chunk; report missing, unreadable or truncated instructions explicitly. "
         "Read-only: change nothing. Read referenced repository sections; distinguish verified consequences from uncertainty. " + REPORT_FORMAT
     )
@@ -57,7 +58,8 @@ def delegate_rules(role):
     """What a worker or scout may do, shared by managed prompts and native profiles."""
     text = (f"Act only as the assigned {role}. Use English. " + COORDINATOR_OWNS +
             "Do not launch other agents. Read AGENTS.md or CLAUDE.md in directories you touch and files they "
-            "import with @path. ")
+            "import with @path. Supplied instruction snapshots satisfy those reads. "
+            "Inspect relevant source/diff ranges when needed; no diff belongs in an initial assignment. ")
     if role == "worker":
         text += ("Read the task’s reference documents before implementation; report missing sections or conflicting requirements. ")
         text += ("Write new or changed code comments, docstrings and documentation in the assignment's Working language "

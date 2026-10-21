@@ -3,9 +3,10 @@ import contextlib
 import io
 import json
 from pathlib import Path
+import re
 from unittest.mock import patch
 
-from agent_box import plan_sync, provider_runner, text_delivery, workflow
+from agent_box import plan_sync, provider_runner, text_delivery, text_summary, workflow
 from agent_box.errors import AgentBoxError
 from test_text_delivery import delivered_bytes
 from workflow_fixtures import BINDING, WorkflowCase, answer, candidate
@@ -44,7 +45,9 @@ class WorkflowTextDeliveryTests(WorkflowCase):
         """Individually acceptable evidence files can exceed the combined delivery budget."""
         self.config.workflow.text_max_bytes = 16000
         self.task.description = "T" * 9000
-        self.review_brief.write_text("B" * 9000)
+        (self.root / "AGENTS.md").write_text("B" * 9000)
+        workflow.gw.git(self.root, "add", ".")
+        workflow.gw.git(self.root, "commit", "-m", "required instructions")
         with patch.object(workflow, "run") as run:
             with self.assertRaisesRegex(AgentBoxError, "including evidence"):
                 self.native_round("--brief", str(self.review_brief))
@@ -71,10 +74,11 @@ class WorkflowTextDeliveryTests(WorkflowCase):
     def test_refused_managed_reports_are_saved_without_inline_prefix_or_readable_locator(self):
         """Refusing consumption must preserve diagnostics without rerunning the paid provider."""
         report = "SENSITIVE_REPORT_PREFIX" + "x" * 65536
+        self.config.workflow.scout.models = []
         for mode in ("inline", "reference"):
             with patch.object(workflow, "run", return_value=report) as run, \
                     contextlib.redirect_stdout(io.StringIO()) as stdout, contextlib.redirect_stderr(io.StringIO()):
-                code = workflow.main(["delegate", "1", "--role", "scout", "--brief", str(self.review_brief),
+                code = workflow.main(["delegate", "1", "--role", "worker", "--brief", str(self.review_brief),
                                       "--output", mode])
             self.assertEqual(code, 2)
             self.assertIn("TEXT_LIMIT_EXCEEDED", stdout.getvalue())
@@ -98,8 +102,9 @@ class WorkflowTextDeliveryTests(WorkflowCase):
     def test_managed_review_refusal_survives_result_lookup_without_destroying_the_receipt(self):
         """A fresh result and a recovery lookup must enforce the same consumption boundary."""
         report = "Verdict: PASS\n" + "x" * 65536
+        self.config.workflow.scout.models = []
         with patch.object(workflow, "run", return_value=answer(report)):
-            with self.assertRaisesRegex(AgentBoxError, "reviewer report.*original saved"):
+            with self.assertRaisesRegex(AgentBoxError, "TEXT_LIMIT_EXCEEDED.*reviewer report"):
                 self.run_workflow("review", "1")
         state = workflow.read_review_state(self.root, BINDING, self.task)
         self.assertEqual(state["used"], 1)
@@ -123,6 +128,7 @@ class WorkflowTextDeliveryTests(WorkflowCase):
         self.assertEqual(delivered_bytes(result["report_text"]), report.encode())
         self.assertEqual(plan_sync.last_result(self.root, self.task)["report"], report)
         oversized = "x" * 65536 + "\nSync: UPDATED\n"
+        self.config.workflow.scout.models = []
         with patch.object(workflow, "run", return_value=oversized):
             with self.assertRaisesRegex(AgentBoxError, "task writes may have completed.*TEXT_LIMIT_EXCEEDED"):
                 self.run_workflow("sync", "1")
@@ -131,3 +137,217 @@ class WorkflowTextDeliveryTests(WorkflowCase):
         self.assertEqual(saved["report"], oversized)
         with self.assertRaisesRegex(AgentBoxError, "TEXT_LIMIT_EXCEEDED"):
             self.run_workflow("inspect", "1")
+
+    def test_native_sync_answer_remains_direct_and_inspectable_above_the_managed_limit(self):
+        """Recording an already delivered native answer must not turn success into an overflow."""
+        report = "x" * 65536 + "\nSync: UPDATED\n"
+        self.run_workflow("sync", "1", "--native")
+        answer_file = self.root.parent / "sync-answer.md"
+        answer_file.write_text(report)
+        with contextlib.redirect_stdout(io.StringIO()) as stdout:
+            code = workflow.main(["sync", "1", "--result", str(answer_file), "--output", "reference"])
+        self.assertEqual(code, 0)
+        result = json.loads(stdout.getvalue())
+        self.assertEqual(result["report"], report)
+        self.assertNotIn("report_text", result)
+        for legacy in (False, True):
+            if legacy:
+                result.pop("backend")
+                plan_sync.save(self.root, self.task, result)
+            self.assertEqual(self.run_workflow("inspect", "1")["plan_sync"]["last_result"]["report"], report)
+
+    def test_large_diff_is_never_injected_into_any_native_or_managed_role_assignment(self):
+        """Agents choose source/diff ranges themselves; even an enormous diff needs only compact context."""
+        marker = "DIFF_CONTENT_MUST_STAY_OUT_OF_ASSIGNMENTS"
+        (self.root / "change.txt").write_text((marker + "\n") * 10000)
+        workflow.gw.git(self.root, "add", ".")
+        workflow.gw.git(self.root, "commit", "-m", "large separate diff")
+        commands = [("delegate", "1", "--role", role, "--brief", str(self.review_brief))
+                    for role in ("worker", "scout")] + [("review", "1"), ("sync", "1")]
+        for command in commands:
+            with self.subTest(command=command):
+                native = self.run_workflow(*command, "--native")
+                prompt = delivered_bytes(native["input"]).decode()
+                self.assertNotIn(marker, prompt)
+                self.assertLess(len(prompt.encode()), 65536)
+                if command[0] == "review":
+                    payload = json.JSONDecoder().raw_decode(prompt.split("Delegation handoff:\n", 1)[1])[0]
+                    manifest = json.loads(Path(payload["manifest"]["path"]).read_text())
+                    self.assertIn(marker, Path(manifest["artifacts"]["full.diff"]["path"]).read_text())
+                    self.native_result()
+                elif command[0] == "sync":
+                    self.report.write_text("No drift.\nSync: UNCHANGED\n")
+                    self.run_workflow("sync", "1", "--result", str(self.report))
+                report = answer() if command[0] == "review" else "Done\nSync: UNCHANGED\n"
+                with patch.object(workflow, "run", return_value=report) as run:
+                    self.run_workflow(*command)
+                run.assert_called_once()
+                self.assertNotIn(marker, run.call_args.args[3])
+
+    def test_mandatory_nested_instruction_imports_refuse_all_routes_before_paid_work(self):
+        """Moving an instruction into an unchanged imported file cannot evade the aggregate input limit."""
+        (self.root / "docs").mkdir()
+        (self.root / "AGENTS.md").write_text("@docs/policy.md\n")
+        (self.root / "docs/policy.md").write_text("@large.md\n")
+        (self.root / "docs/large.md").write_text("x" * 65536)
+        workflow.gw.git(self.root, "add", ".")
+        workflow.gw.git(self.root, "commit", "-m", "mandatory imported instructions")
+        for command in (("delegate", "1", "--role", "worker", "--brief", str(self.review_brief)),
+                        ("delegate", "1", "--role", "scout", "--brief", str(self.review_brief)),
+                        ("review", "1"), ("sync", "1")):
+            for flags in ((), ("--native",)):
+                with self.subTest(command=command, flags=flags), patch.object(workflow, "run") as run:
+                    with self.assertRaisesRegex(AgentBoxError, "TEXT_LIMIT_EXCEEDED.*including imports"):
+                        self.run_workflow(*command, *flags)
+                    run.assert_not_called()
+        self.assertFalse(list(text_delivery.WORKFLOW_TEXTS.glob("*/page-*.txt")))
+        self.assertFalse(workflow.read_review_state(self.root, BINDING, self.task).get("pending"))
+
+    def test_separate_diff_evidence_stays_bound_to_the_review_round(self):
+        """Keeping diff out of the prompt must not allow altered evidence to accept the original head."""
+        opened = self.native_round()
+        prompt = delivered_bytes(opened["input"]).decode()
+        payload = json.JSONDecoder().raw_decode(prompt.split("Delegation handoff:\n", 1)[1])[0]
+        manifest = json.loads(Path(payload["manifest"]["path"]).read_text())
+        source = Path(manifest["artifacts"]["full.diff"]["path"])
+        source.chmod(0o600)
+        source.write_text("Changed after dispatch")
+        source.chmod(0o400)
+        with self.assertRaisesRegex(AgentBoxError, "Review evidence changed"):
+            self.native_result()
+        self.assertNotIn("review", workflow.read_evidence(self.root, self.task))
+
+    def test_instruction_imports_preserve_bytes_skip_examples_and_bound_cycles_and_depth(self):
+        """Only actual imports add mandatory context; aliases and examples cannot duplicate or invent it."""
+        (self.root / "docs").mkdir()
+        policy = self.root / "docs/policy file.md"
+        raw = "日本語 policy\r\n@../AGENTS.md\r\n".encode()
+        policy.write_bytes(raw)
+        (self.root / "AGENTS.md").write_text(
+            "@docs/policy\\ file.md\n`@missing-inline.md`\n```text\n@missing-fence.md\n```\n")
+        (self.root / "CLAUDE.md").write_text("@AGENTS.md\n")
+        workflow.gw.git(self.root, "add", ".")
+        workflow.gw.git(self.root, "commit", "-m", "imported instruction fixture")
+        evidence = workflow.repository_instruction_evidence(self.root, self.config.workflow)
+        self.assertEqual(dict(evidence)["docs/policy file.md"].encode(), raw)
+        self.assertEqual(len(evidence), 3)
+        opened = self.native_round()
+        prompt = delivered_bytes(opened["input"]).decode()
+        self.assertIn(raw.decode(), prompt)
+        self.native_result()
+        for index in range(6):
+            (self.root / f"chain{index}.md").write_text(f"@chain{index + 1}.md\n" if index < 5 else "end")
+        (self.root / "AGENTS.md").write_text("@chain0.md\n")
+        with self.assertRaisesRegex(AgentBoxError, "four hops"):
+            workflow.repository_instruction_evidence(self.root, self.config.workflow)
+        (self.root / "AGENTS.md").write_text("@missing.md\n")
+        with self.assertRaisesRegex(AgentBoxError, "missing"):
+            workflow.repository_instruction_evidence(self.root, self.config.workflow)
+        (self.root / "missing.md").symlink_to(policy)
+        with self.assertRaisesRegex(AgentBoxError, "symlinked"):
+            workflow.repository_instruction_evidence(self.root, self.config.workflow)
+
+    def test_scout_compacts_only_notes_and_preserves_native_managed_assignment_parity(self):
+        """Large supplemental notes must not replace authoritative requirements or leak into the target prompt."""
+        source = "Long supplemental notes. " * 4000
+        self.review_brief.write_text(source)
+        paths = []
+        def summarize(route, role, root, prompt, **kwargs):
+            self.assertEqual(role, "scout")
+            first = Path(json.loads(re.search(r'starting at ("[^"]+")', prompt)[1]))
+            paths.append(first.parent)
+            artifact = {"path": str(first), "id": first.parent.name, "bytes": len(source.strip().encode()),
+                        "pages": len(list(first.parent.glob("page-*.txt")))}
+            self.assertEqual(delivered_bytes(artifact), source.strip().encode())
+            self.assertNotIn(source.strip(), prompt)
+            return "Scope: verify the documented boundary."
+        with patch.object(workflow, "run", side_effect=summarize):
+            native = self.run_workflow("delegate", "1", "--role", "worker", "--brief", str(self.review_brief), "--native")
+        native_prompt = delivered_bytes(native["input"]).decode()
+        self.assertIn(self.task.description, native_prompt)
+        self.assertIn("Scout summary", native_prompt)
+        def managed(route, role, root, prompt, **kwargs):
+            if role == "scout":
+                return summarize(route, role, root, prompt, **kwargs)
+            self.assertEqual(prompt, native_prompt)
+            return "Done"
+        with patch.object(workflow, "run", side_effect=managed) as run:
+            self.run_workflow("delegate", "1", "--role", "worker", "--brief", str(self.review_brief))
+        self.assertEqual(run.call_count, 2)
+        self.assertTrue(all(not path.exists() for path in paths))
+        self.assertEqual(self.review_brief.read_text(), source)
+
+    def test_report_summaries_keep_originals_and_recovery_reads_do_not_call_models(self):
+        """A paid summary is saved once; review identity and Plan sync outcome still come from the original."""
+        finding = "- [HIGH] change.py:1 — Preserve the boundary."
+        report = "Verdict: NEEDS_WORK\n" + finding + "\n" + "x" * 70000
+        summary = "Verdict: NEEDS_WORK\n" + finding + "\nConfirmed by source inspection."
+        with patch.object(workflow, "run", side_effect=[answer(report), summary]) as run:
+            result = self.run_workflow("review", "1")
+        self.assertEqual(run.call_count, 2)
+        self.assertEqual(result["verdict"], "NEEDS_WORK")
+        self.assertIn(finding, result["report"])
+        self.assertEqual(json.loads(Path(result["result_path"]).read_text())["output"]["report"]["text"], report)
+        with patch.object(workflow, "run") as run:
+            repeated = self.run_workflow("review-result", "1")
+        run.assert_not_called()
+        self.assertEqual(repeated["report"], result["report"])
+        raw_sync = "x" * 70000 + "\nSync: UPDATED\n"
+        with patch.object(workflow, "run", side_effect=[raw_sync, "Saved corrections.\nSync: UPDATED\n"]):
+            result = self.run_workflow("sync", "1")
+        self.assertEqual(plan_sync.last_result(self.root, self.task)["report"], raw_sync)
+        self.assertIn("Scout summary", result["report"])
+        self.assertNotIn("report_delivery", result)
+        with patch.object(workflow, "run") as run:
+            self.assertEqual(self.run_workflow("inspect", "1")["plan_sync"]["last_result"]["report"], result["report"])
+        run.assert_not_called()
+
+    def test_summary_failure_never_recurses_or_weakens_required_outcomes(self):
+        """An invalid or oversized scout answer stops once, keeping the original available to its owner."""
+        source = "x" * 70000 + "\nSync: UPDATED\n"
+        for answer_text in ("Sync: UNCHANGED", "x" * 70000, ""):
+            with self.subTest(answer=answer_text[:30]), patch.object(workflow, "run", return_value=answer_text) as run:
+                with self.assertRaisesRegex(AgentBoxError, "TEXT_SUMMARY_FAILED"):
+                    text_summary.compact(source, self.config, self.root, label="fixture", protected=["Sync: UPDATED"])
+                run.assert_called_once()
+
+    def test_exhausted_review_budget_never_spends_a_scout_call_on_preparation(self):
+        """Preparing a summary cannot spend provider budget when the target round is already forbidden."""
+        workflow.save_review_state(self.root, BINDING, self.task, {"used": self.config.workflow.review.max_rounds})
+        self.review_brief.write_text("x" * 70000)
+        for flags in ((), ("--native",)):
+            with self.subTest(flags=flags), patch.object(workflow, "run") as run:
+                with self.assertRaisesRegex(AgentBoxError, "Review attempt budget exhausted"):
+                    self.run_workflow("review", "1", "--brief", str(self.review_brief), *flags)
+                run.assert_not_called()
+
+    def test_summary_source_bound_and_role_behavior_apply_before_provider_work(self):
+        """The cheap route has a finite source bound and receives this project's selected scout behavior."""
+        with patch.object(workflow, "run") as run:
+            with self.assertRaisesRegex(AgentBoxError, "scout input bound"):
+                text_summary.compact("x" * (provider_runner.RESPONSE_LIMIT + 1), self.config, self.root, label="fixture")
+        run.assert_not_called()
+        for version in ("v1", "v2"):
+            self.config.workflow.behavior_version = version
+            with patch.object(workflow, "run", return_value="Short verified summary.") as run:
+                text_summary.compact("x" * 70000, self.config, self.root, label="fixture")
+            self.assertIn(f"Workflow behavior: {version} (scout)", run.call_args.args[3])
+
+    def test_failed_sync_summary_keeps_reconciliation_retryable_and_preserves_malformed_original(self):
+        """Recovery must survive a failed delivery without losing evidence or repeating tracker writes."""
+        original = "x" * 70000
+        with patch.object(workflow, "run", return_value=original):
+            with self.assertRaisesRegex(AgentBoxError, "no single outcome"):
+                self.run_workflow("sync", "1")
+        self.report.write_text("Reread affected tasks; all required changes were saved.\nSync: UPDATED\n")
+        with patch.object(workflow, "run", return_value=""):
+            with self.assertRaisesRegex(AgentBoxError, "reconciliation evidence saved"):
+                self.run_workflow("sync", "1", "--reconcile", str(self.report))
+        saved = plan_sync.last_result(self.root, self.task)
+        self.assertEqual((saved["status"], saved["report"]), ("ERROR", original))
+        self.assertEqual(saved["reconciliation"]["report"], self.report.read_text())
+        with patch.object(workflow, "run", return_value="The original contained no outcome marker.") as run:
+            result = self.run_workflow("sync", "1", "--reconcile", str(self.report))
+        run.assert_called_once()
+        self.assertEqual(result["status"], "UPDATED")
+        self.assertEqual(plan_sync.last_result(self.root, self.task)["report"], original)

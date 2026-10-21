@@ -29,17 +29,22 @@ runtimes require explicit stop/relaunch to adopt it.
 ## Direct upgrades
 
 The unreleased text-delivery guard changes published workflow behavior: assignments
-and captured managed reports above 262,144 UTF-8 bytes now fail before consumption.
-It therefore requires the next **major** package release, even though the new
-settings and commands are additive. Before upgrading a workflow that needs larger
-deliveries, deliberately set a positive global `workflow.text_max_bytes`, or reduce
-the assignment's scope. Missing settings adopt 262,144 bytes and
+and managed report deliveries default to 65,536 UTF-8 bytes. Oversized supplemental
+notes/reports add one managed run on the configured scout route and return a labelled
+summary; originals remain saved. Authoritative requirements are never summarized.
+Missing scout configuration, an invalid summary or unresolved overflow fails delivery.
+This requires the next **major** package release, even though the settings and commands
+are additive. Before upgrading, choose your scout route and a deliberate positive
+global `workflow.text_max_bytes`, or reduce assignment scope. Missing settings adopt 65,536 bytes and
 `workflow.text_retention_days=7`. Both remain global-only; explicit values survive
 direct upgrades from every published configuration. No saved representation changes,
 intermediate release or schema migration is needed. Temporary texts use a new private
 versioned format; unknown formats survive cleanup and are refused for lookup.
-Successful default output fields retain their meanings; `--output reference` is an
-explicit output mode. Running immutable sessions require stop/relaunch to use the
+Small successful outputs retain their fields and meanings. Oversized `response`/`report`
+text may be a labelled summary with additional `summary` metadata; original paths,
+review verdicts/findings and Plan sync status keep their meanings. Read-only lookups
+reuse saved summaries without model calls. `--output reference` remains an explicit
+paging mode. Running immutable sessions require stop/relaunch to use the
 new helper and shared mount. See [text delivery](integrations/workflow.md#text-delivery).
 
 `workflow behavior` was introduced after published v3.0.2. Its now-required `--role`

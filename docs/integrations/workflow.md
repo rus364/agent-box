@@ -259,7 +259,7 @@ expected. A cleanup failure never undoes the merge or Done.
 | `workflow.use_tiers` | off | Let task tiers select model lists |
 | `workflow.language` | — | [Working language](../configuration.md#the-configuration-menu) of tracker, GitHub, commit and repository text |
 | `workflow.timeout_seconds` | 3600 | Limit for each managed run |
-| `workflow.text_max_bytes` | 262144 | Total UTF-8 bytes per complete delivery (global only) |
+| `workflow.text_max_bytes` | 65536 | Total UTF-8 bytes per complete delivery (global only) |
 | `workflow.text_retention_days` | 7 | Creation-time expiry of temporary texts (global only) |
 | `workflow.scout.limit` | 3 | Parallel scouts |
 | `workflow.review.policy` | `auto` | `off`, `auto`, `always` |
@@ -315,28 +315,55 @@ that a model complied with these instructions.
 `--output reference` keeps reports of at most 4,096 bytes inline. For larger reports
 within the total limit it replaces the `response` (delegate) or `report` (sync) text
 with a reading instruction and adds `response_text` or `report_text` locator metadata.
-The default `inline` mode and other successful fields retain their meanings.
+When the original exceeded the total limit, these pages contain the labelled scout summary.
+Small reports retain the existing `inline` behavior; a summarized report adds `summary` metadata.
 Delegate CLI stdout remains the answer/instruction; metadata stays on stderr.
 Managed stdout/final-file capture and the saved original are unchanged. Managed
 review results also add `report_text` pages above 4,096 bytes; `result_path` keeps
 its original receipt meaning. Read the pages for the report instead of the raw receipt.
 
-**Total-size refusal.** Workflow → Delegation has positive global-only settings
-`text_max_bytes` (262,144) and `text_retention_days` (7). The byte limit covers each
-complete agent-box-controlled logical delivery: stored text, assembled assignment
-including mandatory referenced review evidence, or captured managed report. Pages,
-references and provider fallback do not reset it. Input is checked before native
-publication or managed launch; captured output is checked before offering it to its
-consumer and retained privately on refusal. Streaming writes read at most limit+1
-bytes; their error can report a lower bound. GitHub review has its existing separate
-remote size refusal and never receives local paths.
+**Input size and summaries.** Workflow → Delegation has positive global-only
+settings `text_max_bytes` (65,536) and `text_retention_days` (7). The limit covers
+stored texts, complete role assignments and managed report deliveries. Required
+task text, selected behavior and repository instructions remain exact. Root
+AGENTS.md/CLAUDE.md imports are collected recursively, counted once and checked
+before launch; missing, symlinked or more than four-hop imports fail explicitly.
+Markdown code spans/blocks are examples, not imports.
 
-`TEXT_LIMIT_EXCEEDED` names the route, observed bytes, configured limit and setting.
-Stop that delivery and tell the coordinator, who must notify the user in their
-language. Continuing requires the user's deliberate choice to raise the limit or
-reduce scope. Never truncate, silently increase the setting or split one refused
-text across IDs to feed it anyway. The new default refusal requires a major release;
-see [upgrade guidance](../compatibility.md#direct-upgrades).
+No role receives a diff in its initial assignment. Reviewers get requirements,
+commit boundaries and changed paths. Saved `full.diff` remains separate evidence:
+use Git for selected paths when shell is available, or Grep plus bounded Read
+ranges in that file. Source/diff inspection is chosen during work; it is outside
+the initial assignment budget and is never replaced with a summary.
+
+Oversized supplemental notes and captured managed reports get one summary using
+`workflow.scout.models` and its existing ordered fallback route. This synchronous
+step uses managed execution, including when preparing a native target assignment.
+Only the scout may read the oversized source, through temporary bounded pages;
+its source is capped at the existing 4 MiB managed-response bound. Its own short
+assignment and final summary obey the normal delivery limit. No recursive summary
+or automatic limit increase is allowed. Empty scout configuration, provider failure,
+an oversized/invalid summary or oversized authoritative input stops delivery.
+
+A summary is explicitly labelled and carries source size/hash, route and usage
+metadata where returned. Captured originals keep their existing storage/receipt
+meaning. Review verdict and finding bullets and Plan sync outcome lines are
+preserved; acceptance/status is derived from the original. Summary accuracy still
+needs judgment: use the original's relevant sections when verifying a claim.
+Saved summaries are reused by inspect/result reads without paid calls. Explicit
+review reconciliation may create a missing summary once; it never reruns the reviewer.
+Native final answers remain direct and are exempt from this report guard.
+
+`text write` always preserves exact UTF-8 and refuses excess input; it never calls
+a model. Streaming writes read at most limit+1 bytes, so the error may report a
+lower bound. Page references and provider fallback do not reset a delivery budget.
+GitHub review keeps its separate remote size refusal and never receives local paths.
+
+`TEXT_LIMIT_EXCEEDED` or `TEXT_SUMMARY_FAILED` stops the affected delivery. Tell the
+user what could not proceed; preserve originals and never truncate, silently raise
+the setting or split a refused delivery across IDs. An unresolved failure needs the
+user's deliberate limit/scope decision. These changed defaults and possible scout
+calls require a major release; see [upgrade guidance](../compatibility.md#direct-upgrades).
 
 **Retention and limits of enforcement.** Expiry is fixed at publication; setting
 changes affect new records. Writes and coordinator preparation silently prune expired

@@ -80,14 +80,63 @@ def decision(root, task, settings, event):
     return bool(matched), "changed path matched" if matched else "no changed path matched"
 
 
+def native_result(result):
+    """Older native records have a profile route, while managed routes name a provider."""
+    return bool(result and (result.get("backend") == "native"
+                            or result.get("route", {}).get("native")))
+
+
 def checked_result(result, config):
     """Status and recovery commands must not redisclose a previously refused report."""
-    if result and isinstance(result.get("report"), str):
+    if result and not native_result(result) and isinstance(result.get("report"), str):
         from .text_delivery import check_size
+        result = dict(result)
+        if delivery := result.pop("report_delivery", None):
+            result.update(report=delivery["text"], summary=delivery["summary"])
+        if result.get("reconciliation"):
+            result["reconciliation"] = dict(result["reconciliation"])
+            if delivery := result["reconciliation"].pop("report_delivery", None):
+                result["reconciliation"].update(report=delivery["text"], summary=delivery["summary"])
         size = len(result["report"].encode("utf-8"))
         size += len(result.get("reconciliation", {}).get("report", "").encode("utf-8"))
         check_size(size, config.workflow, "sync report (original saved)")
     return result
+
+
+def prepare_report(root, config, result, *, reconciliation=False):
+    """Only explicit completion/reconciliation may pay for a summary; reads reuse it."""
+    if native_result(result):
+        return
+    from .text_summary import compact
+    target = result["reconciliation"] if reconciliation else result
+    budget = config.workflow.text_max_bytes
+    if reconciliation:
+        previous = result.get("report_delivery", {}).get("text", result.get("report", ""))
+        budget -= len(previous.encode("utf-8"))
+    report = target.get("report", "")
+    delivery = target.get("report_delivery")
+    if (delivery and delivery["summary"]["source_sha256"] == hashlib.sha256(report.encode("utf-8")).hexdigest()
+            and len(delivery["text"].encode("utf-8")) <= budget):
+        return
+    protected = [line for line in report.splitlines() if re.fullmatch(r"(?:\*\*)?Sync: \w+(?:\*\*)?[ \t]*", line)]
+    text, summary = compact(report, config, root, label="Plan sync report", budget=budget, protected=protected)
+    if summary:
+        summary_outcomes = [line for line in text.splitlines()
+                            if re.fullmatch(r"(?:\*\*)?Sync: \w+(?:\*\*)?[ \t]*", line)]
+        if summary_outcomes != protected:
+            raise AgentBoxError("TEXT_SUMMARY_FAILED: Plan sync summary changed outcome lines; original retained")
+        try:
+            original_outcome = outcome(report, reconciliation=reconciliation)
+        except AgentBoxError:
+            # A malformed original is itself a recovery case; the new reconciliation owns the outcome.
+            original_outcome = None
+        if original_outcome:
+            try:
+                if outcome(text, reconciliation=reconciliation) != original_outcome:
+                    raise AgentBoxError("outcome differs")
+            except AgentBoxError as exc:
+                raise AgentBoxError(f"TEXT_SUMMARY_FAILED: Plan sync summary changed its outcome; original retained: {exc}") from None
+        target["report_delivery"] = {"text": text, "summary": summary}
 
 
 def describe(root, task, config):
@@ -159,7 +208,16 @@ def run(root, binding, adapter, config, task, event="manual", *, native=False, r
             result["reconciliation"] = {"previous_status": result["status"], "report": report}
             result["status"] = status
             save(root, task, result)
-            return result
+            try:
+                prepare_report(root, config, result)
+                save(root, task, result)
+                prepare_report(root, config, result, reconciliation=True)
+            except (AgentBoxError, OSError) as exc:
+                result.update(status="ERROR", reason=str(exc))
+                save(root, task, result)
+                raise AgentBoxError(f"Plan sync delivery failed; reconciliation evidence saved: {exc}") from None
+            save(root, task, result)
+            return checked_result(result, config)
     if result_file is not None:
         with lock(root, "work"):
             result = last_result(root, task)
@@ -167,6 +225,7 @@ def run(root, binding, adapter, config, task, event="manual", *, native=False, r
                 raise AgentBoxError("No pending native Plan sync assignment")
             if result["head"] != workflow.gw.head_sha(root):
                 raise AgentBoxError("Repository head changed during Plan sync; inspect tasks before retrying")
+            result["backend"] = "native"
             return complete(root, task, result, Path(result_file).read_text())
     required, reason = decision(root, task, settings, event)
     if not required:
@@ -184,6 +243,9 @@ def run(root, binding, adapter, config, task, event="manual", *, native=False, r
               f"References: {str(settings.references).lower()}\n")
     from .workflow_behavior import instructions
     prompt += instructions(config.workflow.behavior_version, "sync")
+    guidance = workflow.repository_instructions(root, config.workflow)
+    if guidance:
+        prompt += f"\nRepository instructions (including imports; already supplied):\n{guidance}\n"
     if config.workflow.language:
         # The rules are also the native profile shared by every repository; only the value is this one's.
         prompt += f"Working language: {config.workflow.language}\n"
@@ -198,7 +260,8 @@ def run(root, binding, adapter, config, task, event="manual", *, native=False, r
         if prior and prior.get("status") in PENDING:
             raise AgentBoxError(f"Plan sync {prior['status']}; stop/await its executor and inspect live tasks, "
                                 f"then workflow sync {task.id} --reconcile FILE before retrying")
-        result = {"task": task.id, "event": event, "head": workflow.gw.head_sha(root), "status": "RUNNING"}
+        result = {"task": task.id, "event": event, "head": workflow.gw.head_sha(root), "status": "RUNNING",
+                  "backend": "native" if native else "managed"}
         if native:
             route = workflow.execution(config, "sync", tier, task.id)
             if not route.get("native"):
@@ -215,10 +278,10 @@ def run(root, binding, adapter, config, task, event="manual", *, native=False, r
             report = output["report"]
             result.update(route=output["route"], usage=output["diagnostics"]["usage"])
             complete(root, task, result, report)
-            text_delivery.check_size(len(report.encode("utf-8")), config.workflow, "sync report (original saved)")
+            prepare_report(root, config, result)
         except (AgentBoxError, OSError) as exc:
             result.update(status="ERROR", reason=str(exc))
             save(root, task, result)
             raise AgentBoxError(f"Plan sync failed; task writes may have completed. Inspect tasks before retrying: {exc}") from None
         save(root, task, result)
-        return result
+        return checked_result(result, config)
