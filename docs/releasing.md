@@ -62,6 +62,11 @@ update their pins together.
    full Python matrix and validates one immutable build before any upload.
    A prior CI result on another commit never replaces those release gates.
 
+   Define any additional runtime acceptance while implementing the affected
+   change, before publication. Scope it to the changed behavior and available
+   environment; record what remains unverified. A release request alone does
+   not authorize an additional manual runtime test campaign.
+
    For local packaging diagnosis, the same checks remain available with the
    workflow's pinned `build`, `twine`, `uv` and `pipx` tools:
 
@@ -111,21 +116,21 @@ update their pins together.
    checks start as soon as the distribution artifact is ready, in parallel with
    Python tests and publication. AUR publication waits for both the checked Arch
    metadata and GitHub Release; it does not gate Python publication.
-7. Record the workflow result and any required post-publication live acceptance.
-   For changes affecting runtime, installation or migration, verify the published
-   package can build the image, start a workspace and run a Claude session
-   locally; exercise an upgrade with an active workspace, preserving its runtime
-   and data before explicit stop/relaunch. These are operator checks, not an
-   unimplemented Actions gate. A release limited to CI/docs may reuse applicable
-   prior runtime evidence; state that no new live runtime check ran.
+7. Record the workflow result, run URL, artifact hashes and verification limits.
+   A successful Release workflow is sufficient acceptance for routine publication.
+   Do not automatically rebuild images, start workspaces or provider sessions,
+   or run active-workspace upgrade probes after release. Additional manual
+   checks require an explicit user request or diagnosis of a concrete failure;
+   they do not become a recurring release gate. Use the existing pipeline;
+   additional runner infrastructure is a separate task.
    Complete the reviewed merge and verify public CI. Restore any temporarily
    disabled workflows only once their safe configuration is on the default branch.
 
 Publication belongs to Actions. The coordinator prepares/reviews the commit,
 pushes its tag, watches the run, and investigates failures. A successful run
 already checks registry metadata, downloaded hashes and isolated uv/pipx installs;
-do not repeat those downloads/installs manually without a failure or a specific
-acceptance need. Record the run URL and its artifact hashes. When recovery is
+repeat those downloads/installs manually only for an explicit user request or
+diagnosis of a concrete failure. When recovery is
 needed, inspect the failure and rerun only failed/dependent jobs; never rerun
 successful uploads just to wait for an index.
 
