@@ -28,7 +28,7 @@ runtimes require explicit stop/relaunch to adopt it.
 
 ## Direct upgrades
 
-The planned major release replaces Vikunja's additive `board init --apply` and
+Release 4.0.0 replaces Vikunja's additive `board init --apply` and
 `adopt boards --apply` behavior. Without input these commands now return metadata;
 bare `--apply` refuses. Supply an explicit five-state `--mapping FILE` to create a
 temporary reviewed plan, then apply that same file with `--plan FILE --apply`.
@@ -38,12 +38,12 @@ board plans use `format_version: 1`; unknown versions are refused before payload
 interpretation, and reads do not rewrite their files. No older published board-plan
 format exists. Relaunch immutable workspace runtimes to use the new commands.
 
-The unreleased text-delivery guard changes published workflow behavior: assignments
+The 4.0.0 text-delivery guard changes published workflow behavior: assignments
 and managed report deliveries default to 65,536 UTF-8 bytes. Oversized supplemental
 notes/reports add one managed run on the configured scout route and return a labelled
 summary; originals remain saved. Authoritative requirements are never summarized.
 Missing scout configuration, an invalid summary or unresolved overflow fails delivery.
-This requires the next **major** package release, even though the settings and commands
+This is a **major** package change, even though the settings and commands
 are additive. Before upgrading, choose your scout route and a deliberate positive
 global `workflow.text_max_bytes`, or reduce assignment scope. Missing settings adopt 65,536 bytes and
 `workflow.text_retention_days=7`. Both remain global-only; explicit values survive

@@ -1,8 +1,8 @@
 # Release notes
 
-## Unreleased
+## 4.0.0
 
-- **Breaking; planned major release:** Vikunja `board init` and `adopt boards`
+- **Breaking:** Vikunja `board init` and `adopt boards`
   now inspect metadata by default. Replace bare `--apply` with an explicit
   lifecycle `--mapping FILE`, review the saved plan, then use `--plan FILE --apply`.
   Renames keep column/card IDs; plans set order and default/done buckets and reject
@@ -11,7 +11,7 @@
   The previous automatic additive initializer is removed. Repository bindings
   and existing native boards need no stored-data migration.
 
-- **Breaking; requires the next major release:** workflow deliveries now default
+- **Breaking:** workflow deliveries now default
   to 65,536 UTF-8 bytes (`workflow.text_max_bytes`). Oversized supplemental notes
   and managed reports use the configured scout for one labelled summary, retaining
   originals and outcome/finding identity. This may add a managed scout call; an
@@ -36,6 +36,19 @@
   with an updated package. Preserve user edits and expose refresh diagnostics to
   the agent through its session. Existing immutable runtimes require relaunch.
   Stored configuration schemas are unchanged; omitted behavior selection uses v2.
+
+Upgrade directly from any earlier public release through the installer that owns
+the package. Existing configuration, boards, cards and explicit settings are
+preserved; no new stored-data conversion or intermediate release is required.
+For Vikunja board preparation, replace bare `--apply` with `--mapping FILE` to
+save a plan, review it, then apply that same file with `--plan FILE --apply`.
+Before sending large workflow inputs, configure the scout route and a deliberate
+positive global `workflow.text_max_bytes`, or reduce assignment scope. Missing
+settings use 65,536 bytes and seven-day temporary-text retention. Set
+`workflow.behavior_version` to `v1` to retain the previous engineering guidance;
+otherwise new assignments use v2. Stop/relaunch existing immutable workspaces to
+adopt the new runtime and shared text mount; active sessions and workspace data
+are retained until that explicit restart.
 
 ## 3.0.2
 
