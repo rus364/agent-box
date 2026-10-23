@@ -1450,13 +1450,6 @@ def build_mounts(
     # --mount flags for the same tree.
     project_mounts = plan_mounts([MountSpec(workspace.host_root, False, "project root"), *extra_mounts,
                                  *host_tmp_mounts(config is not None and config.box.host_tmp)])
-    if config is None or not config.box.persistent_cache:
-        covering = next((mount.path for mount in project_mounts if XDG_CACHE_HOME.is_relative_to(mount.path)), None)
-        if covering is not None:
-            raise AgentBoxError(
-                f"Host mount {covering} includes the disposable tool cache {XDG_CACHE_HOME}. "
-                "Choose a more specific workspace/mount or enable Workspace box > Keep tool cache between boxes")
-
     pairs: list[tuple[Path, Path, bool]] = [
         # Agent homes intentionally remain host-backed and shared: they hold
         # the user's provider authentication and durable agent settings. Git
@@ -1523,6 +1516,15 @@ def build_mounts(
     if config.box.links.enabled:
         root = links.directory(runtime_state.root.name)
         pairs.append((root, root, True))
+
+    if not config.box.persistent_cache:
+        destinations = [mount.path for mount in project_mounts] + [dst for _, dst, _ in pairs]
+        covering = next((dst for dst in destinations if XDG_CACHE_HOME.is_relative_to(dst)), None)
+        if covering is not None:
+            raise AgentBoxError(
+                f"Host mount {covering} includes the disposable tool cache {XDG_CACHE_HOME}. "
+                "Choose a different cache path or a more specific workspace/mount, "
+                "or enable Workspace box > Keep tool cache between boxes")
 
     out = []
     seen_paths: set[Path] = set()

@@ -12,6 +12,15 @@ from test_runtime import IsolatedRuntimeTest
 
 
 class ToolCacheMountTests(IsolatedRuntimeTest):
+    def test_installed_tool_mount_cannot_capture_a_relocated_disposable_cache(self):
+        """Relocation beneath durable tool data must not silently persist downloads."""
+        from agent_box.errors import AgentBoxError
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(
+                runtime, "XDG_CACHE_HOME", runtime.HOST_HOME / ".cargo/cache"):
+            workspace = Workspace(Path(tmp), Path(tmp))
+            with self.assertRaisesRegex(AgentBoxError, "includes the disposable tool cache"):
+                runtime.build_mounts(workspace, [], Path(tmp), config.Config())
+
     def test_parent_home_mount_requires_an_explicit_persistence_choice(self):
         """A whole-home bind cannot silently turn the disposable cache into host data."""
         from agent_box.errors import AgentBoxError
