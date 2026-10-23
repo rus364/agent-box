@@ -1251,7 +1251,7 @@ class BoxConfig:
     k3s: K3sConfig = field(default_factory=K3sConfig)
     network: NetworkConfig = field(default_factory=NetworkConfig)
     podman: PodmanConfig = field(default_factory=PodmanConfig)
-    #: Off keeps disposable tool caches in the box's writable layer. Installed
+    #: Off keeps disposable tool caches in a box-owned anonymous volume. Installed
     #: tools have separate persistent mounts; this only retains XDG_CACHE_HOME.
     persistent_cache: bool = False
     #: The host's sound server inside workspace boxes.

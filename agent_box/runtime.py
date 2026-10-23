@@ -60,7 +60,6 @@ from .paths import (
     CONFIG_ROOT,
     CONTAINER_LAUNCHER_ROOT,
     CONTAINER_LAUNCHER,
-    CONTAINER_CACHE_HOME,
     PACKAGE_ROOT,
     HOST_LAUNCHER,
     CONTAINER_NOTIFY_CREDENTIALS,
@@ -1530,6 +1529,10 @@ def build_mounts(
         seen_paths.add(dst)
         flag = f"type=bind,src={src},dst={dst}" + (",ro=true" if ro else "")
         out += ["--mount", flag]
+    if config is None or not config.box.persistent_cache:
+        # Podman owns this anonymous volume and removes it with the box. A volume
+        # also shields ~/.cache when a parent home directory is the workspace.
+        out += ["--mount", f"type=volume,dst={XDG_CACHE_HOME}"]
     return out
 
 
@@ -1945,7 +1948,6 @@ def container_lifetime_args(
     """
     config = effective_config(runtime_config_base()) if config is None else config
     home = HOST_HOME
-    cache_home = XDG_CACHE_HOME if config.box.persistent_cache else CONTAINER_CACHE_HOME
     args = [
         "--userns=keep-id", *kvm_args(config, kvm), *audio_args(config),
         "--cap-drop=all", "--security-opt=no-new-privileges", "--hostname=agent-box", "--tz=local",
@@ -1956,13 +1958,13 @@ def container_lifetime_args(
         f"--env=GIT_CONFIG_GLOBAL={home}/.config/git/config",
         f"--env=GH_CONFIG_DIR={home}/.config/gh",
         *registries.container_env(config),
-        *kubeconfigs.container_env(config, cache_home=cache_home),
-        f"--env=XDG_CACHE_HOME={cache_home}",
-        f"--env=UV_CACHE_DIR={cache_home}/uv",
+        *kubeconfigs.container_env(config),
+        f"--env=XDG_CACHE_HOME={XDG_CACHE_HOME}",
+        f"--env=UV_CACHE_DIR={XDG_CACHE_HOME}/uv",
         # The official Telegram channel plugin runs its MCP server under Bun
         # and installs its dependencies on first start; keep that download in
         # the container-only cache so it survives across disposable runs.
-        f"--env=BUN_INSTALL_CACHE_DIR={cache_home}/bun",
+        f"--env=BUN_INSTALL_CACHE_DIR={XDG_CACHE_HOME}/bun",
         f"--env=MISE_DATA_DIR={home}/.local/share/mise",
         # `mise trust` records live in the state directory; in the box's own
         # home they died with it and every project tool shim failed as
@@ -2380,7 +2382,7 @@ def remove_workspace_container_then_confirm_absent(name: str) -> None:
     workspace_id = name.rsplit("-", 1)[-1]
     if re.fullmatch(r"[0-9a-f]{16}", workspace_id) and (workspace_state_root(workspace_id) / "browser").exists():
         browser.stop(workspace_id, "workspace")
-    command = ["podman", "rm", "-f", name]
+    command = ["podman", "rm", "-f", "--volumes", name]
     try:
         result = subprocess.run(command, text=True, capture_output=True)
     except OSError as exc:

@@ -12,8 +12,8 @@ from test_runtime import IsolatedRuntimeTest
 
 
 class ToolCacheMountTests(IsolatedRuntimeTest):
-    def test_disposable_tool_cache_stays_outside_a_home_directory_workspace_and_shared_tmp(self):
-        """Mounting the project home or /tmp must not redirect disposable caches onto the host."""
+    def test_standard_cache_path_is_private_even_below_a_home_directory_workspace(self):
+        """A Podman-owned anonymous volume shields the cache without relocating tool paths."""
         settings = config.Config()
         settings.box.host_tmp = True
         workspace = Workspace(runtime.HOST_HOME, runtime.HOST_HOME)
@@ -22,15 +22,14 @@ class ToolCacheMountTests(IsolatedRuntimeTest):
         with tempfile.TemporaryDirectory() as tmp:
             for persistent in (False, True):
                 settings.box.persistent_cache = persistent
-                argv = runtime.container_lifetime_args(workspace, [], Path(tmp), config=settings)
-                cache = runtime.XDG_CACHE_HOME if persistent else runtime.CONTAINER_CACHE_HOME
+                cache = runtime.XDG_CACHE_HOME
+                with mock.patch.object(runtime.kubeconfigs, "XDG_CACHE_HOME", cache):
+                    argv = runtime.container_lifetime_args(workspace, [], Path(tmp), config=settings)
                 self.assertIn(f"--env=XDG_CACHE_HOME={cache}", argv)
                 self.assertIn(f"--env=UV_CACHE_DIR={cache}/uv", argv)
                 self.assertIn(f"--env=BUN_INSTALL_CACHE_DIR={cache}/bun", argv)
                 self.assertIn(f"--env=KUBECACHEDIR={cache}/kube", argv)
-                if not persistent:
-                    self.assertFalse(cache.is_relative_to(runtime.HOST_HOME))
-                    self.assertFalse(cache.is_relative_to(Path("/tmp")))
+                self.assertEqual(f"type=volume,dst={cache}" in argv, not persistent)
 
     def test_session_snapshot_retains_cache_policy_and_reads_legacy_retention(self):
         """A nested launch must not confuse an omitted old setting with today's default."""
@@ -64,6 +63,7 @@ class ToolCacheMountTests(IsolatedRuntimeTest):
                         (runtime.XDG_CACHE_HOME / "claude-cli-nodejs", runtime.XDG_CACHE_HOME / "claude-cli-nodejs"),
                     ):
                         self.assertEqual(f"type=bind,src={source},dst={destination}" in argv, persistent)
+                    self.assertEqual(f"type=volume,dst={runtime.XDG_CACHE_HOME}" in argv, not persistent)
                     for source, destination in (("uv", ".local/share/uv"), ("mise", ".local/share/mise"),
                                                 ("cargo", ".cargo"), ("rustup", ".rustup")):
                         self.assertIn(f"type=bind,src={runtime.STATE_ROOT / source},dst={runtime.HOST_HOME / destination}", argv)

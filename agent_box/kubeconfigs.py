@@ -277,11 +277,11 @@ def mounts(config, workspace_id: str) -> list[tuple[Path, Path, bool]]:
     return [(runtime_dir(workspace_id), KUBECONFIG_DIR, True)]
 
 
-def container_env(config, *, cache_home=None) -> list[str]:
+def container_env(config) -> list[str]:
     """kubectl's cache belongs in the box's selected cache, outside read-only ``~/.kube``."""
     if not config.credentials.kubernetes.active:
         return []
-    return [f"--env=KUBECACHEDIR={(cache_home or XDG_CACHE_HOME) / 'kube'}"]
+    return [f"--env=KUBECACHEDIR={XDG_CACHE_HOME / 'kube'}"]
 
 
 def sync(config, workspace_id: str) -> list[str]:

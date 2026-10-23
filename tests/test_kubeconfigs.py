@@ -311,7 +311,7 @@ class BoxTargetTests(unittest.TestCase):
         target = runtime.HOST_HOME / ".kube"
         self.assertEqual(kubeconfigs.KUBECONFIG_DIR, target)
         self.assertIn(f"type=bind,src={kubeconfigs.runtime_dir(state.root.name)},dst={target},ro=true", args)
-        self.assertIn(f"--env=KUBECACHEDIR={runtime.CONTAINER_CACHE_HOME / 'kube'}", args)
+        self.assertIn(f"--env=KUBECACHEDIR={runtime.XDG_CACHE_HOME / 'kube'}", args)
         self.assertFalse(any("SECRET" in arg or arg.startswith("--env=KUBECONFIG=") for arg in args))
         plain = runtime.container_lifetime_args(workspace, [], Path("/checkout"), Config(), runtime_state=state)
         self.assertFalse(any(f"dst={target}," in arg or "KUBECACHEDIR" in arg for arg in plain))

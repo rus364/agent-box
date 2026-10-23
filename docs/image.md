@@ -33,11 +33,14 @@ configurations you `mise trust` survive box recreation: mise's installs,
 global configuration and trust records live in agent-box state shared by
 every box, separate from the host's own mise.
 
-General tool caches (`XDG_CACHE_HOME`, including uv downloads and temporary `uvx`
-environments) use `/var/tmp/agent-box-cache` inside the workspace container by
-default, outside a home-directory workspace or shared `/tmp`, and disappear when
-that container is removed. Concurrent sessions in the same box share that
-cache until the box is removed. Enable **Workspace box → Keep tool cache
+General tool caches (`~/.cache`, or the configured `XDG_CACHE_HOME`, including uv
+downloads and temporary `uvx` environments) use a private anonymous Podman disk
+volume by default. The usual paths stay unchanged, even when the home directory
+is the workspace: the anonymous volume shadows the parent bind mount's cache.
+Podman removes it with the box (`--rm`, or explicit removal with `--volumes`);
+agent-box creates no separate host cache directory or cache-cleaning engine.
+Concurrent sessions in the same box share that cache until the box is removed.
+Enable **Workspace box → Keep tool cache
 between boxes** (`box.persistent_cache`) to reuse a shared host-backed cache.
 With persistence off, later boxes may need network access to download it again.
 Installed Python versions/uv tools, mise tools/configuration/trust and Cargo/Rust

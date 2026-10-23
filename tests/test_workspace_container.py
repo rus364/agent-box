@@ -523,7 +523,7 @@ class WorkspaceContainerLifecycleTests(unittest.TestCase):
 
         prepare.assert_not_called()
         self.assertEqual([call.args[0] for call in run.call_args_list], [
-            ["podman", "rm", "-f", self.spec.name],
+            ["podman", "rm", "-f", "--volumes", self.spec.name],
         ])
 
     def test_ambiguous_keeper_query_refuses_to_admit_work_into_a_dying_box(self):
@@ -612,14 +612,14 @@ class WorkspaceContainerLifecycleTests(unittest.TestCase):
              mock.patch.object(runtime.subprocess, "run", return_value=mock.Mock(returncode=0, stderr="")) as run:
             runtime.ensure_workspace_container(self.spec)
         podman_calls = [call.args[0] for call in run.call_args_list if call.args[0][0] == "podman"]
-        self.assertEqual(podman_calls[:2], [["podman", "rm", "-f", self.spec.name], self.spec.create_argv])
+        self.assertEqual(podman_calls[:2], [["podman", "rm", "-f", "--volumes", self.spec.name], self.spec.create_argv])
 
     def test_stopped_incompatible_workspace_is_removed_and_recreated(self):
         with mock.patch.object(runtime, "inspect_workspace_container", side_effect=[self._container("exited", base_hash="old"), None]), \
              mock.patch.object(runtime.subprocess, "run", return_value=mock.Mock(returncode=0, stderr="")) as run:
             runtime.ensure_workspace_container(self.spec)
         podman_calls = [call.args[0] for call in run.call_args_list if call.args[0][0] == "podman"]
-        self.assertEqual(podman_calls[:2], [["podman", "rm", "-f", self.spec.name], self.spec.create_argv])
+        self.assertEqual(podman_calls[:2], [["podman", "rm", "-f", "--volumes", self.spec.name], self.spec.create_argv])
 
     def test_stopped_prior_schema_workspace_is_recreated(self):
         stale = self._container("exited")
@@ -627,7 +627,7 @@ class WorkspaceContainerLifecycleTests(unittest.TestCase):
         with mock.patch.object(runtime, "inspect_workspace_container", side_effect=[stale, None]), \
              mock.patch.object(runtime.subprocess, "run", return_value=mock.Mock(returncode=0, stderr="")) as run:
             runtime.ensure_workspace_container(self.spec)
-        self.assertEqual(run.call_args_list[0].args[0], ["podman", "rm", "-f", self.spec.name])
+        self.assertEqual(run.call_args_list[0].args[0], ["podman", "rm", "-f", "--volumes", self.spec.name])
 
     def test_explicit_incompatible_mounts_refuse_a_live_box(self):
         extra = Path(self.tmp.name) / "extra"
@@ -814,7 +814,7 @@ class WorkspaceContainerLifecycleTests(unittest.TestCase):
              mock.patch.object(runtime, "container_has_workloads", return_value=False), \
              mock.patch.object(runtime.subprocess, "run") as run:
             runtime.cleanup_workspace_container_if_idle(self.spec.name)
-        self.assertEqual(run.call_args.args[0], ["podman", "rm", "-f", self.spec.name])
+        self.assertEqual(run.call_args.args[0], ["podman", "rm", "-f", "--volumes", self.spec.name])
 
     def test_process_table_filters_only_init_and_keeper(self):
         self.assertFalse(runtime.parse_top_workloads("PID PPID COMMAND\n1 0 catatonit\n2 1 bash keeper.sh\n"))
