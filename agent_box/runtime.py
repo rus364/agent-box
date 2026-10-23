@@ -60,6 +60,7 @@ from .paths import (
     CONFIG_ROOT,
     CONTAINER_LAUNCHER_ROOT,
     CONTAINER_LAUNCHER,
+    CONTAINER_CACHE_HOME,
     PACKAGE_ROOT,
     HOST_LAUNCHER,
     CONTAINER_NOTIFY_CREDENTIALS,
@@ -1944,6 +1945,7 @@ def container_lifetime_args(
     """
     config = effective_config(runtime_config_base()) if config is None else config
     home = HOST_HOME
+    cache_home = XDG_CACHE_HOME if config.box.persistent_cache else CONTAINER_CACHE_HOME
     args = [
         "--userns=keep-id", *kvm_args(config, kvm), *audio_args(config),
         "--cap-drop=all", "--security-opt=no-new-privileges", "--hostname=agent-box", "--tz=local",
@@ -1954,13 +1956,13 @@ def container_lifetime_args(
         f"--env=GIT_CONFIG_GLOBAL={home}/.config/git/config",
         f"--env=GH_CONFIG_DIR={home}/.config/gh",
         *registries.container_env(config),
-        *kubeconfigs.container_env(config),
-        f"--env=XDG_CACHE_HOME={XDG_CACHE_HOME}",
-        f"--env=UV_CACHE_DIR={XDG_CACHE_HOME}/uv",
+        *kubeconfigs.container_env(config, cache_home=cache_home),
+        f"--env=XDG_CACHE_HOME={cache_home}",
+        f"--env=UV_CACHE_DIR={cache_home}/uv",
         # The official Telegram channel plugin runs its MCP server under Bun
         # and installs its dependencies on first start; keep that download in
         # the container-only cache so it survives across disposable runs.
-        f"--env=BUN_INSTALL_CACHE_DIR={XDG_CACHE_HOME}/bun",
+        f"--env=BUN_INSTALL_CACHE_DIR={cache_home}/bun",
         f"--env=MISE_DATA_DIR={home}/.local/share/mise",
         # `mise trust` records live in the state directory; in the box's own
         # home they died with it and every project tool shim failed as

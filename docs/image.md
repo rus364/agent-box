@@ -33,8 +33,9 @@ configurations you `mise trust` survive box recreation: mise's installs,
 global configuration and trust records live in agent-box state shared by
 every box, separate from the host's own mise.
 
-General tool caches (`~/.cache`, including uv downloads and temporary `uvx`
-environments) stay in the workspace container by default and disappear when
+General tool caches (`XDG_CACHE_HOME`, including uv downloads and temporary `uvx`
+environments) use `/var/tmp/agent-box-cache` inside the workspace container by
+default, outside a home-directory workspace or shared `/tmp`, and disappear when
 that container is removed. Concurrent sessions in the same box share that
 cache until the box is removed. Enable **Workspace box → Keep tool cache
 between boxes** (`box.persistent_cache`) to reuse a shared host-backed cache.

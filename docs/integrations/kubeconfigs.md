@@ -53,7 +53,7 @@ default, as it is on the host.
 
 While forwarding is on, the box's `~/.kube` is read-only: `kubectl config
 use-context` and other kubeconfig edits fail, so pass `--context` instead.
-kubectl's cache moves to `~/.cache/kube` through `KUBECACHEDIR`. With
+kubectl's cache follows the box's selected `XDG_CACHE_HOME/kube` through `KUBECACHEDIR`. With
 forwarding off, the box's `~/.kube` is an ordinary directory.
 
 ## What does not work inside the box

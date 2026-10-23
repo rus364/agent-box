@@ -84,6 +84,8 @@ def expand_user(value: str) -> Path:
 XDG_CONFIG_HOME = env_path("XDG_CONFIG_HOME", HOST_HOME / ".config")
 XDG_DATA_HOME = env_path("XDG_DATA_HOME", HOST_HOME / ".local/share")
 XDG_CACHE_HOME = env_path("XDG_CACHE_HOME", HOST_HOME / ".cache")
+# A home-directory workspace must not turn a disposable tool cache into a host write.
+CONTAINER_CACHE_HOME = Path("/var/tmp/agent-box-cache")
 XDG_STATE_HOME = env_path("XDG_STATE_HOME", HOST_HOME / ".local/state")
 # The login runtime directory comes from the real uid, not $XDG_RUNTIME_DIR,
 # for the same reason HOST_HOME ignores $HOME: its sockets become bind mounts.
