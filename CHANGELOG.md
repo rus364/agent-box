@@ -9,7 +9,8 @@
   the new default. Migration and toggling never delete old cache data. Global
   schema 3 and workspace creation policy format 2 support direct upgrades.
 - Share immutable runtime copies between workspace and browser launchers. Retire
-  unused copies older than seven days while retaining recent/live copies and
+  unused copies created by the new retention protocol after seven days, preserving
+  legacy copies, recent/live copies and
   failing closed when references cannot be inventoried. Rotate abandoned atomic
   write staging older than one day using writer locks; add no cache-clean command.
 

@@ -12,6 +12,8 @@ import subprocess
 import tempfile
 import time
 
+RETENTION_MARKER = ".retention-v1"
+
 
 def _live_references(proc: Path = Path("/proc")):
     """Fail closed if either rootless containers or this user's processes cannot be inventoried."""
@@ -71,7 +73,10 @@ def _retire_bundles(parent: Path, current: Path) -> None:
         if not root.is_dir() or root.is_symlink():
             continue
         bundles = sorted((path for path in root.iterdir() if not path.is_symlink() and path.is_dir()
-                          and re.fullmatch(r"[a-f0-9]{64}", path.name)),
+                          and re.fullmatch(r"[a-f0-9]{64}", path.name)
+                          and not (path / RETENTION_MARKER).is_symlink()
+                          and (path / RETENTION_MARKER).is_file()
+                          and (path / RETENTION_MARKER).read_bytes() == b"1\n"),
                          key=lambda path: path.stat().st_mtime, reverse=True)
         for path in bundles[2:]:
             if path != current and path.stat().st_mtime < cutoff:
@@ -125,6 +130,9 @@ def prepare(package: Path, root: Path, *, managed: bool = False) -> Path:
                     target.parent.mkdir(parents=True, exist_ok=True)
                     target.write_bytes(content)
                     target.chmod(0o755 if relative == Path("container-launcher") else 0o644)
+                # Only this protocol locks preparation and refreshes reused copies.
+                # Old launchers may be between prepare() and mount without any visible reference.
+                (stage / RETENTION_MARKER).write_bytes(b"1\n")
                 try:
                     os.rename(stage, destination)
                 except OSError:

@@ -12,6 +12,26 @@ from agent_box.paths import PACKAGE_ROOT
 
 
 class RuntimeBundleTests(unittest.TestCase):
+    def test_legacy_prepared_but_not_mounted_bundle_is_never_retired(self):
+        """Old prepare returns without a lock or timestamp refresh, before argv/mounts expose use."""
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "source"
+            source.mkdir()
+            root = Path(tmp) / "runtime/launcher"
+            for version in range(4):
+                (source / "__init__.py").write_text(str(version))
+                bundle = runtime_bundle.prepare(source, root)
+                os.utime(bundle.parent, (version, version))
+                if version == 0:
+                    legacy = bundle
+                    (bundle.parent / runtime_bundle.RETENTION_MARKER).unlink()
+            # A legacy prepare of version 0 returns this existing path untouched.
+            prepared = legacy
+            (source / "__init__.py").write_text("new")
+            with mock.patch.object(runtime_bundle, "_live_references", return_value=[]):
+                runtime_bundle.prepare(source, root, managed=True)
+            self.assertEqual((prepared / "__init__.py").read_text(), "0")
+
     def test_runtime_inventory_recognizes_broker_argv_and_retains_unidentifiable_legacy_brokers(self):
         """A broker changes cwd, so only the explicit bundle runner identifies it afterwards."""
         with tempfile.TemporaryDirectory() as tmp:

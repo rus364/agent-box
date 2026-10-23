@@ -50,8 +50,10 @@ stop/relaunch an existing workspace to change its mount policy. Switching it off
 does not delete an old shared cache or third-party data. There is no cache-clean
 command in agent-box.
 
-Workspace and browser launchers share immutable runtime copies. On preparation,
-agent-box keeps the two latest copies in each runtime family and copies reused
+Workspace and browser launchers share immutable runtime copies. New copies carry
+a retention-protocol marker; unmarked legacy copies are preserved because old
+launchers can prepare them without locking or refreshing their timestamps.
+On preparation, agent-box keeps the two latest marked copies in each runtime family and copies reused
 within seven days; it retires older copies only after checking all of its user's
 container mounts, process arguments and live Claude MCP configurations. Unknown references or old browser brokers
 whose runtime cannot be identified retain the copies. Atomic-write staging files
