@@ -51,7 +51,7 @@ def review_language(language):
     if not language:
         return ""
     return (f"Working language: {language}. New or changed code comments, docstrings, documentation and commit "
-            f"messages belong in {language}; task descriptions written earlier may be in another language.\n")
+            f"messages belong in {language}; tracker requirements may use another language. Report conflicting repository language requirements.\n")
 
 
 def delegate_rules(role):

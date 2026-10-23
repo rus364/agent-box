@@ -788,7 +788,9 @@ def configuration_summary(config):
             **scout_diagnostics(config),
             "cleanup_local_branches": config.workflow.cleanup_local_branches,
             "cleanup_remote_branches": config.workflow.cleanup_remote_branches,
-            "language": config.workflow.language or None}
+            "language": config.workflow.language or None,
+            "tracker_language": config.workflow.languages().tracker,
+            "engineering_language": config.workflow.languages().engineering}
 
 
 def resolve(root, adapter, task, *, allow_missing=False):
@@ -1736,14 +1738,14 @@ def delegate(args, root, adapter, config):
         raise AgentBoxError(f"{path} is empty, so the coordinator does this {args.role} work itself in its own "
                             f"session; configure candidates there to delegate it")
     guidance = repository_instructions(root, config.workflow)
-    fixed = delegate_prompt(args.role, task, "", guidance, config.workflow.language,
+    fixed = delegate_prompt(args.role, task, "", guidance, config.workflow.languages().engineering,
                             behavior_version=config.workflow.behavior_version)
     from . import text_delivery
     text_delivery.check_size(len(fixed.encode("utf-8")), config.workflow, f"{args.role} mandatory assignment")
     from .text_summary import compact
     brief, brief_summary = compact(brief, config, root, label="assignment notes",
                                    budget=config.workflow.text_max_bytes - len(fixed.encode("utf-8")))
-    prompt = delegate_prompt(args.role, task, brief, guidance, config.workflow.language,
+    prompt = delegate_prompt(args.role, task, brief, guidance, config.workflow.languages().engineering,
                              behavior_version=config.workflow.behavior_version)
     text_delivery.check_size(len(prompt.encode("utf-8")), config.workflow, f"{args.role} assignment")
     text_delivery.prepare(config)
@@ -1812,7 +1814,7 @@ def review(args, root, binding, adapter, config, task, parent, tasks, base, fing
         saved = evidence(root, task, fingerprint, base)
         try:
             prompt = reviewer_handoff(root, base, task, parent, tasks, brief, saved, review_context, round_id,
-                                      config.workflow.language, behavior_version=config.workflow.behavior_version,
+                                      config.workflow.languages().engineering, behavior_version=config.workflow.behavior_version,
                                       text_settings=config.workflow, text_config=config)
             descriptor = review_descriptor(identity, task, fingerprint, round_id)
             bind_delegation_input(root, descriptor, prompt, local_evidence=True)
@@ -1861,7 +1863,7 @@ def review(args, root, binding, adapter, config, task, parent, tasks, base, fing
                 raise AgentBoxError("Code or base changed before review; start a review of the current head")
             saved = evidence(root, task, fingerprint, base)
             prompt = reviewer_handoff(root, base, task, parent, tasks, brief, saved, review_context, round_id,
-                                      config.workflow.language, behavior_version=config.workflow.behavior_version,
+                                      config.workflow.languages().engineering, behavior_version=config.workflow.behavior_version,
                                       text_settings=config.workflow, text_config=config)
             descriptor = review_descriptor(identity, task, fingerprint, round_id)
             bind_delegation_input(root, descriptor, prompt, local_evidence=True)

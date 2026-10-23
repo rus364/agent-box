@@ -72,7 +72,7 @@ class ConfigMenuTests(unittest.TestCase):
             ('credentials',): ['git', 'github', 'registries', 'kubernetes', 'cloud'],
             ('host',): ['notifications', 'personal_browser', 'claude_skill_links'],
             ('workflow',): ['enabled', 'behavior_version', 'merge_mode', 'auto_push', 'pause_push', 'cleanup_local_branches',
-                           'cleanup_remote_branches', 'language', 'use_tiers', 'worker', 'scout', 'review', 'sync', 'timeout_seconds', 'text_max_bytes', 'text_retention_days'],
+                           'cleanup_remote_branches', 'language', 'tracker_language', 'use_tiers', 'worker', 'scout', 'review', 'sync', 'timeout_seconds', 'text_max_bytes', 'text_retention_days'],
             ('workflow', 'worker'): ['models', 'tiers'],
             ('workflow', 'scout'): ['limit', 'models'],
             ('workflow', 'sync'): ['policy', 'events', 'paths', 'scope', 'references', 'models', 'tiers'],

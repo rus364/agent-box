@@ -72,19 +72,39 @@ one summary; requirements stay exact and diffs are read on demand. See
 [text delivery](integrations/workflow.md#text-delivery) for failure, paging and
 session-context boundaries.
 
-**Working language.** `workflow.language` names the language of project text, such as
-`English` or `Deutsch`: tracker tasks and comments, pull requests and review
-replies, commit messages, code comments and documentation. Agents still talk
-to you in your own language; agent handoffs and agent-box's own output stay
-English. Empty, the default, keeps each text's current rule: the task's own
-language in the tracker, English for implementation. `agent-box tracker status`
-and `agent-box workflow inspect` report the effective value, and the shipped
-skills and the AGENTS.md workflow block read it from there; prompts agent-box
-generates for Plan sync, reviewers, workers and adoption name it directly.
-A task description an agent rewrites is saved wholly in the working language;
-older comments and untouched files are not translated. The value is one line
-of at most 40 characters. It applies with the tracker alone too, without the
-workflow enabled.
+**Project languages.** Workflow → Project text has two settings:
+
+- **Engineering language**, `workflow.language`: code comments, docstrings,
+  documentation, commits, PRs and review replies. Empty defaults to English.
+  It also remains the tracker fallback for existing configurations.
+- **Tracker language**, `workflow.tracker_language`: task titles, descriptions,
+  plans, checklists, journal comments, normalization, adoption and Plan sync.
+  Empty inherits `workflow.language`. With both empty, new tasks use your
+  interaction language and existing tasks keep their own language.
+
+For Russian tracker work and English engineering, set globally or per project:
+
+```json
+{"workflow": {"language": "English", "tracker_language": "Russian"}}
+```
+
+Global and project values merge per field before resolving these fallbacks.
+Reset a project override to inherit the global value; an explicit empty tracker
+override clears the global tracker choice and follows the effective engineering
+setting. Each setting accepts one line of at most 40 characters.
+
+`agent-box tracker status` reports the resolved tracker value as `language`.
+`agent-box workflow inspect` exposes `configuration.tracker_language` (nullable)
+and `configuration.engineering_language` (English by default); the legacy
+`configuration.language` retains the configured base value or null.
+Generated assignments name the appropriate language for their destination.
+Tracker settings also apply without workflow enabled. A rewritten task
+description is saved wholly in the tracker language; older comments and
+untouched files are not translated. Agents report conflicting repository
+language requirements before editing and preserve user-owned instructions.
+Conversation with you stays in your language; agent-to-agent handoffs/reports
+and agent-box output stay English. These instructions guide agents; they do
+not translate text automatically.
 
 **Inside a workspace box** the saved file is not mounted. There
 `agent-box config apply` applies the session's rendered configuration — the
@@ -177,7 +197,7 @@ A project may set:
 
 - `workflow`, except global-only `enabled`, `text_max_bytes` and `text_retention_days` — including each role's
   candidate lists (`models`, and `tiers.N` for workers, Plan sync and
-  reviewers), `use_tiers` and the working `language`;
+  reviewers), `use_tiers`, `language` and `tracker_language`;
 - `box.tools`, `box.k3s`, `box.podman` and `box.persistent_cache`;
 - `tracker.provider` and `tracker.connections.<provider>.url`;
 - `tracker.project` and `tracker.recursive`, which identify the project and

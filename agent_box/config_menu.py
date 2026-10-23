@@ -41,10 +41,13 @@ HELP = {
     "box": "What the workspace box is built with, the k3s cluster and nested Podman storage beside it, sound, and its environment.",
     "credentials": "Host identity and credentials the box's own tools may use. Everything that exposes a credential is off by default.",
     "host": "Host-owned notifications, personal desktop browser access and Claude skill links. Global only.",
-    "workflow.language": ("Working language of project text, such as English or Deutsch: tracker tasks and comments, pull requests and "
-                 "review replies, commit messages, code comments and documentation. Conversation with you stays in your "
-                 "language; agent handoffs and agent-box output stay English. Empty keeps each text's current rule. "
-                 "A project may override it."),
+    "workflow.language": ("Engineering language, such as English or Deutsch: code comments, docstrings, documentation, commits, "
+                 "pull requests and review replies. Also the tracker fallback unless Tracker language overrides it. "
+                 "Empty keeps English for engineering and each task's language for the tracker. "
+                 "Conversation with you stays in your language; agent handoffs and agent-box output stay English. A project may override it."),
+    "workflow.tracker_language": ("Language of tracker tasks, plans, comments, normalization, adoption and Plan sync. "
+                 "Empty inherits Engineering language; when both are empty, new tasks use your interaction language "
+                 "and existing tasks keep their language. A project may override it; no bulk translation."),
     "agents.default": "Agent started by `agent-box` without claude/codex; an explicit claude or codex always wins. Global only; not a project setting.",
     "agents.claude": "Claude session settings, including --host, and its status line. Global only.",
     "agents.claude.telegram_channel": "Start Claude with Anthropic's official Telegram channel plugin. This requires its host-side setup and exposes the session through that channel.",
@@ -181,7 +184,7 @@ ACTION_HELP = {
 LABELS = {
     "bypass_permissions": "Bypass permissions (container)",
     "agents": "Agents", "box": "Workspace box", "credentials": "Credentials", "host": "Host",
-    "language": "Working language",
+    "language": "Engineering language", "tracker_language": "Tracker language",
     "host_tmp": "Share host /tmp",
     "default": "Default agent", "statusline": "Status line",
     "claude": "Claude", "codex": "Codex", "github": "GitHub", "git": "Git",
@@ -334,7 +337,7 @@ MENU_GROUPS = {
         ("Workflow", ("enabled",)),
         ("Behavior", ("behavior_version",)),
         ("Delivery", ("merge_mode", "auto_push", "pause_push", "cleanup_local_branches", "cleanup_remote_branches")),
-        ("Project text", ("language",)),
+        ("Project text", ("language", "tracker_language")),
         ("Roles", ("use_tiers", "worker", "scout", "review", "sync")),
         ("Delegation", ("timeout_seconds", "text_max_bytes", "text_retention_days")),
     ),

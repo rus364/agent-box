@@ -11,12 +11,12 @@ from .tracker.core import root_task
 from .workflow_state import lock
 
 
-RULES = """Act as the sync executor. Use tracker CLI; never invoke workflow commands or the coordinator's ab-sync skill. Read AGENTS.md/CLAUDE.md and imports. Read source with agent-box tracker get ID --no-comments; inspect decisions, commits and referenced sections. Use tracker search with separate path/anchor/term substrings; follow relations, including unreferenced tasks. Search defaults to open; --include-done finds history. Respect recursive scope; use get --no-comments for plausible candidates, not every task; comments ID only for missing evidence. Never fetch task URLs directly.
+RULES = """Act as sync executor. Use tracker CLI; never invoke workflow commands or ab-sync. Read AGENTS.md/CLAUDE.md and imports. Read source: agent-box tracker get ID --no-comments; inspect decisions, commits and references. Use tracker search with separate path/anchor/term substrings; follow relations, including unreferenced tasks. Search defaults to open; --include-done finds history. Respect recursive scope; use get --no-comments for plausible candidates, not every task; comments ID only for missing evidence. Never fetch task URLs directly.
 Edit open tasks in scope yourself, including Backlog, Ready, In progress and In review. Only Done is read-only history; superseded text never blocks. Change only tracker descriptions/comments through agent-box tracker. Never change files, Git, lifecycle, assignees, priorities, relations or progress marks; never delegate.
 Edit only a concrete stale assertion or a decision changing the task's scope/acceptance. No informational additions, Git/sync bookkeeping (commit hashes, sync-task IDs), or restated workflow instructions. Preserve intended requirements and unrelated text; unresolved contradictions need a decision, never weaker acceptance. No correction means no write.
 With references enabled, repair missing/stale references needed to implement affected tasks; do not backfill unrelated tasks. Preserve the section's heading and location; if absent, add one under Context. Use path#heading plus purpose; verify sections and meaning, never line numbers or invented decisions.
-Before each edit, reread the task; use agent-box tracker update ID --revision REV --description-file - with its full preserved description in a direct heredoc, without pipes or temporary files. Read back saved text; journal substantive corrections. Write in task language, or wholly in an assignment's Working language. On unknown-outcome, reread task/comments before any further write; never blindly retry.
-Report in English: task IDs, saved/partial corrections, evidence, unresolved issues. End with one line: Sync: UPDATED, Sync: UNCHANGED, Sync: BLOCKED, or Sync: ERROR. BLOCKED needs a decision; ERROR means reading, writing or verification failed.
+Before each edit, reread the task; use agent-box tracker update ID --revision REV --description-file - with its full preserved description in a direct heredoc, without pipes or temporary files. Verify saved text; journal corrections. Write in task language, or wholly in an assignment's Working language. Report conflicting repository language requirements before editing; preserve user-owned instructions. On unknown-outcome, reread task/comments before any further write; never blindly retry.
+Report in English: task IDs, saved/partial corrections, evidence, unresolved issues. End with: Sync: UPDATED, Sync: UNCHANGED, Sync: BLOCKED, or Sync: ERROR. BLOCKED needs a decision; ERROR means reading, writing or verification failed.
 """
 
 PENDING = ("RUNNING", "NATIVE", "ERROR", "BLOCKED")
@@ -246,9 +246,10 @@ def run(root, binding, adapter, config, task, event="manual", *, native=False, r
     guidance = workflow.repository_instructions(root, config.workflow)
     if guidance:
         prompt += f"\nRepository instructions (including imports; already supplied):\n{guidance}\n"
-    if config.workflow.language:
+    language = config.workflow.languages().tracker
+    if language:
         # The rules are also the native profile shared by every repository; only the value is this one's.
-        prompt += f"Working language: {config.workflow.language}\n"
+        prompt += f"Working language: {language}\n"
     saved = workflow.read_evidence(root, task)
     if saved.get("base_head") and saved.get("head"):
         prompt += f"Source commits: {saved['base_head']}..{saved['head']} (verify integration before propagation).\n"

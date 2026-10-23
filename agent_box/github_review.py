@@ -452,7 +452,7 @@ def _round(root, binding, adapter, config, task, parent, tasks, fingerprint, ide
     # ours; anything else is a stranger's question, and this run publishes its own.
     request = find_request(comments, [*published_requests(root, task, provider, head, base_head),
                                       request_body(provider, head, base_head, descriptions,
-                                                   review_context, brief, config.workflow.language,
+                                                   review_context, brief, config.workflow.languages().engineering,
                                                    behavior_version=config.workflow.behavior_version)])
     if descriptor is not None:
         round_id = descriptor["delegation"]
@@ -504,7 +504,7 @@ def _round(root, binding, adapter, config, task, parent, tasks, fingerprint, ide
             f"Ask the user before rerunning workflow review {task.id} or reviewing this head another way")
     body = (request["body"] if request is not None
             else request_body(provider, head, base_head, descriptions, review_context, brief,
-                              config.workflow.language, behavior_version=config.workflow.behavior_version))
+                              config.workflow.languages().engineering, behavior_version=config.workflow.behavior_version))
     if request is None and len(body) > COMMENT_LIMIT:
         raise AgentBoxError(
             f"The request for {head[:12]} is {len(body)} characters and GitHub accepts {COMMENT_LIMIT}; "

@@ -257,7 +257,8 @@ expected. A cleanup failure never undoes the merge or Done.
 | `workflow.pause_push` | off | Publish and verify unfinished task branches on an explicit pause |
 | `workflow.cleanup_local_branches`, `cleanup_remote_branches` | off | Delete integrated task branches |
 | `workflow.use_tiers` | off | Let task tiers select model lists |
-| `workflow.language` | — | [Working language](../configuration.md#the-configuration-menu) of tracker, GitHub, commit and repository text |
+| `workflow.language` | — | [Engineering language](../configuration.md#the-configuration-menu) of repository text, commits, PRs and review replies; also the tracker fallback. Empty uses English for engineering |
+| `workflow.tracker_language` | — | Tracker tasks, plans, comments, normalization, adoption and Plan sync; empty inherits `workflow.language`, then each task's language |
 | `workflow.timeout_seconds` | 3600 | Limit for each managed run |
 | `workflow.text_max_bytes` | 65536 | Total UTF-8 bytes per complete delivery (global only) |
 | `workflow.text_retention_days` | 7 | Creation-time expiry of temporary texts (global only) |

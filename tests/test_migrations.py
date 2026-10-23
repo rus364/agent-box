@@ -173,6 +173,35 @@ class MigrationTests(unittest.TestCase):
             self.path = self.root / repo_binding.BINDING_FILE
         self.assertEqual(json.loads(self.path.read_text())["version"], 2)
 
+    def test_language_only_configurations_gain_a_tracker_override_without_conversion(self):
+        """An additive tracker choice must preserve the old base and survive real save/load paths."""
+        fixtures = Path(__file__).parent / "fixtures" / "compatibility" / "1.0.0"
+        old = json.loads((fixtures / "config.json").read_text())
+        old.setdefault("workflow", {})["language"] = "Deutsch"
+        self.path.write_text(json.dumps(old))
+        original = self.path.read_bytes()
+        saved = config.load_config(self.path)
+        policy = saved.workflow.languages()
+        self.assertEqual((policy.tracker, policy.engineering), ("Deutsch", "Deutsch"))
+        self.assertEqual(self.path.read_bytes(), original)
+        saved.workflow.tracker_language = "Russian"
+        config.save_config(saved, self.path)
+        reloaded = config.load_config(self.path)
+        self.assertEqual(reloaded.workflow.language, "Deutsch")
+        self.assertEqual(reloaded.workflow.tracker_language, "Russian")
+        self.assertEqual(reloaded.agents.default, saved.agents.default)
+        self.assertEqual(reloaded.credentials, saved.credentials)
+
+        project_path = self.root / "project.json"
+        project_path.write_bytes((fixtures / "project.json").read_bytes())
+        project = project_config.load(project_path)
+        project = project_config.changed(project, assignments=[(("workflow", "tracker_language"), "Français")])
+        project_config.save(project_path, project)
+        merged = project_config.apply(reloaded, project_config.load(project_path))
+        self.assertEqual(merged.workflow.languages().tracker, "Français")
+        self.assertEqual(merged.workflow.languages().engineering, "Deutsch")
+        self.assertFalse(merged.workflow.auto_push)
+
     def test_durable_recovery_readers_refuse_future_state_instead_of_starting_over(self):
         """Discarding these records could duplicate external writes or reset review budgets."""
         from agent_box import plan_sync, workflow

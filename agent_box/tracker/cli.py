@@ -322,7 +322,7 @@ def dispatch(args):
                 "user": {"id": str(user["id"]), "username": user.get("username")},
                 "capabilities": sorted(adapter.capabilities), "binding": asdict(binding) if binding else None,
                 "lifecycle": adapter.lifecycle_report() if binding else [],
-                "language": config.workflow.language or None}
+                "language": config.workflow.languages().tracker}
     if args.command == "audit":
         if args.project:
             config = effective_config()
@@ -332,7 +332,7 @@ def dispatch(args):
             adapter, binding = make_adapter(selected, provider), selected
         if binding is None:
             raise TrackerError("Pass --project to audit a project, or run ab-setup")
-        return audit_project(adapter, binding.project, binding.recursive, effective_config().workflow.language)
+        return audit_project(adapter, binding.project, binding.recursive, effective_config().workflow.languages().tracker)
     if args.command == "projects":
         return [{"id": str(p["id"]), "title": p["title"], "parent": str(p.get("parent_project_id") or "")}
                 for p in adapter.projects() if args.query.casefold() in p["title"].casefold()]

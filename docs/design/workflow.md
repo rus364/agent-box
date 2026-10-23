@@ -92,7 +92,8 @@ with existing-only branch switching. It never recreates lost work from base.
   acceptance, or a missing or stale reference an affected task needs. No
   recaps, commit hashes, sync bookkeeping or copies of workflow instructions; no
   correction means no write. It preserves requirements, progress marks and an
-  existing reference section's heading, language and location, and verifies
+  existing reference section's heading and location, uses the resolved tracker
+  language for edited descriptions, and verifies
   saved text. Open tasks in any state are editable; only Done tasks are
   historical evidence. Lifecycle, assignees, dependencies and progress marks
   never change.

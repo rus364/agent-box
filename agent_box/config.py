@@ -956,6 +956,13 @@ class PlanSyncConfig:
         return result
 
 
+@dataclass(frozen=True)
+class LanguagePolicy:
+    """Resolved destinations; None preserves each tracker's task-language rule."""
+    tracker: str | None
+    engineering: str
+
+
 @dataclass
 class WorkflowConfig:
     """Optional workflow policy; only enabled integrations may publish or delegate.
@@ -986,11 +993,11 @@ class WorkflowConfig:
     cleanup_local_branches: bool = False
     cleanup_remote_branches: bool = False
     worker: WorkerConfig = field(default_factory=WorkerConfig)
-    #: The working language of project text in every area at once (tracker,
-    #: GitHub, commits, repository text); empty keeps each text's own rule.
-    #: Per-area switches were rejected as configuration nobody asked to vary.
-    #: It applies with the tracker alone too, since ab-tracker reads it.
+    #: Engineering language and tracker fallback, preserving existing configurations.
+    #: Empty keeps English engineering and each task's own tracker language.
     language: str = ""
+    #: Empty inherits language; an override affects only tracker text, including Plan sync.
+    tracker_language: str = ""
     #: Launch-only candidate lists pinned by --worker/--reviewer/--scout/--sync, keyed by role.
     #: Never serialized: a session re-derives them from its snapshot's launch
     #: flags, so no configuration file can hold one.
@@ -1004,6 +1011,10 @@ class WorkflowConfig:
 
     def role(self, role):
         return {"scout": self.scout, "worker": self.worker, "reviewer": self.review, "sync": self.sync}[role]
+
+    def languages(self) -> LanguagePolicy:
+        return LanguagePolicy(tracker=self.tracker_language or self.language or None,
+                              engineering=self.language or "English")
 
     def effective_tier(self, tier):
         """The task tier that selects models, or None while tiers are switched off."""
@@ -1049,7 +1060,8 @@ class WorkflowConfig:
             value = getattr(self, name)
             if type(value) is not int or value < 1:
                 errors.append(f"workflow.{name} must be a positive integer")
-        errors += language_problems(self.language)
+        for name in ("language", "tracker_language"):
+            errors += language_problems(getattr(self, name), f"workflow.{name}")
         value = self.timeout_seconds
         if not isinstance(value, int) or not math.isfinite(value) or not 30 <= value <= 86400:
             errors.append("workflow.timeout_seconds must be between 30 and 86400")
@@ -1138,8 +1150,9 @@ class WorkflowConfig:
         result.sync = PlanSyncConfig.from_dict(data.get("sync"))
         result.worker = WorkerConfig.from_dict(data.get("worker"))
         # Only spaces are trimmed: a line break must reach validate(), not vanish into an empty value.
-        language = data.get("language")
-        result.language = language.strip(" ") if isinstance(language, str) else ""
+        for name in ("language", "tracker_language"):
+            language = data.get(name)
+            setattr(result, name, language.strip(" ") if isinstance(language, str) else "")
         return result
 
 
@@ -1376,7 +1389,7 @@ class HostConfig:
 LANGUAGE_LIMIT = 40
 
 
-def language_problems(language: str) -> list[str]:
+def language_problems(language: str, field="workflow.language") -> list[str]:
     """Why a working language cannot be put into a generated prompt as is.
 
     The value is free text so any language can be named in its own words; a
@@ -1388,9 +1401,9 @@ def language_problems(language: str) -> list[str]:
     # Zl and Zp are Unicode's line and paragraph separators, which a prompt reader also breaks on.
     if any(unicodedata.category(character)[0] == "C" or unicodedata.category(character) in ("Zl", "Zp")
            for character in language):
-        return ["workflow.language must be one line without control characters"]
+        return [f"{field} must be one line without control characters"]
     if len(language) > LANGUAGE_LIMIT:
-        return [f"workflow.language must be at most {LANGUAGE_LIMIT} characters, a language name such as English"]
+        return [f"{field} must be at most {LANGUAGE_LIMIT} characters, a language name such as English"]
     return []
 
 

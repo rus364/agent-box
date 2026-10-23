@@ -28,6 +28,18 @@ runtimes require explicit stop/relaunch to adopt it.
 
 ## Direct upgrades
 
+`workflow.tracker_language` is an additive, backward-compatible setting for
+tracker text. Missing or empty inherits `workflow.language`, preserving all
+existing language-only configurations. No stored representation changes or
+schema migration are needed; it is suitable for a MINOR release. Global/project
+schema numbers and published fixtures remain unchanged. Configuration snapshots
+carry both settings through the existing serializer. `workflow inspect` retains
+`configuration.language` and adds resolved `tracker_language` and
+`engineering_language`; tracker status `language` describes tracker text.
+Owned skills and hash-verified repository guidance refresh through the existing
+package-update/apply path, preserving user edits. Running immutable workspace
+runtimes need explicit stop/relaunch to adopt the new helpers and instructions.
+
 Release 4.0.0 replaces Vikunja's additive `board init --apply` and
 `adopt boards --apply` behavior. Without input these commands now return metadata;
 bare `--apply` refuses. Supply an explicit five-state `--mapping FILE` to create a

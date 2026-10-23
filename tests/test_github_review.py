@@ -162,7 +162,8 @@ class CloudReviewTests(LandingCase):
     def request_comment(self, created=None, provider="claude"):
         created = created or when(60)
         body = github_review.request_body(provider, self.head, gw.base_commit(self.root, "main"),
-                                          workflow.review_descriptions(self.parent, self.parent, [self.parent]), behavior_version="v2")
+                                          workflow.review_descriptions(self.parent, self.parent, [self.parent]),
+                                          language=self.config.workflow.languages().engineering, behavior_version="v2")
         return {"id": 100, "user": {"login": "rus364", "type": "User"}, "created_at": created,
                 "updated_at": created, "body": body,
                 "html_url": "https://github.com/o/r/pull/9#issuecomment-100"}
@@ -174,20 +175,24 @@ class CloudReviewTests(LandingCase):
         self.assertEqual(github_review.request_body("claude", self.head, base, descriptions, language="", behavior_version="v2"),
                          github_review.request_body("claude", self.head, base, descriptions, behavior_version="v2"))
         self.config.workflow.language = "Français"
+        self.config.workflow.tracker_language = "Russian"
         self.review()
         self.assertIn("Working language: Français. New or changed code comments", self.published())
 
-    def test_cloud_requests_receive_the_effective_project_behavior_for_both_bots(self):
-        """A cloud reviewer must not inherit the global coordinator policy or another project."""
+    def test_cloud_requests_receive_the_effective_project_behavior_and_language_for_both_bots(self):
+        """Both bots judge engineering text using project policy, regardless of tracker or global language."""
         from agent_box import project_config
         original = self.config
         original.workflow.review.max_rounds = 4
+        original.workflow.language = "Deutsch"
+        original.workflow.tracker_language = "日本語"
         for provider in ("codex", "claude"):
             for version in ("v1", "v2"):
                 original.workflow.behavior_version = "v2" if version == "v1" else "v1"
                 original.workflow.review.github_provider = provider
                 path = self.root / ".agent-box.json"
-                path.write_text(json.dumps({"workflow": {"behavior_version": version}}))
+                path.write_text(json.dumps({"workflow": {"behavior_version": version,
+                                                        "language": "English", "tracker_language": "Russian"}}))
                 gw.git(self.root, "add", ".agent-box.json")
                 gw.git(self.root, "commit", "-m", f"project choice {provider} {version}")
                 self.commit_action(f"# {provider} {version}\nuses: anthropics/claude-code-action@v1\n")
@@ -196,6 +201,8 @@ class CloudReviewTests(LandingCase):
                 body = self.published()
                 self.assertIn(f"Workflow behavior: {version} (reviewer)", body)
                 self.assertNotIn(f"Workflow behavior: {version} (coordinator)", body)
+                self.assertIn("Working language: English.", body)
+                self.assertNotIn("Working language: Russian", body)
                 self.comments.append({**self.request_comment(provider=provider), "body": body})
                 if provider == "claude":
                     self.answer(CLAUDE_PASS)
