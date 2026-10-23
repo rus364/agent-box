@@ -68,7 +68,7 @@ class ConfigMenuTests(unittest.TestCase):
             ('agents',): ['default', 'claude', 'codex', 'host_env', 'external_apis'],
             ('agents', 'codex'): ['native_agent_wait', 'remote_control', 'bypass_permissions'],
             ('agents', 'claude'): ['remote_control', 'telegram_channel', 'bypass_permissions', 'statusline'],
-            ('box',): ['tools', 'network', 'browser', 'k3s', 'podman', 'host_tmp', 'audio', 'links', 'env'],
+            ('box',): ['tools', 'network', 'browser', 'k3s', 'podman', 'persistent_cache', 'host_tmp', 'audio', 'links', 'env'],
             ('credentials',): ['git', 'github', 'registries', 'kubernetes', 'cloud'],
             ('host',): ['notifications', 'personal_browser', 'claude_skill_links'],
             ('workflow',): ['enabled', 'behavior_version', 'merge_mode', 'auto_push', 'pause_push', 'cleanup_local_branches',
@@ -202,7 +202,7 @@ class ConfigMenuTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / 'config.json'
             save_config(result.config, path)
-            self.assertEqual(json.loads(path.read_text()), {'version': 2})
+            self.assertEqual(json.loads(path.read_text()), {'version': Config().to_dict()['version']})
 
 
     def test_cleanup_toggles_save_independently_without_enabling_the_other(self):

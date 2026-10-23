@@ -1,5 +1,18 @@
 # Release notes
 
+## Unreleased
+
+- Keep the general tool cache inside new workspace containers by default. Enable
+  **Workspace box → Keep tool cache between boxes** to retain it on the host.
+  Installed tools remain persistent. Existing global configurations migrate to
+  `box.persistent_cache: true`; explicitly turn it off and stop/relaunch to adopt
+  the new default. Migration and toggling never delete old cache data. Global
+  schema 3 and workspace creation policy format 2 support direct upgrades.
+- Share immutable runtime copies between workspace and browser launchers. Retire
+  unused copies older than seven days while retaining recent/live copies and
+  failing closed when references cannot be inventoried. Rotate abandoned atomic
+  write staging older than one day using writer locks; add no cache-clean command.
+
 ## 4.0.0
 
 - **Breaking:** Vikunja `board init` and `adopt boards`

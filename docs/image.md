@@ -33,6 +33,31 @@ configurations you `mise trust` survive box recreation: mise's installs,
 global configuration and trust records live in agent-box state shared by
 every box, separate from the host's own mise.
 
+General tool caches (`~/.cache`, including uv downloads and temporary `uvx`
+environments) stay in the workspace container by default and disappear when
+that container is removed. Concurrent sessions in the same box share that
+cache until the box is removed. Enable **Workspace box → Keep tool cache
+between boxes** (`box.persistent_cache`) to reuse a shared host-backed cache.
+With persistence off, later boxes may need network access to download it again.
+Installed Python versions/uv tools, mise tools/configuration/trust and Cargo/Rust
+installations remain persistent independently of that switch. Host sessions use
+their normal host cache paths.
+
+Existing saved configurations migrate with cache persistence on, retaining their
+previous behavior. Explicitly turn the checkbox off to adopt disposable caches;
+stop/relaunch an existing workspace to change its mount policy. Switching it off
+does not delete an old shared cache or third-party data. There is no cache-clean
+command in agent-box.
+
+Workspace and browser launchers share immutable runtime copies. On preparation,
+agent-box keeps the two latest copies in each runtime family and copies reused
+within seven days; it retires older copies only after checking all of its user's
+container mounts and process arguments. Unknown references or old browser brokers
+whose runtime cannot be identified retain the copies. Atomic-write staging files
+use writer locks; a later write removes abandoned files older than one day in the
+same directory, preserving active writers. These are internal retention rules,
+not cleanup of installed tools, workflow evidence or user project data.
+
 ## Building and refreshing
 
 ```bash

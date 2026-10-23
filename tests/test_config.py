@@ -139,7 +139,7 @@ class RoundTripTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / 'config.json'
             save_config(Config(), path)
-            self.assertEqual(json.loads(path.read_text()), {'version': 2})
+            self.assertEqual(json.loads(path.read_text()), {'version': config_module.VERSION})
             self.assertEqual(load_config(path).to_dict(), Config().to_dict())
 
     def test_native_agent_wait_defaults_are_cache_aware_and_round_trip_custom_values(self):
@@ -154,7 +154,7 @@ class RoundTripTests(unittest.TestCase):
             path = Path(tmp) / 'config.json'
             save_config(config, path)
             self.assertEqual(json.loads(path.read_text()), {
-                'version': 2,
+                'version': config_module.VERSION,
                 'agents': {'codex': {'native_agent_wait': {'enabled': False, 'interval_seconds': 900}}},
             })
             loaded = load_config(path)
@@ -184,7 +184,7 @@ class RoundTripTests(unittest.TestCase):
             save_config(config, path)
             data = json.loads(path.read_text())
             self.assertEqual(data, {
-                'version': 2, 'box': {'tools': {'analysis': False}, 'env': {'set': {'CUSTOM': ''}}},
+                'version': config_module.VERSION, 'box': {'tools': {'analysis': False}, 'env': {'set': {'CUSTOM': ''}}},
                 'workflow': {'auto_push': False, 'review': {'sensitive_paths': [],
                     'models': [{'provider': 'codex', 'model': 'custom-model', 'effort': 'medium', 'speed': 'inherit', 'api_provider': ''}]}}})
             self.assertEqual(load_config(path).to_dict(), config.to_dict())
@@ -207,7 +207,7 @@ class RoundTripTests(unittest.TestCase):
             save_config(config, path)
             # The file holds a bot token, so it must not be world-readable.
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
-            self.assertEqual(json.loads(path.read_text())["version"], 2)
+            self.assertEqual(json.loads(path.read_text())["version"], config_module.VERSION)
             loaded = load_config(path)
         self.assertTrue(loaded.agents.claude.telegram_channel)
         self.assertEqual(loaded.host.notifications.telegram_token, "123:abc")

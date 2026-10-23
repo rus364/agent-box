@@ -272,10 +272,9 @@ def codex_command(
 
 def ensure_state_dirs() -> None:
     for path in (
-        BUILD_STATE, STATE_ROOT / "cache", STATE_ROOT / "uv", STATE_ROOT / "mise",
+        BUILD_STATE, STATE_ROOT / "uv", STATE_ROOT / "mise",
         STATE_ROOT / "mise-config", STATE_ROOT / "cargo", STATE_ROOT / "rustup", NOTIFY_STATE_ROOT,
         STATE_ROOT / "runtime/workspaces", CODEX_HOME, CLAUDE_HOME,
-        XDG_CACHE_HOME / "claude-code", XDG_CACHE_HOME / "claude-cli-nodejs",
     ):
         path.mkdir(parents=True, exist_ok=True)
 
@@ -888,6 +887,9 @@ def prepare_container_lifetime_state(
     """
     runtime_state = runtime_state or legacy_runtime_state()
     ensure_state_dirs()
+    if config.box.persistent_cache:
+        for path in (STATE_ROOT / "cache", XDG_CACHE_HOME / "claude-code", XDG_CACHE_HOME / "claude-cli-nodejs"):
+            path.mkdir(parents=True, exist_ok=True)
     seed_git_config(runtime_state.git, config)
     seed_state_dir(
         runtime_state.gh,
@@ -1109,6 +1111,7 @@ def sync_tracker_runtime(config: Config, directory: Path | None = None, *, polic
         "box": {"tools": config.box.tools.to_dict(), "browser": config.box.browser.to_dict(), "k3s": config.box.k3s.to_dict(),
                 "network": network,
                 "podman": config.box.podman.to_dict(),
+                "persistent_cache": config.box.persistent_cache,
                 "audio": config.box.audio, "host_tmp": config.box.host_tmp, "links": config.box.links.to_dict()},
         "container": container,
         # Re-applied over the project configuration inside the session.
@@ -1454,11 +1457,6 @@ def build_mounts(
         # a snapshot owned by one workspace box lifetime.
         (CODEX_HOME, CODEX_HOME, False),
         (CLAUDE_HOME, CLAUDE_HOME, False),
-        # Shared container-only cache: intentionally global so tool downloads
-        # survive short-lived boxes without exposing the host's real ~/.cache.
-        (STATE_ROOT / "cache", XDG_CACHE_HOME, False),
-        (XDG_CACHE_HOME / "claude-code", XDG_CACHE_HOME / "claude-code", False),
-        (XDG_CACHE_HOME / "claude-cli-nodejs", XDG_CACHE_HOME / "claude-cli-nodejs", False),
         # Shared tool caches/state. uv/mise own their concurrency handling;
         # Rust gets standard in-container homes backed by agent-box-private
         # persistent storage rather than the host's real ~/.cargo/~/.rustup.
@@ -1477,6 +1475,10 @@ def build_mounts(
         (script_dir / "container-launcher", CONTAINER_LAUNCHER, True),
         (script_dir, CONTAINER_LAUNCHER_ROOT / "agent_box", True),
     ]
+    if config is not None and config.box.persistent_cache:
+        pairs += [(STATE_ROOT / "cache", XDG_CACHE_HOME, False),
+                  (XDG_CACHE_HOME / "claude-code", XDG_CACHE_HOME / "claude-code", False),
+                  (XDG_CACHE_HOME / "claude-cli-nodejs", XDG_CACHE_HOME / "claude-cli-nodejs", False)]
     if mount_workspace_runtime_state:
         # The keeper needs only this workspace's lifecycle lock and snapshots,
         # never another workspace's writable runtime state.
@@ -2174,6 +2176,7 @@ def workspace_box_policy(spec: WorkspaceContainerSpec) -> dict:
                 "network": config.box.network.to_dict(),
                 # Whichever session leaves last deletes or keeps the data by this.
                 "podman": config.box.podman.to_dict(),
+                "persistent_cache": config.box.persistent_cache,
                 "audio": any(arg.startswith("--env=PULSE_SERVER=") for arg in spec.create_argv),
                 "host_tmp": config.box.host_tmp,
                 "links": config.box.links.to_dict()},
@@ -3262,7 +3265,7 @@ def runtime_main(
         if existing is None:
             prepare_network(config)
             prepare_k3s(config, workspace, runtime_state)
-            bundle = runtime_bundle.prepare(script_dir, STATE_ROOT / "runtime/launcher")
+            bundle = runtime_bundle.prepare(script_dir, STATE_ROOT / "runtime/launcher", managed=True)
             spec = workspace_container_spec(workspace, extra_mounts, bundle, config, options.kvm, image=selected_image)
         else:
             spec = existing

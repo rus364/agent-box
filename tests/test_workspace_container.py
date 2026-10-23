@@ -413,6 +413,23 @@ class WorkspaceContainerLifecycleTests(unittest.TestCase):
             self.assertFalse(snapshot.box.browser.active())
             self.assertTrue(snapshot.box.tools.groups["kubernetes"])
 
+    def test_join_keeps_creation_cache_mounts_after_saved_or_project_settings_change(self):
+        """A second session may not change the shared cache underneath its live neighbour."""
+        for retained in (False, True):
+            with self.subTest(retained=retained):
+                original = runtime.Config()
+                original.box.persistent_cache = retained
+                container, policy = self._live_box(original)
+                self.assertEqual(policy["box"]["persistent_cache"], retained)
+                with mock.patch.object(runtime, "inspect_workspace_container", return_value=container):
+                    spec = runtime.existing_workspace_spec(self.workspace, LaunchOptions())
+                changed = runtime.Config()
+                changed.box.persistent_cache = not retained
+                with mock.patch.object(runtime, "load_config", return_value=changed), \
+                        mock.patch.object(project_config, "load", return_value={"box": {"persistent_cache": not retained}}):
+                    joined = runtime.launch_config(LaunchOptions(), box_policy=spec.creation_config._box_policy)
+                self.assertEqual(joined.box.persistent_cache, retained)
+
     def test_first_launch_creates_then_starts_one_workspace_container(self):
         with mock.patch.object(runtime, "inspect_workspace_container", return_value=None), \
              mock.patch.object(runtime.subprocess, "run", return_value=mock.Mock(returncode=0, stderr="")) as run:

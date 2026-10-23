@@ -171,7 +171,7 @@ class BrowserMigrationTests(unittest.TestCase):
                 self.assertFalse(config.migrate_config(path))
             self.assertTrue(config.load_config(path).box.browser.enabled)
             self.assertEqual(next((Path(tmp)/'backups').rglob('schema-*.json')).read_bytes(), original)
-            self.assertEqual(json.loads(path.read_text())['version'], 2)
+            self.assertEqual(json.loads(path.read_text())['version'], config.Config().to_dict()['version'])
 
 
 class HostBrowserTests(IsolatedRuntimeTest):

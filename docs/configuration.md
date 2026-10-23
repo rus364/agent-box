@@ -178,7 +178,7 @@ A project may set:
 - `workflow`, except global-only `enabled`, `text_max_bytes` and `text_retention_days` — including each role's
   candidate lists (`models`, and `tiers.N` for workers, Plan sync and
   reviewers), `use_tiers` and the working `language`;
-- `box.tools`, `box.k3s` and `box.podman`;
+- `box.tools`, `box.k3s`, `box.podman` and `box.persistent_cache`;
 - `tracker.provider` and `tracker.connections.<provider>.url`;
 - `tracker.project` and `tracker.recursive`, which identify the project and
   exist only here.

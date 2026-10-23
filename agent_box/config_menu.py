@@ -124,6 +124,7 @@ HELP = {
     "box.browser": "Isolated Playwright MCP + Chromium in a separate container per agent session. Requires local rootless Podman in host and workspace modes; first use downloads the pinned image. No personal browser/profile access.",
     "box.browser.enabled": "Start the isolated browser for Claude/Codex. Host sessions use host networking; workspace sessions share their workspace network. Project, explicit extra mounts and session outputs only; private workspace /tmp files are not shared. No workspace image rebuild needed.",
     "box.podman": "Where nested Podman's images, build cache, containers and volumes live: the host Podman volume agent-box-podman-<workspace id>. The tool group itself is under Image tools.",
+    "box.persistent_cache": "Keep tool caches on the host between boxes. Off stores the general cache only inside the workspace container until it is removed; tools may need fresh downloads next time. Installed tools and agent state stay persistent. Changing this requires stop/relaunch and never deletes an existing host cache.",
     "box.podman.persistent_data": "Keep the volume after the box is gone, so pulls and build cache survive between sessions. Off deletes it whenever the box goes away, so each box starts empty. `agent-box stop --podman-data` deletes it on demand.",
     "box.audio": "Mount the host PulseAudio/PipeWire socket so agents can use the microphone and speakers, e.g. Claude Code /voice. Everything in the box gets both. Changing it recreates the box.",
     "box.host_tmp": "Share the whole host /tmp read-write at /tmp in workspace, browser (also --host) and k3s sidecar containers. Off by default; no integration is enabled by this switch. Exposes accessible unrelated files and Unix sockets; sticky bits restrict deletion, not reading or socket access. Permissions stay unchanged; k3s uses a different UID mapping. Stop/relaunch a workspace to change its mounts; host browsers use their session choice. Host files are never cleaned up. Conflicting read-only mounts are refused.",
@@ -209,6 +210,7 @@ PATH_LABELS = {
     "box.browser": "Browser",
     "box.browser.enabled": "Enabled",
     "box.podman": "Nested Podman storage",
+    "box.persistent_cache": "Keep tool cache between boxes",
 }
 
 #: What each offered value means, shown for the value under the cursor; the field's own
@@ -319,7 +321,7 @@ MENU_GROUPS = {
     ),
     ("box",): (
         ("Image", ("tools",)),
-        ("Workspace resources", ("network", "browser", "k3s", "podman")),
+        ("Workspace resources", ("network", "browser", "k3s", "podman", "persistent_cache")),
         ("Inside the box", ("host_tmp", "audio", "links", "env")),
     ),
     ("credentials",): (

@@ -112,7 +112,7 @@ class ContainerStatePreparationTests(IsolatedRuntimeTest):
                  mock.patch.object(runtime, "NOTIFY_STATE_ROOT", state_root / "notify"):
                 self.assertFalse(state_root.exists())
                 runtime.prepare_container_lifetime_state(Config(), mount_notifications=False)
-                self.assertTrue((state_root / "cache").is_dir())
+                self.assertFalse((state_root / "cache").exists())
                 self.assertTrue((state_root / "uv").is_dir())
                 self.assertTrue((state_root / "mise").is_dir())
                 self.assertTrue((state_root / "mise-config").is_dir())

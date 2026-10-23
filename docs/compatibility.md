@@ -100,10 +100,16 @@ package when a rollback is necessary.
 Schema numbers are independent per format and independent of package SemVer.
 The first public formats are version 1. An omitted version explicitly means 1,
 including hand-written configuration fragments; it never means the latest schema.
-Global and project configuration now use schema 2: `box.tools.browser` moves to
+Project configuration uses schema 2: `box.tools.browser` moves to
 `box.browser.enabled`, preserving explicit values and absent project overrides.
 Pending global proposals use format 2 to migrate browser assignments/resets while
-retaining the host confirmation boundary. Other formats retain their independent versions. Writers include the version. Migrations transform a copy before current parsers
+retaining the host confirmation boundary. Global schema 3 and workspace creation
+policy format 2 preserve the former shared tool-cache behavior with
+`box.persistent_cache: true`; new installations default to a disposable cache.
+Explicit false is preserved. Older unversioned session snapshots retain shared
+cache semantics in memory. Existing cache files and live workspace mounts are
+not removed by migration; changing the selection requires stop/relaunch.
+Other formats retain their independent versions. Writers include the version. Migrations transform a copy before current parsers
 can discard renamed fields. Reading alone does not rewrite the file.
 
 | Data | Boundary |

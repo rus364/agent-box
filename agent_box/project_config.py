@@ -26,7 +26,8 @@ PROJECT_FIELDS = {
     "workflow": {key: _fields(value, ("workflow", key)) for key, value in Config().workflow.to_dict().items()
                  if key not in {"enabled", "text_max_bytes", "text_retention_days"}},
     "box": {"tools": _fields(Config().box.tools.to_dict()), "browser": _fields(Config().box.browser.to_dict()), "k3s": _fields(Config().box.k3s.to_dict(), ("k3s",)),
-            "podman": _fields(Config().box.podman.to_dict()), "network": {"ports": list}},
+            "podman": _fields(Config().box.podman.to_dict()), "persistent_cache": bool,
+            "network": {"ports": list}},
     "tracker": {"provider": str, "project": str, "recursive": bool,
                 "connections": {provider: {"url": str} for provider in TRACKER_PROVIDERS}},
 }

@@ -96,7 +96,15 @@ def browser_proposal(data):
     return data
 
 
-GLOBAL_CONFIG = Schema("global configuration", 2, {1: browser_sidecar}, key="version")
+def retained_tool_cache(data):
+    """Published boxes always shared their cache; fresh defaults must not rewrite that choice."""
+    box = data.setdefault("box", {})
+    if isinstance(box, dict):
+        box.setdefault("persistent_cache", True)
+    return data
+
+
+GLOBAL_CONFIG = Schema("global configuration", 3, {1: browser_sidecar, 2: retained_tool_cache}, key="version")
 PROJECT_CONFIG = Schema("project configuration", 2, {1: browser_sidecar}, key="version")
 WORKFLOW_EVIDENCE = Schema("workflow evidence")
 REVIEW_BUDGET = Schema("review budget")
@@ -104,7 +112,7 @@ PLAN_SYNC = Schema("Plan sync record")
 IMPORT_STATE = Schema("tracker import mapping")
 MOVE_JOURNAL = Schema("tracker move journal")
 ADOPTION_RECEIPT = Schema("tracker adoption receipt")
-BOX_POLICY = Schema("workspace creation policy")
+BOX_POLICY = Schema("workspace creation policy", 2, {1: retained_tool_cache})
 SKILL_MARKER = Schema("managed skill marker")
 REVIEW_RECEIPT = Schema("review receipt")
 CONFIG_PROPOSAL = Schema("global configuration proposal", 2, {1: browser_proposal})

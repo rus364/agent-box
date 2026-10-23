@@ -1251,6 +1251,9 @@ class BoxConfig:
     k3s: K3sConfig = field(default_factory=K3sConfig)
     network: NetworkConfig = field(default_factory=NetworkConfig)
     podman: PodmanConfig = field(default_factory=PodmanConfig)
+    #: Off keeps disposable tool caches in the box's writable layer. Installed
+    #: tools have separate persistent mounts; this only retains XDG_CACHE_HOME.
+    persistent_cache: bool = False
     #: The host's sound server inside workspace boxes.
     #:
     #: Off by default: turning it on lets everything in the box -- agents,
@@ -1274,6 +1277,7 @@ class BoxConfig:
 
     def to_dict(self) -> dict[str, Any]:
         return {"tools": self.tools.to_dict(), "browser": self.browser.to_dict(), "k3s": self.k3s.to_dict(), "network": self.network.to_dict(), "podman": self.podman.to_dict(),
+                "persistent_cache": self.persistent_cache,
                 "audio": self.audio, "host_tmp": self.host_tmp, "links": self.links.to_dict(), "env": self.env.to_dict()}
 
     @classmethod
@@ -1284,6 +1288,7 @@ class BoxConfig:
                    k3s=K3sConfig.from_dict(data.get("k3s")),
                    network=NetworkConfig.from_dict(data.get("network")),
                    podman=PodmanConfig.from_dict(data.get("podman")), audio=_bool(data, "audio", False), links=LinksConfig.from_dict(data.get("links")),
+                   persistent_cache=_bool(data, "persistent_cache", False),
                    host_tmp=_bool(data, "host_tmp", False), env=EnvConfig.from_dict(data.get("env")))
 
     def validate(self) -> list[str]:
@@ -1493,6 +1498,7 @@ def apply_box_policy(config, policy):
     config.box.k3s = shared.box.k3s
     config.box.network = shared.box.network
     config.box.podman = shared.box.podman
+    config.box.persistent_cache = shared.box.persistent_cache
     config.box.audio = shared.box.audio
     config.box.host_tmp = shared.box.host_tmp
     config.box.links = shared.box.links
@@ -1526,7 +1532,8 @@ def effective_config(base=None, *, include_project=True) -> Config:
             # The snapshot is rendered once at launch; after a schema change in the
             # checkout it no longer loads or validates although nothing the user saved is wrong.
             try:
-                base = Config.from_dict(rendered)
+                # Pre-setting snapshots are unversioned and always retained their cache.
+                base = Config.from_dict(migrations.retained_tool_cache(rendered))
                 base._session_container = bool(rendered.get("container", False))
                 if isinstance(rendered.get("workflow_guidance"), dict):
                     base._workflow_guidance = rendered["workflow_guidance"]

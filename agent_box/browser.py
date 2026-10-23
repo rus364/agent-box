@@ -147,8 +147,9 @@ def prepare(directory, project, cwd, mounts=(), *, container="", workspace="", s
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     (directory / "output").mkdir(mode=0o700, exist_ok=True)
     argv = container_command(directory, project, cwd, list(mounts), container=container, workspace=workspace, host_tmp=host_tmp, personal=bool(desktop))
-    bundle = runtime_bundle.prepare(PACKAGE_ROOT, STATE_ROOT / "runtime/browser-launcher")
-    launcher = [sys.executable, "-m", "agent_box.browser"]
+    bundle = runtime_bundle.prepare(PACKAGE_ROOT, STATE_ROOT / "runtime/launcher", managed=True)
+    # Keep the immutable package visible in argv after the broker changes cwd.
+    launcher = [str(Path(sys.executable).resolve()), str(bundle / "__main__.py"), "_browser"]
     if not container:
         # The absolute package runner survives an installer replacing its old tree.
         command = [str(Path(sys.executable).resolve()), str(bundle / "__main__.py"), "_browser", "run", json.dumps(argv), json.dumps(desktop)]

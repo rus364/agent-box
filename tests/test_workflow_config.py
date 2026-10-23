@@ -107,7 +107,7 @@ class WorkflowConfigTests(unittest.TestCase):
                 loaded = load_config(path)
                 self.assertEqual(loaded.workflow, config.workflow)
                 self.assertEqual([spec["model"] for spec in loaded.workflow.review.models], ["deepseek-v4-flash", "gpt-5.6-luna"])
-                self.assertEqual(json.loads(path.read_text())["version"], 2)
+                self.assertEqual(json.loads(path.read_text())["version"], Config().to_dict()['version'])
                 runtime.sync_tracker_runtime(loaded, Path(directory) / "runtime")
                 raw = (Path(directory) / "runtime" / "config.json").read_text()
                 self.assertNotIn("host-secret", raw)

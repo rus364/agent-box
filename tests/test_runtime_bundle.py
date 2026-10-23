@@ -3,13 +3,75 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import os
 from pathlib import Path
+from unittest import mock
 
 from agent_box import runtime_bundle
 from agent_box.paths import PACKAGE_ROOT
 
 
 class RuntimeBundleTests(unittest.TestCase):
+    def test_runtime_inventory_recognizes_broker_argv_and_retains_unidentifiable_legacy_brokers(self):
+        """A broker changes cwd, so only the explicit bundle runner identifies it afterwards."""
+        with tempfile.TemporaryDirectory() as tmp:
+            proc = Path(tmp)
+            process = proc / "123"
+            process.mkdir()
+            command = process / "cmdline"
+            command.write_bytes(b"python\0/bundle/agent_box/__main__.py\0_browser\0serve\0")
+            with mock.patch.object(runtime_bundle.subprocess, "run", return_value=mock.Mock(stdout="")):
+                self.assertIn("/bundle/agent_box/__main__.py", runtime_bundle._live_references(proc))
+                command.write_bytes(b"python\0-m\0agent_box.browser\0serve\0")
+                self.assertIsNone(runtime_bundle._live_references(proc))
+
+    def test_managed_retention_keeps_live_and_recent_bundles_and_retires_old_unused_copies(self):
+        """The current package alone cannot identify runtimes still mounted or executing."""
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "source"
+            source.mkdir()
+            root = Path(tmp) / "runtime/launcher"
+            bundles = []
+            for version in range(4):
+                (source / "__init__.py").write_text(str(version))
+                bundle = runtime_bundle.prepare(source, root)
+                os.utime(bundle.parent, (version, version))
+                bundles.append(bundle)
+            recent = bundles[-1]
+            os.utime(recent.parent, None)
+            (source / "__init__.py").write_text("new")
+            with mock.patch.object(runtime_bundle, "_live_references", return_value=[str(bundles[0] / "__init__.py")]):
+                current = runtime_bundle.prepare(source, root, managed=True)
+            self.assertTrue(bundles[0].exists())
+            self.assertFalse(bundles[1].exists())
+            self.assertFalse(bundles[2].exists())
+            self.assertTrue(recent.exists())
+            self.assertTrue(current.exists())
+
+    def test_failed_inventory_retains_old_runtimes_but_locked_staging_can_be_retired(self):
+        """Missing Podman access is not evidence that no running box needs a bundle."""
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "source"
+            source.mkdir()
+            root = Path(tmp) / "runtime/launcher"
+            bundles = []
+            for version in range(3):
+                (source / "__init__.py").write_text(str(version))
+                bundle = runtime_bundle.prepare(source, root)
+                os.utime(bundle.parent, (version, version))
+                bundles.append(bundle)
+            stage = root / ".prepare-locked-abcd1234"
+            stage.mkdir()
+            os.utime(stage, (0, 0))
+            legacy = root / ".prepare-old-writer"
+            legacy.mkdir()
+            os.utime(legacy, (0, 0))
+            with mock.patch.object(runtime_bundle, "_live_references", return_value=None):
+                runtime_bundle.prepare(source, root, managed=True)
+            self.assertTrue(all(bundle.exists() for bundle in bundles))
+            self.assertFalse(stage.exists())
+            self.assertTrue(legacy.exists())
+
     def test_reinstall_preserves_old_bytes_and_changes_runtime_identity(self):
         """Reinstalling into the same tool directory must not alter a live bundle."""
         with tempfile.TemporaryDirectory() as tmp:
