@@ -22,13 +22,14 @@ from agent_box.workspace import Workspace
 def _argv(config, env=None, gh_token="gho_secrettoken"):
     """Full podman argv for one run, with `gh auth token` on the host faked."""
     tmp = tempfile.TemporaryDirectory()
-    project = Path(tmp.name)
+    project = Path(tmp.name) / "project"
+    project.mkdir()
     base = {k: v for k, v in os.environ.items()
             if k not in ("GH_TOKEN", "GITHUB_TOKEN",
                          "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "HTTPS_PROXY")}
     base.update(env or {})
     try:
-        state = project / "state"
+        state = Path(tmp.name) / "state"
         with mock.patch.dict(os.environ, base, clear=True), \
              mock.patch.object(runtime, "STATE_ROOT", state), \
              mock.patch.object(runtime, "BUILD_STATE", state / "build"), \
