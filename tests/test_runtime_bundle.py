@@ -25,6 +25,24 @@ class RuntimeBundleTests(unittest.TestCase):
                 command.write_bytes(b"python\0-m\0agent_box.browser\0serve\0")
                 self.assertIsNone(runtime_bundle._live_references(proc))
 
+    def test_live_claude_configuration_protects_a_browser_that_has_not_started_yet(self):
+        """Claude names an MCP file in argv and may start its immutable runner much later."""
+        import json
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            proc = root / "proc"
+            process = proc / "123"
+            process.mkdir(parents=True)
+            config = root / "mcp.json"
+            runner = "/old/bundle/agent_box/__main__.py"
+            config.write_text(json.dumps({"mcpServers": {"agent_box_browser": {
+                "command": "python", "args": [runner, "_browser", "run"]}}}))
+            (process / "cmdline").write_bytes(b"claude\0--mcp-config\0" + os.fsencode(config) + b"\0")
+            with mock.patch.object(runtime_bundle.subprocess, "run", return_value=mock.Mock(stdout="")):
+                self.assertIn(runner, runtime_bundle._live_references(proc))
+                config.unlink()
+                self.assertIsNone(runtime_bundle._live_references(proc))
+
     def test_managed_retention_keeps_live_and_recent_bundles_and_retires_old_unused_copies(self):
         """The current package alone cannot identify runtimes still mounted or executing."""
         with tempfile.TemporaryDirectory() as tmp:

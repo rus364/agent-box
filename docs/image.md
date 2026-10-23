@@ -52,7 +52,7 @@ command in agent-box.
 Workspace and browser launchers share immutable runtime copies. On preparation,
 agent-box keeps the two latest copies in each runtime family and copies reused
 within seven days; it retires older copies only after checking all of its user's
-container mounts and process arguments. Unknown references or old browser brokers
+container mounts, process arguments and live Claude MCP configurations. Unknown references or old browser brokers
 whose runtime cannot be identified retain the copies. Atomic-write staging files
 use writer locks; a later write removes abandoned files older than one day in the
 same directory, preserving active writers. These are internal retention rules,

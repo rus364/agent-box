@@ -38,10 +38,29 @@ def _live_references(proc: Path = Path("/proc")):
                     # Old brokers chdir after importing; /proc cannot identify their bundle.
                     return None
                 references += arguments
+                for index, argument in enumerate(arguments[:-1]):
+                    if argument != "--mcp-config":
+                        continue
+                    # Claude can defer browser startup; its live argv names the config, not the runner.
+                    try:
+                        path = Path(arguments[index + 1])
+                        if path.stat().st_size > 65536:
+                            return None
+                        servers = json.loads(path.read_text()).get("mcpServers", {})
+                        for name, server in servers.items():
+                            if name.startswith("agent_box_"):
+                                if not isinstance(server.get("args"), list):
+                                    return None
+                                values = [server["command"], *server["args"]]
+                                if not all(isinstance(value, str) for value in values):
+                                    return None
+                                references += values
+                    except (OSError, ValueError, TypeError, AttributeError, KeyError):
+                        return None
             except (FileNotFoundError, ProcessLookupError):
                 pass
         return references
-    except (OSError, ValueError, TypeError, subprocess.SubprocessError):
+    except (OSError, ValueError, TypeError, AttributeError, KeyError, subprocess.SubprocessError):
         return None
 
 
