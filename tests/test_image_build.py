@@ -62,6 +62,14 @@ class ImageInputsTests(IsolatedRuntimeTest):
         with patch.object(runtime, 'nested_podman_build_args', return_value=['--build-arg', 'PODMAN_UID_RANGES=[[3,4]]']):
             self.assertNotEqual(self.fingerprint(), previous)
 
+    def test_relocated_cache_is_provisioned_by_a_matching_image(self):
+        """A cache outside the home needs image-owned permissions, not a missing host bind."""
+        original = self.fingerprint()
+        with patch.object(runtime, 'XDG_CACHE_HOME', Path('/srv/agent-cache')):
+            arguments = runtime.image_build_arguments(self.config, self.identity)
+            self.assertIn('USER_CACHE_HOME=/srv/agent-cache', arguments)
+            self.assertNotEqual(self.fingerprint(), original)
+
     def test_podman_reads_the_bytes_that_were_hashed(self):
         """Replacing an editable/package source during a build cannot mislabel it."""
         before = (self.source / 'nested_podman.py').read_bytes()

@@ -318,6 +318,7 @@ def image_build_arguments(config: Config, identity: HostIdentity) -> list[str]:
         "--build-arg", f"USER_UID={identity.uid}",
         "--build-arg", f"USER_GID={identity.gid}",
         "--build-arg", f"USER_HOME={identity.home}",
+        "--build-arg", f"USER_CACHE_HOME={XDG_CACHE_HOME}",
         "--build-arg", f"TOOLS_REFRESH={TOOLS_REFRESH_FILE.read_text().strip()}",
         *tool_build_args(config), *nested_podman_build_args(config, identity),
     ]
