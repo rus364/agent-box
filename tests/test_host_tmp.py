@@ -68,9 +68,18 @@ class HostTmpSessionTests(launch_tests.IsolatedLaunchTest):
 
 
 class HostTmpWorkspaceTests(unittest.TestCase):
-    setUp = workspace_tests.WorkspaceContainerLifecycleTests.setUp
     _container = workspace_tests.WorkspaceContainerLifecycleTests._container
     _live_box = workspace_tests.WorkspaceContainerLifecycleTests._live_box
+
+    def setUp(self):
+        workspace_tests.WorkspaceContainerLifecycleTests.setUp(self)
+        # A /tmp fixture must not pretend that the usual home cache lives in shared /tmp.
+        cache = runtime.HOST_HOME / '.cache'
+        for module in (runtime, runtime.kubeconfigs):
+            patcher = patch.object(module, 'XDG_CACHE_HOME', cache)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.spec = runtime.workspace_container_spec(self.workspace, [], self.script_dir, self.config)
 
     def test_enabled_mount_is_structural_and_conflicting_read_only_mounts_fail(self):
         """The opt-in must use normal overlap rules and change the immutable box spec."""

@@ -12,14 +12,30 @@ from test_runtime import IsolatedRuntimeTest
 
 
 class ToolCacheMountTests(IsolatedRuntimeTest):
-    def test_standard_cache_path_is_private_even_below_a_home_directory_workspace(self):
-        """A Podman-owned anonymous volume shields the cache without relocating tool paths."""
+    def test_parent_home_mount_requires_an_explicit_persistence_choice(self):
+        """A whole-home bind cannot silently turn the disposable cache into host data."""
+        from agent_box.errors import AgentBoxError
+        from agent_box.mounts import MountSpec
         settings = config.Config()
-        settings.box.host_tmp = True
-        workspace = Workspace(runtime.HOST_HOME, runtime.HOST_HOME)
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(runtime, "XDG_CACHE_HOME", runtime.HOST_HOME / ".cache"):
+            home = Workspace(runtime.HOST_HOME, runtime.HOST_HOME)
+            project = Workspace(Path(tmp), Path(tmp))
+            for workspace, mounts in ((home, []), (project, [MountSpec(runtime.HOST_HOME, False)])):
+                with self.assertRaisesRegex(AgentBoxError, "includes the disposable tool cache"):
+                    runtime.build_mounts(workspace, mounts, Path(tmp), settings)
+                settings.box.persistent_cache = True
+                self.assertIn(f"type=bind,src={runtime.STATE_ROOT / 'cache'},dst={runtime.XDG_CACHE_HOME}",
+                              runtime.build_mounts(workspace, mounts, Path(tmp), settings))
+                settings.box.persistent_cache = False
+
+    def test_standard_cache_path_is_not_relocated_or_replaced_by_an_extra_volume(self):
+        """Disposable caches need only the container's writable layer, not another storage object."""
+        settings = config.Config()
         settings.credentials.kubernetes.enabled = True
         settings.credentials.kubernetes.files = ["cluster.yaml"]
         with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp), Path(tmp))
             for persistent in (False, True):
                 settings.box.persistent_cache = persistent
                 cache = runtime.XDG_CACHE_HOME
@@ -29,7 +45,7 @@ class ToolCacheMountTests(IsolatedRuntimeTest):
                 self.assertIn(f"--env=UV_CACHE_DIR={cache}/uv", argv)
                 self.assertIn(f"--env=BUN_INSTALL_CACHE_DIR={cache}/bun", argv)
                 self.assertIn(f"--env=KUBECACHEDIR={cache}/kube", argv)
-                self.assertEqual(f"type=volume,dst={cache}" in argv, not persistent)
+                self.assertFalse(any(arg.startswith("type=volume,") for arg in argv))
 
     def test_session_snapshot_retains_cache_policy_and_reads_legacy_retention(self):
         """A nested launch must not confuse an omitted old setting with today's default."""
@@ -63,7 +79,7 @@ class ToolCacheMountTests(IsolatedRuntimeTest):
                         (runtime.XDG_CACHE_HOME / "claude-cli-nodejs", runtime.XDG_CACHE_HOME / "claude-cli-nodejs"),
                     ):
                         self.assertEqual(f"type=bind,src={source},dst={destination}" in argv, persistent)
-                    self.assertEqual(f"type=volume,dst={runtime.XDG_CACHE_HOME}" in argv, not persistent)
+                    self.assertFalse(any(arg.startswith("type=volume,") for arg in argv))
                     for source, destination in (("uv", ".local/share/uv"), ("mise", ".local/share/mise"),
                                                 ("cargo", ".cargo"), ("rustup", ".rustup")):
                         self.assertIn(f"type=bind,src={runtime.STATE_ROOT / source},dst={runtime.HOST_HOME / destination}", argv)

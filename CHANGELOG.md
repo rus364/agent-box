@@ -2,8 +2,8 @@
 
 ## Unreleased
 
-- Keep the general tool cache at its usual path in a private anonymous Podman
-  volume, removed with new workspace containers by default. Enable
+- Keep the general tool cache at its usual path in new workspace containers'
+  writable filesystem by default, without an extra mount or volume. Enable
   **Workspace box → Keep tool cache between boxes** to retain it on the host.
   Installed tools remain persistent. Existing global configurations migrate to
   `box.persistent_cache: true`; explicitly turn it off and stop/relaunch to adopt

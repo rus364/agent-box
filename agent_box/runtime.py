@@ -1449,6 +1449,12 @@ def build_mounts(
     # --mount flags for the same tree.
     project_mounts = plan_mounts([MountSpec(workspace.host_root, False, "project root"), *extra_mounts,
                                  *host_tmp_mounts(config is not None and config.box.host_tmp)])
+    if config is None or not config.box.persistent_cache:
+        covering = next((mount.path for mount in project_mounts if XDG_CACHE_HOME.is_relative_to(mount.path)), None)
+        if covering is not None:
+            raise AgentBoxError(
+                f"Host mount {covering} includes the disposable tool cache {XDG_CACHE_HOME}. "
+                "Choose a more specific workspace/mount or enable Workspace box > Keep tool cache between boxes")
 
     pairs: list[tuple[Path, Path, bool]] = [
         # Agent homes intentionally remain host-backed and shared: they hold
@@ -1529,10 +1535,6 @@ def build_mounts(
         seen_paths.add(dst)
         flag = f"type=bind,src={src},dst={dst}" + (",ro=true" if ro else "")
         out += ["--mount", flag]
-    if config is None or not config.box.persistent_cache:
-        # Podman owns this anonymous volume and removes it with the box. A volume
-        # also shields ~/.cache when a parent home directory is the workspace.
-        out += ["--mount", f"type=volume,dst={XDG_CACHE_HOME}"]
     return out
 
 
@@ -2382,7 +2384,7 @@ def remove_workspace_container_then_confirm_absent(name: str) -> None:
     workspace_id = name.rsplit("-", 1)[-1]
     if re.fullmatch(r"[0-9a-f]{16}", workspace_id) and (workspace_state_root(workspace_id) / "browser").exists():
         browser.stop(workspace_id, "workspace")
-    command = ["podman", "rm", "-f", "--volumes", name]
+    command = ["podman", "rm", "-f", name]
     try:
         result = subprocess.run(command, text=True, capture_output=True)
     except OSError as exc:

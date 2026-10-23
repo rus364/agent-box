@@ -34,12 +34,15 @@ global configuration and trust records live in agent-box state shared by
 every box, separate from the host's own mise.
 
 General tool caches (`~/.cache`, or the configured `XDG_CACHE_HOME`, including uv
-downloads and temporary `uvx` environments) use a private anonymous Podman disk
-volume by default. The usual paths stay unchanged, even when the home directory
-is the workspace: the anonymous volume shadows the parent bind mount's cache.
-Podman removes it with the box (`--rm`, or explicit removal with `--volumes`);
-agent-box creates no separate host cache directory or cache-cleaning engine.
-Concurrent sessions in the same box share that cache until the box is removed.
+downloads and temporary `uvx` environments) stay in the workspace container's
+writable filesystem by default. The usual paths stay unchanged; no additional
+cache mount, volume or host directory is created. Removing the container removes
+its cache. Concurrent sessions in the same box share that cache until the box is removed.
+If a workspace or selected host mount includes the cache path itself (for example,
+the entire home directory), a disposable cache would actually write to the host.
+That conflicting selection is refused: choose a more specific project/mount or
+explicitly enable persistence. Agent-box does not relocate the cache or add a
+separate storage object to hide that conflict.
 Enable **Workspace box → Keep tool cache
 between boxes** (`box.persistent_cache`) to reuse a shared host-backed cache.
 With persistence off, later boxes may need network access to download it again.
