@@ -1,17 +1,25 @@
 {
-  "version": 2,
   "tracker": {
-    "provider": "github",
-    "project": "rus364/2",
-    "recursive": false,
     "connections": {
       "github": {
         "url": "https://api.github.com"
       }
-    }
+    },
+    "project": "rus364/2",
+    "provider": "github",
+    "recursive": false
   },
+  "version": 2,
   "workflow": {
+    "auto_push": true,
+    "cleanup_local_branches": true,
+    "cleanup_remote_branches": true,
+    "merge_mode": "local",
     "review": {
+      "ignored_paths": [
+        "docs/**",
+        "**/*.md"
+      ],
       "sensitive_paths": [
         "**/skills/**",
         "**/AGENTS.md",
@@ -26,15 +34,7 @@
         "agent_box/runtime_bundle.py",
         "agent_box/container-launcher",
         "agent_box/__main__.py"
-      ],
-      "ignored_paths": [
-        "docs/**",
-        "**/*.md"
       ]
-    },
-    "merge_mode": "local",
-    "auto_push": true,
-    "cleanup_local_branches": true,
-    "cleanup_remote_branches": true
+    }
   }
 }
