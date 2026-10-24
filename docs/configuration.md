@@ -184,6 +184,7 @@ keep those changes. Opening or cancelling the project menu saves nothing.
 
 ```json
 {
+  "version": 2,
   "tracker": {
     "provider": "github",
     "project": "octo-org/5",

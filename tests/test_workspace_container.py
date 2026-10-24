@@ -629,6 +629,35 @@ class WorkspaceContainerLifecycleTests(unittest.TestCase):
         podman_calls = [call.args[0] for call in run.call_args_list if call.args[0][0] == "podman"]
         self.assertEqual(podman_calls[:2], [["podman", "rm", "-f", self.spec.name], self.spec.create_argv])
 
+    def test_recreation_preserves_unsupported_policies_before_mutating_workspace_state(self):
+        """Rejected records must survive even if a newer readable record masks them."""
+        root = self.spec.runtime_state.root
+        root.mkdir(parents=True, exist_ok=True)
+        rejected = root / "box-a.json"
+        latest = root / "box-z.json"
+        for container in (None, self._container("exited")):
+            for original in (b'{}', b'{"format_version":1}', b'{"format_version":999}', b'{broken'):
+                for with_latest in (False, True):
+                    with self.subTest(container=container is not None, original=original, latest=with_latest):
+                        rejected.write_bytes(original)
+                        if with_latest:
+                            runtime.atomic_write_json(latest, runtime.workspace_box_policy(self.spec), 0o600)
+                        else:
+                            latest.unlink(missing_ok=True)
+                        before = {p.name: p.read_bytes() for p in root.glob("box-*.json")}
+                        with mock.patch.object(runtime, "inspect_workspace_container", return_value=container), \
+                             mock.patch.object(runtime, "remove_workspace_container_then_confirm_absent") as remove, \
+                             mock.patch.object(runtime, "remove_nested_podman_volume") as volume, \
+                             mock.patch.object(runtime, "prepare_container_lifetime_state") as prepare, \
+                             mock.patch.object(runtime.subprocess, "run") as run:
+                            with self.assertRaisesRegex(AgentBoxError, "unreadable or unsupported creation policy"):
+                                runtime.ensure_workspace_container(self.spec)
+                        remove.assert_not_called()
+                        volume.assert_not_called()
+                        prepare.assert_not_called()
+                        run.assert_not_called()
+                        self.assertEqual({p.name: p.read_bytes() for p in root.glob("box-*.json")}, before)
+
     def test_stopped_incompatible_workspace_is_removed_and_recreated(self):
         with mock.patch.object(runtime, "inspect_workspace_container", side_effect=[self._container("exited", base_hash="old"), None]), \
              mock.patch.object(runtime.subprocess, "run", return_value=mock.Mock(returncode=0, stderr="")) as run:

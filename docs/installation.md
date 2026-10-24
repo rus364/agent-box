@@ -44,17 +44,17 @@ pipx ensurepath
 ```
 
 Reopen the shell after changing PATH. Running the installed command needs no
-source checkout. For example, to install the first release, use `agent-box-tool==1.0.0`.
+source checkout. To pin the experimental release, use `agent-box-tool==0.1.0`.
 
 Public Git installation is also supported, without a GitHub account:
 
 ```bash
-uv tool install 'git+https://github.com/rus364/agent-box.git@v1.0.0'
+uv tool install 'git+https://github.com/rus364/agent-box.git@v0.1.0'
 # or:
-pipx install 'git+https://github.com/rus364/agent-box.git@v1.0.0'
+pipx install 'git+https://github.com/rus364/agent-box.git@v0.1.0'
 ```
 
-Omit `@v1.0.0` only when you deliberately want the development branch.
+Omit `@v0.1.0` only when you deliberately want the development branch.
 
 **2. Configure integrations.**
 

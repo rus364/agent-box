@@ -1804,22 +1804,29 @@ def release_k3s(workspace: Workspace, config: Config | None = None,
         print(f"agent-box: stopped the k3s cluster {k3s.name(workspace_identity(workspace))}", file=sys.stderr)
 
 
-def last_box_config(runtime_state: WorkspaceRuntimeState, current: Config | None = None) -> Config | None:
+def last_box_config(runtime_state: WorkspaceRuntimeState, current: Config | None = None,
+                    *, require_readable: bool = False) -> Config | None:
     """The configuration the workspace's latest box was created with; ``None`` when unreadable.
 
     Data a box used goes or stays by the policy that box was created with, as
     every session in it did: a setting changed since, or read by a command
     that never joined the box, must not delete what the box was told to keep,
     nor keep what it was told to discard. Without any box record ``current``
-    (by default the current configuration) applies.
+    (by default the current configuration) applies. Recreation requires every
+    record to be readable because it replaces all of them, not just the latest.
     """
     config = current or effective_config(runtime_config_base())
     policies = sorted(runtime_state.root.glob("box-*.json"))
     if not policies:
         return config
     try:
-        return apply_box_policy(copy.deepcopy(config), read_json(policies[-1]))
+        for policy in policies if require_readable else policies[-1:]:
+            recorded = apply_box_policy(copy.deepcopy(config), read_json(policy))
+        return recorded
     except (OSError, ValueError, TypeError, KeyError, AttributeError, AgentBoxError):
+        if require_readable:
+            raise AgentBoxError("cannot recreate workspace: unreadable or unsupported creation policy; "
+                                "preserve the existing policy files and resolve them before retrying") from None
         return None
 
 
@@ -2449,6 +2456,9 @@ def ensure_workspace_container(spec: WorkspaceContainerSpec) -> None:
                 or not _container_belongs_to_workspace(current, spec)):
             raise AgentBoxError("the workspace box ended or changed while this launch was starting; run the command again")
         return
+    previous = None
+    if current is None or current.get("State", {}).get("Status") != "running":
+        previous = last_box_config(spec.runtime_state, spec.creation_config, require_readable=True)
     if current is not None:
         if not _container_belongs_to_workspace(current, spec):
             if (
@@ -2494,7 +2504,6 @@ def ensure_workspace_container(spec: WorkspaceContainerSpec) -> None:
         # This is the safety boundary: do not reseed live Git/GH bind roots.
         # The gone box's record is replaced below, so its disposal policy is
         # applied first; a disposable new box starts empty as well.
-        previous = last_box_config(spec.runtime_state, spec.creation_config)
         if previous is not None and not (previous.box.podman.persistent_data
                                          and spec.creation_config.box.podman.persistent_data):
             remove_nested_podman_volume(spec.workspace_id)
