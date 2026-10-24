@@ -42,7 +42,8 @@ def alive(process):
     try:
         # An orphan can remain as a zombie until its reaper runs; it uses no API.
         return Path(f"/proc/{process['pid']}/stat").read_text().rsplit(")", 1)[1].split()[0] != "Z"
-    except FileNotFoundError:
+    except (FileNotFoundError, ProcessLookupError):
+        # The process can disappear before open or while reading proc stat.
         return False
 
 

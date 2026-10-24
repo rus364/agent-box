@@ -238,6 +238,46 @@ class SharedPolicyTests(K3sRuntimeTest):
             host_k3s.save(self.root, stale)
             self.assertFalse(host_k3s.has_owners(self.root))
 
+    def test_process_exit_during_stat_read_drops_stale_owner(self):
+        """An exit after opening proc stat is not corrupt cluster ownership."""
+        self.reserve()
+        with mock.patch.object(host_k3s.channel, "_launcher_alive", return_value=True), \
+             mock.patch.object(host_k3s.channel, "_boot_id", return_value=host_k3s.channel._boot_id()):
+            for error in (FileNotFoundError, ProcessLookupError):
+                with self.subTest(error=error.__name__):
+                    stat_file = mock.mock_open()
+                    stat_file.return_value.read.side_effect = error("process exited")
+                    original_open = Path.open
+
+                    def open_stat(path, *args, **kwargs):
+                        if path == Path(f"/proc/{os.getpid()}/stat"):
+                            return stat_file(*args, **kwargs)
+                        return original_open(path, *args, **kwargs)
+
+                    with mock.patch.object(Path, "open", open_stat):
+                        self.assertFalse(host_k3s.has_owners(self.root))
+                    stat_file.return_value.read.assert_called_once()
+
+    def test_stat_permission_error_does_not_discard_live_owner(self):
+        """Unreadable process state must not authorize cleanup of a live consumer."""
+        self.reserve()
+        stat_file = mock.mock_open()
+        stat_file.return_value.read.side_effect = PermissionError("access denied")
+        original_open = Path.open
+
+        def open_stat(path, *args, **kwargs):
+            if path == Path(f"/proc/{os.getpid()}/stat"):
+                return stat_file(*args, **kwargs)
+            return original_open(path, *args, **kwargs)
+
+        with mock.patch.object(host_k3s.channel, "_launcher_alive", return_value=True), \
+             mock.patch.object(host_k3s.channel, "_boot_id", return_value=host_k3s.channel._boot_id()), \
+             mock.patch.object(Path, "open", open_stat):
+            with self.assertRaises(AgentBoxError) as raised:
+                host_k3s.has_owners(self.root)
+        self.assertIsInstance(raised.exception.__cause__, PermissionError)
+        self.assertTrue(host_k3s.has_owners(self.root))
+
     def test_pending_tmux_handoff_survives_early_client_detach(self):
         """The launcher may detach before the pane has consumed its environment."""
         reservation = self.reserve(Config())
