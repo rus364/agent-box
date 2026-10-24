@@ -37,9 +37,9 @@ class SharedPolicyTests(K3sRuntimeTest):
             patch.start()
             self.addCleanup(patch.stop)
 
-    def ensure(self, workspace_id, settings, state, project, *, host_tmp=False):
+    def ensure(self, workspace_id, settings, state, project):
         self.sidecar = {"State": {"Status": "running"}, "Config": {"Labels": {
-            k3s.SPEC_LABEL: k3s.spec_hash(workspace_id, settings, state, project, host_tmp=host_tmp)}}}
+            k3s.SPEC_LABEL: k3s.spec_hash(workspace_id, settings, state, project)}}}
         state.mkdir(parents=True, exist_ok=True)
         (state / "kubeconfig").write_text("test managed kubeconfig")
         return 41234

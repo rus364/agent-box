@@ -49,6 +49,21 @@ class IsolatedLaunchTest(unittest.TestCase):
 
 
 class SessionPrecedenceTests(IsolatedLaunchTest):
+    def test_removed_tmp_flags_follow_unknown_option_forwarding(self):
+        """Removed switches must not grant host access or gain special compatibility handling."""
+        for flag in ('--host-tmp', '--no-host-tmp'):
+            with self.subTest(flag=flag):
+                options, rest = launch_options.parse([flag, 'codex'])
+                self.assertEqual(options.overrides, {})
+                self.assertEqual(rest, [flag, 'codex'])
+
+    def test_old_tmp_setting_is_not_rendered_into_new_sessions(self):
+        """An obsolete setting must not revive sharing through a nested session snapshot."""
+        config = Config.from_dict({'box': {'host_tmp': True}})
+        launched, snapshot = self.launch(config, {})
+        self.assertNotIn('host_tmp', launched.box.to_dict())
+        self.assertNotIn('host_tmp', snapshot.read_text())
+
     def test_k3s_override_survives_project_changes_without_becoming_a_saved_setting(self):
         """A one-launch cluster choice wins over the project and remains absent from its global baseline."""
         for enabled in (True, False):

@@ -310,38 +310,6 @@ class PersonalHostLaunchTests(IsolatedRuntimeTest):
                         selected.assert_not_called()
                         opened.assert_not_called()
 
-    def test_host_tmp_selection_reaches_personal_browser_in_both_launch_modes(self):
-        """Personal-browser uploads must honor the same explicit sharing as isolated browsing."""
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            for host in (False, True):
-                for enabled in (False, True):
-                    config = Config()
-                    config.host.personal_browser.enabled = True
-                    config.box.host_tmp = enabled
-                    with self.subTest(host=host, enabled=enabled), \
-                            patch.object(runtime, "launch_config", return_value=config), \
-                            patch.object(runtime, "resolve_workspace", return_value=Workspace(root, root)), \
-                            patch.object(runtime, "resolved_workspace", return_value=Workspace(root, root)), \
-                            patch.object(runtime, "existing_workspace_spec", return_value=None), \
-                            patch.object(runtime.host_podman, "require"), \
-                            patch.object(runtime, "ensure_workspace_image", return_value="sha256:test"), \
-                            patch.object(runtime, "sync_managed_skills"), \
-                            patch.object(runtime, "claude_skill_links"), \
-                            patch.object(runtime, "workspace_container_spec"), \
-                            patch.object(runtime, "session_runtime", return_value=root / "snapshot.json"), \
-                            patch.object(runtime, "tmux_enabled", return_value=False), \
-                            patch.object(runtime.shutil, "which", return_value="/usr/bin/codex"), \
-                            patch.object(personal_browser, "command", return_value=["/usr/bin/test-browser"]), \
-                            patch.object(browser, "prepare", side_effect=RuntimeError("dispatch reached")) as prepared:
-                        with self.assertRaisesRegex(RuntimeError, "dispatch reached"):
-                            if host:
-                                runtime.host_main("codex", ["exec", "hello"], LaunchOptions(tmux=False))
-                            else:
-                                runtime.runtime_main(["codex", "exec", "hello"], runtime.PACKAGE_ROOT)
-                        self.assertEqual(prepared.call_args.kwargs.get("host_tmp"), enabled)
-                        self.assertEqual(bool(prepared.call_args.kwargs.get("container")), not host)
-
     def test_real_launch_wiring_adds_both_servers_without_touching_saved_settings(self):
         """Testing the helpers alone would miss the second server being lost at dispatch."""
         with tempfile.TemporaryDirectory() as temporary:

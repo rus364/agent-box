@@ -68,7 +68,6 @@ OPTIONS = (
     Option("cloud-profiles", ACCESS, "Cloud CLI profiles chosen in agent-box config", form="pair", container=True),
     Option("k3s", ACCESS, "This project's shared k3s cluster (host or container)", form="pair"),
     Option("links", ACCESS, "Host web-link broker and temporary localhost callback forwarding", form="pair", container=True),
-    Option("host-tmp", ACCESS, "Share host /tmp read-write with workspace and browser/k3s sidecars", form="pair"),
     Option("api-keys", ACCESS, "Provider API key variables", form="pair", container=True),
     Option("personal-browser", ACCESS, "Connect to the desktop browser through its Playwright extension", form="pair"),
     Option("browser", ACCESS, "Do not start the agent browser MCP server", form="negated"),
@@ -241,8 +240,6 @@ def apply(config, overrides):
             config.box.k3s.enabled = value
         elif key == "links":
             config.box.links.enabled = value
-        elif key == "host-tmp":
-            config.box.host_tmp = value
         elif key == "api-keys":
             config.agents.host_env.api_keys = value
         elif key == "personal-browser":

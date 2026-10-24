@@ -46,7 +46,7 @@ from .errors import AgentBoxError
 from .external_config import has_toml_spelling, toml_string
 from .identity import HostIdentity, detect_host_identity
 from .launch_options import LaunchOptions
-from .mounts import MountSpec, host_tmp_mounts, plan_mounts
+from .mounts import MountSpec, plan_mounts
 from .notify import SUPPRESS_NOTIFY_ENV
 from .paths import (
     AGENT_SKILLS_DIR,
@@ -1113,7 +1113,7 @@ def sync_tracker_runtime(config: Config, directory: Path | None = None, *, polic
                 "network": network,
                 "podman": config.box.podman.to_dict(),
                 "persistent_cache": config.box.persistent_cache,
-                "audio": config.box.audio, "host_tmp": config.box.host_tmp, "links": config.box.links.to_dict()},
+                "audio": config.box.audio, "links": config.box.links.to_dict()},
         "container": container,
         # Re-applied over the project configuration inside the session.
         "launch": launch,
@@ -1448,8 +1448,7 @@ def build_mounts(
     # the documented way to expose sibling repos); plan_mounts collapses
     # that deterministically instead of issuing two overlapping podman
     # --mount flags for the same tree.
-    project_mounts = plan_mounts([MountSpec(workspace.host_root, False, "project root"), *extra_mounts,
-                                 *host_tmp_mounts(config is not None and config.box.host_tmp)])
+    project_mounts = plan_mounts([MountSpec(workspace.host_root, False, "project root"), *extra_mounts])
     pairs: list[tuple[Path, Path, bool]] = [
         # Agent homes intentionally remain host-backed and shared: they hold
         # the user's provider authentication and durable agent settings. Git
@@ -1757,7 +1756,7 @@ def prepare_k3s(config: Config, workspace: Workspace, runtime_state: WorkspaceRu
                     host_k3s.cleanup(runtime_state.root, retained)
                 else:
                     release_k3s(workspace, config, runtime_state)
-            k3s.ensure(workspace_id, config.box.k3s, state_dir, workspace.host_root, host_tmp=config.box.host_tmp)
+            k3s.ensure(workspace_id, config.box.k3s, state_dir, workspace.host_root)
         else:
             release_k3s(workspace, config, runtime_state)
 
@@ -2187,7 +2186,6 @@ def workspace_box_policy(spec: WorkspaceContainerSpec) -> dict:
                 "podman": config.box.podman.to_dict(),
                 "persistent_cache": config.box.persistent_cache,
                 "audio": any(arg.startswith("--env=PULSE_SERVER=") for arg in spec.create_argv),
-                "host_tmp": config.box.host_tmp,
                 "links": config.box.links.to_dict()},
         "credentials": {"git": config.credentials.git.to_dict(),
                         "github": {"config": config.credentials.github.config},
@@ -2267,7 +2265,6 @@ def existing_workspace_spec(workspace: Workspace, options: LaunchOptions, packag
                         "kubeconfigs": shared.credentials.kubernetes.enabled,
                         "cloud-profiles": shared.credentials.cloud.enabled,
                         "links": shared.box.links.enabled,
-                        "host-tmp": shared.box.host_tmp,
                         "git-config": shared.credentials.git.full_config,
                         "gh-config": shared.credentials.github.config}
         for key, actual in shared_flags.items():
@@ -2307,7 +2304,7 @@ def verified_browser_mounts(policy, container):
         if not target.is_absolute() or type(read_only) is not bool:
             raise AgentBoxError("invalid saved browser mount; stop and relaunch the workspace")
         selected.append(MountSpec(target, read_only))
-    for mount in [*selected, *host_tmp_mounts(Config.from_dict(policy).box.host_tmp)]:
+    for mount in selected:
         target, read_only = mount.path, mount.read_only
         covering = [item for item in container.get("Mounts", [])
                     if target.is_relative_to(Path(item["Destination"]))]
@@ -3165,10 +3162,6 @@ def runtime_main(
     errors = config.box.validate()
     if errors:
         raise AgentBoxError(errors[0])
-    try:
-        plan_mounts([*extra_mounts, *host_tmp_mounts(config.box.host_tmp)])
-    except MountError as exc:
-        raise AgentBoxError(str(exc)) from exc
     agent, rest = config.agents.default, args
     if args and args[0] in {"claude", "codex", "shell", "doctor"}:
         agent, rest = args[0], args[1:]
@@ -3207,7 +3200,7 @@ def runtime_main(
             inherited = existing.browser_mounts if existing is not None else extra_mounts
             browser.prepare(browser_dir, workspace.host_root, workspace.cwd, inherited,
                             container=workspace_container_name(workspace), workspace=workspace_identity(workspace),
-                            session=session.name if session else "", host_tmp=config.box.host_tmp)
+                            session=session.name if session else "")
         except (AgentBoxError, OSError) as exc:
             warn(f"browser unavailable: {exc}; starting without it")
             browser_dir = None
@@ -3221,7 +3214,7 @@ def runtime_main(
             inherited = existing.browser_mounts if existing is not None else extra_mounts
             browser.prepare(personal_dir, workspace.host_root, workspace.cwd, inherited,
                             container=workspace_container_name(workspace), workspace=workspace_identity(workspace),
-                            session=session.name if session else "", host_tmp=config.box.host_tmp, desktop=desktop)
+                            session=session.name if session else "", desktop=desktop)
         except (AgentBoxError, OSError) as exc:
             warn(f"personal browser unavailable: {exc}")
             personal_dir = None
@@ -3721,7 +3714,7 @@ def host_main(
             browser_dir = HOST_SESSIONS_ROOT / workspace_identity(workspace) / "browser" / uuid.uuid4().hex
             try:
                 browser_command = browser.prepare(browser_dir, workspace.host_root, workspace.cwd,
-                                                  workspace=workspace_identity(workspace), host_tmp=config.box.host_tmp)
+                                                  workspace=workspace_identity(workspace))
                 record_workspace_path(workspace_identity(workspace), str(workspace.host_root.resolve()))
             except (AgentBoxError, OSError) as exc:
                 warn(f"browser unavailable: {exc}; starting without it")
@@ -3735,7 +3728,7 @@ def host_main(
                 personal_dir = HOST_SESSIONS_ROOT / workspace_identity(workspace) / "browser" / uuid.uuid4().hex
                 personal_command = browser.prepare(personal_dir, workspace.host_root, workspace.cwd,
                                                    workspace=workspace_identity(workspace),
-                                                   host_tmp=config.box.host_tmp, desktop=desktop)
+                                                   desktop=desktop)
                 record_workspace_path(workspace_identity(workspace), str(workspace.host_root.resolve()))
             except (AgentBoxError, OSError) as exc:
                 warn(f"personal browser unavailable: {exc}")

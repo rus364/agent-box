@@ -61,8 +61,13 @@ class BrowserPolicyTests(unittest.TestCase):
                      'Config': {'Labels': {runtime.WORKSPACE_CONTAINER_EXTRA_MOUNTS_LABEL:
                                            runtime.explicit_mounts_hash(mounts)}}}
         policy = {'browser_mounts': [['/private', False]]}
-        with self.assertRaisesRegex(AgentBoxError, 'differ from the workspace'):
-            runtime.verified_browser_mounts(policy, container)
+        for actual in ([], [{'Source': '/private', 'Destination': '/private', 'RW': False}],
+                       [{'Source': '/other', 'Destination': '/private', 'RW': True}]):
+            with self.subTest(actual=actual):
+                container['Mounts'] = actual
+                with self.assertRaisesRegex(AgentBoxError, 'differ from the workspace'):
+                    runtime.verified_browser_mounts(policy, container)
+        container['Mounts'] = [{'Source': '/project', 'Destination': '/project', 'RW': True}]
         policy['browser_mounts'] = [['/project/assets', False]]
         self.assertEqual(runtime.verified_browser_mounts(policy, container),
                          [MountSpec(Path('/project/assets'), False)])
@@ -94,6 +99,20 @@ class BrowserPolicyTests(unittest.TestCase):
         self.assertNotIn('/run/podman', ' '.join(args))
         self.assertNotIn('.codex', ' '.join(args))
         self.assertEqual(args[args.index('--workdir')+1], '/project/sub')
+
+    def test_browser_tmp_is_private_unless_explicitly_mounted(self):
+        """Both browser types and launch modes must rely only on selected host mounts."""
+        for container in ('', 'workspace'):
+            for personal in (False, True):
+                with self.subTest(container=container, personal=personal):
+                    args = browser.container_command('/state/session', '/project', '/project', [],
+                                                     container=container, personal=personal)
+                    self.assertNotIn('type=bind,src=/tmp,dst=/tmp,ro=false', args)
+                    for read_only in (False, True):
+                        args = browser.container_command(
+                            '/state/session', '/project', '/project', [MountSpec(Path('/tmp'), read_only)],
+                            container=container, personal=personal)
+                        self.assertIn(f'type=bind,src=/tmp,dst=/tmp,ro={str(read_only).lower()}', args)
 
     def test_native_host_retains_localhost_and_session_private_output(self):
         """Host browser URLs and returned filenames must retain their usual meaning."""
@@ -185,18 +204,16 @@ class HostBrowserTests(IsolatedRuntimeTest):
             with self.subTest(agent=agent):
                 cfg = config.Config()
                 cfg.box.browser.enabled = True
-                cfg.box.host_tmp = True
                 command = ['python3', '/immutable/agent_box/__main__.py', '_browser', 'run', '[]']
                 with patch.object(runtime, 'launch_config', return_value=cfg), \
                      patch.object(runtime, 'resolved_workspace', return_value=Workspace(self.root, self.root)), \
                      patch.object(runtime.shutil, 'which', return_value='/bin/'+agent), \
                      patch.object(runtime, 'HOST_SESSIONS_ROOT', self.root/'sessions'), \
-                     patch.object(browser, 'prepare', return_value=command) as prepare, \
+                     patch.object(browser, 'prepare', return_value=command), \
                      patch.object(runtime, 'tmux_enabled', return_value=False), \
                      patch.object(runtime, 'browser_claude_args', wraps=runtime.browser_claude_args), \
                      patch.object(runtime.subprocess, 'call', return_value=0) as call:
                     runtime.host_main(agent, ['sample prompt'])
-                self.assertTrue(prepare.call_args.kwargs['host_tmp'])
                 argv = call.call_args.args[0]
                 if agent == 'codex':
                     self.assertIn('mcp_servers.agent_box_browser=', ' '.join(argv))

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Breaking (next major release):** remove whole-host `/tmp` sharing:
+  `box.host_tmp`, `--host-tmp` and `--no-host-tmp` no longer configure workspace,
+  browser or k3s mounts. Remove these flags from launch commands. Containers
+  keep their own `/tmp`; existing explicit `--mount` behavior is unchanged.
+  There is no replacement setting, fallback or migration. An old `host_tmp`
+  field is ignored by normal configuration parsing. Running immutable runtimes
+  keep their existing mounts until explicit stop/relaunch; host temporary files
+  are not changed or cleaned up.
 - Keep the general tool cache at its usual path in new workspace containers'
   writable filesystem by default, without an extra mount or volume. Enable
   **Workspace box → Keep tool cache between boxes** to retain it on the host.

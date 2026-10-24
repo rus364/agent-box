@@ -131,15 +131,11 @@ def box_policy(root, workspace):
 def apply(config, options, policy):
     """Only shared sidecar choices are inherited; host credentials stay native."""
     shared = Config.from_dict({"box": policy})
-    for key, actual in (("k3s", shared.box.k3s.enabled), ("host-tmp", shared.box.host_tmp)):
-        if key in options.overrides and options.overrides[key] != actual:
-            raise AgentBoxError(f"explicit {key} choice conflicts with the running project environment; "
-                                "stop all project sessions and relaunch with that option")
+    if "k3s" in options.overrides and options.overrides["k3s"] != shared.box.k3s.enabled:
+        raise AgentBoxError("explicit k3s choice conflicts with the running project environment; "
+                            "stop all project sessions and relaunch with that option")
     config.box.k3s = copy.deepcopy(shared.box.k3s)
     config._cluster_policy = shared.box.k3s.to_dict()
-    # /tmp is part of the sidecar recipe only when the cluster is enabled.
-    if shared.box.k3s.enabled:
-        config.box.host_tmp = shared.box.host_tmp
 
 
 def inherit(config, options, root):
@@ -160,13 +156,12 @@ def verify(config, root):
         return
     expected = Config.from_dict({"box": data["box"]})
     if (data["runtime"] != runtime_bundle.identity(PACKAGE_ROOT)
-            or config.box.k3s.to_dict() != expected.box.k3s.to_dict()
-            or config.box.k3s.enabled and config.box.host_tmp != expected.box.host_tmp):
+            or config.box.k3s.to_dict() != expected.box.k3s.to_dict()):
         raise AgentBoxError("project cluster policy changed during startup; retry the launch")
     if config.box.k3s.enabled:
         sidecar = k3s.inspect(root.name)
         wanted = k3s.spec_hash(root.name, config.box.k3s, root / "k3s",
-                               Path(data["project"]), host_tmp=config.box.host_tmp)
+                               Path(data["project"]))
         if (sidecar or {}).get("State", {}).get("Status") != "running" or (
                 sidecar.get("Config", {}).get("Labels", {}).get(k3s.SPEC_LABEL) != wanted):
             raise AgentBoxError("shared k3s is unavailable or incompatible; stop project sessions and relaunch")
@@ -230,7 +225,7 @@ def _reserve(config, options, workspace):
                 host_root = runtime.HOST_SESSIONS_ROOT / root.name
                 if host_root.is_dir() and runtime.shutil.which("tmux") and runtime.tmux_sessions(None, host_root=host_root):
                     raise AgentBoxError("existing host sessions have no shared cluster policy; end them and relaunch")
-            data = {"box": {"k3s": config.box.k3s.to_dict(), "host_tmp": config.box.host_tmp},
+            data = {"box": {"k3s": config.box.k3s.to_dict()},
                     "runtime": runtime_bundle.identity(PACKAGE_ROOT), "owners": {},
                     "project": str(workspace.host_root)}
             # A failed readiness check must retain the creation-time cleanup policy.
@@ -239,12 +234,11 @@ def _reserve(config, options, workspace):
             sidecar = k3s.inspect(root.name)
             if policy is not None or data and data["owners"]:
                 wanted = k3s.spec_hash(root.name, config.box.k3s, root / "k3s",
-                                       workspace.host_root, host_tmp=config.box.host_tmp)
+                                       workspace.host_root)
                 if (sidecar or {}).get("State", {}).get("Status") != "running" or (
                         sidecar.get("Config", {}).get("Labels", {}).get(k3s.SPEC_LABEL) != wanted):
                     raise AgentBoxError("shared k3s is unavailable or incompatible; stop project sessions and relaunch")
-            k3s.ensure(root.name, config.box.k3s, root / "k3s", workspace.host_root,
-                       host_tmp=config.box.host_tmp)
+            k3s.ensure(root.name, config.box.k3s, root / "k3s", workspace.host_root)
             # Probe through the same host kubeconfig the agent will receive.
             result = subprocess.run(
                 ["kubectl", "--kubeconfig", str(k3s.kubeconfig_path(root / "k3s")),
@@ -306,7 +300,7 @@ def record_box(config, root):
     """Keep a former host environment's cleanup policy current after box creation."""
     data = load(root)
     if data and not data["owners"]:
-        data["box"] = {"k3s": config.box.k3s.to_dict(), "host_tmp": config.box.host_tmp}
+        data["box"] = {"k3s": config.box.k3s.to_dict()}
         data["runtime"] = runtime_bundle.identity(PACKAGE_ROOT)
         save(root, data)
 

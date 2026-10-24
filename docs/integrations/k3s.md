@@ -175,11 +175,7 @@ rm` deletes a cluster together with the rest of what that project keeps.
 > The agent is cluster-admin in its cluster. A privileged pod, a `hostPath: /`
 > volume, `hostPID` or `hostNetwork` all land in the **sidecar**: its
 > filesystem, its processes, its network. Your home directory is not mounted.
-> The optional `box.host_tmp` / `--host-tmp` setting mounts the whole host
-> `/tmp` read-write in the sidecar. Pods get no automatic `/tmp` bind, but an
-> explicit `hostPath` can reach that shared directory, including accessible
-> unrelated files and Unix sockets. Sharing is off by default; see
-> [extra mounts](../usage.md#extra-mounts) for permissions and lifetime.
+> The sidecar has its own `/tmp`; workspace extra mounts are not inherited.
 > Root in a pod is root in the sidecar's user namespace, which maps to your
 > own user on the host.
 

@@ -14,6 +14,21 @@ from agent_box.workspace import Workspace
 
 
 class WorkspaceContainerIdentityTests(unittest.TestCase):
+    def test_temporary_directory_sharing_requires_an_explicit_mount(self):
+        """Even old settings must leave /tmp private; explicit file access remains available."""
+        config = runtime.Config.from_dict({'box': {'host_tmp': True}})
+        workspace = Workspace(Path('/project'), Path('/project'))
+        with mock.patch.object(runtime, 'XDG_CACHE_HOME', runtime.HOST_HOME / '.cache'), \
+             mock.patch.object(runtime.kubeconfigs, 'XDG_CACHE_HOME', runtime.HOST_HOME / '.cache'):
+            normal = runtime.build_mounts(workspace, [], runtime.PACKAGE_ROOT, config)
+            self.assertNotIn('type=bind,src=/tmp,dst=/tmp', normal)
+            for read_only in (False, True):
+                with self.subTest(read_only=read_only):
+                    mounts = runtime.build_mounts(
+                        workspace, [MountSpec(Path('/tmp'), read_only)], runtime.PACKAGE_ROOT, config)
+                    expected = 'type=bind,src=/tmp,dst=/tmp' + (',ro=true' if read_only else '')
+                    self.assertEqual(mounts.count(expected), 1)
+
     def test_canonical_workspace_has_a_stable_collision_safe_container_name(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
