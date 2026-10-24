@@ -21,12 +21,44 @@ request header; a failure shows a short diagnostic and leaves manual entry.
 **Add from provider list** offers the models not configured yet; typing
 filters them by ID or name. A chosen model gets the settings the list states:
 `display_name`, `supported_efforts` and the provider's default `effort`,
-`context_window` and `input_modalities`. DeepSeek, OpenRouter and Anthropic
+`context_window`, `max_output_tokens` and `input_modalities`. DeepSeek, OpenRouter and Anthropic
 state most of these; a plain OpenAI-compatible list gives only IDs. Compaction
 thresholds, Codex tool flags, `metadata` and `env` stay manual. A configured
 model the list lacks is marked `not listed` and kept; **Update from API**
-replaces only the fields the list states for that model. A listed model is a
+deliberately replaces only the fields the list states for that model, including
+any manual edits to those shared fields. Browsing and launching never refresh
+saved values. CLI-specific overrides remain intact. A listed model is a
 suggestion, not proof that the account may use it.
+
+Known routing aliases `openrouter/free` and `openrouter/auto` import only their
+labels. Their advertised limits and capabilities do not describe a fixed model;
+the menu explains this rather than filling them in. Unknown metadata uses the
+normal conservative defaults. Deliberate manual settings, including previously
+saved alias settings, remain untouched; review them when the router changes.
+Other custom aliases cannot be classified from an arbitrary ID alone: verify
+what they route to before adopting the advertised settings.
+
+### Metadata and client mapping
+
+| Published field | Stored setting and client behavior |
+| --- | --- |
+| DeepSeek `context_window`, OpenRouter `context_length` (or `top_provider.context_length`) | Exact `context_window`; Codex catalog and Claude custom-ID environment |
+| Anthropic `max_input_tokens` | Conservative `context_window` from the input limit; no output budget is added to invent a total capacity |
+| DeepSeek `max_output_tokens`, OpenRouter `top_provider.max_completion_tokens`, Anthropic model `max_tokens` | `max_output_tokens`; Claude uses the smaller of this ceiling and its 32,000-token unknown-model default. Codex has no mapped output-limit setting; this field is not inserted into its catalog |
+| `input_modalities`, OpenRouter `architecture.input_modalities`, Anthropic `capabilities.image_input.supported` | Text/image subset in Codex's catalog. Missing data defaults to text only; audio, video and file support are not inferred. No equivalent Claude modality setting is emitted |
+| DeepSeek `effort`, OpenRouter explicit `reasoning.supported_efforts`, Anthropic `capabilities.effort` | Shared effort list/default, Codex catalog and Claude launch effort within each client's vocabulary |
+| OpenRouter `supported_parameters` such as `tools` or `reasoning` | Not enough to infer parallel calls, reasoning levels/summaries, freeform patch tools, or Claude thinking/adaptive-thinking behavior; these remain manual |
+| Output modalities, DeepSeek `api_capabilities.anthropic_messages.system_prompt_update` | Not mapped: neither describes a supported generic client launch setting |
+
+These are advertised values, not live capability guarantees. OpenRouter limits
+may vary by the selected backend even for a fixed model ID. A missing, null,
+non-integer or nonpositive token limit stays unknown. We do not synthesize effort
+levels from a generic reasoning flag, or enable Claude capability overrides from
+unrelated provider flags. See the provider contracts for
+[DeepSeek](https://api-docs.deepseek.com/api/list-models/),
+[OpenRouter](https://openrouter.ai/docs/api/api-reference/models/list-all-models-and-their-properties),
+[its free router](https://openrouter.ai/openrouter/free/providers), and
+[Anthropic](https://platform.claude.com/docs/en/api/models/list).
 
 Keys live in the global protected `config.json` (mode `0600`), are masked in the
 menu and `config show`, and reach processes through their environment or private
@@ -121,7 +153,7 @@ are specific to Codex.
 A provider's `models` is an object keyed by the model ID and shared by both
 CLIs. Each entry accepts `display_name`, `effort` (default: `default`),
 `supported_efforts` (default: empty/unknown), `context_window` (default: `0`,
-CLI default) and `input_modalities` (`text`, `image`; default: `text`). A
+CLI default), `max_output_tokens` (default: `0`, unknown) and `input_modalities` (`text`, `image`; default: `text`). A
 declared effort list constrains launch requests. Explicit CLI/workflow effort
 wins over the model default. Set workflow effort to `default` to use the
 model's settings.
@@ -143,18 +175,45 @@ the installed Codex and the API.
 Additional session config can use ordinary permitted Codex `-c` arguments;
 API/profile/catalog and Remote Control ownership remain with agent-box.
 
-Claude Code knows a 200K and a 1M context window only, so Claude derives its
-window from `context_window`: from 1,000,000 tokens it launches the ID with
-`[1m]`, from 200,000 with the ordinary window, and below that leaves it
-unspecified. Configured IDs never carry `[1m]`; an explicit `--model ID[1m]`
-still selects that model. Claude uses only the efforts among its own levels: a
-shared default it lacks, such as `minimal`, launches with Claude's default, and
-a model declaring no level Claude has accepts only that default. The
-compact threshold must stay below the window that CLI uses. It becomes
-`CLAUDE_CODE_AUTO_COMPACT_WINDOW`, and default effort becomes
-`CLAUDE_CODE_EFFORT_LEVEL`. Claude's picker receives IDs and display labels;
-its native effort UI is controlled by Claude Code. Agent-box uses
-`supported_efforts` for its workflow picker and launch validation.
+Claude receives the exact `context_window` as
+`CLAUDE_CODE_MAX_CONTEXT_TOKENS`, without rounding or changing the model ID.
+For an unrecognized custom ID without `[1m]`, this corrects the assumed window
+while keeping compaction enabled. Claude's own ID resolution limits this setting:
+recognized Claude models and bare `claude-` IDs keep their native context rules
+while compaction is enabled. Agent-box does not disable compaction, impersonate a
+Claude model through `behavesAs`/`modelOverrides`, or declare arbitrary
+`_SUPPORTED_CAPABILITIES` to work around those rules.
+
+Configured IDs never carry `[1m]`; an explicit `--model ID[1m]` still selects that
+model and retains the requested suffix, without generating a competing context
+override. For a real Claude model requiring that suffix, select it explicitly.
+For other windows use an untagged custom ID with the correct configured limit.
+Explicit endpoint/model environment values override generated context/output
+values; a pre-existing startup environment value is also retained unless the
+endpoint/model environment replaces it. Claude may cap output below the supplied
+limit. Increasing the provider's advertised output ceiling alone does not increase
+the generated request budget above 32,000 tokens.
+
+The compaction threshold remains separate, must be below the configured window,
+and becomes `CLAUDE_CODE_AUTO_COMPACT_WINDOW`. Claude uses only efforts among its
+own levels: a shared default it lacks, such as `minimal`, launches with Claude's
+default; a model declaring no level Claude supports accepts only that default.
+Default effort becomes `CLAUDE_CODE_EFFORT_LEVEL`. Agent-box uses
+`supported_efforts` for its workflow picker and validation; it does not guarantee
+that Claude's own effort UI recognizes the custom model.
+
+Claude's generated context, output, compaction and effort environment is set at
+launch. Its `/model` picker does not rerun agent-box: **restart with `--model ID`
+when switching models with different limits or tuning**. Codex's catalog carries
+per-model context/compaction; native session-wide overrides still win.
+See [Claude custom-model context rules](https://code.claude.com/docs/en/model-config#correct-the-window-for-a-gateway-or-custom-model-id)
+and [output-limit behavior](https://code.claude.com/docs/en/env-vars#claude_code_max_output_tokens).
+
+`max_output_tokens` is an optional field within the current configuration schema;
+existing current-format entries without it load as unknown. No schema identity
+changes or historical conversions are introduced. Saved credentials, models and
+overrides are not refreshed or rewritten at launch. Existing workspaces need
+explicit stop/relaunch to adopt updated runtime code.
 
 Endpoint `env` applies to that CLI only; the model's `env` for that CLI
 overrides matching names.

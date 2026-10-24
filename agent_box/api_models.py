@@ -73,6 +73,11 @@ def _number(*values):
     return next((v for v in values if type(v) is int and v > 0), None)
 
 
+def routing_alias(model):
+    """These published IDs select different models, not a fixed set of capabilities."""
+    return model in ('openrouter/free', 'openrouter/auto')
+
+
 def model_fields(item):
     """The shared model settings one list entry states; a field the API leaves out stays absent.
 
@@ -85,11 +90,17 @@ def model_fields(item):
     name = item.get('display_name') or item.get('name')
     if isinstance(name, str) and name.strip():
         fields['display_name'] = name.strip()
+    if routing_alias(item.get('id')):
+        return fields
     top = item.get('top_provider') if isinstance(item.get('top_provider'), dict) else {}
     context = _number(item.get('context_window'), item.get('context_length'),
                       item.get('max_input_tokens'), top.get('context_length'))
     if context:
         fields['context_window'] = context
+    output = _number(item.get('max_output_tokens'), top.get('max_completion_tokens'),
+                     item.get('max_tokens') if item.get('type') == 'model' else None)
+    if output:
+        fields['max_output_tokens'] = output
     capabilities = item.get('capabilities') if isinstance(item.get('capabilities'), dict) else {}
     architecture = item.get('architecture') if isinstance(item.get('architecture'), dict) else {}
     modalities = item.get('input_modalities') or architecture.get('input_modalities')

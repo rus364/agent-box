@@ -32,6 +32,91 @@ def rich_config():
 
 
 class ExternalModelTests(unittest.TestCase):
+    def test_discovered_limits_survive_storage_and_reach_each_clients_supported_settings(self):
+        """Nonstandard windows must not be rounded or confused with output and compaction limits."""
+        for context, output in ((32000, 4096), (400000, 65536), (1000000, 128000), (2000000, 393216)):
+            with self.subTest(context=context), tempfile.TemporaryDirectory() as tmp:
+                fields = api_models.model_fields({'id': 'custom', 'context_window': context,
+                                                  'max_output_tokens': output})
+                raw = external_config().to_dict()
+                provider = raw['agents']['external_apis']['deepseek']
+                provider['models'] = {'custom': {**fields, 'claude': {'auto_compact_token_limit': context // 2}}}
+                for cli in ('claude', 'codex'):
+                    provider[cli]['default_model'] = 'custom'
+                path = Path(tmp) / 'config.json'
+                save_config(Config.from_dict(raw), path)
+                config = load_config(path)
+                for cli in ('claude', 'codex'):
+                    command, env = ext.prepare([cli], 'deepseek', cli, config, Path(tmp) / cli, {})
+                    if cli == 'claude':
+                        self.assertEqual(env['ANTHROPIC_MODEL'], 'custom')
+                        self.assertEqual(env['CLAUDE_CODE_MAX_CONTEXT_TOKENS'], str(context))
+                        self.assertEqual(env['CLAUDE_CODE_MAX_OUTPUT_TOKENS'], str(min(32000, output)))
+                        self.assertEqual(env['CLAUDE_CODE_AUTO_COMPACT_WINDOW'], str(context // 2))
+                        settings = json.loads((Path(tmp) / cli / 'claude-settings.json').read_text())
+                        self.assertEqual(settings['env']['CLAUDE_CODE_MAX_CONTEXT_TOKENS'], str(context))
+                        self.assertNotIn('behavesAs', str(settings))
+                        self.assertNotIn('modelOverrides', settings)
+                    else:
+                        row = json.loads((Path(tmp) / cli / 'models.json').read_text())['models'][0]
+                        self.assertEqual(row['context_window'], context)
+                        self.assertNotIn('max_output_tokens', row)
+
+    def test_explicit_native_limits_win_and_model_environment_does_not_leak_to_nested_launches(self):
+        """Discovery is a default; configured env and explicit suffixes retain their own meaning."""
+        raw = rich_config().to_dict()
+        provider = raw['agents']['external_apis']['deepseek']
+        provider['models']['v4-pro']['max_output_tokens'] = 4096
+        provider['claude']['env']['CLAUDE_CODE_MAX_CONTEXT_TOKENS'] = '500000'
+        provider['models']['v4-pro']['claude']['env'].update(
+            CLAUDE_CODE_MAX_CONTEXT_TOKENS='600000', CLAUDE_CODE_MAX_OUTPUT_TOKENS='2048')
+        config = Config.from_dict(raw)
+        with tempfile.TemporaryDirectory() as tmp:
+            original = {'CLAUDE_CODE_MAX_CONTEXT_TOKENS': '700000', 'CLAUDE_CODE_MAX_OUTPUT_TOKENS': '1024'}
+            _, inherited = ext.prepare(['claude'], 'deepseek', 'claude', rich_config(),
+                                       Path(tmp) / 'inherited', original)
+            self.assertEqual(inherited['CLAUDE_CODE_MAX_CONTEXT_TOKENS'], '700000')
+            self.assertEqual(inherited['CLAUDE_CODE_MAX_OUTPUT_TOKENS'], '1024')
+            self.assertEqual(ext.builtin_environment(inherited), original)
+            _, env = ext.prepare(['claude'], 'deepseek', 'claude', config, Path(tmp) / 'parent', {})
+            self.assertEqual(env['CLAUDE_CODE_MAX_CONTEXT_TOKENS'], '600000')
+            self.assertEqual(env['CLAUDE_CODE_MAX_OUTPUT_TOKENS'], '2048')
+            self.assertEqual(ext.builtin_environment(env).get('CLAUDE_CODE_MAX_CONTEXT_TOKENS'), None)
+            # A different connection without explicit env cannot inherit the parent's model limits.
+            config = external_config()
+            _, child = ext.prepare(['claude', '--model', 'manual'], 'deepseek', 'claude', config,
+                                   Path(tmp) / 'child', env)
+            for name in ('CLAUDE_CODE_MAX_CONTEXT_TOKENS', 'CLAUDE_CODE_MAX_OUTPUT_TOKENS',
+                         'CLAUDE_CODE_AUTO_COMPACT_WINDOW'):
+                self.assertFalse(child.get(name))
+            command, tagged = ext.prepare(['claude', '--model', 'v4-pro[1m]'], 'deepseek', 'claude',
+                                          rich_config(), Path(tmp) / 'tagged', {})
+            self.assertIn('v4-pro[1m]', command)
+            self.assertFalse(tagged.get('CLAUDE_CODE_MAX_CONTEXT_TOKENS'))
+
+    def test_router_defaults_stay_unknown_but_explicit_limits_are_preserved(self):
+        """Routing metadata must not manufacture fixed capabilities or erase deliberate user settings."""
+        fields = api_models.model_fields({'id': 'openrouter/free', 'context_length': 200000,
+                                          'input_modalities': ['text', 'image'], 'max_output_tokens': 8192})
+        raw = external_config().to_dict()
+        provider = raw['agents']['external_apis']['deepseek']
+        provider['models'] = {'openrouter/free': fields}
+        for cli in ('claude', 'codex'):
+            provider[cli]['default_model'] = 'openrouter/free'
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Config.from_dict(raw)
+            _, env = ext.prepare(['claude'], 'deepseek', 'claude', config, Path(tmp) / 'unknown', {})
+            self.assertFalse(env.get('CLAUDE_CODE_MAX_CONTEXT_TOKENS'))
+            ext.prepare(['codex'], 'deepseek', 'codex', config, Path(tmp) / 'codex', {})
+            row = json.loads((Path(tmp) / 'codex/models.json').read_text())['models'][0]
+            self.assertIsNone(row['context_window'])
+            self.assertEqual(row['input_modalities'], ['text'])
+            self.assertFalse(row['supports_parallel_tool_calls'])
+            provider['models']['openrouter/free']['context_window'] = 64000
+            _, env = ext.prepare(['claude'], 'deepseek', 'claude', Config.from_dict(raw),
+                                 Path(tmp) / 'explicit', {})
+            self.assertEqual(env['CLAUDE_CODE_MAX_CONTEXT_TOKENS'], '64000')
+
     def test_custom_patch_tools_require_explicit_external_model_opt_in(self):
         """Function-only APIs must not receive a custom tool just because Codex supports it."""
         for metadata, expected in (({}, None), ({'apply_patch_tool_type': 'freeform'}, 'freeform'),
@@ -103,10 +188,10 @@ class ExternalModelTests(unittest.TestCase):
                         self.assertIn('model_reasoning_effort="high"', command)
                     else:
                         settings = json.loads((root / cli / 'claude-settings.json').read_text())
-                        self.assertEqual(env['ANTHROPIC_MODEL'], 'v4-pro[1m]')
+                        self.assertEqual(env['ANTHROPIC_MODEL'], 'v4-pro')
                         self.assertEqual(env['CLAUDE_CODE_EFFORT_LEVEL'], 'high')
                         self.assertEqual(env['CLAUDE_CODE_AUTO_COMPACT_WINDOW'], '786432')
-                        self.assertIn({'model': 'v4-pro[1m]', 'label': 'V4 Pro'}, settings['modelPicker']['options'])
+                        self.assertIn({'model': 'v4-pro', 'label': 'V4 Pro'}, settings['modelPicker']['options'])
 
     def test_explicit_effort_and_manual_models_win_without_inheriting_another_models_settings(self):
         """Workflow effort must win over defaults; manual IDs cannot inherit unrelated capabilities."""
@@ -118,7 +203,7 @@ class ExternalModelTests(unittest.TestCase):
                     self.assertLess(command.index('model_reasoning_effort="high"'), command.index('model_reasoning_effort="max"'))
                 else:
                     self.assertEqual(env['CLAUDE_CODE_EFFORT_LEVEL'], 'max')
-                    self.assertEqual(command[command.index('--model') + 1], 'v4-pro[1m]')
+                    self.assertEqual(command[command.index('--model') + 1], 'v4-pro')
                 _, env = ext.prepare([cli, '--model', 'manual-model', *options], 'deepseek', cli, config, tmp, {})
                 self.assertEqual(env['MODEL_OPTION'], 'endpoint')
                 self.assertNotIn('CLAUDE_CODE_AUTO_COMPACT_WINDOW', env)
@@ -179,9 +264,10 @@ class ExternalModelTests(unittest.TestCase):
     def test_invalid_model_metadata_and_owned_environment_fail_privately(self):
         """Bad tuning must be rejected at load time without echoing supplied values."""
         bad = [{'effort': 'private-value'}, {'supported_efforts': [['private-value']]},
+               {'max_output_tokens': True}, {'max_output_tokens': -1},
                {'supported_efforts': ['low'], 'effort': 'high'}, {'context_window': True},
                {'context_window': -1}, {'context_window': 100, 'codex': {'auto_compact_token_limit': 100}},
-               {'context_window': 400000, 'claude': {'auto_compact_token_limit': 300000}},
+               {'context_window': 400000, 'claude': {'auto_compact_token_limit': 400000}},
                {'input_modalities': ['audio']}, {'input_modalities': []}, {'codex': 'private-value'},
                {'codex': {'supports_parallel_tool_calls': 1}}, {'claude': {'metadata': {}}},
                {'codex': {'metadata': {'slug': 'private-value'}}}, {'codex': {'metadata': {'x': float('nan')}}},
@@ -223,7 +309,7 @@ class ExternalModelTests(unittest.TestCase):
                         self.assertNotIn('private-value', str(raised.exception))
 
     def test_claude_window_and_effort_are_derived_from_the_shared_model(self):
-        """Claude knows only 200K and 1M windows and its own efforts; Codex keeps the exact values."""
+        """Both clients keep exact windows; Claude still uses only its supported effort vocabulary."""
         models = {'wide': {'context_window': 1000000, 'supported_efforts': ['minimal', 'high'], 'effort': 'minimal'},
                   'mid': {'context_window': 400000, 'claude': {'auto_compact_token_limit': 150000}},
                   'small': {'context_window': 32000}, 'narrow': {'supported_efforts': ['minimal']}}
@@ -234,7 +320,7 @@ class ExternalModelTests(unittest.TestCase):
         self.assertEqual({m: s['context_window'] for m, s in provider.codex.models.items()},
                          {'wide': 1000000, 'mid': 400000, 'small': 32000, 'narrow': 0})
         self.assertEqual({m: s['context_window'] for m, s in provider.claude.models.items()},
-                         {'wide': 1048576, 'mid': 200000, 'small': 0, 'narrow': 0})
+                         {'wide': 1000000, 'mid': 400000, 'small': 32000, 'narrow': 0})
         # A declaration Claude shares no level with still restricts it, to Claude's default.
         tree = config.to_dict()
         for model, offered in (('wide', ('default', 'high')), ('narrow', ('default',)), ('small', ('default', 'low', 'medium', 'high', 'xhigh', 'max'))):
@@ -246,7 +332,7 @@ class ExternalModelTests(unittest.TestCase):
                 ext.prepare(['claude', '--model', model, '--effort', effort], 'test', 'claude', config, temp, {})
         with tempfile.TemporaryDirectory() as temp:
             command, env = ext.prepare(['claude', '--model', 'wide'], 'test', 'claude', config, temp, {})
-            self.assertEqual(command[command.index('--model') + 1], 'wide[1m]')
+            self.assertEqual(command[command.index('--model') + 1], 'wide')
             self.assertFalse(env['CLAUDE_CODE_EFFORT_LEVEL'])
             command, _ = ext.prepare(['codex', '--model', 'wide'], 'test', 'codex', config, temp, {})
             self.assertIn('model_reasoning_effort="minimal"', command)
@@ -314,7 +400,7 @@ class ExternalModelTests(unittest.TestCase):
             def start(command, **kwargs):
                 if cli == 'claude':
                     self.assertEqual(kwargs['env']['CLAUDE_CODE_EFFORT_LEVEL'], 'max')
-                    self.assertEqual(kwargs['env']['ANTHROPIC_MODEL'], 'v4-pro[1m]')
+                    self.assertEqual(kwargs['env']['ANTHROPIC_MODEL'], 'v4-pro')
                 else:
                     path = next(arg.partition('=')[2] for arg in command if arg.startswith('model_catalog_json='))
                     rows = json.loads(Path(json.loads(path)).read_text())['models']

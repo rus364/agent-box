@@ -1,5 +1,18 @@
 # Release notes
 
+## Unreleased
+
+- Preserve exact external-model context sizes and pass them to Claude's supported
+  custom-ID context setting instead of rounding to 200K/1M or adding `[1m]`.
+  Recognized Claude IDs retain native window rules; select `[1m]` explicitly
+  when that model requires it. Restart Claude when switching models with
+  different launch limits.
+- Discover optional output ceilings, use conservative Claude output budgets,
+  preserve native env overrides, and leave routing-alias capabilities unknown.
+  Existing current-format model entries need no conversion; refresh provider
+  fields explicitly in the menu if desired. Running workspace runtimes require
+  explicit stop/relaunch.
+
 ## 0.1.0
 
 - Restart the product as **experimental 0.x** under the existing `agent-box-tool`

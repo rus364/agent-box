@@ -462,7 +462,8 @@ def help_for(path):
                 "display_name": "Optional model picker label; the model ID sent to the API stays unchanged.",
                 "effort": "Model reasoning default; default leaves the CLI/provider choice. Explicit CLI/workflow effort takes priority. Claude launches a level it lacks with its own default.",
                 "supported_efforts": "Effort names the model supports. None checked means unknown; declared levels constrain explicit requests. Claude uses the ones among its own levels.",
-                "context_window": "Tokens; 0 leaves the CLI default. Claude knows 200K and 1M windows: from 1000000 tokens it launches the model with [1m], from 200000 with the 200K window.",
+                "context_window": "Exact tokens; 0 leaves the CLI default. Claude custom IDs use CLAUDE_CODE_MAX_CONTEXT_TOKENS; recognized Claude IDs retain native window rules. Restart after changing models with different limits.",
+                "max_output_tokens": "Provider output ceiling; 0 means unknown. Claude requests at most min(32000, ceiling) unless env overrides it; Codex has no mapped output-limit setting.",
                 "auto_compact_token_limit": "Compaction threshold in tokens; 0 leaves the CLI default. Must be below a configured context window.",
                 "input_modalities": "Input types for the Codex model catalog: text, image or both; at least one.",
                 "supports_parallel_tool_calls": "Advertise parallel tool calls in the Codex model catalog.",
@@ -1148,7 +1149,10 @@ def edit(config, *, project=None):
 
     def listed_summary(model, fields):
         """What the provider states about one model, for the row under the cursor."""
+        if api_models.routing_alias(model):
+            return f"{model}: routing alias; context and capabilities depend on the selected model. Set verified limits manually."
         facts = [f"{fields['context_window']} tokens of context" if "context_window" in fields else "",
+                 f"output limit {fields['max_output_tokens']} tokens" if "max_output_tokens" in fields else "",
                  "input " + ", ".join(fields["input_modalities"]) if "input_modalities" in fields else "",
                  "efforts " + ", ".join(fields["supported_efforts"]) + (f" (default {fields['effort']})" if fields.get("effort", "default") != "default" else "")
                  if "supported_efforts" in fields else ""]
@@ -1329,8 +1333,7 @@ def edit(config, *, project=None):
                             continue
                         return EditResult(config, open_project=True)
                     if action == 'add_model':
-                        model = input_value(screen, 'Model ID, for example deepseek-v4-pro or openai/gpt-5.6-luna; '
-                                            'Claude derives [1m] from the context window', '', False)
+                        model = input_value(screen, 'Model ID, for example deepseek-v4-pro or openai/gpt-5.6-luna', '', False)
                         if model is not None:
                             if not valid_model(model):
                                 notice = 'Invalid model ID'

@@ -61,7 +61,7 @@ class ModelFieldTests(unittest.TestCase):
         """A field the API does not state must stay manual rather than receive an invented value."""
         deepseek = {item['id']: api_models.model_fields(item) for item in sample('deepseek.json')['data']}
         self.assertEqual(deepseek['deepseek-flash'], {
-            'display_name': 'DeepSeek-V4.1-Flash', 'context_window': 1048576, 'input_modalities': ['text', 'image'],
+            'display_name': 'DeepSeek-V4.1-Flash', 'context_window': 1048576, 'max_output_tokens': 393216, 'input_modalities': ['text', 'image'],
             'supported_efforts': ['low', 'high', 'max'], 'effort': 'high'})
         self.assertEqual(deepseek['deepseek-v4-pro']['input_modalities'], ['text'])
         openrouter = {item['id']: api_models.model_fields(item) for item in sample('openrouter.json')['data']}
@@ -76,13 +76,39 @@ class ModelFieldTests(unittest.TestCase):
         anthropic = [api_models.model_fields(item) for page in ('anthropic-page1.json', 'anthropic-page2.json')
                      for item in sample(page)['data']]
         self.assertEqual(anthropic[0], {
-            'display_name': 'Claude Opus 5', 'context_window': 1000000, 'input_modalities': ['text', 'image'],
+            'display_name': 'Claude Opus 5', 'context_window': 1000000, 'max_output_tokens': 128000,
+            'input_modalities': ['text', 'image'],
             'supported_efforts': ['low', 'medium', 'high', 'xhigh', 'max'], 'effort': 'default'})
         # Haiku states it takes no effort: a stale declaration must not survive an update.
         self.assertEqual((anthropic[1]['supported_efforts'], anthropic[1]['effort']), ([], 'default'))
         self.assertEqual(api_models.model_fields({'id': 'm', 'effort': {'supported_levels': ['turbo']}}),
                          {'supported_efforts': [], 'effort': 'default'})
         self.assertEqual([api_models.model_fields(item) for item in sample('openai.json')['data']], [{}, {}])
+
+    def test_routing_alias_does_not_advertise_one_models_limits_or_capabilities(self):
+        """A router's metadata is not a guarantee about the model chosen on the next call."""
+        for model in ('openrouter/free', 'openrouter/auto'):
+            with self.subTest(model=model):
+                fields = api_models.model_fields({
+                    'id': model, 'name': 'Router', 'context_length': 200000,
+                    'top_provider': {'max_completion_tokens': 8192},
+                    'architecture': {'input_modalities': ['text', 'image']},
+                    'reasoning': {'supported_efforts': ['high'], 'default_effort': 'high'},
+                    'supported_parameters': ['tools', 'reasoning', 'parallel_tool_calls']})
+                self.assertEqual(fields, {'display_name': 'Router'})
+
+    def test_output_limits_require_positive_integers_and_tools_do_not_imply_parallel_calls(self):
+        """An output ceiling is usable, but a parameter name does not establish client tool support."""
+        fields = api_models.model_fields({'id': 'vendor/model', 'context_length': 65536,
+            'top_provider': {'max_completion_tokens': 4096},
+            'supported_parameters': ['tools', 'reasoning', 'parallel_tool_calls'],
+            'architecture': {'input_modalities': ['text', 'audio'], 'output_modalities': ['audio']}})
+        self.assertEqual(fields, {'context_window': 65536, 'max_output_tokens': 4096,
+                                  'input_modalities': ['text']})
+        for value in (None, True, -1, 0, '4096', 4096.0):
+            with self.subTest(value=value):
+                self.assertEqual(api_models.model_fields({'id': 'm', 'max_output_tokens': value,
+                    'top_provider': {'max_completion_tokens': value}}), {})
 
 
 class LoadTests(unittest.TestCase):

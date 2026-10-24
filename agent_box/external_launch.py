@@ -12,7 +12,7 @@ import tomllib
 
 from .atomicio import atomic_write_json
 from .errors import AgentBoxError
-from .external_config import (CODEX_OWNED_CONFIG, claude_model, codex_options, model_effort_error,
+from .external_config import (CODEX_OWNED_CONFIG, codex_options, model_effort_error,
                               model_settings, toml_string, valid_model, valid_name)
 from .paths import SESSION_TEMP_ROOT
 
@@ -269,8 +269,17 @@ def prepare(command, name, cli, config, directory, environment, *, model=None):
     explicit_model, effort = invocation_settings(cli, command[1:], managed=model is not None)
     model = choose_model(endpoint, cli, model or explicit_model)
     settings = model_settings(endpoint.models, model, cli)
+    original = builtin_environment(environment)
     custom_env = {**endpoint.env, **settings['env']}
     if cli == 'claude':
+        # Native env overrides are deliberate. Discovery supplies defaults only;
+        # neither context nor output capacity implies a compaction threshold.
+        if settings['context_window'] and not model.endswith('[1m]'):
+            custom_env.setdefault('CLAUDE_CODE_MAX_CONTEXT_TOKENS',
+                                  original.get('CLAUDE_CODE_MAX_CONTEXT_TOKENS') or str(settings['context_window']))
+        if settings['max_output_tokens']:
+            custom_env.setdefault('CLAUDE_CODE_MAX_OUTPUT_TOKENS',
+                                  original.get('CLAUDE_CODE_MAX_OUTPUT_TOKENS') or str(min(32000, settings['max_output_tokens'])))
         if effort is None:
             effort = settings['effort'] if settings['effort'] != 'default' else custom_env.get('CLAUDE_CODE_EFFORT_LEVEL')
         if effort and effort != 'default':
@@ -282,7 +291,6 @@ def prepare(command, name, cli, config, directory, environment, *, model=None):
     error = model_effort_error(endpoint, model, cli, effort)
     if error:
         raise AgentBoxError(error)
-    original = builtin_environment(environment)
     directory = Path(directory)
     baseline = directory / 'api-baseline.json'
     atomic_write_json(baseline, {**{k: v for k, v in original.items() if auth_name(k)},
@@ -291,6 +299,8 @@ def prepare(command, name, cli, config, directory, environment, *, model=None):
     env[BASELINE_ENV] = str(baseline)
     env.update(custom_env)
     models = {**endpoint.models, model: settings}
+    if cli == 'claude' and model.endswith('[1m]'):
+        models.pop(model.removesuffix('[1m]'), None)
     args = list(command[1:])
     boundary = args.index('--') if '--' in args else len(args)
     before, tail = args[:boundary], args[boundary:]
@@ -321,13 +331,6 @@ def prepare(command, name, cli, config, directory, environment, *, model=None):
         before, explicit = codex_config_arguments(before)
         return [command[0], *[arg for value in overrides for arg in ('-c', value)],
                 *explicit, *before, *tail], env
-    model = claude_model(model, settings)
-    # An explicit ID still needs the configured context suffix in the CLI option.
-    for i, arg in enumerate(before):
-        if arg == '--model' and i + 1 < len(before):
-            before[i + 1] = model
-        elif arg.startswith('--model='):
-            before[i] = '--model=' + model
     clean = {k: '' for k in _AUTH_NAMES | {k for k in original if k.startswith('ANTHROPIC_')}}
     clean.update(custom_env)
     clean.update({'ANTHROPIC_API_KEY': spec.api_key, 'ANTHROPIC_BASE_URL': endpoint.url,
@@ -335,12 +338,11 @@ def prepare(command, name, cli, config, directory, environment, *, model=None):
     for family in ('OPUS', 'SONNET', 'HAIKU', 'FABLE'):
         clean['ANTHROPIC_DEFAULT_' + family + '_MODEL'] = model
     env.update(clean)
-    picker_models = {claude_model(m, s): s for m, s in models.items()}
     settings = {'env': clean, 'apiKeyHelper': '', 'model': model,
                 'disableRemoteControl': True, 'remoteControlAtStartup': False,
                 'modelPicker': {'replaceBuiltInOptions': True, 'options': [
                     {'model': m, **({'label': s['display_name']} if s['display_name'] else {})}
-                    for m, s in picker_models.items()]}}
+                    for m, s in models.items()]}}
     # Managed speed settings use the same single --settings argument.
     if '--settings' in before:
         i = before.index('--settings')

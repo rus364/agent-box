@@ -124,12 +124,7 @@ CLI_MODEL_DEFAULTS = {
 def model_defaults():
     """One model for both CLIs: what the API describes is shared, CLI tuning has its own block."""
     return copy.deepcopy(dict(display_name='', effort='default', supported_efforts=[], context_window=0,
-                              input_modalities=['text'], **CLI_MODEL_DEFAULTS))
-
-
-def claude_context(tokens):
-    """Claude Code knows a 200K and a 1M window only; a 1000000-token model is a 1M model."""
-    return 1048576 if tokens >= 1000000 else 200000 if tokens >= 200000 else 0
+                              max_output_tokens=0, input_modalities=['text'], **CLI_MODEL_DEFAULTS))
 
 
 def cli_settings(spec, cli):
@@ -140,13 +135,13 @@ def cli_settings(spec, cli):
     declared list stays whole: narrowed to Claude's levels it could become
     empty, which means "unknown" and would lift the model's restriction.
     """
-    flat = {key: spec[key] for key in ('display_name', 'effort', 'supported_efforts', 'context_window')}
+    flat = {key: spec[key] for key in ('display_name', 'effort', 'supported_efforts', 'context_window',
+                                      'max_output_tokens')}
     flat.update(spec[cli])
     if cli == 'codex':
         flat['input_modalities'] = spec['input_modalities']
     else:
         flat['effort'] = spec['effort'] if spec['effort'] in API_EFFORTS['claude'] else 'default'
-        flat['context_window'] = claude_context(spec['context_window'])
     return flat
 
 
@@ -182,10 +177,6 @@ def parse_env(value, path, cli):
 def model_settings(models, model, cli):
     """``models`` is one CLI's flat view; an unknown ID inherits no other model's settings."""
     return models.get(model, models.get(model.removesuffix('[1m]'), flat_defaults(cli)))
-
-
-def claude_model(model, spec):
-    return model + '[1m]' if spec['context_window'] == 1048576 and not model.endswith('[1m]') else model
 
 
 def model_effort_error(endpoint, model, cli, effort):
@@ -229,7 +220,7 @@ def parse_models(raw, path):
         modalities = spec['input_modalities']
         if not modalities or any(m not in ('text', 'image') for m in modalities) or len(set(modalities)) != len(modalities):
             invalid()
-        if spec['context_window'] < 0:
+        if spec['context_window'] < 0 or spec['max_output_tokens'] < 0:
             invalid()
         for cli in CLI_MODEL_DEFAULTS:
             context, compact = cli_settings(spec, cli)['context_window'], spec[cli]['auto_compact_token_limit']
