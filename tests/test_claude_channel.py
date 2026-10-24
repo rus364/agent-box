@@ -583,12 +583,21 @@ class RuntimeNotificationSelectionTests(unittest.TestCase):
 
 
 class ConfigEnableGatingTests(unittest.TestCase):
-    def test_missing_channel_prerequisites_prevent_menu_save(self):
+    def test_missing_channel_prerequisites_explain_setup_before_menu_save(self):
+        """A recreated or partly configured profile needs recovery steps, not just a refusal."""
         from agent_box import config_menu
         config = Config()
         config.agents.claude.telegram_channel = True
-        with mock.patch.object(cli.channel_module, "missing_requirements", return_value=["Install the Telegram plugin"]):
-            self.assertIn("Install the Telegram plugin", config_menu.validate(config))
+        for plugin, token in ((False, False), (False, True), (True, False)):
+            with self.subTest(plugin=plugin, token=token), tempfile.TemporaryDirectory() as tmp:
+                home = claude_home(tmp, plugin=plugin, token=token)
+                with mock.patch.object(channel, "CLAUDE_HOME", home):
+                    errors = config_menu.validate(config)
+                    self.assertEqual(len(errors), 1)
+                    for missing in channel.missing_requirements():
+                        self.assertIn(missing, errors[0])
+                    self.assertIn(channel.setup_instructions(), errors[0])
+                self.assertNotIn("AAHfiqksKZ8", errors[0])
 
     def test_ready_channel_can_be_saved_or_left_disabled(self):
         from agent_box import config_menu

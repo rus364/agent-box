@@ -429,6 +429,31 @@ class ConfigMenuTests(unittest.TestCase):
         self.assertFalse(result.config.agents.claude.statusline.enabled)
         self.assertTrue(config.agents.claude.statusline.enabled)
 
+    def test_telegram_save_guidance_scrolls_and_keeps_the_draft_editable(self):
+        """Recovery commands stay reachable at minimum size without saving an unready channel."""
+        import curses
+        from agent_box import channel
+        enter = [*select("agents"), "\n", *select("claude", ("agents",)), "\n"]
+        toggle = [*select("telegram_channel", ("agents", "claude")), " "]
+        save = ["\x1b", "\x1b", curses.KEY_END, curses.KEY_UP, "\n"]
+        keys = [*enter, *select("remote_control", ("agents", "claude")), " ", *toggle, *save,
+                "?", *[curses.KEY_DOWN] * 80, "\x1b", *enter, *toggle, *save]
+        for size in ((8, 40), (24, 120)):
+            with self.subTest(size=size), tempfile.TemporaryDirectory() as tmp:
+                config = Config()
+                screen = Screen(keys, sizes=[size])
+                with patch.object(channel, "CLAUDE_HOME", Path(tmp)):
+                    result, _ = self.edit(config, [], screen=screen)
+                help_frames = [frame for frame in screen.frames if "PgUp/PgDn: scroll" in frame]
+                for command in ("agent-box claude", "/plugin install telegram@claude-plugins-official",
+                                "/telegram:configure <token>", "agent-box config",
+                                "/telegram:access policy allowlist"):
+                    self.assertTrue(any("".join(command.split()) in "".join(frame.split()) for frame in help_frames), command)
+                self.assertTrue(result.config.agents.claude.remote_control)
+                self.assertFalse(result.config.agents.claude.telegram_channel)
+                self.assertFalse(config.agents.claude.remote_control)
+                self.assertEqual(list(Path(tmp).iterdir()), [])
+
     def test_network_menu_edits_and_resets_the_original_k3s_port_list(self):
         """The shared networking menu must write the sidecar key, never a disconnected duplicate."""
         import curses

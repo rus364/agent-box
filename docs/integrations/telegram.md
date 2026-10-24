@@ -23,7 +23,9 @@ For native remote access to Claude or Codex without Telegram, see
 
 2. Enable **Agents → Claude → Telegram channel**
    (`agents.claude.telegram_channel`) in `agent-box config`. The menu refuses
-   to save it before the plugin and its token exist.
+   to save it before the plugin and its token exist, and shows the missing
+   prerequisites with setup instructions. Press `?` to read and scroll the
+   complete instructions if they do not fit on screen.
 3. Start a new Claude session and pair your account:
 
    ```text

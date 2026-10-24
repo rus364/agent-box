@@ -506,8 +506,11 @@ def validate(config):
     errors = (config.workflow.validate() + config.agents.codex.validate() + config.box.validate()
               + validate_connections(config))
     if config.agents.claude.telegram_channel:
-        from .channel import missing_requirements
-        errors.extend(missing_requirements())
+        from .channel import missing_requirements, setup_instructions
+        missing = missing_requirements()
+        if missing:
+            errors.append("Telegram channel setup required:\n" + "\n".join(missing)
+                          + "\n\n" + setup_instructions())
     return errors
 
 

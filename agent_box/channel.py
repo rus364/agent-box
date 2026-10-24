@@ -109,7 +109,7 @@ def setup_instructions(claude_home: Path | None = None) -> str:
     return "\n".join([
         "Set up the official Telegram channel first (once, on this host):",
         "",
-        "  1. Create a bot with @BotFather on Telegram and copy its token.",
+        "  1. Use your existing bot token, or create a bot with @BotFather on Telegram.",
         "  2. Start a Claude session and install the plugin:",
         "",
         "         agent-box claude",
@@ -120,6 +120,7 @@ def setup_instructions(claude_home: Path | None = None) -> str:
         "  3. Exit that session, then enable the channel:",
         "",
         "         agent-box config",
+        "         Agents > Claude > Telegram channel: enable, then save.",
         "",
         "  4. Start Claude again and pair: DM the bot, then run",
         "     /telegram:access pair <code> and /telegram:access policy allowlist",
