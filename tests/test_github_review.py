@@ -191,8 +191,8 @@ class CloudReviewTests(LandingCase):
                 original.workflow.behavior_version = "v2" if version == "v1" else "v1"
                 original.workflow.review.github_provider = provider
                 path = self.root / ".agent-box.json"
-                path.write_text(json.dumps({"workflow": {"behavior_version": version,
-                                                        "language": "English", "tracker_language": "Russian"}}))
+                project_config.save(path, {"workflow": {"behavior_version": version,
+                                                       "language": "English", "tracker_language": "Russian"}})
                 gw.git(self.root, "add", ".agent-box.json")
                 gw.git(self.root, "commit", "-m", f"project choice {provider} {version}")
                 self.commit_action(f"# {provider} {version}\nuses: anthropics/claude-code-action@v1\n")
