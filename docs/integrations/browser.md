@@ -113,13 +113,11 @@ is attempted.
 
 ## Upgrading
 
-Global and project schema 1 migrate `box.tools.browser` to
-`box.browser.enabled` in schema 2, retaining explicit true/false and project
-inheritance. Reading converts a copy; normal migration writes retain the original.
-The browser no longer belongs to the workspace image tool list. New images omit
-`playwright-mcp`, Chromium and the old browser smoke command; scripts that called
-those inside the workspace must use the MCP capability or install their own
-project tooling. Existing built images are not modified in place.
+Configure the browser through `box.browser.enabled`. The former
+`box.tools.browser` field and its stored-format migrations are unsupported.
+The browser is a separate sidecar, outside the workspace image tool list.
+Workspace scripts needing a browser must use the MCP capability or install
+their own project tooling. Existing built images are not modified in place.
 
 ## Personal desktop browser
 

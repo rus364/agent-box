@@ -1,9 +1,0 @@
-{
-  "version": 2,
-  "agents": {
-    "claude": {"remote_control": true},
-    "codex": {"remote_control": true}
-  },
-  "credentials": {"github": {"token": false}},
-  "box": {"browser": {"enabled": false}}
-}

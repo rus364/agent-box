@@ -78,13 +78,13 @@ class SetupScopeTests(unittest.TestCase):
 
     def test_project_policy_without_a_binding_still_allows_initial_setup(self):
         """An existing project configuration need not already name a tracker."""
-        self.path.write_text(json.dumps({"workflow": {"auto_push": False}}))
+        self.path.write_text(json.dumps({"version": 2, "workflow": {"auto_push": False}}))
         self.assertFalse(self.setup("--apply")["binding"]["recursive"])
         self.assertFalse(project_config.load(self.path)["workflow"]["auto_push"])
 
     def test_invalid_existing_binding_is_not_silently_replaced(self):
         """An unreadable scope is not evidence that the user chose a root-only binding."""
-        self.path.write_text('{"tracker":{"project":"12","recursive":true}}')
+        self.path.write_text('{"version":2,"tracker":{"project":"12","recursive":true}}')
         before = self.path.read_bytes()
         with self.assertRaisesRegex(AgentBoxError, "Incomplete repository binding"):
             self.setup("--apply")

@@ -1,175 +1,89 @@
-# Compatibility and upgrades
+# Experimental releases and stored data
 
 ## Semantic Versioning
 
-agent-box uses [Semantic Versioning 2.0.0](https://semver.org/) starting at
-1.0.0. PATCH releases fix defects without breaking the public contract; MINOR
-releases add backward-compatible functionality; incompatible public changes
-require a MAJOR release. Release notes describe changes and any user action.
-Released artifacts are immutable: a fix gets a new version.
+agent-box uses the initial-development `0.MINOR.PATCH` line of
+[Semantic Versioning 2.0.0](https://semver.org/), restarting at `0.1.0`.
+The product is experimental. CLI commands, JSON output, configuration, defaults,
+platform requirements and stored formats may change without compatibility
+guarantees. Breaking changes do not require a 1.x release. Release notes describe
+changes and any required fresh setup; published artifacts are never replaced.
 
-The public contract includes documented CLI commands/options, documented JSON
-output fields and meanings, saved global/project settings and their meanings,
-integration ownership rules, and stated platform requirements. Additive JSON
-fields are allowed; consumers must ignore fields they do not use. Human progress
-messages, internal Python functions and private workflow artifacts are not a
-stable programming API. Removing supported Python/platform versions or changing
-an existing default incompatibly requires a major release.
-
-Release 3.0.0 changes container permission bypass from unconditional
-to opt-in for both agents. Missing `agents.claude.bypass_permissions` and
-`agents.codex.bypass_permissions` now mean `false`, including on direct upgrade
-from 1.x or 2.x. Enable either explicitly to restore its former behavior; see
-[container permissions](configuration.md#defaults). The new boolean fields are
-additive within global schema 2: no saved field is renamed or reinterpreted,
-and no conversion is needed. The package major version changes independently
-of the unchanged JSON format. Running immutable
-runtimes require explicit stop/relaunch to adopt it.
+The former 1.x–4.x releases are unsupported. Their release notes remain historical
+records, not promises made by the 0.x line. There is no stable public API or
+supported upgrade/downgrade path from those releases. Reinstalling and configuring
+again may be necessary. See [installation](installation.md#updating) and the
+[publication reset procedure](releasing.md#the-010-reset).
 
 ## Direct upgrades
 
-`workflow.tracker_language` is an additive, backward-compatible setting for
-tracker text. Missing or empty inherits `workflow.language`, preserving all
-existing language-only configurations. No stored representation changes or
-schema migration are needed; it is suitable for a MINOR release. Global/project
-schema numbers and published fixtures remain unchanged. Configuration snapshots
-carry both settings through the existing serializer. `workflow inspect` retains
-`configuration.language` and adds resolved `tracker_language` and
-`engineering_language`; tracker status `language` describes tracker text.
-Owned skills and hash-verified repository guidance refresh through the existing
-package-update/apply path, preserving user edits. Running immutable workspace
-runtimes need explicit stop/relaunch to adopt the new helpers and instructions.
+No automatic migrations, historical compatibility aliases, transitional releases
+or successful-upgrade matrix are provided. Current-format defaults still apply
+when an optional setting is absent; that is not a promise to preserve older
+representations or meanings. Unsupported stored schemas stop the operation
+without replacing the original. A new installation never silently deletes or
+resets existing user data.
 
-Release 4.0.0 replaces Vikunja's additive `board init --apply` and
-`adopt boards --apply` behavior. Without input these commands now return metadata;
-bare `--apply` refuses. Supply an explicit five-state `--mapping FILE` to create a
-temporary reviewed plan, then apply that same file with `--plan FILE --apply`.
-This is a breaking command/agent-guidance change, not a binding or native-tracker
-data migration. Existing boards and cards remain untouched on upgrade. Temporary
-board plans use `format_version: 1`; unknown versions are refused before payload
-interpretation, and reads do not rewrite their files. No older published board-plan
-format exists. Relaunch immutable workspace runtimes to use the new commands.
+The installer (uv, pipx or pacman) owns package replacement. For supported saved
+formats, the first host agent launch after a package change refreshes configured
+integrations under a lock. It records success only after application completes.
+Unchanged launches and read-only commands do not reapply integrations;
+`agent-box config apply` remains available for manual edits and retry.
+A fresh installation uses `agent-box config` to choose settings.
 
-The 4.0.0 text-delivery guard changes published workflow behavior: assignments
-and managed report deliveries default to 65,536 UTF-8 bytes. Oversized supplemental
-notes/reports add one managed run on the configured scout route and return a labelled
-summary; originals remain saved. Authoritative requirements are never summarized.
-Missing scout configuration, an invalid summary or unresolved overflow fails delivery.
-This is a **major** package change, even though the settings and commands
-are additive. Before upgrading, choose your scout route and a deliberate positive
-global `workflow.text_max_bytes`, or reduce assignment scope. Missing settings adopt 65,536 bytes and
-`workflow.text_retention_days=7`. Both remain global-only; explicit values survive
-direct upgrades from every published configuration. No saved representation changes,
-intermediate release or schema migration is needed. Temporary texts use a new private
-versioned format; unknown formats survive cleanup and are refused for lookup.
-Small successful outputs retain their fields and meanings. Oversized `response`/`report`
-text may be a labelled summary with additional `summary` metadata; original paths,
-review verdicts/findings and Plan sync status keep their meanings. Read-only lookups
-reuse saved summaries without model calls. `--output reference` remains an explicit
-paging mode. Running immutable sessions require stop/relaunch to use the
-new helper and shared mount. See [text delivery](integrations/workflow.md#text-delivery).
-
-`workflow behavior` was introduced after published v3.0.2. Its now-required `--role`
-corrects an unpublished interface; it is not the reason for the major-release
-requirement above. No behavior snapshot contents or role permissions changed.
-
-Workflow behavior versions are independent of package and persisted schema
-versions. The additive `workflow.behavior_version` field uses `v2` when absent,
-including on upgrades from published configurations; explicit `v1` preserves the
-previous engineering guidance. It changes agent guidance, not existing workflow
-permissions, lifecycle or review gates. No stored representation conversion is
-needed; global/project schema numbers stay unchanged. New assignments use the
-effective selection, while already running agent contexts and immutable workspace
-runtimes retain their existing execution boundary. Repository guidance refresh is
-lazy per opened project and preserves user-owned text; see
-[engineering guidance](integrations/workflow.md#engineering-guidance).
-
-Every public version can upgrade directly to any later release, including across
-major versions. Use the installer that owns the package (uv/pipx or the Arch
-package manager); intermediate packages are never required. The first host agent launch after an update migrates saved
-data and refreshes already configured integrations automatically. `config apply`
-remains available for manual edits and retry. Concurrent first launches serialize
-application; success is recorded only after every application step completes.
-Read-only commands do not apply integrations. A fresh install without a saved
-configuration still uses `agent-box config` to choose its settings.
-
-Package identity is recorded separately from data schema versions. A content
-digest covers installed resources and editable copies, so changes to skills can
-trigger application even when no data format changed. A session using a rendered
-snapshot never performs automatic host application: it cannot infer missing host
-settings, and its runtime may deliberately be older than the installed package.
-
-Running workspaces retain immutable runtime copies and are not interrupted by a
-package upgrade. To adopt a new runtime, stop and launch that workspace explicitly.
-Workspaces, source files, volumes and third-party application data are preserved;
-upgrading PostgreSQL, k3s, provider CLIs or workloads is not an agent-box data
-migration. Downgrades are not supported: a binary encountering a future schema
-refuses it without overwriting it. Restore a suitable backup with the matching
-package when a rollback is necessary.
+Package identity is independent of data schema versions. Its content digest
+covers installed resources and editable copies, so a skill change can trigger
+integration application without a data-format change. Rendered sessions do not
+infer unavailable host settings or rewrite host integrations. Running workspaces
+retain immutable runtime copies; stop and relaunch explicitly to adopt a new one.
+User project files, volumes and third-party application data are not converted
+or reset by changing the agent-box package.
 
 ## Stored formats
 
-Schema numbers are independent per format and independent of package SemVer.
-The first public formats are version 1. An omitted version explicitly means 1,
-including hand-written configuration fragments; it never means the latest schema.
-Project configuration uses schema 2: `box.tools.browser` moves to
-`box.browser.enabled`, preserving explicit values and absent project overrides.
-Pending global proposals use format 2 to migrate browser assignments/resets while
-retaining the host confirmation boundary. Global schema 3 and workspace creation
-policy format 2 preserve the former shared tool-cache behavior with
-`box.persistent_cache: true`; new installations default to a disposable cache.
-Explicit false is preserved. Older unversioned session snapshots retain shared
-cache semantics in memory. Existing cache files and live workspace mounts are
-not removed by migration; changing the selection requires stop/relaunch.
-Other formats retain their independent versions. Writers include the version. Migrations transform a copy before current parsers
-can discard renamed fields. Reading alone does not rewrite the file.
+Schema numbers identify representations, not product maturity. The package reset
+to `0.1.0` does not renumber them. Global configuration uses `version: 3`;
+project configuration uses `version: 2`; configuration proposals and workspace
+creation policies use `format_version: 2`. These schemas have no registered
+historical conversion steps. An omitted envelope denotes schema 1, never the
+current version; it therefore cannot make an old configuration readable.
+Writers stamp the current version. Reads do not rewrite their source.
 
 | Data | Boundary |
 | --- | --- |
-| Global `config.json` and repository `.agent-box.json` | Independent `version`; global migration persists on package application or explicit config writes; project writes migrate through the project configuration writer |
-| Workflow evidence, review budget and Plan sync records | Independent `format_version`; retain ownership, scope, budgets and recovery state |
-| Tracker import mappings, move journals, adoption receipts | Independent `format_version`; retain external IDs and interrupted-operation recovery |
-| Temporary Vikunja board plans | `format_version: 1`; bind reviewed intent to instance/project/view and a board snapshot; future formats are refused without changing the file |
-| Global configuration proposals | `format_version`; preserve the existing explicit host confirmation boundary |
-| Workspace creation policies | `format_version`; unreadable/future cleanup policy retains data |
-| Native host cluster ownership | New `format_version: 1`; records enabled and disabled creation policy plus process identities; future/unreadable records refuse admission and cleanup. No older format needs conversion; active sessions from an older runtime require stop/relaunch |
-| Managed skill markers | `format_version`; user-edited/unowned trees remain protected |
-| Native profile ownership sidecars | One SHA-256 line after commit; old/new hash pair during replacement, allowing retry before or after the content write; unknown shapes and edited content remain unowned |
-| Review receipts and seals | `format_version`; preserve original bytes/seals while reading; existing bounded retention still applies |
-| Applied-package record | `format_version`; only successful reconciliation advances package identity |
-| Rendered session configuration, synchronized credentials, caches, build signals | Derived from saved choices or external authorities; regenerate for new sessions without rewriting live snapshots |
+| Global `config.json` and repository `.agent-box.json` | Independent `version`; unsupported input is refused before saving or applying integrations |
+| Workflow evidence, review budgets and Plan sync records | Independent `format_version`; preserve ownership, scope, budgets and recovery state |
+| Tracker import mappings, move journals and adoption receipts | Independent `format_version`; preserve external IDs and interrupted-operation recovery |
+| Temporary Vikunja board plans | `format_version: 1`; bind reviewed intent to a board snapshot; unsupported formats are refused |
+| Global configuration proposals | `format_version`; retain the explicit host confirmation boundary |
+| Workspace creation policies | `format_version`; unreadable or unsupported policy cannot authorize cleanup |
+| Native host cluster ownership | `format_version: 1`; unknown/unreadable records refuse admission and cleanup |
+| Managed skill markers | `format_version`; user-edited and unowned trees remain protected |
+| Native profile ownership sidecars | Content hashes distinguish owned writes and interrupted replacement from user edits |
+| Review receipts and seals | `format_version`; preserve original bytes/seals and bounded retention |
+| Applied-package record | `format_version`; only successful integration application advances package identity |
+| Rendered session configuration, synchronized credentials, caches and build signals | Derived from current saved choices or external authorities; regenerated for new sessions |
 
 Claude/Codex files belong to their providers or the user. agent-box reconciles only
-its owned entries, retaining unrelated content; their whole files are never passed
-through agent-box's schema converter. Container schema and runtime digest checks
-continue to enforce the explicit restart boundary.
+owned entries, retaining unrelated content; provider files are not passed through
+its schema converter. Unknown ownership records and user-edited integrations stay
+protected even though historical package compatibility is unsupported.
 
 ## Writing a migration
 
-1. Assess every persisted format and public behavior affected by the change.
-   Keep the version-1 fixtures under `tests/fixtures/compatibility/1.0.0` unchanged;
-   add fixtures for later published formats and meaningful user settings.
-2. For a changed stored representation, increment that format's `Schema.version`
-   and add the `N -> N+1` pure function to its `steps` in `agent_box/migrations.py`.
-   Retain all earlier steps. Additive fields can remain in the same schema only
-   if existing readers/writers and default semantics stay compatible.
-3. Preserve false, empty and explicit values. Account for historical omitted
-   defaults; a new default must not silently enable credential exposure. When an
-   old choice has no automatic equivalent, fail with an actionable explanation
-   instead of dropping it. Keep converters free of filesystem/network side effects.
-4. Validate before committing. Use the shared writer under the operation's own
-   read/modify/write lock. It refuses future formats, retains an exact private
-   original in the migration state directory before a schema-changing write, and
-   atomically replaces a single document. Multi-file changes require their own
-   resumable operation protocol; an atomic file rename is not a transaction over
-   integrations or external services.
-5. Test oldest-to-current and skipped releases, failure before/after backup,
-   repeated execution, future-version refusal, and user data/opt-in preservation.
-   Exercise actual load/save or operation entry points as well as pure conversion.
-   An integration-layout change needs ownership and interrupted-apply tests even
-   when no JSON schema changes. Package upgrades need active-workspace coverage.
+No historical handlers are shipped or required during experimental development.
+`agent_box/migrations.py` retains the generic `Schema`, read/write and conversion
+machinery for possible future migration support. Its synthetic tests exercise
+copying, ordered steps, validation, private original backups, locking, atomic
+replacement and safe retry; they do not promise any old release will load.
 
-Backup names contain the original schema and content digest. Their contents may
-include credentials, so files are private and must not be logged or committed.
-They are retained for explicit recovery; do not delete them as part of an upgrade.
-No conversion for unpublished historical layouts is part of the public contract.
+If migration support is explicitly introduced later, version each representation
+independently and register pure conversion steps only for that supported scope.
+Validate before committing and preserve the original before a format-changing
+write. The shared writer protects one document; it is not a transaction across
+integrations or external services. Existing operation locks still guard
+read/modify/write sequences.
+
+Private backups may contain credentials. Never log, commit or silently remove
+them. Current-format data preservation and integration ownership tests remain
+necessary regardless of whether historical conversion support exists.

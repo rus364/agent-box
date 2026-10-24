@@ -1293,7 +1293,7 @@ class BoxConfig:
     def from_dict(cls, data: Any) -> "BoxConfig":
         data = _mapping(data)
         return cls(tools=ToolsConfig.from_dict(data.get("tools")),
-                   browser=BrowserConfig.from_dict(data.get("browser", {"enabled": _mapping(data.get("tools")).get("browser", False)})),
+                   browser=BrowserConfig.from_dict(data.get("browser")),
                    k3s=K3sConfig.from_dict(data.get("k3s")),
                    network=NetworkConfig.from_dict(data.get("network")),
                    podman=PodmanConfig.from_dict(data.get("podman")), audio=_bool(data, "audio", False), links=LinksConfig.from_dict(data.get("links")),
@@ -1540,8 +1540,7 @@ def effective_config(base=None, *, include_project=True) -> Config:
             # The snapshot is rendered once at launch; after a schema change in the
             # checkout it no longer loads or validates although nothing the user saved is wrong.
             try:
-                # Pre-setting snapshots are unversioned and always retained their cache.
-                base = Config.from_dict(migrations.retained_tool_cache(rendered))
+                base = Config.from_dict(rendered)
                 base._session_container = bool(rendered.get("container", False))
                 if isinstance(rendered.get("workflow_guidance"), dict):
                     base._workflow_guidance = rendered["workflow_guidance"]

@@ -1,7 +1,7 @@
-"""Forward-only JSON formats; reads convert copies, explicit writes retain originals.
+"""Versioned JSON storage with reusable conversion and original-preservation machinery.
 
-Package versions do not identify data formats. Each format keeps its own steps
-so a new release can read every public predecessor without installing it first.
+Package versions do not identify data formats. Experimental releases ship no
+historical conversion steps; unsupported formats must never be overwritten.
 """
 from __future__ import annotations
 
@@ -30,8 +30,8 @@ class Schema:
     def source_version(self, data):
         if not isinstance(data, dict):
             raise AgentBoxError(f"Invalid {self.name}: expected a JSON object")
-        # Omission is explicitly part of the first public format, including
-        # hand-written config fragments; it never means the latest version.
+        # An omitted envelope denotes schema 1, never an arbitrary current
+        # format whose parser could silently discard older fields.
         version = data.get(self.key, 1)
         if type(version) is not int or version < 1:
             raise AgentBoxError(f"Invalid {self.name} schema version")
@@ -46,7 +46,8 @@ class Schema:
         while version < self.version:
             step = self.steps.get(version)
             if step is None:
-                raise AgentBoxError(f"Missing {self.name} migration from schema {version}; nothing written")
+                raise AgentBoxError(f"Unsupported {self.name} schema {version}; expected {self.version}. "
+                                    "No migration is available; nothing written")
             try:
                 result = step(result)
                 if not isinstance(result, dict):
@@ -65,57 +66,18 @@ class Schema:
         return result
 
 
-def browser_sidecar(data):
-    """Keep explicit false project overrides as well as global browser opt-ins."""
-    box = data.get("box")
-    if isinstance(box, dict) and isinstance(box.get("tools"), dict):
-        tools = box["tools"]
-        if "browser" in tools:
-            enabled = tools.pop("browser")
-            browser = box.setdefault("browser", {})
-            if isinstance(browser, dict):
-                browser.setdefault("enabled", enabled)
-    return data
-
-
-def browser_proposal(data):
-    """Pending proposals keep their meaning without bypassing host confirmation."""
-    assignments = data.get("set", {})
-    if isinstance(assignments, dict):
-        if "box" in assignments and isinstance(assignments["box"], dict):
-            browser_sidecar({"box": assignments["box"]})
-        if isinstance(assignments.get("box.tools"), dict) and "browser" in assignments["box.tools"]:
-            assignments.setdefault("box.browser.enabled", assignments["box.tools"].pop("browser"))
-        if "box.tools.browser" in assignments:
-            assignments.setdefault("box.browser.enabled", assignments.pop("box.tools.browser"))
-    resets = data.get("reset", [])
-    if isinstance(resets, list):
-        data["reset"] = ["box.browser.enabled" if path == "box.tools.browser" else path for path in resets]
-        if "box.tools" in resets and "box.browser.enabled" not in data["reset"]:
-            data["reset"].append("box.browser.enabled")
-    return data
-
-
-def retained_tool_cache(data):
-    """Published boxes always shared their cache; fresh defaults must not rewrite that choice."""
-    box = data.setdefault("box", {})
-    if isinstance(box, dict):
-        box.setdefault("persistent_cache", True)
-    return data
-
-
-GLOBAL_CONFIG = Schema("global configuration", 3, {1: browser_sidecar, 2: retained_tool_cache}, key="version")
-PROJECT_CONFIG = Schema("project configuration", 2, {1: browser_sidecar}, key="version")
+GLOBAL_CONFIG = Schema("global configuration", 3, key="version")
+PROJECT_CONFIG = Schema("project configuration", 2, key="version")
 WORKFLOW_EVIDENCE = Schema("workflow evidence")
 REVIEW_BUDGET = Schema("review budget")
 PLAN_SYNC = Schema("Plan sync record")
 IMPORT_STATE = Schema("tracker import mapping")
 MOVE_JOURNAL = Schema("tracker move journal")
 ADOPTION_RECEIPT = Schema("tracker adoption receipt")
-BOX_POLICY = Schema("workspace creation policy", 2, {1: retained_tool_cache})
+BOX_POLICY = Schema("workspace creation policy", 2)
 SKILL_MARKER = Schema("managed skill marker")
 REVIEW_RECEIPT = Schema("review receipt")
-CONFIG_PROPOSAL = Schema("global configuration proposal", 2, {1: browser_proposal})
+CONFIG_PROPOSAL = Schema("global configuration proposal", 2)
 APPLIED_PACKAGE = Schema("applied package")
 
 

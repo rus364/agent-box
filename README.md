@@ -14,6 +14,11 @@ One project. One shared container. Your agents, shell, tools, state, and detacha
 
 </div>
 
+> **Experimental 0.x:** interfaces, configuration and stored formats may change
+> without compatibility guarantees. Earlier formats and automatic migrations
+> are not supported; reinstalling and configuring again may be necessary.
+> See the [experimental release policy](docs/compatibility.md).
+
 ---
 
 ## Why agent-box?
@@ -119,8 +124,9 @@ isolated browser uses a separate Podman container in either mode.
 **Configuration.** Built-in defaults, then your global
 `~/.config/agent-box/config.json`, then the repository's `.agent-box.json`.
 `agent-box config` edits settings and applies integrations. The first host launch
-after a package update refreshes configured integrations automatically; unchanged
-launches leave them alone. See [compatibility and upgrades](docs/compatibility.md).
+after a package update refreshes configured integrations when the saved format is
+supported; unchanged launches leave them alone. See the
+[experimental release policy](docs/compatibility.md).
 
 ## Documentation
 

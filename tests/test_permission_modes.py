@@ -17,18 +17,16 @@ FLAGS = {
 
 
 class PermissionModesTests(IsolatedRuntimeTest):
-    def test_missing_old_settings_never_grant_bypass_and_opt_ins_round_trip(self):
-        """An upgrade must require a fresh, independent choice for each agent."""
-        fixtures = Path(__file__).parent / "fixtures/compatibility"
-        for path in (fixtures / "1.0.0/config.json", fixtures / "1.1.0/browser-config.json",
-                     fixtures / "2.0.0/permission-config.json"):
+    def test_missing_settings_never_grant_bypass_and_opt_ins_round_trip(self):
+        """Each provider needs an independent opt-in, including in minimal current config."""
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "config.json"
+            path.write_text('{"version":' + str(config_module.VERSION) + '}')
             original = path.read_bytes()
             saved = load_config(path)
             for agent in FLAGS:
                 self.assertFalse(getattr(saved.agents, agent).bypass_permissions)
             self.assertEqual(path.read_bytes(), original)
-        with tempfile.TemporaryDirectory() as temp:
-            path = Path(temp) / "config.json"
             for selected in FLAGS:
                 config = Config()
                 getattr(config.agents, selected).bypass_permissions = True

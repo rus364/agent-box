@@ -19,12 +19,14 @@ agent-box config check      # verify the Claude Telegram channel setup
 agent-box config ai         # set things up together with an agent
 ```
 
-**Package updates apply automatically.** The first host agent launch after an
-update migrates saved settings and refreshes already configured integrations.
+**Configured integrations refresh automatically.** The first host agent launch
+after an update validates the saved format and refreshes configured integrations.
+Unsupported formats stop the launch without rewriting the file; no historical
+migrations are provided. Reinstalling the package alone does not reset settings.
 Unchanged launches do not reapply them, and rendered sessions do not rewrite
 host settings. `agent-box config apply` remains available for manual edits and
 retry; `agent-box uninstall` removes owned integrations. See
-[compatibility and upgrades](compatibility.md).
+[experimental release policy](compatibility.md).
 
 ## The configuration menu
 

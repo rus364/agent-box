@@ -5,18 +5,17 @@ import json
 import os
 from pathlib import Path
 import subprocess
-import sys
 import tarfile
 import tempfile
-import tomllib
 import unittest
 from unittest.mock import patch
 
 from tools import aur
 
 
-def metadata(version='1.0.1', revision='1', name='agent-box'):
-    return f'pkgbase = {name}\n\tpkgver = {version}\n\tpkgrel = {revision}\npkgname = {name}\n'
+def metadata(version='0.1.0', revision='1', name='agent-box', epoch='1'):
+    text = f'pkgbase = {name}\n\tpkgver = {version}\n\tpkgrel = {revision}\npkgname = {name}\n'
+    return text + (f'epoch = {epoch}\n' if epoch is not None else '')
 
 
 class AurTests(unittest.TestCase):
@@ -82,30 +81,7 @@ class AurTests(unittest.TestCase):
                     self.assertEqual(result.stderr, '' if code == '0' else 'backend-diagnostic\n')
                     self.assertEqual((root / 'build.log').read_text(), 'backend-diagnostic\n')
 
-    def test_recipe_prepare_retains_explicit_package_data_and_is_idempotent(self):
-        """Older sdists get the explicit resource policy without clobbering future settings."""
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            source = root / 'agent_box_tool-1.0.1'
-            source.mkdir()
-            recipe = root / 'PKGBUILD'
-            recipe.write_text(aur.render('1.0.1', '2', 'a' * 64))
-            (root / 'python').symlink_to(sys.executable)
-            env = dict(os.environ, PATH=str(root) + os.pathsep + os.defpath)
-            for explicit in (None, False, True):
-                with self.subTest(explicit=explicit):
-                    text = '[tool.setuptools.package-data]\nagent_box = ["skills/**/*"]\n'
-                    if explicit is not None:
-                        text = f'tool.setuptools.include-package-data = {str(explicit).lower()}\n' + text
-                    metadata = source / 'pyproject.toml'
-                    metadata.write_text(text)
-                    subprocess.run(['bash', '-ec', 'source "$1"; prepare; cd "$2"; prepare',
-                                    'bash', str(recipe), str(root)], cwd=root, env=env, check=True)
-                    settings = tomllib.loads(metadata.read_text())['tool']['setuptools']
-                    self.assertIs(settings['include-package-data'], explicit if explicit is not None else False)
-                    self.assertEqual(settings['package-data'], {'agent_box': ['skills/**/*']})
-
-    def test_stable_versions_and_integer_package_revisions_are_required(self):
+    def test_release_versions_and_integer_package_revisions_are_required(self):
         """Release inputs cannot introduce prereleases or shell syntax into PKGBUILD."""
         self.assertLess(aur.version_key('1.9.0', 5), aur.version_key('1.10.0', 1))
         for version, revision in [('1.0.0rc1', '1'), ('v1.0.0', '1'), ('01.0.0', '1'),
@@ -123,7 +99,7 @@ class AurTests(unittest.TestCase):
                     (path / name).write_text(metadata() if name == '.SRCINFO' else 'unchanged')
             self.assertFalse(aur.compare_candidate(candidate, existing))
             (candidate / 'PKGBUILD').write_text('changed')
-            with self.assertRaisesRegex(ValueError, 'without a pkgver/pkgrel'):
+            with self.assertRaisesRegex(ValueError, 'without an epoch/pkgver/pkgrel'):
                 aur.compare_candidate(candidate, existing)
             (candidate / '.SRCINFO').write_text(metadata(revision='2'))
             self.assertTrue(aur.compare_candidate(candidate, existing))
@@ -132,11 +108,40 @@ class AurTests(unittest.TestCase):
                 aur.compare_candidate(candidate, existing)
 
     def test_ambiguous_existing_identity_is_not_overwritten(self):
-        """Split packages and epochs need an explicit maintainer decision."""
+        """Duplicate identity fields cannot conceal a different package or version order."""
         for text in (metadata() + 'pkgname = another\n', 'epoch = 1\n' + metadata(),
+                     metadata(epoch='-1'), metadata(epoch='1;echo injected'),
                      metadata() + 'pkgver = 2.0.0\n', metadata().replace('pkgbase = agent-box', 'pkgbase = another')):
             with self.subTest(text=text), self.assertRaises(ValueError):
                 aur.srcinfo(text)
+
+    def test_epoch_orders_the_reset_without_a_general_downgrade_bypass(self):
+        """Arch can order 0.x after the old line while still refusing later downgrades."""
+        with tempfile.TemporaryDirectory() as directory:
+            candidate, existing = Path(directory) / 'candidate', Path(directory) / 'existing'
+            candidate.mkdir()
+            existing.mkdir()
+            (candidate / '.SRCINFO').write_text(metadata('0.1.0', epoch='1'))
+            (existing / '.SRCINFO').write_text(metadata('4.0.0', epoch=None))
+            self.assertTrue(aur.compare_candidate(candidate, existing))
+            for version, epoch in (('0.1.1', '1'), ('0.0.1', '2')):
+                (existing / '.SRCINFO').write_text(metadata(version, epoch=epoch))
+                with self.subTest(version=version, epoch=epoch), self.assertRaisesRegex(ValueError, 'downgrade'):
+                    aur.compare_candidate(candidate, existing)
+
+    def test_publisher_requires_the_reviewed_epoch_before_contacting_registries(self):
+        """A modified epoch must not change resolver order outside the reviewed recipe."""
+        with tempfile.TemporaryDirectory() as directory, patch('subprocess.run') as run, \
+                patch.object(aur, 'published_digest') as digest:
+            root = Path(directory)
+            repository = aur.settings()[1]['release']['repository'].rstrip('/')
+            (root / '.SRCINFO').write_text(metadata(epoch='2') + f'url = {repository}\n')
+            for name in ('PKGBUILD', 'LICENSE'):
+                (root / name).write_text('placeholder')
+            with self.assertRaisesRegex(ValueError, 'different AUR epoch'):
+                aur.publish(root)
+            run.assert_not_called()
+            digest.assert_not_called()
 
     def test_prepare_checks_archive_metadata_before_writing_recipe(self):
         """Renaming an archive must not let a different version pass as the target release."""
@@ -163,6 +168,7 @@ class AurTests(unittest.TestCase):
             text = (root / 'out/PKGBUILD').read_text()
             self.assertIn(hashlib.sha256(archive.read_bytes()).hexdigest(), text)
             self.assertIn('pkgver=1.0.1\npkgrel=1', text)
+            self.assertIn('epoch=1\n', text)
 
     def test_source_download_must_match_independent_registry_digest(self):
         """GitHub Release assets must be the same source bytes already verified on PyPI."""
@@ -197,7 +203,7 @@ class AurTests(unittest.TestCase):
             root = Path(directory)
             digest = 'a' * 64
             repository = aur.settings()[1]['release']['repository'].rstrip('/')
-            info = metadata() + f'url = {repository}\nsource = {aur.archive_name("1.0.1")}::{aur.source_url("1.0.1")}\nsha256sums = {digest}\n'
+            info = metadata('1.0.1') + f'url = {repository}\nsource = {aur.archive_name("1.0.1")}::{aur.source_url("1.0.1")}\nsha256sums = {digest}\n'
             (root / '.SRCINFO').write_text(info)
             (root / 'LICENSE').write_text('license')
             (root / 'PKGBUILD').write_text('unreviewed shell')

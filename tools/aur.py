@@ -1,4 +1,4 @@
-"""Prepare stable AUR metadata and publish only checked, released source versions."""
+"""Prepare AUR metadata and publish only checked, released source versions."""
 import argparse
 from email.parser import Parser
 import hashlib
@@ -21,12 +21,14 @@ def settings(root=ROOT):
     return data['project'], data['tool']['agent-box']
 
 
-def version_key(version, revision):
+def version_key(version, revision, epoch=0):
     if not re.fullmatch(r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)', version):
-        raise ValueError('AUR releases require stable MAJOR.MINOR.PATCH versions')
+        raise ValueError('AUR releases require MAJOR.MINOR.PATCH versions without suffixes')
     if not re.fullmatch(r'[1-9][0-9]*', str(revision)):
         raise ValueError('pkgrel must be a positive integer')
-    return (*map(int, version.split('.')), int(revision))
+    if not re.fullmatch(r'0|[1-9][0-9]*', str(epoch)):
+        raise ValueError('epoch must be a nonnegative integer')
+    return (int(epoch), *map(int, version.split('.')), int(revision))
 
 
 def archive_name(version, root=ROOT):
@@ -62,11 +64,12 @@ def fetch(version, directory, root=ROOT):
 
 
 def render(version, revision, digest, root=ROOT):
-    version_key(version, revision)
     project, config = settings(root)
+    epoch = config['aur']['epoch']
+    version_key(version, revision, epoch)
     values = {
         'MAINTAINER': config['aur']['maintainer'], 'PACKAGE': config['aur']['name'],
-        'VERSION': version, 'REVISION': str(revision), 'SHA256': digest,
+        'VERSION': version, 'REVISION': str(revision), 'EPOCH': str(epoch), 'SHA256': digest,
         'REPOSITORY': config['release']['repository'].rstrip('/'),
         'ARCHIVE': archive_name(version, root), 'DISTNAME': project['name'].replace('-', '_'),
     }
@@ -108,12 +111,11 @@ def srcinfo(text):
         if len(values) != 1:
             raise ValueError(f'.SRCINFO must contain exactly one {key}')
         return values[0]
-    if fields.get('epoch', ['0']) != ['0']:
-        raise ValueError('Refusing an unexpected AUR epoch')
+    fields.setdefault('epoch', ['0'])
     name, version, revision = single('pkgname'), single('pkgver'), single('pkgrel')
     if single('pkgbase') != name:
         raise ValueError('Split AUR packages are not supported')
-    version_key(version, revision)
+    version_key(version, revision, single('epoch'))
     return name, version, revision, fields
 
 
@@ -123,13 +125,14 @@ def compare_candidate(candidate, existing):
     old_name, old_version, old_revision, old_fields = srcinfo((existing / '.SRCINFO').read_text())
     if name != old_name or fields.get('url') != old_fields.get('url'):
         raise ValueError('Existing AUR package has a different identity')
-    new, old = version_key(version, revision), version_key(old_version, old_revision)
+    new = version_key(version, revision, fields['epoch'][0])
+    old = version_key(old_version, old_revision, old_fields['epoch'][0])
     if new < old:
         raise ValueError('Refusing to downgrade the AUR package')
     if new == old:
         if all((existing / f).is_file() and (candidate / f).read_bytes() == (existing / f).read_bytes() for f in FILES):
             return False
-        raise ValueError('Recipe changed without a pkgver/pkgrel increase')
+        raise ValueError('Recipe changed without an epoch/pkgver/pkgrel increase')
     return True
 
 
@@ -140,6 +143,8 @@ def publish(candidate, root=ROOT):
     name, version, revision, fields = srcinfo((candidate / '.SRCINFO').read_text())
     if name != config['aur']['name'] or fields.get('url') != [config['release']['repository'].rstrip('/')]:
         raise ValueError('Candidate has a different package name')
+    if fields['epoch'] != [str(config['aur']['epoch'])]:
+        raise ValueError('Candidate has a different AUR epoch')
     digest = published_digest(version, root)
     if fields.get('sha256sums') != [digest] or fields.get('source') != [archive_name(version, root) + '::' + source_url(version, root)]:
         raise ValueError('Candidate does not reference the verified published source')

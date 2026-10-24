@@ -20,7 +20,7 @@ from test_text_delivery import delivered_bytes
 
 class BehaviorConfigTests(unittest.TestCase):
     def test_default_and_explicit_versions_survive_saved_and_rendered_settings(self):
-        """An old omitted setting adopts v2; selecting v1 must survive a package refresh."""
+        """The default is v2; an explicit supported behavior selection must survive saving."""
         self.assertEqual(config.Config.from_dict({}).workflow.behavior_version, "v2")
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -45,16 +45,6 @@ class BehaviorConfigTests(unittest.TestCase):
                 self.assertTrue(any("behavior_version" in x for x in settings.workflow.validate()))
                 with self.assertRaises(AgentBoxError):
                     project_config.validate({"workflow": {"behavior_version": value}}, Path(".agent-box.json"))
-
-    def test_published_settings_adopt_the_default_without_rewriting_the_original(self):
-        """A direct upgrade must not require intermediate releases or alter saved opt-ins on read."""
-        fixtures = Path(__file__).parent / "fixtures/compatibility"
-        for path in (fixtures / "1.0.0/config.json", fixtures / "1.1.0/browser-config.json",
-                     fixtures / "2.0.0/permission-config.json"):
-            before = path.read_bytes()
-            settings = config.load_config(path)
-            self.assertEqual(settings.workflow.behavior_version, "v2")
-            self.assertEqual(path.read_bytes(), before)
 
     def test_project_reset_inherits_and_global_proposal_reset_restores_v2(self):
         """Resetting an override must not accidentally pin the project's last effective version."""
@@ -126,7 +116,7 @@ class BehaviorDeliveryTests(WorkflowCase):
         session = Path(self.directory.name) / "session"
         runtime.sync_tracker_runtime(self.config, session, container=False)
         path = self.root / ".agent-box.json"
-        path.write_text(json.dumps({"workflow": {"behavior_version": version}}))
+        project_config.save(path, {"workflow": {"behavior_version": version}})
         gw.git(self.root, "add", ".agent-box.json")
         gw.git(self.root, "commit", "-m", f"fixture project behavior {version}")
         with patch.dict(os.environ, {"AGENT_BOX_RUNTIME_CONFIG": str(session / "config.json")}), \

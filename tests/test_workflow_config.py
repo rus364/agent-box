@@ -130,7 +130,7 @@ class WorkflowConfigTests(unittest.TestCase):
         for workflow, message in cases:
             with self.subTest(workflow=workflow), tempfile.TemporaryDirectory() as directory:
                 artifact = Path(directory) / "config.json"
-                artifact.write_text(json.dumps({"workflow": workflow}))
+                artifact.write_text(json.dumps({"version": Config().to_dict()["version"], "workflow": workflow}))
                 self.assertTrue(any(message in error for error in load_config(artifact).workflow.validate()))
                 with patch.dict(os.environ, {"AGENT_BOX_RUNTIME_CONFIG": str(artifact)}), \
                      patch("agent_box.project_config.load", return_value={}), \

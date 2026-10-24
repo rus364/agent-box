@@ -2,6 +2,7 @@
 pkgname=@PACKAGE@
 pkgver=@VERSION@
 pkgrel=@REVISION@
+epoch=@EPOCH@
 pkgdesc='Run coding agents in rootless Podman workspace boxes'
 arch=('any')
 url='@REPOSITORY@'
@@ -11,20 +12,6 @@ makedepends=('python-build' 'python-installer' 'python-setuptools' 'python-wheel
 optdepends=('github-cli: forward GitHub authentication' 'tmux: detachable host sessions')
 source=("@ARCHIVE@::$url/releases/download/v$pkgver/@ARCHIVE@")
 sha256sums=('@SHA256@')
-
-prepare() {
-  cd "@DISTNAME@-$pkgver"
-  # Older release archives need the same explicit package-data policy as upstream.
-  python - <<'PY'
-from pathlib import Path
-import tomllib
-
-path = Path('pyproject.toml')
-text = path.read_text()
-if 'include-package-data' not in tomllib.loads(text)['tool']['setuptools']:
-    path.write_text('tool.setuptools.include-package-data = false\n' + text)
-PY
-}
 
 build() {
   cd "@DISTNAME@-$pkgver"

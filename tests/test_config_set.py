@@ -19,7 +19,8 @@ class ConfigSetTests(unittest.TestCase):
         self.file = Path(temp.name) / ".agent-box.json"
         self.binding = {"tracker": {"provider": "vikunja", "project": "12", "recursive": True,
                                     "connections": {"vikunja": {"url": "https://tracker.example"}}}}
-        self.file.write_text(json.dumps(self.binding, indent=2) + "\n")
+        self.file.write_text(json.dumps({"version": project_config.migrations.PROJECT_CONFIG.version,
+                                         **self.binding}, indent=2) + "\n")
 
         def die(message):
             raise AgentBoxError(message)

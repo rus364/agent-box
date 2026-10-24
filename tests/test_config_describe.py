@@ -75,7 +75,7 @@ class ConfigDescribeTests(unittest.TestCase):
         config = Config()
         config.workflow.review.max_files = Config().workflow.review.max_files + 2
         save_config(config, self.global_file)
-        self.project_file.write_text(json.dumps({"workflow": {"review": {"max_lines": 10}}}))
+        self.project_file.write_text(json.dumps({"version": 2, "workflow": {"review": {"max_lines": 10}}}))
         _, fields = self.describe()
         self.assertEqual({key: fields["workflow.review.max_files"][key] for key in ("default", "global", "source", "effective")},
                          {"default": config.workflow.review.max_files - 2, "global": config.workflow.review.max_files,
@@ -177,7 +177,7 @@ class ConfigDescribeTests(unittest.TestCase):
         config.tracker.enabled = config.workflow.enabled = True
         config.tracker.connections["vikunja"] = TrackerConnection("https://session.example", "session-token-value")
         config._global_tracker_urls = {"vikunja": "https://global.example"}
-        self.project_file.write_text(json.dumps({"workflow": {"review": {"policy": "always"}}, "tracker": {"project": "7"}}))
+        self.project_file.write_text(json.dumps({"version": 2, "workflow": {"review": {"policy": "always"}}, "tracker": {"project": "7"}}))
         output, fields = self.in_session(config, {"review": "off", "project": "12"})
         policy = fields["workflow.review.policy"]
         self.assertEqual((policy["project"], policy["effective"], policy["source"]), ("always", "off", "session"))
@@ -194,7 +194,7 @@ class ConfigDescribeTests(unittest.TestCase):
 
     def test_a_normalized_project_value_is_not_attributed_to_a_session(self):
         """Without launch flags nothing can come from a session, even when loading trims a value."""
-        self.project_file.write_text(json.dumps({"workflow": {"review": {"label": "ab:review "}},
+        self.project_file.write_text(json.dumps({"version": 2, "workflow": {"review": {"label": "ab:review "}},
                                                  "tracker": {"connections": {"vikunja": {"url": "https://tracker.example "}}}}))
         _, fields = self.describe()
         label = fields["workflow.review.label"]
@@ -215,7 +215,7 @@ class ConfigDescribeTests(unittest.TestCase):
 
     def test_an_invalid_project_file_fails_before_any_output(self):
         """Partial JSON from a rejected project file would look like a valid description."""
-        self.project_file.write_text(json.dumps({"audio": {"enabled": True}}))
+        self.project_file.write_text(json.dumps({"version": 2, "audio": {"enabled": True}}))
         with contextlib.redirect_stdout(io.StringIO()) as output, self.assertRaises(AgentBoxError):
             cli.config_command(["describe"])
         self.assertEqual(output.getvalue(), "")

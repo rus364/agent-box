@@ -2180,6 +2180,7 @@ def workspace_box_policy(spec: WorkspaceContainerSpec) -> dict:
     tools["podman"] = tools["podman"] and "--device=/dev/net/tun" in spec.create_argv
     source, destination, read_only = tracker_mounts(config, spec.runtime_state)[0]
     return {
+        "format_version": migrations.BOX_POLICY.version,
         "box": {"tools": tools, "k3s": config.box.k3s.to_dict(),
                 "network": config.box.network.to_dict(),
                 # Whichever session leaves last deletes or keeps the data by this.

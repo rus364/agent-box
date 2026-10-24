@@ -53,9 +53,8 @@ Installed Python versions/uv tools, mise tools/configuration/trust and Cargo/Rus
 installations remain persistent independently of that switch. Host sessions use
 their normal host cache paths.
 
-Existing saved configurations migrate with cache persistence on, retaining their
-previous behavior. Explicitly turn the checkbox off to adopt disposable caches;
-stop/relaunch an existing workspace to change its mount policy. Switching it off
+No historical cache setting is migrated. Configure the desired current setting
+explicitly and stop/relaunch an existing workspace to change its mount policy. Switching it off
 does not delete an old shared cache or third-party data. There is no cache-clean
 command in agent-box.
 

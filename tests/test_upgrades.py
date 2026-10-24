@@ -104,7 +104,7 @@ class AutomaticUpgradeTests(unittest.TestCase):
     def test_explicit_apply_reconciles_manual_changes_without_a_package_change(self):
         """Manual config edits keep the explicit apply escape hatch."""
         upgrades.reconcile()
-        self.file.write_text(json.dumps({"version": 1, "agents": {"default": "codex"}}))
+        self.file.write_text(json.dumps({"version": config.VERSION, "agents": {"default": "codex"}}))
         self.assertEqual(upgrades.reconcile(), [])
         upgrades.reconcile(force=True)
         self.assertEqual(self.apply.call_args.args[0].agents.default, "codex")

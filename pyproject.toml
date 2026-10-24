@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agent-box-tool"
-version = "4.0.0"
+version = "0.1.0"
 description = "Run coding agents in rootless Podman workspace boxes"
 dynamic = ["readme", "urls"]
 requires-python = ">=3.11"
@@ -12,7 +12,7 @@ license = "MIT"
 license-files = ["LICENSE"]
 dependencies = []
 classifiers = [
-    "Development Status :: 5 - Production/Stable",
+    "Development Status :: 3 - Alpha",
     "Environment :: Console",
     "Intended Audience :: Developers",
     "Operating System :: POSIX :: Linux",
@@ -50,4 +50,5 @@ Changelog = "{repository}/blob/{tag}/CHANGELOG.md"
 
 [tool.agent-box.aur]
 name = "agent-box"
+epoch = 1
 maintainer = "rus364 <rus364@gmail.com>"

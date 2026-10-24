@@ -116,11 +116,11 @@ class NetworkingTests(unittest.TestCase):
                 altered["Config"]["CreateCommand"] = []
             self.assertIsNotNone(networking.inspection_problem(network, altered))
 
-    def test_legacy_policy_defaults_do_not_inherit_new_global_host_access(self):
-        """Missing additive fields in published v1 policies mean the original safe defaults."""
+    def test_current_policy_defaults_do_not_inherit_global_host_access(self):
+        """Missing current optional fields keep safe defaults instead of inheriting host access."""
         config = Config()
         config.box.network = NetworkConfig("host")
-        apply_box_policy(config, {"format_version": 1, "workflow_mount": False, "box": {}})
+        apply_box_policy(config, {"format_version": runtime.migrations.BOX_POLICY.version, "workflow_mount": False, "box": {}})
         self.assertEqual(config.box.network, NetworkConfig())
         with self.assertRaisesRegex(AgentBoxError, "future|newer|schema"):
             apply_box_policy(config, {"format_version": 999, "workflow_mount": False})
@@ -152,7 +152,7 @@ class NetworkingTests(unittest.TestCase):
     def test_inner_snapshot_replaces_inherited_outer_network_policy(self):
         """An explicit isolated inner launch must never regain the outer box's host namespace choice."""
         base = Config()
-        outer = {"format_version": 1, "workflow_mount": False,
+        outer = {"format_version": runtime.migrations.BOX_POLICY.version, "workflow_mount": False,
                  "box": {"network": {"mode": "host"}, "tools": {}}}
         apply_box_policy(base, outer)
         options, _ = launch_options.parse(["--network=default"])

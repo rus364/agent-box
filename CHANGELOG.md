@@ -1,8 +1,22 @@
 # Release notes
 
-## Unreleased
+## 0.1.0
 
-- **Breaking (next major release):** remove whole-host `/tmp` sharing:
+- Restart the product as **experimental 0.x** under the existing `agent-box-tool`
+  distribution and `agent-box` command. Interfaces, configuration and stored
+  formats have no compatibility guarantees. The former 1.x–4.x line is
+  unsupported; reinstalling and configuring again may be necessary.
+- Remove historical browser and shared-cache conversions, their parser/session
+  aliases and old-release migration fixtures. Keep the generic schema/storage
+  machinery, current schema identities and non-destructive refusal of unsupported
+  data. No migration bridge or supported upgrade path is provided.
+- Publish the Arch package with `epoch=1` so its ordinary version ordering can
+  represent the reset; Python artifacts remain plain `0.1.0`. Keep package
+  identity, source hash and recipe validation. GitHub publication explicitly
+  marks the new release as Latest. Earlier GitHub Releases were removed;
+  Git tags and historical notes remain. PyPI releases are yanked only after
+  the new artifacts are published and verified.
+- **Breaking:** remove whole-host `/tmp` sharing:
   `box.host_tmp`, `--host-tmp` and `--no-host-tmp` no longer configure workspace,
   browser or k3s mounts. Remove these flags from launch commands. Containers
   keep their own `/tmp`; existing explicit `--mount` behavior is unchanged.
@@ -13,10 +27,10 @@
 - Keep the general tool cache at its usual path in new workspace containers'
   writable filesystem by default, without an extra mount or volume. Enable
   **Workspace box → Keep tool cache between boxes** to retain it on the host.
-  Installed tools remain persistent. Existing global configurations migrate to
-  `box.persistent_cache: true`; explicitly turn it off and stop/relaunch to adopt
-  the new default. Migration and toggling never delete old cache data. Global
-  schema 3 and workspace creation policy format 2 support direct upgrades.
+  Installed tools remain persistent. Historical cache defaults are not migrated.
+  Global schema 3 and workspace creation policy format 2 remain independent of
+  package numbering. Changing the current setting requires stop/relaunch and
+  never deletes old cache data.
 - Share immutable runtime copies between workspace and browser launchers. Retire
   unused copies created by the new retention protocol after seven days, preserving
   legacy copies, recent/live copies and

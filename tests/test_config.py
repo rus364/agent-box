@@ -49,11 +49,10 @@ class DefaultsAreSafeTests(unittest.TestCase):
             self.assertFalse(config.credentials.github.token)
 
     def test_partial_file_does_not_silently_enable_anything(self):
-        """A file written by a future/older agent-box must not turn a
-        credential switch on just by omitting it."""
+        """Omitting an optional current setting must not enable credential exposure."""
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "config.json"
-            path.write_text(json.dumps({"version": 2, "agents": {"claude": {"telegram_channel": True}}}))
+            path.write_text(json.dumps({"version": config_module.VERSION, "agents": {"claude": {"telegram_channel": True}}}))
             config = load_config(path)
             self.assertTrue(config.agents.claude.telegram_channel)
             self.assertFalse(config.credentials.github.token)
@@ -220,7 +219,7 @@ class RoundTripTests(unittest.TestCase):
     def test_unknown_keys_are_dropped_on_save(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "config.json"
-            path.write_text(json.dumps({"version": 2, "remote_control": {"enabled": True}}))
+            path.write_text(json.dumps({"version": config_module.VERSION, "remote_control": {"enabled": True}}))
             save_config(load_config(path), path)
             self.assertNotIn("remote_control", json.loads(path.read_text()))
 

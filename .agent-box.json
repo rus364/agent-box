@@ -1,4 +1,5 @@
 {
+  "version": 2,
   "tracker": {
     "provider": "github",
     "project": "rus364/2",

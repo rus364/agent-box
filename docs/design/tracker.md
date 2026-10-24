@@ -191,8 +191,8 @@ checklist text.
 Deployment type is read from `serverInfo`; user identities use Cloud account IDs
 or Server/DC usernames accordingly. The optional connection `username` selects
 email/API-token Basic authentication; its absence retains PAT Bearer auth.
-This additive optional account field requires no format migration: old
-URL/token accounts retain their serialized shape and published fixtures.
+The current connection format supports both authentication choices without
+a separate representation.
 
 Lifecycle uses project workflow statuses from `/project/KEY/statuses`, checked
 for every issue type. Writes follow available transitions, never assume that

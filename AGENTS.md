@@ -36,20 +36,20 @@ tests/                 unittest, no plugins
 
 ## Rules that are not negotiable
 
-**Semantic Versioning from 1.0.0.** Use SemVer: PATCH fixes bugs compatibly,
-MINOR adds backward-compatible functionality, and breaking changes to the
-documented public contract require MAJOR. Describe breaking changes and their
-upgrade path in release notes. Package versions and persisted schema versions
-are separate; see `docs/compatibility.md` for the public surface and formats.
+**Experimental 0.x releases.** Use SemVer's initial-development line, starting
+at 0.1.0. Interfaces, configuration and stored formats may change without
+compatibility guarantees; breaking changes do not require a 1.x release.
+Describe changes and required fresh setup in release notes. Published artifacts
+remain immutable. Package versions and persisted schema versions are separate;
+see `docs/compatibility.md`.
 
-**Every public version upgrades directly to every later version.** Keep forward
-migrations, including across major releases; users never install intermediate
-packages. Before changing a persisted format or owned integration layout, assess
-migration impact, retain published fixtures, add the required conversion and
-test skipped versions, failure/retry and data preservation. Reject future schemas
-before parsing or writing; preserve the original before migration commits. Do
-not invent migrations for unpublished layouts. Running workspace runtimes stay
-immutable; adopting a new runtime may require an explicit stop/relaunch.
+**No historical compatibility support.** Do not add migrations, legacy aliases,
+transition releases or an old-version upgrade matrix. Keep the generic schema
+and storage machinery for future use, but no historical conversion handlers.
+Retain current schema identities when package numbering changes. Reject
+unsupported or future formats before overwriting them; never silently reset or
+delete user data. Test current behavior and storage safety. Running workspace
+runtimes stay immutable; adopting a new runtime requires explicit stop/relaunch.
 
 **Paths come from `paths.py`.** Use `HOST_HOME` (passwd-derived), never
 `Path.home()`, `os.path.expanduser`, or `$HOME`. A poisoned environment must not
@@ -61,7 +61,7 @@ defines them, with the reason.
 
 **Apply once after a package update.** `runtime.apply_config` is the single
 integration writer. Configuration commands apply explicit changes; the first
-host launch after a package update automatically migrates data and refreshes
+host launch after a package update validates the saved format and refreshes
 already configured integrations under a lock, recording the package identity
 only after success. Unchanged launches and read-only commands do not reapply.
 Rendered sessions never infer or rewrite unavailable host settings. Preserve

@@ -56,8 +56,8 @@ class ToolCacheMountTests(IsolatedRuntimeTest):
                 self.assertIn(f"--env=KUBECACHEDIR={cache}/kube", argv)
                 self.assertFalse(any(arg.startswith("type=volume,") for arg in argv))
 
-    def test_session_snapshot_retains_cache_policy_and_reads_legacy_retention(self):
-        """A nested launch must not confuse an omitted old setting with today's default."""
+    def test_session_snapshot_retains_both_explicit_cache_choices(self):
+        """A nested launch uses the rendered choice without inventing a retention opt-in."""
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "session/config.json"
             settings = config.Config()
@@ -66,11 +66,6 @@ class ToolCacheMountTests(IsolatedRuntimeTest):
                 runtime.sync_tracker_runtime(settings, path.parent, policy=True, container=False)
                 with mock.patch.dict(os.environ, {"AGENT_BOX_RUNTIME_CONFIG": str(path)}):
                     self.assertEqual(config.effective_config(include_project=False).box.persistent_cache, persistent)
-            data = json.loads(path.read_text())
-            data["box"].pop("persistent_cache")
-            path.write_text(json.dumps(data))
-            with mock.patch.dict(os.environ, {"AGENT_BOX_RUNTIME_CONFIG": str(path)}):
-                self.assertTrue(config.effective_config(include_project=False).box.persistent_cache)
 
     def test_only_opted_in_caches_reach_the_host_but_installed_tools_always_survive(self):
         """The default box can be removed without losing Python, mise or Rust installs."""
@@ -110,29 +105,28 @@ class ToolCacheMountTests(IsolatedRuntimeTest):
                 self.assertEqual(kept.read_text(), "download")
 
 
-class ToolCacheCompatibilityTests(unittest.TestCase):
-    def test_fresh_defaults_and_published_configurations_have_distinct_cache_defaults(self):
-        """Every published schema upgrades directly without silently changing retention."""
+class ToolCacheConfigTests(unittest.TestCase):
+    def test_current_configurations_keep_explicit_cache_choices(self):
+        """Absent settings use the disposable default; explicit choices survive saving."""
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "config.json"
             self.assertFalse(config.load_config(path).box.persistent_cache)
-            for version in (1, 2):
-                for explicit in (None, False, True):
-                    with self.subTest(version=version, explicit=explicit):
-                        old = {"version": version}
-                        if explicit is not None:
-                            old["box"] = {"persistent_cache": explicit}
-                        path.write_text(json.dumps(old))
-                        loaded = config.load_config(path)
-                        self.assertEqual(loaded.box.persistent_cache, explicit is not False)
-                        self.assertEqual(json.loads(path.read_text()), old)
-                        config.save_config(loaded, path)
-                        self.assertEqual(config.load_config(path).box.persistent_cache, loaded.box.persistent_cache)
+            for explicit in (None, False, True):
+                with self.subTest(explicit=explicit):
+                    data = {"version": config.VERSION}
+                    if explicit is not None:
+                        data["box"] = {"persistent_cache": explicit}
+                    path.write_text(json.dumps(data))
+                    loaded = config.load_config(path)
+                    self.assertEqual(loaded.box.persistent_cache, explicit is True)
+                    self.assertEqual(json.loads(path.read_text()), data)
+                    config.save_config(loaded, path)
+                    self.assertEqual(config.load_config(path).box.persistent_cache, loaded.box.persistent_cache)
             config.save_config(config.Config(), path)
             self.assertFalse(config.load_config(path).box.persistent_cache)
 
     def test_project_cache_choice_inherits_or_overrides_global_settings(self):
-        """A project may opt in, or explicitly opt out of a migrated global default."""
+        """A project may opt in, or explicitly opt out of the global choice."""
         base = config.Config()
         for inherited in (False, True):
             base.box.persistent_cache = inherited
@@ -151,6 +145,3 @@ class ToolCacheCompatibilityTests(unittest.TestCase):
                       "box": {"persistent_cache": persistent}, "workflow_mount": False}
             config.apply_box_policy(settings, policy)
             self.assertEqual(settings.box.persistent_cache, persistent)
-        settings = config.Config()
-        config.apply_box_policy(settings, {"format_version": 1, "workflow_mount": False})
-        self.assertTrue(settings.box.persistent_cache)

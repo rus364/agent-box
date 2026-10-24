@@ -258,13 +258,3 @@ class TextSettingsTests(unittest.TestCase):
             for value in (0, -1, True, None, "7", 1.5):
                 loaded = config.Config.from_dict({"workflow": {name: value}})
                 self.assertIn(f"workflow.{name} must be a positive integer", loaded.workflow.validate())
-
-    def test_direct_upgrades_adopt_defaults_without_rewriting_published_fixtures(self):
-        """No migration is invented for additive settings or the unpublished text layout."""
-        fixtures = Path(__file__).parent / "fixtures/compatibility"
-        for path in (fixtures / "1.0.0/config.json", fixtures / "1.1.0/browser-config.json",
-                     fixtures / "2.0.0/permission-config.json"):
-            before = path.read_bytes()
-            loaded = config.load_config(path)
-            self.assertEqual((loaded.workflow.text_max_bytes, loaded.workflow.text_retention_days), (65536, 7))
-            self.assertEqual(path.read_bytes(), before)

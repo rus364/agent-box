@@ -217,17 +217,15 @@ cloud CLI were used. The existing focused k3s suite passed all 42 tests.
 
 ## Compatibility and implementation boundaries
 
-This audit changes documentation only. Adding disabled-by-default features
-without changing old semantics qualifies for a MINOR release. Menu regrouping
-does not require a persisted migration. Retain `box.k3s.ports`, old strings and
-their loopback/TCP interpretation. A new parser must still reject malformed
-and duplicate mappings. Removing/reinterpreting public keys would instead need
-a migration and a MAJOR-contract assessment; this design avoids it.
+This audit changes documentation only. The current experimental policy provides
+no historical migrations or compatibility guarantees. Retain `box.k3s.ports`
+and its existing loopback/TCP syntax where it remains useful; a new parser must
+reject malformed and duplicate mappings. This design does not require a new
+representation solely to add disabled-by-default networking choices.
 
 Assess global/project schema versions and workspace creation-policy format before
-implementation. Retain published fixtures, direct skipped-version upgrades,
-failure/retry and data-preservation tests. Future schemas must be refused before
-parsing/writing; originals must survive a schema-changing write. New policy
+implementation. Test current formats, failure/retry and data preservation;
+unsupported schemas must be refused before overwriting the original. New policy
 fields must not retrofit permissions into existing immutable runtimes. Apply
 package integration changes through the existing single writer, with explicit
 stop/relaunch to adopt a new runtime.
@@ -241,8 +239,8 @@ Bounded follow-ups, in dependency order:
 3. Host mode, saved/CLI precedence, creation/admission policy, concurrent and
    repeated launches, k3s and nested-container integration.
 
-Each includes its configuration/CLI tests, relevant live topology cases, upgrade
-fixtures where needed and user documentation. These are design boundaries, not
+Each includes its configuration/CLI tests, relevant live topology cases,
+storage-safety checks and user documentation. These are design boundaries, not
 automatically created or selected implementation tasks. The audit demonstrates
 the underlying network mechanisms; it does not establish acceptance of flags
 and lifecycle checks that have not been implemented.
@@ -260,7 +258,7 @@ Primary documentation checked on 2026-10-18:
 - Repository contracts: [k3s](../integrations/k3s.md),
   [nested Podman](../nested-podman.md), [security](../security.md),
   [host execution](../usage.md#host-mode) and
-  [direct upgrades](../compatibility.md#direct-upgrades).
+  [experimental release policy](../compatibility.md#direct-upgrades).
 
 Reproduce with uniquely named disposable containers, no user home/config mounts,
 and only test-service ports. Inventory existing container IDs, networks, volumes

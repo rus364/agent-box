@@ -108,7 +108,7 @@ class ConfigProposalTests(unittest.TestCase):
         """The file may be edited by hand, and global settings may change after the proposal was made."""
         before = self.global_file.read_text()
         self.proposal.parent.mkdir(parents=True)
-        self.proposal.write_text(json.dumps({"set": {"host.notifications.telegram_token": "token-secret-value"}, "reset": []}))
+        self.proposal.write_text(json.dumps({"format_version": 2, "set": {"host.notifications.telegram_token": "token-secret-value"}, "reset": []}))
         with self.assertRaisesRegex(AgentBoxError, "nothing changed") as error:
             self.command("proposal", "apply", answer="y")
         self.assertNotIn("secret-value", str(error.exception))

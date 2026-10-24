@@ -1,11 +1,9 @@
-"""Sibling browser boundaries and migration, independent of installed Podman."""
-import json
+"""Sibling browser boundaries, independent of installed Podman."""
 from pathlib import Path
-import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
-from agent_box import browser, migrations, config, config_menu, project_config, runtime
+from agent_box import browser, config, config_menu, runtime
 from agent_box.errors import AgentBoxError
 from agent_box.mounts import MountSpec
 from agent_box.workspace import Workspace
@@ -148,49 +146,6 @@ class BrowserPolicyTests(unittest.TestCase):
         self.assertIn('label=io.agent-box.browser.mode=host', args)
         self.assertEqual(run.call_args_list[1].args[0][-1], 'abc')
 
-
-class BrowserMigrationTests(unittest.TestCase):
-    def test_pending_proposals_migrate_leaf_and_section_changes_without_applying_them(self):
-        """An old proposal must still request the same opt-in/reset after an upgrade."""
-        old = {'set': {'box.tools': {'browser': True, 'analysis': False}}, 'reset': ['box.tools.browser']}
-        moved = migrations.CONFIG_PROPOSAL.prepare(old)
-        self.assertEqual(moved['set'], {'box.tools': {'analysis': False}, 'box.browser.enabled': True})
-        self.assertEqual(moved['reset'], ['box.browser.enabled'])
-        self.assertIn('browser', old['set']['box.tools'])
-        reset = migrations.CONFIG_PROPOSAL.prepare({'set': {}, 'reset': ['box.tools']})
-        self.assertEqual(reset['reset'], ['box.tools', 'box.browser.enabled'])
-
-    def test_global_opt_in_and_project_opt_out_survive_direct_upgrade(self):
-        """A renamed setting must preserve explicit project false over global true."""
-        fixtures = Path(__file__).parent / 'fixtures/compatibility/1.1.0'
-        saved = json.loads((fixtures / 'browser-config.json').read_text())
-        project = json.loads((fixtures / 'browser-project.json').read_text())
-        upgraded = config.Config.from_dict(migrations.GLOBAL_CONFIG.prepare(saved))
-        override = migrations.PROJECT_CONFIG.prepare(project)
-        override.pop('version')
-        self.assertTrue(upgraded.box.browser.enabled)
-        self.assertFalse(upgraded.box.tools.groups['analysis'])
-        self.assertFalse(project_config.apply(upgraded, override).box.browser.enabled)
-        self.assertTrue(saved['box']['tools']['browser'])
-        self.assertNotIn('browser', upgraded.box.tools.groups)
-
-    def test_omitted_old_setting_keeps_project_inheritance(self):
-        """Migrating a project must not invent a false override absent from its source."""
-        value = migrations.PROJECT_CONFIG.prepare({'box': {'tools': {'analysis': True}}})
-        self.assertNotIn('browser', value['box'])
-
-    def test_explicit_upgrade_retains_original_and_retry_preserves_new_setting(self):
-        """Package reconciliation can be retried without losing user choices or backups."""
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp)/'config.json'
-            original = b'{"version":1,"box":{"tools":{"browser":true}}}'
-            path.write_bytes(original)
-            with patch.object(migrations, 'MIGRATION_STATE', Path(tmp)/'backups'):
-                self.assertTrue(config.migrate_config(path))
-                self.assertFalse(config.migrate_config(path))
-            self.assertTrue(config.load_config(path).box.browser.enabled)
-            self.assertEqual(next((Path(tmp)/'backups').rglob('schema-*.json')).read_bytes(), original)
-            self.assertEqual(json.loads(path.read_text())['version'], config.Config().to_dict()['version'])
 
 
 class HostBrowserTests(IsolatedRuntimeTest):

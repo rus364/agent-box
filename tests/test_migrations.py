@@ -1,4 +1,4 @@
-"""Skipped releases, failed writes and future data must not destroy saved choices."""
+"""Unsupported formats and failed writes must not destroy saved choices."""
 import json
 import tempfile
 import unittest
@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from pathlib import Path
 from unittest.mock import patch
 
-from agent_box import config, migrations, project_config
+from agent_box import config, config_proposal, migrations, project_config
 from agent_box.errors import AgentBoxError
 
 
@@ -32,12 +32,12 @@ class MigrationTests(unittest.TestCase):
         self.addCleanup(patcher.stop)
         self.schema = migrations.Schema("example", 3, {1: move_flag, 2: nest_flag})
 
-    def test_skipped_releases_convert_a_copy_and_keep_false_and_empty_values(self):
-        """One current package carries every step; reading cannot mutate the source."""
-        old = {"old_flag": False, "items": [], "text": ""}
+    def test_registered_steps_convert_a_copy_and_keep_false_and_empty_values(self):
+        """Future converters must preserve values without mutating their input."""
+        old = {"format_version": 1, "old_flag": False, "items": [], "text": ""}
         self.assertEqual(self.schema.prepare(old), {"feature": {"enabled": False},
                          "items": [], "text": "", "format_version": 3})
-        self.assertEqual(old, {"old_flag": False, "items": [], "text": ""})
+        self.assertEqual(old, {"format_version": 1, "old_flag": False, "items": [], "text": ""})
 
     def test_explicit_upgrade_retains_exact_private_original_and_retry_is_a_noop(self):
         """Formatting and secrets in the original remain recoverable after commit."""
@@ -110,18 +110,31 @@ class MigrationTests(unittest.TestCase):
             migrations.write(self.path, json.loads(original), self.schema, expected=original)
         self.assertEqual(json.loads(self.path.read_text()), {"old_flag": False})
 
-    def test_global_and_repository_configs_refuse_future_files_even_on_save(self):
-        """Normal configuration entry points must use the format guard, not only the runner."""
-        for load, save in ((config.load_config, lambda p: config.save_config(config.Config(), p)),
-                           (project_config.load, lambda p: project_config.save(p, {}))):
-            with self.subTest(load=load):
-                self.path.write_text('{"version":999,"valuable":"preserve"}')
-                original = self.path.read_bytes()
-                with self.assertRaises(AgentBoxError):
-                    load(self.path)
-                with self.assertRaises(AgentBoxError):
-                    save(self.path)
-                self.assertEqual(self.path.read_bytes(), original)
+    def test_unsupported_stored_formats_are_refused_before_parsing_and_overwrite(self):
+        """Removing converters must reject old input rather than save defaults over it."""
+        cases = (
+            (migrations.GLOBAL_CONFIG, config.load_config,
+             lambda p: config.save_config(config.Config(), p)),
+            (migrations.PROJECT_CONFIG, project_config.load,
+             lambda p: project_config.save(p, {})),
+            (migrations.CONFIG_PROPOSAL, config_proposal.load,
+             lambda p: config_proposal.save(p, {"set": {}, "reset": []})),
+            (migrations.BOX_POLICY, lambda p: config.apply_box_policy(config.Config(), json.loads(p.read_text())),
+             lambda p: migrations.write(p, {"workflow_mount": False}, migrations.BOX_POLICY)),
+        )
+        for schema, load, save in cases:
+            for version in (None, *range(1, schema.version), 999):
+                with self.subTest(schema=schema.name, version=version):
+                    data = {"valuable": "preserve"}
+                    if version is not None:
+                        data[schema.key] = version
+                    self.path.write_text(json.dumps(data))
+                    original = self.path.read_bytes()
+                    for operation in (load, save):
+                        with self.assertRaises(AgentBoxError) as caught:
+                            operation(self.path)
+                        self.assertNotIn("preserve", str(caught.exception))
+                        self.assertEqual(self.path.read_bytes(), original)
 
     def test_global_config_migrates_before_parsing_and_only_persists_when_applied(self):
         """Renamed known fields must not disappear through Config.from_dict first."""
@@ -137,28 +150,13 @@ class MigrationTests(unittest.TestCase):
             self.assertTrue(config.migrate_config(self.path))
         self.assertEqual(json.loads(self.path.read_text())["version"], 2)
 
-    def test_public_baseline_fixtures_preserve_user_choices_and_project_inheritance(self):
-        """Published examples remain loadable when future release schemas evolve."""
-        fixtures = Path(__file__).parent / "fixtures" / "compatibility" / "1.0.0"
-        saved = config.load_config(fixtures / "config.json")
-        self.assertEqual(saved.agents.default, "codex")
-        self.assertFalse(saved.box.tools.groups["analysis"])
-        self.assertFalse(saved.credentials.github.token)
-        self.assertEqual(saved.box.network, config.NetworkConfig())
-        self.assertEqual(saved.box.k3s.ports, [])
-        project = project_config.load(fixtures / "project.json")
-        merged = project_config.apply(saved, project)
-        self.assertFalse(merged.workflow.auto_push)
-        self.assertEqual(merged.workflow.review.ignored_paths, [])
-        self.assertEqual(merged.agents.default, "codex")
-
     def test_project_load_edit_save_converts_only_the_stored_old_format(self):
         """Proposed current overrides must not run an old field rename a second time."""
         def step(data):
             data["workflow"] = {"auto_push": data.pop("push")}
             return data
         schema = migrations.Schema("project configuration", 2, {1: step}, key="version")
-        self.path.write_text('{"push":false}')
+        self.path.write_text('{"version":1,"push":false}')
         with patch.object(migrations, "PROJECT_CONFIG", schema):
             data = project_config.load(self.path)
             project_config.validate(data, self.path)
@@ -173,12 +171,10 @@ class MigrationTests(unittest.TestCase):
             self.path = self.root / repo_binding.BINDING_FILE
         self.assertEqual(json.loads(self.path.read_text())["version"], 2)
 
-    def test_language_only_configurations_gain_a_tracker_override_without_conversion(self):
-        """An additive tracker choice must preserve the old base and survive real save/load paths."""
-        fixtures = Path(__file__).parent / "fixtures" / "compatibility" / "1.0.0"
-        old = json.loads((fixtures / "config.json").read_text())
-        old.setdefault("workflow", {})["language"] = "Deutsch"
-        self.path.write_text(json.dumps(old))
+    def test_current_language_settings_inherit_and_override_through_save_and_load(self):
+        """Adding a tracker override must preserve the independent engineering language."""
+        self.path.write_text(json.dumps({"version": config.VERSION, "agents": {"default": "codex"},
+                                        "workflow": {"language": "Deutsch"}}))
         original = self.path.read_bytes()
         saved = config.load_config(self.path)
         policy = saved.workflow.languages()
@@ -193,7 +189,7 @@ class MigrationTests(unittest.TestCase):
         self.assertEqual(reloaded.credentials, saved.credentials)
 
         project_path = self.root / "project.json"
-        project_path.write_bytes((fixtures / "project.json").read_bytes())
+        project_config.save(project_path, {"workflow": {"auto_push": False}})
         project = project_config.load(project_path)
         project = project_config.changed(project, assignments=[(("workflow", "tracker_language"), "Français")])
         project_config.save(project_path, project)
@@ -257,9 +253,9 @@ class MigrationTests(unittest.TestCase):
             value, _ = review_results.read(self.root / "state", "repository", receipt)
             self.assertEqual(value["format_version"], 2)
 
-    def test_public_recovery_fixtures_keep_ids_budgets_and_opaque_fields(self):
-        """Frozen durable payloads ensure migration cannot silently reset external history."""
-        fixtures = Path(__file__).parent / "fixtures" / "compatibility" / "1.0.0"
+    def test_current_recovery_records_keep_ids_budgets_and_opaque_fields(self):
+        """Saving current durable payloads must not reset external history or budgets."""
+        fixtures = Path(__file__).parent / "fixtures" / "state"
         for name, schema in (("review-budget", migrations.REVIEW_BUDGET),
                              ("import-state", migrations.IMPORT_STATE)):
             path = fixtures / (name + ".json")

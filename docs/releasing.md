@@ -39,10 +39,11 @@ runs lint once in its build job. CI keeps build/install checks on each supported
 Python version and native Arch packaging checks. Both workflows use Ruff 0.17.1;
 update their pins together.
 
-1. Assess compatibility using the [migration checklist](compatibility.md#writing-a-migration).
-   Select the SemVer version, update `project.version` in `pyproject.toml` and
+1. Follow the [experimental policy](compatibility.md#semantic-versioning).
+   Select an unused `0.MINOR.PATCH` version, update `project.version` in `pyproject.toml` and
    add a matching `## MAJOR.MINOR.PATCH` entry in `CHANGELOG.md`, then review
-   the complete release change. Keep prior public fixtures and migration steps.
+   the complete release change. Describe incompatible changes and required fresh
+   setup without adding historical migrations or an upgrade matrix.
 2. Validate the changes being released. For a version-and-changelog-only commit
    on top of already accepted code, run the metadata/documentation tests and
    check the intended tag and release notes:
@@ -96,7 +97,7 @@ update their pins together.
    git push origin "v$version"
    ```
 
-   `.github/workflows/release.yml` requires a stable `vMAJOR.MINOR.PATCH` tag
+   `.github/workflows/release.yml` requires a `vMAJOR.MINOR.PATCH` tag without suffixes
    matching the metadata. Tests run on Python 3.11–3.14. One build produces an
    immutable GitHub artifact; subsequent jobs download its exact artifact ID.
 5. Watch the Release workflow: TestPyPI upload → verify downloaded hashes and
@@ -111,7 +112,9 @@ update their pins together.
    Healthy installs incur no delay. Other installer failures, digest mismatches
    and installed metadata/selftest failures stop immediately.
 6. Actions creates the GitHub release automatically after production verification,
-   using the checked changelog entry and the same distributions. Only that job
+   using the checked changelog entry and the same distributions. It explicitly
+   marks the release as Latest, including when its numeric version is lower than
+   a former release. Only that job
    receives `contents: write`; it does not check out or build source. Native Arch
    checks start as soon as the distribution artifact is ready, in parallel with
    Python tests and publication. AUR publication waits for both the checked Arch
@@ -141,6 +144,49 @@ PyPI/GitHub publication path; any published artifacts remain valid.
 Recover through the standalone AUR workflow below, without recreating the tag or
 republishing Python artifacts.
 
+## The 0.1.0 reset
+
+Keep the PyPI and TestPyPI project `agent-box-tool`, the AUR package `agent-box`,
+the command and Python import. The Python version is plain `0.1.0`, with no epoch.
+Arch uses `epoch=1`, `pkgver=0.1.0`, `pkgrel=1`; subsequent Arch releases retain
+that epoch. Neither choice provides application data migration.
+
+The owner removed the old GitHub Releases and their uploaded assets. Their Git
+tags and historical changelog entries remain. Preserve existing PyPI artifacts:
+deleting/recreating that project would release its name and still would not
+allow previously used distribution filenames to be uploaded again. An eventual
+stable release must also use unused filenames/version identifiers.
+
+1. Prepare, review and publish `v0.1.0` through the existing pipeline above.
+   TestPyPI rehearses the exact artifacts before PyPI; both verification jobs
+   request `agent-box-tool==0.1.0`, so older releases cannot win resolution.
+   GitHub attaches the checked files and AUR publishes the checked epoch-bearing
+   recipe. Do not recreate removed historical releases to make the reset work.
+2. After the new release has passed verification on each Python index, use that
+   index's project management UI to yank the former `1.0.0`, `1.0.1`, `1.1.0`,
+   `2.0.0`, `3.0.0`, `3.0.1`, `3.0.2` and `4.0.0` releases. Give the reason
+   `Unsupported former release line; development restarts at experimental 0.1.0`.
+   Yanking preserves artifacts and exact-version access. Never yank the old line
+   before a usable replacement has been verified.
+3. Check fresh, unpinned resolution after yanking, separately on TestPyPI and
+   PyPI. With the release tooling installed, the existing helper uses temporary
+   tool and integration directories:
+
+   ```bash
+   python -c 'from tools.release import install_tools; install_tools("agent-box-tool", "0.1.0", "https://test.pypi.org")'
+   python -c 'from tools.release import install_tools; install_tools("agent-box-tool", "0.1.0", "https://pypi.org")'
+   ```
+
+Ordinary upgrades may retain an already installed 4.x package; pins and lockfiles
+may still select a yanked release. No supported transition is promised. Users
+choosing 0.x may reinstall through their existing installer and configure again;
+do not silently delete their settings or introduce a conversion tool. The release
+acceptance is a clean current installation, not an old-version upgrade matrix.
+
+References: [PyPI yanking](https://docs.pypi.org/project-management/yanking/),
+[deleted project/filename restrictions](https://docs.pypi.org/publishing/troubleshooting/)
+and [Arch epoch](https://man.archlinux.org/man/PKGBUILD.5.en).
+
 ## Recovery
 
 - OIDC rejection: compare owner/repository/workflow/environment and the registry
@@ -160,15 +206,17 @@ republishing Python artifacts.
   an existing release; do not rebuild or replace published assets to retry it.
 - Post-publication defect: publish a new SemVer version. If needed, the maintainer
   may yank a broken release with an explanation; do not treat deletion as rollback.
-- Integration failure on upgrade: repair the reported access/configuration issue
-  and launch again, or run `agent-box config apply`. The success marker advances
+- Integration application failure with a supported format: repair the reported
+  access/configuration issue and launch again, or run `agent-box config apply`.
+  Unsupported stored formats need fresh setup, not an automatic conversion.
+  The success marker advances
   only after reconciliation succeeds. Older active workspaces remain on their
   existing runtime until explicitly restarted.
 
 ## Arch / AUR publication
 
 `packaging/aur/PKGBUILD.in` is the source recipe. The AUR name and public maintainer
-contact live in `[tool.agent-box.aur]` in `pyproject.toml`; version and repository
+contact and epoch live in `[tool.agent-box.aur]` in `pyproject.toml`; version and repository
 identity reuse the existing release metadata. The template itself is licensed
 under `packaging/aur/LICENSE` (0BSD); the application remains MIT.
 
@@ -181,8 +229,8 @@ by changing its digest in the CI and reusable Arch build workflows and rerunning
 those checks.
 The published recipe does not run development tests during user installation.
 Successful builds keep backend progress in `src/build.log`; a failed build prints
-that log and stops. Explicit package-data patterns include skills and runtime assets;
-the recipe applies this policy to older source archives that lack the setting.
+that log and stops. Explicit package-data patterns in the current source include
+skills and runtime assets; the recipe does not patch historical source archives.
 
 Release calls `aur-build.yml` with the checked distribution artifact ID, so Arch
 builds the exact sdist without waiting for public assets. Artifact downloads fail
@@ -218,9 +266,9 @@ If it changes, verify the new fingerprint independently before updating the pin.
 
 The publishing job receives the key only in its final step. It never builds or
 sources `PKGBUILD`: it verifies the checked recipe, compares the current AUR
-version/revision, commits metadata and pushes normally to `master`. A global
+epoch/version/revision, commits metadata and pushes normally to `master`. A global
 publication concurrency group serializes our workflow writes. A newer AUR version,
-a changed recipe with the same version/revision, an unexpected existing package,
+a changed recipe with the same epoch/version/revision, an unexpected existing package,
 or a concurrent external update refuses the push. An identical rerun is a no-op.
 An AUR failure leaves the existing PyPI/GitHub release intact; correct the cause
 and rerun the AUR workflow for that version, increasing `pkgrel` if needed.

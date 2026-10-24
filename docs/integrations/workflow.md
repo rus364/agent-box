@@ -363,8 +363,8 @@ GitHub review keeps its separate remote size refusal and never receives local pa
 `TEXT_LIMIT_EXCEEDED` or `TEXT_SUMMARY_FAILED` stops the affected delivery. Tell the
 user what could not proceed; preserve originals and never truncate, silently raise
 the setting or split a refused delivery across IDs. An unresolved failure needs the
-user's deliberate limit/scope decision. These changed defaults and possible scout
-calls require a major release; see [upgrade guidance](../compatibility.md#direct-upgrades).
+user's deliberate limit/scope decision. Defaults and possible scout calls are
+part of the [experimental release policy](../compatibility.md#direct-upgrades).
 
 **Retention and limits of enforcement.** Expiry is fixed at publication; setting
 changes affect new records. Writes and coordinator preparation silently prune expired

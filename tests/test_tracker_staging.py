@@ -86,7 +86,7 @@ class StagingTests(unittest.TestCase):
     def test_launch_only_project_config_survives_public_adoption_and_cutover(self):
         """Adoption can bind a launch-configured repository without discarding its policy."""
         path = self.root / BINDING_FILE
-        overrides = {'box': {'browser': {'enabled': True}}, 'workflow': {'auto_push': False}}
+        overrides = {'version': 2, 'box': {'browser': {'enabled': True}}, 'workflow': {'auto_push': False}}
         path.write_text(json.dumps(overrides))
         report = self.clone()
         self.assertEqual(json.loads(path.read_text()), overrides)

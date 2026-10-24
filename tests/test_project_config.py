@@ -211,7 +211,7 @@ class ProjectConfigTests(unittest.TestCase):
             with patch.object(repo_binding.subprocess, 'run', side_effect=FileNotFoundError('git')):
                 with patch.object(cli.sys, 'argv', ['agent-box', '--help']), redirect_stdout(io.StringIO()):
                     cli.main()
-                self.path.write_text(json.dumps({'tracker': {'connections': {'vikunja': {'token': ''}}}}))
+                self.path.write_text(json.dumps({'version': 2, 'tracker': {'connections': {'vikunja': {'token': ''}}}}))
                 with patch.object(cli.sys, 'argv', ['agent-box', '--help']), \
                      redirect_stderr(io.StringIO()) as output, self.assertRaises(SystemExit) as stopped:
                     cli.main()

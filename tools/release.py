@@ -31,7 +31,7 @@ def project(root=ROOT):
 
 def check_tag(tag, metadata):
     if not re.fullmatch(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", tag):
-        raise ValueError("Release tags must be stable SemVer vMAJOR.MINOR.PATCH")
+        raise ValueError("Release tags must be vMAJOR.MINOR.PATCH without suffixes")
     if metadata["name"] != NAME or tag != "v" + metadata["version"]:
         raise ValueError("Release tag and project name/version do not match")
 

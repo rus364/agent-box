@@ -80,7 +80,7 @@ agent-box claude          # or: agent-box codex
 
 ## Arch Linux / AUR
 
-The stable AUR package is `agent-box`; its Python distribution is still
+The AUR package is `agent-box`; its Python distribution is still
 `agent-box-tool`. Install it with an AUR helper, for example:
 
 ```bash
@@ -146,15 +146,21 @@ Use the installer that owns the package:
 uv tool upgrade agent-box-tool
 ```
 
-With pipx, use `pipx upgrade agent-box-tool`. The next host agent launch migrates
-saved data and refreshes configured integrations automatically. Unchanged launches
-do not reapply them. Use `agent-box config apply` for manual configuration edits
-or to retry a failed application. See [compatibility](compatibility.md).
+With pipx, use `pipx upgrade agent-box-tool`. These commands replace the package;
+0.x does not guarantee that existing settings or stored data remain usable.
+There is no automatic migration or supported transition from the former 1.x–4.x
+line. A fresh installation and configuration may be necessary; reinstalling alone
+does not remove old settings. Preserve any data you need before setting up again.
+
+When the saved format is supported, the next host agent launch refreshes configured
+integrations automatically. Unchanged launches do not reapply them. Use
+`agent-box config apply` for current-format edits or to retry a failed application.
+See the [experimental release policy](compatibility.md).
 
 For a Git installation the installer retains its selected source. A pinned tag
 or commit stays pinned; select the new reference explicitly, for example
-`uv tool install --force 'git+https://github.com/rus364/agent-box.git@v1.1.0'`
-or `pipx install --force 'git+https://github.com/rus364/agent-box.git@v1.1.0'`
+`uv tool install --force 'git+https://github.com/rus364/agent-box.git@v0.1.0'`
+or `pipx install --force 'git+https://github.com/rus364/agent-box.git@v0.1.0'`
 once that version is released. Do not use TestPyPI for normal installations.
 
 Running boxes retain an immutable copy of their launcher resources while the
