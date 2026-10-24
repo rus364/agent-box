@@ -8,7 +8,6 @@ parser has to survive. The one addition is Claude's `Reviewed-Base` line: the
 request asks for it now, and the probe answers predate that request form.
 """
 import datetime
-import json
 import unittest
 from pathlib import Path
 from unittest.mock import patch
