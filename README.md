@@ -15,8 +15,9 @@ One project. One shared container. Your agents, shell, tools, state, and detacha
 </div>
 
 > **Experimental 0.x:** interfaces, configuration and stored formats may change
-> without compatibility guarantees. Earlier formats and automatic migrations
-> are not supported; reinstalling and configuring again may be necessary.
+> without compatibility guarantees. Throughout 0.x, historical migrations and
+> compatibility fallbacks are not supported; reinstalling and configuring again
+> may be necessary.
 > See the [experimental release policy](docs/compatibility.md).
 
 ---

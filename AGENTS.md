@@ -43,9 +43,12 @@ Describe changes and required fresh setup in release notes. Published artifacts
 remain immutable. Package versions and persisted schema versions are separate;
 see `docs/compatibility.md`.
 
-**No historical compatibility support.** Do not add migrations, legacy aliases,
-transition releases or an old-version upgrade matrix. Keep the generic schema
-and storage machinery for future use, but no historical conversion handlers.
+**No historical compatibility support during 0.x.** Do not add historical
+migrations, legacy aliases, compatibility fallbacks, transition releases or an
+old-version upgrade matrix before a new 1.x line. A future stable policy requires
+a separate explicit decision; it does not revive support for the former releases.
+Keep the generic schema and storage machinery for future use, but no historical
+conversion handlers.
 Retain current schema identities when package numbering changes. Reject
 unsupported or future formats before overwriting them; never silently reset or
 delete user data. Test current behavior and storage safety. Running workspace

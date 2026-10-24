@@ -78,7 +78,7 @@ session-context boundaries.
 
 - **Engineering language**, `workflow.language`: code comments, docstrings,
   documentation, commits, PRs and review replies. Empty defaults to English.
-  It also remains the tracker fallback for existing configurations.
+  Tracker language inherits this value when its current setting is empty.
 - **Tracker language**, `workflow.tracker_language`: task titles, descriptions,
   plans, checklists, journal comments, normalization, adoption and Plan sync.
   Empty inherits `workflow.language`. With both empty, new tasks use your

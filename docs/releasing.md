@@ -43,7 +43,8 @@ update their pins together.
    Select an unused `0.MINOR.PATCH` version, update `project.version` in `pyproject.toml` and
    add a matching `## MAJOR.MINOR.PATCH` entry in `CHANGELOG.md`, then review
    the complete release change. Describe incompatible changes and required fresh
-   setup without adding historical migrations or an upgrade matrix.
+   setup without adding historical migrations, compatibility fallbacks or an
+   upgrade matrix throughout the 0.x line.
 2. Validate the changes being released. For a version-and-changelog-only commit
    on top of already accepted code, run the metadata/documentation tests and
    check the intended tag and release notes:

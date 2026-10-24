@@ -17,9 +17,9 @@ again may be necessary. See [installation](installation.md#updating) and the
 
 ## Direct upgrades
 
-No automatic migrations, historical compatibility aliases, transitional releases
-or successful-upgrade matrix are provided. Current-format defaults still apply
-when an optional setting is absent; that is not a promise to preserve older
+Throughout 0.x, do not add historical migrations, compatibility fallbacks, legacy
+aliases, transitional releases or a successful-upgrade matrix. Current-format
+defaults still apply when an optional setting is absent; that is not a promise to preserve older
 representations or meanings. Unsupported stored schemas stop the operation
 without replacing the original. A new installation never silently deletes or
 resets existing user data.
@@ -77,8 +77,11 @@ machinery for possible future migration support. Its synthetic tests exercise
 copying, ordered steps, validation, private original backups, locking, atomic
 replacement and safe retry; they do not promise any old release will load.
 
-If migration support is explicitly introduced later, version each representation
-independently and register pure conversion steps only for that supported scope.
+Reconsider migration support only when defining a new 1.x policy, through a
+separate explicit decision. A stable version does not automatically restore
+support for the former 1.x–4.x releases. If that policy introduces migrations,
+version each representation independently and register pure conversion steps only
+for that supported scope.
 Validate before committing and preserve the original before a format-changing
 write. The shared writer protects one document; it is not a transaction across
 integrations or external services. Existing operation locks still guard
