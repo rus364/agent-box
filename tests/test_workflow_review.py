@@ -713,8 +713,9 @@ class ReviewerInputTests(unittest.TestCase):
             payload = payload_of(prompt)
             manifest, _ = package(payload)
             self.assertLessEqual(len(prompt.encode()), 1048576)
-            for included in (requirement_marker, author_marker, "changed-042.txt"):
+            for included in (requirement_marker, author_marker):
                 self.assertIn(included, prompt)
+            self.assertNotIn("changed-042.txt", prompt)
             self.assertIn(requirement_marker, Path(manifest["artifacts"]["task.md"]["path"]).read_text())
             self.assertEqual(Path(manifest["artifacts"]["author-report.md"]["path"]).read_text(), author_marker)
             self.assertEqual(len(Path(manifest["artifacts"]["changed-paths.txt"]["path"]).read_text().splitlines()), 250)

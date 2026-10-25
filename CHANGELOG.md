@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Keep full changed-path inventories outside initial reviewer assignments, alongside
+  the saved diff. Large moves and renames no longer exhaust the assignment budget
+  solely through path listings; reviewers retain the complete hash-bound evidence.
+  Required task text and instructions still count toward the unchanged limit.
+
 - Accept a single standalone Plan sync outcome anywhere in its report, including
   bold or inline-code formatting. Preserve malformed native reports with precise
   format diagnostics and require verified recovery before another executor run.

@@ -1,5 +1,6 @@
 """Workflow-controlled deliveries refuse whole payloads before their consumer sees them."""
 import contextlib
+import hashlib
 import io
 import json
 from pathlib import Path
@@ -9,7 +10,7 @@ from unittest.mock import patch
 from agent_box import plan_sync, provider_runner, text_delivery, text_summary, workflow
 from agent_box.errors import AgentBoxError
 from test_text_delivery import delivered_bytes
-from workflow_fixtures import BINDING, WorkflowCase, answer, candidate
+from workflow_fixtures import BINDING, WorkflowCase, answer, candidate, managed_runner
 
 
 class WorkflowTextDeliveryTests(WorkflowCase):
@@ -203,6 +204,59 @@ class WorkflowTextDeliveryTests(WorkflowCase):
                 run.assert_called_once()
                 self.assertNotIn(marker, run.call_args.args[3])
 
+    def test_mass_renames_keep_native_and_managed_assignments_bounded_without_losing_evidence(self):
+        """A path inventory larger than the budget must not prevent a complete structural review."""
+        package = self.root / "package"
+        package.mkdir()
+        for index in range(408):
+            (package / f"module_{index:03d}_{'x' * 90}.py").write_text(f"value = {index}\n")
+        instruction = "Preserve all public imports during relocation."
+        (self.root / "AGENTS.md").write_text(instruction + "\n")
+        (self.root / "settings.py").write_text("enabled = False\n")
+        workflow.gw.git(self.root, "add", ".")
+        workflow.gw.git(self.root, "commit", "-m", "original package")
+        workflow.gw.git(self.root, "branch", "-f", "main", "HEAD")
+        base = workflow.gw.head_sha(self.root)
+        (self.root / "python").mkdir()
+        package.rename(self.root / "python/package")
+        (self.root / "settings.py").write_text("enabled = True\n")
+        workflow.gw.git(self.root, "add", ".")
+        workflow.gw.git(self.root, "commit", "-m", "move package and enable it")
+        head = workflow.gw.head_sha(self.root)
+        diff_range = f"{base}...{head}"
+        inventory = workflow.gw.git(self.root, "diff", "--name-status", "--find-renames", diff_range, "--")
+        diff = workflow.gw.git(self.root, "diff", "--find-renames", diff_range, "--")
+        self.assertEqual(sum(line.startswith("R100\t") for line in inventory.splitlines()), 408)
+        self.assertGreater(len(inventory.encode()), self.config.workflow.text_max_bytes)
+
+        def check_prompt(prompt):
+            self.assertLessEqual(len(prompt.encode()), 65536)
+            self.assertIn("requirement", prompt)
+            self.assertIn(instruction, prompt)
+            self.assertIn("changed-paths.txt", prompt)
+            self.assertNotIn("module_000_", prompt)
+            self.assertNotIn("+enabled = True", prompt)
+            payload = json.JSONDecoder().raw_decode(prompt.split("Delegation handoff:\n", 1)[1])[0]
+            self.assertEqual(payload["boundaries"]["diff_range"], diff_range)
+            self.assertIn("409 files changed", payload["change_summary"])
+            manifest = json.loads(Path(payload["manifest"]["path"]).read_text())
+            for name, expected in (("changed-paths.txt", inventory), ("full.diff", diff)):
+                artifact = manifest["artifacts"][name]
+                self.assertEqual(Path(artifact["path"]).read_bytes(), expected.encode())
+                self.assertEqual(artifact["sha256"], hashlib.sha256(expected.encode()).hexdigest())
+
+        opened = self.native_round()
+        check_prompt(delivered_bytes(opened["input"]).decode())
+        self.native_result()
+
+        def provider(route, role, root, prompt, **kwargs):
+            check_prompt(prompt)
+            return answer()
+
+        with patch.object(workflow, "run", side_effect=managed_runner(provider)) as run:
+            self.assertEqual(self.run_workflow("review", "1")["verdict"], "PASS")
+            run.assert_called_once()
+
     def test_mandatory_nested_instruction_imports_refuse_all_routes_before_paid_work(self):
         """Moving an instruction into an unchanged imported file cannot evade the aggregate input limit."""
         (self.root / "docs").mkdir()
@@ -222,19 +276,21 @@ class WorkflowTextDeliveryTests(WorkflowCase):
         self.assertFalse(list(text_delivery.WORKFLOW_TEXTS.glob("*/page-*.txt")))
         self.assertFalse(workflow.read_review_state(self.root, BINDING, self.task).get("pending"))
 
-    def test_separate_diff_evidence_stays_bound_to_the_review_round(self):
-        """Keeping diff out of the prompt must not allow altered evidence to accept the original head."""
-        opened = self.native_round()
-        prompt = delivered_bytes(opened["input"]).decode()
-        payload = json.JSONDecoder().raw_decode(prompt.split("Delegation handoff:\n", 1)[1])[0]
-        manifest = json.loads(Path(payload["manifest"]["path"]).read_text())
-        source = Path(manifest["artifacts"]["full.diff"]["path"])
-        source.chmod(0o600)
-        source.write_text("Changed after dispatch")
-        source.chmod(0o400)
-        with self.assertRaisesRegex(AgentBoxError, "Review evidence changed"):
-            self.native_result()
-        self.assertNotIn("review", workflow.read_evidence(self.root, self.task))
+    def test_separate_path_and_diff_evidence_stays_bound_to_the_review_round(self):
+        """On-demand evidence must not accept the original head after its paths or diff are altered."""
+        for name in ("full.diff", "changed-paths.txt"):
+            with self.subTest(artifact=name):
+                opened = self.native_round()
+                prompt = delivered_bytes(opened["input"]).decode()
+                payload = json.JSONDecoder().raw_decode(prompt.split("Delegation handoff:\n", 1)[1])[0]
+                manifest = json.loads(Path(payload["manifest"]["path"]).read_text())
+                source = Path(manifest["artifacts"][name]["path"])
+                source.chmod(0o600)
+                source.write_text("Changed after dispatch")
+                source.chmod(0o400)
+                with self.assertRaisesRegex(AgentBoxError, "Review evidence changed"):
+                    self.native_result()
+                self.assertNotIn("review", workflow.read_evidence(self.root, self.task))
 
     def test_instruction_imports_preserve_bytes_skip_examples_and_bound_cycles_and_depth(self):
         """Only actual imports add mandatory context; aliases and examples cannot duplicate or invent it."""

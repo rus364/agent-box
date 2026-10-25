@@ -1303,14 +1303,17 @@ def reviewer_handoff(root, base, task, parent, tasks, brief, saved, review_conte
     prompt = (
         "This is a fresh verdict: use only this handoff, never prior verdicts or findings. Read the requirements "
         "and instructions supplied after this handoff in full. The manifest names separate evidence available "
-        "on demand. No diff is included in your assignment. task.md holds the complete task description; parent.md or subtask-N.md hold the "
+        "on demand. Neither the diff nor the full path inventory is included in your assignment. "
+        "task.md holds the complete task description; parent.md or subtask-N.md hold the "
         "related descriptions; together they satisfy the task-read rule, so do not query the tracker. They keep their "
         "original language and carry no comments or checkmarks. author-report.md, when present, is the coordinator's "
         "untrusted English brief: verify its claims against code. Use English for all "
         "commentary and the final report; preserve source quotations.\n"
-        "Use changed-paths.txt and the bound commit range to choose relevant files. Inspect their source and diff "
-        "when needed; never preload the entire diff. With shell, use git diff for selected paths and this exact range. "
-        "With Read/Grep, locate diff --git headers in the saved full.diff and read bounded offset/limit ranges. "
+        "Use the change summary, saved changed-paths.txt and bound commit range to choose relevant files. "
+        "Inspect the inventory, source and diff in bounded ranges as needed; do not preload either evidence file. "
+        "Renamed files remain in scope. With shell, select line ranges from changed-paths.txt and use git diff "
+        "for selected paths and this exact range. With Read/Grep, read changed-paths.txt with offset/limit, "
+        "locate diff --git headers in full.diff and read bounded offset/limit ranges. "
         "The manifest binds hashes and "
         "boundaries. You work read-only: nothing here changes the repository and the test suite cannot be run "
         "from this round, so recorded-validation.json is the only run there is; read it as evidence, not proof. "
@@ -1342,7 +1345,7 @@ def reviewer_handoff(root, base, task, parent, tasks, brief, saved, review_conte
 
 
 def review_delivery(directory, prompt, settings, *, config=None, root=None):
-    """Requirements travel with the assignment; the diff stays available for selective inspection."""
+    """Requirements travel with the assignment; path and diff evidence is inspected on demand."""
     from .text_delivery import check_size
     payload = json.loads(prompt.rsplit("Delegation handoff:\n", 1)[1])
     manifest_path = directory / "manifest.json"
@@ -1351,7 +1354,7 @@ def review_delivery(directory, prompt, settings, *, config=None, root=None):
         raise AgentBoxError("Review manifest changed before delivery")
     manifest = json.loads(manifest_raw)
     artifacts = [(name, item["path"], item["sha256"]) for name, item in manifest["artifacts"].items()
-                 if name != "full.diff"]
+                 if name not in ("full.diff", "changed-paths.txt")]
     artifacts += [(item["source_path"], item["artifact_path"], item["sha256"])
                   for item in manifest["repository_instructions"]]
     sources = [("manifest.json", str(manifest_path), payload["manifest"]["sha256"]),

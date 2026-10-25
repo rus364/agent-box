@@ -344,10 +344,12 @@ before launch; missing, symlinked or more than four-hop imports fail explicitly.
 Markdown code spans/blocks are examples, not imports.
 
 No role receives a diff in its initial assignment. Reviewers get requirements,
-commit boundaries and changed paths. Saved `full.diff` remains separate evidence:
-use Git for selected paths when shell is available, or Grep plus bounded Read
-ranges in that file. Source/diff inspection is chosen during work; it is outside
-the initial assignment budget and is never replaced with a summary.
+commit boundaries, a compact Git change summary and a hash-bound evidence manifest.
+The complete `changed-paths.txt` inventory and `full.diff` remain separate evidence,
+including all renamed paths. Inspect the inventory in bounded line ranges with
+shell or Read/Grep, then use Git for selected paths or Grep plus bounded Read
+ranges in the saved diff. Path/source/diff inspection is chosen during work; it is
+outside the initial assignment budget and is never replaced with a summary.
 
 Oversized supplemental notes and captured managed reports get one summary using
 `workflow.scout.models` and its existing ordered fallback route. This synchronous
