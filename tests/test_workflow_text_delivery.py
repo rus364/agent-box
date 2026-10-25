@@ -371,11 +371,30 @@ class WorkflowTextDeliveryTests(WorkflowCase):
                 text_summary.compact("x" * 70000, self.config, self.root, label="fixture")
             self.assertIn(f"Workflow behavior: {version} (scout)", run.call_args.args[3])
 
+    def test_sync_summaries_preserve_formatted_outcomes_without_requiring_terminal_position(self):
+        """Summaries may move an explicit outcome, but cannot hide or invent another marker."""
+        marker = " \t`Sync: UPDATED` \t"
+        original = "x" * 70000 + "\n" + marker
+        summary = marker + "\nTask 2 correction saved and reread."
+        result = {"report": original, "backend": "managed"}
+        with patch.object(workflow, "run", return_value=summary) as run:
+            plan_sync.prepare_report(self.root, self.config, result)
+        run.assert_called_once()
+        self.assertEqual(result["report"], original)
+        delivered = result["report_delivery"]["text"]
+        self.assertIn(marker, delivered.splitlines())
+        self.assertEqual(plan_sync.outcome(delivered), "UPDATED")
+        for invalid in (summary.replace(marker, "Sync: UPDATED"),
+                        summary + "\n**Sync: ERROR", summary + "\nSync: UNKNOWN"):
+            with self.subTest(summary=invalid), patch.object(workflow, "run", return_value=invalid):
+                with self.assertRaisesRegex(AgentBoxError, "TEXT_SUMMARY_FAILED"):
+                    plan_sync.prepare_report(self.root, self.config, {"report": original})
+
     def test_failed_sync_summary_keeps_reconciliation_retryable_and_preserves_malformed_original(self):
         """Recovery must survive a failed delivery without losing evidence or repeating tracker writes."""
         original = "x" * 70000
         with patch.object(workflow, "run", return_value=original):
-            with self.assertRaisesRegex(AgentBoxError, "no single outcome"):
+            with self.assertRaisesRegex(AgentBoxError, "missing standalone Sync line"):
                 self.run_workflow("sync", "1")
         self.report.write_text("Reread affected tasks; all required changes were saved.\nSync: UPDATED\n")
         with patch.object(workflow, "run", return_value=""):

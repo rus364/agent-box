@@ -211,6 +211,18 @@ affected open tasks, and never touches project files, Git or lifecycle.
 `begin`, a subtask's `finish` and the parent's landing return a Plan sync
 request, which the coordinator runs through `ab-sync`. A run reports
 `UPDATED`, `UNCHANGED`, `BLOCKED` (a decision is needed) or `ERROR`.
+The report contains exactly one standalone `Sync: STATUS` line, anywhere in
+its text. Plain text, whole-line bold (`**Sync: UPDATED**`) or inline code
+(`` `Sync: UPDATED` ``) and surrounding whitespace are accepted. Missing,
+unknown, malformed or repeated outcomes are format errors; prose is never
+used to infer a status.
+
+A rejected native or managed report is retained with its format diagnostic.
+The run remains pending recovery: inspect the report, await/stop the executor
+and reread affected tasks before `workflow sync TASK --reconcile FILE`.
+Recovery requires checked-write evidence plus one standalone outcome line;
+`REQUIRED` additionally allows a new run after partial writes have been checked.
+Do not rerun an executor merely to repair its report format.
 
 ```bash
 agent-box workflow sync TASK                  # manual, even with the policy off

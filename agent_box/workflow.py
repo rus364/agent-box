@@ -1496,7 +1496,7 @@ def parser():
             mode = cmd.add_mutually_exclusive_group()
             mode.add_argument("--native", action="store_true", help="Return a short assignment for the configured native profile")
             mode.add_argument("--result", metavar="FILE", help="Record the native agent's unchanged Markdown answer")
-            mode.add_argument("--reconcile", metavar="FILE", help="After executor stops and live-task checks, record recovery evidence ending Sync: UPDATED|UNCHANGED|BLOCKED|ERROR|REQUIRED; no model call")
+            mode.add_argument("--reconcile", metavar="FILE", help="After executor stops and live-task checks, record recovery evidence with one standalone Sync: UPDATED|UNCHANGED|BLOCKED|ERROR|REQUIRED line; no model call")
             cmd.add_argument("--event", choices=("manual", "before", "after", "plan"), default="manual",
                              help="Manual always runs; other events follow Workflow Plan sync settings")
             cmd.add_argument("--output", choices=("inline", "reference"), default="inline",

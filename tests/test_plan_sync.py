@@ -192,7 +192,7 @@ class PlanSyncTests(WorkflowCase):
     def test_invalid_or_unnecessary_reconciliation_preserves_saved_result(self):
         """A bare outcome is not evidence, and successful results need no administrative override."""
         prior = {"status": "BLOCKED", "head": workflow.gw.head_sha(self.root), "event": "after"}
-        for report in ("", "Sync: UPDATED\n", "Sync: UNCHANGED\nextra", "why\nSync: UPDATED\nSync: REQUIRED"):
+        for report in ("", "Sync: UPDATED\n", "\n **Sync: UNCHANGED**\n \t", "why\nSync: UPDATED\nSync: REQUIRED"):
             plan_sync.save(self.root, self.task, prior)
             self.report.write_text(report)
             with self.subTest(report=report), self.assertRaises(AgentBoxError):
@@ -368,19 +368,62 @@ class PlanSyncTests(WorkflowCase):
         self.assertEqual(route["models"], "--sync")
         self.assertEqual(route["native"], {})
 
-    def test_report_with_text_after_outcome_is_not_recorded_as_success(self):
-        with self.assertRaisesRegex(AgentBoxError, "no single outcome"):
-            plan_sync.complete(self.root, self.task, {}, "Sync: UNCHANGED\nActually could not read tasks")
-        self.assertIsNone(plan_sync.last_result(self.root, self.task))
+    def test_outcome_position_and_presentation_do_not_repeat_completed_tracker_writes(self):
+        """A heading-style summary and a trailing outcome convey the same explicit result."""
+        for marker in ("Sync: UPDATED", "**Sync: UPDATED**", "`Sync: UPDATED`", " \tSync:\tUPDATED \t"):
+            for parts in ((marker, "Task 5 reread; correction saved."),
+                          ("Task 5 reread.", marker, "Correction saved."),
+                          ("Task 5 reread; correction saved.", marker)):
+                report = "\r\n".join(parts) + "\r\n\r\n"
+                with self.subTest(parts=parts):
+                    result = plan_sync.complete(self.root, self.task, {}, report)
+                    self.assertEqual(result["status"], "UPDATED")
+                    self.assertEqual(result["report"], report)
+                    self.assertEqual(plan_sync.outcome(report, reconciliation=True), "UPDATED")
 
-    def test_markdown_emphasis_does_not_require_repeating_completed_tracker_writes(self):
-        """Claude wrapped its successful outcome in bold; that changes presentation, not the result."""
-        report = "Task 5: corrected SHA256 and reference; reread saved text.\n\n**Sync: UPDATED**\n"
-        result = plan_sync.complete(self.root, self.task, {}, report)
-        self.assertEqual(result["status"], "UPDATED")
-        self.assertEqual(result["report"], report)
-        with self.assertRaisesRegex(AgentBoxError, "single outcome"):
-            plan_sync.complete(self.root, self.task, {}, "Sync: UNCHANGED\n**Sync: UPDATED**")
+    def test_missing_unknown_or_repeated_outcomes_are_never_guessed(self):
+        """One valid marker must not conceal a second malformed or contradictory status."""
+        cases = (("No drift found.", "missing standalone"),
+                 ("No changes. Sync: UNCHANGED", "missing standalone"),
+                 ("Sync: COMPLETE", "malformed or unknown"),
+                 ("**Sync: UNCHANGED", "malformed or unknown"),
+                 ("Sync: REQUIRED", "malformed or unknown"),
+                 ("Sync: UNCHANGED\nSync: UNCHANGED", "multiple Sync"),
+                 ("Sync: UNCHANGED\n**Sync: ERROR**", "multiple Sync"),
+                 ("Sync: UNCHANGED\n`Sync: UNKNOWN`", "multiple Sync"),
+                 ("Sync: UNCHANGED\n__Sync: ERROR__", "multiple Sync"),
+                 ("Sync: UNCHANGED\n**Sync: ERROR", "multiple Sync"))
+        for report, reason in cases:
+            with self.subTest(report=report), self.assertRaisesRegex(AgentBoxError, reason):
+                plan_sync.outcome(report)
+
+    def test_malformed_native_and_managed_reports_survive_until_verified_reconciliation(self):
+        """A rejected final answer must remain inspectable without replaying possible tracker writes."""
+        report = "Task 2 correction saved; the report omitted its outcome.\n"
+        recovery = "**Sync: UPDATED**\nTask 2 reread: correction saved, scope complete.\n"
+        for native in (True, False):
+            with self.subTest(native=native), patch.object(workflow, "candidates", return_value={}), \
+                    patch.object(workflow, "execute", return_value={"report": report, "route": {},
+                                                                   "diagnostics": {"usage": None}}) as execute:
+                if native:
+                    self.run_workflow("sync", "1", "--native")
+                    self.report.write_text(report)
+                with self.assertRaisesRegex(AgentBoxError, "Invalid Plan sync report.*original report retained"):
+                    self.run_workflow("sync", "1", *(["--result", str(self.report)] if native else []))
+                saved = plan_sync.last_result(self.root, self.task)
+                self.assertEqual((saved["status"], saved["report"]), ("ERROR", report))
+                self.assertIn("missing standalone Sync line", saved["reason"])
+                inspected = self.run_workflow("inspect", "1")
+                self.assertEqual(inspected["plan_sync"]["last_result"]["report"], report)
+                self.assertIn("--reconcile FILE", inspected["next_step"])
+                with self.assertRaisesRegex(AgentBoxError, "--reconcile"):
+                    self.run_workflow("sync", "1")
+                self.report.write_text(recovery)
+                result = self.run_workflow("sync", "1", "--reconcile", str(self.report))
+                self.assertEqual(result["status"], "UPDATED")
+                self.assertEqual(result["report"], report)
+                self.assertEqual(result["reconciliation"]["report"], recovery)
+                self.assertEqual(execute.call_count, 0 if native else 1)
 
     def test_external_source_is_refused_before_dispatch(self):
         self.task.project = "other"

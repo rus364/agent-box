@@ -16,10 +16,16 @@ Edit open tasks in scope yourself, including Backlog, Ready, In progress and In 
 Edit only a concrete stale assertion or a decision changing the task's scope/acceptance. No informational additions, Git/sync bookkeeping (commit hashes, sync-task IDs), or restated workflow instructions. Preserve intended requirements and unrelated text; unresolved contradictions need a decision, never weaker acceptance. No correction means no write.
 With references enabled, repair missing/stale references needed to implement affected tasks; do not backfill unrelated tasks. Preserve the section's heading and location; if absent, add one under Context. Use path#heading plus purpose; verify sections and meaning, never line numbers or invented decisions.
 Before each edit, reread the task; use agent-box tracker update ID --revision REV --description-file - with its full preserved description in a direct heredoc, without pipes or temporary files. Verify saved text; journal corrections. Write in task language, or wholly in an assignment's Working language. Report conflicting repository language requirements before editing; preserve user-owned instructions. On unknown-outcome, reread task/comments before any further write; never blindly retry.
-Report in English: task IDs, saved/partial corrections, evidence, unresolved issues. End with: Sync: UPDATED, Sync: UNCHANGED, Sync: BLOCKED, or Sync: ERROR. BLOCKED needs a decision; ERROR means reading, writing or verification failed.
+Report in English: task IDs, saved/partial corrections, evidence, unresolved issues. Include exactly one standalone line anywhere: Sync: UPDATED|UNCHANGED|BLOCKED|ERROR (choose one). BLOCKED needs a decision; ERROR means reading/writing/verification failed.
 """
 
 PENDING = ("RUNNING", "NATIVE", "ERROR", "BLOCKED")
+# Count malformed markers too: a valid line must not hide a second attempted outcome.
+SYNC_LINE = re.compile(r"^[ \t>#*_`]*Sync[*_`]*[ \t]*:")
+
+
+def outcome_lines(report):
+    return [line for line in report.splitlines() if SYNC_LINE.match(line)]
 
 
 def record_path(root, task):
@@ -118,11 +124,10 @@ def prepare_report(root, config, result, *, reconciliation=False):
     if (delivery and delivery["summary"]["source_sha256"] == hashlib.sha256(report.encode("utf-8")).hexdigest()
             and len(delivery["text"].encode("utf-8")) <= budget):
         return
-    protected = [line for line in report.splitlines() if re.fullmatch(r"(?:\*\*)?Sync: \w+(?:\*\*)?[ \t]*", line)]
+    protected = outcome_lines(report)
     text, summary = compact(report, config, root, label="Plan sync report", budget=budget, protected=protected)
     if summary:
-        summary_outcomes = [line for line in text.splitlines()
-                            if re.fullmatch(r"(?:\*\*)?Sync: \w+(?:\*\*)?[ \t]*", line)]
+        summary_outcomes = outcome_lines(text)
         if summary_outcomes != protected:
             raise AgentBoxError("TEXT_SUMMARY_FAILED: Plan sync summary changed outcome lines; original retained")
         try:
@@ -177,19 +182,35 @@ def schedule(root, binding, adapter, config, task, event):
 
 
 def outcome(report, *, reconciliation=False):
-    statuses = re.findall(r"^(?:\*\*)?Sync: (\w+)(?:\*\*)?[ \t]*$", report, re.M)
+    lines = outcome_lines(report)
+    if len(lines) != 1:
+        reason = "missing standalone Sync line" if not lines else "multiple Sync lines"
+        raise AgentBoxError(f"Invalid Plan sync report: {reason}; expected exactly one")
+    text = lines[0].strip(" \t")
+    for marker in ("**", "`"):
+        if text.startswith(marker) and text.endswith(marker):
+            text = text[len(marker):-len(marker)]
+            break
+    match = re.fullmatch(r"Sync:[ \t]+(\w+)", text)
     allowed = ("UPDATED", "UNCHANGED", "BLOCKED", "ERROR") + (("REQUIRED",) if reconciliation else ())
-    if (len(statuses) != 1 or statuses[0] not in allowed
-            or report.rstrip().splitlines()[-1].strip("* \t") != f"Sync: {statuses[0]}"):
-        raise AgentBoxError("Plan sync returned no single outcome; reread tasks before retrying")
-    if reconciliation and not "\n".join(report.rstrip().splitlines()[:-1]).strip():
+    if not match or match[1] not in allowed:
+        raise AgentBoxError("Invalid Plan sync report: malformed or unknown Sync outcome; "
+                            f"expected Sync: {'|'.join(allowed)} on a standalone line")
+    if reconciliation and not any(line.strip() for line in report.splitlines() if line != lines[0]):
         raise AgentBoxError("Plan sync reconciliation requires evidence of checked writes and resolved/remaining blockers")
-    return statuses[0]
+    return match[1]
 
 
 def complete(root, task, result, report):
     result["report"] = report
-    result["status"] = outcome(report)
+    try:
+        result["status"] = outcome(report)
+    except AgentBoxError as exc:
+        reason = (f"{exc}; original report retained. Inspect the report and reread affected tasks, "
+                  f"then workflow sync {task.id} --reconcile FILE; do not rerun the executor")
+        result.update(status="ERROR", reason=reason)
+        save(root, task, result)
+        raise AgentBoxError(reason) from None
     save(root, task, result)
     return result
 

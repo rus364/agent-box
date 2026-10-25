@@ -1,7 +1,6 @@
 """One configured scout may reduce supplemental text; authoritative inputs stay exact."""
 import hashlib
 from pathlib import Path
-import re
 import tempfile
 
 from .atomicio import atomic_write_bytes
@@ -19,6 +18,7 @@ def compact(text, config, root, *, label, budget=None, protected=()):
     """
     from . import workflow
     from .provider_runner import FINDING, RESPONSE_LIMIT, VERDICT_LINE
+    from .plan_sync import SYNC_LINE
     limit = config.workflow.text_max_bytes if budget is None else min(budget, config.workflow.text_max_bytes)
     raw = text.encode("utf-8")
     if len(raw) <= limit:
@@ -26,7 +26,7 @@ def compact(text, config, root, *, label, budget=None, protected=()):
     findings = [line for line in text.splitlines() if FINDING.match(line)]
     def outcome_lines(value):
         return [line for line in value.splitlines() if VERDICT_LINE.match(line)
-                or re.fullmatch(r"(?:\*\*)?Sync: \w+(?:\*\*)?[ \t]*", line)]
+                or SYNC_LINE.match(line)]
     outcomes = outcome_lines(text)
     protected = tuple(dict.fromkeys((*protected, *findings, *outcomes)))
     context = (f"{label}: {len(raw)} source UTF-8 bytes; delivery budget={limit}; "
@@ -58,7 +58,6 @@ def compact(text, config, root, *, label, budget=None, protected=()):
                   + f"\nSummarize {label}. Preserve decisions, requirements, findings, evidence locations, failures "
                     "and limitations; omit repetition and incidental narration. Preserve every existing Verdict: "
                     "or Sync: outcome line and every severity-tagged finding bullet exactly. Do not add such lines. "
-                    "An outcome at the end of the source must also end your answer. "
                     f"Aim for at most {min(16384, available)} UTF-8 bytes; the hard output budget is {available}. "
                     "Return only the summary in the source language.\n"
                   + text_delivery.message({"id": path.name, "bytes": len(raw), "pages": len(pages),

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Accept a single standalone Plan sync outcome anywhere in its report, including
+  bold or inline-code formatting. Preserve malformed native reports with precise
+  format diagnostics and require verified recovery before another executor run.
+
 - Preserve exact external-model context sizes and pass them to Claude's supported
   custom-ID context setting instead of rounding to 200K/1M or adding `[1m]`.
   Recognized Claude IDs retain native window rules; select `[1m]` explicitly
