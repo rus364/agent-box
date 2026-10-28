@@ -49,6 +49,37 @@ class IsolatedLaunchTest(unittest.TestCase):
 
 
 class SessionPrecedenceTests(IsolatedLaunchTest):
+    def test_profile_override_is_session_only_and_does_not_grant_access(self):
+        """A profile choice must survive snapshot replay without changing the saved opt-in."""
+        for enabled, toggle in ((False, []), (True, []), (True, ["--no-personal-browser"]),
+                                (False, ["--personal-browser"])):
+            for flags in (["--personal-browser-profile", "Profile 1"],
+                          ["--personal-browser-profile=Profile 1"]):
+                with self.subTest(enabled=enabled, toggle=toggle, flags=flags):
+                    config = Config()
+                    config.host.personal_browser.enabled = enabled
+                    config.host.personal_browser.profile = "Default"
+                    before = config.to_dict()
+                    options, rest = launch_options.parse([*flags, *toggle, "codex", "--profile", "agent-profile"])
+                    self.assertEqual(rest, ["codex", "--profile", "agent-profile"])
+                    launched, snapshot = self.launch(config, options.overrides)
+                    with patch.dict(os.environ, {"AGENT_BOX_RUNTIME_CONFIG": str(snapshot)}):
+                        replay = effective_config()
+                        self.assertEqual(effective_config(include_project=False).host.personal_browser.profile, "")
+                    for result in (launched, replay):
+                        self.assertEqual(result.host.personal_browser.profile, "Profile 1")
+                    self.assertEqual(launched.host.personal_browser.enabled,
+                                     toggle == ["--personal-browser"] if toggle else enabled)
+                    self.assertEqual(replay.host.personal_browser.enabled, toggle == ["--personal-browser"])
+                    self.assertEqual(config.to_dict(), before)
+
+    def test_profile_option_rejects_missing_empty_and_duplicate_values(self):
+        """An accidental empty or repeated selection must not silently choose another profile."""
+        flag = "--personal-browser-profile"
+        for args in ([flag], [flag, ""], [flag + "="], [flag, "Default", flag, "Profile 1"]):
+            with self.subTest(args=args), self.assertRaises(AgentBoxError):
+                launch_options.parse(args)
+
     def test_removed_tmp_flags_follow_unknown_option_forwarding(self):
         """Removed switches must not grant host access or gain special compatibility handling."""
         for flag in ('--host-tmp', '--no-host-tmp'):

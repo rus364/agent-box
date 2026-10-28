@@ -138,6 +138,20 @@ in the intended profile. Optional **Profile** is its directory name, such as
 `Default` or `Profile 2`, shown at `chrome://version` under Profile Path. Empty
 uses the browser's last-used profile. No profile is copied or mounted.
 
+To override the saved profile for one launch, use its directory name, not the
+display name shown in Chrome:
+
+```bash
+agent-box --host --personal-browser --personal-browser-profile "Profile 1" codex
+agent-box --personal-browser --personal-browser-profile="Profile 1" claude
+```
+
+`--personal-browser-profile` does not enable access by itself; the saved checkbox
+or `--personal-browser` must enable it. `--no-personal-browser` still disables
+access. The option requires a nonempty value and leaves saved settings unchanged.
+Start a new agent-box session to use the selection: attaching to an existing
+session or reconnecting its extension keeps that session's original profile.
+
 On enabled launches, both native `--host` and workspace-container mode check
 extension registration on the host. If it is absent from the selected profile's
 saved metadata, agent-box opens the official store page in that browser/profile.

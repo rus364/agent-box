@@ -16,7 +16,7 @@ from agent_box import browser, paths, personal_browser, project_config, runtime
 from agent_box.config import Config, PersonalBrowserConfig
 from agent_box.errors import AgentBoxError
 from agent_box.launch_options import apply as apply_overrides
-from agent_box.launch_options import LaunchOptions
+from agent_box.launch_options import LaunchOptions, parse
 from agent_box.workspace import Workspace
 from test_runtime import IsolatedRuntimeTest
 
@@ -263,20 +263,24 @@ class ExtensionPreflightTests(unittest.TestCase):
 
 
 class PersonalHostLaunchTests(IsolatedRuntimeTest):
-    def test_missing_extension_guidance_runs_on_host_for_both_launch_modes(self):
-        """A workspace launch must open installation on the desktop without preparing broken MCP."""
+    def test_profile_override_reaches_host_preparation_in_both_launch_modes(self):
+        """Both launch modes must use the override for extension checks and the consent opener."""
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            profile = root / "Default"
+            profile = root / "Profile 1"
             profile.mkdir()
-            (profile / "Preferences").write_text('{"extensions":{"settings":{}}}')
-            for host, request in product((False, True), ("missing", "disabled", "version")):
+            for host, request in product((False, True), ("missing", "registered", "disabled", "version")):
                 config = Config()
-                config.host.personal_browser = PersonalBrowserConfig(request != "disabled", "chromium", "Default")
+                config.host.personal_browser = PersonalBrowserConfig(True, "chromium", "Default")
+                before = config.to_dict()
+                entries = {personal_browser.EXTENSION: {"state": 1}} if request == "registered" else {}
+                (profile / "Preferences").write_text(json.dumps({"extensions": {"settings": entries}}))
+                options, _ = parse(["--personal-browser-profile", "Profile 1",
+                                    *(["--no-personal-browser"] if request == "disabled" else []), "--no-tmux"])
                 rest = ["--version"] if request == "version" else ["exec", "hello"]
                 with self.subTest(host=host, request=request), ExitStack() as stack:
                     for name, value in (
-                        ("launch_config", config), ("resolved_workspace", Workspace(root, root)),
+                        ("load_config", config), ("resolved_workspace", Workspace(root, root)),
                         ("session_runtime", root / "snapshot.json"),
                         ("tracker_mounts", [(root, root, False)]),
                         ("ensure_workspace_image", "sha256:test"), ("tmux_enabled", False),
@@ -287,26 +291,33 @@ class PersonalHostLaunchTests(IsolatedRuntimeTest):
                                  "prepare_k3s", "workspace_container_spec"):
                         stack.enter_context(patch.object(runtime, name))
                     stack.enter_context(patch.object(runtime.host_podman, "require"))
-                    stack.enter_context(patch.object(runtime.shutil, "which", return_value="/usr/bin/codex"))
-                    selected = stack.enter_context(patch.object(personal_browser, "command", return_value=[
-                        "/usr/bin/chromium", "--profile-directory=Default"]))
+                    stack.enter_context(patch.object(runtime.shutil, "which", return_value="/test/native-browser"))
+                    stack.enter_context(patch.dict(os.environ, {"DISPLAY": ":0"}, clear=True))
+                    stack.enter_context(patch.object(project_config, "load", return_value={}))
+                    selected = stack.enter_context(patch.object(personal_browser, "command", wraps=personal_browser.command))
                     stack.enter_context(patch.object(personal_browser, "browser_user_data_dir", return_value=root))
                     opened = stack.enter_context(patch.object(personal_browser.subprocess, "Popen"))
                     stack.enter_context(patch.object(runtime.subprocess, "call", return_value=0))
-                    prepared = stack.enter_context(patch.object(browser, "prepare"))
+                    prepared = stack.enter_context(patch.object(browser, "prepare", return_value=["/test/bridge"]))
                     stderr = stack.enter_context(patch("sys.stderr", new_callable=io.StringIO))
                     if host:
-                        runtime.host_main("codex", rest, LaunchOptions(tmux=False))
+                        runtime.host_main("codex", rest, options)
                     else:
                         with self.assertRaises(SystemExit) as exited:
-                            runtime.runtime_main(["codex", *rest], runtime.PACKAGE_ROOT)
+                            runtime.runtime_main(["codex", *rest], runtime.PACKAGE_ROOT, options)
                         self.assertEqual(exited.exception.code, 0)
-                    prepared.assert_not_called()
-                    if request == "missing":
-                        self.assertEqual(opened.call_args.args[0], [
-                            "/usr/bin/chromium", "--profile-directory=Default", personal_browser.STORE])
+                    self.assertEqual(config.to_dict(), before)
+                    desktop = ["/test/native-browser", "--profile-directory=Profile 1"]
+                    if request == "registered":
+                        prepared.assert_called_once()
+                        self.assertEqual(prepared.call_args.kwargs["desktop"], desktop)
+                        opened.assert_not_called()
+                    elif request == "missing":
+                        prepared.assert_not_called()
+                        self.assertEqual(opened.call_args.args[0], [*desktop, personal_browser.STORE])
                         self.assertIn("Install it there, then start a new", stderr.getvalue())
                     else:
+                        prepared.assert_not_called()
                         selected.assert_not_called()
                         opened.assert_not_called()
 
