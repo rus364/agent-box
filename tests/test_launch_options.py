@@ -49,6 +49,17 @@ class IsolatedLaunchTest(unittest.TestCase):
 
 
 class SessionPrecedenceTests(IsolatedLaunchTest):
+    def test_saved_glab_config_survives_replay_and_nested_launch_without_a_flag(self):
+        """A saved opt-in must not disappear when the host config is unavailable inside the box."""
+        for enabled in (True, False):
+            with self.subTest(enabled=enabled):
+                config = Config()
+                config.credentials.gitlab.config = enabled
+                _, snapshot = self.launch(config, {})
+                with patch.dict(os.environ, {"AGENT_BOX_RUNTIME_CONFIG": str(snapshot)}):
+                    self.assertEqual(effective_config().credentials.gitlab.config, enabled)
+                    self.assertEqual(runtime.runtime_config_base().credentials.gitlab.config, enabled)
+
     def test_glab_config_switches_override_saved_exposure_for_one_launch(self):
         """Both flag spellings must stay launcher options and preserve the saved setting."""
         for enabled, flag in ((True, "--glab-config"), (False, "--no-glab-config")):

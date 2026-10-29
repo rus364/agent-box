@@ -1115,6 +1115,7 @@ def sync_tracker_runtime(config: Config, directory: Path | None = None, *, polic
             "external_apis": external,
         },
         "credentials": {"github": config.credentials.github.to_dict(),
+                        "gitlab": config.credentials.gitlab.to_dict(),
                         "registries": config.credentials.registries.to_dict(),
                         "kubernetes": config.credentials.kubernetes.to_dict(),
                         "cloud": config.credentials.cloud.to_dict()},
