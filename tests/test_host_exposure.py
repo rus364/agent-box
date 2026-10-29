@@ -242,7 +242,39 @@ class GitSeedingTests(unittest.TestCase):
         self.assertIn("glpat_secret", second_config.read_text())
 
 
-class ConfigurationSnapshotLinksTests(unittest.TestCase):
+class ConfigurationSnapshotTests(unittest.TestCase):
+    def test_read_only_sources_become_private_writable_copies_without_losing_executable_helpers(self):
+        """Managed dotfiles can be read-only; the box must edit its copies without changing the host."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source, target = root / "source", root / "snapshot"
+            nested = source / "nested"
+            nested.mkdir(parents=True)
+            settings = nested / "config.yml"
+            settings.write_text("host: example.test\n")
+            settings.chmod(0o400)
+            helper = source / "helper"
+            helper.write_text("#!/bin/sh\nexit 0\n")
+            helper.chmod(0o500)
+            (source / "config").write_text("old\n")
+            (source / "config").chmod(0o400)
+            override = root / "override"
+            override.write_text("selected\n")
+            nested.chmod(0o500)
+            try:
+                runtime.seed_state_dir(target, source, override)
+                copied = target / "nested/config.yml"
+                self.assertEqual(copied.stat().st_mode & 0o777, 0o600)
+                self.assertEqual((target / "nested").stat().st_mode & 0o777, 0o700)
+                self.assertEqual((target / "helper").stat().st_mode & 0o777, 0o700)
+                self.assertEqual((target / "config").read_text(), "selected\n")
+                copied.write_text("host: changed.test\n")
+                self.assertEqual(settings.read_text(), "host: example.test\n")
+                self.assertEqual(settings.stat().st_mode & 0o777, 0o400)
+                self.assertEqual(nested.stat().st_mode & 0o777, 0o500)
+            finally:
+                nested.chmod(0o700)
+
     def test_dangling_links_do_not_block_copies_of_relative_file_and_directory_links(self):
         """Old CLI directories may contain stale links; valid dotfiles must still be materialized."""
         with tempfile.TemporaryDirectory() as tmp:

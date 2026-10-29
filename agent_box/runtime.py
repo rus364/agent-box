@@ -763,9 +763,13 @@ def seed_state_dir(target: Path, *sources: Path) -> None:
             shutil.copytree(source, target, dirs_exist_ok=True, ignore=dangling_links)
         else:
             shutil.copy2(source, target / "config")
-    # copytree copies the source root's mode too; host permissions must not
-    # make the private credential snapshot readable by other local users.
-    os.chmod(target, 0o700)
+        # Host permissions must neither expose credentials nor prevent edits
+        # to the snapshot (including a later source overriding an earlier one).
+        for directory, _, files in os.walk(target):
+            os.chmod(directory, 0o700)
+            for name in files:
+                path = Path(directory) / name
+                os.chmod(path, 0o600 | (path.stat().st_mode & 0o100))
 
 
 GIT_IDENTITY_KEYS = ("user.name", "user.email")
