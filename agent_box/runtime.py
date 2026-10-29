@@ -745,6 +745,12 @@ def claude_skill_links(config: Config) -> None:
 
 
 def seed_state_dir(target: Path, *sources: Path) -> None:
+    def dangling_links(directory, names):
+        # copytree's ignore_dangling_symlinks tests relative targets against
+        # cwd; checking the source entry preserves valid relative dotfiles.
+        entries = (Path(directory) / name for name in names)
+        return [path.name for path in entries if path.is_symlink() and not path.exists()]
+
     shutil.rmtree(target, ignore_errors=True)
     target.mkdir(parents=True, exist_ok=True)
     os.chmod(target, 0o700)
@@ -754,7 +760,7 @@ def seed_state_dir(target: Path, *sources: Path) -> None:
         if source.is_dir():
             # Dotfile symlinks must become independent copies, not writable
             # links back to host files or targets unavailable inside the box.
-            shutil.copytree(source, target, dirs_exist_ok=True)
+            shutil.copytree(source, target, dirs_exist_ok=True, ignore=dangling_links)
         else:
             shutil.copy2(source, target / "config")
     # copytree copies the source root's mode too; host permissions must not

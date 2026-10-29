@@ -242,6 +242,29 @@ class GitSeedingTests(unittest.TestCase):
         self.assertIn("glpat_secret", second_config.read_text())
 
 
+class ConfigurationSnapshotLinksTests(unittest.TestCase):
+    def test_dangling_links_do_not_block_copies_of_relative_file_and_directory_links(self):
+        """Old CLI directories may contain stale links; valid dotfiles must still be materialized."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source, dotfiles, target = root / "gh", root / "dotfiles", root / "snapshot"
+            source.mkdir()
+            dotfiles.mkdir()
+            (dotfiles / "hosts.yml").write_text("github.com: {}\n")
+            (source / "hosts.yml").symlink_to("../dotfiles/hosts.yml")
+            (source / "aliases").symlink_to("../dotfiles", target_is_directory=True)
+            (source / "obsolete").symlink_to("missing.yml")
+            runtime.seed_state_dir(target, source)
+            self.assertFalse((target / "hosts.yml").is_symlink())
+            self.assertEqual((target / "hosts.yml").read_text(), "github.com: {}\n")
+            self.assertFalse((target / "aliases").is_symlink())
+            self.assertEqual((target / "aliases/hosts.yml").read_text(), "github.com: {}\n")
+            self.assertFalse((target / "obsolete").is_symlink())
+            self.assertFalse((target / "obsolete").exists())
+            (target / "aliases/hosts.yml").write_text("changed\n")
+            self.assertEqual((dotfiles / "hosts.yml").read_text(), "github.com: {}\n")
+
+
 class GitLabEnvironmentTests(unittest.TestCase):
     def test_shell_config_path_and_tokens_do_not_escape_into_container_argv(self):
         """A copied config is selected by its container path, with no implicit token passthrough."""
