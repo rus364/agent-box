@@ -83,11 +83,18 @@ and unsupported authentication syntax are refused rather than guessed.
 Other settings, including nested custom headers, are preserved. GitLab Git
 credential helpers and SSH rewrites are not configured automatically.
 
-Shell aliases are not copied. For example, an alias setting
-`GLAB_SKIP_TLS_VERIFY` does not affect container glab. Explicit per-host TLS
-settings in `config.yml` do travel with the copy; CA files outside that
-directory require a separate mount. agent-box does not change the host's
-certificate store or infer TLS policy from shell aliases.
+Shell aliases are not copied. To explicitly skip validation of an untrusted
+GitLab certificate:
+
+```bash
+agent-box --env GLAB_SKIP_TLS_VERIFY=true codex
+```
+
+Or save `"GLAB_SKIP_TLS_VERIFY": "true"` in `box.env.set` through
+`agent-box config`. This disables certificate verification for all glab HTTPS
+requests in the session. Per-host TLS settings in `config.yml` are also copied;
+referenced CA files outside that directory require a separate mount. The host's
+certificate store is unchanged.
 
 ## Checking it
 

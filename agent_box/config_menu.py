@@ -73,7 +73,7 @@ HELP = {
     "credentials.github.token": "Read the host gh token and forward it as GH_TOKEN. Disabled by default because it exposes a live credential to the box.",
     "credentials.github.config": "Copy the host gh configuration into the box. Disabled by default because that directory normally contains authentication data.",
     "credentials.gitlab": "Choose whether host GitLab CLI configuration is exposed inside workspace boxes.",
-    "credentials.gitlab.config": "Copy glab configuration and file/keyring access tokens when creating a box. Requires host glab for keyring; OAuth copies expire without refresh. Disabled by default.",
+    "credentials.gitlab.config": "Copy glab configuration and file/keyring access tokens when creating a box. Requires host glab for keyring; OAuth copies expire without refresh. Disabled by default. For untrusted certificates, --env GLAB_SKIP_TLS_VERIFY=true disables glab TLS verification; it can also be saved in box.env.set.",
     "credentials.registries": "Forward the container registry and Helm repository logins you choose from the host's own login files. Copies are re-rendered at every launch, so a login renewed on the host reaches the box at its next launch. Off by default; --[no-]registries overrides it for one session.",
     "credentials.registries.enabled": "Forward the chosen logins into workspace boxes, read-only. Disabled by default because they reach private images and charts. Changing it recreates the box.",
     "credentials.registries.hosts": "Registry hosts found in the podman/skopeo and Helm OCI auth files on the host. Each source is filtered into its own copy; logins kept by a credential helper cannot be forwarded.",
