@@ -131,7 +131,7 @@ class ProviderEnvTests(unittest.TestCase):
 class GitSeedingTests(unittest.TestCase):
     """git config exposure: identity only by default, whole file opt-in."""
 
-    def _seed(self, config, git_output="Someone"):
+    def _seed(self, config, git_output="Someone", *, glab_symlink=False):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         root = Path(tmp.name)
@@ -141,6 +141,11 @@ class GitSeedingTests(unittest.TestCase):
         glab_home = home / ".config/glab-cli"
         glab_home.mkdir(mode=0o755)
         (glab_home / "config.yml").write_text("hosts:\n  gitlab.example:\n    token: glpat_secret\n")
+        if glab_symlink:
+            dotfiles = home / "dotfiles"
+            dotfiles.mkdir()
+            (glab_home / "config.yml").rename(dotfiles / "glab.yml")
+            (glab_home / "config.yml").symlink_to(dotfiles / "glab.yml")
         (home / ".gitconfig").write_text(
             "[user]\n\tname = Someone\n\temail = a@b.c\n"
             "[credential]\n\thelper = store\n"
@@ -217,6 +222,24 @@ class GitSeedingTests(unittest.TestCase):
         self.assertEqual((state / "glab").stat().st_mode & 0o777, 0o700)
         copied.write_text("host: changed.example\n")
         self.assertIn("glpat_secret", original.read_text())
+
+    def test_symlinked_glab_config_becomes_an_independent_snapshot(self):
+        """Dotfile-managed credentials must work without retaining a writable link to the host."""
+        config = Config()
+        config.credentials.gitlab.config = True
+        state = self._seed(config, glab_symlink=True)
+        source = state.parent / "home/.config/glab-cli"
+        original = state.parent / "home/dotfiles/glab.yml"
+        second = state / "second-glab"
+        runtime.seed_state_dir(second, source)
+        first_config, second_config = state / "glab/config.yml", second / "config.yml"
+        self.assertFalse(first_config.is_symlink())
+        self.assertFalse(second_config.is_symlink())
+        first_config.write_text("host: changed.example\n")
+        self.assertIn("glpat_secret", original.read_text())
+        self.assertIn("glpat_secret", second_config.read_text())
+        original.unlink()
+        self.assertIn("glpat_secret", second_config.read_text())
 
 
 class GitLabEnvironmentTests(unittest.TestCase):

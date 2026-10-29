@@ -752,7 +752,9 @@ def seed_state_dir(target: Path, *sources: Path) -> None:
         if not source.exists():
             continue
         if source.is_dir():
-            shutil.copytree(source, target, dirs_exist_ok=True, symlinks=True)
+            # Dotfile symlinks must become independent copies, not writable
+            # links back to host files or targets unavailable inside the box.
+            shutil.copytree(source, target, dirs_exist_ok=True)
         else:
             shutil.copy2(source, target / "config")
     # copytree copies the source root's mode too; host permissions must not
