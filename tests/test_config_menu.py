@@ -69,7 +69,7 @@ class ConfigMenuTests(unittest.TestCase):
             ('agents', 'codex'): ['native_agent_wait', 'remote_control', 'bypass_permissions'],
             ('agents', 'claude'): ['remote_control', 'telegram_channel', 'bypass_permissions', 'statusline'],
             ('box',): ['tools', 'network', 'browser', 'k3s', 'podman', 'persistent_cache', 'audio', 'links', 'env'],
-            ('credentials',): ['git', 'github', 'registries', 'kubernetes', 'cloud'],
+            ('credentials',): ['git', 'github', 'gitlab', 'registries', 'kubernetes', 'cloud'],
             ('host',): ['notifications', 'personal_browser', 'claude_skill_links'],
             ('workflow',): ['enabled', 'behavior_version', 'merge_mode', 'auto_push', 'pause_push', 'cleanup_local_branches',
                            'cleanup_remote_branches', 'language', 'tracker_language', 'use_tiers', 'worker', 'scout', 'review', 'sync', 'timeout_seconds', 'text_max_bytes', 'text_retention_days'],
