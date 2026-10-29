@@ -30,6 +30,14 @@ host stays the source of truth; changes made in the box disappear with it.
   snapshot rewrites `git@github.com:` and `ssh://git@github.com/` remotes to
   HTTPS. An earlier design forwarded the token whenever `gh` was
   authenticated, which handed every box a credential nobody asked for.
+- **GitLab.** With the config-copy opt-in, keyring hosts are resolved by host
+  `glab config get` against a minimal private config with no fallback tokens,
+  repository config or credential environment overrides. Telemetry and update
+  checks are disabled; startup writes stay in the temporary directory. The
+  per-host access/job tokens go into the private creation-time copy with
+  `use_keyring` disabled. OAuth type/expiry survive, but refresh tokens never
+  enter the mounted config, so independent boxes cannot race host renewal.
+  This contract is verified against glab 1.126.0; lookup failures stop creation.
 - **Registries.** Each source file becomes its own filtered copy, never merged:
   Helm often holds registries Podman does not. Where both container auth files
   hold one registry, a key from the second counts unless the first has the

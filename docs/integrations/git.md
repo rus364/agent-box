@@ -10,7 +10,7 @@ GitHub credential. What reaches a session is chosen under **Credentials → Git*
 | Full host Git config (`credentials.git.full_config`) | off | Your entire `~/.gitconfig` |
 | GitHub token (`credentials.github.token`) | off | A live token for everything your account can reach |
 | GitHub config copy (`credentials.github.config`) | off | `~/.config/gh`, which stores that token on disk |
-| GitLab config copy (`credentials.gitlab.config`) | off | The glab configuration directory, including any file-stored tokens |
+| GitLab config copy (`credentials.gitlab.config`) | off | The glab configuration directory and per-host file/keyring access tokens |
 
 **Identity** is what commit attribution needs and is not a secret. **The full
 Git config** often carries credential helpers, bearer-token headers, URL
@@ -61,12 +61,33 @@ Home paths use the account home, not the shell’s `HOME`. System-wide config
 is not copied.
 
 The container gets a private writable copy at `~/.config/glab-cli`, selected
-by its own `GLAB_CONFIG_DIR`. Host files stay unchanged. This includes saved
-self-managed GitLab hosts and tokens stored in the files. Credentials stored
-only in the host OS keyring are not copied; authenticate inside the box with
-`glab auth login` when needed. Shell token variables are not forwarded by this
-switch. GitLab Git credential helpers and SSH rewrites are not configured
-automatically.
+by its own `GLAB_CONFIG_DIR`. Host files stay unchanged. For hosts configured
+with `use_keyring: true`, agent-box runs the host's `glab config get` against
+an isolated temporary configuration and writes that host's access/job token
+into the copy. The container receives no D-Bus or host-keyring access. Install
+`glab` on the host and unlock its keyring before creating the box; an unavailable
+keyring or missing credential stops creation with a diagnostic. Shell token
+variables cannot substitute for a missing keyring entry and are not forwarded
+by this switch.
+
+OAuth copies retain their authentication type and expiry, but omit refresh
+tokens, including those stored in files: sharing a rotating refresh token
+could invalidate the host or another box. An OAuth access token therefore
+works only until it expires. Authenticate independently with `glab auth login`
+inside the box, or renew on the host and explicitly stop/relaunch the box to
+create a fresh snapshot. Attaching to a running box never refreshes this copy.
+
+The credential reader accepts block mappings with plain or quoted host names
+and single-line authentication values. Ambiguous keys, YAML merges, aliases
+and unsupported authentication syntax are refused rather than guessed.
+Other settings, including nested custom headers, are preserved. GitLab Git
+credential helpers and SSH rewrites are not configured automatically.
+
+Shell aliases are not copied. For example, an alias setting
+`GLAB_SKIP_TLS_VERIFY` does not affect container glab. Explicit per-host TLS
+settings in `config.yml` do travel with the copy; CA files outside that
+directory require a separate mount. agent-box does not change the host's
+certificate store or infer TLS policy from shell aliases.
 
 ## Checking it
 

@@ -38,7 +38,7 @@ from . import claude_settings
 from . import notify as notify_module
 from . import k3s, browser, host_k3s
 from . import host_podman, nested_podman, runtime_bundle
-from . import cloud, kubeconfigs, registries, links
+from . import cloud, kubeconfigs, registries, links, glab_config
 from .atomicio import atomic_write_bytes, atomic_write_json, atomic_write_text, read_json
 from .config import ENV_PREFIX, IMPLEMENTED_TRACKERS, WORKFLOW_SKILLS, Config, apply_box_policy, load_config, effective_config, session_account
 from . import image_build, migrations, networking
@@ -744,12 +744,14 @@ def claude_skill_links(config: Config) -> None:
             link.unlink(missing_ok=True)
 
 
-def seed_state_dir(target: Path, *sources: Path) -> None:
+def seed_state_dir(target: Path, *sources: Path, exclude: tuple[str, ...] = ()) -> None:
     def dangling_links(directory, names):
         # copytree's ignore_dangling_symlinks tests relative targets against
         # cwd; checking the source entry preserves valid relative dotfiles.
         entries = (Path(directory) / name for name in names)
-        return [path.name for path in entries if path.is_symlink() and not path.exists()]
+        return [path.name for path in entries
+                if (Path(directory) == source and path.name in exclude)
+                or (path.is_symlink() and not path.exists())]
 
     shutil.rmtree(target, ignore_errors=True)
     target.mkdir(parents=True, exist_ok=True)
@@ -914,10 +916,16 @@ def prepare_container_lifetime_state(
         runtime_state.gh,
         *((HOST_HOME / ".config/gh",) if config.credentials.github.config else ()),
     )
-    seed_state_dir(
-        runtime_state.glab,
-        *((glab_config_dir(),) if config.credentials.gitlab.config else ()),
-    )
+    if config.credentials.gitlab.config:
+        source = glab_config_dir()
+        rendered = glab_config.snapshot_config(source / "config.yml")
+        # The original may contain rotating OAuth refresh tokens. Never publish
+        # that file even briefly; only the access-token snapshot reaches the mount.
+        seed_state_dir(runtime_state.glab, source, exclude=("config.yml",))
+        if rendered is not None:
+            atomic_write_text(runtime_state.glab / "config.yml", rendered, 0o600)
+    else:
+        seed_state_dir(runtime_state.glab)
     if mount_notifications:
         notify_module.sync_credentials(config, NOTIFY_CREDENTIALS)
     tracker_mounts(config, runtime_state)[0][0].mkdir(parents=True, exist_ok=True)

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Include host keyring access/job tokens in opted-in glab configuration copies.
+  Host glab and an unlocked keyring are required for keyring-backed hosts; no
+  D-Bus or host keyring is mounted. OAuth refresh tokens are omitted to preserve
+  independent host sessions. Explicitly stop/relaunch a workspace to seed the
+  new snapshot; OAuth access copies expire without renewal.
+
 - Keep full changed-path inventories outside initial reviewer assignments, alongside
   the saved diff. Large moves and renames no longer exhaust the assignment budget
   solely through path listings; reviewers retain the complete hash-bound evidence.

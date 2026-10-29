@@ -208,8 +208,20 @@ class GitSeedingTests(unittest.TestCase):
 
     def test_glab_is_empty_until_explicitly_enabled(self):
         """An authenticated host must not give every new box GitLab credentials."""
-        state = self._seed(Config())
+        with mock.patch.object(runtime.glab_config, "snapshot_config") as snapshot:
+            state = self._seed(Config())
+        snapshot.assert_not_called()
         self.assertEqual(list((state / "glab").iterdir()), [])
+
+    def test_glab_mount_receives_only_the_rendered_config_and_preserves_the_host(self):
+        """Never copy the original config before replacing it: it may contain a rotating refresh token."""
+        config = Config()
+        config.credentials.gitlab.config = True
+        with mock.patch.object(runtime.glab_config, "snapshot_config", return_value="rendered-access-only\n"):
+            state = self._seed(config)
+        self.assertEqual((state / "glab/config.yml").read_text(), "rendered-access-only\n")
+        self.assertIn("glpat_secret", (state.parent / "home/.config/glab-cli/config.yml").read_text())
+        self.assertEqual((state / "glab/config.yml").stat().st_mode & 0o777, 0o600)
 
     def test_glab_copy_is_private_and_host_files_are_not_writable_through_it(self):
         """The source directory's permissive mode must not leak the copied token."""

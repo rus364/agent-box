@@ -235,7 +235,7 @@ class GitHubConfig:
 
 @dataclass
 class GitLabConfig:
-    """Opt-in because glab configuration can contain tokens for multiple hosts."""
+    """Opt-in because the glab copy includes file/keyring tokens for multiple hosts."""
 
     config: bool = False
 
