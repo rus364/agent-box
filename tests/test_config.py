@@ -24,6 +24,7 @@ class DefaultsAreSafeTests(unittest.TestCase):
         config = Config()
         self.assertFalse(config.credentials.github.token)
         self.assertFalse(config.credentials.github.config)
+        self.assertFalse(config.credentials.gitlab.config)
         self.assertFalse(config.agents.claude.telegram_channel)
         self.assertFalse(config.host.notifications.enabled)
 
@@ -198,6 +199,7 @@ class RoundTripTests(unittest.TestCase):
         config.host.notifications.telegram_token = "123:abc"
         config.host.notifications.telegram_chat_id = "555"
         config.credentials.github.token = True
+        config.credentials.gitlab.config = True
         config.credentials.git.identity = False
         config.credentials.git.full_config = True
         config.agents.host_env.api_keys = True
@@ -212,6 +214,7 @@ class RoundTripTests(unittest.TestCase):
         self.assertEqual(loaded.host.notifications.telegram_token, "123:abc")
         self.assertEqual(loaded.host.notifications.telegram_chat_id, "555")
         self.assertTrue(loaded.credentials.github.token)
+        self.assertTrue(loaded.credentials.gitlab.config)
         self.assertFalse(loaded.credentials.git.identity)
         self.assertTrue(loaded.credentials.git.full_config)
         self.assertTrue(loaded.agents.host_env.api_keys)

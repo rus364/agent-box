@@ -10,7 +10,7 @@ chosen under **Workspace box → Image tools** in `agent-box config`
 | --- | --- |
 | Agents | Claude Code, Codex CLI |
 | Languages | Python, uv, Node.js 22, Bun, mise |
-| Source control | git, git-lfs, gh |
+| Source control | git, git-lfs, gh, glab |
 | Shell tooling | tmux, jq, ripgrep, fd, fzf, just, build essentials, network utilities |
 
 | Optional group | Default | Included |

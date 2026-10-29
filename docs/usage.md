@@ -94,7 +94,7 @@ agent-box --host --no-tmux codex exec "run the tests"
 | Launch | `--host`, `--workspace PATH`, `--mount PATH[:ro]`, `--env NAME[=VALUE]`, `--no-tmux`, `--no-kvm` |
 | Workflow | `--worker SPEC`, `--reviewer SPEC`, `--scout SPEC`, `--sync SPEC`, `--[no-]tiers`, `--review off\|auto\|always`, `--rounds N`, `--merge github\|local`, `--[no-]push`, `--no-workflow` |
 | Tracker | `--tracker URL`, `--project ID` ([details](configuration.md#session-tracker-override)) |
-| Access | `--[no-]gh-token`, `--[no-]gh-config`, `--[no-]git-config`, `--[no-]registries`, `--[no-]kubeconfigs`, `--[no-]cloud-profiles`, `--[no-]k3s`, `--[no-]links`, `--[no-]api-keys`, `--no-browser`, `--[no-]remote-control`, `--[no-]notify` |
+| Access | `--[no-]gh-token`, `--[no-]gh-config`, `--[no-]glab-config`, `--[no-]git-config`, `--[no-]registries`, `--[no-]kubeconfigs`, `--[no-]cloud-profiles`, `--[no-]k3s`, `--[no-]links`, `--[no-]api-keys`, `--no-browser`, `--[no-]remote-control`, `--[no-]notify` |
 
 `SPEC` is `PROVIDER[@API]:MODEL[:EFFORT]`, for example `codex:gpt-5.5:high`
 or `claude@deepseek:deepseek-v4`. `--worker`, `--reviewer`, `--scout` and

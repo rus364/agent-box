@@ -67,6 +67,7 @@ from .paths import (
     CONTAINER_POLICY_RUNTIME_DIR,
     CONTAINER_WORKFLOW_STATE,
     HOST_HOME,
+    glab_config_dir,
     HOST_RUNTIME_DIR,
     HOST_SESSIONS_ROOT,
     HOST_SESSION_RUNNER,
@@ -754,6 +755,9 @@ def seed_state_dir(target: Path, *sources: Path) -> None:
             shutil.copytree(source, target, dirs_exist_ok=True, symlinks=True)
         else:
             shutil.copy2(source, target / "config")
+    # copytree copies the source root's mode too; host permissions must not
+    # make the private credential snapshot readable by other local users.
+    os.chmod(target, 0o700)
 
 
 GIT_IDENTITY_KEYS = ("user.name", "user.email")
@@ -838,6 +842,7 @@ class WorkspaceRuntimeState:
     root: Path
     git: Path
     gh: Path
+    glab: Path
 
 
 def workspace_state_root(workspace_id: str) -> Path:
@@ -862,7 +867,7 @@ def record_workspace_path(workspace_id: str, path: str) -> None:
 
 def workspace_runtime_state(workspace: Workspace) -> WorkspaceRuntimeState:
     root = workspace_state_root(workspace_identity(workspace))
-    return WorkspaceRuntimeState(root=root, git=root / "git", gh=root / "gh")
+    return WorkspaceRuntimeState(root=root, git=root / "git", gh=root / "gh", glab=root / "glab")
 
 
 def legacy_runtime_state(workspace: Workspace | None = None) -> WorkspaceRuntimeState:
@@ -871,6 +876,7 @@ def legacy_runtime_state(workspace: Workspace | None = None) -> WorkspaceRuntime
         root=workspace_runtime_state(workspace).root if workspace is not None else STATE_ROOT,
         git=STATE_ROOT / "git",
         gh=STATE_ROOT / "gh",
+        glab=STATE_ROOT / "glab",
     )
 
 
@@ -879,7 +885,7 @@ def prepare_container_lifetime_state(
 ) -> None:
     """Seed bind-mount sources immediately before creating a new box.
 
-    ``git`` and ``gh`` are directory bind mounts.  Reseeding them replaces
+    Git and CLI configuration snapshots are directory bind mounts. Reseeding them replaces
     their root inodes, so it is safe only when no workspace container is using
     them.  Callers for persistent boxes therefore invoke this only from the
     new-container branch under the workspace transition lock.  The retained
@@ -895,6 +901,10 @@ def prepare_container_lifetime_state(
     seed_state_dir(
         runtime_state.gh,
         *((HOST_HOME / ".config/gh",) if config.credentials.github.config else ()),
+    )
+    seed_state_dir(
+        runtime_state.glab,
+        *((glab_config_dir(),) if config.credentials.gitlab.config else ()),
     )
     if mount_notifications:
         notify_module.sync_credentials(config, NOTIFY_CREDENTIALS)
@@ -1452,7 +1462,7 @@ def build_mounts(
     pairs: list[tuple[Path, Path, bool]] = [
         # Agent homes intentionally remain host-backed and shared: they hold
         # the user's provider authentication and durable agent settings. Git
-        # and gh below are different because their copied, writable config is
+        # and CLI configs below are different because their copied, writable config is
         # a snapshot owned by one workspace box lifetime.
         (CODEX_HOME, CODEX_HOME, False),
         (CLAUDE_HOME, CLAUDE_HOME, False),
@@ -1499,12 +1509,13 @@ def build_mounts(
     if CLAUDE_HOME == DEFAULT_CLAUDE_HOME and DEFAULT_CLAUDE_SIDECAR.is_file():
         pairs.append((DEFAULT_CLAUDE_SIDECAR, DEFAULT_CLAUDE_SIDECAR, False))
 
-    # Both directories are always mounted so git and gh work inside the
+    # These directories are always mounted so Git and its CLIs work inside the
     # container. Their source contents are prepared separately at box
     # creation, never while merely calculating an attach spec.
     pairs += [
         (runtime_state.git, HOST_HOME / ".config/git", False),
         (runtime_state.gh, HOST_HOME / ".config/gh", False),
+        (runtime_state.glab, HOST_HOME / ".config/glab-cli", False),
     ]
 
     pairs += agent_tree_mounts()
@@ -1968,6 +1979,7 @@ def container_lifetime_args(
         f"--env=CODEX_HOME={CODEX_HOME}",
         f"--env=GIT_CONFIG_GLOBAL={home}/.config/git/config",
         f"--env=GH_CONFIG_DIR={home}/.config/gh",
+        f"--env=GLAB_CONFIG_DIR={home}/.config/glab-cli",
         *registries.container_env(config),
         *kubeconfigs.container_env(config),
         f"--env=XDG_CACHE_HOME={XDG_CACHE_HOME}",
@@ -2197,6 +2209,7 @@ def workspace_box_policy(spec: WorkspaceContainerSpec) -> dict:
                 "links": config.box.links.to_dict()},
         "credentials": {"git": config.credentials.git.to_dict(),
                         "github": {"config": config.credentials.github.config},
+                        "gitlab": config.credentials.gitlab.to_dict(),
                         "registries": config.credentials.registries.to_dict(),
                         "kubernetes": config.credentials.kubernetes.to_dict(),
                         "cloud": config.credentials.cloud.to_dict()},
@@ -2274,7 +2287,8 @@ def existing_workspace_spec(workspace: Workspace, options: LaunchOptions, packag
                         "cloud-profiles": shared.credentials.cloud.enabled,
                         "links": shared.box.links.enabled,
                         "git-config": shared.credentials.git.full_config,
-                        "gh-config": shared.credentials.github.config}
+                        "gh-config": shared.credentials.github.config,
+                        "glab-config": shared.credentials.gitlab.config}
         for key, actual in shared_flags.items():
             if key in options.overrides and options.overrides[key] != actual:
                 flag = f"--{key}" if options.overrides[key] else f"--no-{key}"
@@ -2884,6 +2898,7 @@ printf "%-20s %s\n" "mise:" "$(mise --version)"
 printf "%-20s %s\n" "git:" "$(git --version)"
 printf "%-20s %s\n" "git user:" "$(git config --global user.name) <$(git config --global user.email)>"
 printf "%-20s %s\n" "gh:" "$(gh --version | head -1)"
+printf "%-20s %s\n" "glab:" "$(glab version | head -1)"
 printf "%-20s %s\n" "gh account:" "$(gh api user --jq .login 2>/dev/null || echo "not authenticated")"
 # Only the tool groups this configuration asked for are checked. A group left
 # out is a choice, and reporting it as missing would turn every deliberate

@@ -6,7 +6,7 @@ on the [integration pages](../integrations/README.md).
 
 ## Credential copies
 
-Git and `gh` configuration, registry logins, kubeconfigs and cloud CLI
+Git, `gh` and `glab` configuration, registry logins, kubeconfigs and cloud CLI
 profiles reach a box as copies, never as bind mounts of the host files. The
 host stays the source of truth; changes made in the box disappear with it.
 
@@ -18,7 +18,7 @@ host stays the source of truth; changes made in the box disappear with it.
 - A box keeps its creation-time switches and selections. Registry logins,
   kubeconfigs and cloud profiles are re-rendered from those choices at every
   launch, which is how renewed host logins (for example a 12-hour Yandex IAM
-  token) reach a running box. Git and `gh` configuration copies are seeded only
+  token) reach a running box. Git, `gh` and `glab` configuration copies are seeded only
   when the box is created. The GitHub token is not a copy: it is forwarded per
   exec, but tmux sessions inherit the environment of the launch that started
   the box's tmux server.

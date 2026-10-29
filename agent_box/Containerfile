@@ -160,6 +160,31 @@ RUN --mount=type=cache,id=agent-box-apt,target=/var/cache/apt,sharing=locked \
     gh auth status --help | grep -q -- '--active'
 
 #
+# GitLab CLI
+#
+# Resolve one upstream release for both the archive and its checksum manifest.
+# Distribution packages can lag the CLI's authentication/configuration support.
+#
+
+RUN set -eux; \
+    arch="$(dpkg --print-architecture)"; \
+    case "${arch}" in amd64|arm64) ;; *) echo "Unsupported architecture for glab: ${arch}" >&2; exit 1 ;; esac; \
+    download_dir="$(mktemp -d)"; \
+    cd "${download_dir}"; \
+    curl -fsSL https://gitlab.com/api/v4/projects/gitlab-org%2Fcli/releases/permalink/latest -o release.json; \
+    glab_tag="$(jq -er '.tag_name' release.json)"; \
+    archive="glab_${glab_tag#v}_linux_${arch}.tar.gz"; \
+    release_url="https://gitlab.com/gitlab-org/cli/-/releases/${glab_tag}/downloads"; \
+    curl -fsSL "${release_url}/${archive}" -o "${archive}"; \
+    curl -fsSL "${release_url}/checksums.txt" -o checksums.txt; \
+    awk -v file="${archive}" '$2 == file {print}' checksums.txt | sha256sum --check --strict -; \
+    tar -xzf "${archive}" bin/glab; \
+    install -m 0755 bin/glab /usr/local/bin/glab; \
+    cd /; \
+    rm -rf "${download_dir}"; \
+    glab version
+
+#
 # Analysis tooling (group: analysis)
 #
 # Small, and what an agent reaches for when reading a codebase rather than
@@ -633,6 +658,7 @@ RUN set -eux; \
     git --version; \
     git-lfs --version; \
     gh --version; \
+    glab version; \
     jq --version; \
     rg --version; \
     fd --version; \

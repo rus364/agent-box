@@ -61,6 +61,7 @@ OPTIONS = (
     Option("project", TRACKER, "Tracker project ID", "ID"),
     Option("gh-token", ACCESS, "GitHub token", form="pair", container=True),
     Option("gh-config", ACCESS, "Copy of the host gh configuration", form="pair", container=True),
+    Option("glab-config", ACCESS, "Copy of the host glab configuration", form="pair", container=True),
     Option("git-config", ACCESS, "Copy of the full host Git configuration", form="pair", container=True),
     Option("registries", ACCESS, "Container registry and Helm logins chosen in agent-box config",
            form="pair", container=True),
@@ -229,6 +230,8 @@ def apply(config, overrides):
             config.credentials.github.token = value
         elif key == "gh-config":
             config.credentials.github.config = value
+        elif key == "glab-config":
+            config.credentials.gitlab.config = value
         elif key == "git-config":
             config.credentials.git.full_config = value
         elif key == "registries":

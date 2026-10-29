@@ -27,7 +27,7 @@ class ProjectConfigTests(unittest.TestCase):
         self.config.tracker.enabled = True
         self.config.tracker.connections['vikunja'] = TrackerConnection('https://tracker.example', 'global-secret')
         self.binding = Binding('vikunja', 'https://tracker.example', '12', True)
-        self.runtime_state = runtime.WorkspaceRuntimeState(self.root / 'workspace', self.root / 'git', self.root / 'gh')
+        self.runtime_state = runtime.WorkspaceRuntimeState(self.root / 'workspace', self.root / 'git', self.root / 'gh', self.root / 'glab')
         self.env = patch.dict(os.environ, {}, clear=True)
         self.env.start()
         self.addCleanup(self.env.stop)

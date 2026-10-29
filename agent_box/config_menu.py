@@ -72,6 +72,8 @@ HELP = {
     "credentials.github": "Choose which host GitHub credentials, if any, are exposed inside workspace boxes.",
     "credentials.github.token": "Read the host gh token and forward it as GH_TOKEN. Disabled by default because it exposes a live credential to the box.",
     "credentials.github.config": "Copy the host gh configuration into the box. Disabled by default because that directory normally contains authentication data.",
+    "credentials.gitlab": "Choose whether host GitLab CLI configuration is exposed inside workspace boxes.",
+    "credentials.gitlab.config": "Copy host glab configuration, including file-stored tokens. Disabled by default; host keyring credentials are not copied.",
     "credentials.registries": "Forward the container registry and Helm repository logins you choose from the host's own login files. Copies are re-rendered at every launch, so a login renewed on the host reaches the box at its next launch. Off by default; --[no-]registries overrides it for one session.",
     "credentials.registries.enabled": "Forward the chosen logins into workspace boxes, read-only. Disabled by default because they reach private images and charts. Changing it recreates the box.",
     "credentials.registries.hosts": "Registry hosts found in the podman/skopeo and Helm OCI auth files on the host. Each source is filtered into its own copy; logins kept by a credential helper cannot be forwarded.",
@@ -185,7 +187,7 @@ LABELS = {
     "agents": "Agents", "box": "Workspace box", "credentials": "Credentials", "host": "Host",
     "language": "Engineering language", "tracker_language": "Tracker language",
     "default": "Default agent", "statusline": "Status line",
-    "claude": "Claude", "codex": "Codex", "github": "GitHub", "git": "Git",
+    "claude": "Claude", "codex": "Codex", "github": "GitHub", "gitlab": "GitLab", "git": "Git",
     "claude_usage": "Claude usage", "codex_usage": "Codex usage", "custom_usage": "Custom usage",
     "command": "Custom command", "k3s": "k3s cluster", "links": "Web links", "claude_skill_links": "Claude skill links", "personal_browser": "Personal browser",
     "env": "Environment", "host_env": "Provider environment", "tools": "Image tools",
@@ -202,6 +204,7 @@ PATH_LABELS = {
     "box.network": "Network", "box.network.mode": "Network mode",
     "box.network.ports": "Workspace published ports", "box.network.host_ports": "Host services",
     "credentials.github.token": "Forward gh token", "credentials.github.config": "Copy gh config",
+    "credentials.gitlab.config": "Copy glab config",
     # The image's kubernetes tool group keeps its own label.
     "credentials.kubernetes": "Kubernetes configs", "credentials.kubernetes.files": "Kubeconfig files",
     "credentials.cloud": "Cloud CLI profiles", "credentials.cloud.yc": "Yandex Cloud (yc)",
@@ -326,7 +329,7 @@ MENU_GROUPS = {
         ("Inside the box", ("audio", "links", "env")),
     ),
     ("credentials",): (
-        ("", ("git", "github", "registries", "kubernetes", "cloud")),
+        ("", ("git", "github", "gitlab", "registries", "kubernetes", "cloud")),
     ),
     ("host",): (
         ("", ("notifications", "personal_browser", "claude_skill_links")),

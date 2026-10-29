@@ -49,6 +49,20 @@ class IsolatedLaunchTest(unittest.TestCase):
 
 
 class SessionPrecedenceTests(IsolatedLaunchTest):
+    def test_glab_config_switches_override_saved_exposure_for_one_launch(self):
+        """Both flag spellings must stay launcher options and preserve the saved setting."""
+        for enabled, flag in ((True, "--glab-config"), (False, "--no-glab-config")):
+            with self.subTest(flag=flag):
+                config = Config()
+                config.credentials.gitlab.config = not enabled
+                options, remaining = launch_options.parse([flag, "codex"])
+                self.assertEqual(remaining, ["codex"])
+                launched, snapshot = self.launch(config, options.overrides)
+                with patch.dict(os.environ, {"AGENT_BOX_RUNTIME_CONFIG": str(snapshot)}):
+                    self.assertEqual(effective_config().credentials.gitlab.config, enabled)
+                self.assertEqual(launched.credentials.gitlab.config, enabled)
+                self.assertEqual(config.credentials.gitlab.config, not enabled)
+
     def test_profile_override_is_session_only_and_does_not_grant_access(self):
         """A profile choice must survive snapshot replay without changing the saved opt-in."""
         for enabled, toggle in ((False, []), (True, []), (True, ["--no-personal-browser"]),

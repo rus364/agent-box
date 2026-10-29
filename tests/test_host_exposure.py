@@ -138,6 +138,9 @@ class GitSeedingTests(unittest.TestCase):
         home = root / "home"
         (home / ".config/gh").mkdir(parents=True)
         (home / ".config/gh/hosts.yml").write_text("github.com:\n  oauth_token: gho_secret\n")
+        glab_home = home / ".config/glab-cli"
+        glab_home.mkdir(mode=0o755)
+        (glab_home / "config.yml").write_text("hosts:\n  gitlab.example:\n    token: glpat_secret\n")
         (home / ".gitconfig").write_text(
             "[user]\n\tname = Someone\n\temail = a@b.c\n"
             "[credential]\n\thelper = store\n"
@@ -157,6 +160,7 @@ class GitSeedingTests(unittest.TestCase):
              mock.patch.object(runtime, "XDG_CACHE_HOME", state / "cache"), \
              mock.patch.object(runtime, "NOTIFY_CREDENTIALS", state / "runtime/notify.json"), \
              mock.patch.object(runtime, "HOST_HOME", home), \
+             mock.patch.object(runtime, "glab_config_dir", return_value=glab_home), \
              mock.patch.object(runtime.subprocess, "run",
                                return_value=mock.Mock(returncode=0, stdout=git_output + "\n")):
             runtime.prepare_container_lifetime_state(config, mount_notifications=False)
@@ -196,6 +200,36 @@ class GitSeedingTests(unittest.TestCase):
         config = Config()
         config.credentials.github.config = True
         self.assertIn("gho_secret", (self._seed(config) / "gh/hosts.yml").read_text())
+
+    def test_glab_is_empty_until_explicitly_enabled(self):
+        """An authenticated host must not give every new box GitLab credentials."""
+        state = self._seed(Config())
+        self.assertEqual(list((state / "glab").iterdir()), [])
+
+    def test_glab_copy_is_private_and_host_files_are_not_writable_through_it(self):
+        """The source directory's permissive mode must not leak the copied token."""
+        config = Config()
+        config.credentials.gitlab.config = True
+        state = self._seed(config)
+        copied = state / "glab/config.yml"
+        original = state.parent / "home/.config/glab-cli/config.yml"
+        self.assertIn("glpat_secret", copied.read_text())
+        self.assertEqual((state / "glab").stat().st_mode & 0o777, 0o700)
+        copied.write_text("host: changed.example\n")
+        self.assertIn("glpat_secret", original.read_text())
+
+
+class GitLabEnvironmentTests(unittest.TestCase):
+    def test_shell_config_path_and_tokens_do_not_escape_into_container_argv(self):
+        """A copied config is selected by its container path, with no implicit token passthrough."""
+        argv = _argv(Config(), env={"GLAB_CONFIG_DIR": "/host/glab",
+                                    "GITLAB_TOKEN": "glpat_secret",
+                                    "GITLAB_ACCESS_TOKEN": "access_secret", "OAUTH_TOKEN": "oauth_secret"})
+        self.assertIn(f"--env=GLAB_CONFIG_DIR={runtime.HOST_HOME}/.config/glab-cli", argv)
+        for secret in ("/host/glab", "glpat_secret", "access_secret", "oauth_secret"):
+            self.assertNotIn(secret, " ".join(argv))
+        for name in ("GITLAB_TOKEN", "GITLAB_ACCESS_TOKEN", "OAUTH_TOKEN"):
+            self.assertNotIn(f"--env={name}", argv)
 
 
 class NotificationCredentialMountTests(unittest.TestCase):

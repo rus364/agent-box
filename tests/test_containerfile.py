@@ -8,11 +8,14 @@ the container user could not own, ``$HOME`` pointed somewhere nothing was
 mounted, and the mismatch only surfaced later as confusing runtime failures.
 The build must fail immediately and say what to pass instead.
 """
+import hashlib
+import os
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import tarfile
 import unittest
 from pathlib import Path
 
@@ -170,6 +173,50 @@ class GitHubCliTests(unittest.TestCase):
         the tooling actually needs, so a repository that regresses fails the
         build instead of the user's first /install-github-app."""
         self.assertIn("gh auth status --help | grep -q -- '--active'", self.gh_layer())
+
+
+class GitLabCliTests(unittest.TestCase):
+    def test_release_install_checks_architecture_and_checksum_before_installing(self):
+        """A wrong architecture or damaged/missing checksum must fail before a binary reaches PATH."""
+        section = containerfile_text().split("# GitLab CLI\n", 1)[1].split("# Analysis tooling", 1)[0]
+        instruction = section[section.index("RUN ") + 4:].replace("\\\n", "")
+        for arch, checksum in (("amd64", "valid"), ("arm64", "valid"),
+                               ("amd64", "corrupt"), ("amd64", "missing"), ("s390x", "valid")):
+            with self.subTest(arch=arch, checksum=checksum), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                fixtures = root / "fixtures"
+                fixtures.mkdir()
+                payload = root / "payload"
+                payload.write_text("#!/bin/sh\necho 'glab fixture'\n")
+                archive = fixtures / f"glab_1.2.3_linux_{arch}.tar.gz"
+                with tarfile.open(archive, "w:gz") as tar:
+                    tar.add(payload, arcname="bin/glab")
+                digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+                manifest = "" if checksum == "missing" else f"{digest if checksum == 'valid' else '0' * 64}  {archive.name}\n"
+                (fixtures / "checksums.txt").write_text(manifest)
+                (fixtures / "release.json").write_text('{"tag_name":"v1.2.3"}')
+                commands = root / "commands"
+                commands.mkdir()
+                stubs = {
+                    "dpkg": f"#!/bin/sh\necho {arch}\n",
+                    "jq": "#!/bin/sh\necho v1.2.3\n",
+                    "curl": '#!/bin/sh\ncase "$2" in */latest) file=release.json;; *) file=${2##*/};; esac\ncp "$GLAB_FIXTURES/$file" "$4"\n',
+                }
+                for name, text in stubs.items():
+                    target = commands / name
+                    target.write_text(text)
+                    target.chmod(0o755)
+                installed = commands / "glab"
+                script = instruction.replace("/usr/local/bin/glab", str(installed))
+                env = {**os.environ, "PATH": str(commands) + os.pathsep + os.defpath,
+                       "TMPDIR": tmp, "GLAB_FIXTURES": str(fixtures)}
+                result = subprocess.run(["sh", "-c", script], env=env, capture_output=True, text=True)
+                if arch in ("amd64", "arm64") and checksum == "valid":
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertIn("glab fixture", result.stdout)
+                else:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertFalse(installed.exists())
 
 
 class BrowserToolingTests(unittest.TestCase):

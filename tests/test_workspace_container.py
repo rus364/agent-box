@@ -50,7 +50,7 @@ class WorkspaceContainerIdentityTests(unittest.TestCase):
             name = runtime.workspace_container_name(Workspace(root, root))
         self.assertRegex(name, r"^[a-z0-9][a-z0-9_.-]*$")
 
-    def test_different_workspaces_render_distinct_git_and_gh_snapshot_sources(self):
+    def test_different_workspaces_render_distinct_git_and_cli_snapshot_sources(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             first_root = root / "first"
@@ -77,6 +77,10 @@ class WorkspaceContainerIdentityTests(unittest.TestCase):
             self.assertNotEqual(
                 source_for(first, runtime.HOST_HOME / ".config/gh"),
                 source_for(second, runtime.HOST_HOME / ".config/gh"),
+            )
+            self.assertNotEqual(
+                source_for(first, runtime.HOST_HOME / ".config/glab-cli"),
+                source_for(second, runtime.HOST_HOME / ".config/glab-cli"),
             )
 
 
@@ -205,7 +209,7 @@ class WorkspaceContainerLifecycleTests(unittest.TestCase):
         original.credentials.cloud.enabled = True
         original.credentials.cloud.yc = ["original"]
         original.credentials.cloud.aws = ["aws-original"]
-        original.credentials.git.full_config = original.credentials.github.config = True
+        original.credentials.git.full_config = original.credentials.github.config = original.credentials.gitlab.config = True
         original.box.links.enabled = True
         original.box.tools.groups["yc"] = True
         original.box.tools.groups["aws"] = True
@@ -261,6 +265,7 @@ class WorkspaceContainerLifecycleTests(unittest.TestCase):
             self.assertEqual(snapshot.credentials.cloud.aws, ["aws-original"])
             self.assertTrue(snapshot.credentials.git.full_config)
             self.assertTrue(snapshot.credentials.github.config)
+            self.assertTrue(snapshot.credentials.gitlab.config)
             self.assertTrue(snapshot.box.links.enabled)
             self.assertEqual(snapshot.box.k3s.lifetime, "box")
             self.assertTrue(snapshot.box.k3s.enabled)
@@ -310,12 +315,12 @@ class WorkspaceContainerLifecycleTests(unittest.TestCase):
         enabled.credentials.registries.hosts = ["one"]
         enabled.credentials.kubernetes.files = ["one"]
         enabled.credentials.cloud.yc = ["one"]
-        enabled.credentials.git.full_config = enabled.credentials.github.config = enabled.box.links.enabled = True
+        enabled.credentials.git.full_config = enabled.credentials.github.config = enabled.credentials.gitlab.config = enabled.box.links.enabled = True
         enabled.box.k3s.enabled = True
         for config, value in ((enabled, True), (runtime.Config(), False)):
             with mock.patch.object(runtime.k3s, 'api_port', return_value=24443):
                 container, _ = self._live_box(config)
-            for name in ("registries", "kubeconfigs", "cloud-profiles", "links", "git-config", "gh-config", "k3s"):
+            for name in ("registries", "kubeconfigs", "cloud-profiles", "links", "git-config", "gh-config", "glab-config", "k3s"):
                 with self.subTest(name=name, value=value), \
                      mock.patch.object(runtime.k3s, "inspect", return_value={"State": {"Status": "running"}}), \
                      mock.patch.object(runtime.k3s, "api_port", return_value=24443), \
@@ -559,7 +564,7 @@ class WorkspaceContainerLifecycleTests(unittest.TestCase):
              mock.patch.object(runtime.time, "sleep"):
             self.assertIsNone(runtime._wait_for_exiting_keeper(self.spec.name, self._container()))
 
-    def test_spec_calculation_preserves_existing_git_and_gh_source_directory_inodes(self):
+    def test_spec_calculation_preserves_existing_git_and_cli_source_directory_inodes(self):
         """Catches reseeding a live bind source while merely attaching."""
         git_source = self.spec.runtime_state.git
         gh_source = self.spec.runtime_state.gh
@@ -567,6 +572,10 @@ class WorkspaceContainerLifecycleTests(unittest.TestCase):
         gh_source.mkdir(parents=True, exist_ok=True)
         (git_source / "config").write_text("[user]\n\tname = live identity\n")
         (gh_source / "hosts.yml").write_text("github.com:\n")
+        glab_source = self.spec.runtime_state.glab
+        glab_source.mkdir(parents=True, exist_ok=True)
+        (glab_source / "config.yml").write_text("host: live.example\n")
+        glab_inode = glab_source.stat().st_ino
         before = (git_source.stat().st_ino, gh_source.stat().st_ino)
 
         runtime.workspace_container_spec(self.workspace, [], self.script_dir, self.config)
@@ -574,6 +583,8 @@ class WorkspaceContainerLifecycleTests(unittest.TestCase):
         self.assertEqual((git_source.stat().st_ino, gh_source.stat().st_ino), before)
         self.assertIn("live identity", (git_source / "config").read_text())
         self.assertTrue((gh_source / "hosts.yml").is_file())
+        self.assertEqual(glab_source.stat().st_ino, glab_inode)
+        self.assertEqual((glab_source / "config.yml").read_text(), "host: live.example\n")
 
     def test_preparing_second_workspace_preserves_first_snapshot_inode_and_contents(self):
         first_state = self.spec.runtime_state
@@ -587,6 +598,8 @@ class WorkspaceContainerLifecycleTests(unittest.TestCase):
         )
         (first_state.git / "config").write_text("[user]\n\tname = workspace-a\n")
         (first_state.gh / "hosts.yml").write_text("workspace-a\n")
+        (first_state.glab / "config.yml").write_text("workspace-a\n")
+        glab_inode = first_state.glab.stat().st_ino
         before = (first_state.git.stat().st_ino, first_state.gh.stat().st_ino)
 
         runtime.prepare_container_lifetime_state(
@@ -598,6 +611,9 @@ class WorkspaceContainerLifecycleTests(unittest.TestCase):
         self.assertEqual((first_state.gh / "hosts.yml").read_text(), "workspace-a\n")
         self.assertNotEqual(first_state.git, second_spec.runtime_state.git)
         self.assertNotEqual(first_state.gh, second_spec.runtime_state.gh)
+        self.assertNotEqual(first_state.glab, second_spec.runtime_state.glab)
+        self.assertEqual(first_state.glab.stat().st_ino, glab_inode)
+        self.assertEqual((first_state.glab / "config.yml").read_text(), "workspace-a\n")
 
     def test_preparing_recreated_workspace_reseeds_its_own_snapshot(self):
         config = runtime.Config()
@@ -608,6 +624,7 @@ class WorkspaceContainerLifecycleTests(unittest.TestCase):
         )
         (state.git / "old-box").write_text("stale")
         (state.gh / "old-box").write_text("stale")
+        (state.glab / "old-box").write_text("stale")
 
         runtime.prepare_container_lifetime_state(
             config, mount_notifications=False, runtime_state=state,
@@ -615,6 +632,7 @@ class WorkspaceContainerLifecycleTests(unittest.TestCase):
 
         self.assertFalse((state.git / "old-box").exists())
         self.assertFalse((state.gh / "old-box").exists())
+        self.assertFalse((state.glab / "old-box").exists())
 
     def test_running_workspace_is_reused_without_create_or_start(self):
         with mock.patch.object(runtime, "inspect_workspace_container", return_value=self._container()), \

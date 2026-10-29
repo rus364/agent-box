@@ -60,6 +60,35 @@ class EnvPathTests(unittest.TestCase):
             self.assertEqual(result, Path("/default"))
 
 
+class GlabConfigPathTests(unittest.TestCase):
+    """Copy the same user config glab selects without trusting the shell's HOME."""
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.home = Path(temp.name) / "home"
+        self.default = self.home / ".config/glab-cli"
+        self.default.mkdir(parents=True)
+        for patcher in (mock.patch.object(paths, "HOST_HOME", self.home),
+                        mock.patch.dict(os.environ, {"HOME": "/poison"}, clear=True)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_default_uses_passwd_home(self):
+        self.assertEqual(paths.glab_config_dir(), self.default)
+
+    def test_explicit_override_wins_even_when_default_exists(self):
+        (self.default / "config.yml").touch()
+        with mock.patch.dict(os.environ, {"GLAB_CONFIG_DIR": "~/custom-glab", "XDG_CONFIG_HOME": "/xdg"}):
+            self.assertEqual(paths.glab_config_dir(), self.home / "custom-glab")
+
+    def test_default_file_precedes_xdg_but_empty_directory_does_not(self):
+        with mock.patch.dict(os.environ, {"GLAB_CONFIG_DIR": "", "XDG_CONFIG_HOME": "/xdg"}):
+            self.assertEqual(paths.glab_config_dir(), Path("/xdg/glab-cli"))
+            (self.default / "config.yml").touch()
+            self.assertEqual(paths.glab_config_dir(), self.default)
+
+
 class ModuleLevelPathDefaultsTests(unittest.TestCase):
     """Import-time globals must reflect env_path, not the old broken pattern."""
 

@@ -874,7 +874,7 @@ class ProjectMenuTests(unittest.TestCase):
                  patch.object(runtime, 'container_tracker_url', side_effect=lambda url: url):
                 from agent_box.launch_options import LaunchOptions
                 launched = runtime.launch_config(LaunchOptions(overrides={'tracker': 'https://temporary.example'}))
-                state = runtime.WorkspaceRuntimeState(root / 'workspace', root / 'git', root / 'gh')
+                state = runtime.WorkspaceRuntimeState(root / 'workspace', root / 'git', root / 'gh', root / 'glab')
                 snapshot = runtime.session_runtime(launched, runtime_state=state)
             self.assertNotIn('GLOBAL_SECRET', snapshot.read_text())
             with patch.dict(os.environ, {'AGENT_BOX_RUNTIME_CONFIG': str(snapshot)}, clear=True):

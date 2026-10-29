@@ -44,7 +44,7 @@ class TmuxSessionCommandTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.state = runtime.WorkspaceRuntimeState(
-            root=Path(self.tmp.name), git=Path(self.tmp.name) / "git", gh=Path(self.tmp.name) / "gh",
+            root=Path(self.tmp.name), git=Path(self.tmp.name) / "git", gh=Path(self.tmp.name) / "gh", glab=Path(self.tmp.name) / "glab",
         )
 
     def test_session_is_per_launch_not_per_agent(self):

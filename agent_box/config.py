@@ -234,6 +234,20 @@ class GitHubConfig:
 
 
 @dataclass
+class GitLabConfig:
+    """Opt-in because glab configuration can contain tokens for multiple hosts."""
+
+    config: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"config": self.config}
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "GitLabConfig":
+        return cls(config=_bool(data, "config", False))
+
+
+@dataclass
 class GitConfig:
     """Git configuration exposure, split by how much of the host it reveals.
 
@@ -1310,12 +1324,14 @@ class CredentialsConfig:
 
     git: GitConfig = field(default_factory=GitConfig)
     github: GitHubConfig = field(default_factory=GitHubConfig)
+    gitlab: GitLabConfig = field(default_factory=GitLabConfig)
     registries: RegistriesConfig = field(default_factory=RegistriesConfig)
     kubernetes: KubernetesConfig = field(default_factory=KubernetesConfig)
     cloud: CloudConfig = field(default_factory=CloudConfig)
 
     def to_dict(self) -> dict[str, Any]:
-        return {"git": self.git.to_dict(), "github": self.github.to_dict(), "registries": self.registries.to_dict(),
+        return {"git": self.git.to_dict(), "github": self.github.to_dict(), "gitlab": self.gitlab.to_dict(),
+                "registries": self.registries.to_dict(),
                 "kubernetes": self.kubernetes.to_dict(), "cloud": self.cloud.to_dict()}
 
     def needed_tools(self) -> dict[str, str]:
@@ -1338,6 +1354,7 @@ class CredentialsConfig:
     def from_dict(cls, data: Any) -> "CredentialsConfig":
         data = _mapping(data)
         return cls(git=GitConfig.from_dict(data.get("git")), github=GitHubConfig.from_dict(data.get("github")),
+                   gitlab=GitLabConfig.from_dict(data.get("gitlab")),
                    registries=RegistriesConfig.from_dict(data.get("registries")),
                    kubernetes=KubernetesConfig.from_dict(data.get("kubernetes")),
                    cloud=CloudConfig.from_dict(data.get("cloud")))
@@ -1512,6 +1529,7 @@ def apply_box_policy(config, policy):
     config.box.links = shared.box.links
     config.credentials.git = shared.credentials.git
     config.credentials.github.config = shared.credentials.github.config
+    config.credentials.gitlab = shared.credentials.gitlab
     config.credentials.registries = shared.credentials.registries
     config.credentials.kubernetes = shared.credentials.kubernetes
     config.credentials.cloud = shared.credentials.cloud
