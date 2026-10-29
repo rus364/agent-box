@@ -78,7 +78,7 @@ def _fields(lines: list[str], start: int, end: int, indent: int) -> list[Field]:
         if not pair:
             raise _unsupported(index)
         key = _scalar(pair[2], index)
-        if not key or key == "<<" or key in keys:
+        if not key or key == "<<" or key in keys or "\ufeff" in key:
             raise _unsupported(index)
         keys.add(key)
         if fields:
@@ -146,7 +146,7 @@ def _keyring_credentials(host: str, number: int) -> dict[str, str]:
 def snapshot_config(path: Path) -> str | None:
     """Return a sanitized creation-time config; resolve every host before publishing any copy."""
     try:
-        text = path.read_text(encoding="utf-8")
+        text = path.read_text(encoding="utf-8-sig")
     except FileNotFoundError:
         return None
     except (OSError, UnicodeError):

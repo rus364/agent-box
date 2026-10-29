@@ -80,6 +80,17 @@ class GlabSnapshotTests(unittest.TestCase):
                 self.assertEqual(self.render(text), text)
         run.assert_not_called()
 
+    def test_utf8_bom_cannot_hide_hosts_or_rotating_refresh_tokens(self):
+        """A BOM is valid YAML file encoding, not part of the hosts key."""
+        with mock.patch.object(glab_config, "_keyring_credentials",
+                               return_value={"token": "access", "job_token": ""}) as lookup:
+            result = self.render('\ufeffhosts:\n  one.example:\n    use_keyring: true\n'
+                                 '    oauth2_refresh_token: rotating-secret\n')
+        lookup.assert_called_once_with("one.example", 1)
+        self.assertNotIn("rotating-secret", result)
+        self.assertIn('token: "access"', result)
+        self.assertIn('use_keyring: "false"', result)
+
     def test_ambiguous_authentication_is_refused_before_any_keyring_read(self):
         """Do not guess YAML aliases, duplicate keys, invalid nesting or multiline credentials."""
         invalid = [

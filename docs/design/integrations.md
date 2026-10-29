@@ -37,6 +37,8 @@ host stays the source of truth; changes made in the box disappear with it.
   per-host access/job tokens go into the private creation-time copy with
   `use_keyring` disabled. OAuth type/expiry survive, but refresh tokens never
   enter the mounted config, so independent boxes cannot race host renewal.
+  Source paths aliasing that file, including in-tree targets and hardlinks,
+  are omitted so they cannot reintroduce the unfiltered authentication data.
   This contract is verified against glab 1.126.0; lookup failures stop creation.
 - **Registries.** Each source file becomes its own filtered copy, never merged:
   Helm often holds registries Podman does not. Where both container auth files

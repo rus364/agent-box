@@ -744,14 +744,28 @@ def claude_skill_links(config: Config) -> None:
             link.unlink(missing_ok=True)
 
 
-def seed_state_dir(target: Path, *sources: Path, exclude: tuple[str, ...] = ()) -> None:
+def seed_state_dir(target: Path, *sources: Path, exclude: tuple[Path, ...] = ()) -> None:
+    excluded = set()
+    for path in exclude:
+        if path.is_file():
+            info = path.stat()
+            excluded.add((info.st_dev, info.st_ino))
+
     def dangling_links(directory, names):
         # copytree's ignore_dangling_symlinks tests relative targets against
         # cwd; checking the source entry preserves valid relative dotfiles.
         entries = (Path(directory) / name for name in names)
-        return [path.name for path in entries
-                if (Path(directory) == source and path.name in exclude)
-                or (path.is_symlink() and not path.exists())]
+        ignored = []
+        for path in entries:
+            if path.is_symlink() and not path.exists():
+                ignored.append(path.name)
+            elif excluded:
+                # A config may also be reachable through an in-tree symlink
+                # target or hardlink; none may reintroduce the unfiltered file.
+                info = path.stat()
+                if (info.st_dev, info.st_ino) in excluded:
+                    ignored.append(path.name)
+        return ignored
 
     shutil.rmtree(target, ignore_errors=True)
     target.mkdir(parents=True, exist_ok=True)
@@ -921,7 +935,7 @@ def prepare_container_lifetime_state(
         rendered = glab_config.snapshot_config(source / "config.yml")
         # The original may contain rotating OAuth refresh tokens. Never publish
         # that file even briefly; only the access-token snapshot reaches the mount.
-        seed_state_dir(runtime_state.glab, source, exclude=("config.yml",))
+        seed_state_dir(runtime_state.glab, source, exclude=(source / "config.yml",))
         if rendered is not None:
             atomic_write_text(runtime_state.glab / "config.yml", rendered, 0o600)
     else:

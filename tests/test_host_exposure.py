@@ -131,7 +131,7 @@ class ProviderEnvTests(unittest.TestCase):
 class GitSeedingTests(unittest.TestCase):
     """git config exposure: identity only by default, whole file opt-in."""
 
-    def _seed(self, config, git_output="Someone", *, glab_symlink=False):
+    def _seed(self, config, git_output="Someone", *, glab_symlink=False, glab_internal_link=False):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         root = Path(tmp.name)
@@ -146,6 +146,15 @@ class GitSeedingTests(unittest.TestCase):
             dotfiles.mkdir()
             (glab_home / "config.yml").rename(dotfiles / "glab.yml")
             (glab_home / "config.yml").symlink_to(dotfiles / "glab.yml")
+        if glab_internal_link:
+            linked = glab_home / "profiles/default.yml"
+            linked.parent.mkdir()
+            (glab_home / "config.yml").rename(linked)
+            with linked.open("a") as stream:
+                stream.write("    oauth2_refresh_token: rotating-secret\n")
+            (glab_home / "config.yml").symlink_to("profiles/default.yml")
+            (glab_home / "alias.yml").symlink_to("config.yml")
+            (glab_home / "hardlink.yml").hardlink_to(linked)
         (home / ".gitconfig").write_text(
             "[user]\n\tname = Someone\n\temail = a@b.c\n"
             "[credential]\n\thelper = store\n"
@@ -252,6 +261,19 @@ class GitSeedingTests(unittest.TestCase):
         self.assertIn("glpat_secret", second_config.read_text())
         original.unlink()
         self.assertIn("glpat_secret", second_config.read_text())
+
+    def test_internal_config_links_cannot_leave_unsanitized_refresh_token_copies(self):
+        """Materializing the same config via another path must not leak the omitted refresh token."""
+        config = Config()
+        config.credentials.gitlab.config = True
+        state = self._seed(config, glab_internal_link=True)
+        copied = state / "glab"
+        original = state.parent / "home/.config/glab-cli/profiles/default.yml"
+        self.assertIn("rotating-secret", original.read_text())
+        self.assertIn("glpat_secret", (copied / "config.yml").read_text())
+        for path in copied.rglob("*"):
+            if path.is_file():
+                self.assertNotIn("rotating-secret", path.read_text(), str(path))
 
 
 class ConfigurationSnapshotTests(unittest.TestCase):
