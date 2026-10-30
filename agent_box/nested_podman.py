@@ -13,6 +13,10 @@ from pathlib import Path
 # seccomp filter cannot observe those capabilities after it has been installed.
 NAMESPACE_SYSCALLS = frozenset({"chroot", "sethostname"})
 
+# Rootless Podman reads its storage driver only from the user's file; the
+# system storage.conf is ignored for rootless use.
+USER_STORAGE_CONF = '[storage]\ndriver = "overlay"\n'
+
 CONTAINERS_CONF = '''[containers]
 cgroups = "disabled"
 default_sysctls = []
@@ -106,7 +110,7 @@ def configure_image(root: Path, user: str, uid: int, gid: int, home: Path,
     user_config = root / home.relative_to("/") / ".config/containers"
     user_config.mkdir(parents=True, exist_ok=True)
     storage = user_config / "storage.conf"
-    storage.write_text('[storage]\ndriver = "overlay"\n', encoding="utf-8")
+    storage.write_text(USER_STORAGE_CONF, encoding="utf-8")
     for path in (user_config.parent, user_config, storage):
         os.chown(path, uid, gid)
     data = root / home.relative_to("/") / ".local/share/containers"

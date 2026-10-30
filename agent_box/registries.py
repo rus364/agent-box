@@ -18,7 +18,8 @@ import urllib.parse
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .atomicio import atomic_write_json
+from .atomicio import atomic_write_json, atomic_write_text
+from .nested_podman import USER_STORAGE_CONF
 from .paths import (
     CONTAINER_CONTAINERS_CONFIG_DIR,
     CONTAINER_HELM_CONFIG_DIR,
@@ -30,6 +31,7 @@ from .paths import (
 
 #: Match the tools' standard layout so plain tools and scripts find the same copies.
 AUTH_FILE = "containers/auth.json"
+STORAGE_FILE = "containers/storage.conf"
 HELM_REGISTRY_FILE = "helm/registry/config.json"
 HELM_REPOSITORIES_FILE = "helm/repositories.yaml"
 
@@ -440,6 +442,13 @@ def sync(config, workspace_id: str) -> list[str]:
             atomic_write_json(directory / name, {"auths": rendered[kind]}, 0o600)
         else:
             (directory / name).unlink(missing_ok=True)
+    # The read-only copy hides the image's ~/.config/containers, whose only file
+    # is nested Podman's storage.conf, and rootless Podman reads its driver
+    # nowhere else; carry it so registry forwarding keeps the configured storage.
+    if registries.hosts and config.box.tools.groups["podman"]:
+        atomic_write_text(directory / STORAGE_FILE, USER_STORAGE_CONF, 0o600)
+    else:
+        (directory / STORAGE_FILE).unlink(missing_ok=True)
     if registries.helm_repositories:
         available, reported = _repositories(problems, registries.helm_repositories)
         for name in registries.helm_repositories:

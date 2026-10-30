@@ -9,7 +9,8 @@
   config files even with a whole-home mount. Built-in k3s uses `~/.kube/k3s.yaml` through
   `KUBECONFIG`; a selected host file with that name is refused rather than hidden.
   An explicit mount at or below a managed kubeconfig, registry or Helm
-  directory is refused rather than replacing the forwarded copies.
+  directory is refused rather than replacing the forwarded copies. Forwarded
+  registry logins keep nested Podman's overlay storage configuration.
   Rebuild the workspace image and explicitly stop/relaunch to adopt the new paths;
   existing runtimes and prior persistent caches are left untouched. Existing mise
   trust records remain shared through the same private host state.

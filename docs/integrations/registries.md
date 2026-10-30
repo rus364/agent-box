@@ -53,7 +53,8 @@ keeps its own Helm index cache; refresh it with `helm repo update`. The forwarde
 files are read-only: renew those logins on the host, then launch agent-box again.
 An explicit mount at or below a managed `~/.config/containers` or
 `~/.config/helm` would replace the filtered copy with host data and is refused;
-a parent mount such as `~/.config` stays allowed.
+a parent mount such as `~/.config` stays allowed. With nested Podman, the copy
+also carries the image's `storage.conf`, which rootless Podman reads only there.
 
 The running box retains the forwarding switch, chosen hosts and repositories,
 mounts from creation. Later launches refresh only those choices,

@@ -236,6 +236,30 @@ class FilteringTests(IsolatedSources):
         self.assertEqual({path.stat().st_mode & 0o777 for path in directory.rglob("*") if path.is_file()}, {0o600})
         self.assertEqual({path.stat().st_mode & 0o777 for path in directory.rglob("*") if path.is_dir()}, {0o700})
 
+    def test_nested_podman_keeps_its_storage_driver_under_forwarded_logins(self):
+        """The read-only copy hides the image's ~/.config/containers, and rootless
+        Podman reads its storage driver from nowhere else; without the image's
+        storage.conf there, forwarding a login would leave nested Podman on an
+        auto-detected backend instead of the configured overlay."""
+        from agent_box import nested_podman
+        self.write(self.runtime_auth, {"auths": {"cr.yandex": {"auth": "runtime"}}})
+        config = registry_config(["cr.yandex"])
+        config.box.tools.groups["podman"] = True
+        storage = registries.runtime_dir("ws") / "containers/storage.conf"
+        registries.sync(config, "ws")
+        self.assertEqual(storage.read_text(), nested_podman.USER_STORAGE_CONF)
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(nested_podman.os, "chown"):
+            (Path(tmp) / "etc").mkdir()
+            nested_podman.configure_image(Path(tmp), "tester", 1000, 1000, Path("/home/tester"),
+                                          [[1, 999]], [[1, 999]])
+            image = Path(tmp) / "home/tester/.config/containers"
+            self.assertEqual({path.name: path.read_text() for path in image.iterdir()},
+                             {"storage.conf": storage.read_text()})
+        # Without nested Podman nothing beyond the login is added.
+        config.box.tools.groups["podman"] = False
+        registries.sync(config, "ws")
+        self.assertFalse(storage.exists())
+
     def test_a_renewed_host_login_replaces_the_copy_inside_the_mounted_directory(self):
         """The box mounts the directory, so only a replace within it reaches a running box."""
         self.write(self.runtime_auth, {"auths": {"cr.yandex": {"auth": "old"}}})
